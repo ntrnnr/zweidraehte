@@ -173,21 +173,11 @@ impl<const N: usize> TableMemory for AssoTab6Impl<N> {
     fn max_size() -> usize {
         N
     }
-
     fn data_ref(&self) -> &[u8] {
         &self.data
     }
-
     fn data_ref_mut(&mut self) -> &mut [u8] {
         &mut self.data
-    }
-
-    fn read(&self, offset: usize, data: &mut [u8]) {
-        data.copy_from_slice(&self.data[offset..offset + data.len()]);
-    }
-
-    fn write(&mut self, offset: usize, data: &[u8]) {
-        self.data[offset..offset + data.len()].copy_from_slice(data);
     }
 }
 
@@ -244,7 +234,7 @@ pub type AssoTab6<const MAX_ENTRIES: usize> = Table<AssoTab6Impl<{ 2 + MAX_ENTRI
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{AssociationTable, LoadEvent, LoadState, HasLoadStateMachine, TableMemory};
+    use crate::objects::tables::{AssociationTable, HasLoadStateMachine, LoadEvent, LoadState, TableMemory};
 
     use super::AssoTab6;
 
@@ -261,18 +251,21 @@ mod test {
         assert_eq!(ast.read_lsm(), [LoadState::Loading.into()]);
 
         // Allocate a table with space for 2 entries (4 words total including length field)
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x08, // 8 bytes total
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ], None);
+        ast.write_lsm(
+            &[
+                LoadEvent::AdditionalLoadControls.into(),
+                0x0B,
+                0x00,
+                0x00,
+                0x00,
+                0x08, // 8 bytes total
+                0x01,
+                0xff,
+                0x00,
+                0x00,
+            ],
+            None,
+        );
         assert_eq!(ast.read_lsm(), [LoadState::Loading.into()]);
         assert_eq!(&ast.data_ref()[0..8], &[0xff; 8]);
 
@@ -301,18 +294,21 @@ mod test {
 
         // Setup an empty table (length = 0)
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x02, // 2 bytes for the length field only
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ], None);
+        ast.write_lsm(
+            &[
+                LoadEvent::AdditionalLoadControls.into(),
+                0x0B,
+                0x00,
+                0x00,
+                0x00,
+                0x02, // 2 bytes for the length field only
+                0x01,
+                0xff,
+                0x00,
+                0x00,
+            ],
+            None,
+        );
         ast.write(0, &[0x00, 0x00]); // Length: 0 entries
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
@@ -355,18 +351,10 @@ mod test {
         // TSAP 5 → ASAP 6
         // TSAP 5 → ASAP 7 (multiple ASAPs for same TSAP)
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x10,
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ], None);
+        ast.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x10, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x01]); // Entry 1: TSAP = 1
         ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
@@ -405,18 +393,10 @@ mod test {
         // ASAP 5 ← TSAP 6
         // ASAP 5 ← TSAP 7 (multiple TSAPs for same ASAP)
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x10,
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ], None);
+        ast.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x10, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
         ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
@@ -455,18 +435,10 @@ mod test {
         // ASAP 5 ← TSAP 6
         // ASAP 5 ← TSAP 7 (multiple TSAPs for same ASAP - should return first match)
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x10,
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ], None);
+        ast.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x10, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
         ast.write(0, &[0x00, 0x04]); // 4 entries
         ast.write(2, &[0x00, 0x02]); // Entry 1: TSAP = 2
         ast.write(4, &[0x00, 0x02]); // Entry 1: ASAP = 2
@@ -540,18 +512,10 @@ mod test {
         // TSAP 2 → ASAP 20
         // TSAP 3 → ASAP 30, ASAP 31, ASAP 32
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ast.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x14,
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ], None);
+        ast.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x14, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
         ast.write(0, &[0x00, 0x06]); // 6 entries
         // TSAP 1 → ASAP 11
         ast.write(2, &[0x00, 0x01]);

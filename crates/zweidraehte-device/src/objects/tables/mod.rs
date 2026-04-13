@@ -82,8 +82,23 @@ pub trait TableMemory: ConstDefault + Sized {
     fn max_size() -> usize;
     fn data_ref(&self) -> &[u8];
     fn data_ref_mut(&mut self) -> &mut [u8];
-    fn read(&self, offset: usize, data: &mut [u8]);
-    fn write(&mut self, offset: usize, data: &[u8]);
+
+    /// Copy `data.len()` bytes starting at `offset` out of the table.
+    ///
+    /// The default impl is an **unchecked** `copy_from_slice` and will panic
+    /// if `offset + data.len()` exceeds `data_ref().len()`. Table types
+    /// whose backing storage has meaningful bounds (e.g.,
+    /// [`ApplicationImpl`](super::app::ApplicationImpl) wrapping a typed
+    /// struct) override this with a saturating variant.
+    fn read(&self, offset: usize, data: &mut [u8]) {
+        data.copy_from_slice(&self.data_ref()[offset..offset + data.len()]);
+    }
+
+    /// Copy `data.len()` bytes of `data` into the table starting at
+    /// `offset`. See [`read`](Self::read) for the bounds-handling contract.
+    fn write(&mut self, offset: usize, data: &[u8]) {
+        self.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
+    }
 }
 
 pub trait HasLoadStateMachine: TableMemory {

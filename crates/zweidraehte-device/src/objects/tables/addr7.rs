@@ -25,21 +25,11 @@ impl<const N: usize> TableMemory for AddrTab7Impl<N> {
     fn max_size() -> usize {
         N
     }
-
     fn data_ref(&self) -> &[u8] {
         &self.data
     }
-
     fn data_ref_mut(&mut self) -> &mut [u8] {
         &mut self.data
-    }
-
-    fn read(&self, offset: usize, data: &mut [u8]) {
-        data.copy_from_slice(&self.data[offset..offset + data.len()]);
-    }
-
-    fn write(&mut self, offset: usize, data: &[u8]) {
-        self.data[offset..offset + data.len()].copy_from_slice(data);
     }
 }
 
@@ -94,9 +84,8 @@ pub type AddrTab7<const MAX_ENTRIES: usize> = Table<AddrTab7Impl<{ (MAX_ENTRIES 
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        objects::tables::{LoadEvent, LoadState, HasLoadStateMachine, TableMemory}};
-use zweidraehte_proto::address::GroupAddress as KNXGroupAddress;
+    use crate::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState, TableMemory};
+    use zweidraehte_proto::address::GroupAddress as KNXGroupAddress;
 
     use super::AddrTab7;
 
@@ -112,7 +101,10 @@ use zweidraehte_proto::address::GroupAddress as KNXGroupAddress;
         assert_eq!(a.read_lsm(), [LoadState::Loading.into()]);
 
         // Allocate a table and fill it with 0xFF
-        a.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x06, 0x01, 0xff, 0x00, 0x00], None);
+        a.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x06, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
         assert_eq!(a.read_lsm(), [LoadState::Loading.into()]);
         assert_eq!(&a.data_ref()[0..6], &[0xff; 6]);
         assert_eq!(a.mcb_table.as_ref(), &[0x00, 0x00, 0x00, 0x06, 0x00, 0xFF, 0xFF, 0xFF]);

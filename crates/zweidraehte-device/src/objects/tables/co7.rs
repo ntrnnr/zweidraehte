@@ -23,10 +23,7 @@ impl ComObjectDescriptor {
     /// Decode a descriptor from its big-endian 16-bit representation.
     pub fn from_u16(raw: U16) -> Self {
         let val = raw.get();
-        Self {
-            flags: ComObjectFlags((val >> 8) as u8),
-            object_type: ComObjectType::from(val as u8),
-        }
+        Self { flags: ComObjectFlags((val >> 8) as u8), object_type: ComObjectType::from(val as u8) }
     }
 
     /// Encode the descriptor as a big-endian 16-bit value.
@@ -61,21 +58,11 @@ impl<const N: usize> TableMemory for CoTab7Impl<N> {
     fn max_size() -> usize {
         N
     }
-
     fn data_ref(&self) -> &[u8] {
         &self.data
     }
-
     fn data_ref_mut(&mut self) -> &mut [u8] {
         &mut self.data
-    }
-
-    fn read(&self, offset: usize, data: &mut [u8]) {
-        data.copy_from_slice(&self.data[offset..offset + data.len()]);
-    }
-
-    fn write(&mut self, offset: usize, data: &[u8]) {
-        self.data[offset..offset + data.len()].copy_from_slice(data);
     }
 }
 
@@ -122,7 +109,7 @@ pub type CoTab7<const MAX_ENTRIES: usize> = Table<CoTab7Impl<{ (MAX_ENTRIES + 1)
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{LoadEvent, LoadState, HasLoadStateMachine, Priority, TableMemory};
+    use crate::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState, Priority, TableMemory};
 
     use super::{CoTab7, ComObjectFlags, ComObjectType};
 
@@ -138,18 +125,21 @@ mod test {
         assert_eq!(ct.read_lsm(), [LoadState::Loading.into()]);
 
         // Allocate a table with space for 3 communication objects
-        ct.write_lsm(&[
-            LoadEvent::AdditionalLoadControls.into(),
-            0x0B,
-            0x00,
-            0x00,
-            0x00,
-            0x08, // 8 bytes total: 2 for length + 3*2 for objects
-            0x01,
-            0xff,
-            0x00,
-            0x00,
-        ], None);
+        ct.write_lsm(
+            &[
+                LoadEvent::AdditionalLoadControls.into(),
+                0x0B,
+                0x00,
+                0x00,
+                0x00,
+                0x08, // 8 bytes total: 2 for length + 3*2 for objects
+                0x01,
+                0xff,
+                0x00,
+                0x00,
+            ],
+            None,
+        );
         assert_eq!(ct.read_lsm(), [LoadState::Loading.into()]);
         assert_eq!(&ct.data_ref()[0..8], &[0xff; 8]);
 
@@ -178,7 +168,10 @@ mod test {
 
         // Setup a test table with 3 com objects
         ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x08, 0x01, 0xff, 0x00, 0x00], None);
+        ct.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x08, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
 
         ct.write(0, &[0x00, 0x03]); // Length: 3 entries
         ct.write(2, &[0xDC, 0x00]); // Com Object 1: RTWU config, Uint1
@@ -222,7 +215,10 @@ mod test {
 
         // Setup a test table with 1 com object
         ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x04, 0x01, 0xff, 0x00, 0x00], None);
+        ct.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x04, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
 
         ct.write(0, &[0x00, 0x01]); // Length: 1 entry
         ct.write(2, &[0xDC, 0x00]); // Com Object 1: RTWU config, Uint1
@@ -256,7 +252,10 @@ mod test {
 
         // Setup a test table with 4 com objects with different flags
         ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        ct.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x0A, 0x01, 0xff, 0x00, 0x00], None);
+        ct.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x0A, 0x01, 0xff, 0x00, 0x00],
+            None,
+        );
 
         ct.write(0, &[0x00, 0x04]); // Length: 4 entries
         ct.write(2, &[0xDC, 0x00]); // Com Object 1: RTWU config, Uint1
