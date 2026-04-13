@@ -10,9 +10,10 @@ use heapless::Vec;
 
 use core::cell::RefCell;
 
-use zweidraehte_proto::address::IndividualAddress;
 use crate::context::KnxIndividualAddressContext;
 use crate::layers::linklayers::knxip::context::{DeviceInfoContext, IpDiagnosticsContext};
+use crate::objects::tables::{AddressTable, HasLoadStateMachine};
+use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knx::DestinationAddress;
 use zweidraehte_proto::messages::{
     buffers::{Buffer, DynBufferManager},
@@ -20,7 +21,6 @@ use zweidraehte_proto::messages::{
     knx::KnxMessageBuffer,
     knxip::{KNXnetIPServiceType, substructs},
 };
-use crate::objects::tables::{AddressTable, HasLoadStateMachine};
 
 // ============================================================================
 // Server Error

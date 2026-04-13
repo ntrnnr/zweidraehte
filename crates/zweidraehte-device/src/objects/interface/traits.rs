@@ -8,14 +8,14 @@ use core::net::Ipv4Addr;
 
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
 use crate::StackDefinition;
+use crate::context::layer::LayerContext;
+use crate::layers::application::group_data::GroupDataProvider;
+use crate::router::Outbox;
+use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
 };
-use crate::layer_context::LayerContext;
-use crate::layers::application::group_data::GroupDataProvider;
 use zweidraehte_proto::messages::buffers::DynBufferManager;
-use crate::router::Outbox;
-use zweidraehte_proto::AccessContext;
 
 // ============================================================================
 // Inline Property Buffer

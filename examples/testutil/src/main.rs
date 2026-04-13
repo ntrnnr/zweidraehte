@@ -15,7 +15,7 @@ use zweidraehte_conformance::harness::mock::MockLinkLayerBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    layer_context::LayerContext,
+    context::layer::LayerContext,
     objects::tables::{
         AddrTab7, AddressTable, Application, AssoTab6, AssociationTable, CoTab7, CommunicationObjectTable,
     }};

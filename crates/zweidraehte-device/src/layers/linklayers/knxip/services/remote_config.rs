@@ -100,7 +100,8 @@ impl RemoteConfigurationServer {
             DescriptionInformationBlockBuilder::KnxAddresses(knx_addresses),
         ];
 
-        let response_builder = zweidraehte_proto::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
+        let response_builder =
+            zweidraehte_proto::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
 
         let mut response_buffer = context.alloc_buffer().await;
         response_buffer.serialize(&response_builder);
@@ -177,7 +178,8 @@ impl RemoteConfigurationServer {
             DescriptionInformationBlockBuilder::KnxAddresses(knx_addresses),
         ];
 
-        let response_builder = zweidraehte_proto::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
+        let response_builder =
+            zweidraehte_proto::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
 
         let mut response_buffer = context.alloc_buffer().await;
         response_buffer.serialize(&response_builder);

@@ -22,10 +22,10 @@ use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 
-use zweidraehte_proto::address::IndividualAddress;
 use crate::context::LinkLayerBufferContext;
-use zweidraehte_proto::encoding::cemi::CemiMessageCode; // Still needed for RX path
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::encoding::cemi::CemiMessageCode; // Still needed for RX path
 use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 use zweidraehte_proto::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::{CemiFormat, Confirm, KnxMessageBuffer, ServiceType};

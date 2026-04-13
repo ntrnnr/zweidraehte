@@ -16,8 +16,8 @@
 //! ```
 
 use crate::{
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
     layers::application::services::{AlService, AlServiceContext},
     objects::interface::{FunctionPropertyRequest, PropertyServiceHandler},
 };
@@ -113,10 +113,9 @@ fn handle<D: StackDefinition>(
         return;
     };
 
-    let msg =
-        ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
-            FpResponseWriter::write(buf, hdr.object_idx, hdr.prop_id, result.return_code, response_data);
-        });
+    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
+        FpResponseWriter::write(buf, hdr.object_idx, hdr.prop_id, result.return_code, response_data);
+    });
 
     debug!(
         "AL sending FunctionPropertyStateResponse: rc=0x{:02X}, data_len={}",

@@ -35,8 +35,11 @@ pub trait ConnectedHandler: 'static {
     type Handler<'a>;
     const CONNECTION_TYPE: ConnectionType;
 
-    fn accept_connection(h: &mut Self::Handler<'_>, channel_id: u8, cri: &CRI)
-        -> Result<AcceptedConnection, ConnectionStatus>;
+    fn accept_connection(
+        h: &mut Self::Handler<'_>,
+        channel_id: u8,
+        cri: &CRI,
+    ) -> Result<AcceptedConnection, ConnectionStatus>;
 
     fn close_connection(h: &mut Self::Handler<'_>, channel_id: u8);
 
@@ -70,15 +73,9 @@ pub trait ConnectedHandler: 'static {
 pub trait TunnelingConnectedHandler<const N: usize = 0>: ConnectedHandler {
     fn tunneling_slot_info(
         h: &Self::Handler<'_>,
-    ) -> Option<(
-        u16,
-        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
-    )>;
+    ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>)>;
 
-    fn channels_for_bus_indication(
-        h: &Self::Handler<'_>,
-        cemi_data: &[u8],
-    ) -> heapless::Vec<u8, N>;
+    fn channels_for_bus_indication(h: &Self::Handler<'_>, cemi_data: &[u8]) -> heapless::Vec<u8, N>;
 
     fn build_tunneling_request(
         channel_id: u8,
@@ -99,7 +96,9 @@ impl ConnectedHandler for WithDevMgmt {
     const CONNECTION_TYPE: ConnectionType = ConnectionType::DeviceManagement;
 
     fn accept_connection(
-        h: &mut Self::Handler<'_>, channel_id: u8, cri: &CRI,
+        h: &mut Self::Handler<'_>,
+        channel_id: u8,
+        cri: &CRI,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         ConnectionTypeHandler::accept_connection(h, channel_id, cri)
     }
@@ -119,7 +118,10 @@ impl ConnectedHandler for WithDevMgmt {
     }
 
     fn on_data_ack(
-        h: &mut Self::Handler<'_>, channel_id: u8, data: &[u8], conn: &mut ConnectionContext,
+        h: &mut Self::Handler<'_>,
+        channel_id: u8,
+        data: &[u8],
+        conn: &mut ConnectionContext,
     ) -> Result<(), ServerError> {
         ConnectionTypeHandler::on_data_ack(h, channel_id, data, conn)
     }
@@ -138,7 +140,9 @@ impl ConnectedHandler for NoDevMgmt {
     const CONNECTION_TYPE: ConnectionType = ConnectionType::DeviceManagement;
 
     fn accept_connection(
-        _h: &mut Self::Handler<'_>, _channel_id: u8, _cri: &CRI,
+        _h: &mut Self::Handler<'_>,
+        _channel_id: u8,
+        _cri: &CRI,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         Err(ConnectionStatus::ConnectionTypeNotSupported)
     }
@@ -156,7 +160,10 @@ impl ConnectedHandler for NoDevMgmt {
     }
 
     fn on_data_ack(
-        _h: &mut Self::Handler<'_>, _channel_id: u8, _data: &[u8], _conn: &mut ConnectionContext,
+        _h: &mut Self::Handler<'_>,
+        _channel_id: u8,
+        _data: &[u8],
+        _conn: &mut ConnectionContext,
     ) -> Result<(), ServerError> {
         Err(ServerError::Unsupported)
     }
@@ -179,7 +186,9 @@ impl<const N: usize> ConnectedHandler for WithTunnel<N> {
     const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
 
     fn accept_connection(
-        h: &mut Self::Handler<'_>, channel_id: u8, cri: &CRI,
+        h: &mut Self::Handler<'_>,
+        channel_id: u8,
+        cri: &CRI,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         ConnectionTypeHandler::accept_connection(h, channel_id, cri)
     }
@@ -199,7 +208,10 @@ impl<const N: usize> ConnectedHandler for WithTunnel<N> {
     }
 
     fn on_data_ack(
-        h: &mut Self::Handler<'_>, channel_id: u8, data: &[u8], conn: &mut ConnectionContext,
+        h: &mut Self::Handler<'_>,
+        channel_id: u8,
+        data: &[u8],
+        conn: &mut ConnectionContext,
     ) -> Result<(), ServerError> {
         ConnectionTypeHandler::on_data_ack(h, channel_id, data, conn)
     }
@@ -212,18 +224,12 @@ impl<const N: usize> ConnectedHandler for WithTunnel<N> {
 impl<const N: usize> TunnelingConnectedHandler<N> for WithTunnel<N> {
     fn tunneling_slot_info(
         h: &Self::Handler<'_>,
-    ) -> Option<(
-        u16,
-        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
-    )> {
+    ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>)> {
         let (apdu_len, slots) = h.slot_info();
         Some((apdu_len, slots))
     }
 
-    fn channels_for_bus_indication(
-        h: &Self::Handler<'_>,
-        cemi_data: &[u8],
-    ) -> heapless::Vec<u8, N> {
+    fn channels_for_bus_indication(h: &Self::Handler<'_>, cemi_data: &[u8]) -> heapless::Vec<u8, N> {
         h.channels_for_bus_indication(cemi_data)
     }
 
@@ -235,7 +241,11 @@ impl<const N: usize> TunnelingConnectedHandler<N> for WithTunnel<N> {
         buffer_manager: &DynBufferManager<'static>,
     ) -> Option<PendingResponse> {
         TunnelConnectionHandler::<N>::build_tunneling_request(
-            channel_id, sequence_counter, cemi_data, target, buffer_manager,
+            channel_id,
+            sequence_counter,
+            cemi_data,
+            target,
+            buffer_manager,
         )
     }
 }
@@ -248,7 +258,9 @@ impl ConnectedHandler for NoTunnel {
     const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
 
     fn accept_connection(
-        _h: &mut Self::Handler<'_>, _channel_id: u8, _cri: &CRI,
+        _h: &mut Self::Handler<'_>,
+        _channel_id: u8,
+        _cri: &CRI,
     ) -> Result<AcceptedConnection, ConnectionStatus> {
         Err(ConnectionStatus::ConnectionTypeNotSupported)
     }
@@ -266,7 +278,10 @@ impl ConnectedHandler for NoTunnel {
     }
 
     fn on_data_ack(
-        _h: &mut Self::Handler<'_>, _channel_id: u8, _data: &[u8], _conn: &mut ConnectionContext,
+        _h: &mut Self::Handler<'_>,
+        _channel_id: u8,
+        _data: &[u8],
+        _conn: &mut ConnectionContext,
     ) -> Result<(), ServerError> {
         Err(ServerError::Unsupported)
     }
@@ -279,17 +294,11 @@ impl ConnectedHandler for NoTunnel {
 impl TunnelingConnectedHandler<0> for NoTunnel {
     fn tunneling_slot_info(
         _h: &Self::Handler<'_>,
-    ) -> Option<(
-        u16,
-        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, 0>,
-    )> {
+    ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, 0>)> {
         None
     }
 
-    fn channels_for_bus_indication(
-        _h: &Self::Handler<'_>,
-        _cemi_data: &[u8],
-    ) -> heapless::Vec<u8, 0> {
+    fn channels_for_bus_indication(_h: &Self::Handler<'_>, _cemi_data: &[u8]) -> heapless::Vec<u8, 0> {
         heapless::Vec::new()
     }
 
@@ -317,11 +326,7 @@ impl TunnelingConnectedHandler<0> for NoTunnel {
 /// The const generic `N` is the maximum number of tunneling slots.
 ///
 /// Defaults to `WithDevMgmt` + `NoTunnel` (Device Management only, N=0).
-pub struct CompositeHandlers<
-    'a,
-    DM: ConnectedHandler = WithDevMgmt,
-    TUN: ConnectedHandler = NoTunnel,
-> {
+pub struct CompositeHandlers<'a, DM: ConnectedHandler = WithDevMgmt, TUN: ConnectedHandler = NoTunnel> {
     dev_mgmt: DM::Handler<'a>,
     tunnel: TUN::Handler<'a>,
 }
@@ -401,17 +406,11 @@ impl<const N: usize, DM: ConnectedHandler, TUN: TunnelingConnectedHandler<N>> Co
 
     fn tunneling_slot_info(
         &self,
-    ) -> Option<(
-        u16,
-        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
-    )> {
+    ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>)> {
         TUN::tunneling_slot_info(&self.tunnel)
     }
 
-    fn channels_for_bus_indication(
-        &self,
-        cemi_data: &[u8],
-    ) -> heapless::Vec<u8, N> {
+    fn channels_for_bus_indication(&self, cemi_data: &[u8]) -> heapless::Vec<u8, N> {
         TUN::channels_for_bus_indication(&self.tunnel, cemi_data)
     }
 

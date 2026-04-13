@@ -15,23 +15,24 @@ use core::cell::{Cell, RefCell};
 use crate::{
     HasSecureIdentity, StackState,
     bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
     layers::application::ApplicationLayer,
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
     router::Layer,
-    storage::SequenceNumberStorage};
+    storage::SequenceNumberStorage,
+};
 use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};
 use zweidraehte_proto::crypto::{
-        ccm,
-        scf::{SecureServiceType, SecurityControlField},
-    };
+    ccm,
+    scf::{SecureServiceType, SecurityControlField},
+};
 use zweidraehte_proto::messages::{
-        apdu::secure::{self, SecureApduMut, SecureApduRef},
-        buffers::{Buffer, MessageBuffer},
-        knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
-    };
+    apdu::secure::{self, SecureApduMut, SecureApduRef},
+    buffers::{Buffer, MessageBuffer},
+    knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
+};
 
 use crate::logging::warn;
 
@@ -158,13 +159,8 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
     pub(super) p2p_state: P2P::State,
 }
 
-impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>
-    SecureApplicationLayer<'a, D, SEQ, P2P>
-{
-    pub fn new(
-        inner: ApplicationLayer<'a, D>,
-        seq_storage: &'a RefCell<SEQ>,
-    ) -> Self {
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> SecureApplicationLayer<'a, D, SEQ, P2P> {
+    pub fn new(inner: ApplicationLayer<'a, D>, seq_storage: &'a RefCell<SEQ>) -> Self {
         Self {
             inner,
             seq_storage,
@@ -210,8 +206,7 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>
     }
 }
 
-impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>
-    SecureApplicationLayer<'a, D, SEQ, P2P>
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> SecureApplicationLayer<'a, D, SEQ, P2P>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
@@ -540,7 +535,6 @@ where
         SecureResult::Forward(msg)
     }
 
-
     // ========================================================================
     // Application request routing (intercepts SyncRequest before inner AL)
     // ========================================================================
@@ -716,8 +710,7 @@ where
     }
 }
 
-impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Layer
-    for SecureApplicationLayer<'_, D, SEQ, P2P>
+impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Layer for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,

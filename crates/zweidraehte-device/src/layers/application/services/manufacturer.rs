@@ -11,14 +11,15 @@
 //! ```
 
 use crate::{
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService}};
+    layers::application::services::{AlService, AlServiceContext},
+};
 use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        builder::IndicationExt,
-        knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
-    };
+    buffers::Buffer,
+    builder::IndicationExt,
+    knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
+};
 
 use crate::logging::{debug, warn};
 

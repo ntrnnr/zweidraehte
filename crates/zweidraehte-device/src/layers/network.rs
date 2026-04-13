@@ -1,12 +1,12 @@
 use heapless::Deque;
 
-use crate::inner::StackContext;
-use crate::layer_context::HasOutbox;
-use zweidraehte_proto::messages::buffers::Buffer;
-use zweidraehte_proto::messages::knx::*;
+use crate::context::StackContext;
+use crate::context::layer::HasOutbox;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
 use crate::router::Layer;
 use crate::{StackDefinition, StackState};
+use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::knx::*;
 
 /// Network layer for the KNX stack.
 ///
@@ -19,7 +19,7 @@ use crate::{StackDefinition, StackState};
 /// transformed messages to the outbox for further routing.
 pub struct NetworkLayer<'a, D: StackDefinition> {
     state: &'a D::State,
-    lctx: &'a crate::layer_context::LayerContext<D>,
+    lctx: &'a crate::context::layer::LayerContext<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 
     /// FIFO of address types from outgoing requests, needed to transform each

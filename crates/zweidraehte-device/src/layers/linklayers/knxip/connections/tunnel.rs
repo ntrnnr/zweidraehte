@@ -170,10 +170,7 @@ impl<const N: usize> TunnelConnectionHandler<N> {
     /// address is extracted from the cEMI header:
     ///   `[mc(1) + add_info_len(1) + add_info(N) + ctrl1(1) + ctrl2(1) + src(2) + dst(2)]`
     /// where `ctrl2` bit 7 is the address type flag (1 = group).
-    pub fn channels_for_bus_indication(
-        &self,
-        cemi_data: &[u8],
-    ) -> heapless::Vec<u8, N> {
+    pub fn channels_for_bus_indication(&self, cemi_data: &[u8]) -> heapless::Vec<u8, N> {
         let mut channels = heapless::Vec::new();
 
         // Parse cEMI to extract destination address type and address.
@@ -587,16 +584,13 @@ impl<const N: usize> TunnelConnectionHandler<N> {
             // cEMI: msg_code(1) + add_info_len(1) + [add_info] + ctrl1(1) + ctrl2(1) + src(2) + dst(2) + npdu_len(1)
             let add_info_len = if cemi_buffer.len() > 1 { cemi_buffer[1] as usize } else { 0 };
             let npdu_len_offset = 2 + add_info_len + 6;
-            if cemi_buffer.len() > npdu_len_offset
-                && (cemi_buffer[npdu_len_offset] as u16) > self.max_apdu_length
-            {
+            if cemi_buffer.len() > npdu_len_offset && (cemi_buffer[npdu_len_offset] as u16) > self.max_apdu_length {
                 warn!(
                     "Tunnel: NPDU length {} exceeds max {} - ACK but dropping frame (channel {})",
                     cemi_buffer[npdu_len_offset], self.max_apdu_length, conn.channel_id
                 );
-                let ack = Self::build_ack(
-                    conn.channel_id, sequence_counter, ConnectionStatus::NoError, conn, buffer_manager,
-                );
+                let ack =
+                    Self::build_ack(conn.channel_id, sequence_counter, ConnectionStatus::NoError, conn, buffer_manager);
                 return match ack {
                     Some(ack) => Ok(DataFrameAction::AckOnly(ack)),
                     None => {

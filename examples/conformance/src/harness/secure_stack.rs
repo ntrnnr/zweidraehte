@@ -19,7 +19,7 @@ use zweidraehte_device::{ StackDefinition,
         create_system_b_objects_with_extra,
     },
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    layer_context::LayerContext,
+    context::layer::LayerContext,
     memory::MemoryMap,
     objects::interface::{
         AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment,

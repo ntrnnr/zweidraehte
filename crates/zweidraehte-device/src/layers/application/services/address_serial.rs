@@ -12,19 +12,19 @@
 
 use crate::{
     StackState,
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService}};
+    layers::application::services::{AlService, AlServiceContext},
+};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::{
-        apdu::device::{
-            IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse,
-            IndividualAddressSerialNumberWrite,
-        },
-        buffers::Buffer,
-        builder::MessageBuilder,
-        knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
-    };
+    apdu::device::{
+        IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite,
+    },
+    buffers::Buffer,
+    builder::MessageBuilder,
+    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
+};
 
 use crate::logging::{debug, error, trace, warn};
 

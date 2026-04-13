@@ -3,21 +3,28 @@
 //! The [`Runner`] drives the stack's async event loop. The [`new()`] factory
 //! creates both a [`Stack`] handle and a `Runner` from pre-allocated resources.
 
+use embassy_futures::select::{Either, select, select3};
 use embassy_sync::{
     blocking_mutex::raw::{NoopRawMutex, RawMutex},
     channel::{Channel, DynamicReceiver, DynamicSender},
 };
+use embassy_time::Timer;
 
 use crate::{
     StackState,
     composition::LayerStackBuilder,
+    context::StackContext,
     definition::StackDefinition,
-    inner::{Inner, StackContext},
+    inner::Inner,
     layers::{LinkLayerBuilderBase, transport::TlStyle},
     resources::StackResources,
     restart,
-    stack_handle::Stack};
+    router::LayerStack,
+    stack_handle::Stack,
+};
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
+use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+use zweidraehte_proto::messages::knx::ServiceType;
 
 // ============================================================================
 // Runner
@@ -48,12 +55,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Run state machine initialization, DeviceControl sync, and lifecycle
         // events are handled by the DeviceModel in InsecureDeviceLayers::init().
 
-        use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
-        use zweidraehte_proto::messages::knx::ServiceType;
-        use crate::router::LayerStack;
-        use embassy_futures::select::{Either, select, select3};
-        use embassy_time::Timer;
-
         // ================================================================
         // Link layer channels
         // ================================================================
@@ -83,7 +84,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Layer construction (via LayerStackBuilder)
         // ================================================================
 
-        let stack_context = StackContext { inner: self.stack.inner, interface_objects: self.interface_objects };
+        let stack_context = StackContext::new(self.stack.inner, self.interface_objects);
 
         let mut layers = B::<D>::build(&stack_context, &layer_channels);
 
@@ -239,7 +240,7 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 
 /// Create a new KNX stack.
 ///
-/// The runner creates the [`LayerContext`](crate::layer_context::LayerContext)
+/// The runner creates the [`LayerContext`](crate::context::layer::LayerContext)
 /// (buffer manager, outbox, channels) first, then calls
 /// [`D::create_state()`](StackDefinition::create_state) so the device state
 /// has access to runtime infrastructure from birth — no two-phase init.
@@ -258,14 +259,15 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     platform: D::Platform,
     memory_map: D::Mem,
 ) -> (Stack<'static, D>, Runner<'static, D>) {
-    use crate::layer_context::LayerContext;
+    use crate::context::layer::LayerContext;
 
     // ================================================================
     // Step 1: Allocate buffers
     // ================================================================
 
     let buffers = resources.buffers.write([[0; _]; _]);
-    let buffer_manager: &'static mut BufferManager<NUM_BUFS> = resources.buffer_manager.write(unsafe { BufferManager::new(buffers) });
+    let buffer_manager: &'static mut BufferManager<NUM_BUFS> =
+        resources.buffer_manager.write(unsafe { BufferManager::new(buffers) });
 
     // ================================================================
     // Step 2: Create LayerContext (before the state)
@@ -303,7 +305,7 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
 
     // Channels live on LayerContext. Create sender/receiver
     // pairs for the Stack handle and the Runner.
-    let lctx: &'static crate::layer_context::LayerContext<D> = inner.layer_context;
+    let lctx: &'static LayerContext<D> = inner.layer_context;
 
     let app_request_sender: DynamicSender<'static, _> = lctx.app_service_channel.sender().into();
 

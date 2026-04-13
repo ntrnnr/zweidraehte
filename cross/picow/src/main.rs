@@ -98,11 +98,21 @@ impl StackDefinition for PicoWLightSwitch {
         (IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>, EasterEggAugment),
     >;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a zweidraehte_device::layer_context::LayerContext<Self>) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
-        create_system_b_objects_with_extra::<Self, _>(state, layer_ctx, platform, &Self::memory_layout(), EasterEggAugment)
+        create_system_b_objects_with_extra::<Self, _>(
+            state,
+            layer_ctx,
+            platform,
+            &Self::memory_layout(),
+            EasterEggAugment,
+        )
     }
 
     type Services = (

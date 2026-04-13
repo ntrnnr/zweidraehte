@@ -12,19 +12,18 @@
 
 use crate::{
     StackState,
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService},
-    objects::interface::HasDomainAddress};
+    layers::application::services::{AlService, AlServiceContext},
+    objects::interface::HasDomainAddress,
+};
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
-        apdu::device::{
-            DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite,
-        },
-        buffers::Buffer,
-        builder::MessageBuilder,
-        knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
-    };
+    apdu::device::{DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite},
+    buffers::Buffer,
+    builder::MessageBuilder,
+    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
+};
 
 use crate::logging::{debug, error, trace, warn};
 
@@ -157,10 +156,8 @@ where
 ///
 /// For KNX/IP, the domain address is the 4-byte routing multicast address
 /// (see KNX IP Communication Medium spec, section 4.3.5.3.4).
-fn handle_domain_address_serial_number_write<D>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
-) where
+fn handle_domain_address_serial_number_write<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>)
+where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {

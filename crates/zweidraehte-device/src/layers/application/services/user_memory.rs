@@ -12,17 +12,18 @@
 
 use crate::{
     HasPersistence,
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService},
+    layers::application::services::{AlService, AlServiceContext},
     memory::MemoryMap,
-    objects::interface::HasDeviceObject};
+    objects::interface::HasDeviceObject,
+};
 use zweidraehte_proto::messages::{
-        apdu::memory::{UserMemoryAccess, UserMemoryResponse},
-        buffers::Buffer,
-        builder::IndicationExt,
-        knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
-    };
+    apdu::memory::{UserMemoryAccess, UserMemoryResponse},
+    buffers::Buffer,
+    builder::IndicationExt,
+    knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
+};
 
 use crate::logging::{debug, error, warn};
 
@@ -69,10 +70,7 @@ impl<D: StackDefinition> AlService<D> for UserMemoryService {
 // ============================================================================
 
 /// Handle `A_UserMemory_Read.ind`
-fn handle_user_memory_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
-) {
+fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Read rejected: connection-oriented only");
         return;

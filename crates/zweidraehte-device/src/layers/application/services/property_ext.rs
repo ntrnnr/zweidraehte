@@ -14,9 +14,9 @@
 //! ```
 
 use crate::{
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService},
+    layers::application::services::{AlService, AlServiceContext},
     memory::MemoryMap,
     objects::{
         comm::{ComObjects, HasCommObjects},
@@ -27,16 +27,17 @@ use crate::{
             AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasAssociationTable,
             HasCommunicationObjectTable,
         },
-    }};
+    },
+};
 use zweidraehte_proto::messages::{
-        apdu::property_ext::{
-            FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
-            PropertyExtValueWriteConRes, return_code,
-        },
-        buffers::Buffer,
-        builder::{IndicationExt, MessageBuilder},
-        knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
-    };
+    apdu::property_ext::{
+        FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
+        PropertyExtValueWriteConRes, return_code,
+    },
+    buffers::Buffer,
+    builder::{IndicationExt, MessageBuilder},
+    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
+};
 
 use crate::logging::{debug, error, warn};
 
@@ -845,10 +846,7 @@ fn handle_ext_description_read<D: StackDefinition>(
 ///
 /// Wire format: APCI(2) + count(1) + address(3) + data(count)
 /// Response:    APCI(2) + return_code(1) + address(3)
-fn handle_memory_ext_write<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
-) {
+fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     use zweidraehte_proto::messages::knx::offsets;
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
@@ -906,10 +904,7 @@ fn handle_memory_ext_write<D: StackDefinition>(
 ///
 /// Wire format: APCI(2) + count(1) + address(3)
 /// Response:    APCI(2) + return_code(1) + address(3) + data(count)
-fn handle_memory_ext_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
-) {
+fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     use zweidraehte_proto::messages::knx::offsets;
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {

@@ -10,7 +10,7 @@
 use crate::{
     StackDefinition,
     context::EventPublisherContext,
-    layer_context::{HasOutbox, LayerContext},
+    context::layer::{HasOutbox, LayerContext},
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects},
@@ -18,12 +18,13 @@ use crate::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
         },
-    }};
+    },
+};
 use zweidraehte_proto::messages::{
-        buffers::{Buffer, DynBufferManager},
-        builder::MessageBuilder,
-        knx::*,
-    };
+    buffers::{Buffer, DynBufferManager},
+    builder::MessageBuilder,
+    knx::*,
+};
 
 // ============================================================================
 // Types
@@ -54,7 +55,7 @@ pub enum ReadOnInitState {
 /// Mutable bookkeeping shared between the AL's built-in group-data
 /// handler and the [`GroupDataProvider`] capability used by augments.
 ///
-/// Stored on [`LayerContext`](crate::layer_context::LayerContext) rather
+/// Stored on [`LayerContext`](crate::context::layer::LayerContext) rather
 /// than on `GroupDataProvider` itself — providers are transient views
 /// built per call. Keeping the state behind interior mutability means a
 /// fresh provider always sees the latest `read_on_init` cursor and

@@ -24,7 +24,7 @@ use zweidraehte_proto::messages::buffers::MessageBuffer;
 
 use super::bus_access::{BusAccessFrameBuilder, BusAccessResponse, SupportedEmiTypes};
 use super::device::{AsyncHidDevice, DeviceSelector, UsbHidDevice, UsbHidError};
-use super::hid::{HidReport, ReassemblyBuffer, fragment_frame, MAX_REPORT_SIZE};
+use super::hid::{HidReport, MAX_REPORT_SIZE, ReassemblyBuffer, fragment_frame};
 use super::protocol::{EmiId, TransferFrame, encode_cemi_frame};
 
 /// Timeout for Bus Access Server operations
@@ -94,10 +94,7 @@ pub struct UsbCemiTransport<'a, D: UsbHidDevice> {
 
 impl<'a> UsbCemiTransport<'a, AsyncHidDevice> {
     /// Open a USB cEMI transport with the given device selector
-    pub async fn open(
-        selector: &DeviceSelector,
-        resources: InitializedResources<'a>,
-    ) -> Result<Self, UsbHidError> {
+    pub async fn open(selector: &DeviceSelector, resources: InitializedResources<'a>) -> Result<Self, UsbHidError> {
         let device = AsyncHidDevice::open(selector).await?;
 
         info!(
@@ -181,12 +178,9 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
 
         let response = self.send_bus_access_request(&self.transfer_buf[..len].to_vec()).await?;
 
-        let response =
-            BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
+        let response = BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
 
-        response
-            .get_supported_emi_types()
-            .ok_or(UsbHidError::InvalidReport)
+        response.get_supported_emi_types().ok_or(UsbHidError::InvalidReport)
     }
 
     /// Get current active EMI type
@@ -196,12 +190,9 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
 
         let response = self.send_bus_access_request(&self.transfer_buf[..len].to_vec()).await?;
 
-        let response =
-            BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
+        let response = BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
 
-        response
-            .get_active_emi_type()
-            .ok_or(UsbHidError::InvalidReport)
+        response.get_active_emi_type().ok_or(UsbHidError::InvalidReport)
     }
 
     /// Set active EMI type
@@ -212,17 +203,14 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         let response = self.send_bus_access_request(&self.transfer_buf[..len].to_vec()).await?;
 
         // Per spec, a successful Set gets a Response with the same feature ID echoed back
-        let response =
-            BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
+        let response = BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
 
         // Verify the response contains the ActiveEmiType feature and matches what we set
         if let Some(active) = response.get_active_emi_type() {
             if active == emi_id {
                 Ok(())
             } else {
-                Err(UsbHidError::WriteError(
-                    "Set EMI type returned wrong value".into(),
-                ))
+                Err(UsbHidError::WriteError("Set EMI type returned wrong value".into()))
             }
         } else {
             Err(UsbHidError::WriteError("Set EMI type failed".into()))
@@ -236,12 +224,9 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
 
         let response = self.send_bus_access_request(&self.transfer_buf[..len].to_vec()).await?;
 
-        let response =
-            BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
+        let response = BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
 
-        response
-            .get_bus_connection_status()
-            .ok_or(UsbHidError::InvalidReport)
+        response.get_bus_connection_status().ok_or(UsbHidError::InvalidReport)
     }
 
     /// Send a Bus Access Server request and wait for response
@@ -266,14 +251,12 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
                 Either::Second(result) => {
                     let _len = result?;
 
-                    let report = HidReport::parse(self.rx_report)
-                        .map_err(|_| UsbHidError::InvalidReport)?;
+                    let report = HidReport::parse(self.rx_report).map_err(|_| UsbHidError::InvalidReport)?;
 
                     match self.reassembly.process(&report) {
                         Ok(Some(data)) => {
                             // Complete frame received
-                            let frame = TransferFrame::parse(data)
-                                .map_err(|_| UsbHidError::InvalidReport)?;
+                            let frame = TransferFrame::parse(data).map_err(|_| UsbHidError::InvalidReport)?;
 
                             if frame.is_bus_access_server() {
                                 return Ok(frame.body.to_vec());
@@ -308,11 +291,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
     ///
     /// # Returns
     /// The property value bytes on success
-    pub async fn prop_read(
-        &mut self,
-        object_type: u8,
-        property_id: u8,
-    ) -> Result<Vec<u8>, UsbHidError> {
+    pub async fn prop_read(&mut self, object_type: u8, property_id: u8) -> Result<Vec<u8>, UsbHidError> {
         // Build M_PropRead.req frame
         // Format per cEMI spec:
         // - Byte 0: Message Code (0xFC)
@@ -321,11 +300,13 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         // - Byte 4: Property ID
         // - Byte 5-6: Number of Elements (4 bits) + Start Index (12 bits)
         let request = [
-            0xFC,             // M_PropRead.req
-            0x00, object_type, // Object Type (high byte always 0 for KNX)
-            0x01,             // Object Instance (1-based!)
+            0xFC, // M_PropRead.req
+            0x00,
+            object_type, // Object Type (high byte always 0 for KNX)
+            0x01,        // Object Instance (1-based!)
             property_id,
-            0x10, 0x01,       // Count=1, Start=1
+            0x10,
+            0x01, // Count=1, Start=1
         ];
 
         self.send_device_mgmt_request(&request).await
@@ -340,12 +321,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
     /// * `object_type` - The object type (0x00 = Device Object, 0x08 = cEMI Server Object)
     /// * `property_id` - The property ID to write
     /// * `data` - The property value to write
-    pub async fn prop_write(
-        &mut self,
-        object_type: u8,
-        property_id: u8,
-        data: &[u8],
-    ) -> Result<(), UsbHidError> {
+    pub async fn prop_write(&mut self, object_type: u8, property_id: u8, data: &[u8]) -> Result<(), UsbHidError> {
         // Build M_PropWrite.req frame
         // Format per cEMI spec:
         // - Byte 0: Message Code (0xF6)
@@ -387,11 +363,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
     /// ```text
     /// msg_code(1) + obj_type(2) + obj_instance(1) + pid(1) + count_idx(2) + data(N)
     /// ```
-    pub async fn read_property_value(
-        &mut self,
-        object_type: u8,
-        property_id: u8,
-    ) -> Result<Vec<u8>, UsbHidError> {
+    pub async fn read_property_value(&mut self, object_type: u8, property_id: u8) -> Result<Vec<u8>, UsbHidError> {
         const HEADER_LEN: usize = 7;
         let response = self.prop_read(object_type, property_id).await?;
         if response.len() < HEADER_LEN {
@@ -432,13 +404,11 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
                     let len = result?;
                     trace!("USB Transport: RX raw ({} bytes): {:02X?}", len, &self.rx_report[..len.min(64)]);
 
-                    let report = HidReport::parse(self.rx_report)
-                        .map_err(|_| UsbHidError::InvalidReport)?;
+                    let report = HidReport::parse(self.rx_report).map_err(|_| UsbHidError::InvalidReport)?;
 
                     match self.reassembly.process(&report) {
                         Ok(Some(data)) => {
-                            let frame = TransferFrame::parse(data)
-                                .map_err(|_| UsbHidError::InvalidReport)?;
+                            let frame = TransferFrame::parse(data).map_err(|_| UsbHidError::InvalidReport)?;
 
                             debug!("USB Transport: RX frame body: {:02X?}", frame.body);
 
@@ -481,10 +451,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
     // ========================================================================
 
     /// Send a cEMI frame
-    pub async fn send_cemi<B: MessageBuffer>(
-        &mut self,
-        frame: &CemiBuffer<B>,
-    ) -> Result<(), UsbHidError> {
+    pub async fn send_cemi<B: MessageBuffer>(&mut self, frame: &CemiBuffer<B>) -> Result<(), UsbHidError> {
         let len = encode_cemi_frame(frame.as_bytes(), self.transfer_buf)
             .map_err(|_| UsbHidError::WriteError("Failed to encode frame".into()))?;
 
@@ -524,19 +491,13 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         match self.device.read_report(self.rx_report).await {
             Ok(len) => {
                 trace!("USB Transport: RX {} bytes", len);
-                let report =
-                    HidReport::parse(self.rx_report).map_err(|_| UsbHidError::InvalidReport)?;
+                let report = HidReport::parse(self.rx_report).map_err(|_| UsbHidError::InvalidReport)?;
 
                 match self.reassembly.process(&report) {
                     Ok(Some(data)) => {
-                        let frame =
-                            TransferFrame::parse(data).map_err(|_| UsbHidError::InvalidReport)?;
+                        let frame = TransferFrame::parse(data).map_err(|_| UsbHidError::InvalidReport)?;
 
-                        if frame.is_cemi_tunnel() {
-                            Ok(Some(frame.body.to_vec()))
-                        } else {
-                            Ok(None)
-                        }
+                        if frame.is_cemi_tunnel() { Ok(Some(frame.body.to_vec())) } else { Ok(None) }
                     }
                     Ok(None) => Ok(None),
                     Err(_) => {
@@ -550,10 +511,7 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
     }
 
     /// Receive a cEMI frame with timeout
-    pub async fn recv_cemi_timeout(
-        &mut self,
-        timeout: Duration,
-    ) -> Result<Vec<u8>, UsbHidError> {
+    pub async fn recv_cemi_timeout(&mut self, timeout: Duration) -> Result<Vec<u8>, UsbHidError> {
         let deadline = Instant::now() + timeout;
 
         loop {
@@ -567,13 +525,11 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
                 Either::Second(result) => {
                     let _len = result?;
 
-                    let report = HidReport::parse(self.rx_report)
-                        .map_err(|_| UsbHidError::InvalidReport)?;
+                    let report = HidReport::parse(self.rx_report).map_err(|_| UsbHidError::InvalidReport)?;
 
                     match self.reassembly.process(&report) {
                         Ok(Some(data)) => {
-                            let frame = TransferFrame::parse(data)
-                                .map_err(|_| UsbHidError::InvalidReport)?;
+                            let frame = TransferFrame::parse(data).map_err(|_| UsbHidError::InvalidReport)?;
 
                             if frame.is_cemi_tunnel() {
                                 return Ok(frame.body.to_vec());

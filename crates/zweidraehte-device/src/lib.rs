@@ -30,14 +30,13 @@ pub use ip::{DEFAULT_MULTICAST_ADDR, IpConfig, IpPlatform, IpPlatformConfig, IpP
 
 mod composition;
 pub use composition::{
-    InsecureDeviceBuilder, LayerStackBuilder, SecureDeviceBuilder,
-    StandardDeviceLayers, StandardLayerStack, StandardSecureDeviceLayers,
+    InsecureDeviceBuilder, LayerStackBuilder, SecureDeviceBuilder, StandardDeviceLayers, StandardLayerStack,
+    StandardSecureDeviceLayers,
 };
 #[cfg(feature = "knxip")]
 pub use composition::{InsecureIpDeviceBuilder, IpDeviceLayers, IpLayerStack};
 
 pub(crate) mod inner;
-pub use inner::StackContext;
 
 mod resources;
 pub use resources::StackResources;
@@ -57,7 +56,6 @@ pub mod config;
 pub mod context;
 pub mod device_model;
 pub mod ets;
-pub mod layer_context;
 pub mod layers;
 pub mod memory;
 pub mod objects;

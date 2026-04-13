@@ -2,11 +2,7 @@
 
 use core::mem::MaybeUninit;
 
-use crate::{
-    definition::StackDefinition,
-    inner::Inner,
-    layer_context::LayerContext,
-    layers::LinkLayerBuilderBase};
+use crate::{context::layer::LayerContext, definition::StackDefinition, inner::Inner, layers::LinkLayerBuilderBase};
 use zweidraehte_proto::messages::buffers::BufferManager;
 
 /// Pre-allocated resources for the KNX stack.

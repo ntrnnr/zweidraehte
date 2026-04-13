@@ -4,8 +4,8 @@
 //! Layers depend only on the specific context traits they need, making them
 //! easier to test and more modular.
 
-use zweidraehte_proto::messages::buffers::DynBufferManager;
 use crate::objects::interface::PropertyServiceHandler;
+use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 /// Provides access to the buffer manager for allocating and freeing message buffers.
 pub trait BufferManagerContext {
@@ -16,7 +16,7 @@ pub trait BufferManagerContext {
 /// Provides access to the runtime APDU length limit.
 ///
 /// Only implemented by contexts that bridge to the device state (e.g.,
-/// [`StackContext`](crate::inner::StackContext)), since the limit is stored
+/// [`StackContext`](crate::context::StackContext)), since the limit is stored
 /// on [`StackState`](crate::StackState). Link layers use this to detect
 /// hardware capabilities and update the stack accordingly.
 pub trait ApduLengthContext {

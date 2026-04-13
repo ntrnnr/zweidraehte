@@ -13,17 +13,18 @@ use crate::{
     HasAuthorization, HasPersistence, LayerStackBuilder, StackState,
     bcus::system_b::{Extension, HasDiagnosticsContext},
     config,
+    context::StackContext,
+    context::layer::LayerContext,
     device_model::DeviceModelNotifier,
     ets,
-    inner::StackContext,
-    layer_context::LayerContext,
     layers::{self, application::services::AlService},
     memory::MemoryMap,
     objects::{
         comm::ComObjects,
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
-    state::CoreDeviceState};
+    state::CoreDeviceState,
+};
 use zweidraehte_proto::access::HasConnectionAuth;
 
 pub trait StackDefinition: Copy + 'static {

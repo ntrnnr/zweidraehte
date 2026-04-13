@@ -7,20 +7,20 @@
 
 use core::cell::RefCell;
 
-use embassy_sync::{channel::Channel, pubsub::{PubSubChannel, PubSubBehavior}};
+use embassy_sync::{
+    channel::Channel,
+    pubsub::{PubSubBehavior, PubSubChannel},
+};
 
-use zweidraehte_proto::messages::buffers::DynBufferManager;
 use crate::{
     actor::Request,
     definition::StackDefinition,
-    layers::application::{
-        ApplicationLayerService, ApplicationLayerServiceResponse,
-        group_data::GroupDataState,
-    },
+    layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse, group_data::GroupDataState},
     objects::comm::{ComObjectEvent, ComObjects, LifecycleEvent},
     restart,
     router::Outbox,
 };
+use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 // ============================================================================
 // LayerContext
@@ -35,7 +35,8 @@ use crate::{
 pub struct LayerContext<D: StackDefinition> {
     pub buffer_manager: DynBufferManager<'static>,
     pub outbox: RefCell<Outbox>,
-    pub event_channel: PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
+    pub event_channel:
+        PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
     pub lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
     pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
     pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
@@ -68,21 +69,35 @@ impl<D: StackDefinition> LayerContext<D> {
 // ============================================================================
 
 pub trait HasOutbox {
-    fn push_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>);
-    fn push_deferred_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>);
+    fn push_outbox(
+        &self,
+        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    );
+    fn push_deferred_outbox(
+        &self,
+        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    );
 }
 
 impl<D: StackDefinition> HasOutbox for LayerContext<D> {
-    fn push_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>) {
+    fn push_outbox(
+        &self,
+        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    ) {
         self.outbox.borrow_mut().push(msg);
     }
 
-    fn push_deferred_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>) {
+    fn push_deferred_outbox(
+        &self,
+        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    ) {
         self.outbox.borrow_mut().push_deferred(msg);
     }
 }
 
-impl<D: StackDefinition> crate::context::EventPublisherContext<<<D as StackDefinition>::CO as ComObjects>::Index> for LayerContext<D> {
+impl<D: StackDefinition> crate::context::EventPublisherContext<<<D as StackDefinition>::CO as ComObjects>::Index>
+    for LayerContext<D>
+{
     fn publish_event(&self, index: <<D as StackDefinition>::CO as ComObjects>::Index, event: ComObjectEvent) {
         self.event_channel.publish_immediate((index, event));
     }

@@ -12,17 +12,18 @@
 
 use crate::{
     HasPersistence,
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService},
+    layers::application::services::{AlService, AlServiceContext},
     memory::MemoryMap,
-    objects::interface::HasDeviceObject};
+    objects::interface::HasDeviceObject,
+};
 use zweidraehte_proto::messages::{
-        apdu::memory::{MemoryAccess, MemoryBitWrite, MemoryResponse},
-        buffers::Buffer,
-        builder::IndicationExt,
-        knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
-    };
+    apdu::memory::{MemoryAccess, MemoryBitWrite, MemoryResponse},
+    buffers::Buffer,
+    builder::IndicationExt,
+    knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
+};
 
 use crate::logging::{debug, error, warn};
 
@@ -98,7 +99,8 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
         Err(_) => 0,
     };
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize)) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
+    else {
         warn!("AL no buffer for response");
         return;
     };
@@ -158,7 +160,8 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize)) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
+    else {
         warn!("AL no buffer for response");
         return;
     };
@@ -180,10 +183,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
 /// Formula: `new_value = (old_value AND and_mask) XOR xor_mask`
 ///
 /// Legal length: count must be 1-5 bytes.
-fn handle_memorybit_write<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
-) {
+fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL MemoryBit_Write rejected: connection-oriented only");
         return;

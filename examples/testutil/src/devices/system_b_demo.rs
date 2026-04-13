@@ -597,7 +597,7 @@ impl StackDefinition for DemoStack {
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a zweidraehte_device::layer_context::LayerContext<Self>) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

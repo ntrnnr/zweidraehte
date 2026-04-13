@@ -10,19 +10,21 @@
 //! type Services = (MemoryService, AuthorizationService);
 //! ```
 
-use crate::{ HasAuthorization, StackState,
+use crate::{
+    HasAuthorization, StackState,
+    context::layer::HasOutbox,
     definition::StackDefinition,
-    layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService}};
+    layers::application::services::{AlService, AlServiceContext},
+};
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::messages::{
-        apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
-        buffers::Buffer,
-        builder::IndicationExt,
-        knx::{ApciCode, KnxMessageBuffer, ServiceType},
-    };
+    apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
+    buffers::Buffer,
+    builder::IndicationExt,
+    knx::{ApciCode, KnxMessageBuffer, ServiceType},
+};
 
 use crate::logging::{debug, error, warn};
 

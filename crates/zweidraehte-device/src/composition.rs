@@ -15,23 +15,24 @@ use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
 use crate::layers::transport::cemi::{CemiEvent, CemiTransportLayer};
 use crate::{
     actor::Request,
+    context::StackContext,
     definition::StackDefinition,
     device_model::{self, DeviceModel as _},
-    inner::StackContext,
     layers::{
         self, LinkLayerBuilder,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
         network::NetworkLayer,
+        secure_application::{NoP2p, P2pFeature, SecureApplicationLayer},
         transport::TransportLayer,
     },
+    objects::tables::{HasAddressTable, HasAssociationTable},
     restart,
     router::{self, LayerStack},
-    storage::HasSequenceStorage,
+    storage::{HasSequenceStorage, SequenceNumberStorage},
 };
 
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::KnxMessageBuffer;
-
 
 // ============================================================================
 // Layer stack builders
@@ -184,12 +185,8 @@ impl<D: StackDefinition> HasAppRequest for ApplicationLayer<'_, D> {
     }
 }
 
-use crate::layers::secure_application::SecureApplicationLayer;
-use crate::objects::tables::{HasAddressTable, HasAssociationTable};
-use crate::storage::SequenceNumberStorage;
-
-impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: crate::layers::secure_application::P2pFeature>
-    HasAppRequest for SecureApplicationLayer<'_, D, SEQ, P2P>
+impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> HasAppRequest
+    for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
@@ -227,15 +224,12 @@ pub type StandardDeviceLayers<'a, D> = StandardLayerStack<'a, D, ApplicationLaye
 /// Standard secure layer stack: `(NL, TL, SecureAL<AL>)`.
 ///
 /// `P2P` selects the P2P feature variant. Defaults to
-/// [`NoP2p`](crate::layers::secure_application::NoP2p) so group-only
+/// [`NoP2p`](NoP2p) so group-only
 /// devices don't pay for SIAT-driven sync code. Use
 /// [`WithP2p`](crate::layers::secure_application::WithP2p) for
 /// devices that need S-A_Sync.
-pub type StandardSecureDeviceLayers<'a, D, P2P = crate::layers::secure_application::NoP2p> = StandardLayerStack<
-    'a,
-    D,
-    SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage, P2P>,
->;
+pub type StandardSecureDeviceLayers<'a, D, P2P = NoP2p> =
+    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage, P2P>>;
 
 impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
@@ -261,7 +255,7 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
     }
 }
 
-impl<'a, D: StackDefinition + HasSequenceStorage, P2P: crate::layers::secure_application::P2pFeature>
+impl<'a, D: StackDefinition + HasSequenceStorage, P2P: P2pFeature>
     StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage, P2P>>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
@@ -290,9 +284,7 @@ where
     }
 }
 
-impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
-    for StandardLayerStack<'a, D, AL>
-{
+impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack for StandardLayerStack<'a, D, AL> {
     const DISPATCH_TABLE: router::DispatchTable = {
         type Layers<'a, D, AL> = (NetworkLayer<'a, D>, TransportLayer<'a, D>, AL);
         <Layers<'_, D, AL> as LayerStack>::DISPATCH_TABLE
@@ -318,9 +310,7 @@ impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
     type ServiceInput = StandardServiceInput;
 
     fn recv_service_input(&self) -> impl core::future::Future<Output = Self::ServiceInput> + '_ {
-        async {
-            StandardServiceInput::AppRequest(self.app_rx.receive().await)
-        }
+        async { StandardServiceInput::AppRequest(self.app_rx.receive().await) }
     }
 
     fn handle_service_input(&mut self, input: Self::ServiceInput) {
@@ -346,7 +336,7 @@ impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
 /// [`StackDefinition::LayerBuilder`] to enable Data Secure support.
 ///
 /// The `P2P` type parameter selects KNX Data Secure P2P support:
-/// - [`NoP2p`](crate::layers::secure_application::NoP2p) (default):
+/// - [`NoP2p`](NoP2p) (default):
 ///   omit SIAT-driven S-A_Sync code. Appropriate for group-only
 ///   devices that only need tool-key commissioning + group keys.
 /// - [`WithP2p`](crate::layers::secure_application::WithP2p):
@@ -354,12 +344,11 @@ impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
 ///
 /// Use via `type LayerBuilder = SecureDeviceBuilder<WithP2p>` in a
 /// device's [`StackDefinition`] impl.
-pub struct SecureDeviceBuilder<P2P: crate::layers::secure_application::P2pFeature = crate::layers::secure_application::NoP2p> {
+pub struct SecureDeviceBuilder<P2P: P2pFeature = NoP2p> {
     _phantom: core::marker::PhantomData<P2P>,
 }
 
-impl<D: StackDefinition + HasSequenceStorage, P2P: crate::layers::secure_application::P2pFeature>
-    LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
+impl<D: StackDefinition + HasSequenceStorage, P2P: P2pFeature> LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::State: HasSecureIdentity + HasExtensionState,
@@ -382,7 +371,7 @@ where
         _channels: &'a (),
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
-        context: &'a crate::inner::StackContext<'a, D>,
+        context: &'a crate::context::StackContext<'a, D>,
         ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
@@ -444,9 +433,7 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
 }
 
 #[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
-    for IpLayerStack<'a, D, AL>
-{
+impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack for IpLayerStack<'a, D, AL> {
     const DISPATCH_TABLE: router::DispatchTable = {
         type Layers<'a, D, AL> = (NetworkLayer<'a, D>, CemiTransportLayer<'a, D>, AL);
         <Layers<'_, D, AL> as LayerStack>::DISPATCH_TABLE

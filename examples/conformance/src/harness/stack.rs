@@ -23,7 +23,7 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     bcus::system_b::{MemoryLayout, Tp1SystemBDeviceState},
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    layer_context::LayerContext,
+    context::layer::LayerContext,
     objects::tables::Application,
     storage::StaticIdentity};
 use zweidraehte_proto::AccessContext;

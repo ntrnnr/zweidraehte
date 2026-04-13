@@ -30,15 +30,13 @@
 
 use embassy_sync::channel::DynamicSender;
 
-use crate::{ StackDefinition,
-    layer_context::HasOutbox,
-    router::Layer};
+use crate::{StackDefinition, context::layer::HasOutbox, router::Layer};
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        knx::{KnxMessageBuffer, ServiceType},
-    };
+    buffers::Buffer,
+    knx::{KnxMessageBuffer, ServiceType},
+};
 
 use super::TransportLayer;
 
@@ -362,11 +360,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 pub struct CemiTransportLayerChannelPair {
     /// DevMgmt handler → CemiTransportLayer (capacity 2: one Frame + one
     /// Activate/Deactivate can be pending simultaneously).
-    pub event: embassy_sync::channel::Channel<
-        embassy_sync::blocking_mutex::raw::NoopRawMutex,
-        CemiEvent,
-        2,
-    >,
+    pub event: embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, CemiEvent, 2>,
     /// CemiTransportLayer → KNX/IP runtime (capacity 1: at most one
     /// response pending).
     pub response: embassy_sync::channel::Channel<
@@ -411,7 +405,8 @@ impl CemiTransportLayerChannelPair {
 /// receive cEMI events and send responses.
 pub struct CemiTransportLayerClientEndpoints<'a> {
     pub event_receiver: embassy_sync::channel::DynamicReceiver<'a, CemiEvent>,
-    pub response_sender: embassy_sync::channel::DynamicSender<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    pub response_sender:
+        embassy_sync::channel::DynamicSender<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
 }
 
 /// Link-layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
@@ -419,5 +414,6 @@ pub struct CemiTransportLayerClientEndpoints<'a> {
 /// Used by the KNX/IP runtime to send cEMI events and receive responses.
 pub struct CemiTransportLayerEndpoints<'a> {
     pub event_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
-    pub response_receiver: embassy_sync::channel::DynamicReceiver<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
+    pub response_receiver:
+        embassy_sync::channel::DynamicReceiver<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
 }

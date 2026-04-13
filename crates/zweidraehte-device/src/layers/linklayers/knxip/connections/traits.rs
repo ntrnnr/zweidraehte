@@ -131,17 +131,11 @@ pub trait ConnectionHandlers<const N: usize = 0> {
     /// Returns `None` when tunneling is not available.
     fn tunneling_slot_info(
         &self,
-    ) -> Option<(
-        u16,
-        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
-    )>;
+    ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>)>;
 
     /// Determine which active tunnel channels should receive a forwarded
     /// bus indication. Returns empty when tunneling is not available.
-    fn channels_for_bus_indication(
-        &self,
-        cemi_data: &[u8],
-    ) -> heapless::Vec<u8, N>;
+    fn channels_for_bus_indication(&self, cemi_data: &[u8]) -> heapless::Vec<u8, N>;
 
     /// Build a TunnelingRequest frame for forwarding a bus indication to
     /// a tunnel client. Returns `None` when tunneling is not available or

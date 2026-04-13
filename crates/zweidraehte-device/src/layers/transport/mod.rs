@@ -38,19 +38,21 @@ pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, 
 
 use embassy_time::{Duration, Instant};
 
-use crate::{ HasAuthorization, StackDefinition,
-    inner::StackContext,
-    layer_context::HasOutbox,
+use crate::{
+    HasAuthorization, StackDefinition,
+    context::StackContext,
+    context::layer::HasOutbox,
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
-    router::Layer};
+    router::Layer,
+};
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        builder::ConfirmationExt,
-        knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
-    };
+    buffers::Buffer,
+    builder::ConfirmationExt,
+    knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
+};
 
 // ============================================================================
 // Configuration
@@ -119,7 +121,7 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
     /// Unified device state (contains tables and runtime state)
     state: &'a D::State,
 
-    lctx: &'a crate::layer_context::LayerContext<D>,
+    lctx: &'a crate::context::layer::LayerContext<D>,
 
     /// Connection table for stateful connections
     connections: ConnectionTable<MAX_INCOMING, MAX_OUTGOING>,
@@ -188,7 +190,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     }
 
     /// Access to the layer context.
-    pub(crate) fn lctx(&self) -> &'a crate::layer_context::LayerContext<D> {
+    pub(crate) fn lctx(&self) -> &'a crate::context::layer::LayerContext<D> {
         self.lctx
     }
 
@@ -701,7 +703,10 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let send_msg = {
             let pending = self.connections.find_any(dest).and_then(|c| c.pending_msg.as_ref());
             if let Some(pm) = pending {
-                self.lctx.buffer_manager.try_alloc_from_slice(pm.buf()).map(|buf| KnxMessageBuffer::new(buf, service_type))
+                self.lctx
+                    .buffer_manager
+                    .try_alloc_from_slice(pm.buf())
+                    .map(|buf| KnxMessageBuffer::new(buf, service_type))
             } else {
                 None
             }

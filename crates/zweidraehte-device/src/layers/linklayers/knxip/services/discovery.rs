@@ -2,12 +2,12 @@ use core::net::SocketAddrV4;
 use heapless::Vec;
 
 use zweidraehte_proto::messages::{
-        buffers::{Buffer, MessageBuffer},
-        knx::KnxMessageBuffer,
-        knxip::KNXnetIPServiceFamily,
-        knxip::KNXnetIPServiceType,
-        knxip::substructs::*,
-    };
+    buffers::{Buffer, MessageBuffer},
+    knx::KnxMessageBuffer,
+    knxip::KNXnetIPServiceFamily,
+    knxip::KNXnetIPServiceType,
+    knxip::substructs::*,
+};
 use zweidraehte_proto::util::packets::ParseBuffer;
 
 use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError, resolve_hpai};
@@ -244,11 +244,7 @@ impl DiscoveryServer {
         let ip_current_config =
             if include_ip_current_config { context.ip_diagnostics().map(|d| d.ip_current_config()) } else { None };
 
-        let additional_addresses = if include_knx_addresses {
-            context.additional_individual_addresses()
-        } else {
-            &[]
-        };
+        let additional_addresses = if include_knx_addresses { context.additional_individual_addresses() } else { &[] };
 
         // Build the DIB list. Mandatory DIBs first, then optional.
         let mut dibs: Vec<DescriptionInformationBlockBuilder<'_>, MAX_RESPONSE_DIBS> = Vec::new();
@@ -275,9 +271,7 @@ impl DiscoveryServer {
             )));
         }
 
-        if include_tunneling_info
-            && let Some((max_apdu_len, slots)) = context.tunneling_slot_info()
-        {
+        if include_tunneling_info && let Some((max_apdu_len, slots)) = context.tunneling_slot_info() {
             let _ = dibs.push(DescriptionInformationBlockBuilder::TunnelingInfo(TunnelingInfoBuilder::new(
                 max_apdu_len,
                 slots,

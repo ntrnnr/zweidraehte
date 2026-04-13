@@ -130,11 +130,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
     /// Sockets are not yet bound; call [`bind_all()`](Self::bind_all)
     /// to create and configure them.
     pub fn new(local_addr: Ipv4Addr, descriptors: Vec<SocketDescriptor, MAX_SOCKETS>) -> Self {
-        Self {
-            sockets: core::array::from_fn(|_| None),
-            descriptors,
-            local_addr,
-        }
+        Self { sockets: core::array::from_fn(|_| None), descriptors, local_addr }
     }
 
     /// Bind all sockets based on the stored descriptors.
@@ -198,7 +194,13 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
 
     /// Send a datagram on a specific socket.
     pub async fn send_to(&self, socket_idx: usize, data: &[u8], destination: SocketAddrV4) -> Result<(), ()> {
-        trace!("KNX/IP TX {} bytes on socket {} to {}: {:?}", data.len(), socket_idx, destination, zweidraehte_util::fmt::Bytes(data));
+        trace!(
+            "KNX/IP TX {} bytes on socket {} to {}: {:?}",
+            data.len(),
+            socket_idx,
+            destination,
+            zweidraehte_util::fmt::Bytes(data)
+        );
 
         if let Some(Some(socket)) = self.sockets.get(socket_idx) {
             match socket.send_to(data, destination).await {
@@ -284,7 +286,13 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                         continue;
                     }
 
-                    debug!("Received {} bytes on socket {} from {} (dest {:?})", buffer.len(), socket_idx, source, destination);
+                    debug!(
+                        "Received {} bytes on socket {} from {} (dest {:?})",
+                        buffer.len(),
+                        socket_idx,
+                        source,
+                        destination
+                    );
                     return UdpEvent::Frame { socket_idx, source, destination, buffer };
                 }
                 Err(()) => {

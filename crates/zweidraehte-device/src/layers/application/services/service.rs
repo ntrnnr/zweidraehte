@@ -32,13 +32,12 @@
 //! handlers may migrate into services incrementally without requiring
 //! a big-bang AL split.
 
-use crate::{
-    definition::StackDefinition};
+use crate::definition::StackDefinition;
 use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::messages::{
-        buffers::{Buffer, DynBufferManager},
-        knx::{ApciCode, KnxMessageBuffer},
-    };
+    buffers::{Buffer, DynBufferManager},
+    knx::{ApciCode, KnxMessageBuffer},
+};
 
 // ============================================================================
 // Service Context
@@ -53,7 +52,7 @@ pub struct AlServiceContext<'a, D: StackDefinition> {
     /// Unified device state (tables + runtime configuration).
     pub state: &'a D::State,
 
-    pub lctx: &'a crate::layer_context::LayerContext<D>,
+    pub lctx: &'a crate::context::layer::LayerContext<D>,
 
     /// Interface objects container for property access.
     pub interface_objects: &'a D::InterfaceObjects<'static>,

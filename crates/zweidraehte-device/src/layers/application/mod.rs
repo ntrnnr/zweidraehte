@@ -21,24 +21,26 @@ pub(crate) mod group_data;
 pub mod services;
 
 use crate::context::RestartPublisherContext;
-use crate::{ HasAuthorization, StackDefinition, StackState,
+use crate::{
+    HasAuthorization, StackDefinition, StackState,
     actor::Request,
-    inner::StackContext,
-    layer_context::HasOutbox,
+    context::StackContext,
+    context::layer::HasOutbox,
     objects::{
         comm::HasCommObjects,
         interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
     },
     restart::{EraseCode, RestartError, RestartRequest},
-    router::Layer};
+    router::Layer,
+};
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
-        buffers::{Buffer, DynBufferManager},
-        knx::*,
-    };
+    buffers::{Buffer, DynBufferManager},
+    knx::*,
+};
 
 // ============================================================================
 // Service Types
@@ -84,7 +86,7 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Unified device state (contains tables and runtime configuration)
     state: &'a D::State,
 
-    lctx: &'a crate::layer_context::LayerContext<D>,
+    lctx: &'a crate::context::layer::LayerContext<D>,
 
     // --- Interface objects ---
     /// Interface objects container with typed access to device properties.
@@ -146,7 +148,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     }
 
     /// Access the layer context.
-    pub(crate) fn lctx(&self) -> &'a crate::layer_context::LayerContext<D> {
+    pub(crate) fn lctx(&self) -> &'a crate::context::layer::LayerContext<D> {
         self.lctx
     }
 }
@@ -319,7 +321,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
     }
 }
-
 
 // ============================================================================
 // Property Services (A_PropertyDescription_*, A_PropertyValue_*)
@@ -802,7 +803,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Per KNX spec, this service only takes effect when the device is in programming mode.
     fn handle_individual_address_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
         use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::apdu::device::IndividualAddressWrite;
+        use zweidraehte_proto::messages::apdu::device::IndividualAddressWrite;
 
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressWrite with unexpected service type: {:?}", ind.service_type());
@@ -943,4 +944,3 @@ use zweidraehte_proto::messages::apdu::device::IndividualAddressWrite;
         self.lctx.push_outbox(msg.into_inner());
     }
 }
-

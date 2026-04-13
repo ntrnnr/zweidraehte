@@ -8,22 +8,22 @@ use embassy_time::Instant;
 
 use embassy_sync::channel::DynamicSender;
 
-use zweidraehte_proto::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
 use crate::layers::transport::cemi::CemiEvent;
+use crate::objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler};
+use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
 use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 use zweidraehte_proto::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
 use zweidraehte_proto::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
     DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
 };
-use zweidraehte_proto::AccessContext;
-use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler,
-};
 use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::types::{PendingResponse, ServerError};
-use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction, PendingAck};
+use super::{
+    AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction, PendingAck,
+};
 
 // ============================================================================
 // Handler
@@ -91,8 +91,8 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             ConnectionStatus::DataConnectionError
         })?;
 
-        let object_idx = self.property_handler.resolve_object_index(frame.object_type, frame.object_instance)
-            .ok_or_else(|| {
+        let object_idx =
+            self.property_handler.resolve_object_index(frame.object_type, frame.object_instance).ok_or_else(|| {
                 debug!(
                     "Unknown interface object: type=0x{:04x}, instance={}",
                     frame.object_type, frame.object_instance
@@ -165,10 +165,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         let builder = DeviceConfigurationAckBuilder::new(channel_id, sequence_counter, status);
         let mut buffer = buffer_manager.alloc().await;
         buffer.serialize(&builder);
-        PendingResponse {
-            buffer,
-            target: conn.response_target(),
-        }
+        PendingResponse { buffer, target: conn.response_target() }
     }
 
     fn handle_prop_read(
@@ -345,10 +342,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
             DeviceConfigurationAckBuilder::new(conn.channel_id, sequence_counter, ConnectionStatus::NoError);
         if let Some(mut ack_buffer) = buffer_manager.try_alloc() {
             ack_buffer.serialize(&ack_builder);
-            let _ = responses.push(PendingResponse {
-                buffer: ack_buffer,
-                target: conn.response_target(),
-            });
+            let _ = responses.push(PendingResponse { buffer: ack_buffer, target: conn.response_target() });
         } else {
             warn!("DevMgmt: skipping ACK for channel {} (no free buffers)", conn.channel_id);
         }
@@ -381,10 +375,7 @@ impl ConnectionTypeHandler for DeviceMgmtConnectionHandler<'_> {
                     });
                 }
 
-                let _ = responses.push(PendingResponse {
-                    buffer: resp_buffer,
-                    target,
-                });
+                let _ = responses.push(PendingResponse { buffer: resp_buffer, target });
             } else {
                 warn!("DevMgmt: skipping data response for channel {} (no free buffers)", conn.channel_id);
             }

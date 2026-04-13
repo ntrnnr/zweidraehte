@@ -37,12 +37,11 @@ mod tunnel;
 pub(crate) use context::{ConnectionContext, ConnectionTransport, PendingAck};
 pub(crate) use device_mgmt::DeviceMgmtConnectionHandler;
 pub(crate) use handlers::{
-    CompositeHandlers, ConnectedHandler, NoTunnel, TunnelingConnectedHandler,
-    WithDevMgmt, WithTunnel,
+    CompositeHandlers, ConnectedHandler, NoTunnel, TunnelingConnectedHandler, WithDevMgmt, WithTunnel,
 };
 pub(crate) use traits::{
-    AcceptedConnection, AckTimeoutResult, ConnectionHandlers, ConnectionManagerResult,
-    ConnectionTypeHandler, DataFrameAction, TcpChannelEvent,
+    AcceptedConnection, AckTimeoutResult, ConnectionHandlers, ConnectionManagerResult, ConnectionTypeHandler,
+    DataFrameAction, TcpChannelEvent,
 };
 pub(crate) use tunnel::TunnelConnectionHandler;
 
@@ -64,8 +63,6 @@ use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::types::{PacketOrigin, PendingResponse, ResponseTarget, ServerError, resolve_hpai};
 use traits::MAX_RESPONSES;
-
-
 
 // ============================================================================
 // Connection Manager
@@ -97,9 +94,7 @@ where
     next_channel_id: u8,
 }
 
-impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
-    ConnectionManager<H, N, MAX_CONNECTIONS>
-{
+impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> ConnectionManager<H, N, MAX_CONNECTIONS> {
     /// Create a new connection manager with the given handler collection.
     pub fn new(handlers: H) -> Self {
         Self {
@@ -195,8 +190,10 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
             Ok(Vec::new())
         } else {
             let conn = self.connections[conn_idx].as_mut().expect("just verified Some");
-            let action =
-                self.handlers.on_data_frame(channel_id, connection_type, service_type, data, conn, buffer_manager).await?;
+            let action = self
+                .handlers
+                .on_data_frame(channel_id, connection_type, service_type, data, conn, buffer_manager)
+                .await?;
 
             match action {
                 DataFrameAction::Responses(handler_responses) => {
@@ -240,11 +237,8 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
                     // frames originated by sibling connections. Without this,
                     // the TPUART echo filter would prevent them from ever
                     // seeing the frame.
-                    let forwarded = self.forward_bus_indication_excluding(
-                        &forwarding_cemi[..cemi_len],
-                        channel_id,
-                        buffer_manager,
-                    );
+                    let forwarded =
+                        self.forward_bus_indication_excluding(&forwarding_cemi[..cemi_len], channel_id, buffer_manager);
                     for response in forwarded {
                         let _ = responses.push(response);
                     }
@@ -341,15 +335,9 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
                     pending.sent_at = now;
                     info!(
                         "ACK timeout: channel={}, seq={}, attempt {}/{} — retransmitting",
-                        ctx.channel_id,
-                        pending.sequence_counter,
-                        pending.attempt,
-                        max_retries,
+                        ctx.channel_id, pending.sequence_counter, pending.attempt, max_retries,
                     );
-                    let _ = retransmissions.push(PendingResponse {
-                        buffer: retransmit_buffer,
-                        target: pending.target,
-                    });
+                    let _ = retransmissions.push(PendingResponse { buffer: retransmit_buffer, target: pending.target });
                 } else {
                     warn!(
                         "ACK timeout: channel={}, seq={} — no buffer for retransmit, giving up",
@@ -373,10 +361,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
                 let socket_idx = ctx.socket_idx;
 
                 // Build DISCONNECT_REQUEST to the client's control endpoint.
-                let control_target = ResponseTarget::Udp {
-                    destination: control_endpoint,
-                    socket_idx,
-                };
+                let control_target = ResponseTarget::Udp { destination: control_endpoint, socket_idx };
                 let _ = disconnects.push((channel_id, control_target));
 
                 // Tear down the connection.
@@ -417,9 +402,8 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         use zweidraehte_proto::messages::knxip::DeviceConfigurationRequestBuilder;
 
         // Find the active Device Management connection.
-        let conn = self.connections.iter_mut().flatten().find(
-            |c| c.connection_type == ConnectionType::DeviceManagement,
-        )?;
+        let conn =
+            self.connections.iter_mut().flatten().find(|c| c.connection_type == ConnectionType::DeviceManagement)?;
 
         // Convert internal format to cEMI TL wire format.
         //
@@ -432,17 +416,19 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         }
 
         let tpdu = &data[6..];
-        debug!("cEMI TL response: internal ({} bytes): {:?}, TPDU ({} bytes): {:?}",
-            data.len(), zweidraehte_util::fmt::Bytes(data), tpdu.len(), zweidraehte_util::fmt::Bytes(tpdu));
+        debug!(
+            "cEMI TL response: internal ({} bytes): {:?}, TPDU ({} bytes): {:?}",
+            data.len(),
+            zweidraehte_util::fmt::Bytes(data),
+            tpdu.len(),
+            zweidraehte_util::fmt::Bytes(tpdu)
+        );
 
         // Serialize the cEMI TL payload using the standard builder.
         // Message code: T_Data_Connected.ind (0x89) — the device acts as
         // the "bus" toward the cEMI client, indicating data to it. ETS
         // expects .ind, not .con (which is for bus-level confirmations).
-        let cemi_builder = CemiTransportBuilder {
-            message_code: CemiMessageCode::TDataConnectedInd,
-            tpdu,
-        };
+        let cemi_builder = CemiTransportBuilder { message_code: CemiMessageCode::TDataConnectedInd, tpdu };
         let mut cemi_payload = [0u8; 256];
         let mut cemi_buf: &mut [u8] = &mut cemi_payload;
         let (cemi_data, _) = cemi_buf.serialize(&cemi_builder);
@@ -451,8 +437,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         let send_seq = conn.send_sequence_counter;
         conn.send_sequence_counter = send_seq.wrapping_add(1);
 
-        let req_builder =
-            DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, cemi_data);
+        let req_builder = DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, cemi_data);
 
         let mut resp_buffer = buffer_manager.try_alloc()?;
         resp_buffer.serialize(&req_builder);
@@ -483,10 +468,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
     /// implementation — `DevMgmtOnly` always returns `None`.
     pub fn tunneling_slot_info(
         &self,
-    ) -> Option<(
-        u16,
-        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
-    )> {
+    ) -> Option<(u16, heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>)> {
         self.handlers.tunneling_slot_info()
     }
 
@@ -578,18 +560,10 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         let target = conn.response_target();
         let is_udp = matches!(conn.transport, ConnectionTransport::Udp);
 
-        if let Some(response) = H::build_tunneling_request(
-            channel_id,
-            send_seq,
-            cemi_data,
-            target,
-            buffer_manager,
-        ) {
+        if let Some(response) = H::build_tunneling_request(channel_id, send_seq, cemi_data, target, buffer_manager) {
             // For UDP connections, save a copy for retransmission if the
             // client doesn't ACK within the timeout.
-            if is_udp
-                && let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&response.buffer)
-            {
+            if is_udp && let Some(retransmit_buffer) = buffer_manager.try_alloc_from_slice(&response.buffer) {
                 let conn = self.find_connection_mut(channel_id).expect("connection verified above");
                 conn.pending_ack = Some(PendingAck {
                     sequence_counter: send_seq,
@@ -662,13 +636,12 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
 
         // Ask the handler collection to accept. The trait impl returns
         // ConnectionTypeNotSupported if the connection type isn't available.
-        let accepted =
-            match self.handlers.accept_connection(channel_id, cri_connection_type, &request.cri) {
-                Ok(accepted) => accepted,
-                Err(status) => {
-                    return self.send_connect_response(channel_id, status, None, origin, buffer_manager).await;
-                }
-            };
+        let accepted = match self.handlers.accept_connection(channel_id, cri_connection_type, &request.cri) {
+            Ok(accepted) => accepted,
+            Err(status) => {
+                return self.send_connect_response(channel_id, status, None, origin, buffer_manager).await;
+            }
+        };
 
         // Determine transport and TCP channel tracking based on origin.
         let source = origin.peer_addr();
@@ -901,5 +874,4 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         }
         id
     }
-
 }
