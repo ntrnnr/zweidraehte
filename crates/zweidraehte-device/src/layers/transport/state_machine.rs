@@ -64,6 +64,18 @@ pub enum TlStyle {
     Style1Rationalised,
 }
 
+impl TlStyle {
+    /// Whether this style supports client-initiated outgoing connections.
+    ///
+    /// Only `Style3` carries the CONNECTING state needed to open connections
+    /// to remote peers. A device with `TL_MAX_OUTGOING > 0` that does not
+    /// pick `Style3` cannot actually initiate connections and the
+    /// [`Runner`](crate::Runner) rejects that combination at compile time.
+    pub const fn supports_outgoing_connections(self) -> bool {
+        matches!(self, Self::Style3)
+    }
+}
+
 // ============================================================================
 // Events (public API)
 // ============================================================================
@@ -307,9 +319,10 @@ impl ProcessResult {
         addr: IndividualAddress,
     ) {
         if let Some(next_state) = self.next_state
-            && let Some(conn) = connections.find_any_including_closed(addr) {
-                conn.state = next_state;
-            }
+            && let Some(conn) = connections.find_any_including_closed(addr)
+        {
+            conn.state = next_state;
+        }
     }
 }
 
@@ -1234,8 +1247,7 @@ mod tests {
         connect(&mut conn, source, TlStyle::Style1Rationalised);
 
         // Wrong seq in OPEN_IDLE → E06 → CLOSED/A6 (Style 1R disconnects, no NACK)
-        let actions =
-            process(&mut conn, TlEvent::ReceivedData { source, seq_no: 5 }, TlStyle::Style1Rationalised);
+        let actions = process(&mut conn, TlEvent::ReceivedData { source, seq_no: 5 }, TlStyle::Style1Rationalised);
 
         assert_eq!(conn.state, ConnectionState::Closed);
         let v: Vec<_> = actions.iter().collect();

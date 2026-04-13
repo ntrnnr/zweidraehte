@@ -14,10 +14,11 @@ use core::cell::{Cell, RefCell};
 
 use crate::{
     HasSecureIdentity, StackState,
+    actor::Request,
     bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::ApplicationLayer,
+    layers::application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
     router::Layer,
@@ -543,15 +544,7 @@ where
     ///
     /// `SyncRequest` is handled here by calling [`initiate_sync`]. All other
     /// requests are forwarded to the inner [`ApplicationLayer`].
-    pub fn handle_app_request(
-        &mut self,
-        request: &crate::actor::Request<
-            crate::layers::application::ApplicationLayerService,
-            crate::layers::application::ApplicationLayerServiceResponse,
-        >,
-    ) {
-        use crate::layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse};
-
+    pub fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>) {
         match request.get() {
             ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
                 if let Some(msg) = P2P::initiate_sync(self, *peer_ia, *tool_access, *is_broadcast) {
