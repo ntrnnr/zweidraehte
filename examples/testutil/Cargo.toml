@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 zweidraehte-device = { path = "../../crates/zweidraehte-device", features = ["log", "linux", "knxip", "tp1", "usb"] }
+zweidraehte-proto = { path = "../../crates/zweidraehte-proto", features = ["log", "knxip", "std"] }
 zweidraehte-conformance = { path = "../conformance" }
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", features = ["log", "linux"] }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod" }

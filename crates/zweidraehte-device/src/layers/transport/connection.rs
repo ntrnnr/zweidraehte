@@ -4,10 +4,8 @@
 //! for managing connection-oriented transport layer communication per
 //! KNX specification 03/03/04.
 
-use crate::{
-    address::IndividualAddress,
-    messages::{buffers::Buffer, knx::KnxMessageBuffer},
-};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 use embassy_time::Instant;
 
 // ============================================================================
@@ -72,7 +70,7 @@ pub struct Connection {
     /// pending message is acknowledged (A8).
     pub queued_outgoing: Option<KnxMessageBuffer<Buffer<'static>>>,
     /// Slot index for looking up this connection's access level in the
-    /// shared [`ConnectionAuthLevels`](crate::ConnectionAuthLevels). Set once on allocation.
+    /// shared [`ConnectionAuthLevels`](zweidraehte_proto::ConnectionAuthLevels). Set once on allocation.
     pub slot_index: u8,
 }
 

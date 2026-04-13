@@ -24,7 +24,7 @@ use super::mock::CapturedLinkLayerMessage;
 use super::stack::ConformancePersistedState;
 
 use crate::logger::{self, LogEntry};
-use zweidraehte_device::messages::knx::ServiceType;
+use zweidraehte_proto::messages::knx::ServiceType;
 
 // ============================================================================
 // Child State

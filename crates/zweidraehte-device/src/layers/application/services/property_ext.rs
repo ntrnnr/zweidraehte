@@ -18,15 +18,6 @@ use crate::{
     layer_context::HasOutbox,
     layers::application::services::{AlServiceContext, AlService},
     memory::MemoryMap,
-    messages::{
-        apdu::property_ext::{
-            FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
-            PropertyExtValueWriteConRes, return_code,
-        },
-        buffers::Buffer,
-        builder::{IndicationExt, MessageBuilder},
-        knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
-    },
     objects::{
         comm::{ComObjects, HasCommObjects},
         interface::{
@@ -36,8 +27,16 @@ use crate::{
             AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasAssociationTable,
             HasCommunicationObjectTable,
         },
-    },
-};
+    }};
+use zweidraehte_proto::messages::{
+        apdu::property_ext::{
+            FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
+            PropertyExtValueWriteConRes, return_code,
+        },
+        buffers::Buffer,
+        builder::{IndicationExt, MessageBuilder},
+        knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
+    };
 
 use crate::logging::{debug, error, warn};
 
@@ -495,7 +494,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
 /// Check whether a PDT code represents a function/control property type
 /// that cannot be accessed via regular property read/write services.
 fn is_function_pdt(pdt: u8) -> bool {
-    use crate::dpt::{PDT_Control, PDT_Function, PropertyDataDefinition};
+    use zweidraehte_proto::dpt::{PDT_Control, PDT_Function, PropertyDataDefinition};
     pdt == PDT_Control::ID || pdt == PDT_Function::ID
 }
 
@@ -733,7 +732,7 @@ fn handle_ext_description_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlServiceContext<'_, D>,
 ) {
-    use crate::messages::knx::offsets;
+    use zweidraehte_proto::messages::knx::offsets;
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtDescriptionRead unexpected service type: {:?}", ind.service_type());
@@ -850,7 +849,7 @@ fn handle_memory_ext_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlServiceContext<'_, D>,
 ) {
-    use crate::messages::knx::offsets;
+    use zweidraehte_proto::messages::knx::offsets;
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         return;
@@ -911,7 +910,7 @@ fn handle_memory_ext_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlServiceContext<'_, D>,
 ) {
-    use crate::messages::knx::offsets;
+    use zweidraehte_proto::messages::knx::offsets;
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         return;
@@ -993,7 +992,7 @@ fn send_memory_ext_write_response<D: StackDefinition>(
     addr_mid: u8,
     addr_lo: u8,
 ) {
-    use crate::messages::knx::offsets;
+    use zweidraehte_proto::messages::knx::offsets;
     let resp_len = offsets::MSG_APCI + 6; // APCI(2) + rc(1) + addr(3)
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
     let base = offsets::MSG_APCI;

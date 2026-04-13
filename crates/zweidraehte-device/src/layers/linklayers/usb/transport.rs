@@ -19,8 +19,8 @@ use core::mem::MaybeUninit;
 use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Instant, Timer};
 
-use crate::encoding::cemi::CemiBuffer;
-use crate::messages::buffers::MessageBuffer;
+use zweidraehte_proto::encoding::cemi::CemiBuffer;
+use zweidraehte_proto::messages::buffers::MessageBuffer;
 
 use super::bus_access::{BusAccessFrameBuilder, BusAccessResponse, SupportedEmiTypes};
 use super::device::{AsyncHidDevice, DeviceSelector, UsbHidDevice, UsbHidError};

@@ -7,12 +7,10 @@ use zerocopy::{
     big_endian::{U16, U32},
 };
 
-use crate::{
-    address::GroupAddress,
-    dpt::PDT_Generic08,
-    messages::knx::Priority,
-    util::{crc::crc16_ccitt, packets::BufferView},
-};
+use zweidraehte_proto::address::GroupAddress;
+use zweidraehte_proto::dpt::PDT_Generic08;
+use zweidraehte_proto::messages::knx::Priority;
+use zweidraehte_proto::util::{crc::crc16_ccitt, packets::BufferView};
 
 // ============================================================================
 // Table Accessor Traits

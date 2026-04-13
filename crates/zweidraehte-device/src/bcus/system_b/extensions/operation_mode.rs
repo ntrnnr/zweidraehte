@@ -22,10 +22,10 @@ use core::cell::Cell;
 
 use embassy_time::Instant;
 
-use crate::access::AccessPolicy;
-use crate::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
-use crate::messages::builder::MessageBuilder;
-use crate::messages::knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets};
+use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
+use zweidraehte_proto::messages::builder::MessageBuilder;
+use zweidraehte_proto::messages::knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets};
 use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
     AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
@@ -553,7 +553,7 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         // Validate that the GA exists in the device's address table.
-        let ga = crate::address::GroupAddress([data[3], data[4]]);
+        let ga = zweidraehte_proto::address::GroupAddress([data[3], data[4]]);
         let tsap = ctx.state.adt().borrow().get_tsap(ga);
 
         let Some(tsap) = tsap else {
@@ -752,7 +752,7 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         // Validate that the GA exists in the device's address table.
-        let ga = crate::address::GroupAddress([data[3], data[4]]);
+        let ga = zweidraehte_proto::address::GroupAddress([data[3], data[4]]);
         let tsap = ctx.state.adt().borrow().get_tsap(ga);
 
         let Some(tsap) = tsap else {

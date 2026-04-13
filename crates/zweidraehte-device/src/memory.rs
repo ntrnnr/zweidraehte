@@ -15,7 +15,7 @@
 //! [`HasAssociationTable`](crate::objects::tables::HasAssociationTable), and
 //! [`HasCommunicationObjectTable`](crate::objects::tables::HasCommunicationObjectTable).
 
-use crate::AccessContext;
+use zweidraehte_proto::AccessContext;
 
 // ============================================================================
 // Memory Map

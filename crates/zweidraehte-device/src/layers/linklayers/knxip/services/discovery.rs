@@ -1,16 +1,14 @@
 use core::net::SocketAddrV4;
 use heapless::Vec;
 
-use crate::{
-    messages::{
+use zweidraehte_proto::messages::{
         buffers::{Buffer, MessageBuffer},
         knx::KnxMessageBuffer,
         knxip::KNXnetIPServiceFamily,
         knxip::KNXnetIPServiceType,
         knxip::substructs::*,
-    },
-    util::packets::ParseBuffer,
-};
+    };
+use zweidraehte_proto::util::packets::ParseBuffer;
 
 use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError, resolve_hpai};
 
@@ -55,8 +53,8 @@ impl DiscoveryServer {
         source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<PendingResponse, ServerError> {
-        use crate::messages::knxip::{SearchRequest, SearchResponseBuilder};
-        use crate::util::packets::SerializeBuffer;
+        use zweidraehte_proto::messages::knxip::{SearchRequest, SearchResponseBuilder};
+        use zweidraehte_proto::util::packets::SerializeBuffer;
 
         // FIXME: check conditions when to respond or not (remote endpoint TCP etc.)
 
@@ -110,8 +108,8 @@ impl DiscoveryServer {
         source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        use crate::messages::knxip::{SearchRequestExtended, SearchResponseExtendedBuilder};
-        use crate::util::packets::SerializeBuffer;
+        use zweidraehte_proto::messages::knxip::{SearchRequestExtended, SearchResponseExtendedBuilder};
+        use zweidraehte_proto::util::packets::SerializeBuffer;
 
         // Parse the SearchRequestExtended and all its SRPs
         let mut buffer = data;
@@ -322,8 +320,8 @@ impl DiscoveryServer {
         source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<PendingResponse, ServerError> {
-        use crate::messages::knxip::{DescriptionRequest, DescriptionResponseBuilder};
-        use crate::util::packets::SerializeBuffer;
+        use zweidraehte_proto::messages::knxip::{DescriptionRequest, DescriptionResponseBuilder};
+        use zweidraehte_proto::util::packets::SerializeBuffer;
 
         // FIXME: check conditions when to respond or not (remote endpoint TCP etc.)
 

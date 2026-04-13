@@ -22,7 +22,7 @@ use zweidraehte_conformance::harness::secure_stack::{
 };
 use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
 
-use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
+use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_device::objects::interface::HasDeviceObject;
 use zweidraehte_device::restart::EraseCode;
 use zweidraehte_device::storage::HasSequenceStorage;

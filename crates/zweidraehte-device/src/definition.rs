@@ -11,7 +11,6 @@ use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
 use crate::{
     HasAuthorization, HasPersistence, LayerStackBuilder, StackState,
-    access::HasConnectionAuth,
     bcus::system_b::{Extension, HasDiagnosticsContext},
     config,
     device_model::DeviceModelNotifier,
@@ -24,8 +23,8 @@ use crate::{
         comm::ComObjects,
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
-    state::CoreDeviceState,
-};
+    state::CoreDeviceState};
+use zweidraehte_proto::access::HasConnectionAuth;
 
 pub trait StackDefinition: Copy + 'static {
     /// Device descriptor containing all device identification and configuration.

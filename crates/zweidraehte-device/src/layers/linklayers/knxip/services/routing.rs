@@ -17,14 +17,12 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_time::Instant;
 use heapless::Vec;
 
-use crate::{
-    messages::{
+use zweidraehte_proto::messages::{
         buffers::{Buffer, MessageBuffer},
         knx::{CemiFormat, InternalFormat, KnxMessageBuffer, ServiceType},
         knxip::{KNXNETIP_HEADER_SIZE, KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingLostMessage},
-    },
-    util::packets::ParseBuffer,
-};
+    };
+use zweidraehte_proto::util::packets::ParseBuffer;
 
 use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError};
 

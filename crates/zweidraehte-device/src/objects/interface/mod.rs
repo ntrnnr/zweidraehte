@@ -56,7 +56,7 @@ mod standard;
 mod traits;
 
 pub use macros::*;
-pub use crate::properties::*;
+pub use zweidraehte_proto::properties::*;
 pub use standard::*;
 pub use traits::*;
 

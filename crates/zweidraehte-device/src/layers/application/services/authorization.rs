@@ -10,18 +10,19 @@
 //! type Services = (MemoryService, AuthorizationService);
 //! ```
 
-use crate::{
-    AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackState,
+use crate::{ HasAuthorization, StackState,
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService},
-    messages::{
+    layers::application::services::{AlServiceContext, AlService}};
+use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::AccessSource;
+use zweidraehte_proto::HasConnectionAuth;
+use zweidraehte_proto::messages::{
         apdu::auth::{AuthorizeRequest, AuthorizeResponse, KeyResponse, KeyWrite},
         buffers::Buffer,
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType},
-    },
-};
+    };
 
 use crate::logging::{debug, error, warn};
 
@@ -110,7 +111,7 @@ fn handle_authorize_request<D: StackDefinition>(
 fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     // Access policy 3FF/0CC: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
-    use crate::access::AccessPolicy;
+    use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.state.security_mode_enabled();
     if !AccessPolicy::READ_OPEN_WRITE_TOOL.can_write(&ctx.access_ctx, security_on) {
         debug!("AL Key_Write denied by access policy");

@@ -14,16 +14,15 @@ use embassy_time::{Duration, Timer};
 use env_logger::Env;
 
 use zweidraehte_device::{
-    address::{GroupAddress, IndividualAddress},
     context::BufferManagerContext,
     layers::{
         LinkLayerBuilder,
         linklayers::usb::{UsbLinkLayerBuilder, UsbLinkLayerResources},
-    },
-    messages::buffers::{Buffer, BufferManager, MessageBuffer},
-    messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
-    messages::knx::{KnxMessageBuffer, ServiceType},
-};
+    }};
+use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::messages::buffers::{Buffer, BufferManager, MessageBuffer};
+use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 /// Group address 2/0/3
 const GROUP_ADDR: GroupAddress = GroupAddress::from_three_level(2, 0, 3);
@@ -107,11 +106,11 @@ async fn run_fake_network(mut fake_network: FakeNetworkLayer) {
 
 // Simple context that just provides a buffer manager
 struct SimpleContext {
-    buffer_manager: &'static zweidraehte_device::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: &'static zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
 }
 
 impl BufferManagerContext for SimpleContext {
-    fn buffer_manager(&self) -> &zweidraehte_device::messages::buffers::DynBufferManager<'static> {
+    fn buffer_manager(&self) -> &zweidraehte_proto::messages::buffers::DynBufferManager<'static> {
         self.buffer_manager
     }
 }

@@ -21,13 +21,12 @@ use const_default::ConstDefault;
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    AccessContext,
     bcus::system_b::{MemoryLayout, Tp1SystemBDeviceState},
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     layer_context::LayerContext,
     objects::tables::Application,
-    storage::StaticIdentity,
-};
+    storage::StaticIdentity};
+use zweidraehte_proto::AccessContext;
 
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
@@ -46,7 +45,7 @@ use zweidraehte_device::{
 // This is achieved through the prepare_read and handle_write hooks.
 
 pub mod comm_objs {
-    use zweidraehte_device::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
+    use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
     use zweidraehte_device::ets::EtsComObjects;
     use zweidraehte_device::objects::comm::ComObject;
 
@@ -161,7 +160,7 @@ pub mod comm_objs {
 // Manual ComObjects implementation with custom hooks for shadow objects
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
 use core::cell::UnsafeCell;
-use zweidraehte_device::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
+use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 use zweidraehte_device::objects::comm::{ComObjectInfo, ComObjectInfoMut};
 use zweidraehte_device::objects::tables::CommunicationObjectTable;
 
@@ -959,12 +958,12 @@ impl HasRoutingCount for ConformanceState {
     }
 }
 
-impl zweidraehte_device::HasConnectionAuth for ConformanceState {
-    fn connection_access(&self, slot: u8) -> zweidraehte_device::AccessContext {
+impl zweidraehte_proto::HasConnectionAuth for ConformanceState {
+    fn connection_access(&self, slot: u8) -> zweidraehte_proto::AccessContext {
         self.inner.connection_access(slot)
     }
 
-    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_device::AccessContext) {
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_proto::AccessContext) {
         self.inner.set_connection_access(slot, ctx);
     }
 

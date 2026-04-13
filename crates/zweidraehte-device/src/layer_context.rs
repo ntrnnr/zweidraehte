@@ -9,7 +9,7 @@ use core::cell::{Cell, RefCell};
 
 use embassy_sync::{channel::Channel, pubsub::{PubSubChannel, PubSubBehavior}};
 
-use crate::messages::buffers::DynBufferManager;
+use zweidraehte_proto::messages::buffers::DynBufferManager;
 use crate::{
     actor::Request,
     definition::StackDefinition,
@@ -80,16 +80,16 @@ impl<D: StackDefinition> LayerContext<D> {
 // ============================================================================
 
 pub trait HasOutbox {
-    fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>);
-    fn push_deferred_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>);
+    fn push_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>);
+    fn push_deferred_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>);
 }
 
 impl<D: StackDefinition> HasOutbox for LayerContext<D> {
-    fn push_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>) {
+    fn push_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>) {
         self.outbox.borrow_mut().push(msg);
     }
 
-    fn push_deferred_outbox(&self, msg: crate::messages::knx::KnxMessageBuffer<crate::messages::buffers::Buffer<'static>>) {
+    fn push_deferred_outbox(&self, msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>) {
         self.outbox.borrow_mut().push_deferred(msg);
     }
 }

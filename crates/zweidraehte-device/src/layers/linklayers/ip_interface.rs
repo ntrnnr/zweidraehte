@@ -47,15 +47,14 @@ use embassy_sync::{
 use zweidraehte_platform::IpTransport;
 
 use crate::{
-    address::IndividualAddress,
     context::AddressTableContext,
     layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
-    messages::{
+    objects::tables::{AddressTable, HasLoadStateMachine}};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::{
         buffers::*,
         builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
-    },
-    objects::tables::{AddressTable, HasLoadStateMachine},
-};
+    };
 
 use super::{
     knxip::{KnxNetIpBuilder, KnxNetIpContext, KnxNetIpResources, SubnetIndication, SubnetLink, features},
@@ -443,7 +442,7 @@ fn internal_to_cemi(
     indication: &IndicationMessage<Buffer<'static>>,
     buffer_manager: &DynBufferManager<'static>,
 ) -> Option<Buffer<'static>> {
-    use crate::messages::knx::{KnxMessageBuffer, ServiceType};
+    use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
     // Deref through IndicationMessage → KnxMessageBuffer<Buffer, InternalFormat>
     let internal_msg: &KnxMessageBuffer<Buffer<'static>> = indication;
@@ -463,7 +462,7 @@ fn internal_to_cemi(
 /// Convert a tunnel-injected indication (internal format) into a request
 /// for TPUART transmission.
 fn indication_to_request(indication: IndicationMessage<Buffer<'static>>) -> RequestMessage<Buffer<'static>> {
-    use crate::messages::knx::ServiceType;
+    use zweidraehte_proto::messages::knx::ServiceType;
 
     // Re-wrap the inner message buffer as a request. The message content
     // (internal format) is the same — only the envelope changes from

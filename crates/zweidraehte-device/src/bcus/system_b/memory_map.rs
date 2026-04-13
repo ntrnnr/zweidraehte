@@ -4,10 +4,9 @@
 //! to the device's tables for A_Memory_Read/Write services.
 
 use crate::{
-    AccessContext,
     memory::{MemoryError, MemoryMap},
-    objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, TableMemory},
-};
+    objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, TableMemory}};
+use zweidraehte_proto::AccessContext;
 
 /// Memory layout information for System B devices.
 ///

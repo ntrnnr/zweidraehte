@@ -1030,7 +1030,7 @@ impl ModuleCollection {
 ///
 /// ```rust,ignore
 /// use zweidraehte_knxprod::define_module;
-/// use zweidraehte_device::dpt::DPT_Switch;
+/// use zweidraehte_proto::dpt::DPT_Switch;
 /// use zweidraehte_device::ets::EtsComObjects;
 /// use zweidraehte_device::objects::comm::ComObject;
 ///

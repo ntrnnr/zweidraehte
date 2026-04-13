@@ -9,13 +9,12 @@ use zweidraehte_platform::{
 };
 
 use zweidraehte_device::{
-    layers::linklayers::tpuart::TpUartLinkLayer,
-    messages::{
+    layers::linklayers::tpuart::TpUartLinkLayer};
+use zweidraehte_proto::messages::{
         buffers::{Buffer, BufferManager},
         builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::{KnxMessageBuffer, ServiceType},
-    },
-};
+    };
 
 // Fake network layer that just prints received indications
 struct FakeNetworkLayer {

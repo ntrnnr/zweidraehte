@@ -45,7 +45,7 @@ pub use zweidraehte_proto::config::*;
 // ============================================================================
 
 // Re-export ComObjectFlags and Priority for use in macros
-pub use crate::messages::knx::Priority;
+pub use zweidraehte_proto::messages::knx::Priority;
 pub use crate::objects::tables::ComObjectFlags;
 
 // Re-export communication object flag constants from ComObjectFlags
@@ -136,7 +136,7 @@ macro_rules! knx_stack_config {
         } $(,)?
     ) => {
         pub struct $name {
-            pub individual_address: $crate::address::IndividualAddress,
+            pub individual_address: ::zweidraehte_proto::address::IndividualAddress,
             addr7_data: [u8; Self::ADDR7_SIZE],
             asso6_data: [u8; Self::ASSO6_SIZE],
             co7_data: [u8; Self::CO7_SIZE],
@@ -190,7 +190,7 @@ macro_rules! knx_stack_config {
                         i += 1;
                     }
 
-                    $crate::address::IndividualAddress::new(area, line, device)
+                    ::zweidraehte_proto::address::IndividualAddress::new(area, line, device)
                 };
 
                 // Build address table

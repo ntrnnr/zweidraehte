@@ -8,14 +8,14 @@ use core::net::Ipv4Addr;
 
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
 use crate::StackDefinition;
-use crate::dpt::{
+use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
 };
 use crate::layer_context::LayerContext;
 use crate::layers::application::group_data::GroupDataProvider;
-use crate::messages::buffers::DynBufferManager;
+use zweidraehte_proto::messages::buffers::DynBufferManager;
 use crate::router::Outbox;
-use crate::AccessContext;
+use zweidraehte_proto::AccessContext;
 
 // ============================================================================
 // Inline Property Buffer
@@ -279,7 +279,7 @@ impl<'a> FunctionPropertyRequest<'a> {
 /// Result from a function property operation.
 ///
 /// Named `Result` (not `Response`) to avoid collision with the wire-format
-/// [`FunctionPropertyResponse`](crate::messages::apdu::function_property::FunctionPropertyResponse)
+/// [`FunctionPropertyResponse`](zweidraehte_proto::messages::apdu::function_property::FunctionPropertyResponse)
 /// in the proto crate.
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionPropertyResult {
@@ -418,7 +418,7 @@ impl StatePropertyValue for PDT_Generic06 {
 pub struct Ipv4Property;
 
 // Ipv4Property uses the same wire format as PDT_UnsignedLong (4 bytes, ID 9)
-impl const crate::dpt::PropertyDataDefinition for Ipv4Property {
+impl const zweidraehte_proto::dpt::PropertyDataDefinition for Ipv4Property {
     const SIZE: usize = 4;
     const ID: u8 = 9; // PDT_UnsignedLong
 }
@@ -916,7 +916,7 @@ where
 ///
 /// ```rust,ignore
 /// use zweidraehte_device::objects::interface::*;
-/// use zweidraehte_device::dpt::InterfaceObjectType;
+/// use zweidraehte_proto::dpt::InterfaceObjectType;
 ///
 /// struct MyDeviceObject {
 ///     serial_number: PDT_Generic06,
@@ -1205,7 +1205,7 @@ where
 // without going through the PropertyServiceHandler byte-buffer protocol.
 // They are used by stack layers that need direct access to specific properties.
 
-use crate::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
+use zweidraehte_proto::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 
 /// Trait for types that provide a routing count.
 ///

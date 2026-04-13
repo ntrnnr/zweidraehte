@@ -7,8 +7,8 @@
 use core::cell::RefCell;
 
 use super::SecurityTable;
-use crate::access::AccessPolicy;
-use crate::dpt::{
+use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_Generic18,
     PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
 };
@@ -18,7 +18,7 @@ use crate::objects::interface::{
     PropertyError, PropertyLookup, WriteResponse, pid,
 };
 use crate::objects::tables::LoadState;
-use crate::properties::PropertyRead;
+use zweidraehte_proto::properties::PropertyRead;
 use crate::storage::SequenceNumberStorage;
 use crate::StackDefinition;
 
@@ -737,10 +737,10 @@ mod tests {
     struct MockState;
 
     impl crate::StackState for MockState {
-        fn individual_address(&self) -> crate::address::IndividualAddress {
-            crate::address::IndividualAddress::new(1, 0, 1)
+        fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress {
+            zweidraehte_proto::address::IndividualAddress::new(1, 0, 1)
         }
-        fn set_individual_address(&self, _addr: crate::address::IndividualAddress) {}
+        fn set_individual_address(&self, _addr: zweidraehte_proto::address::IndividualAddress) {}
         fn serial_number(&self) -> &[u8; 6] {
             &[0; 6]
         }
@@ -806,7 +806,7 @@ mod tests {
             pid: pid::OBJECT_TYPE,
             start_idx: 1,
             count: 1,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let mut buf = [0u8; 4];
         let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &req, &mut buf);
@@ -837,7 +837,7 @@ mod tests {
             count: 1,
             start_idx: 1,
             data: &[1],
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &req);
         assert!(result.expect("should handle").is_ok());
@@ -850,7 +850,7 @@ mod tests {
             count: 1,
             start_idx: 1,
             data: &[0],
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &req);
         assert!(result.expect("should handle").is_ok());
@@ -869,7 +869,7 @@ mod tests {
             pid: pid::OBJECT_TYPE,
             start_idx: 1,
             count: 1,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let mut buf = [0u8; 4];
 
@@ -933,7 +933,7 @@ mod tests {
             count: 1,
             start_idx: 1,
             data: &entry,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
         assert!(result.expect("should handle").is_ok());
@@ -944,7 +944,7 @@ mod tests {
             pid: pid::GROUP_KEY_TABLE,
             start_idx: 0,
             count: 1,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let mut buf = [0u8; 32];
         let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
@@ -958,7 +958,7 @@ mod tests {
             pid: pid::GROUP_KEY_TABLE,
             start_idx: 1,
             count: 1,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
         let len = result.expect("should handle").expect("should succeed");
@@ -997,7 +997,7 @@ mod tests {
             count: 3,
             start_idx: 1,
             data: &[0x01, 0x03, 0x00], // GO 0: auth, GO 1: auth+conf, GO 2: none
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
         assert!(result.expect("should handle").is_ok());
@@ -1023,7 +1023,7 @@ mod tests {
             count: 1,
             start_idx: 1,
             data: &[0xDD; 16],
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
         assert!(result.expect("should handle").is_ok());
@@ -1035,7 +1035,7 @@ mod tests {
             pid: pid::TOOL_KEY,
             start_idx: 1,
             count: 1,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let mut buf = [0u8; 16];
         let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
@@ -1056,7 +1056,7 @@ mod tests {
             count: 3,
             start_idx: 1,
             data: &[0x01, 0x02, 0x03],
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let result = augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req);
         assert!(result.expect("should handle").is_err());
@@ -1075,7 +1075,7 @@ mod tests {
             pid: pid::GROUP_KEY_TABLE,
             start_idx: 1,
             count: 1,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let mut buf = [0u8; 32];
         let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);
@@ -1098,7 +1098,7 @@ mod tests {
             count: 1,
             start_idx: 1,
             data: &entry,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         augment.property_value_write(&mock, InterfaceObjectType::Security, &write_req).unwrap().unwrap();
 
@@ -1108,7 +1108,7 @@ mod tests {
             pid: pid::GROUP_KEY_TABLE,
             start_idx: 1,
             count: 1,
-            ctx: crate::AccessContext::MAX_ACCESS,
+            ctx: zweidraehte_proto::AccessContext::MAX_ACCESS,
         };
         let mut buf = [0u8; 4]; // Too small for 18-byte entry.
         let result = augment.property_value_read(&mock, InterfaceObjectType::Security, &read_req, &mut buf);

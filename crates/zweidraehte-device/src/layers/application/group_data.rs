@@ -12,19 +12,18 @@ use crate::{
     context::EventPublisherContext,
     layer_context::{HasOutbox, LayerContext},
     layers::application::capabilities::GroupValueSender,
-    messages::{
-        buffers::{Buffer, DynBufferManager},
-        builder::MessageBuilder,
-        knx::*,
-    },
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects},
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
         },
-    },
-};
+    }};
+use zweidraehte_proto::messages::{
+        buffers::{Buffer, DynBufferManager},
+        builder::MessageBuilder,
+        knx::*,
+    };
 
 // ============================================================================
 // Types

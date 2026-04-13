@@ -8,14 +8,13 @@
 use crate::{
     HasPersistence, StackDefinition, StackState,
     device_model::DeviceModelNotifier,
-    dpt::{DeviceControl, ProgrammingMode, RoutingCount},
     objects::interface::{
         AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest,
         FunctionPropertyResult, HasDeviceObject, InterfaceObject, InterfaceObjectAugment, PropertyAccess,
         PropertyBuf, PropertyDescriptionResponse, PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
-    objects::tables::{HasLoadStateMachine, HasRunStateMachine},
-};
+    objects::tables::{HasLoadStateMachine, HasRunStateMachine}};
+use zweidraehte_proto::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 
 use super::SystemBObjects;
 use crate::objects::interface::HasRoutingCount;
@@ -39,7 +38,7 @@ where
         self.total_object_count()
     }
 
-    fn object_type_at(&self, object_idx: u16) -> Option<crate::dpt::InterfaceObjectType> {
+    fn object_type_at(&self, object_idx: u16) -> Option<zweidraehte_proto::dpt::InterfaceObjectType> {
         self.object_type_for(object_idx)
     }
 
@@ -345,7 +344,7 @@ where
         // Table 2, this is the recommended access method for PDT_CONTROL.
         if !self.is_augment_object(req.object_idx) {
             if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-                use crate::dpt::{PDT_Control, PropertyDataDefinition};
+                use zweidraehte_proto::dpt::{PDT_Control, PropertyDataDefinition};
                 if desc.pdt_id == PDT_Control::ID {
                     let write_req = FullPropertyWriteRequest {
                         object_idx: req.object_idx,
@@ -412,7 +411,7 @@ where
         // services and this is the recommended access method.
         if !self.is_augment_object(req.object_idx) {
             if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-                use crate::dpt::{PDT_Control, PropertyDataDefinition};
+                use zweidraehte_proto::dpt::{PDT_Control, PropertyDataDefinition};
                 if desc.pdt_id == PDT_Control::ID {
                     let read_req = FullPropertyReadRequest {
                         object_idx: req.object_idx,

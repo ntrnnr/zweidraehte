@@ -14,7 +14,7 @@
 use core::net::SocketAddrV4;
 use heapless::Vec;
 
-use crate::messages::{
+use zweidraehte_proto::messages::{
     buffers::Buffer,
     knx::KnxMessageBuffer,
     knxip::{
@@ -23,7 +23,7 @@ use crate::messages::{
     },
 };
 
-use crate::util::packets::{ParseBuffer, SerializeBuffer};
+use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError, resolve_hpai};
 
@@ -65,7 +65,7 @@ impl RemoteConfigurationServer {
         source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        use crate::messages::knxip::RemoteDiagnosticRequest;
+        use zweidraehte_proto::messages::knxip::RemoteDiagnosticRequest;
 
         let mut buffer = data;
         let request = buffer.parse::<RemoteDiagnosticRequest>().map_err(|e| {
@@ -100,7 +100,7 @@ impl RemoteConfigurationServer {
             DescriptionInformationBlockBuilder::KnxAddresses(knx_addresses),
         ];
 
-        let response_builder = crate::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
+        let response_builder = zweidraehte_proto::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
 
         let mut response_buffer = context.alloc_buffer().await;
         response_buffer.serialize(&response_builder);
@@ -132,7 +132,7 @@ impl RemoteConfigurationServer {
         source: SocketAddrV4,
         context: &ServerContext<'_>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        use crate::messages::knxip::RemoteBasicConfigurationRequest;
+        use zweidraehte_proto::messages::knxip::RemoteBasicConfigurationRequest;
 
         let mut buffer = data;
         let request = buffer.parse::<RemoteBasicConfigurationRequest<_>>().map_err(|e| {
@@ -177,7 +177,7 @@ impl RemoteConfigurationServer {
             DescriptionInformationBlockBuilder::KnxAddresses(knx_addresses),
         ];
 
-        let response_builder = crate::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
+        let response_builder = zweidraehte_proto::messages::knxip::RemoteDiagnosticResponseBuilder::new(request.selector, &dibs);
 
         let mut response_buffer = context.alloc_buffer().await;
         response_buffer.serialize(&response_builder);
@@ -207,7 +207,7 @@ impl RemoteConfigurationServer {
         data: &[u8],
         context: &ServerContext<'_>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError> {
-        use crate::messages::knxip::RemoteResetRequest;
+        use zweidraehte_proto::messages::knxip::RemoteResetRequest;
 
         let mut buffer = data;
         let request = buffer.parse::<RemoteResetRequest>().map_err(|e| {
@@ -227,10 +227,10 @@ impl RemoteConfigurationServer {
         // TODO: Execute the reset command. This needs a platform-level
         // restart mechanism that doesn't exist yet.
         match request.command {
-            crate::messages::knxip::ResetCommand::Restart => {
+            zweidraehte_proto::messages::knxip::ResetCommand::Restart => {
                 warn!("RemoteResetRequest: Restart requested but not yet implemented");
             }
-            crate::messages::knxip::ResetCommand::MasterReset => {
+            zweidraehte_proto::messages::knxip::ResetCommand::MasterReset => {
                 warn!("RemoteResetRequest: MasterReset requested but not yet implemented");
             }
         }

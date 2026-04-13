@@ -464,6 +464,7 @@ dependencies = [
  "embassy-time",
  "serde",
  "zweidraehte-device",
+ "zweidraehte-proto",
  "zweidraehte-util",
 ]
 

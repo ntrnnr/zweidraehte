@@ -56,27 +56,26 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Instant, Timer};
 
 use crate::{
-    address::IndividualAddress,
-    context::KnxIndividualAddressContext,
-    messages::{
+    context::KnxIndividualAddressContext};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::{
         buffers::{Buffer, MessageBuffer},
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage},
         knx::*,
-    },
-};
+    };
 
 use crate::layers::Inbox;
-use crate::messages::builder::RequestMessage;
+use zweidraehte_proto::messages::builder::RequestMessage;
 
 pub mod busmon;
 mod chip;
 mod state_machine;
 
-use crate::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message_no_checksum, validate_tp1_checksum};
+use zweidraehte_proto::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message_no_checksum, validate_tp1_checksum};
 use chip::{ChipType, RetryConfig};
 use state_machine::*;
 
-use crate::address::GroupAddress;
+use zweidraehte_proto::address::GroupAddress;
 use crate::objects::tables::{AddressTable, HasLoadStateMachine};
 
 // Re-export for external use

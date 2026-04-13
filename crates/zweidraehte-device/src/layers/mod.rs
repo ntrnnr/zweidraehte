@@ -5,8 +5,8 @@
 use embassy_sync::blocking_mutex::raw::RawMutex;
 use embassy_sync::channel::{DynamicSender, Receiver};
 
-use crate::messages::buffers::Buffer;
-use crate::messages::builder::{ConfirmationMessage, IndicationMessage};
+use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage};
 
 /// Async message inbox that yields one message per call.
 pub trait Inbox<M> {
@@ -155,7 +155,7 @@ pub trait LinkLayerBuilder<CTX>: LinkLayerBuilderBase {
         ll_endpoints: Self::LLEndpoints<'a>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        req_rx: impl Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a;
 }
 

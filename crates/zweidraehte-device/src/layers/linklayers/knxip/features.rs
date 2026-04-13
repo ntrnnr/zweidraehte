@@ -23,10 +23,10 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 
 use heapless::Vec;
 
-use crate::messages::buffers::Buffer;
-use crate::messages::knx::KnxMessageBuffer;
-use crate::messages::knxip::KNXnetIPServiceType;
-use crate::messages::knxip::substructs::{self, SupportedService};
+use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::knx::KnxMessageBuffer;
+use zweidraehte_proto::messages::knxip::KNXnetIPServiceType;
+use zweidraehte_proto::messages::knxip::substructs::{self, SupportedService};
 
 use super::services::remote_config::RemoteConfigurationServer;
 use super::services::routing::RoutingServer;
@@ -434,7 +434,7 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
             cemi_sender,
         );
 
-        let mut additional_addresses = [crate::address::IndividualAddress::default(); N];
+        let mut additional_addresses = [zweidraehte_proto::address::IndividualAddress::default(); N];
         let addr_count = context.write_additional_individual_addresses(&mut additional_addresses);
         let ext_info = context.extended_device_information();
         let tunnel = super::connections::TunnelConnectionHandler::<N>::new(

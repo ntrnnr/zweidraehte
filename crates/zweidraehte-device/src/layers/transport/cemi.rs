@@ -30,16 +30,15 @@
 
 use embassy_sync::channel::DynamicSender;
 
-use crate::{
-    AccessSource, StackDefinition,
-    address::IndividualAddress,
+use crate::{ StackDefinition,
     layer_context::HasOutbox,
-    messages::{
+    router::Layer};
+use zweidraehte_proto::AccessSource;
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::{
         buffers::Buffer,
         knx::{KnxMessageBuffer, ServiceType},
-    },
-    router::Layer,
-};
+    };
 
 use super::TransportLayer;
 
@@ -259,7 +258,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         msg_buf.as_mut()[6..6 + tpdu.len()].copy_from_slice(tpdu);
 
         let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_Data_Ind);
-        msg.set_access_source(AccessSource::Explicit(crate::AccessContext::MAX_ACCESS));
+        msg.set_access_source(AccessSource::Explicit(zweidraehte_proto::AccessContext::MAX_ACCESS));
 
         self.inner.lctx().push_outbox(msg);
     }
@@ -372,7 +371,7 @@ pub struct CemiTransportLayerChannelPair {
     /// response pending).
     pub response: embassy_sync::channel::Channel<
         embassy_sync::blocking_mutex::raw::NoopRawMutex,
-        crate::messages::buffers::Buffer<'static>,
+        zweidraehte_proto::messages::buffers::Buffer<'static>,
         1,
     >,
 }
@@ -412,7 +411,7 @@ impl CemiTransportLayerChannelPair {
 /// receive cEMI events and send responses.
 pub struct CemiTransportLayerClientEndpoints<'a> {
     pub event_receiver: embassy_sync::channel::DynamicReceiver<'a, CemiEvent>,
-    pub response_sender: embassy_sync::channel::DynamicSender<'a, crate::messages::buffers::Buffer<'static>>,
+    pub response_sender: embassy_sync::channel::DynamicSender<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
 }
 
 /// Link-layer-side endpoints borrowed from [`CemiTransportLayerChannelPair`].
@@ -420,5 +419,5 @@ pub struct CemiTransportLayerClientEndpoints<'a> {
 /// Used by the KNX/IP runtime to send cEMI events and receive responses.
 pub struct CemiTransportLayerEndpoints<'a> {
     pub event_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
-    pub response_receiver: embassy_sync::channel::DynamicReceiver<'a, crate::messages::buffers::Buffer<'static>>,
+    pub response_receiver: embassy_sync::channel::DynamicReceiver<'a, zweidraehte_proto::messages::buffers::Buffer<'static>>,
 }

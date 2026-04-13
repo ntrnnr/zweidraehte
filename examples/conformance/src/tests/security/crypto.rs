@@ -3,8 +3,8 @@
 //! Uses the `zweidraehte_proto::crypto` module (Phase 3) to encrypt/decrypt
 //! secure APDUs on the test runner side, simulating what ETS does.
 
-use zweidraehte_device::crypto::ccm::{self, CcmContext};
-use zweidraehte_device::crypto::scf::{SecureServiceType, SecurityControlField};
+use zweidraehte_proto::crypto::ccm::{self, CcmContext};
+use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 
 use super::context::SecurityTestContext;
 use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource};
@@ -157,7 +157,7 @@ pub fn wrap_secure_invalid(
 
 /// Wrap with wrong address type in the CCM context (AT=group instead of individual).
 fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut SecurityTestContext) -> Vec<u8> {
-    use zweidraehte_device::crypto::scf::{SecureServiceType, SecurityControlField};
+    use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 
     assert!(plaintext_frame.len() >= 7, "frame too short for wrapping");
 
@@ -276,7 +276,7 @@ pub fn wrap_sync_req(
     serial_number: &[u8; 6],
     challenge: &[u8; 6],
 ) -> Vec<u8> {
-    use zweidraehte_device::crypto::ccm::{CcmContext, encrypt_and_mac_sync_req};
+    use zweidraehte_proto::crypto::ccm::{CcmContext, encrypt_and_mac_sync_req};
 
     let tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
 

@@ -153,7 +153,7 @@
 ///
 /// ```rust,ignore
 /// use zweidraehte_device::objects::interface::*;
-/// use zweidraehte_device::dpt::*;
+/// use zweidraehte_proto::dpt::*;
 ///
 /// define_interface_object! {
 ///     /// Device Object containing basic device information
@@ -200,7 +200,7 @@ macro_rules! define_interface_object {
                 // PID_OBJECT_TYPE is always the first property (index 0)
                 $crate::define_interface_object!(@make_descriptor
                     $crate::objects::interface::pid::OBJECT_TYPE,
-                    $crate::dpt::PDT_UnsignedInt, 1, ReadOnly,
+                    ::zweidraehte_proto::dpt::PDT_UnsignedInt, 1, ReadOnly,
                 ),
                 // User-defined properties follow
                 $(
@@ -248,8 +248,8 @@ macro_rules! define_interface_object {
         }
 
         impl $crate::objects::interface::InterfaceObject for $name {
-            fn object_type(&self) -> $crate::dpt::InterfaceObjectType {
-                $crate::dpt::$obj_type::$obj_variant
+            fn object_type(&self) -> ::zweidraehte_proto::dpt::InterfaceObjectType {
+                ::zweidraehte_proto::dpt::$obj_type::$obj_variant
             }
 
             fn property_count(&self) -> u16 {
@@ -299,7 +299,7 @@ macro_rules! define_interface_object {
 
                 match req.pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
-                        let obj_type: u16 = <$crate::dpt::InterfaceObjectType as Into<u16>>::into($crate::dpt::$obj_type::$obj_variant);
+                        let obj_type: u16 = <::zweidraehte_proto::dpt::InterfaceObjectType as Into<u16>>::into(::zweidraehte_proto::dpt::$obj_type::$obj_variant);
                         if buf.len() < 2 {
                             return Err($crate::objects::interface::PropertyError::BufferTooSmall);
                         }
@@ -422,7 +422,7 @@ macro_rules! define_interface_object {
                 // PID_OBJECT_TYPE is always the first property (index 0)
                 $crate::define_interface_object!(@make_descriptor
                     $crate::objects::interface::pid::OBJECT_TYPE,
-                    $crate::dpt::PDT_UnsignedInt, 1, ReadOnly,
+                    ::zweidraehte_proto::dpt::PDT_UnsignedInt, 1, ReadOnly,
                 ),
                 // Static properties
                 $(
@@ -473,8 +473,8 @@ macro_rules! define_interface_object {
         }
 
         impl<$lt, $state_ty: $state_bound> $crate::objects::interface::InterfaceObject for $name<$lt, $state_ty> {
-            fn object_type(&self) -> $crate::dpt::InterfaceObjectType {
-                $crate::dpt::$obj_type::$obj_variant
+            fn object_type(&self) -> ::zweidraehte_proto::dpt::InterfaceObjectType {
+                ::zweidraehte_proto::dpt::$obj_type::$obj_variant
             }
 
             fn property_count(&self) -> u16 {
@@ -506,7 +506,7 @@ macro_rules! define_interface_object {
             ) -> Result<usize, $crate::objects::interface::PropertyError> {
                 match req.pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => {
-                        let obj_type: u16 = <$crate::dpt::InterfaceObjectType as Into<u16>>::into($crate::dpt::$obj_type::$obj_variant);
+                        let obj_type: u16 = <::zweidraehte_proto::dpt::InterfaceObjectType as Into<u16>>::into(::zweidraehte_proto::dpt::$obj_type::$obj_variant);
                         $crate::objects::interface::PropertyRead::read_property(
                             &obj_type.to_be_bytes(), req.start_idx, req.count, buf,
                         )
@@ -774,7 +774,7 @@ macro_rules! define_interface_object {
     (@make_descriptor $pid:expr, $pdt:ty, $max:expr, $access:ident, [$rl:expr, $wl:expr, $policy:expr]) => {
         $crate::objects::interface::PropertyDescriptor::with_policy(
             $pid,
-            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            <$pdt as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
             $max,
             $crate::objects::interface::PropertyAccess::$access,
             $rl,
@@ -787,12 +787,12 @@ macro_rules! define_interface_object {
     (@make_descriptor $pid:expr, $pdt:ty, $max:expr, $access:ident, [$rl:expr, $wl:expr]) => {
         $crate::objects::interface::PropertyDescriptor::with_policy(
             $pid,
-            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            <$pdt as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
             $max,
             $crate::objects::interface::PropertyAccess::$access,
             $rl,
             $wl,
-            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+            ::zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
         )
     };
 
@@ -800,12 +800,12 @@ macro_rules! define_interface_object {
     (@make_descriptor $pid:expr, $pdt:ty, $max:expr, $access:ident,) => {
         $crate::objects::interface::PropertyDescriptor::with_policy(
             $pid,
-            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            <$pdt as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
             $max,
             $crate::objects::interface::PropertyAccess::$access,
             3,
             3,
-            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+            ::zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
         )
     };
 
@@ -818,7 +818,7 @@ macro_rules! define_interface_object {
     (@make_array_descriptor $pid:expr, $pdt:ty, $max:expr, [$rl:expr, $wl:expr, $policy:expr]) => {
         $crate::objects::interface::PropertyDescriptor::with_policy(
             $pid,
-            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            <$pdt as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
             $max,
             $crate::objects::interface::PropertyAccess::ReadWrite,
             $rl,
@@ -831,12 +831,12 @@ macro_rules! define_interface_object {
     (@make_array_descriptor $pid:expr, $pdt:ty, $max:expr, [$rl:expr, $wl:expr]) => {
         $crate::objects::interface::PropertyDescriptor::with_policy(
             $pid,
-            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            <$pdt as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
             $max,
             $crate::objects::interface::PropertyAccess::ReadWrite,
             $rl,
             $wl,
-            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+            ::zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
         )
     };
 
@@ -844,12 +844,12 @@ macro_rules! define_interface_object {
     (@make_array_descriptor $pid:expr, $pdt:ty, $max:expr,) => {
         $crate::objects::interface::PropertyDescriptor::with_policy(
             $pid,
-            <$pdt as $crate::dpt::PropertyDataDefinition>::ID,
+            <$pdt as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
             $max,
             $crate::objects::interface::PropertyAccess::ReadWrite,
             3,
             3,
-            $crate::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
+            ::zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
         )
     };
 }
@@ -865,7 +865,7 @@ pub trait HasProperty<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::dpt::*;
+    use zweidraehte_proto::dpt::*;
     use crate::objects::interface::{
         InterfaceObject, PropertyAccess, PropertyError, PropertyReadRequest, PropertyWriteRequest,
         pid,

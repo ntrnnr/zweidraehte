@@ -38,19 +38,19 @@ pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, 
 
 use embassy_time::{Duration, Instant};
 
-use crate::{
-    AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition,
-    address::IndividualAddress,
+use crate::{ HasAuthorization, StackDefinition,
     inner::StackContext,
     layer_context::HasOutbox,
-    messages::{
+    objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
+    router::Layer};
+use zweidraehte_proto::AccessSource;
+use zweidraehte_proto::HasConnectionAuth;
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::{
         buffers::Buffer,
         builder::ConfirmationExt,
         knx::{DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci},
-    },
-    objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
-    router::Layer,
-};
+    };
 
 // ============================================================================
 // Configuration
@@ -183,7 +183,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     }
 
     /// Access to the buffer manager (used by [`CemiTransportLayer`](cemi::CemiTransportLayer)).
-    pub(crate) fn buffer_manager(&self) -> &'a crate::messages::buffers::DynBufferManager<'static> {
+    pub(crate) fn buffer_manager(&self) -> &'a zweidraehte_proto::messages::buffers::DynBufferManager<'static> {
         &self.lctx.buffer_manager
     }
 
@@ -368,7 +368,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
     /// Handle connection-oriented indications (N_Data_Ind).
     fn handle_connection_indication(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
-        use crate::messages::knx::offsets::MSG_TPCI;
+        use zweidraehte_proto::messages::knx::offsets::MSG_TPCI;
 
         let tpci = match msg.get_tpci() {
             Some(t) => t,
@@ -1041,7 +1041,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     /// Uses `try_alloc` — if no buffer is available, the connect is skipped.
     /// The connection timeout will eventually clean up the failed connection.
     fn send_connect(&mut self, dest: IndividualAddress) {
-        use crate::messages::builder::MessageBuilder;
+        use zweidraehte_proto::messages::builder::MessageBuilder;
 
         // Control PDUs need only the basic header (7 bytes up to and including TPCI)
         const CONTROL_PDU_LEN: usize = 7;
@@ -1069,7 +1069,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///
     /// Uses `try_alloc` — if no buffer is available, the disconnect is skipped.
     fn send_disconnect(&mut self, dest: IndividualAddress) {
-        use crate::messages::builder::MessageBuilder;
+        use zweidraehte_proto::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
 
@@ -1097,7 +1097,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     /// Used when force-closing incoming connections (e.g. when activating
     /// cEMI Transport Layer mode). This goes upward to AL, not to the wire.
     pub(crate) fn send_disconnect_indication(&mut self, source: IndividualAddress) {
-        use crate::messages::builder::MessageBuilder;
+        use zweidraehte_proto::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
 
@@ -1124,7 +1124,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     /// Used when activating cEMI Transport Layer mode to signal a
     /// synthetic connection to AL from the cEMI path.
     pub(crate) fn send_connect_indication(&mut self, source: IndividualAddress) {
-        use crate::messages::builder::MessageBuilder;
+        use zweidraehte_proto::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
 
@@ -1151,7 +1151,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     /// Uses `try_alloc` — if no buffer is available, the ACK is skipped.
     /// The remote will retransmit on timeout.
     fn send_ack(&mut self, dest: IndividualAddress, seq_no: u8) {
-        use crate::messages::builder::MessageBuilder;
+        use zweidraehte_proto::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
 
@@ -1178,7 +1178,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     ///
     /// Uses `try_alloc` — if no buffer is available, the NACK is skipped.
     fn send_nack(&mut self, dest: IndividualAddress, seq_no: u8) {
-        use crate::messages::builder::MessageBuilder;
+        use zweidraehte_proto::messages::builder::MessageBuilder;
 
         const CONTROL_PDU_LEN: usize = 7;
 

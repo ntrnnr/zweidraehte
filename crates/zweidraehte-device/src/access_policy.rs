@@ -13,11 +13,11 @@
 //!    considering KNX Data Secure roles, security mode, and per-property
 //!    permission matrices.
 //!
-//! [`AccessPolicy`]: crate::access::AccessPolicy
+//! [`AccessPolicy`]: zweidraehte_proto::access::AccessPolicy
 
-use crate::AccessContext;
-use crate::access::AccessPolicy;
-use crate::messages::knx::ApciCode;
+use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::messages::knx::ApciCode;
 
 /// Result of a service-level access check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,8 +229,8 @@ mod tests {
 
     #[test]
     fn restart_policies_match_spec() {
-        use crate::access::ClientRole;
-        use crate::access::SecurityMode;
+        use zweidraehte_proto::access::ClientRole;
+        use zweidraehte_proto::access::SecurityMode;
 
         // Basic restart: unlisted plain can trigger (sec off, 3FF bits 9,8 set)
         let unlisted = AccessContext::new(3);

@@ -33,13 +33,12 @@
 //! a big-bang AL split.
 
 use crate::{
-    access::AccessContext,
-    definition::StackDefinition,
-    messages::{
+    definition::StackDefinition};
+use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::messages::{
         buffers::{Buffer, DynBufferManager},
         knx::{ApciCode, KnxMessageBuffer},
-    },
-};
+    };
 
 // ============================================================================
 // Service Context

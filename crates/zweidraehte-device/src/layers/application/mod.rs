@@ -21,23 +21,24 @@ pub(crate) mod group_data;
 pub mod services;
 
 use crate::context::RestartPublisherContext;
-use crate::{
-    AccessContext, AccessSource, HasAuthorization, HasConnectionAuth, StackDefinition, StackState,
+use crate::{ HasAuthorization, StackDefinition, StackState,
     actor::Request,
-    address::GroupAddress,
     inner::StackContext,
     layer_context::HasOutbox,
-    messages::{
-        buffers::{Buffer, DynBufferManager},
-        knx::*,
-    },
     objects::{
         comm::HasCommObjects,
         interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
     },
     restart::{EraseCode, RestartError, RestartRequest},
-    router::Layer,
-};
+    router::Layer};
+use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::AccessSource;
+use zweidraehte_proto::HasConnectionAuth;
+use zweidraehte_proto::address::GroupAddress;
+use zweidraehte_proto::messages::{
+        buffers::{Buffer, DynBufferManager},
+        knx::*,
+    };
 
 // ============================================================================
 // Service Types
@@ -359,7 +360,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[5-6]: Type + MaxElements
     /// - APDU[7]: Read/Write Access Levels
     fn handle_property_description_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use crate::messages::{
+        use zweidraehte_proto::messages::{
             apdu::property::{PropertyDescriptionRead, PropertyDescriptionResponse},
             builder::IndicationExt,
         };
@@ -467,7 +468,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits]
     /// - APDU[6..]: Data
     fn handle_property_value_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use crate::messages::{
+        use zweidraehte_proto::messages::{
             apdu::property::{PropertyValueHeader, PropertyValueResponse},
             builder::IndicationExt,
         };
@@ -567,7 +568,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[4-5]: [Count:4bits][StartIndex:12bits] (count=0 on error)
     /// - APDU[6..]: Written data (echo back on success)
     fn handle_property_value_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use crate::messages::{
+        use zweidraehte_proto::messages::{
             apdu::property::{PropertyValueHeader, PropertyValueResponse},
             builder::IndicationExt,
         };
@@ -670,7 +671,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Both services share the same wire format and response format, differing
     /// only in which trait method is called on the interface objects.
     fn handle_function_property(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, is_command: bool) {
-        use crate::messages::{
+        use zweidraehte_proto::messages::{
             apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
             builder::IndicationExt,
         };
@@ -754,7 +755,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - APDU[0-1]: APCI (DeviceDescriptorResponse with descriptor type in low 6 bits)
     /// - APDU[2-3]: Mask version (only if descriptor type is 0)
     fn handle_device_descriptor_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use crate::messages::{
+        use zweidraehte_proto::messages::{
             apdu::device::{DeviceDescriptorRead, DeviceDescriptorResponse},
             builder::IndicationExt,
         };
@@ -781,7 +782,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             // Access policy 3FF/0CC at data level: when security mode is on
             // and the request lacks sufficient access (e.g. plain or auth-only),
             // return FF FF (masked) instead of the real device descriptor.
-            use crate::access::AccessPolicy;
+            use zweidraehte_proto::access::AccessPolicy;
             let access_ctx = self.resolve_access(ind);
             let security_on = self.state.security_mode_enabled();
             let mask_version = if AccessPolicy::READ_OPEN_WRITE_TOOL.can_read(&access_ctx, security_on) {
@@ -822,7 +823,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
     /// Send a DeviceDescriptorResponse error (descriptor_type = 0x3F).
     fn send_dd_error(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use crate::messages::{apdu::device::DeviceDescriptorResponse, builder::IndicationExt};
+        use zweidraehte_proto::messages::{apdu::device::DeviceDescriptorResponse, builder::IndicationExt};
 
         let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(DeviceDescriptorResponse::ERROR_MSG_LEN) else {
             warn!("AL no buffer for response");
@@ -851,7 +852,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Note: The individual address is taken from the source address field of the
     /// response frame, not from the APDU payload.
     fn handle_individual_address_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use crate::messages::{apdu::device, builder::MessageBuilder};
+        use zweidraehte_proto::messages::{apdu::device, builder::MessageBuilder};
 
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressRead with unexpected service type: {:?}", ind.service_type());
@@ -895,7 +896,8 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     ///
     /// Per KNX spec, this service only takes effect when the device is in programming mode.
     fn handle_individual_address_write(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        use crate::{address::IndividualAddress, messages::apdu::device::IndividualAddressWrite};
+        use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::apdu::device::IndividualAddressWrite;
 
         if ind.service_type() != ServiceType::T_Broadcast_Ind {
             warn!("AL IndividualAddressWrite with unexpected service type: {:?}", ind.service_type());
@@ -909,7 +911,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         // Access policy 3FF/00C: everyone can write when security mode is off;
         // when security mode is on, only Tool A+C can write.
-        use crate::access::AccessPolicy;
+        use zweidraehte_proto::access::AccessPolicy;
         let access_ctx = self.resolve_access(ind);
         let security_on = self.state.security_mode_enabled();
         if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&access_ctx, security_on) {
@@ -943,7 +945,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        use crate::messages::apdu::restart::RestartParsed;
+        use zweidraehte_proto::messages::apdu::restart::RestartParsed;
 
         let Some(parsed) = RestartParsed::parse(ind.buf()) else {
             warn!("AL Restart message too short: {}", ind.len());
@@ -981,7 +983,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         // Security-mode access policy: AP 3FF/00C for all restart types.
         // When security mode is off, all callers can restart (0x3FF = all bits set).
         // When security mode is on, only Tool A+C is allowed (0x00C).
-        use crate::access::AccessPolicy;
+        use zweidraehte_proto::access::AccessPolicy;
         let security_on = self.state.security_mode_enabled();
         if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&restart_ctx, security_on) {
             warn!("AL Restart: access denied by security policy ({:?}, sec_on={})", restart_ctx, security_on);
@@ -1021,7 +1023,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         error: RestartError,
         process_time_100ms: u16,
     ) {
-        use crate::messages::{apdu::restart::RestartResponse, builder::IndicationExt};
+        use zweidraehte_proto::messages::{apdu::restart::RestartResponse, builder::IndicationExt};
 
         let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(RestartResponse::MSG_LEN) else {
             warn!("AL no buffer for response");

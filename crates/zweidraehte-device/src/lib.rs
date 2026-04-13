@@ -15,20 +15,6 @@ extern crate zweidraehte_util;
 #[macro_use]
 extern crate zweidraehte_proto;
 
-// Re-export protocol types from proto so downstream can use zweidraehte_device::address etc.
-pub use zweidraehte_proto::access;
-pub use zweidraehte_proto::address;
-pub use zweidraehte_proto::crypto;
-pub use zweidraehte_proto::device;
-pub use zweidraehte_proto::dpt;
-pub use zweidraehte_proto::encoding;
-pub use zweidraehte_proto::messages;
-pub use zweidraehte_proto::properties;
-pub use zweidraehte_proto::util;
-pub use zweidraehte_proto::{
-    AccessContext, AccessSource, ConnectionAuthLevels, HasConnectionAuth, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS,
-};
-
 mod state;
 pub use state::{HasAuthorization, HasPersistence, HasSecureIdentity, ReadObjectError, StackState, UpdateObjectError};
 
@@ -61,8 +47,6 @@ pub use runner::{Runner, new};
 
 mod stack_handle;
 pub use stack_handle::Stack;
-
-pub use zweidraehte_proto::error;
 
 pub(crate) mod logging;
 

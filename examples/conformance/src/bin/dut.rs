@@ -21,7 +21,7 @@ use zweidraehte_conformance::harness::stack::{
     ConformanceMemoryMap, ConformancePersistedState, ConformanceStateConfig, IpcConformanceTestStack, device_info,
 };
 
-use zweidraehte_device::messages::buffers::{BufferManager, DynBufferManager};
+use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_device::objects::interface::HasDeviceObject;
 use zweidraehte_device::restart::EraseCode;
 use zweidraehte_device::{Runner, Stack, StackResources};

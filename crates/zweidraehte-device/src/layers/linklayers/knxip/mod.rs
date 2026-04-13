@@ -12,12 +12,11 @@ use crate::{
     },
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
-    },
-    messages::{
+    }};
+use zweidraehte_proto::messages::{
         buffers::Buffer,
         builder::IndicationMessage,
-    },
-};
+    };
 
 pub(crate) mod connections;    // Connection-oriented state machines
 pub mod context;               // IP-specific context traits

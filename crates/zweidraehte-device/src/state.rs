@@ -5,8 +5,8 @@
 //! providing individual address, serial number, authorization, and
 //! programming mode. It has no dependency on KNX/IP.
 
-use crate::access::{AccessContext, HasConnectionAuth};
-use crate::address::IndividualAddress;
+use zweidraehte_proto::access::{AccessContext, HasConnectionAuth};
+use zweidraehte_proto::address::IndividualAddress;
 use crate::bcus::system_b::HasDiagnosticsContext;
 use crate::device_model::DeviceModelNotifier;
 use crate::objects::{

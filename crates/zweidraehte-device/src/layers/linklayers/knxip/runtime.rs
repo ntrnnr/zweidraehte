@@ -8,14 +8,13 @@ use heapless::Vec;
 use zweidraehte_platform::IpTransport;
 
 use crate::{
-    layers::Inbox,
-    messages::{
+    layers::Inbox};
+use zweidraehte_proto::messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::*,
         knxip::*,
-    },
-};
+    };
 
 use super::{
     KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ServerError,
@@ -156,8 +155,8 @@ where
                 for (channel_id, target) in ack_result.disconnects {
                     // Build and send DISCONNECT_REQUEST to the client's
                     // control endpoint.
-                    use crate::messages::knxip::substructs::HPAI;
-                    use crate::util::packets::SerializeBuffer;
+                    use zweidraehte_proto::messages::knxip::substructs::HPAI;
+                    use zweidraehte_proto::util::packets::SerializeBuffer;
 
                     if let Some(mut buffer) = buffer_manager.try_alloc() {
                         let control_hpai = HPAI::ipv4_udp(core::net::Ipv4Addr::UNSPECIFIED, 0);
@@ -306,7 +305,7 @@ where
                         ServiceType::L_Data_Req if F::Routing::supports_requests() => {
                             debug!("KnxNetIp Link Layer sending L_Data_Req: {:?}", msg);
 
-                            let mut addr_buf2 = [crate::address::IndividualAddress::default();
+                            let mut addr_buf2 = [zweidraehte_proto::address::IndividualAddress::default();
                                 <F::Tunneling as features::TunnelingFeature>::CAPACITY];
                             let addr_count2 =
                                 crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(

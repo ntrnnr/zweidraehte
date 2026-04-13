@@ -2,9 +2,9 @@
 
 use heapless::Vec;
 
-use crate::messages::buffers::{Buffer, DynBufferManager};
-use crate::messages::knxip::substructs::{CRI, ConnectionType};
-use crate::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
+use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use zweidraehte_proto::messages::knxip::substructs::{CRI, ConnectionType};
+use zweidraehte_proto::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
 
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::context::ConnectionContext;
@@ -16,7 +16,7 @@ use super::context::ConnectionContext;
 /// Result of a successfully accepted connection.
 pub struct AcceptedConnection {
     /// CRD to include in the ConnectResponse.
-    pub crd: crate::messages::knxip::substructs::CRD,
+    pub crd: zweidraehte_proto::messages::knxip::substructs::CRD,
 }
 
 /// What the connection manager should do after a handler processes a data frame.
@@ -133,7 +133,7 @@ pub trait ConnectionHandlers<const N: usize = 0> {
         &self,
     ) -> Option<(
         u16,
-        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
+        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )>;
 
     /// Determine which active tunnel channels should receive a forwarded

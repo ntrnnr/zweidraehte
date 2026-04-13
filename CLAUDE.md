@@ -41,9 +41,11 @@ cross/                     Embedded targets (separate workspace)
 ### Coding style
 
 - Don't assume std or even alloc in the core crates, we need to run on embedded devices
+- Try to prevent dynamic dispatch: Rely on compile-time composable and monomorphizable types
 - If you see common patterns, implement new features using these patterns in case they fit instead of inventing new ones
-- When generating packets, use the existing packet generation infrastructure in `zweidraehte_device::messages`
-- When parsing packets, use the existing packet parsing infrastructure in `zweidraehte_device::messages`
+- When generating packets, use the existing packet generation infrastructure in `zweidraehte_proto::messages`
+- When parsing packets, use the existing packet parsing infrastructure in `zweidraehte_proto::messages`
+- When using foreign parts from one of our local crates, add a use statement, don't litter the code with full paths of types
 
 ### Crates
 

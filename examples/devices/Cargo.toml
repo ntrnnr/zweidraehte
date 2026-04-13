@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false }
+zweidraehte-proto = { path = "../../crates/zweidraehte-proto", default-features = false }
 zweidraehte-util = { path = "../../crates/zweidraehte-util" }
 const-default = { workspace = true }
 serde = { workspace = true }
@@ -16,8 +17,8 @@ embassy-time.workspace = true
 default = []
 knxprod = ["dep:zweidraehte-knxprod"]
 gen = ["knxprod", "dep:env_logger"]
-defmt = ["zweidraehte-device/defmt"]
-log = ["zweidraehte-device/log"]
+defmt = ["zweidraehte-device/defmt", "zweidraehte-proto/defmt"]
+log = ["zweidraehte-device/log", "zweidraehte-proto/log"]
 
 [[bin]]
 name = "gen_light_switch_mtxml"

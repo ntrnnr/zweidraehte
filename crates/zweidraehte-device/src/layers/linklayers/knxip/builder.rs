@@ -6,13 +6,12 @@ use heapless::Vec;
 use zweidraehte_platform::{IpTransport, TcpListenerOptions};
 
 use crate::{
-    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
-    messages::{
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase}};
+use zweidraehte_proto::messages::{
         buffers::Buffer,
         builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
         knxip::substructs,
-    },
-};
+    };
 
 use super::runtime::KnxNetIp;
 use super::{

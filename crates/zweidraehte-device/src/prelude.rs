@@ -5,11 +5,10 @@
 //! ```
 
 // Core stack
-pub use crate::{
-    AccessContext, HasAuthorization, HasPersistence, HasSecureIdentity, InsecureDeviceBuilder,
+pub use crate::{ HasAuthorization, HasPersistence, HasSecureIdentity, InsecureDeviceBuilder,
     ReadObjectError, Runner, SecureDeviceBuilder, Stack, StackDefinition, StackResources,
-    StackState, StandardDeviceLayers, StandardLayerStack, StandardSecureDeviceLayers, UpdateObjectError,
-};
+    StackState, StandardDeviceLayers, StandardLayerStack, StandardSecureDeviceLayers, UpdateObjectError};
+use zweidraehte_proto::AccessContext;
 
 // KNX/IP-specific types
 #[cfg(feature = "knxip")]
@@ -22,7 +21,7 @@ pub use crate::layers::transport::cemi::{
 };
 
 // Addressing
-pub use crate::address::{GroupAddress, IndividualAddress};
+pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 // Device identity and ETS derive macros
 pub use crate::ets::{DeviceDescriptor, EtsComObjects, EtsEnum, EtsParams, EtsUnion, MaskVersion};

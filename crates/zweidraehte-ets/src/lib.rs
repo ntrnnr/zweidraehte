@@ -1744,7 +1744,7 @@ fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 ///
 /// ```rust,ignore
 /// use zweidraehte_ets::EtsComObjects;
-/// use zweidraehte_device::dpt::*;
+/// use zweidraehte_proto::dpt::*;
 ///
 /// #[derive(EtsComObjects)]
 /// pub struct MyComObjects {

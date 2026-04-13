@@ -1,6 +1,6 @@
 use core::cell::RefCell;
 
-use crate::dpt::DatapointType;
+use zweidraehte_proto::dpt::DatapointType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]

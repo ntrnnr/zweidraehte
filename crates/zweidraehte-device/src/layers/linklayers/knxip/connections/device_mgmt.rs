@@ -8,19 +8,19 @@ use embassy_time::Instant;
 
 use embassy_sync::channel::DynamicSender;
 
-use crate::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
+use zweidraehte_proto::encoding::cemi::{CemiLocalMgmt, CemiMessageCode};
 use crate::layers::transport::cemi::CemiEvent;
-use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
-use crate::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
-use crate::messages::knxip::{
+use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
+use zweidraehte_proto::messages::knxip::substructs::{CRD, CRI, DeviceManagementCRD};
+use zweidraehte_proto::messages::knxip::{
     ConnectionStatus, DeviceConfigurationAck, DeviceConfigurationAckBuilder, DeviceConfigurationRequest,
     DeviceConfigurationRequestBuilder, KNXnetIPServiceType,
 };
-use crate::AccessContext;
+use zweidraehte_proto::AccessContext;
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, PropertyServiceHandler,
 };
-use crate::util::packets::{ParseBuffer, SerializeBuffer};
+use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::types::{PendingResponse, ServerError};
 use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction, PendingAck};

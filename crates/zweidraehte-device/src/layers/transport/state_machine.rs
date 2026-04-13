@@ -29,7 +29,7 @@
 //!                              ActionBuffer<TlAction>
 //! ```
 
-use crate::address::IndividualAddress;
+use zweidraehte_proto::address::IndividualAddress;
 
 use super::connection::{Connection, ConnectionState};
 

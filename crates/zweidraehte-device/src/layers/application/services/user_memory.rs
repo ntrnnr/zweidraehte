@@ -16,14 +16,13 @@ use crate::{
     layer_context::HasOutbox,
     layers::application::services::{AlServiceContext, AlService},
     memory::MemoryMap,
-    messages::{
+    objects::interface::HasDeviceObject};
+use zweidraehte_proto::messages::{
         apdu::memory::{UserMemoryAccess, UserMemoryResponse},
         buffers::Buffer,
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
-    },
-    objects::interface::HasDeviceObject,
-};
+    };
 
 use crate::logging::{debug, error, warn};
 

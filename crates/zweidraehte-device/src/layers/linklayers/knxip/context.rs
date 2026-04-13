@@ -1,7 +1,7 @@
 //! Context traits for KNX/IP link layer and services.
 
-use crate::address::IndividualAddress;
-use crate::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 
 /// Provides access to dynamic device information for KNX/IP discovery.
 ///
@@ -38,10 +38,10 @@ pub trait DeviceInfoContext {
 /// device state and platform for current network configuration.
 pub trait IpDiagnosticsContext {
     /// Build an `IpConfig` DIB from configured (ETS-programmed) values.
-    fn ip_config(&self) -> crate::messages::knxip::substructs::IpConfig;
+    fn ip_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpConfig;
 
     /// Build an `IpCurrentConfig` DIB from the platform's current state.
-    fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig;
+    fn ip_current_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig;
 }
 
 /// Provides additional KNX individual addresses for IP tunneling use-cases.

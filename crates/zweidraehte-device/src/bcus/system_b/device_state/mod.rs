@@ -13,9 +13,7 @@ use core::cell::{Cell, RefCell};
 
 use const_default::ConstDefault;
 
-use crate::{
-    AccessContext, MAX_ACCESS_LEVELS, NUM_AUTH_KEYS, StackDefinition, StackState,
-    address::IndividualAddress,
+use crate::{ StackDefinition, StackState,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
         comm::{ComObjects, HasCommObjects},
@@ -28,8 +26,11 @@ use crate::{
             asso6::AssoTab6Impl,
             co7::CoTab7Impl,
         },
-    },
-};
+    }};
+use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::MAX_ACCESS_LEVELS;
+use zweidraehte_proto::NUM_AUTH_KEYS;
+use zweidraehte_proto::address::IndividualAddress;
 
 use super::{
     DiagnosticsContext, ExtensionState, HasDiagnosticsContext, HasPersistedState, HasSecurityMode, OperationModeState,
@@ -200,7 +201,7 @@ pub struct SystemBDeviceState<
     /// Per-connection access levels. Written by the AL (authorize), read by
     /// both AL and TL. Not persisted — resets to `MIN_ACCESS` on each
     /// connection open.
-    access_store: crate::ConnectionAuthLevels<MAX_CONN>,
+    access_store: zweidraehte_proto::ConnectionAuthLevels<MAX_CONN>,
 
     // ========================================================================
     // Dirty Tracking
@@ -267,7 +268,7 @@ impl<
             comm_objs: RefCell::new(comm_objs),
             co_hook_context: hook_context,
             operation_mode: OperationModeState::new(30),
-            access_store: crate::ConnectionAuthLevels::new(),
+            access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
             extension_state: ES::from_config(ES::Config::default()),
             dirty: Cell::new(false),
             dm_slot: DmNotificationSlot::new(),
@@ -496,7 +497,7 @@ impl<
             comm_objs: RefCell::new(D::CO::new()),
             co_hook_context: Default::default(),
             operation_mode: OperationModeState::new(30),
-            access_store: crate::ConnectionAuthLevels::new(),
+            access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
             extension_state: ES::from_config(extension_config),
             dirty: Cell::new(false),
             dm_slot: DmNotificationSlot::new(),
@@ -836,13 +837,13 @@ impl<
     D: StackDefinition,
     ES: ExtensionState,
     const MAX_CONN: usize,
-> crate::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
+> zweidraehte_proto::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
-    fn connection_access(&self, slot: u8) -> crate::AccessContext {
+    fn connection_access(&self, slot: u8) -> zweidraehte_proto::AccessContext {
         self.access_store.get(slot)
     }
 
-    fn set_connection_access(&self, slot: u8, ctx: crate::AccessContext) {
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_proto::AccessContext) {
         self.access_store.set(slot, ctx);
     }
 

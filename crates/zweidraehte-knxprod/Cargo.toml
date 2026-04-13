@@ -8,6 +8,7 @@ description = "KNX product definition generator - schema, generator, and page la
 
 [dependencies]
 zweidraehte-device = { path = "../zweidraehte-device" }
+zweidraehte-proto = { path = "../zweidraehte-proto" }
 
 serde = { workspace = true }
 chrono = { workspace = true }

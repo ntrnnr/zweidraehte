@@ -1283,7 +1283,7 @@ pub fn process_busmon_event(ctx: &mut BusMonitorContext, event: BusMonitorEvent)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encoding::tp1::{calculate_tp1_checksum, validate_tp1_checksum};
+    use zweidraehte_proto::encoding::tp1::{calculate_tp1_checksum, validate_tp1_checksum};
 
     #[test]
     fn test_init_to_reset() {

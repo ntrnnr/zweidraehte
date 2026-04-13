@@ -12,11 +12,11 @@
 
 use crate::{
     StackState,
-    address::{GroupAddress, IndividualAddress},
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService},
-    messages::{
+    layers::application::services::{AlServiceContext, AlService}};
+use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::messages::{
         apdu::device::{
             IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse,
             IndividualAddressSerialNumberWrite,
@@ -24,8 +24,7 @@ use crate::{
         buffers::Buffer,
         builder::MessageBuilder,
         knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
-    },
-};
+    };
 
 use crate::logging::{debug, error, trace, warn};
 
@@ -120,7 +119,7 @@ fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx
     }
 
     // Access policy 3FF/00C.
-    use crate::access::AccessPolicy;
+    use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.state.security_mode_enabled();
     if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access_ctx, security_on) {
         debug!("AL IndividualAddressSerialNumberWrite denied by access policy");

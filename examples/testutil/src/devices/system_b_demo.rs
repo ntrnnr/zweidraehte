@@ -61,7 +61,7 @@ use zweidraehte_device::bcus::system_b::{
     HasPersistedState, IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap,
     SystemBStackDefinition, create_system_b_objects_from_extension,
 };
-use zweidraehte_device::dpt::*;
+use zweidraehte_proto::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;

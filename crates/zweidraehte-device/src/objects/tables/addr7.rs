@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zerocopy::big_endian::U16;
 
-use crate::address::GroupAddress;
+use zweidraehte_proto::address::GroupAddress;
 
 use super::{AddressTable, Table, TableMemory};
 
@@ -95,9 +95,8 @@ pub type AddrTab7<const MAX_ENTRIES: usize> = Table<AddrTab7Impl<{ (MAX_ENTRIES 
 #[cfg(test)]
 mod test {
     use crate::{
-        address::GroupAddress as KNXGroupAddress,
-        objects::tables::{LoadEvent, LoadState, HasLoadStateMachine, TableMemory},
-    };
+        objects::tables::{LoadEvent, LoadState, HasLoadStateMachine, TableMemory}};
+use zweidraehte_proto::address::GroupAddress as KNXGroupAddress;
 
     use super::AddrTab7;
 

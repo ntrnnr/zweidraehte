@@ -9,9 +9,9 @@
 //! [`ConnectionHandlers`] implementation that dispatches by
 //! `CONNECTION_TYPE` constant.
 
-use crate::messages::buffers::DynBufferManager;
-use crate::messages::knxip::substructs::{CRI, ConnectionType};
-use crate::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
+use zweidraehte_proto::messages::buffers::DynBufferManager;
+use zweidraehte_proto::messages::knxip::substructs::{CRI, ConnectionType};
+use zweidraehte_proto::messages::knxip::{ConnectionStatus, KNXnetIPServiceType};
 
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::{
@@ -72,7 +72,7 @@ pub trait TunnelingConnectedHandler<const N: usize = 0>: ConnectedHandler {
         h: &Self::Handler<'_>,
     ) -> Option<(
         u16,
-        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
+        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )>;
 
     fn channels_for_bus_indication(
@@ -214,7 +214,7 @@ impl<const N: usize> TunnelingConnectedHandler<N> for WithTunnel<N> {
         h: &Self::Handler<'_>,
     ) -> Option<(
         u16,
-        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
+        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )> {
         let (apdu_len, slots) = h.slot_info();
         Some((apdu_len, slots))
@@ -281,7 +281,7 @@ impl TunnelingConnectedHandler<0> for NoTunnel {
         _h: &Self::Handler<'_>,
     ) -> Option<(
         u16,
-        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, 0>,
+        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, 0>,
     )> {
         None
     }
@@ -403,7 +403,7 @@ impl<const N: usize, DM: ConnectedHandler, TUN: TunnelingConnectedHandler<N>> Co
         &self,
     ) -> Option<(
         u16,
-        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
+        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )> {
         TUN::tunneling_slot_info(&self.tunnel)
     }

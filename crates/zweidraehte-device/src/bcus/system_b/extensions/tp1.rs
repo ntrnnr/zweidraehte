@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
-use crate::dpt::{InterfaceObjectType, PDT_Generic01};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 use crate::objects::interface::{
     AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment,
     PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,

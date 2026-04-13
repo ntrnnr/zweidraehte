@@ -12,14 +12,13 @@
 use crate::{
     definition::StackDefinition,
     layer_context::HasOutbox,
-    layers::application::services::{AlServiceContext, AlService},
-    messages::{
+    layers::application::services::{AlServiceContext, AlService}};
+use zweidraehte_proto::messages::{
         apdu::device::{AdcRead, AdcResponse},
         buffers::Buffer,
         builder::IndicationExt,
         knx::{ApciCode, KnxMessageBuffer, ServiceType},
-    },
-};
+    };
 
 use crate::logging::{debug, error, warn};
 

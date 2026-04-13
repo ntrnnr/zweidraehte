@@ -29,7 +29,7 @@ use zweidraehte_proto::dpt::PDT_Control;
 
 use crate::StackState;
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier};
-use crate::dpt::{
+use zweidraehte_proto::dpt::{
     DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06,
     PDT_Generic08, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PDT_Version, ProgrammingMode,
     PropertyDataDefinition, RoutingCount,
@@ -262,7 +262,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     /// READ_OPEN_WRITE_TOOL (3FF/0CC) is the implicit default. The RESTRICTED
     /// policy only applies to the Security IO's LOAD_STATE_CONTROL (§9.1.2.6.4).
     fn property_descriptors() -> [PropertyDescriptor; 7] {
-        use crate::access::AccessPolicy;
+        use zweidraehte_proto::access::AccessPolicy;
         [
             PropertyDescriptor::with_policy(
                 pid::OBJECT_TYPE,
@@ -471,7 +471,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
     /// Access levels per Profiles spec Annex A.2.7 (mask 57B0h).
     /// Note: PEI_TYPE (PID 14) is omitted since it's not used for the PEI object itself.
     fn property_descriptors() -> [PropertyDescriptor; 4] {
-        use crate::access::AccessPolicy;
+        use zweidraehte_proto::access::AccessPolicy;
         [
             PropertyDescriptor::with_policy(
                 pid::OBJECT_TYPE,
@@ -670,7 +670,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
     /// LOAD_STATE_CONTROL write level is 1 for System B table objects.
     /// TABLE and TABLE_REFERENCE are writable during loading only.
     fn property_descriptors() -> [PropertyDescriptor; 5] {
-        use crate::access::AccessPolicy;
+        use zweidraehte_proto::access::AccessPolicy;
         [
             PropertyDescriptor::with_policy(
                 pid::OBJECT_TYPE,
@@ -1237,7 +1237,7 @@ impl SecurityInterfaceObject {
     /// Access policies are set per KNX spec 03/04/01 Table 3 and
     /// 03/05/01 section 6.3.
     const DESCRIPTORS: &'static [PropertyDescriptor] = {
-        use crate::access::AccessPolicy;
+        use zweidraehte_proto::access::AccessPolicy;
         &[
             // PID_OBJECT_TYPE (1): always readable
             PropertyDescriptor::with_policy(

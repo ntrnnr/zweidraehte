@@ -770,7 +770,7 @@ ETS metadata generation AND runtime storage:
 ```rust
 use ets_macros::EtsComObjects;
 use zweidraehte_device::objects::comm::{ComObject, ComObjectStorage};
-use zweidraehte_device::dpt::*;
+use zweidraehte_proto::dpt::*;
 
 #[derive(EtsComObjects)]
 pub struct DimmerChannelObjects {

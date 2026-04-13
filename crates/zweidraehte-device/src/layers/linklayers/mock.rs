@@ -6,14 +6,13 @@ use embassy_sync::{
 };
 
 use crate::{
-    encoding::tp1,
-    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
-    messages::{
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase}};
+use zweidraehte_proto::encoding::tp1;
+use zweidraehte_proto::messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::*,
-    },
-};
+    };
 
 /// A mock link layer that allows injecting messages via a channel
 ///

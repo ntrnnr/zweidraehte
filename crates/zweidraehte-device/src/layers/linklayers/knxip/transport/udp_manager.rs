@@ -18,7 +18,7 @@ use heapless::Vec;
 
 use zweidraehte_platform::{AsyncUdpSocket, IpTransport, UdpSocketOptions};
 
-use crate::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
+use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 
 use super::super::EndpointType;
 

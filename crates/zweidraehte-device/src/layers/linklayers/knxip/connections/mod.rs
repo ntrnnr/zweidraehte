@@ -52,15 +52,15 @@ use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant};
 use heapless::Vec;
 
-use crate::messages::buffers::{Buffer, DynBufferManager};
-use crate::messages::builder::IndicationMessage;
-use crate::messages::knx::{CemiFormat, KnxMessageBuffer};
-use crate::messages::knxip::substructs::{CRD, ConnectionType, HPAI};
-use crate::messages::knxip::{
+use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager};
+use zweidraehte_proto::messages::builder::IndicationMessage;
+use zweidraehte_proto::messages::knx::{CemiFormat, KnxMessageBuffer};
+use zweidraehte_proto::messages::knxip::substructs::{CRD, ConnectionType, HPAI};
+use zweidraehte_proto::messages::knxip::{
     ConnectRequest, ConnectResponseBuilder, ConnectionStatus, ConnectionstateRequest, ConnectionstateResponseBuilder,
     DisconnectRequest, DisconnectResponseBuilder, KNXnetIPServiceType,
 };
-use crate::util::packets::{ParseBuffer, SerializeBuffer};
+use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::types::{PacketOrigin, PendingResponse, ResponseTarget, ServerError, resolve_hpai};
 use traits::MAX_RESPONSES;
@@ -113,7 +113,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
     /// Handle an incoming KNX/IP message for a connection-oriented service.
     ///
     /// The caller must only pass service types with category
-    /// [`ServiceCategory::ConnectionLifecycle`](crate::messages::knxip::ServiceCategory::ConnectionLifecycle) or [`ServiceCategory::ConnectionData`](crate::messages::knxip::ServiceCategory::ConnectionData).
+    /// [`ServiceCategory::ConnectionLifecycle`](zweidraehte_proto::messages::knxip::ServiceCategory::ConnectionLifecycle) or [`ServiceCategory::ConnectionData`](zweidraehte_proto::messages::knxip::ServiceCategory::ConnectionData).
     /// Connectionless service types are handled separately by the server instances.
     ///
     /// Connection lifecycle messages (Connect, Disconnect, Connectionstate) are
@@ -413,8 +413,8 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         internal_buf: &Buffer<'static>,
         buffer_manager: &DynBufferManager<'static>,
     ) -> Option<PendingResponse> {
-        use crate::encoding::cemi::{CemiMessageCode, CemiTransportBuilder};
-        use crate::messages::knxip::DeviceConfigurationRequestBuilder;
+        use zweidraehte_proto::encoding::cemi::{CemiMessageCode, CemiTransportBuilder};
+        use zweidraehte_proto::messages::knxip::DeviceConfigurationRequestBuilder;
 
         // Find the active Device Management connection.
         let conn = self.connections.iter_mut().flatten().find(
@@ -485,7 +485,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize>
         &self,
     ) -> Option<(
         u16,
-        heapless::Vec<crate::messages::knxip::substructs::TunnelingSlotInfo, N>,
+        heapless::Vec<zweidraehte_proto::messages::knxip::substructs::TunnelingSlotInfo, N>,
     )> {
         self.handlers.tunneling_slot_info()
     }

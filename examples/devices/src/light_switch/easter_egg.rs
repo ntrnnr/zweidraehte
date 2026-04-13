@@ -21,7 +21,7 @@
 //! ```
 
 use zweidraehte_device::StackDefinition;
-use zweidraehte_device::dpt::{InterfaceObjectType, PDT_Function};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_device::objects::interface::{
     AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
     PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,

@@ -8,31 +8,30 @@
 //!   response with the same key before forwarding to the TL.
 //!
 //! [`ApplicationLayer`]: crate::layers::application::ApplicationLayer
-//! [`AccessContext`]: crate::access::AccessContext
+//! [`AccessContext`]: zweidraehte_proto::access::AccessContext
 
 use core::cell::{Cell, RefCell};
 
 use crate::{
     HasSecureIdentity, StackState,
-    access::{AccessContext, AccessSource, ClientRole, SecurityMode},
     bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
-    crypto::{
-        ccm,
-        scf::{SecureServiceType, SecurityControlField},
-    },
     definition::StackDefinition,
     layer_context::HasOutbox,
     layers::application::ApplicationLayer,
-    messages::{
-        apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef},
-        buffers::{Buffer, MessageBuffer},
-        knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
-    },
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
     router::Layer,
-    storage::SequenceNumberStorage,
-};
+    storage::SequenceNumberStorage};
+use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};
+use zweidraehte_proto::crypto::{
+        ccm,
+        scf::{SecureServiceType, SecurityControlField},
+    };
+use zweidraehte_proto::messages::{
+        apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef},
+        buffers::{Buffer, MessageBuffer},
+        knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
+    };
 
 use crate::logging::warn;
 

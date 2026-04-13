@@ -12,20 +12,19 @@
 
 use crate::{
     StackState,
-    address::GroupAddress,
     definition::StackDefinition,
     layer_context::HasOutbox,
     layers::application::services::{AlServiceContext, AlService},
-    messages::{
+    objects::interface::HasDomainAddress};
+use zweidraehte_proto::address::GroupAddress;
+use zweidraehte_proto::messages::{
         apdu::device::{
             DomainAddressSerialNumberRead, DomainAddressSerialNumberResponse, DomainAddressSerialNumberWrite,
         },
         buffers::Buffer,
         builder::MessageBuilder,
         knx::{ApciCode, DestinationAddress, KnxMessageBuffer, ServiceType},
-    },
-    objects::interface::HasDomainAddress,
-};
+    };
 
 use crate::logging::{debug, error, trace, warn};
 
@@ -184,7 +183,7 @@ fn handle_domain_address_serial_number_write<D>(
 
     // Access policy 3FF/00C: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
-    use crate::access::AccessPolicy;
+    use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.state.security_mode_enabled();
     if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access_ctx, security_on) {
         debug!("AL DomainAddressSerialNumberWrite denied by access policy");

@@ -14,13 +14,12 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant};
 use crate::{
-    layers::linklayers::knxip::context::IpDiagnosticsContext,
-    messages::{
+    layers::linklayers::knxip::context::IpDiagnosticsContext};
+use zweidraehte_proto::messages::{
         buffers::Buffer,
         builder::{ConfirmationExt, IndicationMessage, RequestMessage},
         knxip::*,
-    },
-};
+    };
 
 use super::{
     KnxNetIpContext, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError,
@@ -66,7 +65,7 @@ pub(super) const MAX_RETRY_ATTEMPTS: u8 = 5;
 pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
     context: &'a dyn KnxNetIpContext,
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
-    additional_addresses: &'a [crate::address::IndividualAddress],
+    additional_addresses: &'a [zweidraehte_proto::address::IndividualAddress],
     tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
     address_filter: Option<&'a dyn super::types::AddressFilter>,
 ) -> ServerContext<'a> {
@@ -125,7 +124,7 @@ where
 
                 debug!("Retrying message (attempt {}/{})", pending.retry_count + 1, MAX_RETRY_ATTEMPTS);
 
-                let mut addr_buf = [crate::address::IndividualAddress::default();
+                let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default();
                     <F::Tunneling as features::TunnelingFeature>::CAPACITY];
                 let addr_count =
                     crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
@@ -209,7 +208,7 @@ where
                 // Enforce traffic type constraints: certain service types
                 // must only arrive via unicast or multicast.
                 {
-                    use crate::messages::knxip::TrafficRule;
+                    use zweidraehte_proto::messages::knxip::TrafficRule;
                     let rule = service_type.traffic_rule();
 
                     match &origin {
@@ -300,7 +299,7 @@ where
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
         let mut addr_buf =
-            [crate::address::IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+            [zweidraehte_proto::address::IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
         let addr_count = crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
             self.context,
             &mut addr_buf,

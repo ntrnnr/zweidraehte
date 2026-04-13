@@ -10,19 +10,18 @@ use embassy_time::{Duration, TimeoutError, with_timeout};
 use crate::{
     ReadObjectError, StackState, UpdateObjectError,
     actor::{ActorRequest, Request},
-    address::IndividualAddress,
     definition::StackDefinition,
     inner::Inner,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
-    messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects, LifecycleEvent},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
     },
-    restart,
-};
+    restart};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 
 use embassy_sync::channel::DynamicReceiver;
 
@@ -122,7 +121,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Example
     /// ```rust,ignore
     /// # async fn example(stack: zweidraehte_device::Stack<'_, MyStackDef>, switch_index: MyComObjectIndex) {
-    /// use zweidraehte_device::dpt::DPT_Switch;
+    /// use zweidraehte_proto::dpt::DPT_Switch;
     ///
     /// // Update a boolean switch object
     /// if stack.update_object(switch_index, DPT_Switch::from(true)).await.is_ok() {
@@ -476,7 +475,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// #     stack: zweidraehte_device::Stack<'_, MyStackDef>,
     /// #     mock_ll: zweidraehte_device::layers::linklayers::mock::MockLinkLayerHandle
     /// # ) {
-    /// use zweidraehte_device::messages::knx::ServiceType;
+    /// use zweidraehte_proto::messages::knx::ServiceType;
     ///
     /// // Allocate a message buffer
     /// let msg = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81]).await;
@@ -487,7 +486,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// ```
     pub async fn alloc_message(&self, msg: &[u8]) -> KnxMessageBuffer<Buffer<'static>> {
         let buffer = self.inner.layer_context.buffer_manager.alloc_from_slice(msg).await;
-        KnxMessageBuffer::new(buffer, crate::messages::knx::ServiceType::L_Data_Ind)
+        KnxMessageBuffer::new(buffer, zweidraehte_proto::messages::knx::ServiceType::L_Data_Ind)
     }
 
     /// Get the device's individual address.

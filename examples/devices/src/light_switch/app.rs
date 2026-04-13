@@ -23,7 +23,7 @@ pub use zweidraehte_util::input::{ButtonEvent, WaitForRelease};
 
 use super::comm_objs::{Index, LightSwitchComObjects};
 use super::params::{ButtonConfig, ButtonsMode, LightSwitchParams, RockerDirection, SwitchAction};
-use zweidraehte_device::dpt::*;
+use zweidraehte_proto::dpt::*;
 use zweidraehte_device::prelude::*;
 
 // ============================================================================

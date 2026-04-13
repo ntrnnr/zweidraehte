@@ -4,7 +4,7 @@
 //! Layers depend only on the specific context traits they need, making them
 //! easier to test and more modular.
 
-use crate::messages::buffers::DynBufferManager;
+use zweidraehte_proto::messages::buffers::DynBufferManager;
 use crate::objects::interface::PropertyServiceHandler;
 
 /// Provides access to the buffer manager for allocating and freeing message buffers.
@@ -66,7 +66,7 @@ pub trait MaxRetryCountContext {
 /// Provides the KNX primary individual address.
 pub trait KnxIndividualAddressContext {
     /// The device's primary individual address.
-    fn individual_address(&self) -> crate::address::IndividualAddress;
+    fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress;
 }
 
 /// Provides access to the device's address table for ACK decisions.

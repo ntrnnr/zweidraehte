@@ -81,7 +81,7 @@ pub struct RestartRequest {
     /// Channel number (usually 0 for all channels, used by multi-channel devices).
     pub channel: u8,
     /// Access context of the requester.
-    pub access_ctx: crate::AccessContext,
+    pub access_ctx: zweidraehte_proto::AccessContext,
     /// Whether an A_Restart_Response should be sent.
     ///
     /// This is true for master reset requests (erase codes 0x01-0x07)

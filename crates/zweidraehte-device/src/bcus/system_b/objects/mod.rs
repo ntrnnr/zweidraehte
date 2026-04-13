@@ -33,14 +33,13 @@ use core::cell::RefCell;
 use crate::{
     StackState,
     device_model::DeviceModelNotifier,
-    dpt::{InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt, RoutingCount},
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
         InterfaceObject, InterfaceObjectAugment, PeiProgramObject, PropertyAccess, PropertyDescriptor, PropertyError,
         pid,
     },
-    objects::tables::{HasLoadStateMachine, HasRunStateMachine},
-};
+    objects::tables::{HasLoadStateMachine, HasRunStateMachine}};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt, RoutingCount};
 
 use crate::StackDefinition;
 use crate::layer_context::LayerContext;

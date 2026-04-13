@@ -39,14 +39,14 @@
 
 use embassy_time::Instant;
 
-use crate::address::IndividualAddress;
-use crate::messages::buffers::DynBufferManager;
-use crate::messages::knxip::substructs::{CRD, CRI, TunnelingCRD, TunnelingLayer, TunnelingSlotInfo};
-use crate::messages::knxip::{
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::buffers::DynBufferManager;
+use zweidraehte_proto::messages::knxip::substructs::{CRD, CRI, TunnelingCRD, TunnelingLayer, TunnelingSlotInfo};
+use zweidraehte_proto::messages::knxip::{
     ConnectionStatus, KNXnetIPServiceType, TunnelingAck, TunnelingAckBuilder, TunnelingFeatureGet,
     TunnelingFeatureResponseBuilder, TunnelingFeatureSet, TunnelingRequest, TunnelingRequestBuilder,
 };
-use crate::util::packets::{ParseBuffer, SerializeBuffer};
+use zweidraehte_proto::util::packets::{ParseBuffer, SerializeBuffer};
 
 use super::super::types::{PendingResponse, ResponseTarget, ServerError};
 use super::{AcceptedConnection, ConnectionContext, ConnectionTransport, ConnectionTypeHandler, DataFrameAction};
@@ -64,7 +64,7 @@ struct TunnelSlot {
     active_channel: Option<u8>,
 }
 
-use crate::messages::knxip::tunneling_feature_id as feature_id;
+use zweidraehte_proto::messages::knxip::tunneling_feature_id as feature_id;
 
 // ============================================================================
 // Handler

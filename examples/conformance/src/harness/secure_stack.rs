@@ -12,17 +12,13 @@ use core::cell::{Cell, RefCell};
 
 use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, OperationModeState};
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::{
-    AccessContext, HasConnectionAuth, StackDefinition,
-    access::{AccessPolicy, ClientRole, SecurityMode},
-    address::IndividualAddress,
+use zweidraehte_device::{ StackDefinition,
     bcus::system_b::{
         DefaultSystemBInterfaceObjects, HasExtensionState, HasPersistedState, HasSecurityMode, PersistedState,
         SecureExtensionConfig, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
         create_system_b_objects_with_extra,
     },
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition},
     layer_context::LayerContext,
     memory::MemoryMap,
     objects::interface::{
@@ -34,8 +30,12 @@ use zweidraehte_device::{
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
         HasLoadStateMachine, HasPeiApplication, LoadEvent,
     },
-    storage::StaticIdentity,
-};
+    storage::StaticIdentity};
+use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::HasConnectionAuth;
+use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition};
 
 use super::stack::{
     CONFORMANCE_DD2, CONFORMANCE_MEMORY_LAYOUT, CONFORMANCE_USER_MANUFACTURER_INFO, ConformanceHookContext,

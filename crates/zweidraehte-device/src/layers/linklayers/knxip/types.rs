@@ -10,11 +10,11 @@ use heapless::Vec;
 
 use core::cell::RefCell;
 
-use crate::address::IndividualAddress;
+use zweidraehte_proto::address::IndividualAddress;
 use crate::context::KnxIndividualAddressContext;
 use crate::layers::linklayers::knxip::context::{DeviceInfoContext, IpDiagnosticsContext};
-use crate::messages::knx::DestinationAddress;
-use crate::messages::{
+use zweidraehte_proto::messages::knx::DestinationAddress;
+use zweidraehte_proto::messages::{
     buffers::{Buffer, DynBufferManager},
     builder::IndicationMessage,
     knx::KnxMessageBuffer,
@@ -222,7 +222,7 @@ impl<'a> ServerContext<'a> {
 
     /// Get the device info context. Services can call
     /// `device_info().device_information()` to build a fresh
-    /// [`DeviceInformation`](crate::messages::knxip::substructs::DeviceInformation) reflecting the current device state.
+    /// [`DeviceInformation`](zweidraehte_proto::messages::knxip::substructs::DeviceInformation) reflecting the current device state.
     pub fn device_info(&self) -> &dyn DeviceInfoContext {
         self.device_info
     }
@@ -290,7 +290,7 @@ impl<'a> ServerContext<'a> {
 /// This supports NAT traversal scenarios where the client cannot know its
 /// externally visible address/port.
 pub(crate) fn resolve_hpai(
-    hpai: &crate::messages::knxip::substructs::HPAI,
+    hpai: &zweidraehte_proto::messages::knxip::substructs::HPAI,
     packet_source: SocketAddrV4,
 ) -> SocketAddrV4 {
     let addr = hpai.address();

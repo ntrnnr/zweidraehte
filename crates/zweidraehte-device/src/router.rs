@@ -13,8 +13,8 @@
 
 use embassy_time::Instant;
 
-use crate::messages::buffers::Buffer;
-use crate::messages::knx::{KnxMessageBuffer, ServiceType};
+use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 // ============================================================================
 // Layer Trait

@@ -229,7 +229,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use zweidraehte_device::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
+use zweidraehte_proto::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
 use zweidraehte_device::prelude::*;
 
 use zweidraehte_knxprod::definition::module::ModuleCollection;

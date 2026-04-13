@@ -14,17 +14,16 @@ use zerocopy::FromBytes;
 
 use crate::{
     IpPlatform, IpPlatformState, IpStackState, StackDefinition, StackState,
-    address::IndividualAddress,
-    dpt::{
-        InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt,
-        PropertyDataDefinition,
-    },
     objects::interface::{
         AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObjectAugment, Ipv4Property,
         PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
         StatePropertyValue, WriteResponse, pid,
-    },
-};
+    }};
+use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::dpt::{
+        InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt,
+        PropertyDataDefinition,
+    };
 
 use super::IpExtensionState;
 

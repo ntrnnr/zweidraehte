@@ -27,7 +27,8 @@ use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, SystemBDeviceState};
 use crate::layers::linklayers::knxip::features::{FeatureSet, TunnelingFeature};
 use crate::objects::interface::HasDomainAddress;
-use crate::{IpConfig, IpPlatformConfig, IpStackState, address::IndividualAddress};
+use crate::{IpConfig, IpPlatformConfig, IpStackState};
+use zweidraehte_proto::address::IndividualAddress;
 
 // ============================================================================
 // Persisted IP Config

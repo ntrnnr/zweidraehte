@@ -15,7 +15,7 @@
 
 use core::net::Ipv4Addr;
 
-use crate::address::IndividualAddress;
+use zweidraehte_proto::address::IndividualAddress;
 
 // ============================================================================
 // IpStackState — persisted/configured IP parameters

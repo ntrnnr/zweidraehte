@@ -15,13 +15,12 @@ use zweidraehte_conformance::harness::mock::MockLinkLayerBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
-    dpt::DPT_Switch,
     layer_context::LayerContext,
-    messages::{buffers::Buffer, knx::KnxMessageBuffer},
     objects::tables::{
         AddrTab7, AddressTable, Application, AssoTab6, AssociationTable, CoTab7, CommunicationObjectTable,
-    },
-};
+    }};
+use zweidraehte_proto::dpt::DPT_Switch;
+use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 
 #[derive(Debug, ConstDefault)]
 pub struct AppParameters {
@@ -71,7 +70,7 @@ pub struct MyState {
     /// Communication objects
     comm_objs: RefCell<comm_objs::AppComObjects>,
     /// Per-connection access level store
-    access_store: zweidraehte_device::ConnectionAuthLevels<1>,
+    access_store: zweidraehte_proto::ConnectionAuthLevels<1>,
     /// DeviceModel notification slot
     dm_slot: DmNotificationSlot,
 }
@@ -89,7 +88,7 @@ impl MyState {
             cot: RefCell::new(cot),
             app: RefCell::new(Application::new()),
             comm_objs: RefCell::new(comm_objs::AppComObjects::new()),
-            access_store: zweidraehte_device::ConnectionAuthLevels::<1>::new(),
+            access_store: zweidraehte_proto::ConnectionAuthLevels::<1>::new(),
             dm_slot: DmNotificationSlot::new(),
         }
     }
@@ -142,12 +141,12 @@ impl HasCommunicationObjectTable for MyState {
     }
 }
 
-impl zweidraehte_device::HasConnectionAuth for MyState {
-    fn connection_access(&self, slot: u8) -> zweidraehte_device::AccessContext {
+impl zweidraehte_proto::HasConnectionAuth for MyState {
+    fn connection_access(&self, slot: u8) -> zweidraehte_proto::AccessContext {
         self.access_store.get(slot)
     }
 
-    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_device::AccessContext) {
+    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_proto::AccessContext) {
         self.access_store.set(slot, ctx);
     }
 

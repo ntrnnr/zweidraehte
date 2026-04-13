@@ -11,10 +11,9 @@ use crate::{
     context::{BufferManagerContext, PropertyServiceContext},
     definition::StackDefinition,
     layer_context::LayerContext,
-    messages::buffers::DynBufferManager,
     objects::{comm::HasCommObjects, tables::HasAddressTable},
-    prelude::PropertyServiceHandler,
-};
+    prelude::PropertyServiceHandler};
+use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 // ============================================================================
 // APDU length clamping helper
@@ -148,11 +147,11 @@ impl<D: StackDefinition> PropertyServiceContext for StackContext<'_, D> {
 
 #[cfg(feature = "knxip")]
 impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::DeviceInfoContext for StackContext<'_, D> {
-    fn device_information(&self) -> crate::messages::knxip::substructs::DeviceInformation {
+    fn device_information(&self) -> zweidraehte_proto::messages::knxip::substructs::DeviceInformation {
         use crate::IpPlatform;
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;
-        use crate::messages::knxip::substructs::{
+        use zweidraehte_proto::messages::knxip::substructs::{
             DeviceInformation, DeviceStatus, ExtendedDeviceInformation, KNXMedium,
         };
         use zweidraehte_platform::address::EthernetAddress;
@@ -173,8 +172,8 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::DeviceInfoCon
         }
     }
 
-    fn extended_device_information(&self) -> crate::messages::knxip::substructs::ExtendedDeviceInformation {
-        crate::messages::knxip::substructs::ExtendedDeviceInformation {
+    fn extended_device_information(&self) -> zweidraehte_proto::messages::knxip::substructs::ExtendedDeviceInformation {
+        zweidraehte_proto::messages::knxip::substructs::ExtendedDeviceInformation {
             // Spec §7.5.4.9: medium_status bit 0 = COMMUNICATION_IMPOSSIBLE.
             // For non-router KNX/IP devices, this is always FALSE (0x00).
             medium_status: 0x00,
@@ -190,14 +189,14 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::DeviceInfoCon
 
 #[cfg(feature = "knxip")]
 impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpDiagnosticsContext for StackContext<'_, D> {
-    fn ip_config(&self) -> crate::messages::knxip::substructs::IpConfig {
+    fn ip_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpConfig {
         use crate::IpPlatform;
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;
 
         let ip = self.inner.state.extension_state();
         let platform = &self.inner.platform;
-        crate::messages::knxip::substructs::IpConfig {
+        zweidraehte_proto::messages::knxip::substructs::IpConfig {
             ip_address: ip.configured_ip_address(),
             subnet_mask: ip.configured_subnet_mask(),
             default_gateway: ip.configured_default_gateway(),
@@ -206,11 +205,11 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpDiagnostics
         }
     }
 
-    fn ip_current_config(&self) -> crate::messages::knxip::substructs::IpCurrentConfig {
+    fn ip_current_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig {
         use crate::IpPlatform;
 
         let platform = &self.inner.platform;
-        crate::messages::knxip::substructs::IpCurrentConfig {
+        zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig {
             ip_address: platform.current_ip_address(),
             subnet_mask: platform.current_subnet_mask(),
             default_gateway: platform.current_default_gateway(),
@@ -223,7 +222,7 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpDiagnostics
 
 #[cfg(feature = "knxip")]
 impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext for StackContext<'_, D> {
-    fn write_additional_individual_addresses(&self, buf: &mut [crate::address::IndividualAddress]) -> usize {
+    fn write_additional_individual_addresses(&self, buf: &mut [zweidraehte_proto::address::IndividualAddress]) -> usize {
         use crate::IpStackState;
         use crate::bcus::system_b::HasExtensionState;
         self.inner.state.extension_state().write_additional_individual_addresses(buf)
@@ -243,7 +242,7 @@ where
 // Unconditional — `individual_address()` is on `StackState`, so this works
 // for both IP and TP1 devices.
 impl<D: StackDefinition> crate::context::KnxIndividualAddressContext for StackContext<'_, D> {
-    fn individual_address(&self) -> crate::address::IndividualAddress {
+    fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress {
         self.inner.state.individual_address()
     }
 }

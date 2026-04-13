@@ -1033,6 +1033,7 @@ dependencies = [
  "serde",
  "zweidraehte-device",
  "zweidraehte-knxprod",
+ "zweidraehte-proto",
  "zweidraehte-util",
 ]
 
@@ -4677,6 +4678,7 @@ dependencies = [
  "zweidraehte-device",
  "zweidraehte-knxprod",
  "zweidraehte-platform",
+ "zweidraehte-proto",
 ]
 
 [[package]]
@@ -6187,6 +6189,7 @@ dependencies = [
  "serde_with",
  "static_cell",
  "zweidraehte-device",
+ "zweidraehte-proto",
 ]
 
 [[package]]
@@ -6249,6 +6252,7 @@ dependencies = [
  "uuid",
  "zip",
  "zweidraehte-device",
+ "zweidraehte-proto",
 ]
 
 [[package]]

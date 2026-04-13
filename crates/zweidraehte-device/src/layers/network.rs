@@ -2,8 +2,8 @@ use heapless::Deque;
 
 use crate::inner::StackContext;
 use crate::layer_context::HasOutbox;
-use crate::messages::buffers::Buffer;
-use crate::messages::knx::*;
+use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::knx::*;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
 use crate::router::Layer;
 use crate::{StackDefinition, StackState};

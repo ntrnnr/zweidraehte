@@ -53,7 +53,7 @@ use zweidraehte_conformance::*;
 ///
 /// Wraps the `tp1_to_knx_message_no_checksum` function for use with `Vec<u8>`.
 fn tp1_to_internal(tp1: &[u8]) -> Vec<u8> {
-    use zweidraehte_device::encoding::tp1;
+    use zweidraehte_proto::encoding::tp1;
     let mut buf = tp1.to_vec();
     buf = tp1::tp1_to_knx_message_no_checksum(buf);
     buf
@@ -63,7 +63,7 @@ fn tp1_to_internal(tp1: &[u8]) -> Vec<u8> {
 ///
 /// Wraps the `knx_to_tp1_message_no_checksum` function for use with `Vec<u8>`.
 fn internal_to_tp1(internal: &[u8]) -> Vec<u8> {
-    use zweidraehte_device::encoding::tp1;
+    use zweidraehte_proto::encoding::tp1;
     let mut buf = internal.to_vec();
     buf = tp1::knx_to_tp1_message_no_checksum(buf);
     buf
@@ -479,8 +479,8 @@ async fn execute_step(
                 .unwrap_or(0);
 
             // Build SCF byte.
-            let scf = zweidraehte_device::crypto::scf::SecurityControlField {
-                service: zweidraehte_device::crypto::scf::SecureServiceType::SyncRequest,
+            let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
+                service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
                 system_broadcast: sync_params.system_broadcast,
                 confidentiality: true,
                 tool_access: sync_params.tool_access,
@@ -530,8 +530,8 @@ async fn execute_step(
                 .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
                 .unwrap_or(0);
 
-            let scf = zweidraehte_device::crypto::scf::SecurityControlField {
-                service: zweidraehte_device::crypto::scf::SecureServiceType::SyncRequest,
+            let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
+                service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
                 system_broadcast: sync_params.system_broadcast,
                 confidentiality: true,
                 tool_access: sync_params.tool_access,

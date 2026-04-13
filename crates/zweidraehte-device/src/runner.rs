@@ -14,11 +14,10 @@ use crate::{
     definition::StackDefinition,
     inner::{Inner, StackContext},
     layers::{LinkLayerBuilderBase, transport::TlStyle},
-    messages::buffers::{Buffer, BufferManager},
     resources::StackResources,
     restart,
-    stack_handle::Stack,
-};
+    stack_handle::Stack};
+use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
 
 // ============================================================================
 // Runner
@@ -49,8 +48,8 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Run state machine initialization, DeviceControl sync, and lifecycle
         // events are handled by the DeviceModel in InsecureDeviceLayers::init().
 
-        use crate::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
-        use crate::messages::knx::ServiceType;
+        use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+        use zweidraehte_proto::messages::knx::ServiceType;
         use crate::router::LayerStack;
         use embassy_futures::select::{Either, select, select3};
         use embassy_time::Timer;

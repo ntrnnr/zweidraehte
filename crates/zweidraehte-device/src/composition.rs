@@ -24,13 +24,13 @@ use crate::{
         network::NetworkLayer,
         transport::TransportLayer,
     },
-    messages::buffers::Buffer,
     restart,
     router::{self, LayerStack},
     storage::HasSequenceStorage,
 };
 
-use crate::messages::knx::KnxMessageBuffer;
+use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 
 
 // ============================================================================
@@ -77,9 +77,9 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, crate::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, crate::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a;
 }
 
@@ -111,9 +111,9 @@ where
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, crate::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, crate::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         builder.build_and_run(resources, context, Default::default(), ind_tx, conf_tx, req_rx)
     }
@@ -157,9 +157,9 @@ where
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, crate::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, crate::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         builder.build_and_run(resources, context, channels.ll_endpoints(), ind_tx, conf_tx, req_rx)
     }
@@ -361,9 +361,9 @@ where
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a crate::inner::StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, crate::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, crate::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<crate::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
+        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
+        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         builder.build_and_run(resources, context, Default::default(), ind_tx, conf_tx, req_rx)
     }

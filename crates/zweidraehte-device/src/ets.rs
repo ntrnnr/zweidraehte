@@ -571,7 +571,7 @@ pub trait EtsExportable {
 
 /// Trait for types that carry DPT information.
 ///
-/// This is implemented for [`DatapointType`](crate::dpt::DatapointType) to allow
+/// This is implemented for [`DatapointType`](zweidraehte_proto::dpt::DatapointType) to allow
 /// extracting DPT main/sub numbers at compile time.
 pub trait HasDptInfo {
     /// DPT main type number
@@ -586,7 +586,7 @@ pub trait HasDptInfo {
 }
 
 // Blanket impl of HasDptInfo for all DatapointType instances from proto.
-use crate::dpt::{DatapointType, PropertyDataDefinition};
+use zweidraehte_proto::dpt::{DatapointType, PropertyDataDefinition};
 
 impl<PDT: PropertyDataDefinition, const MAIN: u16, const SUB: u16> HasDptInfo
     for DatapointType<PDT, MAIN, SUB>

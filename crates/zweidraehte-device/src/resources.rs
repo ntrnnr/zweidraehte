@@ -6,9 +6,8 @@ use crate::{
     definition::StackDefinition,
     inner::Inner,
     layer_context::LayerContext,
-    layers::LinkLayerBuilderBase,
-    messages::buffers::BufferManager,
-};
+    layers::LinkLayerBuilderBase};
+use zweidraehte_proto::messages::buffers::BufferManager;
 
 /// Pre-allocated resources for the KNX stack.
 ///

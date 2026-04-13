@@ -29,14 +29,13 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::channel::DynamicSender;
 
 use zweidraehte_device::{
-    encoding::tp1,
-    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
-    messages::{
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase}};
+use zweidraehte_proto::encoding::tp1;
+use zweidraehte_proto::messages::{
         buffers::{Buffer, MessageBuffer},
         builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
         knx::*,
-    },
-};
+    };
 
 // ============================================================================
 // Framing Protocol
@@ -425,7 +424,7 @@ pub struct IpcLinkLayer<'a> {
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     socket: Async<UnixStream>,
-    buffer_manager: zweidraehte_device::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
     command_tx: DynamicSender<'a, IpcCommand>,
 }
 
@@ -434,7 +433,7 @@ impl<'a> IpcLinkLayer<'a> {
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         socket: Async<UnixStream>,
-        buffer_manager: zweidraehte_device::messages::buffers::DynBufferManager<'static>,
+        buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
         command_tx: DynamicSender<'a, IpcCommand>,
     ) -> Self {
         Self { ind_tx, conf_tx, socket, buffer_manager, command_tx }
@@ -604,7 +603,7 @@ impl IpcLinkLayerResources {
 /// dispatching non-INJECT commands to the stack.
 pub struct IpcLinkLayerBuilder {
     socket: Async<UnixStream>,
-    buffer_manager: zweidraehte_device::messages::buffers::DynBufferManager<'static>,
+    buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
     command_tx: DynamicSender<'static, IpcCommand>,
 }
 
@@ -616,7 +615,7 @@ impl IpcLinkLayerBuilder {
     /// set to non-blocking and wrapped in `async_io::Async`.
     pub fn new(
         socket_fd: RawFd,
-        buffer_manager: zweidraehte_device::messages::buffers::DynBufferManager<'static>,
+        buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
         command_tx: DynamicSender<'static, IpcCommand>,
     ) -> io::Result<Self> {
         let stream = unsafe { UnixStream::from_raw_fd(socket_fd) };
