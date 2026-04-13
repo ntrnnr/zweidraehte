@@ -61,20 +61,17 @@ bind_interrupts!(struct Irqs {
 /// MAC vendor prefix for locally-administered MAC addresses.
 const MAC_OUI: [u8; 3] = [0x02, 0x00, 0xFA];
 
-const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-
 /// Device state: System B tables + IP link-layer state (additional IAs, IP config).
 ///
 /// Uses `IpSystemBDeviceState` even though the mask is TP1 (07B0) — the state
 /// type is mask-agnostic. The IP link-layer state stores additional individual
-/// addresses for tunneling connections and IP configuration.
+/// addresses for tunneling connections and IP configuration. Table sizes
+/// derive from `DEVICE_DESCRIPTOR` via the `SystemBStackDefinition`
+/// associated consts.
 /// Maximum number of concurrent tunneling connections (additional individual addresses).
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
 
-type IpIfState =
-    IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoIpInterface, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
+type IpIfState = IpStateFor<PicoIpInterface, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
 
 type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 

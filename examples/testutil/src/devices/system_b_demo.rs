@@ -58,7 +58,7 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    HasPersistedState, IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
     SystemBStackDefinition, create_system_b_objects_from_extension,
 };
 use zweidraehte_proto::dpt::*;
@@ -534,12 +534,9 @@ impl zweidraehte_platform::NetworkConfig for MockIpPlatform {
 // Stack Definition
 // ============================================================================
 
-const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-
-/// Unified state type.
-pub type DemoState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, DemoStack, KnxIpDeviceTcp>;
+/// Unified state type. Table sizes derive from `DEVICE_DESCRIPTOR`
+/// through the `SystemBStackDefinition` associated consts.
+pub type DemoState = IpStateFor<DemoStack, KnxIpDeviceTcp>;
 
 /// Persisted snapshot type for the demo device.
 pub type DemoPersistedState = <DemoState as HasPersistedState>::Persisted;

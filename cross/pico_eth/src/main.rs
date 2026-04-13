@@ -51,12 +51,10 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 /// Bit 1 (locally administered) is forced set by `derive_mac_address`.
 const MAC_OUI: [u8; 3] = [0x02, 0x00, 0xFA];
 
-const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-
 /// Device state combining System B tables with IP link-layer state.
-type PicoEthState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoEthLightSwitch, KnxIpDeviceUdp>;
+/// Table sizes derive from `DEVICE_DESCRIPTOR` via the
+/// `SystemBStackDefinition` associated consts.
+type PicoEthState = IpStateFor<PicoEthLightSwitch, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).

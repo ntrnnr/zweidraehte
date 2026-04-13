@@ -1,7 +1,8 @@
 //! System B stack definition supertrait.
 //!
 //! [`SystemBStackDefinition`] extends [`StackDefinition`] with memory layout
-//! helpers that are common to all System B devices using [`SystemBMemoryMap`].
+//! helpers and table-size associated consts that are common to all System B
+//! devices using [`SystemBMemoryMap`].
 
 use crate::StackDefinition;
 
@@ -9,10 +10,18 @@ use super::memory_map::{MemoryLayout, SystemBMemoryMap};
 
 /// Supertrait for System B devices that use [`SystemBMemoryMap`].
 ///
-/// Provides [`memory_layout()`](Self::memory_layout) and
-/// [`memory_map()`](Self::memory_map) as provided methods derived from
-/// [`DEVICE`](StackDefinition::DEVICE) and `size_of::<P>()`. Implement
-/// with an empty body to get the defaults:
+/// Provides:
+///
+/// - [`ADT_SIZE`](Self::ADT_SIZE), [`AST_SIZE`](Self::AST_SIZE) and
+///   [`COT_SIZE`](Self::COT_SIZE) associated consts derived from
+///   [`DEVICE`](StackDefinition::DEVICE). Use with the [`Tp1StateFor`],
+///   [`IpStateFor`] and [`SecureTp1StateFor`] aliases below so that
+///   devices never have to restate table sizes by hand.
+/// - [`memory_layout()`](Self::memory_layout) and
+///   [`memory_map()`](Self::memory_map) as provided methods derived from
+///   [`DEVICE`](StackDefinition::DEVICE) and `size_of::<P>()`.
+///
+/// Implement with an empty body to get the defaults:
 ///
 /// ```rust,ignore
 /// impl SystemBStackDefinition for MyDevice {}
@@ -21,6 +30,18 @@ use super::memory_map::{MemoryLayout, SystemBMemoryMap};
 /// Override [`memory_layout()`](Self::memory_layout) if you need a
 /// non-standard base address or custom layout calculation.
 pub trait SystemBStackDefinition: StackDefinition<Mem = SystemBMemoryMap> {
+    /// Address-table capacity, derived from
+    /// [`DEVICE`](StackDefinition::DEVICE).
+    const ADT_SIZE: usize = Self::DEVICE.address_table_size();
+
+    /// Association-table capacity, derived from
+    /// [`DEVICE`](StackDefinition::DEVICE).
+    const AST_SIZE: usize = Self::DEVICE.association_table_size();
+
+    /// Communication-object table capacity, derived from
+    /// [`DEVICE`](StackDefinition::DEVICE).
+    const COT_SIZE: usize = Self::DEVICE.comm_object_table_size();
+
     /// Compute the memory layout for this device's tables.
     ///
     /// Derives all table offsets and sizes from
@@ -40,3 +61,63 @@ pub trait SystemBStackDefinition: StackDefinition<Mem = SystemBMemoryMap> {
         SystemBMemoryMap::new(Self::memory_layout())
     }
 }
+
+// ============================================================================
+// State type aliases
+// ============================================================================
+//
+// These aliases project the table-size consts off `SystemBStackDefinition`
+// into the shape expected by the underlying `SystemBDeviceState` aliases
+// (`Tp1SystemBDeviceState`, `IpDeviceState`, `SecureTp1DeviceState`). They
+// require `generic_const_exprs` (already enabled crate-wide) to push the
+// associated const `D::ADT_SIZE` etc. into a type-level position.
+//
+// Users write:
+//
+// ```rust,ignore
+// type State = Tp1StateFor<MyStack>;
+// // instead of
+// const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
+// const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
+// const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
+// type State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyStack>;
+// ```
+
+/// TP1 System B state for `D`, with sizes drawn from `D::DEVICE`.
+pub type Tp1StateFor<D>
+where
+    D: SystemBStackDefinition,
+= super::extensions::Tp1SystemBDeviceState<
+    { <D as SystemBStackDefinition>::ADT_SIZE },
+    { <D as SystemBStackDefinition>::AST_SIZE },
+    { <D as SystemBStackDefinition>::COT_SIZE },
+    D,
+>;
+
+/// KNX/IP System B state for `D` using feature set `Proto`, with sizes
+/// drawn from `D::DEVICE`.
+#[cfg(feature = "knxip")]
+pub type IpStateFor<D, Proto>
+where
+    D: SystemBStackDefinition,
+= super::extensions::IpDeviceState<
+    { <D as SystemBStackDefinition>::ADT_SIZE },
+    { <D as SystemBStackDefinition>::AST_SIZE },
+    { <D as SystemBStackDefinition>::COT_SIZE },
+    D,
+    Proto,
+>;
+
+/// Secure TP1 System B state for `D` with sequence-number storage `SEQ`
+/// and P2P table capacity `P2P`. Sizes drawn from `D::DEVICE`.
+pub type SecureTp1StateFor<D, SEQ, const P2P: usize>
+where
+    D: SystemBStackDefinition,
+= super::extensions::SecureTp1DeviceState<
+    { <D as SystemBStackDefinition>::ADT_SIZE },
+    { <D as SystemBStackDefinition>::AST_SIZE },
+    { <D as SystemBStackDefinition>::COT_SIZE },
+    D,
+    SEQ,
+    P2P,
+>;

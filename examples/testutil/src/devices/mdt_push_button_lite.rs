@@ -14,7 +14,7 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    HasPersistedState, IpDeviceState, IpExtension, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
     SystemBStackDefinition, create_system_b_objects_from_extension,
 };
 use zweidraehte_proto::dpt::*;
@@ -3205,12 +3205,9 @@ impl zweidraehte_platform::NetworkConfig for MockIpPlatform {
 // Stack Definition
 // ============================================================================
 
-const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-
-/// Unified state type.
-pub type MdtState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MdtStack, KnxIpDeviceUdp>;
+/// Unified state type. Table sizes derive from `DEVICE_DESCRIPTOR`
+/// through the `SystemBStackDefinition` associated consts.
+pub type MdtState = IpStateFor<MdtStack, KnxIpDeviceUdp>;
 
 /// Persisted snapshot type for the MDT device.
 pub type MdtPersistedState = <MdtState as HasPersistedState>::Persisted;

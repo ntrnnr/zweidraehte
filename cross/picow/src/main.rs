@@ -24,8 +24,8 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, HasPersistedState, IpAugmentFor, IpDeviceState, IpExtension, SystemBMemoryMap,
-        SystemBStackDefinition, create_system_b_objects_with_extra,
+        DefaultSystemBInterfaceObjects, HasPersistedState, IpAugmentFor, IpExtension, IpStateFor,
+        SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects_with_extra,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -40,12 +40,10 @@ use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, RpFlashStorage};
 /// Device descriptor from the light switch device definition (KNX/IP variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 
-const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoWLightSwitch, KnxIpDeviceUdp>;
+/// Table sizes derive from `DEVICE_DESCRIPTOR` via the
+/// `SystemBStackDefinition` associated consts.
+type PicoWState = IpStateFor<PicoWLightSwitch, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).

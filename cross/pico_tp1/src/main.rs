@@ -49,12 +49,9 @@ bind_interrupts!(struct Irqs {
 /// Device descriptor from the light switch device definition (TP1 variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1;
 
-const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-
-/// Device state for TP1.
-type PicoTp1State = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, PicoTp1LightSwitch>;
+/// Device state for TP1. Table sizes derive from `DEVICE_DESCRIPTOR`
+/// via the `SystemBStackDefinition` associated consts.
+type PicoTp1State = Tp1StateFor<PicoTp1LightSwitch>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
