@@ -230,18 +230,6 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                         self.handle_property_value_write(&msg);
                     }
 
-                    // --- Function Property Services ---
-                    ApciCode::FunctionPropertyCommand => {
-                        self.handle_function_property_command(&msg);
-                    }
-                    ApciCode::FunctionPropertyStateRead => {
-                        self.handle_function_property_state_read(&msg);
-                    }
-                    // FunctionPropertyStateResponse is a response APCI — ignore if received.
-                    ApciCode::FunctionPropertyStateResponse => {
-                        debug!("AL ignoring FunctionPropertyStateResponse (response APCI)");
-                    }
-
                     // --- Device Management ---
                     ApciCode::DeviceDescriptorRead => {
                         self.handle_device_descriptor_read(&msg);
@@ -648,89 +636,6 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 self.lctx.push_outbox(msg.into_inner());
             }
         }
-    }
-}
-
-// ============================================================================
-// Function Property Services (A_FunctionPropertyCommand, ...)
-// ============================================================================
-
-impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
-    /// Handle `A_FunctionPropertyCommand.ind`
-    fn handle_function_property_command(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        self.handle_function_property(ind, true);
-    }
-
-    /// Handle `A_FunctionPropertyState_Read.ind`
-    fn handle_function_property_state_read(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>) {
-        self.handle_function_property(ind, false);
-    }
-
-    /// Shared implementation for function property command and state read.
-    ///
-    /// Both services share the same wire format and response format, differing
-    /// only in which trait method is called on the interface objects.
-    fn handle_function_property(&mut self, ind: &KnxMessageBuffer<Buffer<'static>>, is_command: bool) {
-        use zweidraehte_proto::messages::{
-            apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
-            builder::IndicationExt,
-        };
-        use crate::objects::interface::FunctionPropertyRequest;
-
-        if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
-            warn!("AL FunctionProperty unexpected service type: {:?}", ind.service_type());
-            return;
-        }
-
-        let Some(hdr) = FunctionPropertyHeader::parse(ind.buf()) else {
-            error!("FunctionProperty message too short: {}", ind.len());
-            return;
-        };
-        let service_data = hdr.data(ind.buf());
-
-        let access_ctx = self.resolve_access(ind);
-        let label = if is_command { "Command" } else { "StateRead" };
-        debug!(
-            "AL FunctionProperty{}: obj={}, prop_id={}, service_data_len={}, access_ctx={:?}",
-            label,
-            hdr.object_idx,
-            hdr.prop_id,
-            service_data.len(),
-            access_ctx
-        );
-
-        let req = FunctionPropertyRequest {
-            object_idx: hdr.object_idx as u16,
-            prop_id: hdr.prop_id,
-            service_data,
-            ctx: access_ctx,
-        };
-
-        let result = if is_command {
-            self.interface_objects.function_property_command(&req)
-        } else {
-            self.interface_objects.function_property_state_read(&req)
-        };
-
-        let response_data = result.data.as_slice();
-        let response_len = FpResponseWriter::msg_len(response_data.len());
-
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
-            warn!("AL no buffer for FunctionProperty response");
-            return;
-        };
-
-        let msg =
-            ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
-                FpResponseWriter::write(buf, hdr.object_idx, hdr.prop_id, result.return_code, response_data);
-            });
-
-        debug!(
-            "AL sending FunctionPropertyStateResponse: rc=0x{:02X}, data_len={}",
-            result.return_code,
-            response_data.len()
-        );
-        self.lctx.push_outbox(msg.into_inner());
     }
 }
 

@@ -26,6 +26,7 @@ pub mod adc;
 pub mod address_serial;
 pub mod authorization;
 pub mod domain_addr;
+pub mod function_property;
 pub mod manufacturer;
 pub mod memory;
 pub mod property_ext;
@@ -36,6 +37,7 @@ pub use adc::AdcService;
 pub use address_serial::IndividualAddressSerialNumberService;
 pub use authorization::AuthorizationService;
 pub use domain_addr::DomainAddressService;
+pub use function_property::FunctionPropertyService;
 pub use manufacturer::UserManufacturerInfoService;
 pub use memory::MemoryService;
 pub use property_ext::PropertyExtValueService;
@@ -44,23 +46,34 @@ pub use user_memory::UserMemoryService;
 
 /// Standard AL services for System B devices.
 ///
-/// Composes the services that are mandatory for System B (mask 07B0h/27B0h):
-/// memory access, user memory, authorization, serial number addressing,
-/// and ADC. Use this as `type Services = SystemBAlServices;` to match
-/// the pre-modularization behavior.
+/// Composes the services commonly used by System B devices (mask
+/// 07B0h/27B0h): memory access, user memory, authorization, serial
+/// number addressing, ADC, user-manufacturer info, and function
+/// properties. Use this as `type Services = SystemBAlServices;` for the
+/// pre-modularization behaviour.
 ///
-/// For devices that also need domain address or extended property services,
-/// compose further:
+/// For devices that also need domain address or extended property
+/// services, compose further:
+///
 /// ```rust,ignore
 /// type Services = (SystemBAlServices, DomainAddressService);
 /// ```
+///
+/// Per the KNX spec profile matrix (06 Profiles §4.2), only a subset
+/// of these are strictly mandatory on every System B profile —
+/// `AdcService` in particular is legacy BCU1/BCU2 and harmless on
+/// System B, but devices that target the smallest possible footprint
+/// can drop it by spelling out a smaller tuple.
 pub type SystemBAlServices = (
     MemoryService,
     (
         UserMemoryService,
         (
             AuthorizationService,
-            (IndividualAddressSerialNumberService, (AdcService, UserManufacturerInfoService)),
+            (
+                IndividualAddressSerialNumberService,
+                (AdcService, (UserManufacturerInfoService, FunctionPropertyService)),
+            ),
         ),
     ),
 );
