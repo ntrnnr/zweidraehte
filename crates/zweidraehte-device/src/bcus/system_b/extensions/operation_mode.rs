@@ -24,8 +24,8 @@ use embassy_time::Instant;
 
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
-use zweidraehte_proto::messages::builder::MessageBuilder;
-use zweidraehte_proto::messages::knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets};
+use zweidraehte_proto::messages::knx::Priority;
+use crate::layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding};
 use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
     AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
@@ -567,50 +567,29 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         // ================================================================
-        // Build and send GroupValue_Write telegram
+        // Send GroupValue_Write via the addressed-sender capability
         //
-        // Unlike the "transmit current value of a GO" path (service 0x02),
-        // this is an arbitrary GA-addressed write with a caller-supplied
+        // This is an arbitrary GA-addressed write with a caller-supplied
         // value, so the `GroupValueSender` ASAP-based capability doesn't
-        // apply. We push a raw telegram via the shared outbox instead.
+        // apply. Use `GroupValueAddressedSender` on the provider instead
+        // — it knows how to frame and queue the telegram.
         // ================================================================
 
         let value = &data[5..];
         // Bit 7 of flags: 1 = next full octet, 0 = 6 trailing bits after APCI.
         let full_octet = flags & 0x80 != 0;
-
-        let (msg_offset, msg_len) = if !full_octet && value.len() == 1 && value[0] < 64 {
-            (offsets::MSG_APCI + 1, offsets::MSG_APCI + 1 + 1)
+        let encoding = if !full_octet && value.len() == 1 && value[0] < 64 {
+            GroupValueEncoding::Short
         } else {
-            (offsets::MSG_APDU, offsets::MSG_APDU + value.len())
+            GroupValueEncoding::Full
         };
-
-        let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(msg_len) else {
-            warn!("GO diag: no buffer for GroupValue_Write");
-            return FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) };
-        };
-
-        let msg = MessageBuilder::new_request(
-            msg_buf,
-            ServiceType::T_GroupData_Req,
-            Priority::Low,
-            DestinationAddress::ConnectionNr(tsap),
-        )
-        .with_application(ApciCode::GroupValueWrite)
-        .with_data(|buf| {
-            if !full_octet && value.len() == 1 && value[0] < 64 {
-                buf[offsets::MSG_APCI + 1] |= value[0];
-            } else {
-                buf[msg_offset..msg_offset + value.len()].copy_from_slice(value);
-            }
-        });
 
         debug!(
             "GO diag: stashing GroupValue_Write to TSAP {} (GA 0x{:04X})",
             tsap,
             u16::from_be_bytes([data[3], data[4]])
         );
-        ctx.outbox().borrow_mut().push_deferred(msg.into_inner());
+        ctx.group_value_sender().send_group_write_tsap(tsap, Priority::Low, encoding, value);
 
         FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
     }
@@ -673,44 +652,24 @@ impl<'a> DiagnosticsAugment<'a> {
         let resp = go_diag_success(0x02, go_idx, status, value);
 
         // ================================================================
-        // Build and send GroupValue_Write telegram
+        // Send GroupValue_Write via the addressed-sender capability
         //
         // This transmits the current CO value bypassing the normal
         // queueing / request-status flow — diagnostic behaviour, not a
         // user-initiated send — so the `GroupValueSender` capability
         // (which honours `ComObjectStatus::WriteRequest` gating) is
-        // intentionally not used here. We push a raw telegram to the
-        // shared outbox instead.
+        // intentionally not used here. Use `GroupValueAddressedSender`,
+        // which frames the telegram against the supplied TSAP.
         // ================================================================
 
-        let (msg_offset, msg_len) = if short_format {
-            (offsets::MSG_APCI + 1, offsets::MSG_APCI + 1 + object_size)
-        } else {
-            (offsets::MSG_APDU, offsets::MSG_APDU + object_size)
-        };
+        let encoding = if short_format { GroupValueEncoding::Short } else { GroupValueEncoding::Full };
 
-        if let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(msg_len) {
-            let msg = MessageBuilder::new_request(
-                msg_buf,
-                ServiceType::T_GroupData_Req,
-                priority,
-                DestinationAddress::ConnectionNr(tsap),
-            )
-            .with_application(ApciCode::GroupValueWrite)
-            .with_data(|buf| {
-                if short_format {
-                    buf[offsets::MSG_APCI + 1] |= value[0] & 0x3F;
-                } else {
-                    buf[msg_offset..msg_offset + object_size].copy_from_slice(value);
-                }
-            });
-
-            debug!("GO diag: stashing GroupValue_Write (transmit) ASAP {} TSAP {}", asap, tsap);
-            drop(co);
-            ctx.outbox().borrow_mut().push_deferred(msg.into_inner());
-        } else {
-            warn!("GO diag: no buffer for GroupValue_Write (transmit)");
-        }
+        debug!("GO diag: stashing GroupValue_Write (transmit) ASAP {} TSAP {}", asap, tsap);
+        // The sender only touches `lctx` (buffer manager + outbox), so
+        // holding the CO borrow across this call is fine — `value` stays
+        // valid for the duration of the send.
+        ctx.group_value_sender().send_group_write_tsap(tsap, priority, encoding, &value[..object_size]);
+        drop(co);
 
         resp
     }
@@ -766,33 +725,19 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         // ================================================================
-        // Build and send GroupValue_Read telegram
+        // Send GroupValue_Read via the addressed-sender capability
         //
         // Like the direct write above, this is GA-addressed rather than
         // ASAP-addressed, so the `GroupValueSender` capability does not
-        // apply. Push a raw read telegram to the shared outbox.
+        // apply. Use `GroupValueAddressedSender` for the queued read.
         // ================================================================
 
-        let msg_len = offsets::MSG_APCI + 1 + 1;
-        if let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(msg_len) {
-            let msg = MessageBuilder::new_request(
-                msg_buf,
-                ServiceType::T_GroupData_Req,
-                Priority::Low,
-                DestinationAddress::ConnectionNr(tsap),
-            )
-            .with_application(ApciCode::GroupValueRead)
-            .build();
-
-            debug!(
-                "GO diag: stashing GroupValue_Read to TSAP {} (GA 0x{:04X})",
-                tsap,
-                u16::from_be_bytes([data[3], data[4]])
-            );
-            ctx.outbox().borrow_mut().push_deferred(msg.into_inner());
-        } else {
-            warn!("GO diag: no buffer for GroupValue_Read");
-        }
+        debug!(
+            "GO diag: stashing GroupValue_Read to TSAP {} (GA 0x{:04X})",
+            tsap,
+            u16::from_be_bytes([data[3], data[4]])
+        );
+        ctx.group_value_sender().send_group_read_tsap(tsap, Priority::Low);
 
         FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
     }

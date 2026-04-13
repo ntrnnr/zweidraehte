@@ -13,6 +13,8 @@
 //! [`HasX`] pattern used elsewhere in the codebase (e.g.
 //! [`HasAddressTable`](crate::objects::tables::HasAddressTable)).
 
+use zweidraehte_proto::messages::knx::Priority;
+
 // ============================================================================
 // GroupValueSender
 // ============================================================================
@@ -37,4 +39,47 @@ pub trait GroupValueSender {
     ///
     /// Same return semantics as [`request_group_write`](Self::request_group_write).
     fn request_group_read(&self, asap: u16) -> bool;
+}
+
+// ============================================================================
+// GroupValueAddressedSender
+// ============================================================================
+
+/// Encoding for the value in an outgoing `A_GroupValue_Write`.
+///
+/// Small values (<= 6 bits) can be packed into the low bits of the APCI
+/// byte, avoiding a separate APDU byte. Larger values need their own
+/// APDU bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum GroupValueEncoding {
+    /// Pack `data[0] & 0x3F` into the low six bits of the APCI byte.
+    /// Only valid for single-byte values where the top two bits are zero.
+    Short,
+    /// Place the value in one or more APDU bytes after the APCI byte.
+    Full,
+}
+
+/// Ability to emit a `A_GroupValue_{Write,Read}` telegram to a known TSAP.
+///
+/// Unlike [`GroupValueSender`] (which looks up the TSAP from the
+/// association table and drives the `ComObjectStatus` state machine),
+/// this capability pushes a telegram directly. The caller has already
+/// resolved the destination TSAP and chosen the value to send — the
+/// provider just builds the wire representation and queues it on the
+/// outbox.
+///
+/// Used by diagnostic paths (GO diagnostics services 0x01–0x03) where
+/// the normal status-gated send flow would be wrong: either the target
+/// is a bare group address rather than a local communication object, or
+/// the transmission must bypass the `ComObjectStatus::WriteRequest`
+/// check. Sends are deferred (`push_deferred`) so any response telegram
+/// produced by the same handler goes out first.
+pub trait GroupValueAddressedSender {
+    /// Build and queue a `A_GroupValue_Write` to `tsap` carrying `data`
+    /// encoded as `encoding`, at `priority`.
+    fn send_group_write_tsap(&self, tsap: u16, priority: Priority, encoding: GroupValueEncoding, data: &[u8]);
+
+    /// Build and queue a `A_GroupValue_Read` to `tsap` at `priority`.
+    fn send_group_read_tsap(&self, tsap: u16, priority: Priority);
 }

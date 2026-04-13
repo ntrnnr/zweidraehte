@@ -39,7 +39,9 @@ pub use crate::objects::interface::{
 };
 
 // Application-layer capabilities (augments and services call these)
-pub use crate::layers::application::capabilities::GroupValueSender;
+pub use crate::layers::application::capabilities::{
+    GroupValueAddressedSender, GroupValueEncoding, GroupValueSender,
+};
 
 // Table accessor traits
 pub use crate::objects::tables::{

@@ -11,7 +11,7 @@ use crate::{
     StackDefinition,
     context::EventPublisherContext,
     layer_context::{HasOutbox, LayerContext},
-    layers::application::capabilities::GroupValueSender,
+    layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
     objects::{
         comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects},
         tables::{
@@ -615,6 +615,68 @@ impl<D: StackDefinition> GroupValueSender for GroupDataProvider<'_, D> {
     #[inline]
     fn request_group_read(&self, asap: u16) -> bool {
         self.send_group_value_request(asap, true)
+    }
+}
+
+impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> {
+    fn send_group_write_tsap(&self, tsap: u16, priority: Priority, encoding: GroupValueEncoding, data: &[u8]) {
+        // Short encoding packs the value into the low six bits of the
+        // low APCI byte; the frame ends right after that byte, so the
+        // allocation is one byte past the start of the APCI field.
+        // Full encoding places the value in the APDU bytes following
+        // the APCI field.
+        let (msg_offset, msg_len) = match encoding {
+            GroupValueEncoding::Short => (offsets::MSG_APCI + 1, offsets::MSG_APDU),
+            GroupValueEncoding::Full => (offsets::MSG_APDU, offsets::MSG_APDU + data.len()),
+        };
+
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(msg_len) else {
+            warn!("GroupValueAddressedSender: no buffer for GroupValue_Write to TSAP {}", tsap);
+            return;
+        };
+
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::T_GroupData_Req,
+            priority,
+            DestinationAddress::ConnectionNr(tsap),
+        )
+        .with_application(ApciCode::GroupValueWrite)
+        .with_data(|buf| match encoding {
+            GroupValueEncoding::Short => {
+                // Low 6 bits of the short value go into the low bits of
+                // the APCI byte. Callers guarantee the value fits.
+                if let Some(&v) = data.first() {
+                    buf[offsets::MSG_APCI + 1] |= v & 0x3F;
+                }
+            }
+            GroupValueEncoding::Full => {
+                buf[msg_offset..msg_offset + data.len()].copy_from_slice(data);
+            }
+        });
+
+        self.lctx.outbox.borrow_mut().push_deferred(msg.into_inner());
+    }
+
+    fn send_group_read_tsap(&self, tsap: u16, priority: Priority) {
+        // GroupValue_Read carries no payload; one byte is enough to hold
+        // the two-bit short APCI code.
+        let msg_len = offsets::MSG_APCI + 1 + 1;
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(msg_len) else {
+            warn!("GroupValueAddressedSender: no buffer for GroupValue_Read to TSAP {}", tsap);
+            return;
+        };
+
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::T_GroupData_Req,
+            priority,
+            DestinationAddress::ConnectionNr(tsap),
+        )
+        .with_application(ApciCode::GroupValueRead)
+        .build();
+
+        self.lctx.outbox.borrow_mut().push_deferred(msg.into_inner());
     }
 }
 
