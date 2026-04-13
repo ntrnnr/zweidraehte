@@ -893,7 +893,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::PropertyExtValueService,
     );
-    type LayerBuilder = SecureDeviceBuilder;
+    type LayerBuilder = SecureDeviceBuilder<zweidraehte_device::layers::secure_application::WithP2p>;
 }
 
 // ============================================================================

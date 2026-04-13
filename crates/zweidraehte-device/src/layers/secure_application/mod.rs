@@ -35,14 +35,17 @@ use zweidraehte_proto::messages::{
 
 use crate::logging::warn;
 
+pub mod p2p_feature;
 mod p2p_security;
+
+pub use p2p_feature::{NoP2p, P2pFeature, WithP2p};
 
 // ============================================================================
 // Processing result for try_process_secure
 // ============================================================================
 
 /// Result of secure frame processing.
-pub(super) enum SecureResult {
+pub enum SecureResult {
     /// Forward the (decrypted) message to the inner Application Layer.
     Forward(KnxMessageBuffer<Buffer<'static>>),
     /// Frame was silently dropped (verification failed, etc.).
@@ -131,11 +134,17 @@ pub(super) struct PendingSyncState {
 
 /// Secure Application Layer wrapper.
 ///
-/// Generic over `SEQ`: the sequence number storage backend. This is
-/// kept separate from the main device config because sequence numbers
-/// change on every outgoing secure frame and need wear-resistant
-/// storage (e.g., dedicated flash sector with wear leveling).
-pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberStorage> {
+/// Generics:
+/// - `SEQ`: sequence number storage backend. Kept separate from the main
+///   device config because sequence numbers change on every outgoing
+///   secure frame and need wear-resistant storage (e.g., a dedicated
+///   flash sector with wear leveling).
+/// - `P2P`: [`P2pFeature`] slot selecting whether KNX Data Secure P2P
+///   sync (S-A_Sync_Req / S-A_Sync_Res) is compiled in. Defaults to
+///   [`NoP2p`]: no SIAT dispatch, no pending-sync tracker, no code —
+///   LLVM elides the stubs through monomorphisation. Devices that need
+///   P2P pass [`WithP2p`] explicitly.
+pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature = NoP2p> {
     pub(super) inner: ApplicationLayer<'a, D>,
     /// Security context for encrypting the outgoing response.
     outgoing_ctx: Cell<OutgoingSecurityCtx>,
@@ -143,13 +152,15 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
     /// `SecureExtensionState`. Shared with the Security IO augment which
     /// handles PID 59 (PID_SEQUENCE_NUMBER_SENDING) read/write.
     pub(super) seq_storage: &'a RefCell<SEQ>,
-    /// Timestamp of the last sync response sent (1-second rate limit per spec).
-    pub(super) last_sync_response: Cell<Option<embassy_time::Instant>>,
-    /// Pending DUT-initiated sync request awaiting a response (6s timeout).
-    pub(super) pending_sync: Cell<Option<PendingSyncState>>,
+    /// Per-instance state owned by the P2P feature slot. For
+    /// [`NoP2p`] this is `()` — zero bytes — and the feature trait
+    /// methods return `Dropped`/`None` before ever touching it.
+    pub(super) p2p_state: P2P::State,
 }
 
-impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ> {
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>
+    SecureApplicationLayer<'a, D, SEQ, P2P>
+{
     pub fn new(
         inner: ApplicationLayer<'a, D>,
         seq_storage: &'a RefCell<SEQ>,
@@ -158,8 +169,7 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<
             inner,
             seq_storage,
             outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
-            last_sync_response: Cell::new(None),
-            pending_sync: Cell::new(None),
+            p2p_state: P2P::State::default(),
         }
     }
 
@@ -200,7 +210,8 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<
     }
 }
 
-impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage> SecureApplicationLayer<'a, D, SEQ>
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>
+    SecureApplicationLayer<'a, D, SEQ, P2P>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
@@ -324,11 +335,11 @@ where
         // ================================================================
 
         if scf.service == SecureServiceType::SyncRequest {
-            return self.process_sync_request(msg, scf, scf_byte, src, st);
+            return P2P::process_sync_request(self, msg, scf, scf_byte, src, st);
         }
 
         if scf.service == SecureServiceType::SyncResponse {
-            return self.process_sync_response(msg, scf, scf_byte, src);
+            return P2P::process_sync_response(self, msg, scf, scf_byte, src);
         }
 
         // From here on, only S-A_Data is handled.
@@ -549,7 +560,7 @@ where
 
         match request.get() {
             ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
-                if let Some(msg) = self.initiate_sync(*peer_ia, *tool_access, *is_broadcast) {
+                if let Some(msg) = P2P::initiate_sync(self, *peer_ia, *tool_access, *is_broadcast) {
                     self.inner.lctx().push_outbox(msg);
                     request.try_reply(ApplicationLayerServiceResponse::SyncInitiated).ok();
                 } else {
@@ -705,7 +716,8 @@ where
     }
 }
 
-impl<D: StackDefinition, SEQ: SequenceNumberStorage> Layer for SecureApplicationLayer<'_, D, SEQ>
+impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Layer
+    for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,

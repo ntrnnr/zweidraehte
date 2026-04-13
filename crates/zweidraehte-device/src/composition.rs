@@ -188,13 +188,16 @@ use crate::layers::secure_application::SecureApplicationLayer;
 use crate::objects::tables::{HasAddressTable, HasAssociationTable};
 use crate::storage::SequenceNumberStorage;
 
-impl<D: StackDefinition, SEQ: SequenceNumberStorage> HasAppRequest for SecureApplicationLayer<'_, D, SEQ>
+impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: crate::layers::secure_application::P2pFeature>
+    HasAppRequest for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>) {
-        self.handle_app_request(request);
+        // Call the inherent method explicitly so method resolution can't
+        // fall back to this trait method and recurse infinitely.
+        SecureApplicationLayer::handle_app_request(self, request);
     }
 }
 
@@ -222,10 +225,16 @@ pub struct StandardLayerStack<'a, D: StackDefinition, AL: router::Layer + HasApp
 pub type StandardDeviceLayers<'a, D> = StandardLayerStack<'a, D, ApplicationLayer<'a, D>>;
 
 /// Standard secure layer stack: `(NL, TL, SecureAL<AL>)`.
-pub type StandardSecureDeviceLayers<'a, D> = StandardLayerStack<
+///
+/// `P2P` selects the P2P feature variant. Defaults to
+/// [`NoP2p`](crate::layers::secure_application::NoP2p) so group-only
+/// devices don't pay for SIAT-driven sync code. Use
+/// [`WithP2p`](crate::layers::secure_application::WithP2p) for
+/// devices that need S-A_Sync.
+pub type StandardSecureDeviceLayers<'a, D, P2P = crate::layers::secure_application::NoP2p> = StandardLayerStack<
     'a,
     D,
-    SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage>,
+    SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage, P2P>,
 >;
 
 impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
@@ -252,8 +261,8 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
     }
 }
 
-impl<'a, D: StackDefinition + HasSequenceStorage>
-    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage>>
+impl<'a, D: StackDefinition + HasSequenceStorage, P2P: crate::layers::secure_application::P2pFeature>
+    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage, P2P>>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
@@ -335,21 +344,34 @@ impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack
 ///
 /// Drop-in replacement for [`InsecureDeviceBuilder`] in a device's
 /// [`StackDefinition::LayerBuilder`] to enable Data Secure support.
-pub struct SecureDeviceBuilder;
+///
+/// The `P2P` type parameter selects KNX Data Secure P2P support:
+/// - [`NoP2p`](crate::layers::secure_application::NoP2p) (default):
+///   omit SIAT-driven S-A_Sync code. Appropriate for group-only
+///   devices that only need tool-key commissioning + group keys.
+/// - [`WithP2p`](crate::layers::secure_application::WithP2p):
+///   compile in the full S-A_Sync protocol.
+///
+/// Use via `type LayerBuilder = SecureDeviceBuilder<WithP2p>` in a
+/// device's [`StackDefinition`] impl.
+pub struct SecureDeviceBuilder<P2P: crate::layers::secure_application::P2pFeature = crate::layers::secure_application::NoP2p> {
+    _phantom: core::marker::PhantomData<P2P>,
+}
 
-impl<D: StackDefinition + HasSequenceStorage> LayerStackBuilder<D> for SecureDeviceBuilder
+impl<D: StackDefinition + HasSequenceStorage, P2P: crate::layers::secure_application::P2pFeature>
+    LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::State: HasSecureIdentity + HasExtensionState,
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     type Stack<'a>
-        = StandardSecureDeviceLayers<'a, D>
+        = StandardSecureDeviceLayers<'a, D, P2P>
     where
         D: 'a;
     type Channels = ();
 
-    fn build<'a>(ctx: &'a StackContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D>
+    fn build<'a>(ctx: &'a StackContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D, P2P>
     where
         D: 'a,
     {
