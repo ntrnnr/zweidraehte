@@ -51,6 +51,41 @@ pub enum ReadOnInitState {
     Done,
 }
 
+/// Mutable bookkeeping shared between the AL's built-in group-data
+/// handler and the [`GroupDataProvider`] capability used by augments.
+///
+/// Stored on [`LayerContext`](crate::layer_context::LayerContext) rather
+/// than on `GroupDataProvider` itself — providers are transient views
+/// built per call. Keeping the state behind interior mutability means a
+/// fresh provider always sees the latest `read_on_init` cursor and
+/// `pending_group_send` slot.
+#[derive(Debug)]
+pub struct GroupDataState {
+    /// Read-on-init scan cursor. Advanced by the AL poll loop; restarted
+    /// when the application transitions from stopped to running.
+    pub(crate) read_on_init: core::cell::Cell<ReadOnInitState>,
+
+    /// Pending group value send awaiting TL confirmation. When
+    /// populated, the next TL confirmation resolves the matching
+    /// communication object status.
+    pub(crate) pending_group_send: core::cell::Cell<Option<PendingGroupSend>>,
+}
+
+impl GroupDataState {
+    pub const fn new() -> Self {
+        Self {
+            read_on_init: core::cell::Cell::new(ReadOnInitState::Idle),
+            pending_group_send: core::cell::Cell::new(None),
+        }
+    }
+}
+
+impl Default for GroupDataState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 // ============================================================================
 // GroupDataProvider
 // ============================================================================
@@ -422,7 +457,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
             // Store pending state so the TL confirmation (arriving later on
             // conf_rx) can update the CO status.
-            self.lctx.pending_group_send.set(Some(PendingGroupSend { asap, read }));
+            self.lctx.group_data.pending_group_send.set(Some(PendingGroupSend { asap, read }));
 
             // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
             debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
@@ -447,7 +482,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
     /// Returns `true` if a pending group send was found and processed,
     /// `false` if no group send was pending (confirmation is for something else).
     pub fn handle_tl_confirmation(&self, conf: &KnxMessageBuffer<Buffer<'static>>) -> bool {
-        let Some(pending) = self.lctx.pending_group_send.take() else {
+        let Some(pending) = self.lctx.group_data.pending_group_send.take() else {
             return false;
         };
 
@@ -474,7 +509,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
     /// Returns the next deadline for the read-on-init cycle, if active.
     pub fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        match self.lctx.read_on_init.get() {
+        match self.lctx.group_data.read_on_init.get() {
             ReadOnInitState::Scanning(cursor) => {
                 debug!("AL next_deadline: ROI active (cursor={}), next step in 100ms", cursor);
                 Some(embassy_time::Instant::now() + embassy_time::Duration::from_millis(100))
@@ -503,19 +538,19 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
     pub fn poll(&self) {
         // Reset Done → Idle when the app stops, so the next startup triggers
         // a fresh ROI scan.
-        if self.lctx.read_on_init.get() == ReadOnInitState::Done && !self.state.app().borrow().is_running() {
-            self.lctx.read_on_init.set(ReadOnInitState::Idle);
+        if self.lctx.group_data.read_on_init.get() == ReadOnInitState::Done && !self.state.app().borrow().is_running() {
+            self.lctx.group_data.read_on_init.set(ReadOnInitState::Idle);
         }
 
         // Start ROI scan if the conditions are met (app running, AST loaded,
         // comm objects still uninitialized from DeviceModel reset).
-        if self.lctx.read_on_init.get() == ReadOnInitState::Idle
+        if self.lctx.group_data.read_on_init.get() == ReadOnInitState::Idle
             && self.state.app().borrow().is_running()
             && self.state.ast().borrow().is_loaded()
             && self.state.comm_objects().borrow().status(1) == ComObjectStatus::Uninitialized
         {
             info!("AL read-on-init: starting cycle (detected uninitialized objects)");
-            self.lctx.read_on_init.set(ReadOnInitState::Scanning(1));
+            self.lctx.group_data.read_on_init.set(ReadOnInitState::Scanning(1));
         }
 
         self.read_on_init_step();
@@ -538,7 +573,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
     /// In particular, non-ROI objects stay `Uninitialized` until they
     /// actually receive a value via a write or response from the bus.
     fn read_on_init_step(&self) {
-        let ReadOnInitState::Scanning(start) = self.lctx.read_on_init.get() else {
+        let ReadOnInitState::Scanning(start) = self.lctx.group_data.read_on_init.get() else {
             return;
         };
 
@@ -546,12 +581,12 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         // Idle (not Done) so a subsequent app restart triggers a fresh scan.
         if !self.state.app().borrow().is_running() {
             debug!("AL read-on-init: cancelled (app not running)");
-            self.lctx.read_on_init.set(ReadOnInitState::Idle);
+            self.lctx.group_data.read_on_init.set(ReadOnInitState::Idle);
             return;
         }
         if !self.state.ast().borrow().is_loaded() {
             debug!("AL read-on-init: cancelled (AST not loaded)");
-            self.lctx.read_on_init.set(ReadOnInitState::Idle);
+            self.lctx.group_data.read_on_init.set(ReadOnInitState::Idle);
             return;
         }
 
@@ -592,13 +627,13 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             self.send_group_value_request(asap, true);
 
             // Save cursor for next call and return (one object per step)
-            self.lctx.read_on_init.set(ReadOnInitState::Scanning(cursor));
+            self.lctx.group_data.read_on_init.set(ReadOnInitState::Scanning(cursor));
             return;
         }
 
         // All objects scanned — cycle complete.
         info!("AL read-on-init: cycle complete ({} objects scanned)", entry_count);
-        self.lctx.read_on_init.set(ReadOnInitState::Done);
+        self.lctx.group_data.read_on_init.set(ReadOnInitState::Done);
     }
 }
 

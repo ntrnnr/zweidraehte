@@ -5,7 +5,7 @@
 //! lives in [`StackResources`](crate::StackResources) and is passed
 //! directly to layers at construction time.
 
-use core::cell::{Cell, RefCell};
+use core::cell::RefCell;
 
 use embassy_sync::{channel::Channel, pubsub::{PubSubChannel, PubSubBehavior}};
 
@@ -15,7 +15,7 @@ use crate::{
     definition::StackDefinition,
     layers::application::{
         ApplicationLayerService, ApplicationLayerServiceResponse,
-        group_data::{PendingGroupSend, ReadOnInitState},
+        group_data::GroupDataState,
     },
     objects::comm::{ComObjectEvent, ComObjects, LifecycleEvent},
     restart,
@@ -40,24 +40,13 @@ pub struct LayerContext<D: StackDefinition> {
     pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
     pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 
-    // ------------------------------------------------------------------------
-    // Group-data bookkeeping
-    //
-    // Shared across the application layer's built-in group-data handler and
-    // the [`GroupDataProvider`](crate::layers::application::group_data::GroupDataProvider)
-    // capability used by augments. Interior mutability keeps these reachable
-    // via shared references so an augment running inside a property-dispatch
-    // call can still request group sends.
-    // ------------------------------------------------------------------------
-
-    /// Read-on-init scan cursor. Advanced by the AL poll loop; restarted
-    /// when the application transitions from stopped to running.
-    pub(crate) read_on_init: Cell<ReadOnInitState>,
-
-    /// Pending group value send awaiting TL confirmation. When populated,
-    /// the next TL confirmation resolves the matching communication object
-    /// status.
-    pub(crate) pending_group_send: Cell<Option<PendingGroupSend>>,
+    /// Bookkeeping shared between the application layer's built-in
+    /// group-data handler and the
+    /// [`GroupDataProvider`](crate::layers::application::group_data::GroupDataProvider)
+    /// capability used by augments. The struct holds all its fields
+    /// behind [`Cell`](core::cell::Cell), so a provider built from a
+    /// shared reference can still advance the state.
+    pub(crate) group_data: GroupDataState,
 }
 
 impl<D: StackDefinition> LayerContext<D> {
@@ -69,8 +58,7 @@ impl<D: StackDefinition> LayerContext<D> {
             lifecycle_channel: PubSubChannel::new(),
             restart_channel: Channel::new(),
             app_service_channel: Channel::new(),
-            read_on_init: Cell::new(ReadOnInitState::Idle),
-            pending_group_send: Cell::new(None),
+            group_data: GroupDataState::new(),
         }
     }
 }
