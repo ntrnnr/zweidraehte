@@ -8,11 +8,13 @@
 //! - Module definitions and instances
 //! - Load procedures for different mask families
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine;
 
-use zweidraehte_device::ets::{EtsCommObjectDef, EtsParamType, EtsTranslation, EtsUnionFieldInfo, TranslationAttribute};
+use zweidraehte_device::ets::{
+    EtsCommObjectDef, EtsParamType, EtsTranslation, EtsUnionFieldInfo, TranslationAttribute,
+};
 
 use super::baggage::{baggages_to_refs, make_baggage_id};
 use crate::definition::module::{ModuleArgRole, ModuleArgType, StoredModuleDef};
@@ -26,8 +28,8 @@ use super::traversal::{
     collect_pictures_from_layout, collect_pictures_from_module_layout, collect_union_variant_texts,
 };
 use super::{
-    strip_no_memory_bytes, ActiveConditions, ApplicationProgramConfig, GeneratorError, MaskFamily, ParamRefMap,
-    System7MemoryLayout,
+    ActiveConditions, ApplicationProgramConfig, GeneratorError, MaskFamily, ParamRefMap, System7MemoryLayout,
+    strip_no_memory_bytes,
 };
 use crate::signing::KnxSchemaVersion;
 

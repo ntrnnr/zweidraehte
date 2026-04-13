@@ -17,7 +17,7 @@ mod mtxml;
 mod project;
 mod traversal;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::definition::module::ModuleCollection;
 use crate::definition::page_layout::PageStructure;
@@ -73,10 +73,10 @@ impl ActiveConditions {
 /// Maps parameter names to ParameterRef IDs.
 pub(crate) struct ParamRefMap {
     /// Ref map: param name -> ref_id
-    pub primary: HashMap<String, String>,
+    pub primary: BTreeMap<String, String>,
     /// Text-based ref map: (param_name, text_override) -> ref_id
     /// For union variant params that have different text overrides in different contexts
-    pub by_text: HashMap<(String, Option<String>), String>,
+    pub by_text: BTreeMap<(String, Option<String>), String>,
     /// Total number of ParameterRefs generated. ComObjectRef _R-N suffixes
     /// must start after this to avoid collisions with ParameterRef suffixes.
     pub total_ref_count: u32,
