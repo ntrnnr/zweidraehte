@@ -44,6 +44,20 @@ pub use property_ext::PropertyExtValueService;
 pub use service::{AlService, AlServiceContext};
 pub use user_memory::UserMemoryService;
 
+/// Right-associate a flat list of types into a nested pair structure:
+/// `nest!(A, B, C, D)` expands to `(A, (B, (C, D)))`.
+///
+/// Intended for composing tuple-fold traits like [`AlService`] whose
+/// blanket impl for `(A, B)` drives left-to-right dispatch. The base
+/// case requires at least two elements — a single-element composition
+/// has no meaning in this pattern, so `nest!(A)` is intentionally a
+/// compile error rather than silently expanding to a bare `A`.
+#[macro_export]
+macro_rules! nest {
+    ($a:ty, $b:ty $(,)?) => { ($a, $b) };
+    ($a:ty, $($rest:ty),+ $(,)?) => { ($a, $crate::nest!($($rest),+)) };
+}
+
 /// Standard AL services for System B devices.
 ///
 /// Composes the services commonly used by System B devices (mask
@@ -64,16 +78,12 @@ pub use user_memory::UserMemoryService;
 /// `AdcService` in particular is legacy BCU1/BCU2 and harmless on
 /// System B, but devices that target the smallest possible footprint
 /// can drop it by spelling out a smaller tuple.
-pub type SystemBAlServices = (
+pub type SystemBAlServices = nest!(
     MemoryService,
-    (
-        UserMemoryService,
-        (
-            AuthorizationService,
-            (
-                IndividualAddressSerialNumberService,
-                (AdcService, (UserManufacturerInfoService, FunctionPropertyService)),
-            ),
-        ),
-    ),
+    UserMemoryService,
+    AuthorizationService,
+    IndividualAddressSerialNumberService,
+    AdcService,
+    UserManufacturerInfoService,
+    FunctionPropertyService,
 );
