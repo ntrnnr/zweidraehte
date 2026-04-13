@@ -402,6 +402,17 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, const GRP: usize, const
                     _ => cur,
                 };
                 self.state.set_load_state(new_state);
+                // On transition into `Loaded`, seed the receiving sequence
+                // number storage from the SIAT. After this, the S-AL reads
+                // and writes per-peer last-valid seqnrs exclusively via
+                // `SequenceNumberStorage`; the SIAT table remains in state
+                // for IA-membership checks (`is_in_siat`) and ETS table I/O
+                // only — never mutated at runtime. Seeding here (rather
+                // than at every incoming frame) keeps the wear profile of
+                // the sequence store predictable.
+                if new_state == LoadState::Loaded && cur != LoadState::Loaded {
+                    self.state.seed_receiving_seqs(&mut *self.seq_storage.borrow_mut());
+                }
                 // Return the new state in the response (echo format).
                 Ok(WriteResponse::byte(new_state.into()))
             }
