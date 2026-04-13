@@ -24,7 +24,7 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, IpAugmentFor, IpDeviceState, IpExtension, SystemBMemoryMap,
+        DefaultSystemBInterfaceObjects, HasPersistedState, IpAugmentFor, IpDeviceState, IpExtension, SystemBMemoryMap,
         SystemBStackDefinition, create_system_b_objects_with_extra,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
