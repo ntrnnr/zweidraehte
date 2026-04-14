@@ -127,6 +127,12 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     // PROP4: PDT_GENERIC_01 ReadWrite (PID_SECURITY_REPORT = 0x39)
     vars.insert("ACCESSIBLE_PROP4".into(), TestVariable::Bytes(vec![0x39]));
 
+    // Manufacturer-specific overflow-test PID exposed by our DUT for
+    // conformance test 3.8.12.6: a writable view of the four 16-bit
+    // failure counters in `PID_SECURITY_FAILURES_LOG`. The reference
+    // XML names this `#OVERFLOW_PROPERTY` and suggests PID 203 (0xCB).
+    vars.insert("OVERFLOW_PROPERTY".into(), TestVariable::Bytes(vec![0xCB]));
+
     // Memory addresses for security-aware sub-region tests (3.7.2.8).
     // 3-byte MemoryExtended addresses within Level 2 memory (0x0300-0x03FF).
     vars.insert("MEM_AP_000_000".into(), TestVariable::Bytes(vec![0x00, 0x03, 0xD0]));

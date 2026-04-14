@@ -548,6 +548,17 @@ pub mod pid {
     /// GO Security Flags (PID 61)
     pub const GO_SECURITY_FLAGS: u8 = 61;
 
+    /// Test-only manufacturer-specific PID exposing the four 16-bit
+    /// `PID_SECURITY_FAILURES_LOG` counters as a writable array, used by
+    /// the Data Security conformance test 3.8.12.6 to set them to FFFFh
+    /// before provoking errors and observing saturation.
+    ///
+    /// PDT_GENERIC_02, four elements (one per failure-type counter), R/W.
+    /// Spec TSS J §3.8.12.6 says: "Set error counters to FFFFh (e.g. use
+    /// manufacturer specific PID – e.g. PID = 203 in the KNX Secure
+    /// Object with 4 Elements, each 16 Bits wide)".
+    pub const TEST_FAILURE_COUNTERS: u8 = 203;
+
     /// Role Table (PID 62)
     pub const ROLE_TABLE: u8 = 62;
 

@@ -9,8 +9,8 @@ use core::cell::RefCell;
 use super::SecurityTable;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
-    InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08,
-    PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
+    InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
+    PDT_Generic08, PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
 };
 use crate::objects::interface::{
     AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
@@ -176,6 +176,21 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const G
             pid::GO_SECURITY_FLAGS,
             PDT_UnsignedChar::ID,
             0, // 0 elements until loaded
+            PropertyAccess::ReadWrite,
+            2,
+            2,
+            AccessPolicy::TOOL_ONLY, // 00C/00C
+        ),
+        // PID_TEST_FAILURE_COUNTERS (203): manufacturer-specific
+        // direct view of `PID_SECURITY_FAILURES_LOG`'s four 16-bit
+        // counters. Read returns the live counter array; write replaces
+        // it. Used only by conformance test 3.8.12.6 to seed FFFFh
+        // before provoking errors and observing that the saturating
+        // increment in `SecurityFailuresLog::log_failure` holds.
+        PropertyDescriptor::with_policy(
+            pid::TEST_FAILURE_COUNTERS,
+            PDT_Generic02::ID,
+            4,
             PropertyAccess::ReadWrite,
             2,
             2,
@@ -361,6 +376,31 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, const GRP: usize, const
                     Ok(1)
                 }
             }
+            // ---- Test-only manufacturer-specific PID 203 ----
+            // Returns the four 16-bit failure counters as a flat array.
+            // start_idx == 0 returns the element count; otherwise returns
+            // `count` × 2-byte counters starting at `start_idx`.
+            pid::TEST_FAILURE_COUNTERS => {
+                let counters = self.state.failures_log().borrow().counters_as_bytes();
+                if req.start_idx == 0 {
+                    if buf.len() < 2 {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    buf[..2].copy_from_slice(&4u16.to_be_bytes());
+                    Ok(2)
+                } else {
+                    let start = (req.start_idx - 1) as usize * 2;
+                    let bytes = req.count as usize * 2;
+                    if start + bytes > counters.len() {
+                        return Some(Err(PropertyError::ValueOutOfRange));
+                    }
+                    if buf.len() < bytes {
+                        return Some(Err(PropertyError::BufferTooSmall));
+                    }
+                    buf[..bytes].copy_from_slice(&counters[start..start + bytes]);
+                    Ok(bytes)
+                }
+            }
             // ---- Stubs for Phase 6+ ----
             pid::SECURITY_FAILURES_LOG => Err(PropertyError::InvalidPropertyId),
             _ => Err(PropertyError::InvalidPropertyId),
@@ -489,6 +529,30 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, const GRP: usize, const
                     return Some(Err(PropertyError::BufferTooSmall));
                 }
                 self.state.set_security_report_enabled(req.data[0] != 0);
+                Ok(WriteResponse::Echo)
+            }
+            // ---- Test-only manufacturer-specific PID 203 ----
+            // Replaces the four 16-bit failure counters wholesale. We
+            // accept a write of any prefix of the four counters
+            // (`req.count` × 2 bytes starting at `start_idx - 1`) but
+            // expect the typical 4-element write from test 3.8.12.6.
+            pid::TEST_FAILURE_COUNTERS => {
+                if req.start_idx == 0 {
+                    // Element count writes are a no-op (fixed at 4).
+                    return Some(Ok(WriteResponse::Echo));
+                }
+                let start = (req.start_idx - 1) as usize;
+                let count = req.count as usize;
+                if start + count > 4 || req.data.len() < count * 2 {
+                    return Some(Err(PropertyError::ValueOutOfRange));
+                }
+                let mut log = self.state.failures_log().borrow_mut();
+                let mut counters = *log.counters();
+                for i in 0..count {
+                    let off = i * 2;
+                    counters[start + i] = u16::from_be_bytes([req.data[off], req.data[off + 1]]);
+                }
+                log.set_counters(counters);
                 Ok(WriteResponse::Echo)
             }
             _ => Err(PropertyError::InvalidPropertyId),

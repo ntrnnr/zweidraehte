@@ -417,6 +417,14 @@ impl SecurityFailuresLog {
         self.count = 0;
         self.write_idx = 0;
     }
+
+    /// Overwrite the four 16-bit counters directly. Used by the
+    /// manufacturer-specific test PID (203) so the conformance suite can
+    /// set them to a known value (typically FFFFh) before provoking
+    /// errors to verify the saturating-add behaviour of `log_failure`.
+    pub fn set_counters(&mut self, counters: [u16; 4]) {
+        self.counters = counters;
+    }
 }
 
 impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P, GO> {
