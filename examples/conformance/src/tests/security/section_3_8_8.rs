@@ -171,9 +171,134 @@ fn test_3_8_8_6() -> TestCase {
 }
 
 fn test_3_8_8_7() -> TestCase {
-    TestCase::new("3.8.8.7 Secure FunctionPropertyStateRead after power down and master reset").with_steps(vec![
-        comment("Placeholder: requires power-cycle infrastructure not available to the harness."),
-    ])
+    // Connection-oriented secure A+C `A_Restart` variants from the
+    // established pattern (see 3.8.12.2/3.8.12.3/3.8.12.4).
+    const CONNECTED_RESTART_CONFIRMED: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+    const CONNECTED_RESTART_FACTORY: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 02 00";
+    const CONNECTED_RESTART_FACTORY_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+    const CONNECTED_RESTART_FRWITHIA: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 07 00";
+    const CONNECTED_RESTART_FRWITHIA_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    const CHALLENGE_1: [u8; 6] = [0, 0, 0, 0, 0, 1];
+
+    let steps = vec![
+        // ==== Phase A: Confirmed Restart preserves PID_SECURITY_MODE ====
+        comment("A. Activate Security Mode"),
+        inject_secure_ac(COMMAND_ENABLE, "TK1"),
+        expect_secure_ac(COMMAND_RESP_OK, "TK1", TIMEOUT),
+
+        comment("A. Connection-oriented secure Confirmed Restart (erase=0x01)"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        wait(500),
+
+        comment("A. Read Security Mode → still ON (Confirmed Restart preserves)"),
+        inject_secure_ac(STATE_READ, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_ON, "TK1", TIMEOUT),
+
+        // ==== Phase B: FactoryResetKeepIA clears PID_SECURITY_MODE ====
+        comment("B. Re-activate Security Mode"),
+        inject_secure_ac(COMMAND_ENABLE, "TK1"),
+        expect_secure_ac(COMMAND_RESP_OK, "TK1", TIMEOUT),
+
+        comment("B. FactoryResetKeepIA (erase=0x07)"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac(CONNECTED_RESTART_FRWITHIA, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_FRWITHIA_RESP, "TK1", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        wait(500),
+
+        // After FactoryResetKeepIA the active tool key reverts to FDSK,
+        // security mode is OFF, but the IA is kept so we don't need to
+        // re-program. Sync the tool sequence counter and read back.
+        comment("B. Sync tool seq after FactoryResetKeepIA"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        comment("B. Read Security Mode → OFF (factory reset cleared)"),
+        inject_secure_ac(STATE_READ, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+
+        // ==== Phase C: FactoryReset clears PID_SECURITY_MODE ====
+        // Note: our DUT restored IA after the FactoryResetKeepIA (via
+        // the preserved address), so step C still starts with a valid IA.
+        comment("C. Re-activate Security Mode"),
+        inject_secure_ac(COMMAND_ENABLE, "TK1"),
+        expect_secure_ac(COMMAND_RESP_OK, "TK1", TIMEOUT),
+
+        comment("C. FactoryReset (erase=0x02) — IA gets wiped"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac(CONNECTED_RESTART_FACTORY, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_FACTORY_RESP, "TK1", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI FF FF 60 81"),
+        wait(500),
+
+        comment("C. Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
+        inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+        wait(200),
+
+        comment("C. Sync tool seq after FactoryReset"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        comment("C. Read Security Mode → OFF (factory reset cleared)"),
+        inject_secure_ac(STATE_READ, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+
+        // ==== Phase D: Local Factory Reset clears PID_SECURITY_MODE ====
+        comment("D. Re-activate Security Mode"),
+        inject_secure_ac(COMMAND_ENABLE, "TK1"),
+        expect_secure_ac(COMMAND_RESP_OK, "TK1", TIMEOUT),
+
+        comment("D. Local Factory Reset via IPC (same effect as erase=0x02)"),
+        master_reset(0x02, 2000),
+
+        comment("D. Re-program BDUT IA"),
+        inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+        wait(200),
+
+        comment("D. Sync tool seq after Local Factory Reset"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        comment("D. Read Security Mode → OFF (local factory reset cleared)"),
+        inject_secure_ac(STATE_READ, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+
+        // ==== Phase E: Power Down preserves PID_SECURITY_MODE ====
+        comment("E. Activate Security Mode"),
+        inject_secure_ac(COMMAND_ENABLE, "TK1"),
+        expect_secure_ac(COMMAND_RESP_OK, "TK1", TIMEOUT),
+
+        comment("E. Power cycle the DUT"),
+        power_cycle(2000),
+
+        comment("E. Sync tool seq after power cycle"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        comment("E. Read Security Mode → still ON (power cycle preserves)"),
+        inject_secure_ac(STATE_READ, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_ON, "TK1", TIMEOUT),
+    ];
+
+    TestCase::new("3.8.8.7 Secure FunctionPropertyStateRead after power down and master reset")
+        .with_steps(steps)
 }
 
 // ============================================================================
