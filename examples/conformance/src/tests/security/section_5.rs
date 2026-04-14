@@ -59,15 +59,73 @@ pub fn create_section_5_suite() -> TestSuite {
         ])
         .with_cases(vec![
             test_5_1_1(),
+            test_5_1_2(),
+            test_5_1_3(),
+            test_5_1_4(),
+            test_5_1_5(),
             test_5_1_6(),
             test_5_1_7(),
+            test_5_2_0(),
             test_5_2_1(),
+            test_5_2_2(),
+            test_5_2_3(),
+            test_5_2_4(),
             test_5_2_5(),
             test_5_2_6(),
-            test_5_1_2(),
-            // Skipped: 5.1.3-5.1.5, 5.2.2-5.2.4 — need connection-oriented
-            // authorize sequences.
         ])
+}
+
+fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
+    TestCase::new(name).with_steps(vec![comment(reason)])
+}
+
+fn test_5_1_3() -> TestCase {
+    placeholder(
+        "5.1.3 MemoryExtended_Write – not authorized (Conditional)",
+        "Placeholder: requires connection-oriented A_Authorize key sequence not yet supported by the harness.",
+    )
+}
+
+fn test_5_1_4() -> TestCase {
+    placeholder(
+        "5.1.4 MemoryExtended_Write – read only memory (if available in BDUT)",
+        "Placeholder: requires a read-only memory region on the DUT; current DUT exposes no such region.",
+    )
+}
+
+fn test_5_1_5() -> TestCase {
+    placeholder(
+        "5.1.5 MemoryExtended_Write – partly read only memory",
+        "Placeholder: requires a partly read-only memory region on the DUT; current DUT exposes no such region.",
+    )
+}
+
+fn test_5_2_0() -> TestCase {
+    placeholder(
+        "5.2.0 Test Preparation",
+        "Placeholder: documentation-only test-preparation entry (no active telegrams).",
+    )
+}
+
+fn test_5_2_2() -> TestCase {
+    placeholder(
+        "5.2.2 MemoryExtended_Read – not authorized (Conditional)",
+        "Placeholder: requires connection-oriented A_Authorize key sequence not yet supported by the harness.",
+    )
+}
+
+fn test_5_2_3() -> TestCase {
+    placeholder(
+        "5.2.3 MemoryExtended_Read – write only memory (if available in BDUT)",
+        "Placeholder: requires a write-only memory region on the DUT; current DUT exposes no such region.",
+    )
+}
+
+fn test_5_2_4() -> TestCase {
+    placeholder(
+        "5.2.4 MemoryExtended_Read – partly write only memory (if available in BDUT)",
+        "Placeholder: requires a partly write-only memory region on the DUT; current DUT exposes no such region.",
+    )
 }
 
 // ============================================================================

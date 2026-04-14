@@ -46,10 +46,28 @@ pub fn create_section_4_2_suite() -> TestSuite {
             test_4_2_1(),
             test_4_2_7(),
             test_4_2_10(),
+            test_4_2_11(),
+            test_4_2_12(),
             test_4_2_13(),
-            // Skipped: 4.2.11 — access level restrictions (needs Authorize sequence)
-            // Skipped: 4.2.12 — min/max value check (optional, device-specific)
         ])
+}
+
+fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
+    TestCase::new(name).with_steps(vec![comment(reason)])
+}
+
+fn test_4_2_11() -> TestCase {
+    placeholder(
+        "4.2.11 A_PropertyExtValue_WriteCon, to area with higher access level",
+        "Placeholder: requires connection-oriented A_Authorize key sequence; harness does not yet drive access-level authorization.",
+    )
+}
+
+fn test_4_2_12() -> TestCase {
+    placeholder(
+        "4.2.12 A_PropertyExtValue_WriteCon, minimum, maximum value and void value (Optional)",
+        "Placeholder: optional min/max/void-value check is device-specific and not exercised on this DUT.",
+    )
 }
 
 // ============================================================================

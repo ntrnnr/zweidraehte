@@ -212,9 +212,69 @@ pub fn create_section_3_8_12_suite() -> TestSuite {
     TestSuite::new("3.8.12 PID_SECURITY_FAILURES_LOG (Security IO, access 1FF/0CC)", variables)
         .secure()
         .with_cases(vec![
+            test_3_8_12_1(),
+            test_3_8_12_2(),
+            test_3_8_12_3(),
+            test_3_8_12_4(),
+            test_3_8_12_5(),
+            test_3_8_12_6(),
             test_3_8_12_7(),
+            test_3_8_12_8(),
             test_3_8_12_9(),
         ])
+}
+
+fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
+    TestCase::new(name).with_steps(vec![comment(reason)])
+}
+
+fn test_3_8_12_1() -> TestCase {
+    placeholder(
+        "3.8.12.1 Secure FunctionProperty, behavior on Power Down – Unsecure FunctionPropertyRead/Write – Unsecure FunctionPropertyRead with A only – Unsecure FunctionCommand – FunctionCommand with A only",
+        "Placeholder: requires power-cycle infrastructure not available to the harness.",
+    )
+}
+
+fn test_3_8_12_2() -> TestCase {
+    placeholder(
+        "3.8.12.2 Secure FunctionPropertyCommand, behavior on Confirmed Restart",
+        "Placeholder: requires confirmed-restart handling and persistence infrastructure.",
+    )
+}
+
+fn test_3_8_12_3() -> TestCase {
+    placeholder(
+        "3.8.12.3 Secure FunctionPropertyCommand, behavior on Factory Reset",
+        "Placeholder: requires factory-reset infrastructure not available to the harness.",
+    )
+}
+
+fn test_3_8_12_4() -> TestCase {
+    placeholder(
+        "3.8.12.4 Secure FunctionPropertyCommand, behavior on Factory Reset without IA",
+        "Placeholder: requires factory-reset-without-IA infrastructure not available to the harness.",
+    )
+}
+
+fn test_3_8_12_5() -> TestCase {
+    placeholder(
+        "3.8.12.5 Secure FunctionPropertyCommand, behavior on Local Factory Reset",
+        "Placeholder: requires local factory-reset trigger infrastructure not available to the harness.",
+    )
+}
+
+fn test_3_8_12_6() -> TestCase {
+    placeholder(
+        "3.8.12.6 Check prevention of Overflow in security counters",
+        "Placeholder: requires driving the failure-log counters to overflow; needs additional stimulation infrastructure.",
+    )
+}
+
+fn test_3_8_12_8() -> TestCase {
+    placeholder(
+        "3.8.12.8 Secure FunctionPropertyCommand, negative cases",
+        "Placeholder: negative-case stimulation of FunctionPropertyCommand not yet wired up.",
+    )
 }
 
 // ============================================================================

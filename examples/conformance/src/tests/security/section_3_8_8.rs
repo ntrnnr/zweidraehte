@@ -159,7 +159,21 @@ pub fn create_section_3_8_8_suite() -> TestSuite {
             test_3_8_8_3(),
             test_3_8_8_4(),
             test_3_8_8_5(),
+            test_3_8_8_6(),
+            test_3_8_8_7(),
         ])
+}
+
+fn test_3_8_8_6() -> TestCase {
+    TestCase::new("3.8.8.6 Secure FunctionPropertyStateRead").with_steps(vec![
+        comment("Placeholder: XML entry is comment-only (no active telegrams) — documentation-only cross-reference."),
+    ])
+}
+
+fn test_3_8_8_7() -> TestCase {
+    TestCase::new("3.8.8.7 Secure FunctionPropertyStateRead after power down and master reset").with_steps(vec![
+        comment("Placeholder: requires power-cycle infrastructure not available to the harness."),
+    ])
 }
 
 // ============================================================================

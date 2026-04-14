@@ -158,6 +158,9 @@ pub fn create_section_3_2_suite() -> TestSuite {
             // Setup: load Security IO and write GO flags.
             test_3_2_setup(),
 
+            // Placeholder (introduction — documentation-only, 0 telegrams in XML).
+            test_3_2_1(),
+
             // ================================================================
             // Positive tests: auth-only (GO_SEC_0, GK1/GK2)
             // ================================================================
@@ -526,5 +529,15 @@ fn test_3_2_13() -> TestCase {
         comment("Cleanup: clear SIAT entries"),
         inject_secure_ac(CLEAR_SIAT, "TK1"),
         expect_secure_ac(CLEAR_SIAT_OK, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.2.1 — placeholder (introduction / setup assumptions, 0 telegrams in XML)
+// ============================================================================
+
+fn test_3_2_1() -> TestCase {
+    TestCase::new("3.2.1 Introduction").with_steps(vec![
+        comment("Placeholder: documents GO/key/GA assumptions for the 3.2 suite."),
     ])
 }

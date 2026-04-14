@@ -49,8 +49,14 @@ pub fn create_section_4_4_suite() -> TestSuite {
             test_4_4_9(),
             test_4_4_7(),
             test_4_4_10(),
-            // Skipped: 4.4.11 — access level restrictions (needs Authorize sequence)
+            test_4_4_11(),
         ])
+}
+
+fn test_4_4_11() -> TestCase {
+    TestCase::new("4.4.11 A_PropertyExtValue_InfoReport, to area with higher access level, to be ignored by MaS").with_steps(vec![
+        comment("Placeholder: requires connection-oriented A_Authorize key sequence; harness does not yet drive access-level authorization."),
+    ])
 }
 
 // ============================================================================

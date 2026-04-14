@@ -53,6 +53,7 @@ pub fn create_section_6_suite() -> TestSuite {
         .with_cases(vec![
             test_6_1_1(),
             test_6_1_2(),
+            test_6_1_3(),
             test_6_1_4(),
             test_6_1_5(),
             test_6_1_6(),
@@ -1082,5 +1083,11 @@ fn test_6_2_29() -> TestCase {
         comment("Set normal mode"),
         inject("BC #EDI #BDUT_ADDR 69 01 D4 00 03 00 10 34 00 00 00"),
         expect("BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 20 00 00 FF", TIMEOUT),
+    ])
+}
+
+fn test_6_1_3() -> TestCase {
+    TestCase::new("6.1.3 Reading normal operation mode – negative response due to invalid ReadServiceID coding").with_steps(vec![
+        comment("Placeholder: XML entry is comment-only (no active telegrams) — covered by other 6.1.x ReadServiceID negative cases."),
     ])
 }

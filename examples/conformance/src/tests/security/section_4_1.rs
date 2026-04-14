@@ -38,13 +38,37 @@ pub fn create_section_4_1_suite() -> TestSuite {
             test_4_1_4(),
             test_4_1_5(),
             test_4_1_6(),
+            test_4_1_7(),
+            test_4_1_8(),
             test_4_1_9(),
+            test_4_1_10(),
             test_4_1_11(),
-            // Skipped: 4.1.7, 4.1.8 — require #USER_OBJ_TYPE1, #MAX_APDU_LENGTH
-            //   variables and a user-defined IO not in our DUT.
-            // Skipped: 4.1.10 — requires connection-oriented authorization key
-            //   setup (38 telegrams with A_Authorize/A_Key_Write sequences).
         ])
+}
+
+fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
+    TestCase::new(name).with_steps(vec![comment(reason)])
+}
+
+fn test_4_1_7() -> TestCase {
+    placeholder(
+        "4.1.7 A_PropertyExtValue_Read, data fitting to Max APDU Length",
+        "Placeholder: requires #USER_OBJ_TYPE1 / #MAX_APDU_LENGTH variables and a user-defined IO not present on the DUT.",
+    )
+}
+
+fn test_4_1_8() -> TestCase {
+    placeholder(
+        "4.1.8 A_PropertyExtValue_Read, data exceeds Max APDU Length",
+        "Placeholder: requires #USER_OBJ_TYPE1 / #MAX_APDU_LENGTH variables and a user-defined IO not present on the DUT.",
+    )
+}
+
+fn test_4_1_10() -> TestCase {
+    placeholder(
+        "4.1.10 A_PropertyExtValue_Read, to area with higher access level (Conditional)",
+        "Placeholder: requires connection-oriented A_Authorize / A_Key_Write authorization-key setup not yet supported by the harness.",
+    )
 }
 
 // ============================================================================

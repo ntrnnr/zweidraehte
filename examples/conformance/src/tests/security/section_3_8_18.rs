@@ -153,9 +153,14 @@ pub fn create_section_3_8_18_suite() -> TestSuite {
     .secure()
     .with_cases(vec![
         test_3_8_18_1(),
+        test_3_8_18_2(),
         test_3_8_18_3(),
-        // Skipped: 3.8.18.2 — uses P2P key infrastructure and alternative
-        //   individual address (0x2202), not yet implemented.
+    ])
+}
+
+fn test_3_8_18_2() -> TestCase {
+    TestCase::new("3.8.18.2 Secured S-A_Data, P2P Key").with_steps(vec![
+        comment("Placeholder: requires P2P-key infrastructure and alternative individual address (0x2202); not yet supported by the harness."),
     ])
 }
 

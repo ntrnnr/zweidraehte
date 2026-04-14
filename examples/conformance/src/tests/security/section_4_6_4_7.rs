@@ -22,16 +22,37 @@ pub fn create_section_4_6_4_7_suite() -> TestSuite {
             wait(1000),
         ])
         .with_cases(vec![
+            test_4_6_0(),
             test_4_6_1(),
+            test_4_6_2(),
             test_4_6_3(),
             test_4_6_4(),
             test_4_6_5(),
+            test_4_7_0(),
             test_4_7_1(),
             test_4_7_2(),
             test_4_7_3(),
             test_4_7_4(),
             test_4_7_5(),
         ])
+}
+
+fn test_4_6_0() -> TestCase {
+    TestCase::new("4.6.0 Test preparation").with_steps(vec![
+        comment("Placeholder: documentation-only test-preparation entry (no active telegrams)."),
+    ])
+}
+
+fn test_4_6_2() -> TestCase {
+    TestCase::new("4.6.2 A_FunctionPropertyExtCommand with funtion returns error").with_steps(vec![
+        comment("Placeholder: XML entry is comment-only (no active telegrams) — documentation-only cross-reference."),
+    ])
+}
+
+fn test_4_7_0() -> TestCase {
+    TestCase::new("4.7.0 Test preparation").with_steps(vec![
+        comment("Placeholder: documentation-only test-preparation entry (no active telegrams)."),
+    ])
 }
 
 // ============================================================================

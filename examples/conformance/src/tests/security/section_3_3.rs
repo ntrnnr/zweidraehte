@@ -51,6 +51,10 @@ pub fn create_section_3_3_suite() -> TestSuite {
             wait(55000),
         ])
         .with_cases(vec![
+            // Placeholder cases (0 active telegrams in XML).
+            test_3_3_0(),
+            test_3_3_7(),
+            test_3_3_12(),
             // ================================================================
             // Positive tests
             // ================================================================
@@ -642,5 +646,35 @@ fn test_3_3_21() -> TestCase {
             InvalidSecurityParam::TruncateBytes(1),
         ),
         expect_none(TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.3.0 — placeholder (preparation is performed via suite `.with_preparation`)
+// ============================================================================
+
+fn test_3_3_0() -> TestCase {
+    TestCase::new("3.3.0 Test preparation").with_steps(vec![
+        comment("Placeholder: preparation is executed as suite-level with_preparation."),
+    ])
+}
+
+// ============================================================================
+// 3.3.7 — placeholder (covered by Vol 8/3/7 "wrong APCIs")
+// ============================================================================
+
+fn test_3_3_7() -> TestCase {
+    TestCase::new("3.3.7 incorrect S-A_Sync_Req-PDU - incorrect APCI – P2P").with_steps(vec![
+        comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'."),
+    ])
+}
+
+// ============================================================================
+// 3.3.12 — placeholder (EITT cannot inject wrong challenge; see 3.3.18)
+// ============================================================================
+
+fn test_3_3_12() -> TestCase {
+    TestCase::new("3.3.12 S-A_Sync_Req-PDU, A+C with wrong encrypted data – (system) broadcast").with_steps(vec![
+        comment("Placeholder: see 3.3.18; challenge is MAC input and EITT cannot inject wrong challenge."),
     ])
 }

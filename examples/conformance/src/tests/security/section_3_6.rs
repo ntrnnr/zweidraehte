@@ -164,6 +164,8 @@ pub fn create_section_3_6_suite() -> TestSuite {
         .secure()
         .with_preparation(preparation_steps())
         .with_cases(vec![
+            // Placeholders (documentation-only / cleanup section in XML).
+            test_3_6_1_1(),
             test_3_6_1_2(),
             test_3_6_1_3(),
             test_3_6_1_4(),
@@ -175,8 +177,29 @@ pub fn create_section_3_6_suite() -> TestSuite {
             test_3_6_1_10(),
             test_3_6_1_11(),
             test_3_6_1_12(),
+            test_3_6_1_x(),
         ])
         .with_teardown(teardown_steps())
+}
+
+// ============================================================================
+// 3.6.1.1 — placeholder (introduction / role-GA table in XML)
+// ============================================================================
+
+fn test_3_6_1_1() -> TestCase {
+    TestCase::new("3.6.1.1 Introduction").with_steps(vec![
+        comment("Placeholder: documents role/GA/key assumptions for the 3.6 suite."),
+    ])
+}
+
+// ============================================================================
+// 3.6.1.x — placeholder (cleanup; executed via suite teardown)
+// ============================================================================
+
+fn test_3_6_1_x() -> TestCase {
+    TestCase::new("3.6.1.x Clean up").with_steps(vec![
+        comment("Placeholder: cleanup is executed as suite-level teardown."),
+    ])
 }
 
 // ============================================================================

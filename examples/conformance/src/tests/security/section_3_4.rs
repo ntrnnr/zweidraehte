@@ -153,6 +153,9 @@ pub fn create_section_3_4_suite() -> TestSuite {
             test_3_4_5(),
             test_3_4_7(),
             test_3_4_9(),
+            test_3_4_6(),
+            test_3_4_8(),
+            test_3_4_10(),
         ])
         .with_teardown(vec![
             comment("Cleanup: revert security state, clear tables"),
@@ -316,5 +319,35 @@ fn test_3_4_9() -> TestCase {
         comment("Verify DUT is functional after broadcast sync"),
         inject_secure_ac(READ_SEQ_SENDING, "TK1"),
         expect_secure_ac(READ_SEQ_SENDING_OK, "TK1", TIMEOUT),
+    ])
+}
+
+// ============================================================================
+// 3.4.6 — placeholder (covered by Vol 8/3/7 "wrong APCIs")
+// ============================================================================
+
+fn test_3_4_6() -> TestCase {
+    TestCase::new("3.4.6 incorrect S-A_Sync_Res-PDU to a P2P request - wrong APCI").with_steps(vec![
+        comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'."),
+    ])
+}
+
+// ============================================================================
+// 3.4.8 — placeholder (not testable: BDUT random unknown to test tool)
+// ============================================================================
+
+fn test_3_4_8() -> TestCase {
+    TestCase::new("3.4.8 incorrect S-A_Sync_Res-PDU to a P2P request - incorrect SAI").with_steps(vec![
+        comment("Placeholder: not testable — BDUT-sent random value is unknown to the test tool."),
+    ])
+}
+
+// ============================================================================
+// 3.4.10 — placeholder (not testable: BDUT random unknown to test tool)
+// ============================================================================
+
+fn test_3_4_10() -> TestCase {
+    TestCase::new("3.4.10 incorrect S-A_Sync_Res-PDU to a broadcast request - wrong MAC").with_steps(vec![
+        comment("Placeholder: not testable — BDUT-sent random value is unknown to the test tool."),
     ])
 }

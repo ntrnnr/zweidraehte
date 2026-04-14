@@ -48,9 +48,15 @@ pub fn create_section_4_3_suite() -> TestSuite {
             test_4_3_9(),
             test_4_3_7(),
             test_4_3_10(),
+            test_4_3_11(),
             test_4_3_12(),
-            // Skipped: 4.3.11 — access level restrictions (needs Authorize sequence)
         ])
+}
+
+fn test_4_3_11() -> TestCase {
+    TestCase::new("4.3.11 A_PropertyExtValue_WriteUnCon, to area with higher access level").with_steps(vec![
+        comment("Placeholder: requires connection-oriented A_Authorize key sequence; harness does not yet drive access-level authorization."),
+    ])
 }
 
 // ============================================================================

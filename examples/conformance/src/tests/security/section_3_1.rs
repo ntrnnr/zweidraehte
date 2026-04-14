@@ -97,8 +97,30 @@ pub fn create_section_3_1_suite() -> TestSuite {
 
             test_3_1_24(),
 
-            // Skipped: 3.1.4 and 3.1.16 (deactivated in XML, 0 active telegrams)
+            // Placeholders for cross-reference cases (0 active telegrams in XML).
+            test_3_1_4(),
+            test_3_1_16(),
         ])
+}
+
+// ============================================================================
+// 3.1.4 — placeholder (covered by Vol 8/3/7 "wrong APCIs")
+// ============================================================================
+
+fn test_3_1_4() -> TestCase {
+    TestCase::new("3.1.4 incorrect S-A_Data A only - incorrect APCI Sec").with_steps(vec![
+        comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'."),
+    ])
+}
+
+// ============================================================================
+// 3.1.16 — placeholder (covered by Vol 8/3/7 "wrong APCIs")
+// ============================================================================
+
+fn test_3_1_16() -> TestCase {
+    TestCase::new("3.1.16 incorrect S-A_Data PDU - incorrect APCI").with_steps(vec![
+        comment("Placeholder: covered by Application Layer Test 8/3/7 'wrong APCIs'."),
+    ])
 }
 
 // ============================================================================

@@ -183,10 +183,30 @@ pub fn create_section_3_8_14_suite() -> TestSuite {
     TestSuite::new("3.8.14 PID_SECURITY_REPORT / REPORT_CONTROL (Security IO)", variables)
         .secure()
         .with_cases(vec![
+            test_3_8_14_1(),
             test_3_8_14_2(),
             test_3_8_14_3(),
             test_3_8_14_4(),
+            test_3_8_14_5(),
         ])
+}
+
+fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
+    TestCase::new(name).with_steps(vec![comment(reason)])
+}
+
+fn test_3_8_14_1() -> TestCase {
+    placeholder(
+        "3.8.14.1 Secure PropertyValueRead and Write – A+C",
+        "Placeholder: requires driving REPORT/REPORT_CONTROL trigger conditions; stimulation infrastructure not yet wired.",
+    )
+}
+
+fn test_3_8_14_5() -> TestCase {
+    placeholder(
+        "3.8.14.5 Secure PropertyValueRead after power down/master reset",
+        "Placeholder: requires power-cycle / master-reset infrastructure not available to the harness.",
+    )
 }
 
 // ============================================================================
