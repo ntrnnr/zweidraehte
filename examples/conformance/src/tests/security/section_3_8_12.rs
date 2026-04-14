@@ -24,6 +24,9 @@ use crate::tests::helpers::*;
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
 
+/// Challenge bytes used in sync_req after the power cycle in 3.8.12.1–6.
+const CHALLENGE_1: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+
 // ============================================================================
 // Security Mode Toggle Templates
 // ============================================================================
@@ -229,17 +232,100 @@ fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
 }
 
 fn test_3_8_12_1() -> TestCase {
-    placeholder(
-        "3.8.12.1 Secure FunctionProperty, behavior on Power Down – Unsecure FunctionPropertyRead/Write – Unsecure FunctionPropertyRead with A only – Unsecure FunctionCommand – FunctionCommand with A only",
-        "Placeholder: requires power-cycle infrastructure not available to the harness.",
+    let mut steps = vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("==== General Procedure (clear + provoke 3 errors + verify) ===="),
+    ];
+    steps.extend(general_procedure_steps());
+
+    // ==== Power down / power up the BDUT ====
+    //
+    // The XML says `@@Power down BDUT and power up again`. We simulate with
+    // `power_cycle`, which flushes the live state to the shared-memory region
+    // (so the failures log + counters survive) and respawns the child.
+    steps.extend(vec![
+        comment("==== Specific procedure for 3.8.12.1: Power down + power up ===="),
+        power_cycle(2000),
+
+        // After the power cycle the harness's tool-sending seq counter is
+        // ahead of the DUT's freshly-reloaded receiving seq. Re-sync so
+        // subsequent secure frames are accepted.
+        comment("Sync with BDUT after power-up to re-align tool seq numbers"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        // ---- Verify counters persisted ----
+        comment("Read counters after power-up → expect same [0, 1, 1, 1]"),
+        inject_secure_ac(READ_COUNTERS, "TK1"),
+        expect_secure_ac(READ_COUNTERS_RESP, "TK1", TIMEOUT),
+
+        comment("Read last entry after power-up → expect same SeqNrError"),
+        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
+        expect_secure_ac(READ_LAST_ENTRY_RESP, "TK1", TIMEOUT),
+    ]);
+
+    TestCase::new(
+        "3.8.12.1 Secure FunctionProperty, behavior on Power Down",
     )
+    .with_steps(steps)
 }
 
 fn test_3_8_12_2() -> TestCase {
-    placeholder(
-        "3.8.12.2 Secure FunctionPropertyCommand, behavior on Confirmed Restart",
-        "Placeholder: requires confirmed-restart handling and persistence infrastructure.",
-    )
+    // Connection-oriented A_Restart master reset: restart_type=1, erase=0x01
+    // (Confirmed). TPCI 0x43 (numbered seq 0 + APCI high 0x03), APCI 0x8101,
+    // erase_code=0x01, channel=0x00.
+    const CONNECTED_RESTART_CONFIRMED: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+    // A_Restart_Response: error_code=0x00, process_time=?? (2 bytes).
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    let mut steps = vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("==== General Procedure (clear + provoke 3 errors + verify) ===="),
+    ];
+    steps.extend(general_procedure_steps());
+
+    // Confirmed Restart (erase=0x01) preserves all state including the
+    // failures log. No sync needed — the DUT keeps its tool sending /
+    // receiving sequence counters across this restart variant.
+    steps.extend(vec![
+        comment("==== Specific procedure for 3.8.12.2: Confirmed Restart ===="),
+        comment("Open transport connection"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+
+        comment("Secure A+C numbered A_Restart (Confirmed, erase=0x01)"),
+        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+        comment("Expect T_ACK for our numbered request"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        comment("Expect secure A+C A_Restart_Response (error=0)"),
+        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+        comment("ACK the response"),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        comment("T_Disconnect"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+
+        comment("Wait for the DUT to auto-restart (parent respawns on EOF)"),
+        wait(500),
+
+        // ---- Verify counters persisted across Confirmed Restart ----
+        comment("Read counters after restart → expect same [0, 1, 1, 1]"),
+        inject_secure_ac(READ_COUNTERS, "TK1"),
+        expect_secure_ac(READ_COUNTERS_RESP, "TK1", TIMEOUT),
+
+        comment("Read last entry after restart → expect same SeqNrError"),
+        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
+        expect_secure_ac(READ_LAST_ENTRY_RESP, "TK1", TIMEOUT),
+    ]);
+
+    TestCase::new("3.8.12.2 Secure FunctionPropertyCommand, behavior on Confirmed Restart")
+        .with_steps(steps)
 }
 
 fn test_3_8_12_3() -> TestCase {

@@ -412,8 +412,8 @@ pub enum IpcCommand {
     PowerCycle,
     /// Perform a factory reset with the given erase-code byte, flush to
     /// SHM, and exit. The byte matches `A_Restart` `EraseCode` encodings:
-    /// 0x01=Basic, 0x02=Confirmed, 0x03=FactoryReset, 0x04=ResetIA,
-    /// 0x05=ResetAP, 0x06=ResetParam, 0x07=ResetLinks, 0x08=FactoryResetKeepIA.
+    /// 0x00=Basic, 0x01=Confirmed, 0x02=FactoryReset, 0x03=ResetIA,
+    /// 0x04=ResetAP, 0x05=ResetParam, 0x06=ResetLinks, 0x07=FactoryResetKeepIA.
     MasterReset { erase_code: u8 },
 }
 
