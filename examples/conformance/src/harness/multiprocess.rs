@@ -17,8 +17,8 @@ use std::process::{Child, Command};
 use async_io::Async;
 
 use super::ipc::{
-    self, SharedMemory, TAG_CAPTURED, TAG_INJECT, TAG_LOG, TAG_READY, TAG_SET_PROGRAMMING_MODE, TAG_TRIGGER_READ,
-    TAG_TRIGGER_SYNC, TAG_TRIGGER_WRITE,
+    self, SharedMemory, TAG_CAPTURED, TAG_INJECT, TAG_LOG, TAG_MASTER_RESET, TAG_POWER_CYCLE, TAG_READY,
+    TAG_SET_PROGRAMMING_MODE, TAG_TRIGGER_READ, TAG_TRIGGER_SYNC, TAG_TRIGGER_WRITE,
 };
 use super::mock::CapturedLinkLayerMessage;
 use super::stack::ConformancePersistedState;
@@ -325,6 +325,37 @@ impl MultiProcessHarness {
     pub async fn trigger_sync(&mut self, peer_ia: u16, tool_access: bool, is_broadcast: bool) -> io::Result<()> {
         let ia_bytes = peer_ia.to_be_bytes();
         self.send_command(TAG_TRIGGER_SYNC, &[ia_bytes[0], ia_bytes[1], tool_access as u8, is_broadcast as u8]).await
+    }
+
+    /// Simulate a power cycle: tell the child to flush its current state
+    /// into the shared memory region and exit, then wait for it to exit
+    /// and respawn it.
+    ///
+    /// Unlike an `A_Restart` triggered via bus injection, this does not
+    /// consume an application-layer service nor emit a restart response
+    /// on the bus. Persisted state (Security IO properties, sequence
+    /// numbers, loaded tables) survives; volatile state (transport
+    /// connections, programming-mode flag, CO statuses) is reset when
+    /// the new child starts.
+    pub async fn power_cycle(&mut self, timeout: embassy_time::Duration) -> io::Result<()> {
+        self.send_command(TAG_POWER_CYCLE, &[]).await?;
+        self.wait_for_restart(timeout).await
+    }
+
+    /// Simulate a master reset: tell the child to apply the given
+    /// `EraseCode` (by raw byte), flush the updated state, and exit,
+    /// then wait for it to exit and respawn.
+    ///
+    /// `erase_code` uses the same numeric encoding as the bus-level
+    /// `A_Restart` service (0x03 = FactoryReset, 0x08 = FactoryResetKeepIA,
+    /// etc.). See `TAG_MASTER_RESET` for the full mapping.
+    pub async fn master_reset(
+        &mut self,
+        erase_code: u8,
+        timeout: embassy_time::Duration,
+    ) -> io::Result<()> {
+        self.send_command(TAG_MASTER_RESET, &[erase_code]).await?;
+        self.wait_for_restart(timeout).await
     }
 
     /// Wait for the child to exit (restart) and respawn it.

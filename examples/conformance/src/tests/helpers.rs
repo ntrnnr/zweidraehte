@@ -155,6 +155,26 @@ pub fn wait_for_restart(timeout_ms: u32) -> TestStep {
     TestStep::WaitForRestart { timeout_ms }
 }
 
+/// Simulate a power cycle: flushes persisted DUT state to the shared
+/// memory region, exits the DUT child, and respawns it. Volatile state
+/// (transport connections, programming mode, CO statuses) is cleared;
+/// persisted state (Security IO properties, sequence numbers, tables)
+/// survives — matching how a real device behaves across a power
+/// interruption.
+pub fn power_cycle(timeout_ms: u32) -> TestStep {
+    TestStep::PowerCycle { timeout_ms }
+}
+
+/// Simulate a master reset: applies the given `A_Restart` erase code to
+/// the DUT (e.g. `0x03` = FactoryReset, `0x08` = FactoryResetKeepIA),
+/// flushes the updated state, and respawns. Unlike injecting an
+/// `A_Restart` telegram, this does not generate an `A_Restart_Response`
+/// on the bus — it represents a local reset (power-on while a service
+/// button is held, for example).
+pub fn master_reset(erase_code: u8, timeout_ms: u32) -> TestStep {
+    TestStep::MasterReset { erase_code, timeout_ms }
+}
+
 // ============================================================================
 // KNX Data Secure helpers
 // ============================================================================

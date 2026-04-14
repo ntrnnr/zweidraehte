@@ -17,6 +17,8 @@ use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
+// `ShmCell` is defined locally so the power-cycle/master-reset command
+// handlers share the same `&'static ShmCell` with the restart handler.
 use zweidraehte_conformance::harness::secure_stack::{
     IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceStateConfig,
 };
@@ -62,6 +64,7 @@ async fn run_stack(runner: Runner<'static, IpcSecureConformanceTestStack>) {
 async fn handle_commands(
     stack: Stack<'static, IpcSecureConformanceTestStack>,
     commands: &'static Channel<NoopRawMutex, IpcCommand, 8>,
+    shm: &'static ShmCell,
 ) {
     loop {
         let cmd = commands.receive().await;
@@ -82,8 +85,55 @@ async fn handle_commands(
                 log::info!("CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
                 let _ = stack.initiate_sync(peer_ia, tool_access, is_broadcast).await;
             }
+            IpcCommand::PowerCycle => {
+                log::info!("CMD: PowerCycle — flush + exit");
+                // Give the IPC loop a tick to ack the command before we exit.
+                Timer::after(Duration::from_millis(1)).await;
+                flush_and_exit(stack, shm, None);
+            }
+            IpcCommand::MasterReset { erase_code } => {
+                log::info!("CMD: MasterReset(erase_code=0x{:02x}) — reset + flush + exit", erase_code);
+                Timer::after(Duration::from_millis(1)).await;
+                flush_and_exit(stack, shm, Some(EraseCode::from(erase_code)));
+            }
         }
     }
+}
+
+/// Shared flush-and-exit used by both the restart handler and the
+/// `PowerCycle` / `MasterReset` IPC commands. Applies an optional erase
+/// code, serializes the current state snapshot into the shared memory
+/// region, and calls `process::exit(0)` so the parent respawns.
+fn flush_and_exit(
+    stack: Stack<'static, IpcSecureConformanceTestStack>,
+    shm: &'static ShmCell,
+    erase: Option<EraseCode>,
+) -> ! {
+    let state = stack.state();
+    if let Some(code) = erase {
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => {}
+            EraseCode::FactoryReset => state.inner().factory_reset(),
+            EraseCode::ResetIA => state.inner().reset_individual_address(),
+            EraseCode::ResetAP => state.inner().reset_application(),
+            EraseCode::ResetParam => state.inner().reset_parameters(),
+            EraseCode::ResetLinks => {
+                state.inner().reset_address_table();
+                state.inner().reset_association_table();
+            }
+            EraseCode::FactoryResetKeepIA => state.inner().factory_reset_keep_ia(),
+            // Unknown codes fall through to a plain flush (matches
+            // the restart handler's behaviour for `Other(_)`).
+            _ => {}
+        }
+    }
+    let snapshot = state.to_persisted_snapshot();
+    // SAFETY: Single-threaded embassy executor — no concurrent access.
+    let shm_mut = unsafe { &mut *shm.0.get() };
+    if let Err(e) = shm_mut.write_state(&snapshot) {
+        log::error!("Failed to flush state to shared memory: {}", e);
+    }
+    std::process::exit(0);
 }
 
 // ============================================================================
@@ -289,7 +339,7 @@ async fn main(spawner: Spawner) {
     }
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
-    spawner.spawn(handle_commands(stack, command_channel)).expect("spawn command handler");
+    spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
     spawner.spawn(handle_restarts(stack, shm)).expect("spawn restart handler");
 
     loop {

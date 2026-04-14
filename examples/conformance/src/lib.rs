@@ -178,6 +178,22 @@ pub enum TestStep {
     /// automatic post-restart behavior (e.g., Read-On-Init scans).
     WaitForRestart { timeout_ms: u32 },
 
+    /// Simulate a power cycle: tell the DUT to flush its current persisted
+    /// state to the shared-memory region and exit, then respawn it. This
+    /// resets volatile state (connections, programming mode, CO statuses)
+    /// but preserves persisted state (Security IO properties, sequence
+    /// numbers, loaded tables) — as a real device would after a power
+    /// interruption.
+    PowerCycle { timeout_ms: u32 },
+
+    /// Simulate a master reset: apply the given `A_Restart` `EraseCode`
+    /// to the DUT, flush the updated state, and respawn. Uses the same
+    /// erase-code encoding as the bus-level `A_Restart` service (0x03 =
+    /// FactoryReset, 0x08 = FactoryResetKeepIA, etc.). For the rare
+    /// tests that need a factory reset without emitting an `A_Restart`
+    /// response on the bus.
+    MasterReset { erase_code: u8, timeout_ms: u32 },
+
     /// Custom action placeholder (for complex test scenarios)
     Custom,
 

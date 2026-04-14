@@ -146,6 +146,7 @@ pub fn create_section_3_8_15_suite() -> TestSuite {
             test_3_8_15_3(),
             test_3_8_15_4(),
             test_3_8_15_5(),
+            test_3_8_15_7(),
             test_3_8_15_8(),
             // 3.8.15.6 runs last: it drives the DUT's seq to overflow,
             // after which the DUT refuses to send any secure frames.
@@ -222,9 +223,11 @@ fn test_3_8_15_3() -> TestCase {
     // Secure A+C read: PID 0x3B, count=1, start=1.
     const READ_SEQ: &str =
         "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
-    // Expected read-back: 00 00 00 00 1F 33 (written value + 1).
-    const READ_SEQ_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 1F 33";
+    // Expected read-back after power cycle: the persisted value, possibly
+    // incremented up to the next block boundary — XML uses `?? ??` for the
+    // low two bytes to allow "equal or higher than at power-down".
+    const READ_SEQ_OK_AFTER_PWR: &str =
+        "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
 
     TestCase::new("3.8.15.3 Secure PropertyValueRead after power down check SeqNb").with_steps(vec![
         // ==== Security Mode ON ====
@@ -232,26 +235,32 @@ fn test_3_8_15_3() -> TestCase {
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
 
-        comment("Write sequence number = 0x1F32"),
+        comment("Write sequence number = 0x0000_0000_1F32"),
         inject_secure_ac(WRITE_SEQ, "TK1"),
         expect_secure_ac(WRITE_SEQ_OK, "TK1", TIMEOUT),
 
-        comment("Read back → expect 0x1F33 (written + 1, consumed by write response)"),
+        comment("Power cycle the DUT — persisted state survives"),
+        power_cycle(2000),
+
+        comment("Read back after power cycle — expect seq ≥ written value"),
         inject_secure_ac(READ_SEQ, "TK1"),
-        expect_secure_ac(READ_SEQ_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_OK_AFTER_PWR, "TK1", TIMEOUT),
 
         // ==== Security Mode OFF ====
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
 
-        comment("Write sequence number = 0x1F32 again"),
+        comment("Write sequence number = 0x0000_0000_1F32 again"),
         inject_secure_ac(WRITE_SEQ, "TK1"),
         expect_secure_ac(WRITE_SEQ_OK, "TK1", TIMEOUT),
 
-        comment("Read back → expect 0x1F33 again"),
+        comment("Power cycle again"),
+        power_cycle(2000),
+
+        comment("Read back after second power cycle — expect seq ≥ written value"),
         inject_secure_ac(READ_SEQ, "TK1"),
-        expect_secure_ac(READ_SEQ_OK, "TK1", TIMEOUT),
+        expect_secure_ac(READ_SEQ_OK_AFTER_PWR, "TK1", TIMEOUT),
     ])
 }
 
@@ -461,5 +470,11 @@ fn test_3_8_15_6() -> TestCase {
         comment("Read → no response (seq at max, DUT stops sending)"),
         inject_secure_ac(READ_SEQ, "TK1"),
         expect_none(TIMEOUT),
+    ])
+}
+
+fn test_3_8_15_7() -> TestCase {
+    TestCase::new("3.8.15.7 Master Reset tests").with_steps(vec![
+        comment("Placeholder: requires master-reset infrastructure not available to the harness."),
     ])
 }

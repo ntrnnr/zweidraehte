@@ -68,6 +68,14 @@ pub const TAG_TRIGGER_READ: u8 = 0x04;
 pub const TAG_TRIGGER_WRITE: u8 = 0x05;
 pub const TAG_SHUTDOWN: u8 = 0x07;
 pub const TAG_TRIGGER_SYNC: u8 = 0x09;
+/// Tell the child to flush persisted state to SHM and exit (simulates a
+/// power cycle). The parent detects EOF and respawns; persisted state
+/// (Security IO properties, seq numbers, tables) survives in SHM.
+pub const TAG_POWER_CYCLE: u8 = 0x0A;
+/// Tell the child to perform a factory reset, flush to SHM, and exit.
+/// Payload byte 0 is the `EraseCode` (same numeric values as the `A_Restart`
+/// erase codes). Reuses the same flush+exit path as `TAG_POWER_CYCLE`.
+pub const TAG_MASTER_RESET: u8 = 0x0B;
 
 // Tag values — child-to-parent
 pub const TAG_CAPTURED: u8 = 0x02;
@@ -400,6 +408,13 @@ pub enum IpcCommand {
     TriggerWrite(u16),
     /// Trigger an S-A_Sync_Req to a peer.
     TriggerSync { peer_ia: u16, tool_access: bool, is_broadcast: bool },
+    /// Flush state to SHM and exit (simulates power cycle, no erase).
+    PowerCycle,
+    /// Perform a factory reset with the given erase-code byte, flush to
+    /// SHM, and exit. The byte matches `A_Restart` `EraseCode` encodings:
+    /// 0x01=Basic, 0x02=Confirmed, 0x03=FactoryReset, 0x04=ResetIA,
+    /// 0x05=ResetAP, 0x06=ResetParam, 0x07=ResetLinks, 0x08=FactoryResetKeepIA.
+    MasterReset { erase_code: u8 },
 }
 
 // ============================================================================
@@ -490,6 +505,15 @@ impl<'a> IpcLinkLayer<'a> {
                         TAG_SHUTDOWN => {
                             log::info!("IPC LL received shutdown, exiting");
                             std::process::exit(0);
+                        }
+                        TAG_POWER_CYCLE => {
+                            log::info!("IPC LL: PowerCycle");
+                            self.command_tx.send(IpcCommand::PowerCycle).await;
+                        }
+                        TAG_MASTER_RESET => {
+                            let erase_code = frame.payload.first().copied().unwrap_or(0x03);
+                            log::info!("IPC LL: MasterReset(erase_code=0x{:02x})", erase_code);
+                            self.command_tx.send(IpcCommand::MasterReset { erase_code }).await;
                         }
                         other => {
                             log::warn!("IPC LL ignoring unknown tag: 0x{:02x}", other);

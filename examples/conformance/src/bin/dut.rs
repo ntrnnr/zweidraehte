@@ -70,6 +70,7 @@ async fn run_stack(runner: Runner<'static, IpcConformanceTestStack>) {
 async fn handle_commands(
     stack: Stack<'static, IpcConformanceTestStack>,
     commands: &'static Channel<NoopRawMutex, IpcCommand, 8>,
+    shm: &'static ShmCell,
 ) {
     loop {
         let cmd = commands.receive().await;
@@ -89,8 +90,47 @@ async fn handle_commands(
             IpcCommand::TriggerSync { .. } => {
                 log::warn!("CMD: TriggerSync ignored (non-secure DUT)");
             }
+            IpcCommand::PowerCycle => {
+                log::info!("CMD: PowerCycle — flush + exit");
+                Timer::after(Duration::from_millis(1)).await;
+                flush_and_exit(stack, shm, None);
+            }
+            IpcCommand::MasterReset { erase_code } => {
+                log::info!("CMD: MasterReset(erase_code=0x{:02x}) — reset + flush + exit", erase_code);
+                Timer::after(Duration::from_millis(1)).await;
+                flush_and_exit(stack, shm, Some(EraseCode::from(erase_code)));
+            }
         }
     }
+}
+
+fn flush_and_exit(
+    stack: Stack<'static, IpcConformanceTestStack>,
+    shm: &'static ShmCell,
+    erase: Option<EraseCode>,
+) -> ! {
+    let state = stack.state();
+    if let Some(code) = erase {
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => {}
+            EraseCode::FactoryReset => state.inner().factory_reset(),
+            EraseCode::ResetIA => state.inner().reset_individual_address(),
+            EraseCode::ResetAP => state.inner().reset_application(),
+            EraseCode::ResetParam => state.inner().reset_parameters(),
+            EraseCode::ResetLinks => {
+                state.inner().reset_address_table();
+                state.inner().reset_association_table();
+            }
+            EraseCode::FactoryResetKeepIA => state.inner().factory_reset_keep_ia(),
+            _ => {}
+        }
+    }
+    let snapshot = state.to_persisted_snapshot();
+    let shm_mut = unsafe { &mut *shm.0.get() };
+    if let Err(e) = shm_mut.write_state(&snapshot) {
+        log::error!("Failed to flush state to shared memory: {}", e);
+    }
+    std::process::exit(0);
 }
 
 // ============================================================================
@@ -340,7 +380,7 @@ async fn main(spawner: Spawner) {
 
     // Spawn the stack runner, command handler, and restart handler.
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
-    spawner.spawn(handle_commands(stack, command_channel)).expect("spawn command handler");
+    spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
     spawner.spawn(handle_restarts(stack, shm)).expect("spawn restart handler");
 
     // Keep main alive — the stack runs in background tasks.

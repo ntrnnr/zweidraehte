@@ -311,6 +311,30 @@ async fn execute_step(
             true
         }
 
+        TestStep::PowerCycle { timeout_ms } => {
+            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
+            println!("  [{}] 🔌 PowerCycle (timeout {}ms)", index, effective_ms);
+            let timeout = Duration::from_millis(effective_ms);
+            if let Err(e) = harness.power_cycle(timeout).await {
+                println!("        ❌ Failed: {}", e);
+                return false;
+            }
+            println!("        ✅ DUT power-cycled");
+            true
+        }
+
+        TestStep::MasterReset { erase_code, timeout_ms } => {
+            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
+            println!("  [{}] ♻️  MasterReset(erase=0x{:02x}, timeout {}ms)", index, erase_code, effective_ms);
+            let timeout = Duration::from_millis(effective_ms);
+            if let Err(e) = harness.master_reset(*erase_code, timeout).await {
+                println!("        ❌ Failed: {}", e);
+                return false;
+            }
+            println!("        ✅ DUT reset");
+            true
+        }
+
         TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
             // These should have been resolved before reaching here
             println!("  [{}] ❌ Unresolved template", index);
@@ -822,8 +846,10 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
         zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite(),
         zweidraehte_conformance::tests::security::section_3_4::create_section_3_4_suite(),
+        zweidraehte_conformance::tests::security::section_3_5::create_section_3_5_suite(),
         zweidraehte_conformance::tests::security::section_3_6::create_section_3_6_suite(),
         zweidraehte_conformance::tests::security::section_3_7::create_section_3_7_suite(),
+        zweidraehte_conformance::tests::security::section_3_9::create_section_3_9_suite(),
         zweidraehte_conformance::tests::security::section_4_1::create_section_4_1_suite(),
         zweidraehte_conformance::tests::security::section_4_2::create_section_4_2_suite(),
         zweidraehte_conformance::tests::security::section_4_3::create_section_4_3_suite(),
@@ -833,6 +859,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::security::section_3_8_2::create_section_3_8_2_suite(),
         zweidraehte_conformance::tests::security::section_3_8_3::create_section_3_8_3_suite(),
         zweidraehte_conformance::tests::security::section_3_8_4::create_section_3_8_4_suite(),
+        zweidraehte_conformance::tests::security::section_3_8_5::create_section_3_8_5_suite(),
         zweidraehte_conformance::tests::security::section_3_8_6::create_section_3_8_6_suite(),
         zweidraehte_conformance::tests::security::section_3_8_7::create_section_3_8_7_suite(),
         zweidraehte_conformance::tests::security::section_3_8_8::create_section_3_8_8_suite(),
@@ -843,6 +870,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::security::section_3_8_13::create_section_3_8_13_suite(),
         zweidraehte_conformance::tests::security::section_3_8_14::create_section_3_8_14_suite(),
         zweidraehte_conformance::tests::security::section_3_8_15::create_section_3_8_15_suite(),
+        zweidraehte_conformance::tests::security::section_3_8_16::create_section_3_8_16_suite(),
         zweidraehte_conformance::tests::security::section_3_8_17::create_section_3_8_17_suite(),
         zweidraehte_conformance::tests::security::section_3_8_18::create_section_3_8_18_suite(),
         zweidraehte_conformance::tests::security::section_4_6_4_7::create_section_4_6_4_7_suite(),
