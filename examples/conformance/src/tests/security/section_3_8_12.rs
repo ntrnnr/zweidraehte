@@ -409,17 +409,109 @@ fn test_3_8_12_3() -> TestCase {
 }
 
 fn test_3_8_12_4() -> TestCase {
-    placeholder(
-        "3.8.12.4 Secure FunctionPropertyCommand, behavior on Factory Reset without IA",
-        "Placeholder: requires factory-reset-without-IA infrastructure not available to the harness.",
-    )
+    // Same shape as 3.8.12.3 but with `EraseCode::FactoryResetKeepIA`
+    // (0x07): the IA survives the reset, so we don't need to
+    // re-program it via `A_IndividualAddressSerialNumber_Write`.
+    const CONNECTED_RESTART_FRWITHIA: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 07 00";
+    const CONNECTED_RESTART_FRWITHIA_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    const READ_COUNTERS_EMPTY: &str =
+        "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 00 00 00";
+    const READ_LAST_ENTRY_EMPTY: &str =
+        "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 37 F8 01";
+
+    let mut steps = vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("==== General Procedure (clear + provoke 3 errors + verify) ===="),
+    ];
+    steps.extend(general_procedure_steps());
+
+    steps.extend(vec![
+        comment("==== Specific procedure for 3.8.12.4: FactoryResetKeepIA (erase=0x07) ===="),
+        comment("Open transport connection"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        comment("Secure A+C numbered A_Restart (FactoryResetKeepIA, erase=0x07)"),
+        inject_secure_ac(CONNECTED_RESTART_FRWITHIA, "TK1"),
+        comment("Expect T_ACK"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        comment("Expect secure A+C A_Restart_Response (error=0)"),
+        expect_secure_ac(CONNECTED_RESTART_FRWITHIA_RESP, "TK1", TIMEOUT),
+        comment("ACK the response"),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        comment("T_Disconnect"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+
+        comment("Wait for the DUT to auto-restart (IA is preserved)"),
+        wait(500),
+
+        comment("Sync tool seq number after FactoryResetKeepIA"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        comment("Read counters → expect all zero"),
+        inject_secure_ac(READ_COUNTERS, "TK1"),
+        expect_secure_ac(READ_COUNTERS_EMPTY, "TK1", TIMEOUT),
+
+        comment("Read last entry → expect F8 (empty log)"),
+        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
+        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
+    ]);
+
+    TestCase::new("3.8.12.4 Secure FunctionPropertyCommand, behavior on Factory Reset without IA")
+        .with_steps(steps)
 }
 
 fn test_3_8_12_5() -> TestCase {
-    placeholder(
-        "3.8.12.5 Secure FunctionPropertyCommand, behavior on Local Factory Reset",
-        "Placeholder: requires local factory-reset trigger infrastructure not available to the harness.",
-    )
+    // "Local Factory Reset" is a non-bus reset (typically a service
+    // button press on the device). We exercise the same code path
+    // via the `master_reset` IPC primitive with `EraseCode::FactoryReset`
+    // (0x02). The DUT reapplies its FDSK as the active tool key, just
+    // like 3.8.12.3 — but no `A_Restart_Response` is emitted on the
+    // bus and the IA is wiped to 0xFFFF, requiring a re-program.
+    const READ_COUNTERS_EMPTY: &str =
+        "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 00 00 00";
+    const READ_LAST_ENTRY_EMPTY: &str =
+        "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 37 F8 01";
+
+    let mut steps = vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("==== General Procedure (clear + provoke 3 errors + verify) ===="),
+    ];
+    steps.extend(general_procedure_steps());
+
+    steps.extend(vec![
+        comment("==== Specific procedure for 3.8.12.5: Local Factory Reset ===="),
+        // Erase code 0x02 = FactoryReset, applied via the IPC primitive
+        // (no bus restart telegram, no T_Connect required).
+        master_reset(0x02, 2000),
+
+        comment("Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
+        inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+        wait(200),
+
+        comment("Sync tool seq number after Local Factory Reset"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        comment("Read counters → expect all zero"),
+        inject_secure_ac(READ_COUNTERS, "TK1"),
+        expect_secure_ac(READ_COUNTERS_EMPTY, "TK1", TIMEOUT),
+
+        comment("Read last entry → expect F8 (empty log)"),
+        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
+        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
+    ]);
+
+    TestCase::new("3.8.12.5 Secure FunctionPropertyCommand, behavior on Local Factory Reset")
+        .with_steps(steps)
 }
 
 fn test_3_8_12_6() -> TestCase {
