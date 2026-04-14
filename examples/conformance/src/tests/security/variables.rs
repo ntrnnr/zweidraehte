@@ -97,6 +97,12 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     // the normal BDUT address conflicts with P2P peer IAs).
     vars.insert("ALT_BDUT_ADDR".into(), TestVariable::Bytes(vec![0x12, 0x02]));
 
+    // BDUT address after a factory reset wipes the IA. The XML uses
+    // `#BDUT_ADDR_RESET` for telegrams sent to the DUT before the IA
+    // has been re-programmed — the DUT answers on the broadcast address
+    // `FF FF` until then.
+    vars.insert("BDUT_ADDR_RESET".into(), TestVariable::Bytes(vec![0xFF, 0xFF]));
+
     // Security Interface Object index.
     vars.insert("SEC_INTF_OBJ_INDEX".into(), TestVariable::Bytes(vec![0x06]));
 

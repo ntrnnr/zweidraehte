@@ -297,6 +297,22 @@ pub fn inject_secure_ac_seq0(template: &str, key: &str) -> TestStep {
     TestStep::InjectSecure { template: template.to_string(), sec_params: params, delay_before_ms: 0 }
 }
 
+/// Inject a secure A+C telegram with a specific sequence number (tool
+/// access). Used for the XML transcripts that hard-code a 48-bit
+/// counter value (e.g. 3.8.15.7's `SeqNum="280375465082876"`).
+pub fn inject_secure_ac_seq(template: &str, key: &str, seq: u64) -> TestStep {
+    let mut params = SecureParams::tool_auth_conf(key);
+    params.seq_source = SeqSource::Fixed(seq);
+    TestStep::InjectSecure { template: template.to_string(), sec_params: params, delay_before_ms: 0 }
+}
+
+/// Expect a secure A+C response with a specific sequence number.
+pub fn expect_secure_ac_seq(template: &str, key: &str, seq: u64, timeout_ms: u32) -> TestStep {
+    let mut params = SecureParams::tool_auth_conf(key);
+    params.seq_source = SeqSource::Fixed(seq);
+    TestStep::ExpectSecure { template: template.to_string(), sec_params: params, timeout_ms }
+}
+
 /// Inject a secure telegram with an intentionally invalid field.
 pub fn inject_secure_invalid(template: &str, params: SecureParams, invalid: InvalidSecurityParam) -> TestStep {
     TestStep::InjectSecureInvalid { template: template.to_string(), sec_params: params, invalid, delay_before_ms: 0 }
