@@ -339,7 +339,9 @@ impl MultiProcessHarness {
     /// the new child starts.
     pub async fn power_cycle(&mut self, timeout: embassy_time::Duration) -> io::Result<()> {
         self.send_command(TAG_POWER_CYCLE, &[]).await?;
-        self.wait_for_restart(timeout).await
+        self.wait_for_restart(timeout).await?;
+        self.drain_roi_after_respawn().await;
+        Ok(())
     }
 
     /// Simulate a master reset: tell the child to apply the given
@@ -355,7 +357,28 @@ impl MultiProcessHarness {
         timeout: embassy_time::Duration,
     ) -> io::Result<()> {
         self.send_command(TAG_MASTER_RESET, &[erase_code]).await?;
-        self.wait_for_restart(timeout).await
+        self.wait_for_restart(timeout).await?;
+        self.drain_roi_after_respawn().await;
+        Ok(())
+    }
+
+    /// Drain any Read-On-Init (or other post-startup) captured frames
+    /// emitted by a freshly-respawned child. Matches the implicit drain
+    /// inside `send_command()` so tests don't see stale ROI frames
+    /// interleaved with their expected responses.
+    async fn drain_roi_after_respawn(&mut self) {
+        let mut drained = 0;
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+            let batch = self.drain_captured();
+            drained += batch;
+            if batch == 0 {
+                break;
+            }
+        }
+        if drained > 0 {
+            log::info!("Drained {} ROI messages after power-cycle/master-reset", drained);
+        }
     }
 
     /// Wait for the child to exit (restart) and respawn it.
