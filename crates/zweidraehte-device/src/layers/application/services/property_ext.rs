@@ -892,9 +892,10 @@ fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
     let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access_ctx);
 
     let rc = match result {
-        Ok(_) => 0x00,                                         // E_SUCCESS
-        Err(crate::memory::MemoryError::AccessDenied) => 0xFC, // E_ILLEGAL_COMMAND
-        Err(_) => 0xFD,                                        // E_ADDRESS_VOID
+        Ok(_) => 0x00,                                            // E_SUCCESS
+        Err(crate::memory::MemoryError::AccessDenied) => 0xFC,    // E_ILLEGAL_COMMAND
+        Err(crate::memory::MemoryError::WriteProtected) => 0xFB,  // E_READ_ONLY
+        Err(_) => 0xFD,                                           // E_ADDRESS_VOID
     };
 
     send_memory_ext_write_response(ind, ctx, rc, addr_hi, addr_mid, addr_lo);
@@ -962,8 +963,9 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
         }
         Err(e) => {
             let rc = match e {
-                crate::memory::MemoryError::AccessDenied => 0xFC, // E_ILLEGAL_COMMAND
-                _ => 0xFD,                                        // E_ADDRESS_VOID
+                crate::memory::MemoryError::AccessDenied => 0xFC,    // E_ILLEGAL_COMMAND
+                crate::memory::MemoryError::WriteProtected => 0xFA,  // E_WRITE_ONLY (read of write-only region)
+                _ => 0xFD,                                           // E_ADDRESS_VOID
             };
             let resp_len = offsets::MSG_APCI + 6;
             let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };

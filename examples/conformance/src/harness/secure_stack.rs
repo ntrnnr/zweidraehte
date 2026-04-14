@@ -461,6 +461,31 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
             return Ok(data.len());
         }
 
+        // Read-only memory region (5.1.4): 0x0500–0x050F. Reads return
+        // a fixed pattern; writes return `WriteProtected` in the write
+        // handler.
+        if address >= ConformanceMemoryMap::READONLY_MEMORY_BASE
+            && end_address
+                <= ConformanceMemoryMap::READONLY_MEMORY_BASE + ConformanceMemoryMap::READONLY_MEMORY_SIZE
+        {
+            let offset = (address - ConformanceMemoryMap::READONLY_MEMORY_BASE) as usize;
+            for (i, byte) in data.iter_mut().enumerate() {
+                *byte = (offset + i) as u8;
+            }
+            return Ok(data.len());
+        }
+
+        // Write-only memory region (5.2.3): 0x0510–0x051F. Reads return
+        // `WriteProtected`; writes succeed but the data is discarded
+        // (the AL maps `WriteProtected` to return code 0xFB, which 5.2.3
+        // accepts as the "alternative" return code along with 0xFA).
+        if address >= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE
+            && end_address
+                <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
+        {
+            return Err(MemoryError::WriteProtected);
+        }
+
         Err(MemoryError::NotAccessible)
     }
 
@@ -561,6 +586,24 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         {
             let offset = (address - ConformanceMemoryMap::USER_MEMORY_BASE) as usize;
             tables.user_memory.borrow_mut()[offset..offset + data.len()].copy_from_slice(data);
+            return Ok(data.len());
+        }
+
+        // Read-only memory region (5.1.4): writes always reject. The AL
+        // converts `WriteProtected` to return code 0xFB (E_READ_ONLY).
+        if address >= ConformanceMemoryMap::READONLY_MEMORY_BASE
+            && end_address
+                <= ConformanceMemoryMap::READONLY_MEMORY_BASE + ConformanceMemoryMap::READONLY_MEMORY_SIZE
+        {
+            return Err(MemoryError::WriteProtected);
+        }
+
+        // Write-only memory region (5.2.3): writes silently succeed but
+        // discard the data; reads were rejected in the read handler.
+        if address >= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE
+            && end_address
+                <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
+        {
             return Ok(data.len());
         }
 

@@ -1001,6 +1001,22 @@ impl ConformanceMemoryMap {
     pub const LEVEL2_MEMORY_BASE: u16 = 0x0300;
     /// Base address for level 1 memory block (requires access level <= 1)
     pub const LEVEL1_MEMORY_BASE: u16 = 0x0400;
+    /// Base address for the read-only memory region. Reads return a
+    /// fixed pattern; writes always fail with `MemoryError::WriteProtected`,
+    /// which the application layer maps to return code 0xFB
+    /// (`E_READ_ONLY`). Used by Data Security conformance tests
+    /// 5.1.4 and 5.2.3 to verify the BDUT honours read-only memory.
+    pub const READONLY_MEMORY_BASE: u16 = 0x0500;
+    /// Size of the read-only region (16 bytes; the test addresses one
+    /// 6-byte write and a few short reads).
+    pub const READONLY_MEMORY_SIZE: u16 = 0x10;
+    /// Base address for the write-only memory region. Reads always fail
+    /// with `MemoryError::WriteProtected` (mapped by the AL to return
+    /// code 0xFB, which the conformance test 5.2.3 accepts as the
+    /// "alternative" to 0xFA). Writes succeed but the data is dropped.
+    pub const WRITEONLY_MEMORY_BASE: u16 = 0x0510;
+    /// Size of the write-only region (16 bytes).
+    pub const WRITEONLY_MEMORY_SIZE: u16 = 0x10;
     /// Base address for user memory region (for A_UserMemory_* tests)
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 }
@@ -1089,6 +1105,25 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             let mem = tables.user_memory.borrow();
             data.copy_from_slice(&mem[offset..offset + data.len()]);
             return Ok(data.len());
+        }
+
+        // Read-only memory: 0x0500 - 0x050F (16 bytes).
+        if address >= Self::READONLY_MEMORY_BASE
+            && end_address <= Self::READONLY_MEMORY_BASE + Self::READONLY_MEMORY_SIZE
+        {
+            let offset = (address - Self::READONLY_MEMORY_BASE) as usize;
+            for (i, byte) in data.iter_mut().enumerate() {
+                *byte = (offset + i) as u8;
+            }
+            return Ok(data.len());
+        }
+
+        // Write-only memory: 0x0510 - 0x051F (16 bytes). Reads always
+        // reject; writes succeed silently.
+        if address >= Self::WRITEONLY_MEMORY_BASE
+            && end_address <= Self::WRITEONLY_MEMORY_BASE + Self::WRITEONLY_MEMORY_SIZE
+        {
+            return Err(MemoryError::WriteProtected);
         }
 
         // Address is outside accessible range
@@ -1186,6 +1221,20 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             let offset = (address - Self::USER_MEMORY_BASE) as usize;
             let mut mem = tables.user_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
+            return Ok(data.len());
+        }
+
+        // Read-only memory region: writes always fail.
+        if address >= Self::READONLY_MEMORY_BASE
+            && end_address <= Self::READONLY_MEMORY_BASE + Self::READONLY_MEMORY_SIZE
+        {
+            return Err(MemoryError::WriteProtected);
+        }
+
+        // Write-only memory region: writes succeed silently.
+        if address >= Self::WRITEONLY_MEMORY_BASE
+            && end_address <= Self::WRITEONLY_MEMORY_BASE + Self::WRITEONLY_MEMORY_SIZE
+        {
             return Ok(data.len());
         }
 

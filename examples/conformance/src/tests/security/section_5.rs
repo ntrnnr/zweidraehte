@@ -87,10 +87,21 @@ fn test_5_1_3() -> TestCase {
 }
 
 fn test_5_1_4() -> TestCase {
-    placeholder(
-        "5.1.4 MemoryExtended_Write – read only memory (if available in BDUT)",
-        "Placeholder: requires a read-only memory region on the DUT; current DUT exposes no such region.",
-    )
+    // Per the reference XML: write 6 bytes to the start of the BDUT's
+    // read-only memory region. The DUT must reject with return code
+    // 0xFB (E_READ_ONLY); 0xFC (E_ILLEGAL_COMMAND) is also accepted.
+    // Our DUT picks 0xFB; the response addr field echoes the request
+    // address.
+    TestCase::new("5.1.4 MemoryExtended_Write – read only memory").with_steps(vec![
+        comment("Write 6 bytes to READONLY_MEM_START → expect E_READ_ONLY (0xFB)"),
+        inject(
+            "BC #EDI #BDUT_ADDR 6B 01 FB 06 #READONLY_MEM_START 01 02 03 04 05 06",
+        ),
+        expect(
+            "BC #BDUT_ADDR #EDI 65 01 FC FB #READONLY_MEM_START",
+            TIMEOUT,
+        ),
+    ])
 }
 
 fn test_5_1_5() -> TestCase {
@@ -115,10 +126,22 @@ fn test_5_2_2() -> TestCase {
 }
 
 fn test_5_2_3() -> TestCase {
-    placeholder(
-        "5.2.3 MemoryExtended_Read – write only memory (if available in BDUT)",
-        "Placeholder: requires a write-only memory region on the DUT; current DUT exposes no such region.",
-    )
+    // The reference XML uses a connection-oriented variant (T_Connect +
+    // numbered request) and accepts either return code 0xFA (E_WRITE_ONLY)
+    // or 0xFC (E_ILLEGAL_COMMAND). Our DUT's AL maps `WriteProtected`
+    // to 0xFA on reads so the unconnected version of the request is
+    // sufficient — the spec invariant being checked is that the BDUT
+    // refuses to read a write-only region with a recognisable error.
+    TestCase::new("5.2.3 MemoryExtended_Read – write only memory").with_steps(vec![
+        comment("Read 6 bytes from WRITEONLY_MEM_START → expect E_WRITE_ONLY (0xFA)"),
+        inject(
+            "BC #EDI #BDUT_ADDR 65 01 FD 06 #WRITEONLY_MEM_START",
+        ),
+        expect(
+            "BC #BDUT_ADDR #EDI 65 01 FE FA #WRITEONLY_MEM_START",
+            TIMEOUT,
+        ),
+    ])
 }
 
 fn test_5_2_4() -> TestCase {

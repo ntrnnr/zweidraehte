@@ -133,6 +133,14 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     // XML names this `#OVERFLOW_PROPERTY` and suggests PID 203 (0xCB).
     vars.insert("OVERFLOW_PROPERTY".into(), TestVariable::Bytes(vec![0xCB]));
 
+    // Start address of the DUT's read-only memory region for tests
+    // 5.1.4 / 5.2.3. Three octets, big-endian.
+    // Maps to `ConformanceMemoryMap::READONLY_MEMORY_BASE` (0x000500).
+    vars.insert("READONLY_MEM_START".into(), TestVariable::Bytes(vec![0x00, 0x05, 0x00]));
+    // Start address of the DUT's write-only memory region for test 5.2.3.
+    // Maps to `ConformanceMemoryMap::WRITEONLY_MEMORY_BASE` (0x000510).
+    vars.insert("WRITEONLY_MEM_START".into(), TestVariable::Bytes(vec![0x00, 0x05, 0x10]));
+
     // Memory addresses for security-aware sub-region tests (3.7.2.8).
     // 3-byte MemoryExtended addresses within Level 2 memory (0x0300-0x03FF).
     vars.insert("MEM_AP_000_000".into(), TestVariable::Bytes(vec![0x00, 0x03, 0xD0]));
