@@ -94,10 +94,101 @@ fn test_3_8_7_2() -> TestCase {
 }
 
 fn test_3_8_7_4() -> TestCase {
-    placeholder(
-        "3.8.7.4 Secure PropertyValueRead after power down check value",
-        "Placeholder: LOAD_STATE_CONTROL multi-byte writes rejected as E_DATA_TYPE_CONFLICT; PDT_CONTROL handling for load-procedure records is missing.",
-    )
+    // 10-byte load-control writes: 1-byte event + 9-byte load-procedure
+    // record (zero — System B ignores it). The System B load-state
+    // machine only transitions `Loading → Loaded` on `LoadCompleted`,
+    // so we drive `Unloaded → Loading → Loaded` with two writes
+    // (StartLoading event = 0x01, then LoadCompleted event = 0x02)
+    // before the test proper — this matches the transitions a real
+    // commissioning flow would have already performed by the time
+    // 3.8.7.4 runs.
+    const START_LOADING: &str =
+        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
+    const LOAD_COMPLETED: &str =
+        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
+    const LOAD_CONTROL_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+
+    const READ_LOAD_STATE: &str =
+        "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 05 01 00 01";
+    const READ_LOAD_STATE_LOADED: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 05 01 00 01 01";
+
+    // Connection-oriented A_Restart variants from 3.8.9.5 / 3.8.12.2.
+    const CONNECTED_RESTART_CONFIRMED: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+    // Plain numbered Basic Restart (TPCI 0x43 + APCI 0x80 single byte):
+    // standard frame, len 0x61.
+    const CONNECTED_BASIC_RESTART: &str =
+        "BC #EDI #BDUT_ADDR 61 43 80";
+
+    let steps = vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        // ==== Phase A: Confirmed Restart preserves load state ====
+        comment("Drive Unloaded → Loading (event=0x01)"),
+        inject_secure_ac(START_LOADING, "TK1"),
+        expect_secure_ac(LOAD_CONTROL_OK, "TK1", TIMEOUT),
+
+        comment("Drive Loading → Loaded (event=0x02)"),
+        inject_secure_ac(LOAD_COMPLETED, "TK1"),
+        expect_secure_ac(LOAD_CONTROL_OK, "TK1", TIMEOUT),
+
+        comment("Read load state → expect Loaded (0x01)"),
+        inject_secure_ac(READ_LOAD_STATE, "TK1"),
+        expect_secure_ac(READ_LOAD_STATE_LOADED, "TK1", TIMEOUT),
+
+        comment("T_Connect"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        comment("Secure A+C numbered A_Restart (Confirmed, erase=0x01)"),
+        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+        comment("Expect T_ACK"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        comment("Expect A_Restart_Response"),
+        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+        comment("ACK + T_Disconnect"),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        comment("Wait for the DUT to auto-restart"),
+        wait(500),
+
+        comment("Read load state again → still Loaded (Confirmed Restart preserves)"),
+        inject_secure_ac(READ_LOAD_STATE, "TK1"),
+        expect_secure_ac(READ_LOAD_STATE_LOADED, "TK1", TIMEOUT),
+
+        // ==== Phase B: Basic Restart preserves load state ====
+        comment("Re-write Loaded (idempotent)"),
+        inject_secure_ac(LOAD_COMPLETED, "TK1"),
+        expect_secure_ac(LOAD_CONTROL_OK, "TK1", TIMEOUT),
+
+        comment("Read load state → still Loaded"),
+        inject_secure_ac(READ_LOAD_STATE, "TK1"),
+        expect_secure_ac(READ_LOAD_STATE_LOADED, "TK1", TIMEOUT),
+
+        comment("T_Connect"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        comment("Plain numbered Basic Restart (no encryption — APCI 0x80)"),
+        inject(CONNECTED_BASIC_RESTART),
+        comment("T_ACK only — Basic Restart does not produce an A_Restart_Response"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        comment("Wait for DUT auto-restart on Basic Restart"),
+        wait(500),
+
+        comment("Read load state after Basic Restart → still Loaded"),
+        inject_secure_ac(READ_LOAD_STATE, "TK1"),
+        expect_secure_ac(READ_LOAD_STATE_LOADED, "TK1", TIMEOUT),
+
+        comment("Disable Security Mode (cleanup)"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+    ];
+
+    TestCase::new("3.8.7.4 Secure PropertyValueRead after power down check value")
+        .with_steps(steps)
 }
 
 // ============================================================================

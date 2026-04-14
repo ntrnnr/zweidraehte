@@ -148,7 +148,14 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
 
     // Validate per spec Figure 55 using the property description.
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
-        if is_function_pdt(desc.pdt) {
+        // PDT_FUNCTION must be accessed via FunctionPropertyExt services,
+        // never via PropertyExtValue. PDT_CONTROL is normally similar,
+        // but PID_LOAD_STATE_CONTROL is the canonical exception:
+        // implementations expose it as a 1-byte readable load-state
+        // value via PropertyExtValue_Read (see TSS J §3.8.7.4 expected
+        // response and AN163 Table 4) so the MaC can read the current
+        // state without invoking a load-control function.
+        if is_function_pdt(desc.pdt) && hdr.prop_id != crate::objects::interface::pid::LOAD_STATE_CONTROL {
             debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION → type conflict");
             send_ext_read_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
