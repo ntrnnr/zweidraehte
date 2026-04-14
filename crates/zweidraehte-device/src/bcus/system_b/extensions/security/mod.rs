@@ -252,6 +252,12 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig for Se
 /// mutability during property writes.
 pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
     security_mode_enabled: Cell<bool>,
+    /// Active tool key. The KNX spec defines this as the negotiated key
+    /// for the current MaC↔BDUT session. On a fresh device or after a
+    /// factory reset it equals the FDSK supplied by `DeviceIdentity`;
+    /// `SystemBDeviceState::new` and `SystemBDeviceState::factory_reset`
+    /// seed it from `identity.fdsk()`. Once the MaC writes
+    /// `PID_TOOL_KEY` the negotiated value lives here exclusively.
     tool_key: Cell<[u8; 16]>,
     load_state: Cell<LoadState>,
     /// Group key table: GA_index(2) + key(16) = 18 bytes per entry.
@@ -607,7 +613,12 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         self.security_report_enabled.set(false);
     }
 
-    /// Full factory reset of all security state.
+    /// Reset all security state to factory defaults except the active
+    /// tool key, which the caller is expected to seed from
+    /// `DeviceIdentity::fdsk()` (per spec 03/05/01 §6.1.4 the tool key
+    /// reverts to the FDSK on factory reset). `SystemBDeviceState::
+    /// factory_reset` drives this and the FDSK-write together so the
+    /// state never ends up with a wiped tool key but no FDSK applied.
     pub fn factory_reset(&self) {
         self.security_mode_enabled.set(false);
         self.tool_key.set([0u8; 16]);
@@ -762,12 +773,25 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
         SecurityExtensionConfig {
             security_mode_enabled: self.security_mode_enabled.get(),
             tool_key: self.tool_key.get(),
+            // FDSK is identity, not persisted state — it gets re-injected
+            // from `DeviceIdentity` on every device construction.
             load_state: self.load_state.get(),
             failures_log: self.failures_log.borrow().clone(),
             grp_keys: self.grp_keys.borrow().clone(),
             p2p_keys: self.p2p_keys.borrow().clone(),
             siat: self.siat.borrow().clone(),
             go_flags: self.go_flags.borrow().clone(),
+        }
+    }
+
+    fn seed_tool_key_from_fdsk(&self, fdsk: Option<[u8; 16]>) {
+        // The active tool key was either left at zero by `from_config`
+        // (factory-fresh device) or wiped by `factory_reset()`. Either
+        // way, restore it to the device's FDSK so the MaC can address
+        // the BDUT with secure A+C using the factory-default key
+        // (spec 03/05/01 §6.1.4).
+        if let Some(key) = fdsk {
+            self.tool_key.set(key);
         }
     }
 
@@ -956,6 +980,11 @@ impl<Inner: ExtensionState, SEQ: Default, const GRP: usize, const P2P: usize, co
             }
             _ => {}
         }
+    }
+
+    fn seed_tool_key_from_fdsk(&self, fdsk: Option<[u8; 16]>) {
+        self.inner.seed_tool_key_from_fdsk(fdsk);
+        self.security.seed_tool_key_from_fdsk(fdsk);
     }
 }
 

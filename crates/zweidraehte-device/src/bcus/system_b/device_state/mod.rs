@@ -251,10 +251,16 @@ impl<
         comm_objs: D::CO,
         hook_context: <D::CO as ComObjects>::HookContext,
     ) -> Self {
+        let fdsk = identity.fdsk().copied();
+        let extension_state = ES::from_config(ES::Config::default());
+        // A factory-fresh device starts with FDSK as the active tool
+        // key (spec 03/05/01 §6.1.4: the FDSK is active until the MaC
+        // writes a new tool key). Non-secure extensions ignore this.
+        extension_state.seed_tool_key_from_fdsk(fdsk);
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
             serial_number: *identity.serial_number(),
-            fdsk: identity.fdsk().copied(),
+            fdsk,
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
             programming_mode: Cell::new(false),
@@ -269,7 +275,7 @@ impl<
             co_hook_context: hook_context,
             operation_mode: OperationModeState::new(30),
             access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
-            extension_state: ES::from_config(ES::Config::default()),
+            extension_state,
             dirty: Cell::new(false),
             dm_slot: DmNotificationSlot::new(),
         }
@@ -390,7 +396,11 @@ impl<
 
     /// Perform a full factory reset (everything except serial number).
     ///
-    /// Also resets the link-layer state to factory defaults.
+    /// Also resets the link-layer state to factory defaults. The active
+    /// security tool key is restored to the device's FDSK
+    /// (spec 03/05/01 §6.1.4) — the extension state's `on_erase` wipes
+    /// the negotiated key, then `seed_tool_key_from_fdsk` re-applies the
+    /// factory-default. Non-secure extensions ignore the seed call.
     pub fn factory_reset(&self) {
         self.reset_individual_address();
         self.reset_all_tables();
@@ -401,6 +411,7 @@ impl<
         *self.pei.borrow_mut() = PeiApplication::new();
         *self.pei_program_version.borrow_mut() = [0; 5];
         self.extension_state.on_erase(crate::restart::EraseCode::FactoryReset);
+        self.extension_state.seed_tool_key_from_fdsk(self.fdsk);
         self.mark_dirty();
     }
 

@@ -111,6 +111,15 @@ pub trait ExtensionState: Sized {
     /// Extensions decide per-code what to clear. Called from
     /// `SystemBDeviceState` during `factory_reset()` and `execute_reset()`.
     fn on_erase(&self, code: crate::restart::EraseCode);
+
+    /// Re-seed any negotiated security tool key from the device's FDSK
+    /// (`DeviceIdentity::fdsk()`). Called by `SystemBDeviceState::new`
+    /// (so a factory-fresh device starts with FDSK as the active tool
+    /// key) and by `factory_reset()` (so the FDSK becomes active again
+    /// after a reset, per spec 03/05/01 §6.1.4).
+    ///
+    /// Default: no-op. Extensions with security state override this.
+    fn seed_tool_key_from_fdsk(&self, _fdsk: Option<[u8; 16]>) {}
 }
 
 /// Whether the device's Security Mode is currently enabled.
@@ -142,6 +151,7 @@ pub trait HasSecurityMode {
     fn has_group_key(&self, _tsap: u16) -> bool {
         false
     }
+
 }
 
 impl HasSecurityMode for () {}

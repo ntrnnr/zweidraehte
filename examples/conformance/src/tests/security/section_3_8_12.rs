@@ -329,10 +329,83 @@ fn test_3_8_12_2() -> TestCase {
 }
 
 fn test_3_8_12_3() -> TestCase {
-    placeholder(
-        "3.8.12.3 Secure FunctionPropertyCommand, behavior on Factory Reset",
-        "Placeholder: requires factory-reset infrastructure not available to the harness.",
-    )
+    // Connection-oriented secure A+C `A_Restart` master reset, erase
+    // code 0x02 (FactoryReset). Same wire shape as 3.8.9.5's
+    // `CONNECTED_RESTART_CONFIRMED`, but `81 02 00` instead of
+    // `81 01 00`.
+    const CONNECTED_RESTART_FACTORY: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 02 00";
+    const CONNECTED_RESTART_FACTORY_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    // After FactoryReset the counters and ring buffer are empty.
+    const READ_COUNTERS_EMPTY: &str =
+        "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 11 00 10 37 00 00 00 00 00 00 00 00 00 00 00";
+    // F8 = E_BAD_ARGUMENT — no entry at index 1 because the log is empty.
+    const READ_LAST_ENTRY_EMPTY: &str =
+        "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 37 F8 01";
+
+    let mut steps = vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        comment("==== General Procedure (clear + provoke 3 errors + verify) ===="),
+    ];
+    steps.extend(general_procedure_steps());
+
+    steps.extend(vec![
+        comment("==== Specific procedure for 3.8.12.3: Master Reset (FactoryReset) ===="),
+
+        // Bus-level connection-oriented A_Restart with erase=0x02. The
+        // DUT auto-respawns; persisted state survives in SHM but the
+        // factory-reset path inside the security extension wipes the
+        // active tool key (restored to FDSK) and the failures log.
+        comment("Open transport connection"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        comment("Secure A+C numbered A_Restart (FactoryReset, erase=0x02)"),
+        inject_secure_ac(CONNECTED_RESTART_FACTORY, "TK1"),
+        comment("Expect T_ACK"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        comment("Expect secure A+C A_Restart_Response (error=0)"),
+        expect_secure_ac(CONNECTED_RESTART_FACTORY_RESP, "TK1", TIMEOUT),
+        comment("ACK the response (DUT IA may already be 0xFFFF)"),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        comment("T_Disconnect (DUT now answers as 0xFFFF)"),
+        inject("B0 #EDI FF FF 60 81"),
+
+        comment("Wait for the DUT to auto-restart"),
+        wait(500),
+
+        // Re-program the DUT individual address via serial number
+        // (broadcast). On real BDUTs there'd also be a domain-address
+        // write here, but our TP1 conformance DUT has no domain
+        // address — `2C E0` system-broadcast `A_DomainAddress_*` is
+        // a no-op for it.
+        comment("Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
+        inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+        wait(200),
+
+        // After FactoryReset our DUT seeds the active tool key from
+        // its `DeviceIdentity::fdsk()` (which is `SECURE_FDSK = TK1`),
+        // so secure A+C management traffic with TK1 is accepted again.
+        // Sync the tool sequence counter to align after the restart.
+        comment("Sync tool seq number after FactoryReset"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+
+        // ---- Verify counters were cleared ----
+        comment("Read counters after FactoryReset → expect all zero"),
+        inject_secure_ac(READ_COUNTERS, "TK1"),
+        expect_secure_ac(READ_COUNTERS_EMPTY, "TK1", TIMEOUT),
+
+        comment("Read last entry after FactoryReset → expect F8 (empty log)"),
+        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
+        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
+    ]);
+
+    TestCase::new("3.8.12.3 Secure FunctionPropertyCommand, behavior on Factory Reset")
+        .with_steps(steps)
 }
 
 fn test_3_8_12_4() -> TestCase {
