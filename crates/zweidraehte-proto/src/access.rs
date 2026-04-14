@@ -270,9 +270,11 @@ impl AccessPolicy {
     /// when sec on. Used for IndividualAddressWrite, IndAddrSerNoWrite.
     pub const OPEN_OFF_TOOL_ON: Self = Self::new(0x3FF, 0x00C);
 
-    /// `3FF / 000` — Everyone can read+write when sec off; no access when sec on.
-    /// Used for master reset (erase code 03h) — only local or plain access.
-    pub const READ_ONLY_NO_REMOTE_WRITE: Self = Self::new(0x3FF, 0x000);
+    /// `3FF / 000` — Everyone can read+write when sec off; no access at all when sec on.
+    /// Used for A_Restart with erase code 03h (master reset), per 03/04/01 §6.2.6.3.3
+    /// Table 8. When Security Mode is OFF, a device accepts the master reset from any
+    /// client (including plain-bus); when Security Mode is ON, it is refused entirely.
+    pub const OPEN_OFF_DENY_ON: Self = Self::new(0x3FF, 0x000);
 
     /// `2AA / 008` — Read with auth roles; write only Tool A+C.
     pub const READ_AUTH_WRITE_TOOL_CONF: Self = Self::new(0x2AA, 0x008);
@@ -484,15 +486,15 @@ mod tests {
     }
 
     #[test]
-    fn access_policy_no_remote_write_sec_on() {
+    fn access_policy_open_off_deny_on() {
         // 3FF / 000 — sec on: no access at all
         let tool = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
         // Sec off: all access
-        assert!(AccessPolicy::READ_ONLY_NO_REMOTE_WRITE.can_read(&tool, false));
-        assert!(AccessPolicy::READ_ONLY_NO_REMOTE_WRITE.can_write(&tool, false));
+        assert!(AccessPolicy::OPEN_OFF_DENY_ON.can_read(&tool, false));
+        assert!(AccessPolicy::OPEN_OFF_DENY_ON.can_write(&tool, false));
         // Sec on: no access
-        assert!(!AccessPolicy::READ_ONLY_NO_REMOTE_WRITE.can_read(&tool, true));
-        assert!(!AccessPolicy::READ_ONLY_NO_REMOTE_WRITE.can_write(&tool, true));
+        assert!(!AccessPolicy::OPEN_OFF_DENY_ON.can_read(&tool, true));
+        assert!(!AccessPolicy::OPEN_OFF_DENY_ON.can_write(&tool, true));
     }
 
     #[test]

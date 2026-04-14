@@ -147,13 +147,15 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
 /// | 0x07 | Reset to default w/o IA | 3FF / 00C |
 /// | 0x08 | Local reset to defaults | 3FF / 00C |
 ///
-/// Note: Erase code 0x03 (master reset) has policy `3FF / 000`, meaning
-/// no remote write access is possible — it can only be triggered locally.
+/// Note: Erase code 0x03 (master reset) has policy `3FF / 000`. When
+/// Security Mode is OFF, any client (including plain) may trigger it;
+/// when Security Mode is ON, it is denied to every client. Local/HMI
+/// triggering bypasses Access Policies entirely.
 pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
     match erase_code {
         0x00 | 0x01 => AccessPolicy::READ_OPEN_WRITE_TOOL,    // 3FF / 0CC
         0x02 => AccessPolicy::TOOL_ONLY,                      // 3FF / 00C
-        0x03 => AccessPolicy::READ_ONLY_NO_REMOTE_WRITE,      // 3FF / 000
+        0x03 => AccessPolicy::OPEN_OFF_DENY_ON,               // 3FF / 000
         0x05 | 0x06 | 0x07 | 0x08 => AccessPolicy::TOOL_ONLY, // 3FF / 00C
         _ => AccessPolicy::TOOL_ONLY,                         // Unknown: conservative default
     }
@@ -237,10 +239,12 @@ mod tests {
         let policy = restart_access_policy(0x00);
         assert!(policy.can_write(&unlisted, false));
 
-        // Master reset (0x03): nobody can write remotely (000)
+        // Master reset (0x03) is policy 3FF/000 per 03/04/01 §6.2.6.3.3 Table 8.
+        // When Security Mode is OFF, the device accepts the reset from any client
+        // (including plain). When Security Mode is ON, it is refused entirely.
         let tool = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
         let policy = restart_access_policy(0x03);
-        assert!(!policy.can_write(&tool, false));
+        assert!(policy.can_write(&tool, false));
         assert!(!policy.can_write(&tool, true));
 
         // Reset to default (0x02): only Tool can write
