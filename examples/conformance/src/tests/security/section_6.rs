@@ -1087,7 +1087,23 @@ fn test_6_2_29() -> TestCase {
 }
 
 fn test_6_1_3() -> TestCase {
-    TestCase::new("6.1.3 Reading normal operation mode – negative response due to invalid ReadServiceID coding").with_steps(vec![
-        comment("Placeholder: XML entry is comment-only (no active telegrams) — covered by other 6.1.x ReadServiceID negative cases."),
+    // A FctPropertyExtStateRead with a data section that is too short (only
+    // the reserved byte, no serviceID byte) or too long (one extra trailing
+    // byte) is malformed. The DUT must still respond with a negative
+    // `A_FunctionPropertyExtState_Response`, return-code 0xA0, and a
+    // service-result body that reports the current operation mode and
+    // time-left as if the request had been well-formed.
+    TestCase::new(
+        "6.1.3 Reading normal operation mode – negative response due to invalid ReadServiceID coding",
+    )
+    .with_steps(vec![
+        comment("FctPropertyExtStateRead with only the reserved byte (one byte short)"),
+        inject("BC #EDI #BDUT_ADDR 67 01 D5 00 03 00 10 34 00"),
+        // Response: rc=0xA0, serviceID=echoed-or-zero, mode=0x00, timeLeft=0xFF.
+        expect("BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 A0 ?? 00 FF", TIMEOUT),
+
+        comment("FctPropertyExtStateRead with an extra trailing byte (one byte too long)"),
+        inject("BC #EDI #BDUT_ADDR 69 01 D5 00 03 00 10 34 00 00 00"),
+        expect("BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 A0 00 00 FF", TIMEOUT),
     ])
 }
