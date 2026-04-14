@@ -9,8 +9,8 @@ use core::cell::RefCell;
 use super::SecurityTable;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
-    InterfaceObjectType, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_Generic18,
-    PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
+    InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08,
+    PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
 };
 use crate::objects::interface::{
     AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
@@ -150,10 +150,10 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const G
             AccessPolicy::new(0x1FF, 0x0CC),
         ),
         // PID_SECURITY_REPORT_CONTROL (58): report control — PDT_BINARY_INFORMATION
-        // TODO: PDT_BINARY_INFORMATION is not yet defined, using PDT_Generic01 (1 byte)
+        // (03/05/01 §6.3.12: DPT_Enable 1.003, single bit, 1 byte on the wire).
         PropertyDescriptor::with_policy(
             pid::SECURITY_REPORT_CONTROL,
-            PDT_Generic01::ID,
+            PDT_BinaryInformation::ID,
             1,
             PropertyAccess::ReadWrite,
             2,
