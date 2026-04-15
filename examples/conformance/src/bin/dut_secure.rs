@@ -133,6 +133,10 @@ fn flush_and_exit(
     if let Err(e) = shm_mut.write_state(&snapshot) {
         log::error!("Failed to flush state to shared memory: {}", e);
     }
+    // Half-close the IPC socket so the kernel delivers EOF to the
+    // parent only after any in-flight captured frames (e.g. the restart
+    // response still being serialised by the LL task) have drained.
+    shutdown_ipc_socket();
     std::process::exit(0);
 }
 
@@ -151,8 +155,13 @@ async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, s
             continue;
         }
 
-        // Give the stack a moment to flush the IPC response before exit.
-        Timer::after(Duration::from_millis(1)).await;
+        // Yield long enough for the LL async task to drain the outbox
+        // (T_ACK and the restart response) into the IPC socket. The
+        // subsequent `shutdown_ipc_socket()` handles kernel-side flush,
+        // but that only works once the frames have actually been
+        // written. 30ms leaves plenty of headroom within the test's
+        // 3s per-step timeout while keeping the restart path fast.
+        Timer::after(Duration::from_millis(30)).await;
 
         match erase_code {
             EraseCode::Basic | EraseCode::Confirmed => {}
@@ -175,6 +184,7 @@ async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, s
             log::error!("Failed to flush state to shared memory: {}", e);
         }
 
+        shutdown_ipc_socket();
         std::process::exit(0);
     }
 }
@@ -184,6 +194,30 @@ async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, s
 // ============================================================================
 
 static LOG_SOCKET: OnceLock<Mutex<std::os::unix::net::UnixStream>> = OnceLock::new();
+
+/// Raw fd of the primary IPC socket. Stored at startup so
+/// `flush_and_exit` can do an explicit `shutdown(Write)` before exit,
+/// which flushes any pending writes (captured frames, log frames) and
+/// cleanly signals EOF to the parent. Relying on process-exit alone to
+/// close the socket races with in-flight writes queued by the async LL
+/// task — leading to "DUT disconnected" failures when the parent sees
+/// EOF before the captured restart-response frame lands.
+static IPC_SOCKET_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// Drain any pending writes on the IPC socket and then half-close the
+/// write side so the kernel delivers EOF to the parent only after every
+/// captured frame has been written. Called just before `process::exit`.
+fn shutdown_ipc_socket() {
+    let fd = IPC_SOCKET_FD.load(std::sync::atomic::Ordering::Relaxed);
+    if fd >= 0 {
+        // `shutdown(SHUT_WR)` on a Unix stream socket tells the kernel:
+        // no more writes from this end; deliver EOF to the peer once
+        // the send buffer drains. That's exactly the barrier we want
+        // before `exit` — waiting on a timer alone raced with the async
+        // LL task's socket writes.
+        let _ = unsafe { nix::libc::shutdown(fd, nix::libc::SHUT_WR) };
+    }
+}
 
 struct IpcLogger {
     level: log::LevelFilter,
@@ -265,6 +299,10 @@ fn parse_args() -> (RawFd, RawFd) {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let (shm_fd, socket_fd) = parse_args();
+
+    // Publish the socket fd so `flush_and_exit` can half-close it on
+    // shutdown (see `shutdown_ipc_socket`).
+    IPC_SOCKET_FD.store(socket_fd, std::sync::atomic::Ordering::Relaxed);
 
     // Set up the IPC logger.
     {

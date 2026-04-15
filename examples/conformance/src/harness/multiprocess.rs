@@ -429,6 +429,14 @@ impl MultiProcessHarness {
 
         self.mark_dead();
         self.spawn_child().await?;
+
+        // Drain post-respawn ROI messages the same way `send_command`
+        // does after BrokenPipe. Without this, the next
+        // `receive_captured()` picks up a stale GroupValue_Read that
+        // the respawned child emitted during its read-on-init cycle,
+        // making subsequent secure-response matchers see the wrong
+        // frame.
+        self.drain_roi_after_respawn().await;
         Ok(())
     }
 
