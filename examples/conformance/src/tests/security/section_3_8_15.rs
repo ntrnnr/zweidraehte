@@ -522,11 +522,11 @@ fn test_3_8_15_7() -> TestCase {
     const UC_READ: &str =
         "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
     // Same but inside a connection (seen across the destructive-reset
-    // re-read after sync).
+    // re-read after sync). Uses TPCI 0x41 = numbered(seq 0) per spec.
     const CO_READ: &str =
-        "30 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
+        "30 60 #EDI #BDUT_ADDR 09 41 CC 00 11 00 10 3B 01 00 01";
     const CO_READ_RESET: &str =
-        "30 60 #EDI #BDUT_ADDR_RESET 09 01 CC 00 11 00 10 3B 01 00 01";
+        "30 60 #EDI #BDUT_ADDR_RESET 09 41 CC 00 11 00 10 3B 01 00 01";
 
     // Read responses — suffix indicates the seq value the DUT
     // reports back (written value + 1, because the write response
@@ -538,18 +538,19 @@ fn test_3_8_15_7() -> TestCase {
     // wildcard the last two bytes on reads.
     const UC_READ_OK: &str =
         "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
+    // Connected-response TPCI is 0x41 (numbered seq 0 — mirrors request seq).
     const CO_READ_OK: &str =
-        "30 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
+        "30 60 #BDUT_ADDR #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
     const CO_READ_OK_RESET_ADDR: &str =
-        "30 60 #BDUT_ADDR_RESET #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
+        "30 60 #BDUT_ADDR_RESET #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
 
     // Destructive-reset read-back: SeqNb re-initialised to a non-zero
     // value below the threshold; spec says the DUT must NOT re-init to
     // zero. The reference XML accepts any `00 00 00 00 ?? ??`.
     const CO_READ_OK_REINIT: &str =
-        "30 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
+        "30 60 #BDUT_ADDR #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
     const CO_READ_OK_REINIT_RESET: &str =
-        "30 60 #BDUT_ADDR_RESET #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
+        "30 60 #BDUT_ADDR_RESET #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
 
     // Connection-oriented Confirmed / FactoryReset / FactoryResetKeepIA.
     const CO_RESTART_CONFIRMED: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
@@ -598,12 +599,19 @@ fn test_3_8_15_7() -> TestCase {
         expect_secure_ac(UC_READ_OK, "TK1", TIMEOUT),
 
         // ---- Basic Restart → no change ----
-        comment("=== Basic Restart: no change ==="),
+        // Per spec 03/05/01 §6.3.6.4: with Security Mode ON, plain Basic
+        // Restart is rejected by the access-control policy (XML names this
+        // suite "Basic Restart ignore plain"). TL still sends T_ACK for the
+        // connected frame, but no actual restart happens. Style 3 keeps the
+        // connection in OpenIdle, so we explicitly T_Disconnect before
+        // moving on — otherwise the next T_Connect-on-open is a no-op
+        // (Style 3 E00 in OpenIdle = A0).
+        comment("=== Basic Restart: no change (ignored when sec mode on) ==="),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject(CO_BASIC_RESTART),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        comment("Wait for DUT auto-restart (child exits after Basic Restart)"),
-        wait(2000),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        wait(50),
         comment("Read SeqNb → FE FF FF FF FF FE (first write + 1)"),
         inject_secure_ac(UC_READ, "TK1"),
         expect_secure_ac(UC_READ_OK, "TK1", TIMEOUT),
@@ -625,7 +633,7 @@ fn test_3_8_15_7() -> TestCase {
         expect_secure_ac(CO_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait(500),
+        wait_for_restart(2000),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
         expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
         comment("Read SeqNb → FE FF FF FF FF FF"),
@@ -649,7 +657,7 @@ fn test_3_8_15_7() -> TestCase {
         expect_secure_ac(CO_RESTART_FRWITHIA_RESP, "TK1", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait(500),
+        wait_for_restart(2000),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
         expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
         comment("Read SeqNb → FE FF FF FF FF FF (preserved)"),
@@ -675,7 +683,7 @@ fn test_3_8_15_7() -> TestCase {
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         // IA is wiped — T_Disconnect uses the broadcast address.
         inject("B0 #EDI FF FF 60 81"),
-        wait(500),
+        wait_for_restart(2000),
         comment("Restore DoA — (TP1 DUT has no domain address; skipped)"),
         comment("Synchronize SeqNb for tool key (now = FDSK)"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR_RESET", "FDSK", 1, CHALLENGE_1),
@@ -711,7 +719,7 @@ fn test_3_8_15_7() -> TestCase {
         inject_secure_ac(CO_READ_RESET, "FDSK"),
         expect("B0 #BDUT_ADDR_RESET #EDI 60 C2", TIMEOUT),
         expect_secure_ac(
-            "30 60 #BDUT_ADDR_RESET #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 FE FF FF FF FF FE",
+            "30 60 #BDUT_ADDR_RESET #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 FE FF FF FF FF FE",
             "FDSK",
             TIMEOUT,
         ),
@@ -746,13 +754,13 @@ fn test_3_8_15_7() -> TestCase {
         inject_secure_ac(UC_READ, "FDSK"),
         expect_secure_ac(UC_READ_OK, "FDSK", TIMEOUT),
 
-        // ---- Basic Restart → no change ----
-        comment("=== Basic Restart: no change ==="),
+        // ---- Basic Restart → no change (ignored when sec mode on) ----
+        comment("=== Basic Restart: no change (ignored when sec mode on) ==="),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject(CO_BASIC_RESTART),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        comment("Wait for DUT auto-restart"),
-        wait(2000),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        wait(50),
         comment("Read SeqNb → FF 00 00 00 00 02"),
         inject_secure_ac(UC_READ, "FDSK"),
         expect_secure_ac(UC_READ_OK, "FDSK", TIMEOUT),
@@ -765,7 +773,7 @@ fn test_3_8_15_7() -> TestCase {
         expect_secure_ac(CO_RESTART_CONFIRMED_RESP, "FDSK", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait(500),
+        wait_for_restart(2000),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
         expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
         comment("Connected read SeqNb → FF 00 00 00 00 04"),
@@ -793,7 +801,7 @@ fn test_3_8_15_7() -> TestCase {
         expect_secure_ac(CO_RESTART_FRWITHIA_RESP, "FDSK", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait(500),
+        wait_for_restart(2000),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
         expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
         comment("Connected read SeqNb → 00 00 00 00 ?? ?? (re-initialised, not zero)"),
@@ -822,7 +830,7 @@ fn test_3_8_15_7() -> TestCase {
         expect_secure_ac(CO_RESTART_FACTORY_RESP, "FDSK", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI FF FF 60 81"),
-        wait(500),
+        wait_for_restart(2000),
         comment("Synchronize SeqNb for tool key"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR_RESET", "FDSK", 1, CHALLENGE_1),
         expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
