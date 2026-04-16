@@ -1,5 +1,54 @@
 We are building a KNX device stack. We can run a bunch of conformance tests by running `cargo run --bin conformance-runner`. You can pass test names or subset of names as a parameter to only run specific tests. Make sure to not truncate the output of a test run as it is possibly long. The conformance tests take a long while to run. If you need different output, pipe it into a file and then grep through it for what you need without running them over and over again. You can also give it a test suite name or part of it as the first argument to only run specific tests or test suites.
 
+## Authoring conformance tests
+
+### Suite-level preparation and teardown
+
+`TestSuite` has two hooks for managing global DUT state around a suite:
+
+- `.with_preparation(vec![...])` — steps run once before any test case
+  in the suite. Use for non-trivial setup that all cases depend on
+  (e.g. loading Security IO, seeding SIAT entries, initial SyncReq).
+  If preparation fails, **all tests in the suite are skipped** — the
+  runner reports "Preparation failed - skipping suite tests". A
+  cascade of skipped suites usually traces back to a missing or
+  misordered preparation step.
+- `.with_teardown(vec![...])` — steps run once after all cases finish
+  (pass or fail). Use to restore global DUT state so the next suite
+  starts from a known baseline. Teardown failures are logged but do
+  not affect the suite's pass/fail count.
+
+When a test case mutates global DUT state, you have two choices:
+
+1. **Self-contained**: undo the mutation at the end of the case so
+   other cases (and suites) are unaffected. Pattern used in e.g.
+   3.8.10.1 restoring the GK table entry.
+2. **Suite teardown**: if the mutation can't be cleanly reverted per
+   case (factory reset, tool key rotation under multiple branches,
+   sync rate-limit consumption) put the restore in `with_teardown`.
+
+Destructive operations that leave the DUT in a state the next suite
+can't recover from (wiped address / association / group-key tables,
+missing IA, etc.) should use `full_reset(timeout_ms)` in the suite
+teardown. `TestStep::FullReset` kills the DUT, rewrites shared memory
+with the factory-default snapshot, zeroes the sequence-number tail
+region (so the respawned DUT starts with fresh seq counters rather
+than inheriting stale ones from the previous run), respawns, and
+drains ROI frames. Pair it with `wait(55000)` when the prior test
+consumed a `S-A_Sync_Req` slot — the DUT's 60 s rate-limit timer is
+wall-clock and survives the respawn.
+
+### Timing, fast mode, and rate limits
+
+The runner compresses inter-step waits by a default 100× via the
+`KNX_TIME_DIVISOR` env var (the `--realtime` flag disables it). Most
+`wait(ms)` calls scale accordingly. But DUT-side rate limits (notably
+the 1-minute `S-A_Sync_Req` cooldown) do **not** scale — the DUT
+enforces the spec 60 s regardless. Tests that fire multiple syncs
+back-to-back usually park a literal `wait(55000)` between them, which
+stays a real 55 s in fast mode too. See the SESSION.md note on
+"Sync rate-limit wait scaling" for the proposed fix.
+
 The goal is to write a KNX device stack (and possibly more later) in Rust targeting both embedded devices in a no_std and no alloc environment and embedded Linux userspace systems.
 
 The stack needs to be conformance compliant and generic enough so that we can replace different layers and servers in the stack for different use cases when building devices. It's best to stick to existing patterns where applicable.
