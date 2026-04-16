@@ -151,6 +151,11 @@ const PLAIN_DESC_READ_OK: &str =
 pub fn create_section_3_8_8_suite() -> TestSuite {
     let variables = create_security_variables();
 
+    // 3.8.8.7 performs two destructive factory resets (erase 0x02 and
+    // local master_reset 0x02) that wipe address / association / GK
+    // tables, then leaves Security Mode ON after the power-cycle phase.
+    // Without a full reset, subsequent suites inherit an empty-tables
+    // DUT with sec mode still active and cascade into failures.
     TestSuite::new("3.8.8 PID_SECURITY_MODE (Security IO, access 15F/04C)", variables)
         .secure()
         .with_cases(vec![
@@ -161,6 +166,13 @@ pub fn create_section_3_8_8_suite() -> TestSuite {
             test_3_8_8_5(),
             test_3_8_8_6(),
             test_3_8_8_7(),
+        ])
+        .with_teardown(vec![
+            comment("Teardown: rebuild default SHM + respawn to restore all DUT tables."),
+            full_reset(2000),
+            // Clear the `S-A_Sync_Req` rate-limit window so the next
+            // suite's preparation SyncReq isn't throttled.
+            wait(1500),
         ])
 }
 

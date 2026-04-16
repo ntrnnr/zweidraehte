@@ -119,14 +119,6 @@ const PLAIN_DESC_READ_ZERO: &str =
 // Suite Constructor
 // ============================================================================
 
-// Secure A+C write to reset sequence number to a sane value after overflow
-// test (3.8.15.6). Without this, the DUT won't send any secure frames for
-// subsequent suites.
-const RESET_SEQ: &str =
-    "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 00 00 00 00 10 00";
-const RESET_SEQ_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3B 01 00 01 00";
-
 pub fn create_section_3_8_15_suite() -> TestSuite {
     let variables = create_security_variables();
 
@@ -153,15 +145,13 @@ pub fn create_section_3_8_15_suite() -> TestSuite {
             test_3_8_15_6(),
         ])
         .with_teardown(vec![
-            // After the overflow test, the DUT's sending seq is at max and
-            // it won't send. We need a sync to re-align, then write a sane
-            // value so subsequent suites work.
-            comment("Re-sync after overflow test"),
-            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
-            expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
-            comment("Reset PID_SEQUENCE_NUMBER_SENDING to 0x1000"),
-            inject_secure_ac(RESET_SEQ, "TK1"),
-            expect_secure_ac(RESET_SEQ_OK, "TK1", TIMEOUT),
+            // 3.8.15.7 / .8 perform destructive factory resets that wipe
+            // address / association / GK tables; .6 drives sending seq
+            // to overflow. Rebuild default SHM + respawn to restore all
+            // DUT tables for subsequent suites.
+            comment("Teardown: rebuild default SHM + respawn to restore all DUT tables."),
+            full_reset(2000),
+            wait(1500),
         ])
 }
 
