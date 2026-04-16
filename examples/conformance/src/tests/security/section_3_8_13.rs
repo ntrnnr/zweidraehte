@@ -172,13 +172,11 @@ pub fn create_section_3_8_13_suite() -> TestSuite {
         .with_teardown(vec![
             comment("Teardown: rebuild default SHM + respawn to restore all DUT tables."),
             full_reset(2000),
-            // Clear the 1-minute `S-A_Sync_Req` rate-limit window so
-            // 3.8.15's preparation SyncReq isn't throttled into a
-            // timeout. (The rate limit is enforced by the DUT's
-            // wall-clock; it survives the respawn because the freshly
-            // spawned DUT starts its own fresh timer but the pending
-            // harness context still thinks it's throttled.)
-            wait(55000),
+            // Clear the `S-A_Sync_Req` rate-limit window (1 s spec,
+            // scaled by `KNX_TIME_DIVISOR` under the conformance
+            // harness) so 3.8.15's preparation SyncReq isn't
+            // throttled into a timeout.
+            wait(1500),
         ])
 }
 

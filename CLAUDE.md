@@ -34,20 +34,23 @@ teardown. `TestStep::FullReset` kills the DUT, rewrites shared memory
 with the factory-default snapshot, zeroes the sequence-number tail
 region (so the respawned DUT starts with fresh seq counters rather
 than inheriting stale ones from the previous run), respawns, and
-drains ROI frames. Pair it with `wait(55000)` when the prior test
-consumed a `S-A_Sync_Req` slot — the DUT's 60 s rate-limit timer is
+drains ROI frames. Pair it with `wait(1500)` when the prior test
+consumed a `S-A_Sync_Req` slot — the DUT's sync rate-limit timer is
 wall-clock and survives the respawn.
 
 ### Timing, fast mode, and rate limits
 
-The runner compresses inter-step waits by a default 100× via the
-`KNX_TIME_DIVISOR` env var (the `--realtime` flag disables it). Most
-`wait(ms)` calls scale accordingly. But DUT-side rate limits (notably
-the 1-minute `S-A_Sync_Req` cooldown) do **not** scale — the DUT
-enforces the spec 60 s regardless. Tests that fire multiple syncs
-back-to-back usually park a literal `wait(55000)` between them, which
-stays a real 55 s in fast mode too. See the SESSION.md note on
-"Sync rate-limit wait scaling" for the proposed fix.
+The runner compresses inter-step waits by a default 50× via the
+`KNX_TIME_DIVISOR` env var (the `--realtime` flag disables it).
+`wait(ms)` calls scale accordingly.
+
+DUT-side timing windows that tests depend on (TL ACK / connection
+timeouts, `S-A_Sync_Req` rate limit) are scaled by the same divisor
+inside the DUT when built with the `conformance` feature, so logical
+ordering is preserved without burning real wall-clock. The sync
+rate-limit window is 1 s per spec and scales to ~20 ms in fast mode;
+tests between back-to-back syncs park `wait(1500)` which comfortably
+clears the window in both fast and realtime runs.
 
 The goal is to write a KNX device stack (and possibly more later) in Rust targeting both embedded devices in a no_std and no alloc environment and embedded Linux userspace systems.
 

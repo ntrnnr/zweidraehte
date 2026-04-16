@@ -138,7 +138,7 @@ pub fn create_section_3_8_15_suite() -> TestSuite {
             comment("Sync tool key sequence numbers"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
-            wait(55000), // Sync rate limit.
+            wait(1500), // Sync rate limit.
         ])
         .with_cases(vec![
             test_3_8_15_1(),

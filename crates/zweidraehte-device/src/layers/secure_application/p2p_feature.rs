@@ -62,10 +62,49 @@ use super::{PendingSyncState, SecureApplicationLayer, SecureResult};
 /// Carries the two `Cell`s that track spec-mandated timing: the
 /// 6-second pending-sync deadline for DUT-initiated sync requests and
 /// the 1-second rate limit on outgoing sync responses.
-#[derive(Default)]
 pub struct WithP2pState {
     pub(super) pending_sync: Cell<Option<PendingSyncState>>,
     pub(super) last_sync_response: Cell<Option<embassy_time::Instant>>,
+    /// Rate-limit window for outgoing S-A_Sync_Res. Defaults to 1 s
+    /// per KNX spec. With the `conformance` feature and
+    /// `KNX_TIME_DIVISOR > 1`, scaled down so fast-mode tests don't
+    /// have to burn real wall-clock between back-to-back syncs.
+    pub(super) sync_rate_limit: embassy_time::Duration,
+}
+
+/// Spec-mandated rate-limit window between outgoing S-A_Sync_Res frames.
+pub(super) const SYNC_RATE_LIMIT_MS: u64 = 1_000;
+
+impl Default for WithP2pState {
+    fn default() -> Self {
+        // Under the conformance harness we compress protocol-level
+        // wall-clock delays by `KNX_TIME_DIVISOR` so fast-mode test
+        // runs stay fast; the sync rate-limit window is one of those
+        // delays. In production builds the divisor path doesn't
+        // exist and the window stays at the spec's 1 s.
+        #[cfg(feature = "conformance")]
+        let sync_rate_limit = {
+            extern crate std;
+            let divisor: u64 = std::env::var("KNX_TIME_DIVISOR")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .filter(|&d| d > 0)
+                .unwrap_or(1);
+            let scaled = SYNC_RATE_LIMIT_MS / divisor;
+            if divisor > 1 {
+                crate::logging::info!("S-AL P2P sync rate-limit scaled: divisor={}, window={}ms", divisor, scaled);
+            }
+            embassy_time::Duration::from_millis(scaled)
+        };
+        #[cfg(not(feature = "conformance"))]
+        let sync_rate_limit = embassy_time::Duration::from_millis(SYNC_RATE_LIMIT_MS);
+
+        Self {
+            pending_sync: Cell::new(None),
+            last_sync_response: Cell::new(None),
+            sync_rate_limit,
+        }
+    }
 }
 
 // ============================================================================

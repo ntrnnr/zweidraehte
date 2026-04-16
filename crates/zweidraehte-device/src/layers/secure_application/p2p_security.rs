@@ -53,9 +53,11 @@ where
 {
     let security_state = sal.inner.state().extension_state();
 
-    // Step 1: Rate limit — ignore if we responded less than 1 second ago.
+    // Step 1: Rate limit — ignore if we responded within the
+    // rate-limit window (1 s per spec; scaled for fast conformance
+    // runs so tests don't burn real wall-clock between syncs).
     if let Some(last) = sal.p2p_state.last_sync_response.get() {
-        if embassy_time::Instant::now() - last < embassy_time::Duration::from_secs(1) {
+        if embassy_time::Instant::now() - last < sal.p2p_state.sync_rate_limit {
             return SecureResult::Dropped;
         }
     }

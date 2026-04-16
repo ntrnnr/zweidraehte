@@ -48,7 +48,7 @@ pub fn create_section_3_3_suite() -> TestSuite {
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
             comment("Wait for sync rate limit to expire"),
-            wait(55000),
+            wait(1500),
         ])
         .with_cases(vec![
             // Placeholder cases (0 active telegrams in XML).
@@ -93,7 +93,7 @@ pub fn create_section_3_3_suite() -> TestSuite {
             // SeqNr_local, so a final sync re-aligns the harness's data
             // counter with what the DUT expects for subsequent suites.
             comment("Re-sync to align harness tool_seq_nr after high-sequence tests"),
-            wait(55000),
+            wait(1500),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
         ])
@@ -111,7 +111,7 @@ pub fn create_section_3_3_suite() -> TestSuite {
 /// respond with a correctly encrypted S-A_Sync_Res on the same connection.
 fn test_3_3_1() -> TestCase {
     TestCase::new("3.3.1 correct S-A_Sync_Req-PDU, A+C – P2P – connection-oriented").with_steps(vec![
-        wait(55000), // Sync rate limit.
+        wait(1500), // Sync rate limit.
         comment("Open transport connection"),
         inject("BC #EDI #BDUT_ADDR 60 80"),
         comment("Send connection-oriented sync req (TPCI=0x43: numbered data seq 0)"),
@@ -142,8 +142,7 @@ fn test_3_3_1() -> TestCase {
 /// 3.3.2: Correct S-A_Sync_Req, A+C, P2P connectionless, tool key.
 fn test_3_3_2() -> TestCase {
     TestCase::new("3.3.2 correct S-A_Sync_Req-PDU, A+C – P2P – connectionless").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send correct sync req connectionless with TK1"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
         expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
@@ -153,7 +152,7 @@ fn test_3_3_2() -> TestCase {
 /// 3.3.3: Correct S-A_Sync_Req from second IA (0xFFFE).
 fn test_3_3_3() -> TestCase {
     TestCase::new("3.3.3 correct S-A_Sync_Req-PDU, A+C – P2P connectionless, from second IA").with_steps(vec![
-        wait(55000), // Rate limit: need > 1s between sync responses.
+        wait(1500), // Rate limit: need > 1s between sync responses.
         comment("Send sync req from alternate source FF FE with TK1"),
         inject_sync_req(SyncReqParams {
             key_name: "TK1".into(),
@@ -227,7 +226,7 @@ fn test_3_3_4() -> TestCase {
             expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
             inject_secure_ac(SEC_LOAD_LOADED, "TK1"),
             expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
-            wait(55000), // Rate limit.
+            wait(1500), // Rate limit.
             comment("Send P2P sync req with P2PK1 (SCF=0x12: A+C, no tool)"),
             inject_sync_req(SyncReqParams {
                 key_name: "P2PK1".into(),
@@ -274,7 +273,7 @@ fn test_3_3_4() -> TestCase {
 /// authorized in the Security Individual Address Table.
 fn test_3_3_5() -> TestCase {
     TestCase::new("3.3.5 correct S-A_Sync_Req-PDU, A+C – P2P, connectionless, not with tool key, from IA not part of the PID_Security_Individual_Address_Table").with_steps(vec![
-        wait(55000), // Rate limit.
+        wait(1500), // Rate limit.
         comment("Send P2P sync req from IA 0x1117 (not in SIAT) with P2PK1 → reject"),
         inject_sync_req(SyncReqParams {
             key_name: "P2PK1".into(),
@@ -296,8 +295,7 @@ fn test_3_3_5() -> TestCase {
 /// 3.3.6: Correct S-A_Sync_Req via broadcast and system broadcast.
 fn test_3_3_6() -> TestCase {
     TestCase::new("3.3.6 correct S-A_Sync_Req-PDU – (system) broadcast").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Broadcast sync req with matching serial number"),
         inject_sync_req_broadcast("#EDI", "TK1", 0, DUT_SERIAL, CHALLENGE_1, false),
         expect_sync_res(
@@ -312,7 +310,7 @@ fn test_3_3_6() -> TestCase {
             },
             TIMEOUT,
         ),
-        wait(55000), // Rate limit: must wait > 1 second between sync responses.
+        wait(1500), // Rate limit: must wait > 1 second between sync responses.
         comment("System broadcast sync req with matching serial number"),
         inject_sync_req_broadcast("#EDI", "TK1", 0, DUT_SERIAL, CHALLENGE_1, true),
         expect_sync_res(
@@ -334,8 +332,7 @@ fn test_3_3_6() -> TestCase {
 fn test_3_3_13() -> TestCase {
     let challenge_2: [u8; 6] = [0x11, 0x11, 0x11, 0x11, 0x11, 0x11];
     TestCase::new("3.3.13 correct S-A_Sync_Req-PDU - A+C – P2P - other challenge").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send sync req with different challenge value"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, challenge_2),
         expect_sync_res_tool("TK1", challenge_2, None, None, TIMEOUT),
@@ -346,9 +343,8 @@ fn test_3_3_13() -> TestCase {
 fn test_3_3_14() -> TestCase {
     TestCase::new("3.3.14 correct S-A_Sync_Req-PDU – sequence number local lower than expected by BDUT – P2P")
         .with_steps(vec![
-            wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-            // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
-            comment("Send sync req with SeqNr_local=1 (lower than what BDUT expects)"),
+            wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
+                comment("Send sync req with SeqNr_local=1 (lower than what BDUT expects)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
         ])
@@ -369,11 +365,11 @@ fn test_3_3_15() -> TestCase {
 
     TestCase::new("3.3.15 correct S-A_Sync_Req-PDU – Sequence number local higher to that expected by BDUT – P2P")
         .with_steps(vec![
-            wait(55000), // Sync rate limit.
+            wait(1500), // Sync rate limit.
             comment("Send sync req with SeqNr_local = 5,000,000,000 (far above stored)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", HIGH_SEQ, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(HIGH_SEQ), TIMEOUT),
-            wait(55000), // Rate limit.
+            wait(1500), // Rate limit.
             comment("Send sync req with SeqNr_local = 5,000,000,001 (increment)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", HIGH_SEQ + 1, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(HIGH_SEQ + 1), TIMEOUT),
@@ -394,7 +390,7 @@ fn test_3_3_16() -> TestCase {
 
     TestCase::new("3.3.16 correct S-A_Sync_Req-PDU – Sequence number local identical to that expected by BDUT – P2P")
         .with_steps(vec![
-            wait(55000), // Sync rate limit.
+            wait(1500), // Sync rate limit.
             comment("Send sync req with SeqNr_local = 5,000,000,002 (matches stored + 1)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", EXPECTED_SEQ, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(EXPECTED_SEQ), TIMEOUT),
@@ -408,9 +404,8 @@ fn test_3_3_17() -> TestCase {
 
     TestCase::new("3.3.17 correct S-A_Sync_Req-PDU – verification of correct setting of sequence number sending")
         .with_steps(vec![
-            wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-            // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
-            comment("Write SeqNoSending=100"),
+            wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
+                comment("Write SeqNoSending=100"),
             inject_secure_ac(write_seq_100, "TK1"),
             // A_PropertyExtValueWriteCon response (no error).
             // We don't need to match the exact response — just drain it.
@@ -419,7 +414,7 @@ fn test_3_3_17() -> TestCase {
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, Some(100), None, TIMEOUT),
             comment("Verify different random value with second sync req (different challenge)"),
-            wait(55000), // Rate limit.
+            wait(1500), // Rate limit.
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC]),
             // SeqNr_remote should be 101 now (100 was consumed by the secure write response).
             expect_sync_res_tool("TK1", [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC], None, None, TIMEOUT),
@@ -429,8 +424,7 @@ fn test_3_3_17() -> TestCase {
 /// 3.3.22: S-A_Sync_Req with SBC flag set for P2P (optional, should accept).
 fn test_3_3_22() -> TestCase {
     TestCase::new("3.3.22 S-A_Sync_Req-PDU - A+C – P2P - with tool key – SBC flag set (optional)").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send P2P sync req with SBC flag set — DUT should still accept"),
         inject_sync_req(SyncReqParams {
             key_name: "TK1".into(),
@@ -467,8 +461,7 @@ fn test_3_3_22() -> TestCase {
 /// 3.3.8: Invalid SCF (0x82, reserved SAI=000b) → reject.
 fn test_3_3_8() -> TestCase {
     TestCase::new("3.3.8 incorrect S-A_Sync_Req-PDU – reserved SAI case 1").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send sync req with invalid SCF 0x82 (reserved SAI) → reject"),
         inject_sync_req_invalid(
             SyncReqParams {
@@ -493,8 +486,7 @@ fn test_3_3_8() -> TestCase {
 /// 3.3.9: Invalid SCF (0xE2, reserved SAI=111b) → reject.
 fn test_3_3_9() -> TestCase {
     TestCase::new("3.3.9 incorrect S-A_Sync_Req-PDU – reserved SAI case 2").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send sync req with invalid SCF 0xE2 (reserved SAI) → reject"),
         inject_sync_req_invalid(
             SyncReqParams {
@@ -519,8 +511,7 @@ fn test_3_3_9() -> TestCase {
 /// 3.3.10: Broadcast with serial=0 → reject.
 fn test_3_3_10() -> TestCase {
     TestCase::new("3.3.10 S-A_Sync_Req, A+C with KNX Serial number set to 0 for (system) broadcast").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Broadcast sync req with serial=0 → reject"),
         inject_sync_req_broadcast("#EDI", "TK1", 0, [0; 6], CHALLENGE_1, false),
         expect_none(TIMEOUT),
@@ -534,8 +525,7 @@ fn test_3_3_10() -> TestCase {
 fn test_3_3_11() -> TestCase {
     let wrong_serial: [u8; 6] = [0x12, 0x34, 0x56, 0x78, 0x9A, 0xBB];
     TestCase::new("3.3.11 S-A_Sync_Req-PDU, A+C with KNX Serial number not corresponding to that of the BDUT – (system) broadcast").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Broadcast sync req with wrong serial → reject"),
         inject_sync_req_broadcast("#EDI", "TK1", 0, wrong_serial, CHALLENGE_1, false),
         expect_none(TIMEOUT),
@@ -548,8 +538,7 @@ fn test_3_3_11() -> TestCase {
 /// 3.3.18: Incorrect MAC → reject.
 fn test_3_3_18() -> TestCase {
     TestCase::new("3.3.18 S-A_Sync_Req-PDU - A+C – P2P - with tool key - incorrectly encrypted MAC").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send sync req with invalid MAC → reject"),
         inject_sync_req_invalid(
             SyncReqParams {
@@ -574,8 +563,7 @@ fn test_3_3_18() -> TestCase {
 /// 3.3.19: Sync req sent as group (wrong address type) → reject.
 fn test_3_3_19() -> TestCase {
     TestCase::new("3.3.19 S-A_Sync_Req-PDU - A+C – P2P - with tool key – sent as group").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send sync req computed with group address type → reject"),
         inject_sync_req_invalid(
             SyncReqParams {
@@ -600,8 +588,7 @@ fn test_3_3_19() -> TestCase {
 /// 3.3.20: One byte too many → reject.
 fn test_3_3_20() -> TestCase {
     TestCase::new("3.3.20 S-A_Sync_Req-PDU - A+C – P2P - with tool key – one byte too many").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send sync req with one extra byte appended → reject"),
         inject_sync_req_invalid(
             SyncReqParams {
@@ -626,8 +613,7 @@ fn test_3_3_20() -> TestCase {
 /// 3.3.21: One byte too few → reject.
 fn test_3_3_21() -> TestCase {
     TestCase::new("3.3.21 S-A_Sync_Req-PDU - A+C – P2P - with tool key – one byte too few").with_steps(vec![
-        wait(55000), // Sync rate limit: DUT ignores requests within 1s of last response.
-        // The wait is scaled down by time_divisor (50x), so 55s → ~1.1s real time.
+        wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
         comment("Send sync req with one byte truncated → reject"),
         inject_sync_req_invalid(
             SyncReqParams {

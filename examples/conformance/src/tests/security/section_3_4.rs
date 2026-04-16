@@ -118,7 +118,7 @@ pub fn create_section_3_4_suite() -> TestSuite {
             expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
             // Seed sequence numbers for P2P peer 0x1041 via sync.
             comment("Seed: inject P2P sync req from 0x1041 with P2PK1"),
-            wait(55000),
+            wait(1500),
             inject_sync_req(SyncReqParams {
                 key_name: "P2PK1".into(),
                 tool_access: false,
@@ -180,7 +180,7 @@ pub fn create_section_3_4_suite() -> TestSuite {
 fn test_3_4_1() -> TestCase {
     TestCase::new("3.4.1 correct S-A_Sync_Res-PDU – P2P, seq_local identical").with_steps(vec![
         drain(500),
-        wait(55000), // Sync rate limit.
+        wait(1500), // Sync rate limit.
         comment("Trigger DUT to send P2P sync req to 0x1041 with P2PK1"),
         trigger_sync(P2P_PEER_IA, false),
         comment("Expect sync req, respond with seq_local=10 (identical)"),
@@ -198,7 +198,7 @@ fn test_3_4_1() -> TestCase {
 fn test_3_4_2() -> TestCase {
     TestCase::new("3.4.2 correct S-A_Sync_Res-PDU – P2P, seq_local higher").with_steps(vec![
         drain(500),
-        wait(55000),
+        wait(1500),
         comment("Trigger DUT to send P2P sync req to 0x1041 with P2PK1"),
         trigger_sync(P2P_PEER_IA, false),
         comment("Expect sync req, respond with seq_local=20 (higher)"),
@@ -232,7 +232,7 @@ fn test_3_4_4() -> TestCase {
         drain(500),
         // Seed sequence numbers for ALT_SRC_ADDR/P2PK2 before triggering.
         comment("Seed: inject P2P sync req from #ALT_SRC_ADDR with P2PK2"),
-        wait(55000),
+        wait(1500),
         inject_sync_req(SyncReqParams {
             key_name: "P2PK2".into(),
             tool_access: false,
@@ -258,7 +258,7 @@ fn test_3_4_4() -> TestCase {
             },
             TIMEOUT,
         ),
-        wait(55000),
+        wait(1500),
         comment("Trigger DUT to send P2P sync req to #ALT_SRC_ADDR (0xAFFD)"),
         trigger_sync(0xAFFD, false),
         comment("Expect sync req, respond from #ALT_SRC_ADDR with P2PK2, seq_local=20"),
@@ -277,7 +277,7 @@ fn test_3_4_4() -> TestCase {
 fn test_3_4_5() -> TestCase {
     TestCase::new("3.4.5 S-A_Sync_Res-PDU – broadcast response to P2P request → reject").with_steps(vec![
         drain(500),
-        wait(55000),
+        wait(1500),
         comment("Trigger DUT to send P2P sync req to 0x1041 (SBC=0)"),
         trigger_sync(P2P_PEER_IA, false),
         comment("Respond with SBC=broadcast (mismatch) → DUT rejects"),
@@ -311,7 +311,7 @@ fn test_3_4_7() -> TestCase {
 fn test_3_4_9() -> TestCase {
     TestCase::new("3.4.9 correct S-A_Sync_Res-PDU – broadcast sync (TP only)").with_steps(vec![
         drain(500),
-        wait(55000),
+        wait(1500),
         comment("Trigger DUT to send broadcast sync req to 0x1041"),
         trigger_sync_broadcast(P2P_PEER_IA, false),
         comment("Expect broadcast sync req, respond with broadcast sync response"),
