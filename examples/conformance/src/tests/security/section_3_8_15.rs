@@ -84,18 +84,6 @@ const SECURE_WRITE_DENIED: &str =
     "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3B 00 00 01 FC";
 
 // ============================================================================
-// Verification read — A+C secure read to confirm current state
-// ============================================================================
-
-// A+C secure element count query: count=1, start=0.
-const VERIFY_READ: &str =
-    "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 00";
-
-// Response: count=1, start=0, 2-byte element count.
-const VERIFY_READ_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0B 01 CD 00 11 00 10 3B 01 00 00 ?? ??";
-
-// ============================================================================
 // PropertyExtDescription_Read / Response templates
 // ============================================================================
 
@@ -641,6 +629,9 @@ fn test_3_8_15_7() -> TestCase {
         inject("B0 #EDI #BDUT_ADDR 60 81"),
 
         // ---- Master Reset — Factory Reset without IA → no change ----
+        // FactoryResetKeepIA reverts the active tool key to FDSK; all
+        // management traffic after the reset uses FDSK until we
+        // explicitly re-provision TK1.
         comment("=== Master Reset - FactoryResetKeepIA (0x07): no change ==="),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject_secure_ac(CO_RESTART_FRWITHIA, "TK1"),
@@ -650,28 +641,29 @@ fn test_3_8_15_7() -> TestCase {
         inject("B0 #EDI #BDUT_ADDR 60 81"),
         wait_for_restart(2000),
         drain(500),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
         comment("Read SeqNb → FE FF FF FF FF FF (preserved)"),
-        inject_secure_ac(UC_READ, "TK1"),
-        expect_secure_ac(UC_READ_OK, "TK1", TIMEOUT),
+        inject_secure_ac(UC_READ, "FDSK"),
+        expect_secure_ac(UC_READ_OK, "FDSK", TIMEOUT),
 
         // ---- Re-initialise SeqNb below threshold ----
         comment("Re-initialise SeqNb below threshold"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
-        inject_secure_ac(CO_WRITE_BELOW_FD, "TK1"),
+        inject_secure_ac(CO_WRITE_BELOW_FD, "FDSK"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        expect_secure_ac(CO_WRITE_OK, "TK1", TIMEOUT),
+        expect_secure_ac(CO_WRITE_OK, "FDSK", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
 
         // ---- Master Reset — FactoryReset with IA → no change
         //      (value still below threshold) ----
+        // `tool_key` is still FDSK from the previous FactoryResetKeepIA.
         comment("=== Master Reset - FactoryReset (0x02): no change (value below threshold) ==="),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
-        inject_secure_ac(CO_RESTART_FACTORY, "TK1"),
+        inject_secure_ac(CO_RESTART_FACTORY, "FDSK"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        expect_secure_ac(CO_RESTART_FACTORY_RESP, "TK1", TIMEOUT),
+        expect_secure_ac(CO_RESTART_FACTORY_RESP, "FDSK", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         // IA is wiped — T_Disconnect uses the broadcast address.
         inject("B0 #EDI FF FF 60 81"),
@@ -867,7 +859,12 @@ fn test_3_8_15_7() -> TestCase {
         wait(200),
     ];
 
-    TestCase::new("3.8.15.7 Master Reset tests").with_steps(steps)
+    // Case ends with `tool_key == FDSK` (the last Local Factory Reset
+    // reverts the key, and we don't write TK1 back). Restore it in
+    // teardown so later cases in this suite keep authenticating.
+    TestCase::new("3.8.15.7 Master Reset tests")
+        .with_steps(steps)
+        .with_teardown(provision_tk1_via_fdsk())
 }
 
 #[allow(dead_code)]

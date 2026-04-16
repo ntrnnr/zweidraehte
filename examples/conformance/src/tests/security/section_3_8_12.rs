@@ -212,6 +212,10 @@ fn general_procedure_steps() -> Vec<TestStep> {
 pub fn create_section_3_8_12_suite() -> TestSuite {
     let variables = create_security_variables();
 
+    // 3.8.12.3/4/5 perform factory resets (A_Restart with erase 0x02
+    // / IPC master_reset) that land the DUT on `tool_key == FDSK`.
+    // Rebuild the default SHM snapshot via `full_reset` so the next
+    // suite starts with tool_key = TK1 (the pre-provisioned baseline).
     TestSuite::new("3.8.12 PID_SECURITY_FAILURES_LOG (Security IO, access 1FF/0CC)", variables)
         .secure()
         .with_cases(vec![
@@ -224,6 +228,11 @@ pub fn create_section_3_8_12_suite() -> TestSuite {
             test_3_8_12_7(),
             test_3_8_12_8(),
             test_3_8_12_9(),
+        ])
+        .with_teardown(vec![
+            comment("Teardown: rebuild default SHM + respawn to restore all DUT tables."),
+            full_reset(2000),
+            wait(1500),
         ])
 }
 
@@ -345,6 +354,7 @@ fn test_3_8_12_3() -> TestCase {
     const READ_LAST_ENTRY_EMPTY: &str =
         "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 37 F8 01";
 
+
     let mut steps = vec![
         comment("Enable Security Mode"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
@@ -387,26 +397,29 @@ fn test_3_8_12_3() -> TestCase {
         inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
         wait(200),
 
-        // After FactoryReset our DUT seeds the active tool key from
-        // its `DeviceIdentity::fdsk()` (which is `SECURE_FDSK = TK1`),
-        // so secure A+C management traffic with TK1 is accepted again.
-        // Sync the tool sequence counter to align after the restart.
-        comment("Sync tool seq number after FactoryReset"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        // After FactoryReset the active tool key reverts to FDSK
+        // (distinct from TK1), so post-reset management traffic must
+        // use FDSK until a new tool key is written.
+        comment("Sync tool seq number after FactoryReset (FDSK-encrypted)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
 
         // ---- Verify counters were cleared ----
         comment("Read counters after FactoryReset → expect all zero"),
-        inject_secure_ac(READ_COUNTERS, "TK1"),
-        expect_secure_ac(READ_COUNTERS_EMPTY, "TK1", TIMEOUT),
+        inject_secure_ac(READ_COUNTERS, "FDSK"),
+        expect_secure_ac(READ_COUNTERS_EMPTY, "FDSK", TIMEOUT),
 
         comment("Read last entry after FactoryReset → expect F8 (empty log)"),
-        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
-        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
+        inject_secure_ac(READ_LAST_ENTRY, "FDSK"),
+        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "FDSK", TIMEOUT),
     ]);
 
+    // This case ends with `tool_key == FDSK` because of the factory
+    // reset. Re-provision TK1 in teardown so later cases (which
+    // assume TK1 is active) continue to authenticate.
     TestCase::new("3.8.12.3 Secure FunctionPropertyCommand, behavior on Factory Reset")
         .with_steps(steps)
+        .with_teardown(provision_tk1_via_fdsk())
 }
 
 fn test_3_8_12_4() -> TestCase {
@@ -451,21 +464,23 @@ fn test_3_8_12_4() -> TestCase {
         wait_for_restart(2000),
         drain(500),
 
-        comment("Sync tool seq number after FactoryResetKeepIA"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Sync tool seq number after FactoryResetKeepIA (FDSK-encrypted)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
 
         comment("Read counters → expect all zero"),
-        inject_secure_ac(READ_COUNTERS, "TK1"),
-        expect_secure_ac(READ_COUNTERS_EMPTY, "TK1", TIMEOUT),
+        inject_secure_ac(READ_COUNTERS, "FDSK"),
+        expect_secure_ac(READ_COUNTERS_EMPTY, "FDSK", TIMEOUT),
 
         comment("Read last entry → expect F8 (empty log)"),
-        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
-        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
+        inject_secure_ac(READ_LAST_ENTRY, "FDSK"),
+        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "FDSK", TIMEOUT),
     ]);
 
+    // Factory reset left `tool_key == FDSK`; restore TK1 in teardown.
     TestCase::new("3.8.12.4 Secure FunctionPropertyCommand, behavior on Factory Reset without IA")
         .with_steps(steps)
+        .with_teardown(provision_tk1_via_fdsk())
 }
 
 fn test_3_8_12_5() -> TestCase {
@@ -499,21 +514,23 @@ fn test_3_8_12_5() -> TestCase {
         inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
         wait(200),
 
-        comment("Sync tool seq number after Local Factory Reset"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Sync tool seq number after Local Factory Reset (FDSK-encrypted)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
 
         comment("Read counters → expect all zero"),
-        inject_secure_ac(READ_COUNTERS, "TK1"),
-        expect_secure_ac(READ_COUNTERS_EMPTY, "TK1", TIMEOUT),
+        inject_secure_ac(READ_COUNTERS, "FDSK"),
+        expect_secure_ac(READ_COUNTERS_EMPTY, "FDSK", TIMEOUT),
 
         comment("Read last entry → expect F8 (empty log)"),
-        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
-        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
+        inject_secure_ac(READ_LAST_ENTRY, "FDSK"),
+        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "FDSK", TIMEOUT),
     ]);
 
+    // Local Factory Reset left `tool_key == FDSK`; restore TK1.
     TestCase::new("3.8.12.5 Secure FunctionPropertyCommand, behavior on Local Factory Reset")
         .with_steps(steps)
+        .with_teardown(provision_tk1_via_fdsk())
 }
 
 fn test_3_8_12_6() -> TestCase {

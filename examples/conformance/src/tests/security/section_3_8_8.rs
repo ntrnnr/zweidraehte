@@ -198,6 +198,15 @@ fn test_3_8_8_7() -> TestCase {
     const CONNECTED_RESTART_FRWITHIA_RESP: &str =
         "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
 
+    // PID_TOOL_KEY write: value = TK1 (`00 01 02 ... 0F`). Used after
+    // each factory-reset phase to re-install TK1 so the next phase's
+    // traffic can authenticate with TK1 again.
+    const RESTORE_TOOL_KEY_TK1: &str =
+        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+    const RESTORE_TOOL_KEY_TK1_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+
     const CHALLENGE_1: [u8; 6] = [0, 0, 0, 0, 0, 1];
 
     let steps = vec![
@@ -245,14 +254,19 @@ fn test_3_8_8_7() -> TestCase {
 
         // After FactoryResetKeepIA the active tool key reverts to FDSK,
         // security mode is OFF, but the IA is kept so we don't need to
-        // re-program. Sync the tool sequence counter and read back.
-        comment("B. Sync tool seq after FactoryResetKeepIA"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        // re-program. Sync + read + restore TK1, all using FDSK until
+        // the tool key is re-provisioned.
+        comment("B. Sync tool seq after FactoryResetKeepIA (FDSK-encrypted)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
 
         comment("B. Read Security Mode → OFF (factory reset cleared)"),
-        inject_secure_ac(STATE_READ, "TK1"),
-        expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+        inject_secure_ac(STATE_READ, "FDSK"),
+        expect_secure_ac(STATE_READ_RESP_OFF, "FDSK", TIMEOUT),
+
+        comment("B. Restore PID_TOOL_KEY = TK1 (authenticated with FDSK)"),
+        inject_secure_ac(RESTORE_TOOL_KEY_TK1, "FDSK"),
+        expect_secure_ac(RESTORE_TOOL_KEY_TK1_OK, "FDSK", TIMEOUT),
 
         // ==== Phase C: FactoryReset clears PID_SECURITY_MODE ====
         // Note: our DUT restored IA after the FactoryResetKeepIA (via
@@ -277,13 +291,17 @@ fn test_3_8_8_7() -> TestCase {
         inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
         wait(200),
 
-        comment("C. Sync tool seq after FactoryReset"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("C. Sync tool seq after FactoryReset (FDSK-encrypted)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
 
         comment("C. Read Security Mode → OFF (factory reset cleared)"),
-        inject_secure_ac(STATE_READ, "TK1"),
-        expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+        inject_secure_ac(STATE_READ, "FDSK"),
+        expect_secure_ac(STATE_READ_RESP_OFF, "FDSK", TIMEOUT),
+
+        comment("C. Restore PID_TOOL_KEY = TK1 (authenticated with FDSK)"),
+        inject_secure_ac(RESTORE_TOOL_KEY_TK1, "FDSK"),
+        expect_secure_ac(RESTORE_TOOL_KEY_TK1_OK, "FDSK", TIMEOUT),
 
         // ==== Phase D: Local Factory Reset clears PID_SECURITY_MODE ====
         comment("D. Re-activate Security Mode"),
@@ -297,13 +315,17 @@ fn test_3_8_8_7() -> TestCase {
         inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
         wait(200),
 
-        comment("D. Sync tool seq after Local Factory Reset"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("D. Sync tool seq after Local Factory Reset (FDSK-encrypted)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
 
         comment("D. Read Security Mode → OFF (local factory reset cleared)"),
-        inject_secure_ac(STATE_READ, "TK1"),
-        expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+        inject_secure_ac(STATE_READ, "FDSK"),
+        expect_secure_ac(STATE_READ_RESP_OFF, "FDSK", TIMEOUT),
+
+        comment("D. Restore PID_TOOL_KEY = TK1 (authenticated with FDSK)"),
+        inject_secure_ac(RESTORE_TOOL_KEY_TK1, "FDSK"),
+        expect_secure_ac(RESTORE_TOOL_KEY_TK1_OK, "FDSK", TIMEOUT),
 
         // ==== Phase E: Power Down preserves PID_SECURITY_MODE ====
         comment("E. Activate Security Mode"),

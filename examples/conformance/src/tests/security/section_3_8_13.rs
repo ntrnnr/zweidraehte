@@ -165,8 +165,13 @@ pub fn create_section_3_8_13_suite() -> TestSuite {
             test_3_8_13_3(),
             test_3_8_13_4(),
             test_3_8_13_5(),
-            test_3_8_13_6(),
             test_3_8_13_7(),
+            // `.6` and `.8` leave the DUT with `tool_key == FDSK`
+            // (destructive factory-reset sub-cases / FDSK-revert
+            // test). Run them last so the suite teardown's
+            // `full_reset` reverts to the default SHM snapshot before
+            // the next suite starts.
+            test_3_8_13_6(),
             test_3_8_13_8(),
         ])
         .with_teardown(vec![
@@ -178,10 +183,6 @@ pub fn create_section_3_8_13_suite() -> TestSuite {
             // throttled into a timeout.
             wait(1500),
         ])
-}
-
-fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
-    TestCase::new(name).with_steps(vec![comment(reason)])
 }
 
 fn test_3_8_13_1() -> TestCase {
@@ -347,17 +348,19 @@ fn test_3_8_13_6() -> TestCase {
     // successful secure write under that key proves the invariant.
     //
     // Sub-cases (a)-(c) match the original tool key (TK1 in our
-    // harness). (d)-(e) land the device on FDSK, which in our harness
-    // is the same byte sequence as TK1 — so they all verify against
-    // key "TK1". The distinction is still meaningful for the DUT
-    // implementation: the factory-reset code paths exercise
-    // `seed_tool_key_from_fdsk`, while the non-destructive restarts
-    // rely on persisted state.
+    // harness). (d)-(e) land the device on FDSK, which is a distinct
+    // key in our harness — verification uses SecKey="FDSK" for those
+    // sub-cases. This exercises the `seed_tool_key_from_fdsk` code
+    // path and confirms the DUT rejects TK1 after the reset.
 
     // Write PID_TOOL_KEY = TK1 (idempotent: matches the default).
     const WRITE_TK1: &str =
         "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+    // Write PID_TOOL_KEY = FDSK (idempotent when current key is FDSK).
+    const WRITE_FDSK: &str =
+        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+         F0 D5 1A 23 34 45 56 67 78 89 9A AB BC CD DE EF";
     const WRITE_TK_OK: &str =
         "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
@@ -425,14 +428,13 @@ fn test_3_8_13_6() -> TestCase {
         expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
 
         // ==== (d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK ====
-        // Our FDSK == TK1, so the post-reset key is wire-identical to
-        // the baseline tool key; this sub-case verifies that the
-        // factory-reset code path runs `seed_tool_key_from_fdsk` and
-        // does not leave the tool key at all-zero. FactoryResetKeepIA
-        // also wipes the address / association / group-key / GO-flag
-        // tables — the suite teardown issues a `full_reset` to rebuild
-        // the default SHM snapshot before handing off to the next suite.
-        comment("(d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK (= TK1 in our harness)"),
+        // Our FDSK is distinct from TK1, so after the reset the DUT
+        // only accepts frames encrypted with FDSK until a new tool
+        // key is written. FactoryResetKeepIA also wipes the address /
+        // association / group-key / GO-flag tables — the suite
+        // teardown issues a `full_reset` to rebuild the default SHM
+        // snapshot before handing off to the next suite.
+        comment("(d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject_secure_ac(CONNECTED_RESTART_FRWITHIA, "TK1"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
@@ -441,14 +443,14 @@ fn test_3_8_13_6() -> TestCase {
         inject("B0 #EDI #BDUT_ADDR 60 81"),
         wait_for_restart(2000),
         drain(500),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Verify: write TK1 with FDSK (= TK1) → ACK"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Verify: write PID_TOOL_KEY (value = FDSK) with FDSK → ACK"),
         // Security mode was reset to off by the factory reset; a
         // write on 008/008 policy still works when sec mode is off
         // because the 16F nibble permits A+C writes in both modes.
-        inject_secure_ac(WRITE_TK1, "TK1"),
-        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+        inject_secure_ac(WRITE_FDSK, "FDSK"),
+        expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
 
         // ==== (e) Local FactoryReset (erase=0x02) — tool key → FDSK ====
         // IA also wiped; re-program via serial-number-keyed
@@ -458,37 +460,87 @@ fn test_3_8_13_6() -> TestCase {
         comment("Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
         inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
         wait(200),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Verify: write TK1 with FDSK (= TK1) → ACK"),
-        inject_secure_ac(WRITE_TK1, "TK1"),
-        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-
-        // Suite teardown issues a full_reset + rate-limit cooldown, so
-        // we don't need to restore state at the end of this case.
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Verify: write PID_TOOL_KEY (value = FDSK) with FDSK → ACK"),
+        inject_secure_ac(WRITE_FDSK, "FDSK"),
+        expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
     ])
+    // Case left `tool_key == FDSK` across phases (d) and (e); restore
+    // TK1 so 3.8.13.8 (and anything else the suite orders after us)
+    // starts from the same TK1 baseline every other case expects.
+    .with_teardown(provision_tk1_via_fdsk())
 }
 
 fn test_3_8_13_8() -> TestCase {
-    // Spec semantics: immediately after factory reset the device has an
-    // "empty tool key" and must accept `PID_TOOL_KEY` writes encrypted
-    // with the FDSK. Once a real tool key is written (even to the same
-    // bytes as the FDSK), the device must reject further FDSK-encrypted
-    // traffic.
+    // Check usage of the FDSK — direct port of TSS J §3.8.13.8.
     //
-    // Our conformance DUT cannot distinguish these two states at the
-    // wire level because `SECURE_FDSK == TK1 == initial tool_key` — the
-    // same 16 bytes encode both "FDSK after reset" and "configured
-    // tool key". Faithfully testing FDSK enforcement would need either
-    // a distinct FDSK value or an explicit `tool_key_is_fdsk` flag
-    // tracked through persistence. See the SESSION.md note on stack
-    // feature blockers.
-    placeholder(
-        "3.8.13.8 Check usage of the FDSK",
-        "Placeholder: FDSK == TK1 in this harness, so FDSK-only mode is \
-         wire-indistinguishable from the normal operating state. Needs \
-         a separate FDSK value or an `fdsk_only` flag in SecurityState.",
-    )
+    // Procedure:
+    //   1. Factory reset (erase 0x02) → tool_key reverts to FDSK.
+    //   2. Restore IA + sync tool seq using FDSK.
+    //   3. Write PID_TOOL_KEY = TK1, encrypted with FDSK → ACK.
+    //   4. Write PID_TOOL_KEY = TK1, encrypted with TK1 → ACK.
+    //   5. Try to write PID_TOOL_KEY (to the P2PK2 value), encrypted
+    //      with FDSK → DUT must silently drop it (MAC verifies against
+    //      the current key, which is now TK1).
+    //   6. Verify tool_key is still TK1 by writing PID_TOOL_KEY = TK1
+    //      encrypted with TK1 → ACK.
+    //
+    // `SECURE_FDSK` is distinct from `TK1` in our harness
+    // (`harness::secure_stack::SECURE_FDSK`), so step 5's rejection
+    // is observable on the wire.
+
+    const CONNECTED_RESTART_FACTORY: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 02 00";
+    const CONNECTED_RESTART_FACTORY_RESP: &str = "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    // PID_TOOL_KEY writes. Value = TK1 (`00 01 02 ... 0F`).
+    const WRITE_TK1: &str =
+        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+    // Attempt to write value = P2PK2 (0x33*16). The particular value
+    // doesn't matter — this step expects no response.
+    const WRITE_P2PK2: &str =
+        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+         33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33";
+    const WRITE_TK_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+
+    TestCase::new("3.8.13.8 Check usage of the FDSK").with_steps(vec![
+        comment("Factory reset (erase 0x02) → tool key reverts to FDSK"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac(CONNECTED_RESTART_FACTORY, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_FACTORY_RESP, "TK1", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI FF FF 60 81"),
+        wait_for_restart(2000),
+        drain(500),
+
+        comment("Restore BDUT IA via A_IndividualAddressSerialNumber_Write"),
+        inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+        wait(200),
+
+        comment("Sync tool seq using FDSK (the post-reset active tool key)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+
+        comment("Write PID_TOOL_KEY = TK1 authenticated with FDSK → ACK"),
+        inject_secure_ac(WRITE_TK1, "FDSK"),
+        expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
+
+        comment("Write PID_TOOL_KEY = TK1 authenticated with TK1 → ACK"),
+        inject_secure_ac(WRITE_TK1, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+
+        comment("Try to write PID_TOOL_KEY authenticated with FDSK now that \
+                 the tool key has been set to TK1 → DUT must reject (no resp)"),
+        inject_secure_ac(WRITE_P2PK2, "FDSK"),
+        expect_none(1000),
+
+        comment("Verify tool_key is still TK1 (write TK1 with TK1 → ACK)"),
+        inject_secure_ac(WRITE_TK1, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
