@@ -29,6 +29,11 @@ use crate::tests::helpers::*;
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
 
+/// Fixed challenge used for the tool-key S-A_Sync_Req after a restart /
+/// factory reset. Any non-zero value works; pinning it to a constant
+/// makes the test wire-deterministic.
+const CHALLENGE_1: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+
 // ============================================================================
 // Security Mode Toggle Templates
 // ============================================================================
@@ -147,6 +152,11 @@ const PLAIN_DESC_READ_PID38_ZERO: &str =
 pub fn create_section_3_8_13_suite() -> TestSuite {
     let variables = create_security_variables();
 
+    // Teardown rebuilds the DUT from the default SHM snapshot. 3.8.13.6
+    // sub-cases (d) and (e) both issue destructive factory resets that
+    // wipe address / association / group-key / GO-flag tables. Without
+    // a full reset, subsequent suites' preparation (notably 3.8.15's
+    // SyncReq) cascades into timeouts.
     TestSuite::new("3.8.13 PID_TOOL_KEY (Security IO, access 008/008, write-only)", variables)
         .secure()
         .with_cases(vec![
@@ -159,6 +169,17 @@ pub fn create_section_3_8_13_suite() -> TestSuite {
             test_3_8_13_7(),
             test_3_8_13_8(),
         ])
+        .with_teardown(vec![
+            comment("Teardown: rebuild default SHM + respawn to restore all DUT tables."),
+            full_reset(2000),
+            // Clear the 1-minute `S-A_Sync_Req` rate-limit window so
+            // 3.8.15's preparation SyncReq isn't throttled into a
+            // timeout. (The rate limit is enforced by the DUT's
+            // wall-clock; it survives the respawn because the freshly
+            // spawned DUT starts its own fresh timer but the pending
+            // harness context still thinks it's throttled.)
+            wait(55000),
+        ])
 }
 
 fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
@@ -166,10 +187,60 @@ fn placeholder(name: &'static str, reason: &'static str) -> TestCase {
 }
 
 fn test_3_8_13_1() -> TestCase {
-    placeholder(
-        "3.8.13.1 Secure PropertyValueWrite – A+C",
-        "Placeholder: writes actual tool key and re-authenticates with it; harness cannot yet rotate the tool key mid-run.",
-    )
+    // The reference XML procedure is:
+    //   1. Factory reset → active tool key = FDSK.
+    //   2. Write new tool key using FDSK, response encrypted with new key.
+    //   3. Write yet another tool key using the previous one, response
+    //      encrypted with the newest key.
+    //   4. Repeat after security mode toggle.
+    //
+    // Our harness pins FDSK = TK1 (see `SECURE_FDSK` in secure_stack.rs),
+    // so "FDSK after factory reset" and "TK1 in normal config" are the
+    // same 16-byte key on the wire. We exercise the spec-meaningful
+    // invariant — `PID_TOOL_KEY` write with the current tool key is
+    // accepted and subsequent management traffic authenticates with the
+    // newly-written key — by rotating through TK1 → TK2 → TK1, both
+    // with and without Security Mode enabled.
+
+    // Write PID_TOOL_KEY = TK2 (authenticated with current key, verified
+    // against "TK1" in the response since our stack encrypts the response
+    // with the key that was active at receive time).
+    const WRITE_TK2: &str =
+        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+         10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F";
+
+    // Write PID_TOOL_KEY = TK1 (restore to default for subsequent tests).
+    const WRITE_TK1: &str =
+        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+
+    const WRITE_TK_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+
+    TestCase::new("3.8.13.1 Secure PropertyValueWrite – A+C").with_steps(vec![
+        // ==== Phase A: Security Mode OFF ====
+        // Write tool key with current key (TK1 == FDSK); verify the
+        // device confirms using the same key (our S-AL does not swap
+        // keys mid-transaction).
+        comment("Sec mode OFF — write Tool Key = TK2 (auth with TK1)"),
+        inject_secure_ac(WRITE_TK2, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+
+        // Subsequent management traffic must authenticate with TK2.
+        comment("Enable Security Mode (now auth with TK2)"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK2"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK2", TIMEOUT),
+
+        // ==== Phase B: Security Mode ON ====
+        // Rotate back to TK1 with security mode enabled.
+        comment("Sec mode ON — write Tool Key = TK1 (auth with TK2)"),
+        inject_secure_ac(WRITE_TK1, "TK2"),
+        expect_secure_ac(WRITE_TK_OK, "TK2", TIMEOUT),
+
+        comment("Disable Security Mode (back to default, auth with TK1)"),
+        inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+    ])
 }
 
 fn test_3_8_13_2() -> TestCase {
@@ -263,16 +334,159 @@ fn test_3_8_13_2() -> TestCase {
 }
 
 fn test_3_8_13_6() -> TestCase {
-    placeholder(
-        "3.8.13.6 Secure PropertyValueRead after power down/master reset",
-        "Placeholder: requires power-cycle / master-reset infrastructure not available to the harness.",
-    )
+    // Tool key persistence across different restart types. The
+    // reference XML checks five sub-cases:
+    //   (a) power cycle               — key survives
+    //   (b) bus-level Basic Restart   — key survives
+    //   (c) bus-level Confirmed Restart (erase=0x01) — key survives
+    //   (d) FactoryResetKeepIA (erase=0x07) — key replaced with FDSK
+    //   (e) local FactoryReset (erase=0x02) — key replaced with FDSK
+    //
+    // "Read" here is really "write PID_TOOL_KEY using the current key
+    // and observe an ACK" — PID 56 is write-only, so that's the only
+    // way to probe which key the BDUT is currently accepting. Each
+    // sub-case leaves the device with the expected current key; a
+    // successful secure write under that key proves the invariant.
+    //
+    // Sub-cases (a)-(c) match the original tool key (TK1 in our
+    // harness). (d)-(e) land the device on FDSK, which in our harness
+    // is the same byte sequence as TK1 — so they all verify against
+    // key "TK1". The distinction is still meaningful for the DUT
+    // implementation: the factory-reset code paths exercise
+    // `seed_tool_key_from_fdsk`, while the non-destructive restarts
+    // rely on persisted state.
+
+    // Write PID_TOOL_KEY = TK1 (idempotent: matches the default).
+    const WRITE_TK1: &str =
+        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+    const WRITE_TK_OK: &str =
+        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+
+    // Connection-oriented Basic Restart (secure A+C).
+    //   TPCI 0x43 = numbered seq 0, APCI high 0x03, APCI low 0x80 (Restart).
+    const CONNECTED_BASIC_RESTART: &str =
+        "3C 60 #EDI #BDUT_ADDR 02 43 80";
+
+    // Connection-oriented Confirmed Restart (secure A+C, erase=0x01).
+    const CONNECTED_RESTART_CONFIRMED: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    // Connection-oriented FactoryResetKeepIA (secure A+C, erase=0x07).
+    const CONNECTED_RESTART_FRWITHIA: &str =
+        "3C 60 #EDI #BDUT_ADDR 03 43 81 07 00";
+    const CONNECTED_RESTART_FRWITHIA_RESP: &str =
+        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+
+    TestCase::new("3.8.13.6 Tool Key persistence across power-down / master reset").with_steps(vec![
+        comment("Enable Security Mode"),
+        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+
+        // ==== (a) Power cycle — tool key persists ====
+        comment("(a) Power cycle — tool key survives"),
+        power_cycle(2000),
+        // Tool seq counters reset by power_cycle need re-sync before any
+        // subsequent secure traffic.
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Verify: write TK1 with TK1 → ACK"),
+        inject_secure_ac(WRITE_TK1, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+
+        // ==== (b) Bus-level Basic Restart — tool key persists ====
+        comment("(b) Bus-level Basic Restart (secure A+C) — tool key survives"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac(CONNECTED_BASIC_RESTART, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        wait_for_restart(2000),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Verify: write TK1 with TK1 → ACK"),
+        inject_secure_ac(WRITE_TK1, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+
+        // ==== (c) Bus-level Confirmed Restart (erase=0x01) ====
+        comment("(c) Confirmed Restart (erase=0x01) — tool key survives"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        wait_for_restart(2000),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Verify: write TK1 with TK1 → ACK"),
+        inject_secure_ac(WRITE_TK1, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+
+        // ==== (d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK ====
+        // Our FDSK == TK1, so the post-reset key is wire-identical to
+        // the baseline tool key; this sub-case verifies that the
+        // factory-reset code path runs `seed_tool_key_from_fdsk` and
+        // does not leave the tool key at all-zero. FactoryResetKeepIA
+        // also wipes the address / association / group-key / GO-flag
+        // tables — the suite teardown issues a `full_reset` to rebuild
+        // the default SHM snapshot before handing off to the next suite.
+        comment("(d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK (= TK1 in our harness)"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac(CONNECTED_RESTART_FRWITHIA, "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac(CONNECTED_RESTART_FRWITHIA_RESP, "TK1", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        wait_for_restart(2000),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Verify: write TK1 with FDSK (= TK1) → ACK"),
+        // Security mode was reset to off by the factory reset; a
+        // write on 008/008 policy still works when sec mode is off
+        // because the 16F nibble permits A+C writes in both modes.
+        inject_secure_ac(WRITE_TK1, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+
+        // ==== (e) Local FactoryReset (erase=0x02) — tool key → FDSK ====
+        // IA also wiped; re-program via serial-number-keyed
+        // `A_IndividualAddressSerialNumber_Write` before the verify.
+        comment("(e) Local FactoryReset (erase=0x02) — tool key → FDSK, IA wiped"),
+        master_reset(0x02, 2000),
+        comment("Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
+        inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+        wait(200),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("Verify: write TK1 with FDSK (= TK1) → ACK"),
+        inject_secure_ac(WRITE_TK1, "TK1"),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+
+        // Suite teardown issues a full_reset + rate-limit cooldown, so
+        // we don't need to restore state at the end of this case.
+    ])
 }
 
 fn test_3_8_13_8() -> TestCase {
+    // Spec semantics: immediately after factory reset the device has an
+    // "empty tool key" and must accept `PID_TOOL_KEY` writes encrypted
+    // with the FDSK. Once a real tool key is written (even to the same
+    // bytes as the FDSK), the device must reject further FDSK-encrypted
+    // traffic.
+    //
+    // Our conformance DUT cannot distinguish these two states at the
+    // wire level because `SECURE_FDSK == TK1 == initial tool_key` — the
+    // same 16 bytes encode both "FDSK after reset" and "configured
+    // tool key". Faithfully testing FDSK enforcement would need either
+    // a distinct FDSK value or an explicit `tool_key_is_fdsk` flag
+    // tracked through persistence. See the SESSION.md note on stack
+    // feature blockers.
     placeholder(
         "3.8.13.8 Check usage of the FDSK",
-        "Placeholder: requires FDSK (Factory Default Setup Key) infrastructure not yet implemented.",
+        "Placeholder: FDSK == TK1 in this harness, so FDSK-only mode is \
+         wire-indistinguishable from the normal operating state. Needs \
+         a separate FDSK value or an `fdsk_only` flag in SecurityState.",
     )
 }
 

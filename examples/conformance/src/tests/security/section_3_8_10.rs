@@ -60,6 +60,14 @@ const SECURE_WRITE_ENTRY_DENIED: &str =
 const SECURE_WRITE_ENTRY_B: &str =
     "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 10 11 F0 F1 F2 F3 F4 F5 F6 F7 F8 F9 FA FB FC FD FF";
 
+// Restore entry 1 to the initial stack config: {GA_Index=0x0002, key=GK1}.
+// Tests 3.8.10.1 / 3.8.10.5 overwrite entry 1 as part of their write/read
+// round-trip. Without this cleanup, group traffic that depends on GK1
+// (TSAP 2 → 1/1/1) decrypts with garbage in subsequent suites. Matching
+// pattern used in section_3_2 / section_3_8_17.
+const RESTORE_ENTRY_1_GK1: &str =
+    "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F";
+
 // ============================================================================
 // PropertyExtValueRead / Response templates for PID 0x35 on Security IO
 // ============================================================================
@@ -184,6 +192,13 @@ fn test_3_8_10_1() -> TestCase {
         comment("Read back entry at start=1 → expect entry B data"),
         inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
         expect_secure_ac(SECURE_READ_ENTRY_B_OK, "TK1", TIMEOUT),
+
+        // Cleanup: restore entry 1 to its initial {GA_Index=0x0002, key=GK1}
+        // mapping. Without this, subsequent suites that rely on GK1 for
+        // secure group telegrams to 1/1/1 would fail (or silently compensate).
+        comment("Restore group key entry 1 (TSAP 2 → GK1) — previously overwrote with test pattern"),
+        inject_secure_ac(RESTORE_ENTRY_1_GK1, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ENTRY_OK, "TK1", TIMEOUT),
     ])
 }
 
@@ -318,6 +333,14 @@ fn test_3_8_10_5() -> TestCase {
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
 
+        // Seed entry 1 with the "B" test pattern so the restart-persistence
+        // assertions below have a known value to check against. Previously
+        // this test depended on 3.8.10.1 leaving entry B in the table, which
+        // makes the suite brittle to test ordering.
+        comment("Seed entry 1 = B (self-contained, independent of 3.8.10.1)"),
+        inject_secure_ac(SECURE_WRITE_ENTRY_B, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ENTRY_OK, "TK1", TIMEOUT),
+
         // ==== Phase A: Confirmed Restart ====
         comment("A. T_Connect + Confirmed Restart (erase=0x01)"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
@@ -352,6 +375,12 @@ fn test_3_8_10_5() -> TestCase {
         comment("Read GRP key table entry → unchanged after basic restart"),
         inject_secure_ac(SECURE_READ_ENTRY, "TK1"),
         expect_secure_ac(SECURE_READ_ENTRY_B_OK, "TK1", TIMEOUT),
+
+        // Cleanup: restore entry 1 before this test exits. Sec mode is still
+        // on here, so the secure write travels as A+C.
+        comment("Restore group key entry 1 (TSAP 2 → GK1)"),
+        inject_secure_ac(RESTORE_ENTRY_1_GK1, "TK1"),
+        expect_secure_ac(SECURE_WRITE_ENTRY_OK, "TK1", TIMEOUT),
 
         // Restore: disable security mode for next suite.
         comment("Disable Security Mode"),
