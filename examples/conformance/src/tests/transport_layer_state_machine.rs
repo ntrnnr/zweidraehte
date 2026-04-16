@@ -74,6 +74,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 6400),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.2.1.2 Connect with initial state OPEN_WAIT",
@@ -100,6 +101,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -123,6 +125,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.2.2.2 Connect during connection, initial state OPEN_WAIT",
@@ -152,6 +155,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_B_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -168,6 +172,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 // No expect - we're just verifying no response comes
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.2.3.2 Disconnect with initial state OPEN_IDLE",
@@ -184,6 +189,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 // No expect - BDUT closes without response
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.2.3.3 Disconnect with initial state OPEN_WAIT",
@@ -210,6 +216,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("Now the BDUT is in State 'CLOSED'."),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -232,6 +239,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 6400),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.2.4.2 Disconnect during connection, initial state OPEN_WAIT",
@@ -260,6 +268,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -277,6 +286,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 6200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -311,6 +321,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 3200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -337,6 +348,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.3.1.2 N_Data_Individual with initial state OPEN_WAIT",
@@ -377,6 +389,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 set_programming_mode(false),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -408,6 +421,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.3.3.2 Repeated N_Data_Individual with initial state OPEN_WAIT",
@@ -442,6 +456,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -468,6 +483,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 6200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.3.4.2 Wrong sequence number with initial state OPEN_WAIT",
@@ -500,6 +516,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -521,6 +538,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 6200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.3.5.2 Wrong source address with initial state OPEN_WAIT",
@@ -552,6 +570,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 3200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -575,6 +594,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 5000),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -598,6 +618,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 5000),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         // NOTE: The spec (08/03/04 v01.07.04, §6.4.2.2) says:
         //   "alternatively BDUT immediately sends T_Disconnect"
@@ -627,6 +648,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 500),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -648,6 +670,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 6200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.4.3.2 T_ACK wrong connection address with initial state OPEN_WAIT",
@@ -677,6 +700,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 12200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -700,6 +724,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 5000),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.4.4.2 T_NAK wrong sequence number with initial state OPEN_WAIT",
@@ -728,6 +753,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -749,6 +775,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -781,6 +808,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -815,6 +843,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -837,6 +866,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 6200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
         TestCase {
             name: "6.4.8.2 T_NAK wrong connection address with initial state OPEN_WAIT",
@@ -867,6 +897,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 12200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // ====================================================================
@@ -889,6 +920,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("BDUT sends no Disconnect on the bus."),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
     ];
 

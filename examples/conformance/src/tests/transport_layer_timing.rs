@@ -47,6 +47,7 @@ pub fn create_transport_layer_timing_suite() -> TestSuite {
                 comment("This is implicitly tested in clause 5.2.10.1 and 6.2.5.1."),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
 
         // --------------------------------------------------------------------
@@ -79,6 +80,7 @@ pub fn create_transport_layer_timing_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 3200),
                 comment("================================================================================"),
             ],
+            ..Default::default()
         },
     ];
 

@@ -1155,6 +1155,33 @@ async fn main(_spawner: embassy_executor::Spawner) {
             println!("Test: {}", test.name);
             println!("----------------------------------------------------------------------");
             let mut test_passed = true;
+
+            // Per-case preparation (e.g. provisioning TK1 via an
+            // FDSK-encrypted `PID_TOOL_KEY` write before a test that
+            // assumes TK1 is the active tool key). A failed prep step
+            // fails the test but we still run teardown so the DUT
+            // doesn't leak broken state to the next case.
+            if !test.preparation.is_empty() {
+                println!("  --- Preparation ---------------------------------------------------");
+                for (i, step) in test.preparation.iter().enumerate() {
+                    let resolved_step = match step.resolve(&suite.variables) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            println!("  [P{}] ❌ Template error: {}", i, e);
+                            test_passed = false;
+                            continue;
+                        }
+                    };
+                    if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure)
+                        .await
+                    {
+                        test_passed = false;
+                    }
+                }
+                total_steps += test.preparation.len();
+                println!("  --- Steps ---------------------------------------------------------");
+            }
+
             for (i, step) in test.steps.iter().enumerate() {
                 let resolved_step = match step.resolve(&suite.variables) {
                     Ok(s) => s,
@@ -1171,6 +1198,25 @@ async fn main(_spawner: embassy_executor::Spawner) {
                 }
             }
             total_steps += test.steps.len();
+
+            // Per-case teardown runs regardless of pass/fail so the DUT
+            // is restored to a known state for the next case.
+            // Failures here are logged but do NOT flip the case result.
+            if !test.teardown.is_empty() {
+                println!("  --- Teardown ------------------------------------------------------");
+                for (i, step) in test.teardown.iter().enumerate() {
+                    let resolved_step = match step.resolve(&suite.variables) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            println!("  [T{}] ⚠️  Template error: {}", i, e);
+                            continue;
+                        }
+                    };
+                    execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure).await;
+                }
+                total_steps += test.teardown.len();
+            }
+
             let logs = logger::end_test();
             println!("----------------------------------------------------------------------");
             if test_passed {

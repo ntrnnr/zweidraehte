@@ -95,6 +95,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 expect("BC #BDUT_ADDR #GO_ADDR E1 00 41", 200),
                 comment("Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams."),
             ],
+            ..Default::default()
         },
         
         // --------------------------------------------------------------------
@@ -145,6 +146,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 03 D6 00 36 10 01 00", 200),
                 comment("Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams."),
             ],
+            ..Default::default()
         },
         
         // --------------------------------------------------------------------
@@ -223,6 +225,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("Acceptance: BDUT does not interrupt the established transport connection (it however may write the relevant addressed group object) and shows that the TL connection remains open."),
             ],
+            ..Default::default()
         },
         
         // --------------------------------------------------------------------
@@ -248,6 +251,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("BC #IFACE_A_ADDR #BDUT_ADDR 65 C3 D5 00 36 10 01", 200),
                 comment("Acceptance: BDUT does not accept the frames and does not produce any responses."),
             ],
+            ..Default::default()
         },
         
         // --------------------------------------------------------------------
@@ -418,6 +422,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("Acceptance: BDUT ignores the malformed T-Nack messages"),
             ],
+            ..Default::default()
         },
     ];
 

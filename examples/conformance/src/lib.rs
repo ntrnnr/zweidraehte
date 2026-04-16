@@ -501,19 +501,42 @@ impl TestStep {
 // ============================================================================
 
 /// A single test case containing a sequence of steps
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct TestCase {
     pub name: &'static str,
+    /// Steps run before [`Self::steps`]. Use to provision DUT state this
+    /// case depends on (e.g. installing TK1 via an FDSK-encrypted
+    /// `PID_TOOL_KEY` write after a factory reset) without baking the
+    /// setup into every case's telegram list. A failed preparation
+    /// step fails the whole case, but the `teardown` still runs so
+    /// the DUT can be left in a known state for the next case.
+    pub preparation: Vec<TestStep>,
     pub steps: Vec<TestStep>,
+    /// Steps run after [`Self::steps`], regardless of whether the main
+    /// steps passed. Use to restore DUT state this case mutated (e.g.
+    /// re-install TK1 with the current tool key so the next case can
+    /// still authenticate). Teardown failures are logged but do not
+    /// affect the case's pass/fail result.
+    pub teardown: Vec<TestStep>,
 }
 
 impl TestCase {
     pub const fn new(name: &'static str) -> Self {
-        Self { name, steps: Vec::new() }
+        Self { name, preparation: Vec::new(), steps: Vec::new(), teardown: Vec::new() }
+    }
+
+    pub fn with_preparation(mut self, preparation: Vec<TestStep>) -> Self {
+        self.preparation = preparation;
+        self
     }
 
     pub fn with_steps(mut self, steps: Vec<TestStep>) -> Self {
         self.steps = steps;
+        self
+    }
+
+    pub fn with_teardown(mut self, teardown: Vec<TestStep>) -> Self {
+        self.teardown = teardown;
         self
     }
 }

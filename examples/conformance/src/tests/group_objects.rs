@@ -289,6 +289,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 // Comm flags = idle/OK, read (0x44)
                 expect("BC #BDUT #GO_1_ADDR E1 00 44", 200),
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test 1.4.1.2: BDUT receives A_GroupValue_Read (UINT1)
@@ -370,6 +371,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject("BC #EDI #GO_0_ADDR E1 00 00"),
                 expect("BC #BDUT #GO_0_ADDR E1 00 41", 200),
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test 1.4.1.3: BDUT sends A_GroupValue_Write (UINT1)
@@ -459,6 +461,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject("BC #EDI #GO_1_ADDR E1 00 00"),       // read communication-flags
                 expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Comm.-flags = idle/OK
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test 1.4.1.4: BDUT receives A_GroupValue_Write (UINT1)
@@ -533,6 +536,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. Flags
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test 1.4.1.4a: BDUT receives an invalid data length (BYTE3, optional)
@@ -566,6 +570,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 12 34 56", 200),   // Value Response (unchanged)
                 inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200),       // clear Comm. Flags
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test 1.4.1.5: BDUT receives A_GroupValue_Response (UINT1)
@@ -644,6 +649,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                                                                      // expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT (BCU1: updated to 0x00)
                                                                      // inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. Flags
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test 1.4.1.6: Checking of Read on Init Flag (UINT1)
@@ -680,6 +686,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 // Verify no further ROI reads fire (non-ROI objects stay quiet).
                 expect_none(2000),
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test 1.4.1.7: BDUT receives invalid APCI (BYTE3)
@@ -1031,6 +1038,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
                 expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
             ],
+            ..Default::default()
         },
     ];
 

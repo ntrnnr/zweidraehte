@@ -76,6 +76,7 @@ pub fn create_network_layer_suite() -> TestSuite {
                 comment("Acceptance: The BDUT shall answer with Routing Count 6."),
                 expect("BC #BDUT #GO_ADDR E2 00 40 00", 200),
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test Suite 3.2: Device oriented communication - connected
@@ -145,6 +146,7 @@ pub fn create_network_layer_suite() -> TestSuite {
                 inject_delay("B0 #EDI #BDUT 70 C2", 200),
                 inject_delay("BC #EDI #BDUT 70 81", 200),
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test Suite 3.3: Device oriented communication - connectionless
@@ -182,6 +184,7 @@ pub fn create_network_layer_suite() -> TestSuite {
                 comment("Acceptance: The BDUT shall answer with Routing Count 6."),
                 expect("BC #BDUT #EDI 67 03 D6 00 01 10 01 00 00", 200),
             ],
+            ..Default::default()
         },
         // ====================================================================
         // Test Suite 3.4: Broadcast communication
@@ -222,6 +225,7 @@ pub fn create_network_layer_suite() -> TestSuite {
                 comment("Cleanup: Deactivate ProgMode"),
                 set_programming_mode(false),
             ],
+            ..Default::default()
         },
     ];
 

@@ -785,13 +785,17 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
     }
 
     fn seed_tool_key_from_fdsk(&self, fdsk: Option<[u8; 16]>) {
-        // The active tool key was either left at zero by `from_config`
-        // (factory-fresh device) or wiped by `factory_reset()`. Either
-        // way, restore it to the device's FDSK so the MaC can address
-        // the BDUT with secure A+C using the factory-default key
-        // (spec 03/05/01 §6.1.4).
+        // Only seed FDSK when the tool key is actually zero — either
+        // on a factory-fresh device (where `from_config` loaded the
+        // default zero key) or immediately after `factory_reset()`
+        // (which wipes the key). A persisted config that already
+        // carries a non-zero `tool_key` means ETS previously wrote
+        // one, so we keep it (spec 03/05/01 §6.1.4: the FDSK is only
+        // the initial tool key; a subsequent write replaces it).
         if let Some(key) = fdsk {
-            self.tool_key.set(key);
+            if self.tool_key.get() == [0u8; 16] {
+                self.tool_key.set(key);
+            }
         }
     }
 
