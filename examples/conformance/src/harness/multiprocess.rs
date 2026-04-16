@@ -437,13 +437,12 @@ impl MultiProcessHarness {
         self.mark_dead();
         self.spawn_child().await?;
 
-        // Drain post-respawn ROI messages the same way `send_command`
-        // does after BrokenPipe. Without this, the next
-        // `receive_captured()` picks up a stale GroupValue_Read that
-        // the respawned child emitted during its read-on-init cycle,
-        // making subsequent secure-response matchers see the wrong
-        // frame.
-        self.drain_roi_after_respawn().await;
+        // Intentionally do NOT drain ROI messages. The TestStep
+        // doc-comment for `WaitForRestart` promises that ROI frames
+        // stay in the capture queue so tests (e.g. 1.4.1.6) can
+        // observe Read-On-Init scans after an A_Restart. Tests that
+        // don't want the ROI frames can drop them with an explicit
+        // `drain(ms)` step.
         Ok(())
     }
 

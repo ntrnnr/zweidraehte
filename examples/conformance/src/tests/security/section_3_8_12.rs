@@ -376,6 +376,7 @@ fn test_3_8_12_3() -> TestCase {
 
         comment("Wait for the DUT to auto-restart"),
         wait_for_restart(2000),
+        drain(500),
 
         // Re-program the DUT individual address via serial number
         // (broadcast). On real BDUTs there'd also be a domain-address
@@ -448,6 +449,7 @@ fn test_3_8_12_4() -> TestCase {
 
         comment("Wait for the DUT to auto-restart (IA is preserved)"),
         wait_for_restart(2000),
+        drain(500),
 
         comment("Sync tool seq number after FactoryResetKeepIA"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),

@@ -213,7 +213,14 @@ fn test_3_8_8_7() -> TestCase {
         expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait(500),
+        // Wait for the child DUT to actually flush state and respawn
+        // before the next phase starts. `wait(500)` only waits 10ms in
+        // fast mode — short enough that Phase B's A_Restart lands in
+        // the dying child's restart channel and gets silently dropped.
+        wait_for_restart(2000),
+        // Drop Read-On-Init frames the respawned child emits so they
+        // don't collide with subsequent expects.
+        drain(500),
 
         comment("A. Read Security Mode → still ON (Confirmed Restart preserves)"),
         inject_secure_ac(STATE_READ, "TK1"),
@@ -231,7 +238,10 @@ fn test_3_8_8_7() -> TestCase {
         expect_secure_ac(CONNECTED_RESTART_FRWITHIA_RESP, "TK1", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait(500),
+        wait_for_restart(2000),
+        // Drop Read-On-Init frames the respawned child emits so they
+        // don't collide with subsequent expects.
+        drain(500),
 
         // After FactoryResetKeepIA the active tool key reverts to FDSK,
         // security mode is OFF, but the IA is kept so we don't need to
@@ -258,7 +268,10 @@ fn test_3_8_8_7() -> TestCase {
         expect_secure_ac(CONNECTED_RESTART_FACTORY_RESP, "TK1", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI FF FF 60 81"),
-        wait(500),
+        wait_for_restart(2000),
+        // Drop Read-On-Init frames the respawned child emits so they
+        // don't collide with subsequent expects.
+        drain(500),
 
         comment("C. Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
         inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
