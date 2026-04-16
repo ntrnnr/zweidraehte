@@ -60,9 +60,17 @@ pub mod sec_table_sizes {
 pub const SECURE_SERIAL_NUMBER: [u8; 6] = [0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE];
 
 /// Factory Default Setup Key for the secure DUT.
-/// Uses the same key as KNX spec Annex C examples for easy validation.
+///
+/// Distinct from `TK1` (see `tests::security::variables::TK1`). The
+/// default persisted SHM snapshot already carries `tool_key == TK1`
+/// (the `knx_stack_config!` macro's `security.tool_key` field), so
+/// tests that don't factory-reset the DUT see the pre-configured
+/// TK1. Once a factory reset fires, the active tool key reverts to
+/// this distinct FDSK, and each such test has to re-provision TK1
+/// explicitly (sync + FDSK-encrypted `PID_TOOL_KEY` write) — the
+/// pattern the reference XML uses for 3.8.13.1/8 etc.
 pub const SECURE_FDSK: [u8; 16] =
-    [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F];
+    [0xF0, 0xD5, 0x1A, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78, 0x89, 0x9A, 0xAB, 0xBC, 0xCD, 0xDE, 0xEF];
 
 // ============================================================================
 // Secure Inner State Type

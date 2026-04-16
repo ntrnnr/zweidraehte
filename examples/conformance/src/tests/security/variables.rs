@@ -45,8 +45,14 @@ pub const GK5: [u8; 16] =
 pub const GK6: [u8; 16] =
     [0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E, 0x7F];
 
-/// FDSK — Factory Default Setup Key (same as TK1 for testing convenience).
-pub const FDSK: [u8; 16] = TK1;
+/// FDSK — Factory Default Setup Key.
+///
+/// Must match `SECURE_FDSK` in [`crate::harness::secure_stack`]. Distinct
+/// from TK1 so tests that factory-reset the DUT can observe the tool
+/// key reverting to FDSK and re-provision TK1 via an FDSK-encrypted
+/// `PID_TOOL_KEY` write, per the reference XML (see 3.8.13.1/8).
+pub const FDSK: [u8; 16] =
+    [0xF0, 0xD5, 0x1A, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78, 0x89, 0x9A, 0xAB, 0xBC, 0xCD, 0xDE, 0xEF];
 
 // ============================================================================
 // P2P Key Definitions (Section 3.6 — Roles)
