@@ -175,6 +175,16 @@ pub fn master_reset(erase_code: u8, timeout_ms: u32) -> TestStep {
     TestStep::MasterReset { erase_code, timeout_ms }
 }
 
+/// Re-initialize the DUT to its factory-default conformance state by
+/// overwriting shared memory with the default snapshot and respawning.
+///
+/// Use in teardown steps when a test case leaves the DUT in a
+/// non-recoverable state (e.g. after a factory reset that wipes all
+/// tables, keys, and associations).
+pub fn full_reset(timeout_ms: u32) -> TestStep {
+    TestStep::FullReset { timeout_ms }
+}
+
 // ============================================================================
 // KNX Data Secure helpers
 // ============================================================================

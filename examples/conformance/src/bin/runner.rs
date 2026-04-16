@@ -161,6 +161,7 @@ async fn execute_step(
     sec_ctx: Option<&mut SecurityTestContext>,
     variables: &std::collections::BTreeMap<String, TestVariable>,
     time_divisor: u64,
+    is_secure: bool,
 ) -> bool {
     match step {
         TestStep::Comment(text) => {
@@ -332,6 +333,51 @@ async fn execute_step(
                 return false;
             }
             println!("        ✅ DUT reset");
+            true
+        }
+
+        TestStep::FullReset { timeout_ms } => {
+            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
+            println!(
+                "  [{}] 🏭 FullReset (rebuild default SHM + respawn, timeout {}ms)",
+                index, effective_ms
+            );
+            // Kill the running DUT, overwrite shared memory with the
+            // factory-default snapshot (same one the parent writes at
+            // startup), and respawn. Used after destructive tests that
+            // wipe DUT state (factory reset with table clear, etc.) so
+            // the next suite inherits a clean state.
+            harness.kill_child().await;
+            let reset_result = if is_secure {
+                harness.reset_shared_memory_secure()
+            } else {
+                harness.reset_shared_memory()
+            };
+            if let Err(e) = reset_result {
+                println!("        ❌ Failed to reset SHM: {}", e);
+                return false;
+            }
+            if let Err(e) = harness.spawn_child().await {
+                println!("        ❌ Failed to respawn DUT: {}", e);
+                return false;
+            }
+            // Drain any Read-On-Init frames from the fresh DUT — same
+            // pattern as the master_reset / power_cycle helpers.
+            let settle_ms = scale_ms(500, time_divisor, 100);
+            loop {
+                Timer::after(Duration::from_millis(settle_ms)).await;
+                if harness.drain_captured() == 0 {
+                    break;
+                }
+            }
+            // Tool / peer sequence counters in the persistent secure
+            // context are now stale — the DUT is back at factory
+            // defaults. Clearing the context forces the next secure
+            // step to re-sync seq numbers from scratch.
+            if let Some(ctx) = sec_ctx {
+                ctx.reset_peer_state();
+            }
+            println!("        ✅ DUT fully reset to defaults");
             true
         }
 
@@ -1073,7 +1119,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure)
                     .await
                 {
                     prep_passed = false;
@@ -1118,7 +1164,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure)
                     .await
                 {
                     test_passed = false;
@@ -1155,7 +1201,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor).await;
+                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure).await;
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");

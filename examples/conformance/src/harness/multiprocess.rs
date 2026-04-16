@@ -196,7 +196,14 @@ impl MultiProcessHarness {
         let snapshot = SecureConformancePersistedState::default_snapshot();
         self.shm
             .write_state(&snapshot)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))?;
+        // Also wipe the tail-of-SHM sequence-number region so the
+        // respawned DUT doesn't inherit stale receiving/sending seq
+        // counters. Without this, the newly-minted factory-default DUT
+        // rejects the harness's first secure frame as a replay because
+        // the SHM still holds the previous DUT's advanced tool seq.
+        self.shm.clear_seq_region();
+        Ok(())
     }
 
     fn socket(&self) -> io::Result<&Async<UnixStream>> {

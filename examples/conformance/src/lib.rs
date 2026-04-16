@@ -194,6 +194,12 @@ pub enum TestStep {
     /// response on the bus.
     MasterReset { erase_code: u8, timeout_ms: u32 },
 
+    /// Re-initialize the DUT to factory-default state by overwriting
+    /// shared memory with the default snapshot and respawning. Used in
+    /// teardown steps to undo destructive operations (factory reset,
+    /// table wipes) that would pollute subsequent suites.
+    FullReset { timeout_ms: u32 },
+
     /// Custom action placeholder (for complex test scenarios)
     Custom,
 

@@ -105,6 +105,18 @@ impl SecurityTestContext {
     pub fn set_peer_table_seq(&mut self, key_name: &str, val: u64) {
         self.peer_table_seq.insert(key_name.into(), val);
     }
+
+    /// Reset all sequence-number tracking back to factory defaults.
+    ///
+    /// Call after a full DUT reset (destructive factory reset + SHM
+    /// rebuild + respawn) so the next secure frame re-starts from the
+    /// initial `seq=1` baseline that a fresh DUT expects.
+    pub fn reset_peer_state(&mut self) {
+        self.tool_seq_nr = 1;
+        self.table_seq_nr = 1;
+        self.peer_send_seq.clear();
+        self.peer_table_seq.clear();
+    }
 }
 
 /// Convert a 64-bit counter to a 6-byte big-endian sequence number.

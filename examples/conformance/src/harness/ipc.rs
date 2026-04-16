@@ -367,6 +367,17 @@ impl SharedMemory {
         unsafe { self.ptr.add(self.size - 256) }
     }
 
+    /// Zero out the 256-byte sequence-number region at the tail of the
+    /// shared memory. Called from `full_reset` so a respawned DUT
+    /// re-initialises its per-peer + tool sending/receiving sequence
+    /// counters from scratch, rather than inheriting stale state from
+    /// the previous DUT instance.
+    pub fn clear_seq_region(&mut self) {
+        let start = self.size - 256;
+        let region = &mut self.as_mut_slice()[start..];
+        region.fill(0);
+    }
+
     /// Clear the `FD_CLOEXEC` flag so the fd is inherited by the child.
     pub fn clear_cloexec(&self) -> io::Result<()> {
         use nix::fcntl;
