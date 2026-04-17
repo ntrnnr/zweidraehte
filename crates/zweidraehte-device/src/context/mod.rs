@@ -26,3 +26,13 @@ pub mod traits;
 pub use layer::{HasOutbox, LayerContext};
 pub use stack::StackContext;
 pub use traits::*;
+
+// Link-layer endpoint and context types, re-exported here so downstream
+// link-layer builders (`crate::context::CemiTransportLayerEndpoints`,
+// `crate::context::IpAdditionalIndividualAddressContext`) don't need to
+// know the deeper module paths. Matches the documented locations referenced
+// from `layers/mod.rs`.
+#[cfg(feature = "knxip")]
+pub use crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext;
+#[cfg(feature = "knxip")]
+pub use crate::layers::transport::cemi::CemiTransportLayerEndpoints;
