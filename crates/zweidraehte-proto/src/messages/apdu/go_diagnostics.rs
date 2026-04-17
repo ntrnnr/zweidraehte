@@ -1,0 +1,227 @@
+//! Response writers for the diagnostics function properties carried via
+//! `A_FunctionPropertyExtState_Read` / `A_FunctionPropertyExtCommand`.
+//!
+//! Covers two closely-related properties:
+//!
+//! - **`PID_OPERATION_MODE`** (PID 52) on the Application Program Object
+//!   — carries the current operation-mode byte and a countdown.
+//! - **`PID_GO_DIAGNOSTICS`** (PID 66) on the Group Object Table Object
+//!   — the single function property used for all GO diagnostic
+//!   subcommands (read/write local value, direct GA read/write,
+//!   transmit, etc.). Response layouts vary per service-ID; this module
+//!   provides one writer per distinct response shape.
+//!
+//! The wire layout follows KNX spec 03/05/01 §4.8.1. Unlike the
+//! `group_value` module, the caller does not supply a `MessageBuilder`
+//! buffer here — function-property service data lives inside the
+//! [`PropertyBuf`](crate::PropertyBuf) payload of a
+//! [`FunctionPropertyResult`](crate::messages::apdu::function_property),
+//! so the writers return the populated byte slice directly.
+//!
+//! All writers are `no_std` / alloc-free: they fill a caller-supplied
+//! fixed-size array and return a `&[u8]` of the actual on-wire length.
+
+// ============================================================================
+// PID_OPERATION_MODE
+// ============================================================================
+
+/// Response body for `PID_OPERATION_MODE` — both `E_OM_CURRENT_OPERATION_MODE`
+/// (return code 0x20) success paths and the `0xA0` negative acknowledgement
+/// use the identical three-byte body.
+///
+/// Wire: `[service_id, operation_mode, time_left]`.
+///
+/// Per spec 03/05/01 §4.3.8 the `time_left` byte is 0xFF when no timeout
+/// is running (i.e. normal mode), otherwise the remaining seconds clamped
+/// to 0..=254.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OperationModeResponse {
+    pub service_id: u8,
+    pub operation_mode: u8,
+    pub time_left: u8,
+}
+
+impl OperationModeResponse {
+    /// On-wire length of the response body, in bytes.
+    pub const LEN: usize = 3;
+
+    /// Write the body into `buf` and return the populated prefix.
+    pub fn write(self, buf: &mut [u8; Self::LEN]) -> &[u8] {
+        buf[0] = self.service_id;
+        buf[1] = self.operation_mode;
+        buf[2] = self.time_left;
+        &buf[..Self::LEN]
+    }
+}
+
+// ============================================================================
+// PID_GO_DIAGNOSTICS — ReadServiceID 0x00 (Get GO Config)
+// ============================================================================
+
+/// Response body for `PID_GO_DIAGNOSTICS` ReadServiceID 0x00 ("Get GO
+/// configuration") success (return code 0x20 = `E_GD_CONFIG`).
+///
+/// Per spec 03/05/01 §4.8.1.1.6, the logical structure is
+/// `[service_id, GO_number(2), GO_config(2), size(1), DPT_ID(4)]` with
+/// `GO_config` packing `Linked`, `conf`, `auth`, and the Group Object
+/// Descriptor high octet into a single 16-bit big-endian word.
+///
+/// This implementation diverges from the packed spec layout — it emits
+/// `linked`, `sec_flags`, `config_flags`, and `priority` as four separate
+/// bytes, followed by the size as a big-endian 16-bit field and a
+/// two-byte DPT ID. Conformance tests for 6.2.24 wildcard these bytes, so
+/// the divergence is silent; aligning to the packed layout is tracked as
+/// a separate follow-up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoConfigResponse {
+    /// ReadServiceID echoed back — always 0x00 for this response.
+    pub service_id: u8,
+    /// Group Object number (ASAP) being queried.
+    pub go_idx: u16,
+    /// Non-zero iff at least one group address is bound to this GO.
+    pub linked: u8,
+    /// `auth` / `conf` security bits for this GO (low 2 bits).
+    pub sec_flags: u8,
+    /// Group Object Descriptor high octet — `C R W I T U` flags.
+    pub config_flags: u8,
+    /// Transmission priority encoded as the `Priority` enum's numeric value.
+    pub priority: u8,
+    /// Value size in bytes (spec field "Size").
+    pub size_bytes: u16,
+    /// Datapoint Type main+sub number. Currently always zero because the
+    /// CO table does not track DPT identifiers.
+    pub dpt_id: u16,
+}
+
+impl GoConfigResponse {
+    /// On-wire length of the response body, in bytes.
+    pub const LEN: usize = 11;
+
+    /// Write the body into `buf` and return the populated prefix.
+    pub fn write(self, buf: &mut [u8; Self::LEN]) -> &[u8] {
+        buf[0] = self.service_id;
+        buf[1..3].copy_from_slice(&self.go_idx.to_be_bytes());
+        buf[3] = self.linked;
+        buf[4] = self.sec_flags;
+        buf[5] = self.config_flags;
+        buf[6] = self.priority;
+        buf[7..9].copy_from_slice(&self.size_bytes.to_be_bytes());
+        buf[9..11].copy_from_slice(&self.dpt_id.to_be_bytes());
+        &buf[..Self::LEN]
+    }
+}
+
+// ============================================================================
+// PID_GO_DIAGNOSTICS — status-plus-value success envelope
+// ============================================================================
+
+/// Response body for the `E_GD_GO_STATUS_VALUE` success path (return code
+/// 0x21) used by:
+///
+/// - `WriteServiceID 0x00` (Set local GO value) — echoes the stored value
+/// - `WriteServiceID 0x02` (Transmit current GO value) — echoes the sent value
+/// - `ReadServiceID  0x01` (Get local GO value)
+///
+/// Wire: `[service_id, GO_hi, GO_lo, status, value...]` — the value
+/// length is carried implicitly by the total response length.
+///
+/// The caller supplies a backing buffer large enough to hold the
+/// envelope plus `value.len()` bytes. The writer copies up to
+/// `buf.len() - HEADER_LEN` payload bytes; anything beyond is silently
+/// truncated to match the buffer capacity.
+#[derive(Debug, Clone, Copy)]
+pub struct GoStatusValueResponse<'a> {
+    pub service_id: u8,
+    pub go_idx: u16,
+    pub status: u8,
+    pub value: &'a [u8],
+}
+
+impl<'a> GoStatusValueResponse<'a> {
+    /// Length of the header before the value payload.
+    pub const HEADER_LEN: usize = 4;
+
+    /// Total response length for a given value length.
+    pub const fn len(value_len: usize) -> usize {
+        Self::HEADER_LEN + value_len
+    }
+
+    /// Write the body into `buf` and return the populated prefix.
+    ///
+    /// Clamps the value copy to the buffer's capacity so a short buffer
+    /// does not panic — excess value bytes are dropped. Returns the
+    /// slice actually written, including the truncated payload length.
+    pub fn write<'b>(self, buf: &'b mut [u8]) -> &'b [u8] {
+        debug_assert!(
+            buf.len() >= Self::HEADER_LEN,
+            "GoStatusValueResponse: buffer too small to hold the 4-byte header",
+        );
+        buf[0] = self.service_id;
+        buf[1..3].copy_from_slice(&self.go_idx.to_be_bytes());
+        buf[3] = self.status;
+        let value_capacity = buf.len() - Self::HEADER_LEN;
+        let value_len = self.value.len().min(value_capacity);
+        buf[Self::HEADER_LEN..Self::HEADER_LEN + value_len].copy_from_slice(&self.value[..value_len]);
+        &buf[..Self::HEADER_LEN + value_len]
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operation_mode_response_layout() {
+        let resp = OperationModeResponse { service_id: 0x00, operation_mode: 0x01, time_left: 0x1E };
+        let mut buf = [0u8; OperationModeResponse::LEN];
+        assert_eq!(resp.write(&mut buf), &[0x00, 0x01, 0x1E]);
+    }
+
+    #[test]
+    fn go_config_response_layout() {
+        let resp = GoConfigResponse {
+            service_id: 0x00,
+            go_idx: 0x0042,
+            linked: 0x01,
+            sec_flags: 0x03,
+            config_flags: 0xA5,
+            priority: 0x02,
+            size_bytes: 0x0004,
+            dpt_id: 0x0000,
+        };
+        let mut buf = [0u8; GoConfigResponse::LEN];
+        assert_eq!(resp.write(&mut buf), &[0x00, 0x00, 0x42, 0x01, 0x03, 0xA5, 0x02, 0x00, 0x04, 0x00, 0x00],);
+    }
+
+    #[test]
+    fn go_status_value_response_writes_header_and_payload() {
+        let value = [0xDE, 0xAD, 0xBE, 0xEF];
+        let resp = GoStatusValueResponse { service_id: 0x01, go_idx: 0x0007, status: 0x00, value: &value };
+        let mut buf = [0u8; 16];
+        let out = resp.write(&mut buf);
+        assert_eq!(out, &[0x01, 0x00, 0x07, 0x00, 0xDE, 0xAD, 0xBE, 0xEF]);
+    }
+
+    #[test]
+    fn go_status_value_response_empty_value() {
+        let resp = GoStatusValueResponse { service_id: 0x00, go_idx: 0x0000, status: 0x00, value: &[] };
+        let mut buf = [0u8; 4];
+        assert_eq!(resp.write(&mut buf), &[0x00, 0x00, 0x00, 0x00]);
+    }
+
+    #[test]
+    fn go_status_value_response_truncates_to_capacity() {
+        let value = [1u8; 100];
+        let resp = GoStatusValueResponse { service_id: 0x02, go_idx: 0x0001, status: 0x00, value: &value };
+        // Buffer only fits 4 header + 8 payload = 12 bytes.
+        let mut buf = [0u8; 12];
+        let out = resp.write(&mut buf);
+        assert_eq!(out.len(), 12);
+        assert_eq!(&out[..4], &[0x02, 0x00, 0x01, 0x00]);
+        assert!(out[4..].iter().all(|&b| b == 1));
+    }
+}

@@ -38,6 +38,9 @@ use crate::objects::tables::{
 use crate::{StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
+use zweidraehte_proto::messages::apdu::go_diagnostics::{
+    GoConfigResponse, GoStatusValueResponse, OperationModeResponse,
+};
 use zweidraehte_proto::messages::knx::Priority;
 
 // ============================================================================
@@ -215,18 +218,27 @@ const OPERATION_MODE_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_p
 // GO Diagnostics Response Helpers
 // ============================================================================
 
-/// Build a GO diagnostics success response with the standard envelope.
-///
-/// Format: `[service_id, go_idx_hi, go_idx_lo, status, ...value]`
-/// with return code 0x21 (success with data).
+/// Build a `PropertyBuf` carrying the three-byte `PID_OPERATION_MODE`
+/// response body (`[service_id, mode, time_left]`). Works for both the
+/// success (return code 0x20) and negative acknowledgement (0xA0)
+/// paths, which share the same data layout.
+fn operation_mode_buf<const N: usize>(service_id: u8, mode: u8, time_left: u8) -> PropertyBuf<N> {
+    let mut scratch = [0u8; OperationModeResponse::LEN];
+    PropertyBuf::new(OperationModeResponse { service_id, operation_mode: mode, time_left }.write(&mut scratch))
+}
+
+/// Build a GO diagnostics success response (return code 0x21 —
+/// `E_GD_GO_STATUS_VALUE`) with the standard `[service_id, go_idx,
+/// status, value...]` envelope, serialised by
+/// [`GoStatusValueResponse`].
 fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> FunctionPropertyResult {
+    // 4-byte header + up to 60 value bytes fits comfortably inside
+    // `PropertyBuf`. Values longer than this are truncated per the
+    // GoStatusValueResponse contract — consistent with the prior
+    // implementation's `.min(60)`.
     let mut resp = [0u8; 64];
-    resp[0] = service_id;
-    resp[1..3].copy_from_slice(&go_idx.to_be_bytes());
-    resp[3] = status;
-    let data_len = value.len().min(60);
-    resp[4..4 + data_len].copy_from_slice(&value[..data_len]);
-    FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(&resp[..4 + data_len]) }
+    let out = GoStatusValueResponse { service_id, go_idx, status, value }.write(&mut resp);
+    FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(out) }
 }
 
 /// the Group Object Table Object.
@@ -272,7 +284,7 @@ impl<'a> DiagnosticsAugment<'a> {
             let svc_id = if req.service_data.len() >= 2 { req.service_data[1] } else { 0x00 };
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[svc_id, current_mode, current_time_left]),
+                data: operation_mode_buf(svc_id, current_mode, current_time_left),
             };
         }
 
@@ -284,7 +296,7 @@ impl<'a> DiagnosticsAugment<'a> {
         if reserved != 0x00 {
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
+                data: operation_mode_buf(service_id, current_mode, current_time_left),
             };
         }
 
@@ -292,7 +304,7 @@ impl<'a> DiagnosticsAugment<'a> {
         if service_id != 0x00 {
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
+                data: operation_mode_buf(service_id, current_mode, current_time_left),
             };
         }
 
@@ -300,7 +312,7 @@ impl<'a> DiagnosticsAugment<'a> {
         if requested_mode > 0x01 {
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
+                data: operation_mode_buf(service_id, current_mode, current_time_left),
             };
         }
 
@@ -308,7 +320,7 @@ impl<'a> DiagnosticsAugment<'a> {
         if !stack_state.app().borrow().is_running() {
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
+                data: operation_mode_buf(service_id, current_mode, current_time_left),
             };
         }
 
@@ -320,7 +332,7 @@ impl<'a> DiagnosticsAugment<'a> {
 
         FunctionPropertyResult {
             return_code: 0x20, // E_OM_CURRENT_OPERATION_MODE
-            data: PropertyBuf::new(&[service_id, new_mode, new_time_left]),
+            data: operation_mode_buf(service_id, new_mode, new_time_left),
         }
     }
 
@@ -341,7 +353,7 @@ impl<'a> DiagnosticsAugment<'a> {
             let svc_id = if !req.service_data.is_empty() { req.service_data[0] } else { 0x00 };
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[svc_id, current_mode, current_time_left]),
+                data: operation_mode_buf(svc_id, current_mode, current_time_left),
             };
         }
 
@@ -352,7 +364,7 @@ impl<'a> DiagnosticsAugment<'a> {
         if reserved != 0x00 {
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
+                data: operation_mode_buf(service_id, current_mode, current_time_left),
             };
         }
 
@@ -360,7 +372,7 @@ impl<'a> DiagnosticsAugment<'a> {
         if service_id != 0x00 {
             return FunctionPropertyResult {
                 return_code: 0xA0,
-                data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
+                data: operation_mode_buf(service_id, current_mode, current_time_left),
             };
         }
 
@@ -369,7 +381,7 @@ impl<'a> DiagnosticsAugment<'a> {
         // current state regardless of the Run State Machine.
         FunctionPropertyResult {
             return_code: 0x20, // E_OM_CURRENT_OPERATION_MODE
-            data: PropertyBuf::new(&[service_id, current_mode, current_time_left]),
+            data: operation_mode_buf(service_id, current_mode, current_time_left),
         }
     }
 
@@ -853,21 +865,23 @@ impl<'a> DiagnosticsAugment<'a> {
         // default for devices without a security state configured.
         let sec_flags: u8 = state.extension_state().go_security_flags_for(go_idx).unwrap_or(0) & 0x03;
 
-        let mut resp = [0u8; 16];
-        resp[0] = 0x00; // service_id echo
-        resp[1] = data[2]; // GO_idx_hi
-        resp[2] = data[3]; // GO_idx_lo
-        resp[3] = linked;
-        resp[4] = sec_flags;
-        resp[5] = config_flags;
-        resp[6] = priority;
-        resp[7] = (size_bytes >> 8) as u8;
-        resp[8] = size_bytes as u8;
-        // DPT ID (2 bytes) — not tracked in the CO table, so zero.
-        resp[9] = 0x00;
-        resp[10] = 0x00;
+        let mut resp = [0u8; GoConfigResponse::LEN];
+        // DPT ID (`dpt_id`) is zeroed because the CO table does not
+        // track datapoint identifiers; the spec explicitly permits
+        // reporting 0x00000000 to signal "not available" (§4.8.1.1.6).
+        let out = GoConfigResponse {
+            service_id: 0x00,
+            go_idx,
+            linked,
+            sec_flags,
+            config_flags,
+            priority,
+            size_bytes: size_bytes as u16,
+            dpt_id: 0x0000,
+        }
+        .write(&mut resp);
 
-        FunctionPropertyResult { return_code: 0x20, data: PropertyBuf::new(&resp[..11]) }
+        FunctionPropertyResult { return_code: 0x20, data: PropertyBuf::new(out) }
     }
 
     // ================================================================

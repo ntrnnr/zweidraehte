@@ -26,10 +26,12 @@
 //! - [`restart`] — `A_Restart` (basic and master reset)
 //! - [`secure`] — Secure APDU (S-A_Data) frame parser and builder
 //! - [`group_value`] — `A_GroupValue_Read`, `A_GroupValue_Write`, `A_GroupValue_Response`
+//! - [`go_diagnostics`] — `PID_OPERATION_MODE` and `PID_GO_DIAGNOSTICS` function-property bodies
 
 pub mod auth;
 pub mod device;
 pub mod function_property;
+pub mod go_diagnostics;
 pub mod group_value;
 pub mod memory;
 pub mod property;
