@@ -5,6 +5,28 @@
 //! [`ExtensionState`]) and the [`Extension`] trait that unifies persistence
 //! with interface object augmentation.
 //!
+//! # `Config` / `State` / `Resources` vocabulary
+//!
+//! The three suffixes carry stable meaning across the stack:
+//!
+//! - `*Config` — serialisable persisted form. Round-trips through `serde`.
+//!   Examples: [`PersistedState`] (the whole-device config), [`PersistedIpConfig`],
+//!   and every `*ExtensionConfig`.
+//! - `*State` — runtime in-memory form with interior mutability
+//!   (`Cell`/`RefCell`). Converts to/from `Config` via
+//!   [`ExtensionState::from_config`] / [`ExtensionState::to_config`] at the
+//!   extension level, and via [`HasPersistedState::to_persisted`] plus
+//!   `SystemBDeviceState::from_persisted` at the device level.
+//! - `*Resources` — non-persistent construction-time inputs (pre-allocated
+//!   channels, `MaybeUninit` buffers, factory-programmed keys such as
+//!   FDSK, platform handles). Never serialised. Fed into
+//!   [`ExtensionState::from_config`] as the second argument.
+//! - `*StateConfig` (on [`StackDefinition`]) — constructor-args envelope
+//!   passed to [`StackDefinition::create_state`]. May carry an optional
+//!   persisted snapshot from storage plus identity data (serial number,
+//!   FDSK) that is not itself persisted. Despite the name it is not a
+//!   `Config` in the serialisable sense — it is an init envelope.
+//!
 //! The generic storage traits ([`DeviceStorage`](crate::storage::DeviceStorage),
 //! [`NoStorage`](crate::storage::NoStorage)) live in [`crate::storage`].
 //!

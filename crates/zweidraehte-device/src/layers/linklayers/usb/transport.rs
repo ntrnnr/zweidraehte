@@ -72,7 +72,15 @@ impl Default for UsbCemiTransportResources {
     }
 }
 
-/// Initialized resource references
+/// Borrowed view over initialised [`UsbCemiTransportResources`] buffers.
+///
+/// Returned by [`UsbCemiTransportResources::init`] and consumed by
+/// [`UsbCemiTransport::open`]. This is **not** a link-layer `Resources`
+/// in the
+/// [`LinkLayerBuilderBase::Resources`](crate::layers::LinkLayerBuilderBase)
+/// sense — it lives one level below, at the USB transport boundary, and
+/// holds only `&mut` references into the owning `UsbCemiTransportResources`
+/// struct.
 pub struct InitializedResources<'a> {
     pub rx_report: &'a mut [u8; MAX_REPORT_SIZE],
     pub tx_report: &'a mut [u8; MAX_REPORT_SIZE],

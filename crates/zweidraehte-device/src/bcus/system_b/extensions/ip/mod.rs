@@ -44,6 +44,15 @@ use zweidraehte_proto::address::IndividualAddress;
 /// The const generic `N` is the maximum number of additional individual
 /// addresses (tunneling slots). Non-tunneling devices use the default
 /// `N = 0`, paying zero storage for addresses they never use.
+///
+/// # Naming
+///
+/// The `Persisted` prefix (rather than the conventional `*ExtensionConfig`
+/// suffix used by [`Tp1ExtensionConfig`](super::super::tp1::Tp1ExtensionConfig)
+/// or [`SecurityExtensionConfig`](super::security::SecurityExtensionConfig))
+/// disambiguates this struct from the `IpConfig` DIB type in
+/// `zweidraehte-proto`, which represents a parsed KNXnet/IP protocol
+/// frame, not a persisted device configuration.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersistedIpConfig<const N: usize = 0> {

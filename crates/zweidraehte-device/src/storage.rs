@@ -340,6 +340,16 @@ pub trait SequenceNumberStorage {
 /// Only implemented by secure device stacks. Non-secure stacks don't
 /// need it. The [`SecureDeviceBuilder`] requires this bound.
 ///
+/// # Related
+///
+/// This trait sits on the [`StackDefinition`](crate::StackDefinition)
+/// impl and produces the concrete `SeqStorage` type once, at stack
+/// construction time. The runtime counterpart
+/// [`HasSeqStorage`](crate::bcus::system_b::HasSeqStorage)
+/// lives on the `SecureExtensionState` and exposes that same storage
+/// through `&self` so the S-AL layer and the PID 59 augment can borrow
+/// it.
+///
 /// [`SecureDeviceBuilder`]: crate::composition::SecureDeviceBuilder
 pub trait HasSequenceStorage {
     /// The concrete sequence number storage type.

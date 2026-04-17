@@ -641,6 +641,17 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
 /// Provides access to the sending sequence number storage on the
 /// extension state. Used by the S-AL to borrow the `RefCell<SEQ>`
 /// that the augment also reads/writes for PID 59.
+///
+/// # Related
+///
+/// This is the **extension-state-side** accessor. The corresponding
+/// **stack-definition-side** trait is
+/// [`HasSequenceStorage`](crate::storage::HasSequenceStorage), which
+/// lets a [`StackDefinition`](crate::StackDefinition) impl produce the
+/// `SeqStorage` concrete type during stack construction. The two
+/// cooperate: `HasSequenceStorage` creates the storage once, it lives
+/// inside the `SecureExtensionState`, and `HasSeqStorage` exposes it
+/// through `&self` at runtime.
 pub trait HasSeqStorage {
     /// The concrete sequence number storage type.
     type SeqStorage: SequenceNumberStorage;

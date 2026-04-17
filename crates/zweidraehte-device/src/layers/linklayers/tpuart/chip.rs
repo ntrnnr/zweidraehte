@@ -126,7 +126,15 @@ impl ChipType {
     }
 }
 
-/// Configuration for TPUART retry behavior
+/// Transient parameter object encoding the TPUART `U_SetMaxRstCnt` command.
+///
+/// Despite the `*Config` suffix this is **not** persisted — it is a
+/// bundle of NAK / BUSY retry counts used at the moment the chip command
+/// is issued. The persisted source of these values is
+/// [`Tp1ExtensionConfig`](crate::bcus::system_b::extensions::tp1::Tp1ExtensionConfig),
+/// whose runtime counterpart
+/// [`Tp1ExtensionState`](crate::bcus::system_b::extensions::tp1::Tp1ExtensionState)
+/// materialises a `RetryConfig` when it programs the chip.
 #[derive(Debug, Clone, Copy)]
 pub struct RetryConfig {
     /// Number of retries after receiving NACK (0-7)
