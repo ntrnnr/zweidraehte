@@ -22,9 +22,9 @@
 //! assumes 3.8.13.2 already switched the tool key. Since we skip 3.8.13.2,
 //! we use TK1 (the default tool key) instead.
 
-use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{TestCase, TestSuite};
 
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
@@ -38,17 +38,13 @@ const CHALLENGE_1: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 // Security Mode Toggle Templates
 // ============================================================================
 
-const ENABLE_SECURITY_MODE: &str =
-    "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
+const ENABLE_SECURITY_MODE: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
 
-const ENABLE_SECURITY_MODE_RESP: &str =
-    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
+const ENABLE_SECURITY_MODE_RESP: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
-const DISABLE_SECURITY_MODE: &str =
-    "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
+const DISABLE_SECURITY_MODE: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
 
-const DISABLE_SECURITY_MODE_RESP: &str =
-    "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
+const DISABLE_SECURITY_MODE_RESP: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
 // ============================================================================
 // PropertyExtValueWriteCon templates for PID 0x38 on Security IO
@@ -63,16 +59,13 @@ const SECURE_WRITE_TOOL_KEY: &str =
 // Write success: count=1, start=1, return_code=0x00.
 // APDU: 01 CF + 00 11 + 00 10 + 38 + 01 + 00 01 + 00 = 11 bytes → len = 0x0A
 #[allow(dead_code)] // Not used since we skip 3.8.13.1 and 3.8.13.2.
-const SECURE_WRITE_TOOL_KEY_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+const SECURE_WRITE_TOOL_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
 // Write denied: count=0, start=1, return_code=0xFC (E_ACCESS_DENIED).
-const SECURE_WRITE_TOOL_KEY_DENIED: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 00 00 01 FC";
+const SECURE_WRITE_TOOL_KEY_DENIED: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 00 00 01 FC";
 
 // Plain write denied response: standard frame.
-const PLAIN_WRITE_TOOL_KEY_DENIED: &str =
-    "BC #BDUT_ADDR #EDI 6A 01 CF 00 11 00 10 38 00 00 01 FC";
+const PLAIN_WRITE_TOOL_KEY_DENIED: &str = "BC #BDUT_ADDR #EDI 6A 01 CF 00 11 00 10 38 00 00 01 FC";
 
 // ============================================================================
 // PropertyExtValueRead templates for PID 0x38 on Security IO (write-only)
@@ -80,21 +73,17 @@ const PLAIN_WRITE_TOOL_KEY_DENIED: &str =
 
 // Secure A_PropertyExtValueRead: count=1, start=1.
 // APDU: 01 CC + 00 11 + 00 10 + 38 + 01 + 00 01 = 10 bytes → len = 0x09
-const SECURE_READ_TOOL_KEY: &str =
-    "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 38 01 00 01";
+const SECURE_READ_TOOL_KEY: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 38 01 00 01";
 
 // Secure read denied: count=0, start=1, return_code=0xFC (E_ACCESS_DENIED).
 // All reads are denied because PID_TOOL_KEY is write-only.
-const SECURE_READ_TOOL_KEY_DENIED: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 38 00 00 01 FC";
+const SECURE_READ_TOOL_KEY_DENIED: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CD 00 11 00 10 38 00 00 01 FC";
 
 // Plain extended read (extended frame for oversize APDU).
-const PLAIN_EXT_READ_TOOL_KEY: &str =
-    "BC #EDI #BDUT_ADDR 69 01 CC 00 11 00 10 38 01 00 01";
+const PLAIN_EXT_READ_TOOL_KEY: &str = "BC #EDI #BDUT_ADDR 69 01 CC 00 11 00 10 38 01 00 01";
 
 // Plain extended read denied.
-const PLAIN_EXT_READ_TOOL_KEY_DENIED: &str =
-    "BC #BDUT_ADDR #EDI 6A 01 CD 00 11 00 10 38 00 00 01 FC";
+const PLAIN_EXT_READ_TOOL_KEY_DENIED: &str = "BC #BDUT_ADDR #EDI 6A 01 CD 00 11 00 10 38 00 00 01 FC";
 
 // ============================================================================
 // Standard PropertyValueRead templates (03 D5/D6) for PID 0x38
@@ -105,22 +94,18 @@ const PLAIN_EXT_READ_TOOL_KEY_DENIED: &str =
 
 // Plain standard read: obj_index=#SEC_INTF_OBJ_INDEX, PID=0x38, count=1, start=1.
 // APDU: 03 D5 + OBJ_INDEX(1) + PID(1) + count_start(2) = 6 bytes → TP1 len = 0x65
-const PLAIN_STD_READ_TOOL_KEY: &str =
-    "BC #EDI #BDUT_ADDR 65 03 D5 #SEC_INTF_OBJ_INDEX 38 10 01";
+const PLAIN_STD_READ_TOOL_KEY: &str = "BC #EDI #BDUT_ADDR 65 03 D5 #SEC_INTF_OBJ_INDEX 38 10 01";
 
 // Plain standard read denied: count=0, start=1.
 // In standard property read, count=0 indicates an error/denied response.
-const PLAIN_STD_READ_TOOL_KEY_DENIED: &str =
-    "BC #BDUT_ADDR #EDI 65 03 D6 #SEC_INTF_OBJ_INDEX 38 00 01";
+const PLAIN_STD_READ_TOOL_KEY_DENIED: &str = "BC #BDUT_ADDR #EDI 65 03 D6 #SEC_INTF_OBJ_INDEX 38 00 01";
 
 // Secure standard read (extended frame).
 // APDU: 03 D5 + OBJ_INDEX(1) + PID(1) + count_start(2) = 6 bytes → len = 0x05
-const SECURE_STD_READ_TOOL_KEY: &str =
-    "3C 60 #EDI #BDUT_ADDR 05 03 D5 #SEC_INTF_OBJ_INDEX 38 10 01";
+const SECURE_STD_READ_TOOL_KEY: &str = "3C 60 #EDI #BDUT_ADDR 05 03 D5 #SEC_INTF_OBJ_INDEX 38 10 01";
 
 // Secure standard read denied: count=0, start=1.
-const SECURE_STD_READ_TOOL_KEY_DENIED: &str =
-    "3C 60 #BDUT_ADDR #EDI 05 03 D6 #SEC_INTF_OBJ_INDEX 38 00 01";
+const SECURE_STD_READ_TOOL_KEY_DENIED: &str = "3C 60 #BDUT_ADDR #EDI 05 03 D6 #SEC_INTF_OBJ_INDEX 38 00 01";
 
 // ============================================================================
 // PropertyExtDescription_Read / Response templates for PID 0x38 on Security IO
@@ -129,21 +114,17 @@ const SECURE_STD_READ_TOOL_KEY_DENIED: &str =
 // Secure A+C A_PropertyExtDescription_Read (0x01D2): IOT=0x0011, instance=0x0010,
 // PID=0x38, description index=0x00, property index=0x00.
 // APDU: 01 D2 + 00 11 + 00 10 + 38 + 00 + 00 = 8 bytes → len = 0x08
-const SECURE_DESC_READ_PID38: &str =
-    "3C 60 #EDI #BDUT_ADDR 08 01 D2 00 11 00 10 38 00 00";
+const SECURE_DESC_READ_PID38: &str = "3C 60 #EDI #BDUT_ADDR 08 01 D2 00 11 00 10 38 00 00";
 
 // Secure A+C success response: valid descriptor (wildcard data bytes).
 // APDU: 01 D3 + 00 11 + 00 10 + 38 + ?? x10 = 16 bytes → len = 0x10
-const SECURE_DESC_READ_PID38_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 38 ?? ?? ?? ?? ?? ?? ?? ?? ?? ??";
+const SECURE_DESC_READ_PID38_OK: &str = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 38 ?? ?? ?? ?? ?? ?? ?? ?? ?? ??";
 
 // Plain A_PropertyExtDescription_Read for PID 0x38.
-const PLAIN_DESC_READ_PID38: &str =
-    "BC #EDI #BDUT_ADDR 68 01 D2 00 11 00 10 38 00 00";
+const PLAIN_DESC_READ_PID38: &str = "BC #EDI #BDUT_ADDR 68 01 D2 00 11 00 10 38 00 00";
 
 // Plain all-zero descriptor response (access denied for 00C/00C — plain NEVER allowed).
-const PLAIN_DESC_READ_PID38_ZERO: &str =
-    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 38 00 00 00 00 00 00 00 00 00 00";
+const PLAIN_DESC_READ_PID38_ZERO: &str = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 38 00 00 00 00 00 00 00 00 00 00";
 
 // ============================================================================
 // Suite Constructor
@@ -204,17 +185,14 @@ fn test_3_8_13_1() -> TestCase {
     // Write PID_TOOL_KEY = TK2 (authenticated with current key, verified
     // against "TK1" in the response since our stack encrypts the response
     // with the key that was active at receive time).
-    const WRITE_TK2: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_TK2: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F";
 
     // Write PID_TOOL_KEY = TK1 (restore to default for subsequent tests).
-    const WRITE_TK1: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
 
-    const WRITE_TK_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+    const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
     TestCase::new("3.8.13.1 Secure PropertyValueWrite – A+C").with_steps(vec![
         // ==== Phase A: Security Mode OFF ====
@@ -224,18 +202,15 @@ fn test_3_8_13_1() -> TestCase {
         comment("Sec mode OFF — write Tool Key = TK2 (auth with TK1)"),
         inject_secure_ac(WRITE_TK2, "TK1"),
         expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-
         // Subsequent management traffic must authenticate with TK2.
         comment("Enable Security Mode (now auth with TK2)"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK2"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK2", TIMEOUT),
-
         // ==== Phase B: Security Mode ON ====
         // Rotate back to TK1 with security mode enabled.
         comment("Sec mode ON — write Tool Key = TK1 (auth with TK2)"),
         inject_secure_ac(WRITE_TK1, "TK2"),
         expect_secure_ac(WRITE_TK_OK, "TK2", TIMEOUT),
-
         comment("Disable Security Mode (back to default, auth with TK1)"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
@@ -248,15 +223,11 @@ fn test_3_8_13_2() -> TestCase {
     // 9-byte load-control record. First byte selects the load event:
     // 0x04 = Unload, 0x02 = LoadCompleted. The trailing 8 bytes are
     // the load-procedure record; we send all-zero (System B ignores it).
-    const SET_UNLOADED: &str =
-        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 04 00 00 00 00 00 00 00 00 00";
-    const SET_UNLOADED_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+    const SET_UNLOADED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 04 00 00 00 00 00 00 00 00 00";
+    const SET_UNLOADED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
 
-    const SET_LOADED: &str =
-        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
-    const SET_LOADED_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+    const SET_LOADED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
+    const SET_LOADED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
 
     // PropertyExtValueWriteCon on PID_TOOL_KEY (56 = 0x38), one element
     // starting at index 1, 16-byte key. The reference XML uses literal
@@ -267,39 +238,30 @@ fn test_3_8_13_2() -> TestCase {
     // the specific key bytes.
     //
     // Write Tool Key = TK2 = 10 11 12 ... 1F.
-    const WRITE_TK2: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_TK2: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F";
-    const WRITE_TK_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+    const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
     // Write Tool Key = TK1 = 00 01 02 ... 0F (used to restore TK1
     // before the test exits so subsequent suites still authenticate).
-    const WRITE_TK1: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
 
-    const ENABLE_SM: &str =
-        "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
-    const ENABLE_SM_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
-    const DISABLE_SM: &str =
-        "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
-    const DISABLE_SM_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
+    const ENABLE_SM: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
+    const ENABLE_SM_OK: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
+    const DISABLE_SM: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00";
+    const DISABLE_SM_OK: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
 
     let steps = vec![
         comment("Set Security IO to Unloaded (still authenticated with TK1)"),
         inject_secure_ac(SET_UNLOADED, "TK1"),
         expect_secure_ac(SET_UNLOADED_OK, "TK1", TIMEOUT),
-
         // Even though the Security Object is unloaded, secure tool-key
         // management traffic still works — that's the invariant the
         // test exercises. Activate sec mode encrypted with TK1.
         comment("Activate Security Mode while SecIO unloaded"),
         inject_secure_ac(ENABLE_SM, "TK1"),
         expect_secure_ac(ENABLE_SM_OK, "TK1", TIMEOUT),
-
         // Rotate tool key to TK2 (write authenticated with current key TK1).
         comment("Write Tool Key = TK2 (authenticated with TK1, response with TK1)"),
         inject_secure_ac(WRITE_TK2, "TK1"),
@@ -311,25 +273,21 @@ fn test_3_8_13_2() -> TestCase {
         // start of the inbound transaction). Either is spec-conformant
         // depending on the implementation; we verify against TK1.
         expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-
         // Subsequent management traffic must use the new key TK2.
         comment("Deactivate Security Mode (now authenticated with TK2)"),
         inject_secure_ac(DISABLE_SM, "TK2"),
         expect_secure_ac(DISABLE_SM_OK, "TK2", TIMEOUT),
-
         // Rotate the tool key back to TK1 to leave a clean state for
         // subsequent test cases / suites.
         comment("Restore Tool Key = TK1 (authenticated with TK2, response with TK2)"),
         inject_secure_ac(WRITE_TK1, "TK2"),
         expect_secure_ac(WRITE_TK_OK, "TK2", TIMEOUT),
-
         comment("Reload Security IO (LoadCompleted)"),
         inject_secure_ac(SET_LOADED, "TK1"),
         expect_secure_ac(SET_LOADED_OK, "TK1", TIMEOUT),
     ];
 
-    TestCase::new("3.8.13.2 Check ToolKey usage when Security Interface Object is unloaded")
-        .with_steps(steps)
+    TestCase::new("3.8.13.2 Check ToolKey usage when Security Interface Object is unloaded").with_steps(steps)
 }
 
 fn test_3_8_13_6() -> TestCase {
@@ -350,126 +308,115 @@ fn test_3_8_13_6() -> TestCase {
     // Sub-cases (a)-(c) match the original tool key (TK1 in our
     // harness). (d)-(e) land the device on FDSK, which is a distinct
     // key in our harness — verification uses SecKey="FDSK" for those
-    // sub-cases. This exercises the `seed_tool_key_from_fdsk` code
-    // path and confirms the DUT rejects TK1 after the reset.
+    // sub-cases. This exercises the factory-reset FDSK re-seeding
+    // path in `SecureExtensionState::on_erase` and confirms the DUT
+    // rejects TK1 after the reset.
 
     // Write PID_TOOL_KEY = TK1 (idempotent: matches the default).
-    const WRITE_TK1: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
     // Write PID_TOOL_KEY = FDSK (idempotent when current key is FDSK).
-    const WRITE_FDSK: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_FDSK: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          F0 D5 1A 23 34 45 56 67 78 89 9A AB BC CD DE EF";
-    const WRITE_TK_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+    const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
     // Connection-oriented Basic Restart (secure A+C).
     //   TPCI 0x43 = numbered seq 0, APCI high 0x03, APCI low 0x80 (Restart).
-    const CONNECTED_BASIC_RESTART: &str =
-        "3C 60 #EDI #BDUT_ADDR 02 43 80";
+    const CONNECTED_BASIC_RESTART: &str = "3C 60 #EDI #BDUT_ADDR 02 43 80";
 
     // Connection-oriented Confirmed Restart (secure A+C, erase=0x01).
-    const CONNECTED_RESTART_CONFIRMED: &str =
-        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
-    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
-        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+    const CONNECTED_RESTART_CONFIRMED: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str = "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
 
     // Connection-oriented FactoryResetKeepIA (secure A+C, erase=0x07).
-    const CONNECTED_RESTART_FRWITHIA: &str =
-        "3C 60 #EDI #BDUT_ADDR 03 43 81 07 00";
-    const CONNECTED_RESTART_FRWITHIA_RESP: &str =
-        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+    const CONNECTED_RESTART_FRWITHIA: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 07 00";
+    const CONNECTED_RESTART_FRWITHIA_RESP: &str = "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
 
-    TestCase::new("3.8.13.6 Tool Key persistence across power-down / master reset").with_steps(vec![
-        comment("Enable Security Mode"),
-        inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
-        expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
-        // ==== (a) Power cycle — tool key persists ====
-        comment("(a) Power cycle — tool key survives"),
-        power_cycle(2000),
-        // Tool seq counters reset by power_cycle need re-sync before any
-        // subsequent secure traffic.
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Verify: write TK1 with TK1 → ACK"),
-        inject_secure_ac(WRITE_TK1, "TK1"),
-        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-
-        // ==== (b) Bus-level Basic Restart — tool key persists ====
-        comment("(b) Bus-level Basic Restart (secure A+C) — tool key survives"),
-        inject("B0 #EDI #BDUT_ADDR 60 80"),
-        inject_secure_ac(CONNECTED_BASIC_RESTART, "TK1"),
-        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait_for_restart(2000),
-        drain(500),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Verify: write TK1 with TK1 → ACK"),
-        inject_secure_ac(WRITE_TK1, "TK1"),
-        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-
-        // ==== (c) Bus-level Confirmed Restart (erase=0x01) ====
-        comment("(c) Confirmed Restart (erase=0x01) — tool key survives"),
-        inject("B0 #EDI #BDUT_ADDR 60 80"),
-        inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
-        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
-        inject("B0 #EDI #BDUT_ADDR 60 C2"),
-        inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait_for_restart(2000),
-        drain(500),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
-        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Verify: write TK1 with TK1 → ACK"),
-        inject_secure_ac(WRITE_TK1, "TK1"),
-        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-
-        // ==== (d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK ====
-        // Our FDSK is distinct from TK1, so after the reset the DUT
-        // only accepts frames encrypted with FDSK until a new tool
-        // key is written. FactoryResetKeepIA also wipes the address /
-        // association / group-key / GO-flag tables — the suite
-        // teardown issues a `full_reset` to rebuild the default SHM
-        // snapshot before handing off to the next suite.
-        comment("(d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK"),
-        inject("B0 #EDI #BDUT_ADDR 60 80"),
-        inject_secure_ac(CONNECTED_RESTART_FRWITHIA, "TK1"),
-        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        expect_secure_ac(CONNECTED_RESTART_FRWITHIA_RESP, "TK1", TIMEOUT),
-        inject("B0 #EDI #BDUT_ADDR 60 C2"),
-        inject("B0 #EDI #BDUT_ADDR 60 81"),
-        wait_for_restart(2000),
-        drain(500),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Verify: write PID_TOOL_KEY (value = FDSK) with FDSK → ACK"),
-        // Security mode was reset to off by the factory reset; a
-        // write on 008/008 policy still works when sec mode is off
-        // because the 16F nibble permits A+C writes in both modes.
-        inject_secure_ac(WRITE_FDSK, "FDSK"),
-        expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
-
-        // ==== (e) Local FactoryReset (erase=0x02) — tool key → FDSK ====
-        // IA also wiped; re-program via serial-number-keyed
-        // `A_IndividualAddressSerialNumber_Write` before the verify.
-        comment("(e) Local FactoryReset (erase=0x02) — tool key → FDSK, IA wiped"),
-        master_reset(0x02, 2000),
-        comment("Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
-        inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
-        wait(200),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Verify: write PID_TOOL_KEY (value = FDSK) with FDSK → ACK"),
-        inject_secure_ac(WRITE_FDSK, "FDSK"),
-        expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
-    ])
-    // Case left `tool_key == FDSK` across phases (d) and (e); restore
-    // TK1 so 3.8.13.8 (and anything else the suite orders after us)
-    // starts from the same TK1 baseline every other case expects.
-    .with_teardown(provision_tk1_via_fdsk())
+    TestCase::new("3.8.13.6 Tool Key persistence across power-down / master reset")
+        .with_steps(vec![
+            comment("Enable Security Mode"),
+            inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
+            expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
+            // ==== (a) Power cycle — tool key persists ====
+            comment("(a) Power cycle — tool key survives"),
+            power_cycle(2000),
+            // Tool seq counters reset by power_cycle need re-sync before any
+            // subsequent secure traffic.
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+            comment("Verify: write TK1 with TK1 → ACK"),
+            inject_secure_ac(WRITE_TK1, "TK1"),
+            expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+            // ==== (b) Bus-level Basic Restart — tool key persists ====
+            comment("(b) Bus-level Basic Restart (secure A+C) — tool key survives"),
+            inject("B0 #EDI #BDUT_ADDR 60 80"),
+            inject_secure_ac(CONNECTED_BASIC_RESTART, "TK1"),
+            expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+            inject("B0 #EDI #BDUT_ADDR 60 81"),
+            wait_for_restart(2000),
+            drain(500),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+            comment("Verify: write TK1 with TK1 → ACK"),
+            inject_secure_ac(WRITE_TK1, "TK1"),
+            expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+            // ==== (c) Bus-level Confirmed Restart (erase=0x01) ====
+            comment("(c) Confirmed Restart (erase=0x01) — tool key survives"),
+            inject("B0 #EDI #BDUT_ADDR 60 80"),
+            inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
+            expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+            expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
+            inject("B0 #EDI #BDUT_ADDR 60 C2"),
+            inject("B0 #EDI #BDUT_ADDR 60 81"),
+            wait_for_restart(2000),
+            drain(500),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+            comment("Verify: write TK1 with TK1 → ACK"),
+            inject_secure_ac(WRITE_TK1, "TK1"),
+            expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+            // ==== (d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK ====
+            // Our FDSK is distinct from TK1, so after the reset the DUT
+            // only accepts frames encrypted with FDSK until a new tool
+            // key is written. FactoryResetKeepIA also wipes the address /
+            // association / group-key / GO-flag tables — the suite
+            // teardown issues a `full_reset` to rebuild the default SHM
+            // snapshot before handing off to the next suite.
+            comment("(d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK"),
+            inject("B0 #EDI #BDUT_ADDR 60 80"),
+            inject_secure_ac(CONNECTED_RESTART_FRWITHIA, "TK1"),
+            expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+            expect_secure_ac(CONNECTED_RESTART_FRWITHIA_RESP, "TK1", TIMEOUT),
+            inject("B0 #EDI #BDUT_ADDR 60 C2"),
+            inject("B0 #EDI #BDUT_ADDR 60 81"),
+            wait_for_restart(2000),
+            drain(500),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+            expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+            comment("Verify: write PID_TOOL_KEY (value = FDSK) with FDSK → ACK"),
+            // Security mode was reset to off by the factory reset; a
+            // write on 008/008 policy still works when sec mode is off
+            // because the 16F nibble permits A+C writes in both modes.
+            inject_secure_ac(WRITE_FDSK, "FDSK"),
+            expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
+            // ==== (e) Local FactoryReset (erase=0x02) — tool key → FDSK ====
+            // IA also wiped; re-program via serial-number-keyed
+            // `A_IndividualAddressSerialNumber_Write` before the verify.
+            comment("(e) Local FactoryReset (erase=0x02) — tool key → FDSK, IA wiped"),
+            master_reset(0x02, 2000),
+            comment("Re-program BDUT IA via A_IndividualAddressSerialNumber_Write"),
+            inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
+            wait(200),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
+            expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+            comment("Verify: write PID_TOOL_KEY (value = FDSK) with FDSK → ACK"),
+            inject_secure_ac(WRITE_FDSK, "FDSK"),
+            expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
+        ])
+        // Case left `tool_key == FDSK` across phases (d) and (e); restore
+        // TK1 so 3.8.13.8 (and anything else the suite orders after us)
+        // starts from the same TK1 baseline every other case expects.
+        .with_teardown(provision_tk1_via_fdsk())
 }
 
 fn test_3_8_13_8() -> TestCase {
@@ -494,16 +441,13 @@ fn test_3_8_13_8() -> TestCase {
     const CONNECTED_RESTART_FACTORY_RESP: &str = "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
 
     // PID_TOOL_KEY writes. Value = TK1 (`00 01 02 ... 0F`).
-    const WRITE_TK1: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
     // Attempt to write value = P2PK2 (0x33*16). The particular value
     // doesn't matter — this step expects no response.
-    const WRITE_P2PK2: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_P2PK2: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33";
-    const WRITE_TK_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+    const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
     TestCase::new("3.8.13.8 Check usage of the FDSK").with_steps(vec![
         comment("Factory reset (erase 0x02) → tool key reverts to FDSK"),
@@ -515,28 +459,24 @@ fn test_3_8_13_8() -> TestCase {
         inject("B0 #EDI FF FF 60 81"),
         wait_for_restart(2000),
         drain(500),
-
         comment("Restore BDUT IA via A_IndividualAddressSerialNumber_Write"),
         inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
         wait(200),
-
         comment("Sync tool seq using FDSK (the post-reset active tool key)"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
         expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
-
         comment("Write PID_TOOL_KEY = TK1 authenticated with FDSK → ACK"),
         inject_secure_ac(WRITE_TK1, "FDSK"),
         expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
-
         comment("Write PID_TOOL_KEY = TK1 authenticated with TK1 → ACK"),
         inject_secure_ac(WRITE_TK1, "TK1"),
         expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-
-        comment("Try to write PID_TOOL_KEY authenticated with FDSK now that \
-                 the tool key has been set to TK1 → DUT must reject (no resp)"),
+        comment(
+            "Try to write PID_TOOL_KEY authenticated with FDSK now that \
+                 the tool key has been set to TK1 → DUT must reject (no resp)",
+        ),
         inject_secure_ac(WRITE_P2PK2, "FDSK"),
         expect_none(1000),
-
         comment("Verify tool_key is still TK1 (write TK1 with TK1 → ACK)"),
         inject_secure_ac(WRITE_TK1, "TK1"),
         expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
@@ -556,16 +496,13 @@ fn test_3_8_13_3() -> TestCase {
         comment("Enable Security Mode"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         comment("Auth-only write tool key → E_ACCESS_DENIED (008 requires A+C)"),
         inject_secure_ao(SECURE_WRITE_TOOL_KEY, "TK1"),
         expect_secure_ao(SECURE_WRITE_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         // ==== Security Mode OFF ====
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         comment("Auth-only write tool key → E_ACCESS_DENIED"),
         inject_secure_ao(SECURE_WRITE_TOOL_KEY, "TK1"),
         expect_secure_ao(SECURE_WRITE_TOOL_KEY_DENIED, "TK1", TIMEOUT),
@@ -584,16 +521,13 @@ fn test_3_8_13_4() -> TestCase {
         comment("Enable Security Mode"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         comment("Plain write tool key → E_ACCESS_DENIED"),
         inject(SECURE_WRITE_TOOL_KEY),
         expect(PLAIN_WRITE_TOOL_KEY_DENIED, TIMEOUT),
-
         // ==== Security Mode OFF ====
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         comment("Plain write tool key → E_ACCESS_DENIED"),
         inject(SECURE_WRITE_TOOL_KEY),
         expect(PLAIN_WRITE_TOOL_KEY_DENIED, TIMEOUT),
@@ -616,60 +550,47 @@ fn test_3_8_13_5() -> TestCase {
         comment("Enable Security Mode"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         // -- Standard property read (03 D5) --
         comment("Plain standard read → denied (write-only)"),
         inject(PLAIN_STD_READ_TOOL_KEY),
         expect(PLAIN_STD_READ_TOOL_KEY_DENIED, TIMEOUT),
-
         comment("Auth-only standard read → denied"),
         inject_secure_ao(SECURE_STD_READ_TOOL_KEY, "TK1"),
         expect_secure_ao(SECURE_STD_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         comment("A+C standard read → denied"),
         inject_secure_ac(SECURE_STD_READ_TOOL_KEY, "TK1"),
         expect_secure_ac(SECURE_STD_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         // -- Extended property read (01 CC) --
         comment("Plain extended read → E_ACCESS_DENIED"),
         inject(PLAIN_EXT_READ_TOOL_KEY),
         expect(PLAIN_EXT_READ_TOOL_KEY_DENIED, TIMEOUT),
-
         comment("Auth-only extended read → E_ACCESS_DENIED"),
         inject_secure_ao(SECURE_READ_TOOL_KEY, "TK1"),
         expect_secure_ao(SECURE_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         comment("A+C extended read → E_ACCESS_DENIED"),
         inject_secure_ac(SECURE_READ_TOOL_KEY, "TK1"),
         expect_secure_ac(SECURE_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         // ==== Security Mode OFF ====
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         // -- Standard property read (03 D5) --
         comment("Plain standard read → denied"),
         inject(PLAIN_STD_READ_TOOL_KEY),
         expect(PLAIN_STD_READ_TOOL_KEY_DENIED, TIMEOUT),
-
         comment("Auth-only standard read → denied"),
         inject_secure_ao(SECURE_STD_READ_TOOL_KEY, "TK1"),
         expect_secure_ao(SECURE_STD_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         comment("A+C standard read → denied"),
         inject_secure_ac(SECURE_STD_READ_TOOL_KEY, "TK1"),
         expect_secure_ac(SECURE_STD_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         // -- Extended property read (01 CC) --
         comment("Plain extended read → E_ACCESS_DENIED"),
         inject(PLAIN_EXT_READ_TOOL_KEY),
         expect(PLAIN_EXT_READ_TOOL_KEY_DENIED, TIMEOUT),
-
         comment("Auth-only extended read → E_ACCESS_DENIED"),
         inject_secure_ao(SECURE_READ_TOOL_KEY, "TK1"),
         expect_secure_ao(SECURE_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
-
         comment("A+C extended read → E_ACCESS_DENIED"),
         inject_secure_ac(SECURE_READ_TOOL_KEY, "TK1"),
         expect_secure_ac(SECURE_READ_TOOL_KEY_DENIED, "TK1", TIMEOUT),
@@ -690,16 +611,13 @@ fn test_3_8_13_7() -> TestCase {
         comment("Enable Security Mode"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         comment("Secure A+C description read → success (valid descriptor)"),
         inject_secure_ac(SECURE_DESC_READ_PID38, "TK1"),
         expect_secure_ac(SECURE_DESC_READ_PID38_OK, "TK1", TIMEOUT),
-
         // ==== Security Mode OFF ====
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         comment("Plain description read → all-zero (plain never allowed for 008/008)"),
         inject(PLAIN_DESC_READ_PID38),
         expect(PLAIN_DESC_READ_PID38_ZERO, TIMEOUT),

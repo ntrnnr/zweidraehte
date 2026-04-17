@@ -58,14 +58,14 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
-    SystemBStackDefinition, create_system_b_objects_from_extension,
+    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
+    create_system_b_objects_from_extension,
 };
-use zweidraehte_proto::dpt::*;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
 use zweidraehte_platform::LinuxIpTransport;
+use zweidraehte_proto::dpt::*;
 
 // ============================================================================
 // Device Descriptor
@@ -547,18 +547,13 @@ pub type DemoPersistedState = <DemoState as HasPersistedState>::Persisted;
 /// If `persisted` is `None`, the state is initialized with factory defaults.
 pub struct DemoStateConfig {
     pub serial: [u8; 6],
-    pub fdsk: Option<[u8; 16]>,
     pub persisted: Option<DemoPersistedState>,
 }
 
 impl DemoStateConfig {
     /// Build config from a device identity and optional persisted snapshot.
     pub fn new(identity: &impl DeviceIdentity, persisted: Option<DemoPersistedState>) -> Self {
-        Self {
-            serial: *identity.serial_number(),
-            fdsk: identity.fdsk().copied(),
-            persisted,
-        }
+        Self { serial: *identity.serial_number(), persisted }
     }
 }
 
@@ -582,19 +577,20 @@ impl StackDefinition for DemoStack {
 
     fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = match config.fdsk {
-            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
-            None => StaticIdentity::new(config.serial),
-        };
+        let identity = StaticIdentity::new(config.serial);
         match config.persisted {
-            Some(persisted) => DemoState::from_persisted(&identity, persisted),
-            None => DemoState::new(&identity, comm_objs::DemoComObjects::new(), ()),
+            Some(persisted) => DemoState::from_persisted(identity, persisted, ()),
+            None => DemoState::new(identity, comm_objs::DemoComObjects::new(), (), ()),
         }
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

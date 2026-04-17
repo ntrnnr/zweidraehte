@@ -24,8 +24,8 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, HasPersistedState, IpAugmentFor, IpExtension, IpStateFor,
-        SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects_with_extra,
+        DefaultSystemBInterfaceObjects, HasPersistedState, IpAugmentFor, IpExtension, IpStateFor, SystemBMemoryMap,
+        SystemBStackDefinition, create_system_b_objects_with_extra,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -59,7 +59,6 @@ struct PicoWLightSwitch;
 /// State config: identity + optional persisted snapshot.
 pub struct PicoWStateConfig {
     pub serial: [u8; 6],
-    pub fdsk: Option<[u8; 16]>,
     pub persisted: Option<<PicoWState as HasPersistedState>::Persisted>,
 }
 
@@ -80,13 +79,10 @@ impl StackDefinition for PicoWLightSwitch {
 
     fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = match config.fdsk {
-            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
-            None => StaticIdentity::new(config.serial),
-        };
+        let identity = StaticIdentity::new(config.serial);
         match config.persisted {
-            Some(persisted) => PicoWState::from_persisted(&identity, persisted),
-            None => PicoWState::new(&identity, LightSwitchComObjects::new(), ()),
+            Some(persisted) => PicoWState::from_persisted(identity, persisted, ()),
+            None => PicoWState::new(identity, LightSwitchComObjects::new(), (), ()),
         }
     }
 
@@ -374,11 +370,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_config = PicoWStateConfig {
-        serial: *storage.identity().serial_number(),
-        fdsk: storage.identity().fdsk().copied(),
-        persisted,
-    };
+    let state_config = PicoWStateConfig { serial: *storage.identity().serial_number(), persisted };
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded

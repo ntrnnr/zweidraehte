@@ -23,11 +23,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 use crate::objects::interface::{
     AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment,
     PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,
 };
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 
 // ============================================================================
 // Default Value
@@ -78,8 +78,9 @@ pub struct Tp1ExtensionState {
 
 impl ExtensionState for Tp1ExtensionState {
     type Config = Tp1ExtensionConfig;
+    type Resources = ();
 
-    fn from_config(config: Tp1ExtensionConfig) -> Self {
+    fn from_config(config: Tp1ExtensionConfig, _resources: ()) -> Self {
         Self { max_retry_count: Cell::new(config.max_retry_count) }
     }
 

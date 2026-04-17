@@ -22,10 +22,11 @@ use const_default::ConstDefault;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     bcus::system_b::{MemoryLayout, Tp1SystemBDeviceState},
-    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     context::layer::LayerContext,
+    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
-    storage::StaticIdentity};
+    storage::StaticIdentity,
+};
 use zweidraehte_proto::AccessContext;
 
 // ============================================================================
@@ -45,9 +46,9 @@ use zweidraehte_proto::AccessContext;
 // This is achieved through the prepare_read and handle_write hooks.
 
 pub mod comm_objs {
-    use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
     use zweidraehte_device::ets::EtsComObjects;
     use zweidraehte_device::objects::comm::ComObject;
+    use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 
     // Use #[ets(manual_impl)] to provide our own ComObjects implementation with hooks
     #[derive(EtsComObjects)]
@@ -160,9 +161,9 @@ pub mod comm_objs {
 // Manual ComObjects implementation with custom hooks for shadow objects
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
 use core::cell::UnsafeCell;
-use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 use zweidraehte_device::objects::comm::{ComObjectInfo, ComObjectInfoMut};
 use zweidraehte_device::objects::tables::CommunicationObjectTable;
+use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 
 /// Hook context for conformance tests that provides access to the COT.
 ///
@@ -779,7 +780,7 @@ impl ConformanceState {
         app_table: Application<TestParameters>,
     ) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new());
+        let inner = InnerState::new(identity, ConformanceComObjects::new(), ConformanceHookContext::new(), ());
 
         // Set the conformance test individual address (1.0.1).
         inner.set_individual_address(IndividualAddress::new(1, 0, 1));
@@ -1292,9 +1293,7 @@ impl StackDefinition for IpcConformanceTestStack {
             ConformanceStateConfig::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
                 ConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
-            ConformanceStateConfig::Persisted(snapshot) => {
-                ConformanceState::from_persisted_snapshot(snapshot)
-            }
+            ConformanceStateConfig::Persisted(snapshot) => ConformanceState::from_persisted_snapshot(snapshot),
         }
     }
 
@@ -1408,11 +1407,9 @@ impl ConformanceState {
     /// Uses the stack's `from_persisted()` to reconstruct the inner
     /// device state (including auth keys, tables, load/run states),
     /// then restores the test memory regions.
-    pub fn from_persisted_snapshot(
-        snapshot: ConformancePersistedState,
-    ) -> Self {
+    pub fn from_persisted_snapshot(snapshot: ConformancePersistedState) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::from_persisted(&identity, snapshot.inner);
+        let inner = InnerState::from_persisted(identity, snapshot.inner, ());
 
         Self {
             inner,

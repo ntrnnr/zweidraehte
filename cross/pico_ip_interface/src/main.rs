@@ -89,7 +89,6 @@ struct PicoIpInterface;
 /// State config: identity + optional persisted snapshot.
 pub struct IpIfStateConfig {
     pub serial: [u8; 6],
-    pub fdsk: Option<[u8; 16]>,
     pub persisted: Option<<IpIfState as HasPersistedState>::Persisted>,
 }
 
@@ -119,13 +118,10 @@ impl StackDefinition for PicoIpInterface {
 
     fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = match config.fdsk {
-            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
-            None => StaticIdentity::new(config.serial),
-        };
+        let identity = StaticIdentity::new(config.serial);
         match config.persisted {
-            Some(persisted) => IpIfState::from_persisted(&identity, persisted),
-            None => IpIfState::new(&identity, IpInterfaceComObjects::new(), ()),
+            Some(persisted) => IpIfState::from_persisted(identity, persisted, ()),
+            None => IpIfState::new(identity, IpInterfaceComObjects::new(), (), ()),
         }
     }
 
@@ -395,11 +391,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_config = IpIfStateConfig {
-        serial: *storage.identity().serial_number(),
-        fdsk: storage.identity().fdsk().copied(),
-        persisted,
-    };
+    let state_config = IpIfStateConfig { serial: *storage.identity().serial_number(), persisted };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

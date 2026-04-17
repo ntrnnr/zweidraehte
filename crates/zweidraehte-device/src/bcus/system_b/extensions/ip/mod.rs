@@ -308,8 +308,9 @@ impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
 
 impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAPS> {
     type Config = PersistedIpConfig<N>;
+    type Resources = ();
 
-    fn from_config(config: PersistedIpConfig<N>) -> Self {
+    fn from_config(config: PersistedIpConfig<N>, _resources: ()) -> Self {
         let mut additional = heapless::Vec::<IndividualAddress, N>::new();
         for raw in config
             .additional_individual_addresses

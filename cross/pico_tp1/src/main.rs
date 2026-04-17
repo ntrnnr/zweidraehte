@@ -64,7 +64,6 @@ type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 /// State config: identity + optional persisted snapshot.
 pub struct PicoTp1StateConfig {
     pub serial: [u8; 6],
-    pub fdsk: Option<[u8; 16]>,
     pub persisted: Option<<PicoTp1State as HasPersistedState>::Persisted>,
 }
 
@@ -96,13 +95,10 @@ impl StackDefinition for PicoTp1LightSwitch {
 
     fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = match config.fdsk {
-            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
-            None => StaticIdentity::new(config.serial),
-        };
+        let identity = StaticIdentity::new(config.serial);
         match config.persisted {
-            Some(persisted) => PicoTp1State::from_persisted(&identity, persisted),
-            None => PicoTp1State::new(&identity, LightSwitchComObjects::new(), ()),
+            Some(persisted) => PicoTp1State::from_persisted(identity, persisted, ()),
+            None => PicoTp1State::new(identity, LightSwitchComObjects::new(), (), ()),
         }
     }
 
@@ -407,11 +403,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_config = PicoTp1StateConfig {
-        serial: *storage.identity().serial_number(),
-        fdsk: storage.identity().fdsk().copied(),
-        persisted,
-    };
+    let state_config = PicoTp1StateConfig { serial: *storage.identity().serial_number(), persisted };
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded

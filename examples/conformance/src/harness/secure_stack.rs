@@ -16,7 +16,7 @@ use zweidraehte_device::{
     StackDefinition,
     bcus::system_b::{
         DefaultSystemBInterfaceObjects, HasExtensionState, HasPersistedState, HasSecurityMode, PersistedState,
-        SecureExtensionConfig, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
+        SecureExtensionConfig, SecureResources, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
         create_system_b_objects_with_extra,
     },
     context::layer::LayerContext,
@@ -112,8 +112,14 @@ impl SecureConformanceState {
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
     ) -> Self {
-        let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let inner = SecureInnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new());
+        let identity = StaticSecureIdentity::new(SECURE_SERIAL_NUMBER, SECURE_FDSK);
+        let resources = SecureResources {
+            inner: (),
+            seq_storage: IpcSecureConformanceTestStack::create_seq_storage(),
+            fdsk: SECURE_FDSK,
+        };
+        let inner =
+            SecureInnerState::new(identity, ConformanceComObjects::new(), ConformanceHookContext::new(), resources);
 
         // Set the secure conformance test individual address (1.1.1 = 0x1101).
         inner.set_individual_address(IndividualAddress::new(1, 1, 1));
@@ -906,6 +912,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type LLB = super::ipc::IpcLinkLayerBuilder;
     type ES =
         SecureTp1ExtensionState<ShmSeqStorage, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
+    type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
     type StateConfig = SecureConformanceStateConfig;
     type Mem = ConformanceMemoryMap;
@@ -973,15 +980,6 @@ const SEQ_MAGIC: [u8; 4] = *b"SEQ\0";
 // SAFETY: The embassy executor is single-threaded — no concurrent access.
 unsafe impl Send for ShmSeqStorage {}
 unsafe impl Sync for ShmSeqStorage {}
-
-/// Default creates a null-pointer storage that panics on use.
-/// Call `set_seq_storage()` on the extension state to inject the
-/// real storage after `SystemBDeviceState` construction.
-impl Default for ShmSeqStorage {
-    fn default() -> Self {
-        Self { ptr: core::ptr::null_mut() }
-    }
-}
 
 impl ShmSeqStorage {
     /// Create from a raw pointer to the 16-byte seq region in shared memory.
@@ -1209,9 +1207,9 @@ impl SecureConformancePersistedState {
 
 impl SecureConformanceState {
     pub fn from_persisted_snapshot(snapshot: SecureConformancePersistedState, seq_storage: ShmSeqStorage) -> Self {
-        let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let inner = SecureInnerState::from_persisted(&identity, snapshot.inner);
-        inner.extension_state().set_seq_storage(seq_storage);
+        let identity = StaticSecureIdentity::new(SECURE_SERIAL_NUMBER, SECURE_FDSK);
+        let resources = SecureResources { inner: (), seq_storage, fdsk: SECURE_FDSK };
+        let inner = SecureInnerState::from_persisted(identity, snapshot.inner, resources);
 
         // Seed per-peer receiving sequence numbers from SIAT entries into
         // the wear-resistant storage. This ensures that seqnrs written by

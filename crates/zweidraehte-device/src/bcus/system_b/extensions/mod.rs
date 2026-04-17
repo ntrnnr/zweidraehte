@@ -15,15 +15,13 @@ mod ip;
 pub use ip::*;
 
 pub mod operation_mode;
-pub use operation_mode::{
-    DiagnosticsAugment, DiagnosticsContext, HasDiagnosticsContext, OperationModeState,
-};
+pub use operation_mode::{DiagnosticsAugment, DiagnosticsContext, HasDiagnosticsContext, OperationModeState};
 
 pub mod security;
 pub use security::{
-    HasSecurityState, HasSeqStorage, SecureExtensionConfig, SecureExtensionState, SecureTp1DeviceState,
-    SecureTp1ExtensionState, SecurityAugment, SecurityExtensionConfig, SecurityFailureType, SecurityFailuresLog,
-    SecurityState, SecurityTable,
+    HasSecurityState, HasSeqStorage, SecureExtensionConfig, SecureExtensionState, SecureResources,
+    SecureTp1DeviceState, SecureTp1ExtensionState, SecurityAugment, SecurityExtensionConfig, SecurityFailureType,
+    SecurityFailuresLog, SecurityState, SecurityTable,
 };
 #[cfg(feature = "knxip")]
 pub use security::{SecureIpDeviceState, SecureIpExtensionState};

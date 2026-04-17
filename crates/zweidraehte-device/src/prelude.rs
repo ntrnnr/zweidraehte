@@ -5,9 +5,11 @@
 //! ```
 
 // Core stack
-pub use crate::{ HasAuthorization, HasPersistence, HasSecureIdentity, InsecureDeviceBuilder,
-    ReadObjectError, Runner, SecureDeviceBuilder, Stack, StackDefinition, StackResources,
-    StackState, StandardDeviceLayers, StandardLayerStack, StandardSecureDeviceLayers, UpdateObjectError};
+pub use crate::{
+    HasAuthorization, HasPersistence, HasSecureIdentity, InsecureDeviceBuilder, ReadObjectError, Runner,
+    SecureDeviceBuilder, Stack, StackDefinition, StackResources, StackState, StandardDeviceLayers, StandardLayerStack,
+    StandardSecureDeviceLayers, UpdateObjectError,
+};
 use zweidraehte_proto::AccessContext;
 
 // KNX/IP-specific types
@@ -39,9 +41,7 @@ pub use crate::objects::interface::{
 };
 
 // Application-layer capabilities (augments and services call these)
-pub use crate::layers::application::capabilities::{
-    GroupValueAddressedSender, GroupValueEncoding, GroupValueSender,
-};
+pub use crate::layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender};
 
 // Table accessor traits
 pub use crate::objects::tables::{
@@ -53,7 +53,9 @@ pub use crate::objects::tables::{
 pub use crate::objects::tables::{ComObjectFlags, LoadEvent, RunEvent, Table, TableMemory};
 
 // Storage and identity
-pub use crate::storage::{DeviceIdentity, DeviceStorage, NoStorage, StaticIdentity};
+pub use crate::storage::{
+    DeviceIdentity, DeviceStorage, NoStorage, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity,
+};
 
 // Memory
 pub use crate::memory::{MemoryError, MemoryMap, NoMemoryMap};

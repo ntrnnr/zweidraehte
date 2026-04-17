@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
 use crate::objects::tables::LoadState;
+use crate::restart::EraseCode;
 use crate::storage::SequenceNumberStorage;
 use crate::{StackDefinition, StackState};
 
@@ -751,10 +752,14 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
     }
 }
 
-impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for SecurityState<GRP, P2P, GO> {
-    type Config = SecurityExtensionConfig<GRP, P2P, GO>;
-
-    fn from_config(config: SecurityExtensionConfig<GRP, P2P, GO>) -> Self {
+// Inherent construction / conversion methods.
+//
+// `SecurityState` is never used as a top-level `ExtensionState` — it is
+// always nested inside `SecureExtensionState`. Keeping these as inherent
+// methods (rather than an `ExtensionState` impl) avoids pulling the trait
+// machinery (including `Resources`) into a type that doesn't need it.
+impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P, GO> {
+    pub fn from_config(config: SecurityExtensionConfig<GRP, P2P, GO>) -> Self {
         Self {
             security_mode_enabled: Cell::new(config.security_mode_enabled),
             tool_key: Cell::new(config.tool_key),
@@ -769,7 +774,7 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
         }
     }
 
-    fn to_config(&self) -> SecurityExtensionConfig<GRP, P2P, GO> {
+    pub fn to_config(&self) -> SecurityExtensionConfig<GRP, P2P, GO> {
         SecurityExtensionConfig {
             security_mode_enabled: self.security_mode_enabled.get(),
             tool_key: self.tool_key.get(),
@@ -784,32 +789,13 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionState for Sec
         }
     }
 
-    fn seed_tool_key_from_fdsk(&self, fdsk: Option<[u8; 16]>) {
-        // Only seed FDSK when the tool key is actually zero — either
-        // on a factory-fresh device (where `from_config` loaded the
-        // default zero key) or immediately after `factory_reset()`
-        // (which wipes the key). A persisted config that already
-        // carries a non-zero `tool_key` means ETS previously wrote
-        // one, so we keep it (spec 03/05/01 §6.1.4: the FDSK is only
-        // the initial tool key; a subsequent write replaces it).
-        if let Some(key) = fdsk {
-            if self.tool_key.get() == [0u8; 16] {
-                self.tool_key.set(key);
-            }
-        }
-    }
-
-    fn on_erase(&self, code: crate::restart::EraseCode) {
-        use crate::restart::EraseCode;
-        match code {
-            EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA => {
-                self.factory_reset();
-            }
-            EraseCode::ResetLinks => {
-                self.clear_security_report();
-            }
-            _ => {}
-        }
+    /// Revert the active tool key to the FDSK.
+    ///
+    /// Called from `SystemBDeviceState::factory_reset` after the erase
+    /// pass has zeroed the key. Spec 03/05/01 §6.1.4 mandates that the
+    /// FDSK becomes the active tool key again after a factory reset.
+    pub fn reset_tool_key_to_fdsk(&self, fdsk: [u8; 16]) {
+        self.tool_key.set(fdsk);
     }
 }
 
@@ -855,6 +841,14 @@ pub struct SecureExtensionState<Inner: ExtensionState, SEQ, const GRP: usize, co
     /// `RefCell` for interior mutability since both read and write
     /// through shared references.
     pub seq_storage: RefCell<SEQ>,
+    /// Factory Default Setup Key.
+    ///
+    /// This is the *only* live copy of the FDSK in the device state.
+    /// It is consumed from [`SecureResources`] at construction and
+    /// re-applied to the security store on every factory reset
+    /// (03/05/01 §6.1.4). `SystemBDeviceState` does not duplicate it;
+    /// [`HasSecureIdentity::fdsk`] on the device state forwards here.
+    fdsk: [u8; 16],
 }
 
 /// `SecureExtensionState` delegates `HasSecurityState` to its inner
@@ -942,29 +936,53 @@ impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO:
 {
 }
 
-impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize>
-    SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
-{
-    /// Replace the sequence number storage backend.
-    ///
-    /// Call this after `SystemBDeviceState::new()` or `from_persisted()` to
-    /// inject a platform-specific storage that requires runtime construction
-    /// (e.g., a shared memory pointer or flash handle).
-    pub fn set_seq_storage(&self, storage: SEQ) {
-        *self.seq_storage.borrow_mut() = storage;
-    }
+/// Non-serialisable construction inputs for [`SecureExtensionState`].
+///
+/// Bundles the sequence-number storage handle (typically a platform-
+/// owned resource such as shared memory or a flash sector mapping) with
+/// the Factory Default Setup Key that must be baked into the initial
+/// tool key. Both are required at construction time; carrying them
+/// through [`ExtensionState::Resources`] removes the need for any
+/// post-construction setters.
+///
+/// `fdsk` is non-optional here: if you are building a
+/// `SecureExtensionState`, you are building a Data Secure device, and
+/// a Data Secure device has an FDSK. The type system enforces this via
+/// the [`SecureDeviceIdentity`](crate::storage::SecureDeviceIdentity)
+/// bound at the device-state construction site.
+pub struct SecureResources<Inner: ExtensionState, SEQ> {
+    /// Inner extension's own resources (e.g. `()` for TP1).
+    pub inner: Inner::Resources,
+    /// Sequence-number storage handle (see [`SequenceNumberStorage`]).
+    pub seq_storage: SEQ,
+    /// Factory Default Setup Key. Becomes the initial tool key on a
+    /// factory-fresh device and is re-applied by `factory_reset`.
+    pub fdsk: [u8; 16],
 }
 
-impl<Inner: ExtensionState, SEQ: Default + SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
+impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
     ExtensionState for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 {
     type Config = SecureExtensionConfig<Inner::Config, GRP, P2P, GO>;
+    type Resources = SecureResources<Inner, SEQ>;
 
-    fn from_config(config: Self::Config) -> Self {
+    fn from_config(config: Self::Config, resources: Self::Resources) -> Self {
+        let security = SecurityState::from_config(config.security);
+        // A factory-fresh device (or one that just came out of
+        // `factory_reset`) carries a zero tool key in its config; seed
+        // the FDSK here so the device starts life with FDSK as the
+        // active tool key (spec 03/05/01 §6.1.4). If the persisted
+        // config already holds a non-zero key, ETS has written one and
+        // we keep it.
+        if security.tool_key() == [0u8; 16] {
+            security.reset_tool_key_to_fdsk(resources.fdsk);
+        }
+
         Self {
-            inner: Inner::from_config(config.inner),
-            security: SecurityState::from_config(config.security),
-            seq_storage: RefCell::new(SEQ::default()),
+            inner: Inner::from_config(config.inner, resources.inner),
+            security,
+            seq_storage: RefCell::new(resources.seq_storage),
+            fdsk: resources.fdsk,
         }
     }
 
@@ -972,12 +990,18 @@ impl<Inner: ExtensionState, SEQ: Default + SequenceNumberStorage, const GRP: usi
         SecureExtensionConfig { inner: self.inner.to_config(), security: self.security.to_config() }
     }
 
-    fn on_erase(&self, code: crate::restart::EraseCode) {
-        use crate::restart::EraseCode;
+    fn on_erase(&self, code: EraseCode) {
         match code {
             EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA => {
                 self.inner.on_erase(code);
                 self.security.factory_reset();
+
+                // Spec 03/05/01 §6.1.4: after a factory reset, the FDSK
+                // becomes the active tool key again. The extension owns
+                // its own copy of the FDSK (moved in via
+                // `SecureResources`), so it can self-reset without any
+                // parameter plumbing from `SystemBDeviceState`.
+                self.security.reset_tool_key_to_fdsk(self.fdsk);
 
                 // Per spec 03/05/01 §6.1.4 + AN194: tool sending SeqNr
                 // is re-initialised on factory reset only when the stored
@@ -993,8 +1017,7 @@ impl<Inner: ExtensionState, SEQ: Default + SequenceNumberStorage, const GRP: usi
                 const REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
                 let mut storage = self.seq_storage.borrow_mut();
                 if let Ok((regular, tool)) = storage.load_sending_seqs() {
-                    let tool_u64 =
-                        u64::from_be_bytes([0, 0, tool[0], tool[1], tool[2], tool[3], tool[4], tool[5]]);
+                    let tool_u64 = u64::from_be_bytes([0, 0, tool[0], tool[1], tool[2], tool[3], tool[4], tool[5]]);
                     if tool_u64 >= THRESHOLD {
                         let _ = storage.save_sending_seqs(&regular, &REINIT_VALUE);
                     }
@@ -1005,11 +1028,6 @@ impl<Inner: ExtensionState, SEQ: Default + SequenceNumberStorage, const GRP: usi
             }
             _ => {}
         }
-    }
-
-    fn seed_tool_key_from_fdsk(&self, fdsk: Option<[u8; 16]>) {
-        self.inner.seed_tool_key_from_fdsk(fdsk);
-        self.security.seed_tool_key_from_fdsk(fdsk);
     }
 }
 
@@ -1037,7 +1055,7 @@ impl<Inner, Platform, SEQ, const GRP: usize, const P2P: usize, const GO: usize> 
     for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 where
     Inner: Extension<Platform>,
-    SEQ: SequenceNumberStorage + Default,
+    SEQ: SequenceNumberStorage,
 {
     type Augment<'a, D: StackDefinition>
         = (Inner::Augment<'a, D>, SecurityAugment<'a, SEQ, GRP, P2P, GO>)

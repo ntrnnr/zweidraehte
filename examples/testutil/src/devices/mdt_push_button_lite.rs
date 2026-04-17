@@ -14,16 +14,16 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
-    SystemBStackDefinition, create_system_b_objects_from_extension,
+    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
+    create_system_b_objects_from_extension,
 };
-use zweidraehte_proto::dpt::*;
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
 use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use zweidraehte_knxprod::ets_pages;
+use zweidraehte_proto::dpt::*;
 
 // ============================================================================
 // Device Descriptor
@@ -3215,18 +3215,13 @@ pub type MdtPersistedState = <MdtState as HasPersistedState>::Persisted;
 /// Configuration for constructing `MdtState` inside the runner.
 pub struct MdtStateConfig {
     pub serial: [u8; 6],
-    pub fdsk: Option<[u8; 16]>,
     pub persisted: Option<MdtPersistedState>,
 }
 
 impl MdtStateConfig {
     /// Build config from a device identity and optional persisted snapshot.
     pub fn new(identity: &impl DeviceIdentity, persisted: Option<MdtPersistedState>) -> Self {
-        Self {
-            serial: *identity.serial_number(),
-            fdsk: identity.fdsk().copied(),
-            persisted,
-        }
+        Self { serial: *identity.serial_number(), persisted }
     }
 }
 
@@ -3250,19 +3245,20 @@ impl StackDefinition for MdtStack {
 
     fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = match config.fdsk {
-            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
-            None => StaticIdentity::new(config.serial),
-        };
+        let identity = StaticIdentity::new(config.serial);
         match config.persisted {
-            Some(persisted) => MdtState::from_persisted(&identity, persisted),
-            None => MdtState::new(&identity, comm_objs::MdtComObjects::new(), ()),
+            Some(persisted) => MdtState::from_persisted(identity, persisted, ()),
+            None => MdtState::new(identity, comm_objs::MdtComObjects::new(), (), ()),
         }
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {

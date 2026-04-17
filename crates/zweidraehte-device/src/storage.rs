@@ -2,9 +2,11 @@
 //!
 //! This module provides:
 //!
-//! - [`DeviceIdentity`] — read-only, factory-programmed data (serial number,
-//!   future: FDSK, MAC address)
-//! - [`StaticIdentity`] — compile-time constant identity for demos/testing
+//! - [`DeviceIdentity`] — read-only, factory-programmed data (serial number)
+//! - [`SecureDeviceIdentity`] — extension trait for Data Secure devices,
+//!   adding the Factory Default Setup Key (FDSK)
+//! - [`StaticIdentity`] / [`StaticSecureIdentity`] — compile-time constant
+//!   identities for demos/testing
 //! - [`DeviceStorage`] — trait for persisting device state to various backends
 //!   (flash, EEPROM, filesystem, etc.)
 //! - [`NoStorage`] — null implementation for devices without persistence
@@ -36,18 +38,24 @@ use crate::bcus::system_b::HasPersistedState;
 pub trait DeviceIdentity {
     /// Get the factory-programmed serial number.
     fn serial_number(&self) -> &[u8; 6];
+}
 
-    /// Get the Factory Default Setup Key (FDSK) for KNX Data Secure.
-    ///
-    /// The FDSK is a 16-byte key programmed at the factory and printed
-    /// on the device label. It is used as the initial tool key for the
-    /// first ETS commissioning session. After ETS writes a new tool key
-    /// (PID 56), the FDSK is no longer used for authentication.
-    ///
-    /// Returns `None` for devices without Data Secure support.
-    fn fdsk(&self) -> Option<&[u8; 16]> {
-        None
-    }
+/// Identity extension for KNX Data Secure devices.
+///
+/// Implemented only by identity types that carry a Factory Default Setup
+/// Key (FDSK). The FDSK is a 16-byte key programmed at the factory and
+/// printed on the device label. It acts as the initial tool key for the
+/// first ETS commissioning session; after ETS writes a new tool key (PID
+/// 56), the FDSK is no longer used for authentication but is re-applied
+/// on factory reset (03/05/01 §6.1.4).
+///
+/// The trait is separate from [`DeviceIdentity`] so the type system can
+/// distinguish secure from non-secure devices: a secure stack can bound
+/// on `I: SecureDeviceIdentity` and be guaranteed an FDSK without any
+/// runtime `Option`.
+pub trait SecureDeviceIdentity: DeviceIdentity {
+    /// Get the Factory Default Setup Key.
+    fn fdsk(&self) -> &[u8; 16];
 }
 
 /// Compile-time constant identity for demos and testing.
@@ -57,27 +65,23 @@ pub trait DeviceIdentity {
 /// serial. Not suitable for production where each physical device must
 /// have a unique serial number.
 ///
+/// For Data Secure devices, use [`StaticSecureIdentity`] instead.
+///
 /// # Example
 ///
 /// ```rust,ignore
 /// const SERIAL: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
 /// let identity = StaticIdentity::new(SERIAL);
-/// let state = SystemBDeviceState::new(&identity);
+/// let state = SystemBDeviceState::new(identity, /* ... */);
 /// ```
 pub struct StaticIdentity {
     serial_number: [u8; 6],
-    fdsk: Option<[u8; 16]>,
 }
 
 impl StaticIdentity {
     /// Create a new static identity with the given serial number.
     pub const fn new(serial_number: [u8; 6]) -> Self {
-        Self { serial_number, fdsk: None }
-    }
-
-    /// Create a new static identity with serial number and FDSK.
-    pub const fn with_fdsk(serial_number: [u8; 6], fdsk: [u8; 16]) -> Self {
-        Self { serial_number, fdsk: Some(fdsk) }
+        Self { serial_number }
     }
 }
 
@@ -85,9 +89,36 @@ impl DeviceIdentity for StaticIdentity {
     fn serial_number(&self) -> &[u8; 6] {
         &self.serial_number
     }
+}
 
-    fn fdsk(&self) -> Option<&[u8; 16]> {
-        self.fdsk.as_ref()
+/// Compile-time constant identity for Data Secure demos and testing.
+///
+/// Bundles a serial number with an FDSK. Implements both
+/// [`DeviceIdentity`] and [`SecureDeviceIdentity`] so it can be used
+/// anywhere an `I: DeviceIdentity` is accepted *and* satisfies the
+/// stronger `I: SecureDeviceIdentity` bound required by the secure
+/// extension state.
+pub struct StaticSecureIdentity {
+    serial_number: [u8; 6],
+    fdsk: [u8; 16],
+}
+
+impl StaticSecureIdentity {
+    /// Create a new static secure identity with serial number and FDSK.
+    pub const fn new(serial_number: [u8; 6], fdsk: [u8; 16]) -> Self {
+        Self { serial_number, fdsk }
+    }
+}
+
+impl DeviceIdentity for StaticSecureIdentity {
+    fn serial_number(&self) -> &[u8; 6] {
+        &self.serial_number
+    }
+}
+
+impl SecureDeviceIdentity for StaticSecureIdentity {
+    fn fdsk(&self) -> &[u8; 16] {
+        &self.fdsk
     }
 }
 

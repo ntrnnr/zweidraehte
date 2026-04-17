@@ -13,7 +13,8 @@ use core::cell::{Cell, RefCell};
 
 use const_default::ConstDefault;
 
-use crate::{ StackDefinition, StackState,
+use crate::{
+    HasAuthorization, HasPersistence, HasSecureIdentity, StackDefinition, StackState,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
         comm::{ComObjects, HasCommObjects},
@@ -26,11 +27,14 @@ use crate::{ StackDefinition, StackState,
             asso6::AssoTab6Impl,
             co7::CoTab7Impl,
         },
-    }};
-use zweidraehte_proto::AccessContext;
+    },
+    prelude::SecureDeviceIdentity,
+    restart::{EraseCode, RestartError, RestartHandler},
+};
 use zweidraehte_proto::MAX_ACCESS_LEVELS;
 use zweidraehte_proto::NUM_AUTH_KEYS;
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
 use super::{
     DiagnosticsContext, ExtensionState, HasDiagnosticsContext, HasPersistedState, HasSecurityMode, OperationModeState,
@@ -111,18 +115,15 @@ pub struct SystemBDeviceState<
     /// Individual address.
     individual_address: Cell<IndividualAddress>,
 
-    /// Device serial number (6 bytes).
+    /// Factory-programmed device identity.
     ///
-    /// Factory-programmed, unique per physical device.
-    /// Format: 2 bytes manufacturer ID + 4 bytes device-specific.
-    serial_number: [u8; 6],
-
-    /// Factory Default Setup Key (FDSK) for KNX Data Secure (16 bytes).
-    ///
-    /// Factory-programmed, printed on the device label. Used as the
-    /// initial tool key before ETS writes a new one. `None` for devices
-    /// without Data Secure support.
-    fdsk: Option<[u8; 16]>,
+    /// Owns the serial number and, for Data Secure devices, the FDSK —
+    /// the latter is accessed via the
+    /// [`SecureDeviceIdentity`](crate::storage::SecureDeviceIdentity)
+    /// extension trait and surfaces through the state's
+    /// [`HasSecureIdentity`](crate::HasSecureIdentity) impl only when
+    /// `D::Identity` implements it.
+    identity: D::Identity,
 
     /// Authorization keys for levels 0-2.
     auth_keys: RefCell<[[u8; 4]; NUM_AUTH_KEYS]>,
@@ -239,28 +240,36 @@ impl<
     /// - Auth keys: All set to `[0xFF, 0xFF, 0xFF, 0xFF]` (default key)
     /// - Routing count: 6 (default per KNX spec)
     /// - All tables: Unloaded
-    /// - Extension state: Factory defaults via `ES::from_config(Default::default())`
+    /// - Extension state: Factory defaults via
+    ///   `ES::from_config(Default::default(), resources)`.
     ///
     /// # Arguments
     ///
-    /// - `identity`: Factory-programmed device identity (serial number, etc.)
+    /// - `identity`: Factory-programmed device identity (serial number is
+    ///   copied out; the FDSK, if present, travels separately through
+    ///   `extension_resources`).
     /// - `comm_objs`: Communication objects (group object values + status)
     /// - `hook_context`: Hook context for comm object callbacks
+    /// - `extension_resources`: Non-serialisable resources required by
+    ///   the extension state. `()` for non-secure devices;
+    ///   [`SecureResources`] for Data Secure devices — the FDSK lives in
+    ///   there and the secure extension seeds the initial tool key from
+    ///   it during `from_config`.
+    ///
+    /// [`SecureResources`]: crate::bcus::system_b::extensions::security::SecureResources
     pub fn new(
-        identity: &impl DeviceIdentity,
+        identity: D::Identity,
         comm_objs: D::CO,
         hook_context: <D::CO as ComObjects>::HookContext,
+        extension_resources: ES::Resources,
     ) -> Self {
-        let fdsk = identity.fdsk().copied();
-        let extension_state = ES::from_config(ES::Config::default());
-        // A factory-fresh device starts with FDSK as the active tool
-        // key (spec 03/05/01 §6.1.4: the FDSK is active until the MaC
-        // writes a new tool key). Non-secure extensions ignore this.
-        extension_state.seed_tool_key_from_fdsk(fdsk);
+        // Extension is fully initialised in a single call — the FDSK (if
+        // any) lives in `extension_resources` and gets baked into the
+        // initial tool key by the secure extension's `from_config`.
+        let extension_state = ES::from_config(ES::Config::default(), extension_resources);
         Self {
             individual_address: Cell::new(IndividualAddress::new(15, 15, 255)),
-            serial_number: *identity.serial_number(),
-            fdsk,
+            identity,
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
             programming_mode: Cell::new(false),
@@ -396,11 +405,11 @@ impl<
 
     /// Perform a full factory reset (everything except serial number).
     ///
-    /// Also resets the link-layer state to factory defaults. The active
-    /// security tool key is restored to the device's FDSK
-    /// (spec 03/05/01 §6.1.4) — the extension state's `on_erase` wipes
-    /// the negotiated key, then `seed_tool_key_from_fdsk` re-applies the
-    /// factory-default. Non-secure extensions ignore the seed call.
+    /// Also resets the link-layer state to factory defaults. For Data
+    /// Secure devices the extension's `on_erase(FactoryReset)` both
+    /// wipes the negotiated tool key and re-seeds it from the FDSK the
+    /// extension owns (03/05/01 §6.1.4); non-secure extensions just
+    /// reset their own state and ignore the security concern entirely.
     pub fn factory_reset(&self) {
         self.reset_individual_address();
         self.reset_all_tables();
@@ -410,8 +419,7 @@ impl<
         self.programming_mode.set(false);
         *self.pei.borrow_mut() = PeiApplication::new();
         *self.pei_program_version.borrow_mut() = [0; 5];
-        self.extension_state.on_erase(crate::restart::EraseCode::FactoryReset);
-        self.extension_state.seed_tool_key_from_fdsk(self.fdsk);
+        self.extension_state.on_erase(EraseCode::FactoryReset);
         self.mark_dirty();
     }
 
@@ -472,9 +480,21 @@ impl<
     /// Restore device state from a persisted snapshot.
     ///
     /// Comm objects are runtime-only (not persisted) and are created fresh.
+    ///
+    /// # Arguments
+    ///
+    /// - `identity`: Device identity (serial number is copied out).
+    /// - `persisted`: Previously serialised state.
+    /// - `extension_resources`: Non-serialisable resources for the
+    ///   extension state — see [`Self::new`] for details. Secure devices
+    ///   pass a [`SecureResources`] carrying the FDSK and sequence-number
+    ///   storage handle.
+    ///
+    /// [`SecureResources`]: crate::bcus::system_b::extensions::security::SecureResources
     pub fn from_persisted(
-        identity: &impl DeviceIdentity,
+        identity: D::Identity,
         persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
+        extension_resources: ES::Resources,
     ) -> Self {
         let PersistedState {
             individual_address,
@@ -493,8 +513,7 @@ impl<
 
         Self {
             individual_address: Cell::new(individual_address),
-            serial_number: *identity.serial_number(),
-            fdsk: identity.fdsk().copied(),
+            identity,
             auth_keys: RefCell::new(auth_keys),
             routing_count: Cell::new(routing_count),
             programming_mode: Cell::new(false),
@@ -509,7 +528,7 @@ impl<
             co_hook_context: Default::default(),
             operation_mode: OperationModeState::new(30),
             access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
-            extension_state: ES::from_config(extension_config),
+            extension_state: ES::from_config(extension_config, extension_resources),
             dirty: Cell::new(false),
             dm_slot: DmNotificationSlot::new(),
         }
@@ -519,8 +538,6 @@ impl<
 // ============================================================================
 // RestartHandler Implementation
 // ============================================================================
-
-use crate::restart::{EraseCode, RestartError, RestartHandler};
 
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
     RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
@@ -610,7 +627,7 @@ impl<
     }
 
     fn serial_number(&self) -> &[u8; 6] {
-        &self.serial_number
+        self.identity.serial_number()
     }
 
     fn is_programming_mode(&self) -> bool {
@@ -639,7 +656,7 @@ impl<
 // ============================================================================
 
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
-    crate::HasPersistence for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
+    HasPersistence for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
     fn mark_dirty(&self) {
         SystemBDeviceState::mark_dirty(self);
@@ -650,11 +667,26 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 // HasSecureIdentity Implementation
 // ============================================================================
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
-    crate::HasSecureIdentity for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
+// `HasSecureIdentity` is implemented only when the stack's identity
+// type carries an FDSK — i.e. implements `SecureDeviceIdentity`.
+// Non-secure stacks (whose `D::Identity` is e.g. `StaticIdentity`) do
+// not get this impl, and the secure application layer's
+// `D::State: HasSecureIdentity` bound statically rejects them. This
+// keeps the FDSK a type-level property of the stack rather than a
+// runtime `Option` that everyone has to carry.
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: StackDefinition,
+    ES: ExtensionState,
+    const MAX_CONN: usize,
+> HasSecureIdentity for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
+where
+    D::Identity: SecureDeviceIdentity,
 {
     fn fdsk(&self) -> Option<&[u8; 16]> {
-        self.fdsk.as_ref()
+        Some(<D::Identity as SecureDeviceIdentity>::fdsk(&self.identity))
     }
 }
 
@@ -663,7 +695,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 // ============================================================================
 
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
-    crate::HasAuthorization for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
+    HasAuthorization for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
     fn max_access_levels(&self) -> u8 {
         MAX_ACCESS_LEVELS as u8
@@ -848,13 +880,13 @@ impl<
     D: StackDefinition,
     ES: ExtensionState,
     const MAX_CONN: usize,
-> zweidraehte_proto::HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
+> HasConnectionAuth for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
-    fn connection_access(&self, slot: u8) -> zweidraehte_proto::AccessContext {
+    fn connection_access(&self, slot: u8) -> AccessContext {
         self.access_store.get(slot)
     }
 
-    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_proto::AccessContext) {
+    fn set_connection_access(&self, slot: u8, ctx: AccessContext) {
         self.access_store.set(slot, ctx);
     }
 

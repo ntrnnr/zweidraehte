@@ -24,6 +24,7 @@ use crate::{
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
     state::CoreDeviceState,
+    storage::{DeviceIdentity, StaticIdentity},
 };
 use zweidraehte_proto::access::HasConnectionAuth;
 
@@ -192,6 +193,17 @@ pub trait StackDefinition: Copy + 'static {
     /// For System B devices, use [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)
     /// or [`IpSystemBDeviceState`](crate::bcus::system_b::IpSystemBDeviceState).
     type State: CoreDeviceState<Self::CO>;
+
+    /// Factory-programmed device identity type.
+    ///
+    /// Owned by the device state and threaded through constructors.
+    /// Use [`StaticIdentity`] for non-secure devices. For Data Secure
+    /// devices, set this to a type that implements
+    /// [`SecureDeviceIdentity`](crate::storage::SecureDeviceIdentity)
+    /// — e.g. [`StaticSecureIdentity`](crate::storage::StaticSecureIdentity)
+    /// — so the `HasSecureIdentity` impl on the device state picks up
+    /// the FDSK accessor.
+    type Identity: DeviceIdentity = StaticIdentity;
 
     /// Configuration needed to construct the device state.
     ///

@@ -35,13 +35,17 @@ use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    StackDefinition,
     objects::tables::{
         Table,
         addr7::AddrTab7Impl,
         app::{Application, PeiApplication},
         asso6::AssoTab6Impl,
         co7::CoTab7Impl,
-    }};
+    },
+    prelude::InterfaceObjectAugment,
+    restart::EraseCode,
+};
 use zweidraehte_proto::address::IndividualAddress;
 
 use crate::storage::DeviceIdentity;
@@ -100,8 +104,22 @@ pub trait ExtensionState: Sized {
     /// The serializable config type for this extension state.
     type Config: ExtensionConfig;
 
-    /// Create runtime state from a persisted config.
-    fn from_config(config: Self::Config) -> Self;
+    /// Non-serialisable construction inputs.
+    ///
+    /// Bundles platform-owned handles (sequence-number storage), keys
+    /// that must be baked into the extension at construction time (the
+    /// FDSK for secure extensions), and similar resources that cannot
+    /// live in [`Self::Config`] because they do not round-trip through
+    /// serde. Extensions without such resources use `()`.
+    type Resources;
+
+    /// Create runtime state from a persisted config and construction-time
+    /// resources.
+    ///
+    /// Callers construct `Resources` once and hand ownership over; the
+    /// extension is fully valid the moment this call returns — no
+    /// post-construction setters.
+    fn from_config(config: Self::Config, resources: Self::Resources) -> Self;
 
     /// Export current runtime state to serializable config.
     fn to_config(&self) -> Self::Config;
@@ -110,16 +128,10 @@ pub trait ExtensionState: Sized {
     ///
     /// Extensions decide per-code what to clear. Called from
     /// `SystemBDeviceState` during `factory_reset()` and `execute_reset()`.
+    /// Secure extensions fold the FDSK tool-key re-seed into the
+    /// `FactoryReset` arm so the caller does not need to know about it
+    /// (03/05/01 §6.1.4).
     fn on_erase(&self, code: crate::restart::EraseCode);
-
-    /// Re-seed any negotiated security tool key from the device's FDSK
-    /// (`DeviceIdentity::fdsk()`). Called by `SystemBDeviceState::new`
-    /// (so a factory-fresh device starts with FDSK as the active tool
-    /// key) and by `factory_reset()` (so the FDSK becomes active again
-    /// after a reset, per spec 03/05/01 §6.1.4).
-    ///
-    /// Default: no-op. Extensions with security state override this.
-    fn seed_tool_key_from_fdsk(&self, _fdsk: Option<[u8; 16]>) {}
 }
 
 /// Whether the device's Security Mode is currently enabled.
@@ -151,19 +163,19 @@ pub trait HasSecurityMode {
     fn has_group_key(&self, _tsap: u16) -> bool {
         false
     }
-
 }
 
 impl HasSecurityMode for () {}
 
 impl ExtensionState for () {
     type Config = ();
+    type Resources = ();
 
-    fn from_config(_config: ()) -> Self {}
+    fn from_config(_config: (), _resources: ()) -> Self {}
 
     fn to_config(&self) {}
 
-    fn on_erase(&self, _code: crate::restart::EraseCode) {
+    fn on_erase(&self, _code: EraseCode) {
         // No extension state to reset.
     }
 }
@@ -199,24 +211,24 @@ pub trait Extension<Platform = ()>: ExtensionState {
     /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
     /// For IP: `IpAugment<'a, P, N>` (wraps extension + platform).
     /// For `()`: `()` (no augmentation).
-    type Augment<'a, D: crate::StackDefinition>: crate::objects::interface::InterfaceObjectAugment<D>
+    type Augment<'a, D: StackDefinition>: InterfaceObjectAugment<D>
     where
         Self: 'a,
         Platform: 'a;
 
     /// Create the augment from this extension state and the platform.
-    fn create_augment<'a, D: crate::StackDefinition>(&'a self, platform: &'a Platform) -> Self::Augment<'a, D>
+    fn create_augment<'a, D: StackDefinition>(&'a self, platform: &'a Platform) -> Self::Augment<'a, D>
     where
         Platform: 'a;
 }
 
 impl Extension<()> for () {
-    type Augment<'a, D: crate::StackDefinition>
+    type Augment<'a, D: StackDefinition>
         = ()
     where
         Self: 'a;
 
-    fn create_augment<'a, D: crate::StackDefinition>(&'a self, _platform: &'a ()) -> Self::Augment<'a, D>
+    fn create_augment<'a, D: StackDefinition>(&'a self, _platform: &'a ()) -> Self::Augment<'a, D>
     where
         (): 'a,
     {

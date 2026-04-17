@@ -70,7 +70,6 @@ struct PicoEthLightSwitch;
 /// State config: identity + optional persisted snapshot.
 pub struct PicoEthStateConfig {
     pub serial: [u8; 6],
-    pub fdsk: Option<[u8; 16]>,
     pub persisted: Option<<PicoEthState as HasPersistedState>::Persisted>,
 }
 
@@ -92,14 +91,11 @@ impl StackDefinition for PicoEthLightSwitch {
     fn create_state(config: Self::StateConfig) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
 
-        let identity = match config.fdsk {
-            Some(fdsk) => StaticIdentity::with_fdsk(config.serial, fdsk),
-            None => StaticIdentity::new(config.serial),
-        };
+        let identity = StaticIdentity::new(config.serial);
 
         match config.persisted {
-            Some(persisted) => PicoEthState::from_persisted(&identity, persisted),
-            None => PicoEthState::new(&identity, LightSwitchComObjects::new(), ()),
+            Some(persisted) => PicoEthState::from_persisted(identity, persisted, ()),
+            None => PicoEthState::new(identity, LightSwitchComObjects::new(), (), ()),
         }
     }
 
@@ -503,11 +499,7 @@ async fn main(spawner: Spawner) {
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
     // Build state config from the persisted snapshot loaded earlier (line 430).
-    let state_config = PicoEthStateConfig {
-        serial: *storage.identity().serial_number(),
-        fdsk: storage.identity().fdsk().copied(),
-        persisted,
-    };
+    let state_config = PicoEthStateConfig { serial: *storage.identity().serial_number(), persisted };
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.
