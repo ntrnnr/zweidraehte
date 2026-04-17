@@ -25,21 +25,21 @@ use crate::{
     storage::SequenceNumberStorage,
 };
 use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};
-use zweidraehte_proto::crypto::{
-    ccm,
-    scf::{SecureServiceType, SecurityControlField},
-};
+use zweidraehte_proto::crypto::{ccm, scf::SecureServiceType};
 use zweidraehte_proto::messages::{
-    apdu::secure::{self, SecureApduMut, SecureApduRef},
+    apdu::secure::{SecureApduMut, SecureApduRef},
     buffers::{Buffer, MessageBuffer},
     knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
 };
 
 use crate::logging::warn;
 
+pub mod group_data;
+pub(crate) mod outgoing;
 pub mod p2p_feature;
 mod p2p_security;
 
+pub use group_data::SecureGroupDataProvider;
 pub use p2p_feature::{NoP2p, P2pFeature, WithP2p};
 
 // ============================================================================
@@ -174,36 +174,12 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Secure
         &mut self.inner
     }
 
-    /// Get the next sending sequence number for the given access type
-    /// and increment it. Persists the updated value to storage.
+    /// Reserve the next sending sequence number.
     ///
-    /// Returns `None` if the sequence counter has reached the 48-bit
-    /// maximum (0xFFFFFFFFFFFF). Per the spec, the device must stop
-    /// sending secure frames once overflow is reached.
+    /// Thin wrapper over [`outgoing::reserve_next_seq_nr`] that supplies
+    /// the shared `seq_storage`.
     fn next_seq_nr(&self, tool_access: bool) -> Option<[u8; 6]> {
-        let mut storage = self.seq_storage.borrow_mut();
-        let (regular, tool) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
-        let seq = if tool_access { tool } else { regular };
-
-        // Check for 48-bit overflow before using this sequence number.
-        let val = u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]]);
-        if val >= 0xFFFF_FFFF_FFFF {
-            return None;
-        }
-
-        // Increment: treat as 48-bit big-endian counter.
-        let next_bytes = (val + 1).to_be_bytes();
-        let mut next_seq = [0u8; 6];
-        next_seq.copy_from_slice(&next_bytes[2..8]);
-
-        // Save both counters with only the relevant one changed.
-        if tool_access {
-            let _ = storage.save_sending_seqs(&regular, &next_seq);
-        } else {
-            let _ = storage.save_sending_seqs(&next_seq, &tool);
-        }
-
-        Some(seq)
+        outgoing::reserve_next_seq_nr(self.seq_storage, tool_access)
     }
 }
 
@@ -591,28 +567,14 @@ where
         // Build the secure frame
         // ============================================================
         //
-        // The plaintext message has:
-        //   buf[MSG_TPCI..MSG_TPCI+2] = plain TPCI/APCI
-        //   buf[MSG_APDU..] = plain data
-        //
-        // The secure frame needs:
-        //   buf[MSG_TPCI..MSG_TPCI+2] = Secure TPCI/APCI (0x03F1)
-        //   buf[MSG_APDU]   = SCF
-        //   buf[MSG_APDU+1..+7] = SeqNr (6 bytes)
-        //   buf[MSG_APDU+7..] = encrypted payload + MAC (4 bytes)
-        //
-        // The "payload" P for A+C = 000000b | plain APDU = the plain
-        // TPCI/APCI + data, which is currently at buf[MSG_TPCI..end].
-
-        let buf = msg.buf_mut();
-
-        // For group-addressed responses, look up the outgoing group key
-        // based on the destination TSAP (which is still in MSG_DEST_ADDR as
-        // a ConnectionNr). The incoming key (ctx.key) was for the receiving
-        // GA's TSAP; the outgoing key may differ when the GO has separate
-        // send/receive GAs.
+        // Key selection: for group-addressed responses, look up the
+        // outgoing group key by destination TSAP (which is still in
+        // MSG_DEST_ADDR as a ConnectionNr). The incoming key
+        // (ctx.key) was for the receiving GA's TSAP; the outgoing key
+        // may differ when the GO has separate send/receive GAs.
         let tool_access = (ctx.scf_byte & 0x80) != 0;
         let encryption_key = if matches!(st, ServiceType::T_GroupData_Req) && !tool_access {
+            let buf = msg.buf();
             let out_tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
             let security_state = self.inner.state().extension_state();
             security_state.group_key_for_index(out_tsap).unwrap_or(ctx.key)
@@ -620,86 +582,37 @@ where
             ctx.key
         };
 
-        // For connection-oriented responses, pre-set the TPCI sequence
-        // number bits on the plaintext before encrypting. The CCM B0
-        // block must include the correct TPCI with TL sequence bits
-        // (spec 03/03/07 §5.1.3.2 Figure 101). Without this, the MAC
-        // would be computed with the plain TPCI (0x00) but the TL later
-        // sets the numbered-data TPCI on the already-encrypted frame,
-        // causing a mismatch at the receiver.
-        if let Some(seq) = ctx.outgoing_tl_seq {
-            // DataConnected TPCI: DC=0 (bit 7, Data), N=1 (bit 6, Numbered),
-            // seq in bits 5-2. Preserve the lower 2 bits (APCI high).
-            let tpci_bits = 0x40 | ((seq & 0x0F) << 2);
-            let apci_high = buf[offsets::MSG_TPCI] & 0x03;
-            buf[offsets::MSG_TPCI] = tpci_bits | apci_high;
-        }
-
-        let plain_content_len = buf.len();
-        let needed_len = plain_content_len + secure::OVERHEAD;
-
-        if needed_len > buf.capacity() + offsets::MSG_TPCI {
-            warn!("S-AL: buffer too small for secure frame ({} > {})", needed_len, buf.capacity() + offsets::MSG_TPCI);
-            return Some(msg); // Fall back to plaintext.
-        }
-
-        // Expand buffer so wrap_plaintext has room to shift the payload.
-        buf.set_len(needed_len);
-
-        let tool_access = (ctx.scf_byte & 0x80) != 0; // bit 7 = Tool Access flag
         let Some(seq_nr) = self.next_seq_nr(tool_access) else {
             // Sequence number overflow — the device must not send any more
             // secure frames. Drop the outgoing message entirely.
             warn!("S-AL: sequence number overflow, dropping outgoing secure frame");
             return None;
         };
-        let layout = secure::wrap_plaintext(buf, plain_content_len, ctx.scf_byte, &seq_nr)
-            .expect("buffer capacity already verified");
 
-        // Encrypt payload and compute MAC.
-        // Use the device's own address for src rather than reading from the
-        // buffer — the network layer hasn't filled in MSG_SOURCE_ADDR yet at
-        // this point in the outgoing path.
+        // Device's own address for the CCM B0 source — the NL hasn't
+        // filled in MSG_SOURCE_ADDR yet at this point in the outgoing path.
         let src = u16::from_be_bytes(self.inner.state().individual_address().0);
-        let secure_ref = SecureApduRef::parse(buf).expect("just built a valid secure frame");
-        let mut ccm_ctx = secure_ref.ccm_context(src);
+        let adt = self.inner.state().adt().borrow();
 
-        // For outgoing group responses, MSG_DEST_ADDR still contains the TSAP
-        // (ConnectionNr) — the TL hasn't resolved it to the actual GA yet.
-        // Reverse-lookup the real GA for the CCM context so the receiver can
-        // verify the MAC. Also set the group address type bit in the CCM context.
-        if matches!(st, ServiceType::T_GroupData_Req) {
-            use crate::objects::tables::AddressTable;
-            let tsap = ccm_ctx.dst;
-            let adt = self.inner.state().adt().borrow();
-            if let Some(ga) = adt.get_address(tsap) {
-                ccm_ctx.dst = u16::from_be_bytes(ga.0);
-                ccm_ctx.addr_type = 0x80; // Group addressed
-            }
-        }
-        drop(secure_ref);
-
-        let scf = SecurityControlField::parse(ctx.scf_byte).expect("valid SCF from incoming");
-
-        let mac = if scf.confidentiality {
-            ccm::encrypt_and_mac(
-                &encryption_key,
-                &ccm_ctx,
-                ctx.scf_byte,
-                &mut buf[layout.payload_start..layout.payload_end],
-            )
-        } else {
-            ccm::compute_mac_auth_only(
-                &encryption_key,
-                &ccm_ctx,
-                ctx.scf_byte,
-                &buf[layout.payload_start..layout.payload_end],
-            )
+        let inputs = outgoing::WrapInputs {
+            scf_byte: ctx.scf_byte,
+            key: encryption_key,
+            src,
+            seq_nr,
+            outgoing_tl_seq: ctx.outgoing_tl_seq,
+            adt: &*adt,
         };
 
-        buf[layout.mac_start..layout.mac_start + secure::MAC_LEN].copy_from_slice(&mac);
-
-        Some(msg)
+        match outgoing::wrap_outgoing(&mut msg, inputs) {
+            Ok(()) => Some(msg),
+            Err(outgoing::WrapError::BufferTooSmall) => Some(msg), // Fall back to plaintext (warn already logged).
+            Err(outgoing::WrapError::InvalidScf) => {
+                // Shouldn't happen — ctx.scf_byte came from an incoming
+                // frame we already parsed as valid SCF. Drop defensively.
+                warn!("S-AL: SCF byte 0x{:02X} unexpectedly invalid for outgoing wrap", ctx.scf_byte);
+                None
+            }
+        }
     }
 }
 

@@ -12,14 +12,15 @@ use core::cell::{Cell, RefCell};
 
 use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, OperationModeState};
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::{ StackDefinition,
+use zweidraehte_device::{
+    StackDefinition,
     bcus::system_b::{
         DefaultSystemBInterfaceObjects, HasExtensionState, HasPersistedState, HasSecurityMode, PersistedState,
         SecureExtensionConfig, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
         create_system_b_objects_with_extra,
     },
-    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     context::layer::LayerContext,
+    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     memory::MemoryMap,
     objects::interface::{
         AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment,
@@ -30,7 +31,8 @@ use zweidraehte_device::{ StackDefinition,
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
         HasLoadStateMachine, HasPeiApplication, LoadEvent,
     },
-    storage::StaticIdentity};
+    storage::StaticIdentity,
+};
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};
@@ -111,8 +113,7 @@ impl SecureConformanceState {
         app_table: Application<TestParameters>,
     ) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let inner =
-            SecureInnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new());
+        let inner = SecureInnerState::new(&identity, ConformanceComObjects::new(), ConformanceHookContext::new());
 
         // Set the secure conformance test individual address (1.1.1 = 0x1101).
         inner.set_individual_address(IndividualAddress::new(1, 1, 1));
@@ -195,6 +196,9 @@ impl StackState for SecureConformanceState {
     }
     fn log_access_denied(&self, source_addr: u16) {
         self.inner.log_access_denied(source_addr);
+    }
+    fn has_group_key(&self, tsap: u16) -> bool {
+        self.inner.has_group_key(tsap)
     }
 }
 
@@ -473,8 +477,7 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         // a fixed pattern; writes return `WriteProtected` in the write
         // handler.
         if address >= ConformanceMemoryMap::READONLY_MEMORY_BASE
-            && end_address
-                <= ConformanceMemoryMap::READONLY_MEMORY_BASE + ConformanceMemoryMap::READONLY_MEMORY_SIZE
+            && end_address <= ConformanceMemoryMap::READONLY_MEMORY_BASE + ConformanceMemoryMap::READONLY_MEMORY_SIZE
         {
             let offset = (address - ConformanceMemoryMap::READONLY_MEMORY_BASE) as usize;
             for (i, byte) in data.iter_mut().enumerate() {
@@ -488,8 +491,7 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         // (the AL maps `WriteProtected` to return code 0xFB, which 5.2.3
         // accepts as the "alternative" return code along with 0xFA).
         if address >= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE
-            && end_address
-                <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
+            && end_address <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
         {
             return Err(MemoryError::WriteProtected);
         }
@@ -600,8 +602,7 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         // Read-only memory region (5.1.4): writes always reject. The AL
         // converts `WriteProtected` to return code 0xFB (E_READ_ONLY).
         if address >= ConformanceMemoryMap::READONLY_MEMORY_BASE
-            && end_address
-                <= ConformanceMemoryMap::READONLY_MEMORY_BASE + ConformanceMemoryMap::READONLY_MEMORY_SIZE
+            && end_address <= ConformanceMemoryMap::READONLY_MEMORY_BASE + ConformanceMemoryMap::READONLY_MEMORY_SIZE
         {
             return Err(MemoryError::WriteProtected);
         }
@@ -609,8 +610,7 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         // Write-only memory region (5.2.3): writes silently succeed but
         // discard the data; reads were rejected in the read handler.
         if address >= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE
-            && end_address
-                <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
+            && end_address <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
         {
             return Ok(data.len());
         }
@@ -916,7 +916,11 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         (SecAugment<'a>, (CertificationObjectAugment, DiagnosticsAugment<'a>)),
     >;
 
-    fn create_interface_objects<'a>(state: &'a Self::State, platform: &'a Self::Platform, layer_ctx: &'a LayerContext<Self>) -> Self::InterfaceObjects<'a>
+    fn create_interface_objects<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        layer_ctx: &'a LayerContext<Self>,
+    ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
     {
@@ -1204,10 +1208,7 @@ impl SecureConformancePersistedState {
 }
 
 impl SecureConformanceState {
-    pub fn from_persisted_snapshot(
-        snapshot: SecureConformancePersistedState,
-        seq_storage: ShmSeqStorage,
-    ) -> Self {
+    pub fn from_persisted_snapshot(snapshot: SecureConformancePersistedState, seq_storage: ShmSeqStorage) -> Self {
         let identity = StaticIdentity::with_fdsk(SECURE_SERIAL_NUMBER, SECURE_FDSK);
         let inner = SecureInnerState::from_persisted(&identity, snapshot.inner);
         inner.extension_state().set_seq_storage(seq_storage);

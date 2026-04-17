@@ -10,6 +10,7 @@ use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
 use crate::StackDefinition;
 use crate::context::layer::LayerContext;
 use crate::layers::application::group_data::GroupDataProvider;
+use crate::layers::secure_application::SecureGroupDataProvider;
 use crate::router::Outbox;
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::dpt::{
@@ -633,6 +634,24 @@ impl<'a, D: StackDefinition> AugmentContext<'a, D> {
     #[inline]
     pub fn group_value_sender(&self) -> GroupDataProvider<'a, D> {
         GroupDataProvider::new(self.state, self.lctx)
+    }
+
+    /// Capability handle for requesting *secure* outgoing group-value
+    /// reads and writes by TSAP.
+    ///
+    /// Returns a transient
+    /// [`SecureGroupDataProvider`](crate::layers::secure_application::SecureGroupDataProvider)
+    /// that reaches directly through to the group-key table and the
+    /// sending sequence number storage, building a fully-wrapped KNX
+    /// Data Secure `T_GroupData_Req` in one shot. Has no persistent
+    /// state of its own.
+    ///
+    /// Compiles only on stacks whose state provides the secure-side
+    /// capabilities (extension state with `HasSecurityState +
+    /// HasSeqStorage` plus an address table).
+    #[inline]
+    pub fn secure_group_value_sender(&self) -> SecureGroupDataProvider<'a, D> {
+        SecureGroupDataProvider::new(self.state, self.lctx)
     }
 }
 

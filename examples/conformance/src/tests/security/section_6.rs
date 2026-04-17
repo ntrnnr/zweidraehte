@@ -521,13 +521,18 @@ fn test_6_2_7() -> TestCase {
         inject("BC #EDI #BDUT_ADDR 6E 01 D4 00 09 00 10 42 00 01 80 #GO_1 12 34 56"),
         expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
         expect("BC #BDUT_ADDR #GO_1 E4 00 80 12 34 56", BUS_TIMEOUT),
-        // TODO: Sub-case 7: full octet, auth only (0x81), GA=#GO_2, val=0x55.
-        // The bus-side GroupValue_Write should be an S-frame with auth-only
-        // using GK6. Needs secure group telegram matching infrastructure.
-        //
-        // TODO: Sub-case 8: full octet, auth+conf (0x83), GA=#GO_2, val=0x55.
-        // The bus-side GroupValue_Write should be an S-frame with auth+conf
-        // using GK6. Needs secure group telegram matching infrastructure.
+        // Sub-case 7: full octet, auth only (0x81), GA=#GO_2, val=0x55.
+        // The bus-side GroupValue_Write is an S-frame with auth-only using GK6.
+        comment("Full octet, auth-only (0x81), GA=#GO_2, val=0x55"),
+        inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 81 #GO_2 55"),
+        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
+        expect_group_ao("BC #BDUT_ADDR #GO_2 E2 00 80 55", "GK6", BUS_TIMEOUT),
+        // Sub-case 8: full octet, auth+conf (0x83), GA=#GO_2, val=0x55.
+        // The bus-side GroupValue_Write is an S-frame with auth+conf using GK6.
+        comment("Full octet, auth+conf (0x83), GA=#GO_2, val=0x55"),
+        inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 83 #GO_2 55"),
+        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
+        expect_group_ac("BC #BDUT_ADDR #GO_2 E2 00 80 55", "GK6", BUS_TIMEOUT),
     ])
 }
 
@@ -683,13 +688,18 @@ fn test_6_2_15() -> TestCase {
         inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 03 00 #GO_1"),
         expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03", TIMEOUT),
         expect("BC #BDUT_ADDR #GO_1 E1 00 00", BUS_TIMEOUT),
-        // TODO: Sub-case 2: auth only (0x01), GA=#GO_2.
-        // The bus-side GroupValue_Read should be an S-frame with auth-only
-        // using GK6. Needs secure group telegram matching infrastructure.
-        //
-        // TODO: Sub-case 3: auth+conf (0x03), GA=#GO_2.
-        // The bus-side GroupValue_Read should be an S-frame with auth+conf
-        // using GK6. Needs secure group telegram matching infrastructure.
+        // Sub-case 2: auth only (0x01), GA=#GO_2.
+        // The bus-side GroupValue_Read is an S-frame with auth-only using GK6.
+        comment("Auth-only (0x01), GA=#GO_2"),
+        inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 03 01 #GO_2"),
+        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03", TIMEOUT),
+        expect_group_ao("BC #BDUT_ADDR #GO_2 E1 00 00", "GK6", BUS_TIMEOUT),
+        // Sub-case 3: auth+conf (0x03), GA=#GO_2.
+        // The bus-side GroupValue_Read is an S-frame with auth+conf using GK6.
+        comment("Auth+conf (0x03), GA=#GO_2"),
+        inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 03 03 #GO_2"),
+        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03", TIMEOUT),
+        expect_group_ac("BC #BDUT_ADDR #GO_2 E1 00 00", "GK6", BUS_TIMEOUT),
     ])
 }
 

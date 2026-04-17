@@ -22,20 +22,23 @@ use core::cell::Cell;
 
 use embassy_time::Instant;
 
-use zweidraehte_proto::access::AccessPolicy;
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
-use zweidraehte_proto::messages::knx::Priority;
-use crate::layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding};
+use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
+use crate::layers::application::capabilities::{
+    GroupValueAddressedSender, GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender,
+};
 use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
     AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
     PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
 };
-use crate::{StackDefinition, StackState};
 use crate::objects::tables::{
     AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasAssociationTable,
     HasCommunicationObjectTable, HasRunStateMachine,
 };
+use crate::{StackDefinition, StackState};
+use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
+use zweidraehte_proto::messages::knx::Priority;
 
 // ============================================================================
 // Traits
@@ -385,7 +388,9 @@ impl<'a> DiagnosticsAugment<'a> {
             + HasCommunicationObjectTable
             + HasCommObjects
             + HasAddressTable
-            + HasAssociationTable,
+            + HasAssociationTable
+            + HasExtensionState,
+        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
     {
         // Minimum: [reserved, service_id]
         if req.service_data.len() < 2 {
@@ -532,7 +537,8 @@ impl<'a> DiagnosticsAugment<'a> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
-        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable,
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasExtensionState,
+        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
     {
         let data = req.service_data;
         // Need at least: reserved(1) + serviceID(1) + flags(1) + GA(2) + value(1)
@@ -566,15 +572,6 @@ impl<'a> DiagnosticsAugment<'a> {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
         }
 
-        // ================================================================
-        // Send GroupValue_Write via the addressed-sender capability
-        //
-        // This is an arbitrary GA-addressed write with a caller-supplied
-        // value, so the `GroupValueSender` ASAP-based capability doesn't
-        // apply. Use `GroupValueAddressedSender` on the provider instead
-        // — it knows how to frame and queue the telegram.
-        // ================================================================
-
         let value = &data[5..];
         // Bit 7 of flags: 1 = next full octet, 0 = 6 trailing bits after APCI.
         let full_octet = flags & 0x80 != 0;
@@ -585,11 +582,41 @@ impl<'a> DiagnosticsAugment<'a> {
         };
 
         debug!(
-            "GO diag: stashing GroupValue_Write to TSAP {} (GA 0x{:04X})",
+            "GO diag: stashing GroupValue_Write to TSAP {} (GA 0x{:04X}) sec_bits={:#04X}",
             tsap,
-            u16::from_be_bytes([data[3], data[4]])
+            u16::from_be_bytes([data[3], data[4]]),
+            sec_bits
         );
-        ctx.group_value_sender().send_group_write_tsap(tsap, Priority::Low, encoding, value);
+
+        // ================================================================
+        // Dispatch via the right sender capability
+        //
+        // Plain (sec_bits == 0) goes through `GroupValueAddressedSender`
+        // exactly like before. Secure (auth-only / auth+conf) goes
+        // through `SecureGroupValueAddressedSender`, which builds a
+        // fully-wrapped KNX Data Secure frame using the TSAP's group
+        // key — bypassing the S-AL's respond-to-incoming-secure path
+        // (the triggering FctPropertyExtCommand arrived plaintext).
+        // ================================================================
+        match sec_bits {
+            0x00 => ctx.group_value_sender().send_group_write_tsap(tsap, Priority::Low, encoding, value),
+            0x01 => ctx.secure_group_value_sender().send_group_write_tsap_secure(
+                tsap,
+                Priority::Low,
+                encoding,
+                value,
+                RequestedSecurity::AuthOnly,
+            ),
+            0x03 => ctx.secure_group_value_sender().send_group_write_tsap_secure(
+                tsap,
+                Priority::Low,
+                encoding,
+                value,
+                RequestedSecurity::AuthConf,
+            ),
+            // sec_bits == 0x02 was rejected as invalid earlier.
+            _ => unreachable!("invalid sec_bits {:#04X} — should have been rejected", sec_bits),
+        }
 
         FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
     }
@@ -691,7 +718,8 @@ impl<'a> DiagnosticsAugment<'a> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
-        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable,
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasExtensionState,
+        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
     {
         let data = req.service_data;
         if data.len() != 5 {
@@ -724,20 +752,28 @@ impl<'a> DiagnosticsAugment<'a> {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
         }
 
-        // ================================================================
-        // Send GroupValue_Read via the addressed-sender capability
-        //
-        // Like the direct write above, this is GA-addressed rather than
-        // ASAP-addressed, so the `GroupValueSender` capability does not
-        // apply. Use `GroupValueAddressedSender` for the queued read.
-        // ================================================================
-
         debug!(
-            "GO diag: stashing GroupValue_Read to TSAP {} (GA 0x{:04X})",
+            "GO diag: stashing GroupValue_Read to TSAP {} (GA 0x{:04X}) sec_bits={:#04X}",
             tsap,
-            u16::from_be_bytes([data[3], data[4]])
+            u16::from_be_bytes([data[3], data[4]]),
+            sec_bits
         );
-        ctx.group_value_sender().send_group_read_tsap(tsap, Priority::Low);
+
+        match sec_bits {
+            0x00 => ctx.group_value_sender().send_group_read_tsap(tsap, Priority::Low),
+            0x01 => ctx.secure_group_value_sender().send_group_read_tsap_secure(
+                tsap,
+                Priority::Low,
+                RequestedSecurity::AuthOnly,
+            ),
+            0x03 => ctx.secure_group_value_sender().send_group_read_tsap_secure(
+                tsap,
+                Priority::Low,
+                RequestedSecurity::AuthConf,
+            ),
+            // sec_bits == 0x02 was rejected as invalid earlier.
+            _ => unreachable!("invalid sec_bits {:#04X} — should have been rejected", sec_bits),
+        }
 
         FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
     }
@@ -879,7 +915,9 @@ where
         + HasCommunicationObjectTable
         + HasCommObjects
         + HasAddressTable
-        + HasAssociationTable,
+        + HasAssociationTable
+        + HasExtensionState,
+    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
 {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
         if object_type == InterfaceObjectType::ApplicationProgram && prop_id == pid::OPERATION_MODE {

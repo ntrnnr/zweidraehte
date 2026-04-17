@@ -83,3 +83,51 @@ pub trait GroupValueAddressedSender {
     /// Build and queue a `A_GroupValue_Read` to `tsap` at `priority`.
     fn send_group_read_tsap(&self, tsap: u16, priority: Priority);
 }
+
+// ============================================================================
+// SecureGroupValueAddressedSender
+// ============================================================================
+
+/// Selects the KNX Data Secure level for an outgoing secure telegram.
+///
+/// Passed to [`SecureGroupValueAddressedSender`] methods; the diagnostic
+/// paths that build a telegram on the caller's behalf (e.g.
+/// `PID_GO_DIAGNOSTICS` WriteServiceID `0x01` / `0x03`) decode it from
+/// the request's security flag bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum RequestedSecurity {
+    /// Authenticated only (SCF `SecType=auth`).
+    AuthOnly,
+    /// Authenticated and encrypted (SCF `SecType=conf`).
+    AuthConf,
+}
+
+/// Ability to emit a KNX Data Secure wrapped `A_GroupValue_{Write,Read}`
+/// telegram to a known TSAP.
+///
+/// Mirrors [`GroupValueAddressedSender`] for the secure path. The
+/// provider looks up the group key for the destination TSAP, reserves
+/// a sending sequence number, builds the full secure
+/// `T_GroupData_Req` (SCF + SeqNr + encrypted payload + MAC), and
+/// queues it on the deferred outbox. Bypasses the
+/// [`SecureApplicationLayer`](crate::layers::secure_application::SecureApplicationLayer)'s
+/// "respond-to-incoming-secure" path because the triggering command
+/// typically arrives plaintext.
+///
+/// Only available on stacks whose state provides the full set of
+/// secure-side capabilities (see the provider impl's bounds).
+pub trait SecureGroupValueAddressedSender {
+    /// Build and queue a secure `A_GroupValue_Write` to `tsap`.
+    fn send_group_write_tsap_secure(
+        &self,
+        tsap: u16,
+        priority: Priority,
+        encoding: GroupValueEncoding,
+        data: &[u8],
+        security: RequestedSecurity,
+    );
+
+    /// Build and queue a secure `A_GroupValue_Read` to `tsap`.
+    fn send_group_read_tsap_secure(&self, tsap: u16, priority: Priority, security: RequestedSecurity);
+}
