@@ -425,11 +425,16 @@ impl<'a> DiagnosticsAugment<'a> {
     }
 
     /// Handle FunctionPropertyExtStateRead for PID_GO_DIAGNOSTICS.
-    fn handle_go_diag_state_read<S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable>(
-        &self,
-        state: &S,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn handle_go_diag_state_read<S>(&self, state: &S, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult
+    where
+        S: StackState
+            + HasCommunicationObjectTable
+            + HasCommObjects
+            + HasAddressTable
+            + HasAssociationTable
+            + HasExtensionState,
+        <S as HasExtensionState>::ES: HasSecurityState,
+    {
         if req.service_data.len() < 2 {
             return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
@@ -817,11 +822,11 @@ impl<'a> DiagnosticsAugment<'a> {
     /// Request: [reserved, 0x00, GO_idx_hi, GO_idx_lo]
     /// Success: rc=0x20, [service_id, GO_idx_hi, GO_idx_lo, linked, sec_flags,
     ///          config_flags, priority, size_hi, size_lo]
-    fn handle_go_diag_read_config<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
-        &self,
-        state: &S,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> FunctionPropertyResult {
+    fn handle_go_diag_read_config<S>(&self, state: &S, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult
+    where
+        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAssociationTable + HasExtensionState,
+        <S as HasExtensionState>::ES: HasSecurityState,
+    {
         let data = req.service_data;
         if data.len() != 4 {
             return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
@@ -838,10 +843,15 @@ impl<'a> DiagnosticsAugment<'a> {
         let priority = u8::from(entry.flags.priority());
         let config_flags = entry.flags.to_byte();
 
-        // TODO: linked flag from association table, security flags from
-        // security state. For now use placeholders.
-        let linked: u8 = 0x00;
-        let sec_flags: u8 = 0x00;
+        // Linked: spec 03/05/01 §4.8.1.1.6 — bit set iff at least one GA is
+        // linked to this GO. Derived at query time from the association table.
+        let linked: u8 = if state.ast().borrow().tsaps_for_asap(go_idx).next().is_some() { 0x01 } else { 0x00 };
+
+        // Security flags: per-GO `auth` / `conf` bits from PID_GO_SECURITY_FLAGS.
+        // `go_security_flags_for` returns `None` for out-of-range indices; a
+        // missing entry is reported as 0 (no security required), matching the
+        // default for devices without a security state configured.
+        let sec_flags: u8 = state.extension_state().go_security_flags_for(go_idx).unwrap_or(0) & 0x03;
 
         let mut resp = [0u8; 16];
         resp[0] = 0x00; // service_id echo
