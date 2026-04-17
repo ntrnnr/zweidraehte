@@ -21,6 +21,7 @@ use crate::{
     },
 };
 use zweidraehte_proto::messages::{
+    apdu::group_value::{GroupValueReadRequest, GroupValueWriteRequest},
     buffers::{Buffer, DynBufferManager},
     builder::MessageBuilder,
     knx::*,
@@ -404,56 +405,59 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         if let Some(tsap) = sending_tsap {
             trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
 
-            // Determine the length of this comm obj and the offset in the message
-            // The offset can be 7 for objects with len <= 6 bits because it fits
-            // into the unused six bits of the short APCI codes.
-            let (object_size, msg_offset) = match (read, cot_info.object_type.size_in_bytes()) {
-                // GroupValueWrite.req
-                (false, (s, true)) => (s, offsets::MSG_APCI + 1),
-                (false, (s, false)) => (s, offsets::MSG_APDU),
-
-                // GroupValueRead.req
-                // We need at least 1 byte for the lowermost two bits of the APCI code,
-                // the lowermost six bits of this byte are unused
-                (true, _) => (1, offsets::MSG_APCI + 1),
+            // The outbound message length depends on the APCI service and,
+            // for writes, on whether the object's DPT fits in the short
+            // encoding (value packed into the second APCI byte) or needs
+            // full APDU bytes. Size helpers live in
+            // `apdu::group_value::GroupValue{Read,Write}Request`.
+            let (object_size, is_short) = cot_info.object_type.size_in_bytes();
+            let msg_len = if read {
+                GroupValueReadRequest::MSG_LEN
+            } else if is_short {
+                GroupValueWriteRequest::SHORT_MSG_LEN
+            } else {
+                GroupValueWriteRequest::full_msg_len(object_size)
             };
 
             debug!(
-                "AL preparing {} ASAP {} TSAP {} size {} offset {}",
+                "AL preparing {} ASAP {} TSAP {} size {} msg_len {}",
                 if read { "GroupValueRead" } else { "GroupValueWrite" },
                 asap,
                 tsap,
                 object_size,
-                msg_offset
+                msg_len,
             );
 
-            // Allocate a new message with the required size
-            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(object_size + msg_offset) else {
+            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(msg_len) else {
                 warn!("AL no buffer for response");
                 return true;
             };
 
+            let builder = MessageBuilder::new_request(
+                msg_buf,
+                ServiceType::T_GroupData_Req,
+                cot_info.flags.priority(),
+                DestinationAddress::ConnectionNr(tsap),
+            );
+
             let msg = if read {
-                MessageBuilder::new_request(
-                    msg_buf,
-                    ServiceType::T_GroupData_Req,
-                    cot_info.flags.priority(),
-                    DestinationAddress::ConnectionNr(tsap),
-                )
-                .with_application(ApciCode::GroupValueRead)
-                .build()
+                builder.with_application(ApciCode::GroupValueRead).build()
+            } else if is_short {
+                // Short write: first byte of the CO value carries bits 5..0
+                // in the second APCI byte. Multi-byte values never take
+                // this branch because `size_in_bytes()` returns `(_, false)`
+                // for them.
+                let value_byte = self.state.comm_objects().borrow().value(asap).first().copied().unwrap_or(0);
+                builder
+                    .with_application(ApciCode::GroupValueWrite)
+                    .with_data(|buf| GroupValueWriteRequest::write_short(buf, value_byte))
             } else {
-                MessageBuilder::new_request(
-                    msg_buf,
-                    ServiceType::T_GroupData_Req,
-                    cot_info.flags.priority(),
-                    DestinationAddress::ConnectionNr(tsap),
-                )
-                .with_application(ApciCode::GroupValueWrite)
-                .with_data(|buf| {
-                    buf[msg_offset..msg_offset + object_size]
-                        .copy_from_slice(self.state.comm_objects().borrow().value(asap));
-                })
+                // Full write: copy the CO value into the APDU area.
+                let co = self.state.comm_objects().borrow();
+                let value = co.value(asap);
+                builder
+                    .with_application(ApciCode::GroupValueWrite)
+                    .with_data(|buf| GroupValueWriteRequest::write_full(buf, value))
             };
 
             // Store pending state so the TL confirmation (arriving later on
@@ -656,14 +660,9 @@ impl<D: StackDefinition> GroupValueSender for GroupDataProvider<'_, D> {
 
 impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> {
     fn send_group_write_tsap(&self, tsap: u16, priority: Priority, encoding: GroupValueEncoding, data: &[u8]) {
-        // Short encoding packs the value into the low six bits of the
-        // low APCI byte; the frame ends right after that byte, so the
-        // allocation is one byte past the start of the APCI field.
-        // Full encoding places the value in the APDU bytes following
-        // the APCI field.
-        let (msg_offset, msg_len) = match encoding {
-            GroupValueEncoding::Short => (offsets::MSG_APCI + 1, offsets::MSG_APDU),
-            GroupValueEncoding::Full => (offsets::MSG_APDU, offsets::MSG_APDU + data.len()),
+        let msg_len = match encoding {
+            GroupValueEncoding::Short => GroupValueWriteRequest::SHORT_MSG_LEN,
+            GroupValueEncoding::Full => GroupValueWriteRequest::full_msg_len(data.len()),
         };
 
         let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(msg_len) else {
@@ -680,14 +679,16 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
         .with_application(ApciCode::GroupValueWrite)
         .with_data(|buf| match encoding {
             GroupValueEncoding::Short => {
-                // Low 6 bits of the short value go into the low bits of
-                // the APCI byte. Callers guarantee the value fits.
+                // Callers guarantee the value fits in 6 bits. An empty
+                // slice would leave the APCI bits untouched, which is
+                // the same observable behaviour as the previous inline
+                // code — no need to special-case it here.
                 if let Some(&v) = data.first() {
-                    buf[offsets::MSG_APCI + 1] |= v & 0x3F;
+                    GroupValueWriteRequest::write_short(buf, v);
                 }
             }
             GroupValueEncoding::Full => {
-                buf[msg_offset..msg_offset + data.len()].copy_from_slice(data);
+                GroupValueWriteRequest::write_full(buf, data);
             }
         });
 
@@ -695,10 +696,7 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
     }
 
     fn send_group_read_tsap(&self, tsap: u16, priority: Priority) {
-        // GroupValue_Read carries no payload; one byte is enough to hold
-        // the two-bit short APCI code.
-        let msg_len = offsets::MSG_APCI + 1 + 1;
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(msg_len) else {
+        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(GroupValueReadRequest::MSG_LEN) else {
             warn!("GroupValueAddressedSender: no buffer for GroupValue_Read to TSAP {}", tsap);
             return;
         };

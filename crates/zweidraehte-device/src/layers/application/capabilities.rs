@@ -45,20 +45,11 @@ pub trait GroupValueSender {
 // GroupValueAddressedSender
 // ============================================================================
 
-/// Encoding for the value in an outgoing `A_GroupValue_Write`.
-///
-/// Small values (<= 6 bits) can be packed into the low bits of the APCI
-/// byte, avoiding a separate APDU byte. Larger values need their own
-/// APDU bytes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum GroupValueEncoding {
-    /// Pack `data[0] & 0x3F` into the low six bits of the APCI byte.
-    /// Only valid for single-byte values where the top two bits are zero.
-    Short,
-    /// Place the value in one or more APDU bytes after the APCI byte.
-    Full,
-}
+// Re-export the canonical `GroupValueEncoding` from the proto crate; it
+// lives there alongside the `GroupValueWriteRequest` serializer that
+// consumes it so the encoding choice and the byte-layout it drives are
+// co-located.
+pub use zweidraehte_proto::messages::apdu::group_value::GroupValueEncoding;
 
 /// Ability to emit a `A_GroupValue_{Write,Read}` telegram to a known TSAP.
 ///

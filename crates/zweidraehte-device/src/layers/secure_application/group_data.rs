@@ -16,8 +16,9 @@
 
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::messages::{
+    apdu::group_value::{GroupValueReadRequest, GroupValueWriteRequest},
     builder::MessageBuilder,
-    knx::{ApciCode, DestinationAddress, Priority, ServiceType, offsets},
+    knx::{ApciCode, DestinationAddress, Priority, ServiceType},
 };
 
 use crate::{
@@ -108,20 +109,18 @@ where
         // Build the plaintext T_GroupData_Req.
         // ============================================================
         //
-        // Length sizing matches the non-secure `GroupDataProvider`:
-        //  - Short encoding: value fits in the low 6 bits of the APCI
-        //    byte, so the buffer ends right after it.
-        //  - Full encoding: value occupies APDU bytes after the APCI.
-        //  - Read: no payload, one APDU byte holds the short APCI code.
-        //
+        // Length sizing comes from the `group_value` APDU serializers in
+        // the proto crate, matching the non-secure `GroupDataProvider`.
         // Allocated at plaintext length; `wrap_outgoing` grows the
         // buffer in place by `secure::OVERHEAD` (13 bytes: SCF + SeqNr
         // + MAC + TPCI/APCI shift). The backing capacity is always
         // `BUFFER_SIZE - headroom`, which accommodates the expansion.
         let (plain_msg_len, apci) = match value {
-            Some((GroupValueEncoding::Short, _)) => (offsets::MSG_APDU, ApciCode::GroupValueWrite),
-            Some((GroupValueEncoding::Full, data)) => (offsets::MSG_APDU + data.len(), ApciCode::GroupValueWrite),
-            None => (offsets::MSG_APCI + 1 + 1, ApciCode::GroupValueRead),
+            Some((GroupValueEncoding::Short, _)) => (GroupValueWriteRequest::SHORT_MSG_LEN, ApciCode::GroupValueWrite),
+            Some((GroupValueEncoding::Full, data)) => {
+                (GroupValueWriteRequest::full_msg_len(data.len()), ApciCode::GroupValueWrite)
+            }
+            None => (GroupValueReadRequest::MSG_LEN, ApciCode::GroupValueRead),
         };
 
         let Some(msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(plain_msg_len) else {
@@ -129,37 +128,24 @@ where
             return;
         };
 
+        let builder = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::T_GroupData_Req,
+            priority,
+            DestinationAddress::ConnectionNr(tsap),
+        )
+        .with_application(apci);
+
         let mut msg = match value {
-            Some((GroupValueEncoding::Short, data)) => MessageBuilder::new_request(
-                msg_buf,
-                ServiceType::T_GroupData_Req,
-                priority,
-                DestinationAddress::ConnectionNr(tsap),
-            )
-            .with_application(apci)
-            .with_data(|buf| {
+            Some((GroupValueEncoding::Short, data)) => builder.with_data(|buf| {
                 if let Some(&v) = data.first() {
-                    buf[offsets::MSG_APCI + 1] |= v & 0x3F;
+                    GroupValueWriteRequest::write_short(buf, v);
                 }
             }),
-            Some((GroupValueEncoding::Full, data)) => MessageBuilder::new_request(
-                msg_buf,
-                ServiceType::T_GroupData_Req,
-                priority,
-                DestinationAddress::ConnectionNr(tsap),
-            )
-            .with_application(apci)
-            .with_data(|buf| {
-                buf[offsets::MSG_APDU..offsets::MSG_APDU + data.len()].copy_from_slice(data);
+            Some((GroupValueEncoding::Full, data)) => builder.with_data(|buf| {
+                GroupValueWriteRequest::write_full(buf, data);
             }),
-            None => MessageBuilder::new_request(
-                msg_buf,
-                ServiceType::T_GroupData_Req,
-                priority,
-                DestinationAddress::ConnectionNr(tsap),
-            )
-            .with_application(apci)
-            .build(),
+            None => builder.build(),
         };
 
         // The builder leaves the buffer sized to the plaintext contents;

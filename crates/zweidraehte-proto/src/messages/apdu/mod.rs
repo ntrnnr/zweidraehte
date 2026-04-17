@@ -25,10 +25,12 @@
 //! - [`property_ext`] — `A_PropertyExtValue_*` (AN163 extended interface object addressing)
 //! - [`restart`] — `A_Restart` (basic and master reset)
 //! - [`secure`] — Secure APDU (S-A_Data) frame parser and builder
+//! - [`group_value`] — `A_GroupValue_Read`, `A_GroupValue_Write`, `A_GroupValue_Response`
 
 pub mod auth;
 pub mod device;
 pub mod function_property;
+pub mod group_value;
 pub mod memory;
 pub mod property;
 pub mod property_ext;
