@@ -212,6 +212,7 @@ where
                 pei,
                 0, // PEI has no memory-mapped address
                 PDT_Generic05::with_value(pei_program_version),
+                state,
             )),
             augment,
         }

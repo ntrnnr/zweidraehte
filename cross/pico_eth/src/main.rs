@@ -290,6 +290,12 @@ async fn lifecycle_task(knx: Stack<'static, PicoEthLightSwitch>) -> ! {
             LifecycleEvent::ApplicationStopped => {
                 info!("Application STOPPED — app is no longer running");
             }
+            LifecycleEvent::PeiStarted => {
+                info!("PEI STARTED");
+            }
+            LifecycleEvent::PeiStopped => {
+                info!("PEI STOPPED");
+            }
         }
     }
 }

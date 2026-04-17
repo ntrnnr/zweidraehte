@@ -38,6 +38,20 @@ use crate::{
 // DeviceModel Events and Notification
 // ============================================================================
 
+/// Which program's run state machine produced a [`RunAction`].
+///
+/// Needed because both the Application Program Object and the PEI Program
+/// Object can transition independently, and the DeviceModel's side effects
+/// (comm object reset, `user_stopped` flag, lifecycle event published to
+/// user code) are tied to the Application program only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunTarget {
+    /// Application Program Object (IOT 0x0003).
+    Application,
+    /// PEI Program Object (IOT 0x0005).
+    Pei,
+}
+
 /// Events sent to the DeviceModel for lifecycle orchestration.
 ///
 /// Posted synchronously by interface objects (e.g.
@@ -46,10 +60,12 @@ use crate::{
 /// [`DeviceModel::drain_dm_events`] after each dispatch cycle.
 #[derive(Debug, Clone, Copy)]
 pub enum DeviceModelEvent {
-    /// The RSM crossed the running/not-running boundary.
-    /// The DeviceModel should handle lifecycle side effects (DeviceControl,
-    /// comm object reset, lifecycle events to user code).
-    RunAction(RunAction),
+    /// An RSM crossed the running/not-running boundary. The DeviceModel
+    /// should handle lifecycle side effects (DeviceControl, comm object
+    /// reset, lifecycle events to user code) — scoped by [`RunTarget`]
+    /// since only the Application program drives DeviceControl / comm
+    /// object state.
+    RunAction(RunTarget, RunAction),
 }
 
 /// Trait for buffering [`DeviceModelEvent`]s on the device state.
@@ -191,21 +207,38 @@ impl<D: StackDefinition> DeviceModel for SystemBDeviceModel<'_, D> {
     fn drain_dm_events(&mut self) {
         while let Some(event) = self.state.take_event() {
             match event {
-                DeviceModelEvent::RunAction(action) => self.on_action(action),
+                DeviceModelEvent::RunAction(target, action) => self.on_action_for(target, action),
             }
         }
     }
 
     fn on_action(&mut self, action: RunAction) {
-        match action {
-            RunAction::Started => {
+        // Retained for trait compatibility — this entry point always refers to
+        // the Application program, since callers without a target discriminator
+        // (e.g., the startup cascade in `init`) only drive the application RSM.
+        self.on_action_for(RunTarget::Application, action);
+    }
+}
+
+impl<D: StackDefinition> SystemBDeviceModel<'_, D> {
+    fn on_action_for(&mut self, target: RunTarget, action: RunAction) {
+        match (target, action) {
+            (RunTarget::Application, RunAction::Started) => {
                 self.interface_objects.set_user_stopped(false);
                 self.state.comm_objects().borrow_mut().reset();
                 self.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
             }
-            RunAction::Stopped => {
+            (RunTarget::Application, RunAction::Stopped) => {
                 self.interface_objects.set_user_stopped(true);
                 self.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStopped);
+            }
+            // PEI has no `user_stopped` flag and no associated comm objects —
+            // only the lifecycle event is surfaced.
+            (RunTarget::Pei, RunAction::Started) => {
+                self.lifecycle_channel.publish_immediate(LifecycleEvent::PeiStarted);
+            }
+            (RunTarget::Pei, RunAction::Stopped) => {
+                self.lifecycle_channel.publish_immediate(LifecycleEvent::PeiStopped);
             }
         }
     }

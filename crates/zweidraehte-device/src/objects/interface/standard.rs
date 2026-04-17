@@ -28,13 +28,13 @@ use core::marker::PhantomData;
 use zweidraehte_proto::dpt::PDT_Control;
 
 use crate::StackState;
-use crate::device_model::{DeviceModelEvent, DeviceModelNotifier};
+use crate::device_model::{DeviceModelEvent, DeviceModelNotifier, RunTarget};
+use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
 use zweidraehte_proto::dpt::{
     DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06,
     PDT_Generic08, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PDT_Version, ProgrammingMode,
     PropertyDataDefinition, RoutingCount,
 };
-use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
 
 use super::{
     ArrayPropertyWithPrefixRead, ArrayPropertyWithPrefixWrite, InterfaceObject, PropertyAccess, PropertyDescriptor,
@@ -391,7 +391,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
                 };
 
                 if let Some(action) = run_action {
-                    self.notifier.notify(DeviceModelEvent::RunAction(action));
+                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
                 }
 
                 Ok(WriteResponse::byte(self.app.borrow().read_lsm()[0]))
@@ -400,7 +400,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
                 let run_action = self.app.borrow_mut().write_rsm(req.data);
 
                 if let Some(action) = run_action {
-                    self.notifier.notify(DeviceModelEvent::RunAction(action));
+                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
                 }
 
                 Ok(WriteResponse::byte(self.app.borrow().read_rsm()[0]))
@@ -448,6 +448,11 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)
     alloc_address: u32,
     program_version: PDT_Generic05,
+    /// Notifier for DeviceModel events. PEI RSM transitions are surfaced as
+    /// [`LifecycleEvent::PeiStarted`] / [`LifecycleEvent::PeiStopped`](crate::objects::comm::LifecycleEvent)
+    /// even though PEI has no required side effects on device operation —
+    /// this is purely for observability of the full ETS programming cascade.
+    notifier: &'a dyn DeviceModelNotifier,
 }
 
 impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
@@ -457,8 +462,14 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
     /// * `pei` - Reference to the PEI application table
     /// * `alloc_address` - Virtual address to assign during RelativeData allocation (typically 0)
     /// * `program_version` - PEI program version (typically [0, 0, 0, 0, 0])
-    pub fn new(pei: &'a RefCell<T>, alloc_address: u32, program_version: PDT_Generic05) -> Self {
-        Self { pei, alloc_address, program_version }
+    /// * `notifier` - Notification sink for DeviceModel lifecycle events
+    pub fn new(
+        pei: &'a RefCell<T>,
+        alloc_address: u32,
+        program_version: PDT_Generic05,
+        notifier: &'a dyn DeviceModelNotifier,
+    ) -> Self {
+        Self { pei, alloc_address, program_version, notifier }
     }
 
     /// Get the program version.
@@ -547,15 +558,31 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for PeiPro
         match req.pid {
             super::pid::OBJECT_TYPE | super::pid::PROGRAM_VERSION => Err(PropertyError::WriteNotAllowed),
             super::pid::LOAD_STATE_CONTROL => {
-                // Write the load event to the state machine, providing the allocation address
-                self.pei.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
-                // Response contains the resulting load state (1 byte)
+                // Cascade LSM transitions into the RSM the same way
+                // `ApplicationProgramObject` does: a `LoadEnd` drives a
+                // `Loaded` run event, `Unload` drives `Unloaded`. This is
+                // what surfaces the LSM→RSM cascade as a PEI lifecycle event.
+                let action = self.pei.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
+
+                let run_action = match action {
+                    LoadAction::LoadEnd => self.pei.borrow_mut().handle_run_event(RunEvent::Loaded),
+                    LoadAction::Unload => self.pei.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                    _ => None,
+                };
+
+                if let Some(action) = run_action {
+                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Pei, action));
+                }
+
                 Ok(WriteResponse::byte(self.pei.borrow().read_lsm()[0]))
             }
             super::pid::RUN_STATE_CONTROL => {
-                // Write the run event to the state machine
-                self.pei.borrow_mut().write_rsm(req.data);
-                // Response contains the resulting run state (1 byte)
+                let run_action = self.pei.borrow_mut().write_rsm(req.data);
+
+                if let Some(action) = run_action {
+                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Pei, action));
+                }
+
                 Ok(WriteResponse::byte(self.pei.borrow().read_rsm()[0]))
             }
             _ => Err(PropertyError::InvalidPropertyId),

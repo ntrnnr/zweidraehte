@@ -438,15 +438,22 @@ pub enum ComObjectEvent {
     ReadResponse,
 }
 
-/// Events emitted when the application lifecycle state changes.
+/// Events emitted when a program lifecycle state changes.
 ///
-/// These events are published through [`Stack::lifecycle_events()`](crate::Stack::lifecycle_events) whenever the
+/// These events are published through
+/// [`Stack::lifecycle_events()`](crate::Stack::lifecycle_events) whenever a
 /// run state machine transitions into or out of the RUNNING state, including
 /// transitions caused by load state machine cascades (e.g., ETS programming
 /// completing and automatically starting the application).
+///
+/// Both the Application Program Object and the PEI Program Object have run
+/// state machines and emit their own pair of events. User code targeting
+/// modern devices should typically only react to the `Application*` variants;
+/// the `Pei*` variants are surfaced for completeness so that tools observing
+/// the full ETS programming cascade can see both halves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleEvent {
-    /// The application transitioned to RUNNING.
+    /// The application program transitioned to RUNNING.
     ///
     /// This is the appropriate time to:
     /// - Read ETS parameters and configure application behavior
@@ -455,11 +462,20 @@ pub enum LifecycleEvent {
     /// - Start periodic timers
     ApplicationStarted,
 
-    /// The application transitioned out of RUNNING (to HALTED, READY, or TERMINATED).
+    /// The application program transitioned out of RUNNING (to HALTED, READY, or TERMINATED).
     ///
     /// This is the appropriate time to:
     /// - Stop timers and periodic tasks
     /// - Set outputs to a safe state
     /// - Clean up application-level resources
     ApplicationStopped,
+
+    /// The PEI (Physical External Interface) program transitioned to RUNNING.
+    ///
+    /// PEI is vestigial on modern devices — this event is surfaced for
+    /// observability but has no required user-side handling.
+    PeiStarted,
+
+    /// The PEI program transitioned out of RUNNING.
+    PeiStopped,
 }

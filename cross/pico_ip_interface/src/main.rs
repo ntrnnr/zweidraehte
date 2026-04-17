@@ -269,6 +269,12 @@ async fn lifecycle_task(knx: Stack<'static, PicoIpInterface>) -> ! {
             LifecycleEvent::ApplicationStopped => {
                 info!("Application STOPPED");
             }
+            LifecycleEvent::PeiStarted => {
+                info!("PEI STARTED");
+            }
+            LifecycleEvent::PeiStopped => {
+                info!("PEI STOPPED");
+            }
         }
     }
 }
