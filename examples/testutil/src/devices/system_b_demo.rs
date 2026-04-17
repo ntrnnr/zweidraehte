@@ -58,7 +58,7 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
+    HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
     create_system_b_objects_from_extension,
 };
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
@@ -538,23 +538,23 @@ impl zweidraehte_platform::NetworkConfig for MockIpPlatform {
 /// through the `SystemBStackDefinition` associated consts.
 pub type DemoState = IpStateFor<DemoStack, KnxIpDeviceTcp>;
 
-/// Persisted snapshot type for the demo device.
-pub type DemoPersistedState = <DemoState as HasPersistedState>::Persisted;
+/// Device config (persisted snapshot) type for the demo device.
+pub type DemoDeviceConfig = <DemoState as HasDeviceConfig>::Config;
 
 /// Init envelope for constructing `DemoState` inside the runner.
 ///
-/// Carries the device identity and an optional persisted snapshot.
-/// If `persisted` is `None`, the state is initialized with factory defaults.
+/// Carries the device identity and an optional loaded device config.
+/// If `loaded_config` is `None`, the state is initialized with factory defaults.
 pub struct DemoStateInit {
     pub serial: [u8; 6],
-    pub persisted: Option<DemoPersistedState>,
+    pub loaded_config: Option<DemoDeviceConfig>,
 }
 
 impl DemoStateInit {
     /// Build the init envelope from a device identity and optional
-    /// persisted snapshot.
-    pub fn new(identity: &impl DeviceIdentity, persisted: Option<DemoPersistedState>) -> Self {
-        Self { serial: *identity.serial_number(), persisted }
+    /// loaded device config.
+    pub fn new(identity: &impl DeviceIdentity, loaded_config: Option<DemoDeviceConfig>) -> Self {
+        Self { serial: *identity.serial_number(), loaded_config }
     }
 }
 
@@ -579,8 +579,8 @@ impl StackDefinition for DemoStack {
     fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
         let identity = StaticIdentity::new(init.serial);
-        match init.persisted {
-            Some(persisted) => DemoState::from_persisted(identity, persisted, ()),
+        match init.loaded_config {
+            Some(config) => DemoState::from_config(identity, config, ()),
             None => DemoState::new(identity, comm_objs::DemoComObjects::new(), (), ()),
         }
     }

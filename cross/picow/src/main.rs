@@ -24,7 +24,7 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, HasPersistedState, IpAugmentFor, IpExtension, IpStateFor, SystemBMemoryMap,
+        DefaultSystemBInterfaceObjects, HasDeviceConfig, IpAugmentFor, IpExtension, IpStateFor, SystemBMemoryMap,
         SystemBStackDefinition, create_system_b_objects_with_extra,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
@@ -56,10 +56,10 @@ type Storage = RpFlashStorage<PicoWState, rp_common::FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoWLightSwitch;
 
-/// Init envelope: identity + optional persisted snapshot.
+/// Init envelope: identity + optional loaded device config.
 pub struct PicoWStateInit {
     pub serial: [u8; 6],
-    pub persisted: Option<<PicoWState as HasPersistedState>::Persisted>,
+    pub loaded_config: Option<<PicoWState as HasDeviceConfig>::Config>,
 }
 
 impl SystemBStackDefinition for PicoWLightSwitch {}
@@ -80,8 +80,8 @@ impl StackDefinition for PicoWLightSwitch {
     fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
         let identity = StaticIdentity::new(init.serial);
-        match init.persisted {
-            Some(persisted) => PicoWState::from_persisted(identity, persisted, ()),
+        match init.loaded_config {
+            Some(config) => PicoWState::from_config(identity, config, ()),
             None => PicoWState::new(identity, LightSwitchComObjects::new(), (), ()),
         }
     }
@@ -355,13 +355,13 @@ async fn main(spawner: Spawner) {
     // above and is now passed to RpFlashStorage for config persistence.
     let mut storage = RpFlashStorage::<PicoWState, _>::new(flash, identity_data);
 
-    let persisted = match storage.load_persisted() {
-        Ok(Some(p)) => {
-            info!("Loaded persisted state from flash");
-            Some(p)
+    let loaded_config = match storage.load_config() {
+        Ok(Some(c)) => {
+            info!("Loaded device config from flash");
+            Some(c)
         }
         Ok(None) => {
-            info!("No persisted state found, starting fresh");
+            info!("No stored config found, starting fresh");
             None
         }
         Err(e) => {
@@ -370,7 +370,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = PicoWStateInit { serial: *storage.identity().serial_number(), persisted };
+    let state_init = PicoWStateInit { serial: *storage.identity().serial_number(), loaded_config };
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded

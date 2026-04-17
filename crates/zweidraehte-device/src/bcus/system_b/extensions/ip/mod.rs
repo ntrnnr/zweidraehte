@@ -39,7 +39,7 @@ use zweidraehte_proto::address::IndividualAddress;
 /// All IP-specific settings that can be configured via ETS or
 /// the IP Parameter Object. Implements [`ExtensionConfig`] so it
 /// can be used as the `E` parameter of
-/// [`PersistedState`](crate::bcus::system_b::PersistedState).
+/// [`DeviceConfig`](crate::bcus::system_b::DeviceConfig).
 ///
 /// The const generic `N` is the maximum number of additional individual
 /// addresses (tunneling slots). Non-tunneling devices use the default

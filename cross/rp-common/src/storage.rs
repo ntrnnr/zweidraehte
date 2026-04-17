@@ -44,7 +44,7 @@ use embassy_rp::flash::{self, Flash};
 use embassy_rp::peripherals::FLASH;
 use serde::{Deserialize, Serialize};
 
-use zweidraehte_device::bcus::system_b::HasPersistedState;
+use zweidraehte_device::bcus::system_b::HasDeviceConfig;
 use zweidraehte_device::storage::DeviceIdentity;
 
 // ================================================================================
@@ -75,7 +75,7 @@ const IDENTITY_RECORD_SIZE: usize = 4 + 6 + 8;
 /// Persistent storage backed by RP2040/RP2350 internal flash.
 ///
 /// `S` is the **runtime** state type (e.g., `PicoEthState`). The storage
-/// internally converts to/from the serializable [`S::Persisted`] form
+/// internally converts to/from the serializable [`S::Config`] form
 /// using the stored [`DeviceIdentity`].
 ///
 /// `STORAGE_SIZE` controls how many bytes at the end of flash are reserved
@@ -121,8 +121,8 @@ impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
 
 impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE>
 where
-    S: HasPersistedState,
-    S::Persisted: Serialize + for<'de> Deserialize<'de>,
+    S: HasDeviceConfig,
+    S::Config: Serialize + for<'de> Deserialize<'de>,
 {
     /// Read and deserialize the persisted state from flash without
     /// constructing the runtime state.
@@ -131,7 +131,7 @@ where
     /// IP assignment method) before the platform layer is fully
     /// initialized. For the normal boot path, call this method and pass
     /// the result into the stack's `StateInit` envelope for state construction.
-    pub fn load_persisted(&mut self) -> Result<Option<S::Persisted>, FlashError> {
+    pub fn load_config(&mut self) -> Result<Option<S::Config>, FlashError> {
         let mut region = [0u8; STORAGE_SIZE];
         self.flash.blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
 
@@ -145,7 +145,7 @@ where
         }
 
         let payload = &region[CONFIG_HEADER_SIZE..CONFIG_HEADER_SIZE + len];
-        match postcard::from_bytes::<S::Persisted>(payload) {
+        match postcard::from_bytes::<S::Config>(payload) {
             Ok(persisted) => Ok(Some(persisted)),
             Err(_) => {
                 defmt::warn!("Flash storage: postcard deserialization failed, returning None");
@@ -157,16 +157,16 @@ where
 
 impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE>
 where
-    S: HasPersistedState,
-    S::Persisted: Serialize + for<'de> Deserialize<'de>,
+    S: HasDeviceConfig,
+    S::Config: Serialize + for<'de> Deserialize<'de>,
     I: DeviceIdentity,
 {
     /// Save the current runtime state to flash.
     ///
-    /// Converts to the persisted form via [`HasPersistedState::to_persisted`],
+    /// Converts to the persisted form via [`HasDeviceConfig::to_config`],
     /// serializes with postcard, then erases and writes the flash sector.
     pub fn save(&mut self, state: &S) -> Result<(), FlashError> {
-        let persisted = state.to_persisted();
+        let persisted = state.to_config();
 
         // Serialize into a stack buffer. Reserve header bytes at the front.
         let mut buf = [0u8; STORAGE_SIZE];

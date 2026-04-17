@@ -15,7 +15,7 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     StackDefinition,
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, HasExtensionState, HasPersistedState, HasSecurityMode, PersistedState,
+        DefaultSystemBInterfaceObjects, HasExtensionState, HasDeviceConfig, HasSecurityMode, DeviceConfig,
         SecureExtensionConfig, SecureResources, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
         create_system_b_objects_with_extra,
     },
@@ -889,7 +889,7 @@ pub enum SecureConformanceStateInit {
         app_table: Application<TestParameters>,
     },
     /// Restore from a previously-persisted snapshot.
-    Persisted { snapshot: SecureConformancePersistedState, seq_storage: ShmSeqStorage },
+    Loaded { config: SecureConformanceDeviceConfig, seq_storage: ShmSeqStorage },
 }
 
 /// Secure conformance test stack definition.
@@ -945,8 +945,8 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             SecureConformanceStateInit::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
                 SecureConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
-            SecureConformanceStateInit::Persisted { snapshot, seq_storage } => {
-                SecureConformanceState::from_persisted_snapshot(snapshot, seq_storage)
+            SecureConformanceStateInit::Loaded { config, seq_storage } => {
+                SecureConformanceState::from_device_config(config, seq_storage)
             }
         }
     }
@@ -1145,7 +1145,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 /// Persisted state type for the secure inner state.
-type SecureInnerPersistedState = PersistedState<
+type SecureInnerDeviceConfig = DeviceConfig<
     { table_sizes::ADT },
     { table_sizes::AST },
     { table_sizes::COT },
@@ -1156,8 +1156,8 @@ type SecureInnerPersistedState = PersistedState<
 /// Full snapshot for the secure conformance DUT.
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-pub struct SecureConformancePersistedState {
-    pub inner: SecureInnerPersistedState,
+pub struct SecureConformanceDeviceConfig {
+    pub inner: SecureInnerDeviceConfig,
     #[serde_as(as = "[_; LINEAR_MEMORY_SIZE]")]
     pub linear_memory: [u8; LINEAR_MEMORY_SIZE],
     #[serde_as(as = "[_; LEVEL2_MEMORY_SIZE]")]
@@ -1168,11 +1168,11 @@ pub struct SecureConformancePersistedState {
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 
-impl SecureConformancePersistedState {
+impl SecureConformanceDeviceConfig {
     /// Build the default persisted snapshot without constructing runtime state.
     ///
     /// This produces the same serialized form as the old `Default` impl did,
-    /// but assembles the `PersistedState` directly.
+    /// but assembles the `DeviceConfig` directly.
     pub fn default_snapshot() -> Self {
         let (addr_tab, asso_tab, co_tab) = conformance_config::ConformanceTestConfig::create_tables(
             ConformanceMemoryMap::ADT_BASE as u32,
@@ -1185,7 +1185,7 @@ impl SecureConformancePersistedState {
 
         let sec_config = conformance_config::ConformanceTestConfig::create_security_config();
 
-        let mut inner = SecureInnerPersistedState::factory_default();
+        let mut inner = SecureInnerDeviceConfig::factory_default();
         inner.individual_address = IndividualAddress::new(1, 1, 1);
         inner.address_table = addr_tab;
         inner.association_table = asso_tab;
@@ -1206,10 +1206,10 @@ impl SecureConformancePersistedState {
 }
 
 impl SecureConformanceState {
-    pub fn from_persisted_snapshot(snapshot: SecureConformancePersistedState, seq_storage: ShmSeqStorage) -> Self {
+    pub fn from_device_config(snapshot: SecureConformanceDeviceConfig, seq_storage: ShmSeqStorage) -> Self {
         let identity = StaticSecureIdentity::new(SECURE_SERIAL_NUMBER, SECURE_FDSK);
         let resources = SecureResources { inner: (), seq_storage, fdsk: SECURE_FDSK };
-        let inner = SecureInnerState::from_persisted(identity, snapshot.inner, resources);
+        let inner = SecureInnerState::from_config(identity, snapshot.inner, resources);
 
         // Seed per-peer receiving sequence numbers from SIAT entries into
         // the wear-resistant storage. This ensures that seqnrs written by
@@ -1227,9 +1227,9 @@ impl SecureConformanceState {
         }
     }
 
-    pub fn to_persisted_snapshot(&self) -> SecureConformancePersistedState {
-        SecureConformancePersistedState {
-            inner: self.inner.to_persisted(),
+    pub fn to_device_config(&self) -> SecureConformanceDeviceConfig {
+        SecureConformanceDeviceConfig {
+            inner: self.inner.to_config(),
             linear_memory: *self.linear_memory.borrow(),
             level2_memory: *self.level2_memory.borrow(),
             level1_memory: *self.level1_memory.borrow(),

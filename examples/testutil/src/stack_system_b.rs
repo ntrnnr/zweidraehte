@@ -159,25 +159,25 @@ async fn main(spawner: Spawner) {
     println!("  Manufacturer ID: {:04X}", DEVICE_DESCRIPTOR.manufacturer_id);
     println!();
 
-    // Load persisted state snapshot from storage. The actual runtime state is
+    // Load device config from storage. The actual runtime state is
     // constructed later by the runner via `create_state`, which has access to
     // the `LayerContext`.
     let mut storage = JsonStorage::<DemoState, _>::new(STATE_FILE_PATH, identity);
-    let persisted = match storage.load_persisted() {
-        Ok(Some(persisted)) => {
-            println!("Loaded persisted state from {}", STATE_FILE_PATH);
-            Some(persisted)
+    let loaded_config = match storage.load_config() {
+        Ok(Some(config)) => {
+            println!("Loaded device config from {}", STATE_FILE_PATH);
+            Some(config)
         }
         Ok(None) => {
-            println!("No persisted state found, starting fresh");
+            println!("No stored config found, starting fresh");
             None
         }
         Err(e) => {
-            println!("Error loading persisted state: {}", e);
+            println!("Error loading device config: {}", e);
             None
         }
     };
-    let state_init = DemoStateInit::new(storage.identity(), persisted);
+    let state_init = DemoStateInit::new(storage.identity(), loaded_config);
 
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);

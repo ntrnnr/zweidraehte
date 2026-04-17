@@ -61,10 +61,10 @@ type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 // StackDefinition
 // ----------------------------------------------------------------------------
 
-/// Init envelope: identity + optional persisted snapshot.
+/// Init envelope: identity + optional loaded device config.
 pub struct PicoTp1StateInit {
     pub serial: [u8; 6],
-    pub persisted: Option<<PicoTp1State as HasPersistedState>::Persisted>,
+    pub loaded_config: Option<<PicoTp1State as HasDeviceConfig>::Config>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,8 +96,8 @@ impl StackDefinition for PicoTp1LightSwitch {
     fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
         let identity = StaticIdentity::new(init.serial);
-        match init.persisted {
-            Some(persisted) => PicoTp1State::from_persisted(identity, persisted, ()),
+        match init.loaded_config {
+            Some(config) => PicoTp1State::from_config(identity, config, ()),
             None => PicoTp1State::new(identity, LightSwitchComObjects::new(), (), ()),
         }
     }
@@ -388,13 +388,13 @@ async fn main(spawner: Spawner) {
     // above and is now passed to RpFlashStorage for config persistence.
     let mut storage = RpFlashStorage::<PicoTp1State, _>::new(flash, identity_data);
 
-    let persisted = match storage.load_persisted() {
-        Ok(Some(p)) => {
-            info!("Loaded persisted state from flash");
-            Some(p)
+    let loaded_config = match storage.load_config() {
+        Ok(Some(c)) => {
+            info!("Loaded device config from flash");
+            Some(c)
         }
         Ok(None) => {
-            info!("No persisted state found, starting fresh");
+            info!("No stored config found, starting fresh");
             None
         }
         Err(e) => {
@@ -403,7 +403,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = PicoTp1StateInit { serial: *storage.identity().serial_number(), persisted };
+    let state_init = PicoTp1StateInit { serial: *storage.identity().serial_number(), loaded_config };
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded

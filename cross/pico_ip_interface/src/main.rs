@@ -86,10 +86,10 @@ type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoIpInterface;
 
-/// Init envelope: identity + optional persisted snapshot.
+/// Init envelope: identity + optional loaded device config.
 pub struct IpIfStateInit {
     pub serial: [u8; 6],
-    pub persisted: Option<<IpIfState as HasPersistedState>::Persisted>,
+    pub loaded_config: Option<<IpIfState as HasDeviceConfig>::Config>,
 }
 
 impl SystemBStackDefinition for PicoIpInterface {}
@@ -119,8 +119,8 @@ impl StackDefinition for PicoIpInterface {
     fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
         let identity = StaticIdentity::new(init.serial);
-        match init.persisted {
-            Some(persisted) => IpIfState::from_persisted(identity, persisted, ()),
+        match init.loaded_config {
+            Some(config) => IpIfState::from_config(identity, config, ()),
             None => IpIfState::new(identity, IpInterfaceComObjects::new(), (), ()),
         }
     }
@@ -376,13 +376,13 @@ async fn main(spawner: Spawner) {
 
     let mut storage = RpFlashStorage::<IpIfState, _>::new(flash, identity_data);
 
-    let persisted = match storage.load_persisted() {
-        Ok(Some(p)) => {
-            info!("Loaded persisted state from flash");
-            Some(p)
+    let loaded_config = match storage.load_config() {
+        Ok(Some(c)) => {
+            info!("Loaded device config from flash");
+            Some(c)
         }
         Ok(None) => {
-            info!("No persisted state found, starting fresh");
+            info!("No stored config found, starting fresh");
             None
         }
         Err(e) => {
@@ -391,7 +391,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = IpIfStateInit { serial: *storage.identity().serial_number(), persisted };
+    let state_init = IpIfStateInit { serial: *storage.identity().serial_number(), loaded_config };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

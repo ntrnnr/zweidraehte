@@ -21,7 +21,7 @@ use super::ipc::{
     TAG_SET_PROGRAMMING_MODE, TAG_TRIGGER_READ, TAG_TRIGGER_SYNC, TAG_TRIGGER_WRITE,
 };
 use super::mock::CapturedLinkLayerMessage;
-use super::stack::ConformancePersistedState;
+use super::stack::ConformanceDeviceConfig;
 
 use crate::logger::{self, LogEntry};
 use zweidraehte_proto::messages::knx::ServiceType;
@@ -64,7 +64,7 @@ impl MultiProcessHarness {
         let mut shm = SharedMemory::create()?;
 
         // Build the default persisted snapshot directly (no runtime state needed).
-        let snapshot = ConformancePersistedState::default_snapshot();
+        let snapshot = ConformanceDeviceConfig::default_snapshot();
         shm.write_state(&snapshot)?;
 
         Ok(Self { shm, child: ChildState::Dead, dut_binary: "conformance-dut" })
@@ -181,9 +181,9 @@ impl MultiProcessHarness {
 
     /// Re-initialize shared memory with the default conformance state.
     pub fn reset_shared_memory(&mut self) -> io::Result<()> {
-        use super::stack::ConformancePersistedState;
+        use super::stack::ConformanceDeviceConfig;
 
-        let snapshot = ConformancePersistedState::default_snapshot();
+        let snapshot = ConformanceDeviceConfig::default_snapshot();
         self.shm
             .write_state(&snapshot)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))
@@ -191,9 +191,9 @@ impl MultiProcessHarness {
 
     /// Re-initialize shared memory with the default secure conformance state.
     pub fn reset_shared_memory_secure(&mut self) -> io::Result<()> {
-        use super::secure_stack::SecureConformancePersistedState;
+        use super::secure_stack::SecureConformanceDeviceConfig;
 
-        let snapshot = SecureConformancePersistedState::default_snapshot();
+        let snapshot = SecureConformanceDeviceConfig::default_snapshot();
         self.shm
             .write_state(&snapshot)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))?;

@@ -67,10 +67,10 @@ type Storage = RpFlashStorage<PicoEthState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoEthLightSwitch;
 
-/// Init envelope: identity + optional persisted snapshot.
+/// Init envelope: identity + optional loaded device config.
 pub struct PicoEthStateInit {
     pub serial: [u8; 6],
-    pub persisted: Option<<PicoEthState as HasPersistedState>::Persisted>,
+    pub loaded_config: Option<<PicoEthState as HasDeviceConfig>::Config>,
 }
 
 impl SystemBStackDefinition for PicoEthLightSwitch {}
@@ -93,8 +93,8 @@ impl StackDefinition for PicoEthLightSwitch {
 
         let identity = StaticIdentity::new(init.serial);
 
-        match init.persisted {
-            Some(persisted) => PicoEthState::from_persisted(identity, persisted, ()),
+        match init.loaded_config {
+            Some(config) => PicoEthState::from_config(identity, config, ()),
             None => PicoEthState::new(identity, LightSwitchComObjects::new(), (), ()),
         }
     }
@@ -429,13 +429,13 @@ async fn main(spawner: Spawner) {
     // Persistent storage — peek at IP config before creating the stack
     // ========================================================================
 
-    // Read the persisted state from flash WITHOUT constructing the full
+    // Read the device config from flash WITHOUT constructing the full
     // runtime state. We need the IP assignment method to decide whether
     // to configure the embassy-net stack with DHCP or static IP before
-    // creating it. load_persisted() deserializes the raw config for this.
+    // creating it. load_config() deserializes the raw config for this.
     let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity_data);
-    let persisted = storage.load_persisted().ok().flatten();
-    let ip_config = persisted.as_ref().map(|p| &p.extension_config);
+    let loaded_config = storage.load_config().ok().flatten();
+    let ip_config = loaded_config.as_ref().map(|c| &c.extension_config);
 
     // ========================================================================
     // IP assignment procedure (KNX spec Core 8.5, Figure 42)
@@ -460,7 +460,7 @@ async fn main(spawner: Spawner) {
                 let prefix = rp_common::mask_to_prefix(mask);
                 let gw = Ipv4Addr::from(ip.configured_gateway);
                 let gateway = if gw.is_unspecified() { None } else { Some(gw) };
-                info!("Using persisted static IP: {}/{}", addr, prefix);
+                info!("Using stored static IP: {}/{}", addr, prefix);
                 (
                     embassy_net::Config::ipv4_static(StaticConfigV4 {
                         address: Ipv4Cidr::new(addr, prefix),
@@ -478,7 +478,7 @@ async fn main(spawner: Spawner) {
             (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
         }
     } else {
-        info!("No persisted state, using DHCP");
+        info!("No stored config, using DHCP");
         (embassy_net::Config::dhcpv4(DhcpConfig::default()), IP_ASSIGN_DHCP)
     };
 
@@ -498,8 +498,8 @@ async fn main(spawner: Spawner) {
 
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
-    // Build state config from the persisted snapshot loaded earlier (line 430).
-    let state_init = PicoEthStateInit { serial: *storage.identity().serial_number(), persisted };
+    // Build state init from the device config loaded earlier (line 430).
+    let state_init = PicoEthStateInit { serial: *storage.identity().serial_number(), loaded_config };
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.

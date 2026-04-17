@@ -15,7 +15,7 @@
 //! and [`PersistedIpConfig`](crate::bcus::system_b::PersistedIpConfig) remain
 //! in their respective BCU modules.
 
-use crate::bcus::system_b::HasPersistedState;
+use crate::bcus::system_b::HasDeviceConfig;
 
 // ============================================================================
 // Device identity
@@ -131,11 +131,11 @@ impl SecureDeviceIdentity for StaticSecureIdentity {
 /// `State` is the **runtime** state type (e.g.,
 /// [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)).
 /// The storage backend internalizes the conversion to/from the
-/// serializable form via [`HasPersistedState`] and holds a
+/// serializable form via [`HasDeviceConfig`] and holds a
 /// [`DeviceIdentity`] for restoring state on load.
 ///
 /// This means callers work exclusively with the runtime state type —
-/// no manual `to_persisted()` / `from_persisted()` calls needed.
+/// no manual `to_config()` / `from_config()` calls needed.
 ///
 /// # Persistence Strategy
 ///
@@ -150,9 +150,9 @@ impl SecureDeviceIdentity for StaticSecureIdentity {
 pub trait DeviceStorage: Sized {
     /// The runtime state type this storage handles.
     ///
-    /// Must implement [`HasPersistedState`] so the storage can convert
+    /// Must implement [`HasDeviceConfig`] so the storage can convert
     /// to/from the serializable form internally.
-    type State: HasPersistedState;
+    type State: HasDeviceConfig;
 
     /// The device identity type held by this storage backend.
     type Identity: DeviceIdentity;
@@ -173,11 +173,11 @@ pub trait DeviceStorage: Sized {
     /// The caller passes the snapshot into `D::StateInit` and lets
     /// [`StackDefinition::create_state`](crate::StackDefinition::create_state)
     /// reconstruct runtime state with access to the `LayerContext`.
-    fn load_persisted(&mut self) -> Result<Option<<Self::State as HasPersistedState>::Persisted>, Self::Error>;
+    fn load_config(&mut self) -> Result<Option<<Self::State as HasDeviceConfig>::Config>, Self::Error>;
 
     /// Save persistent state to storage.
     ///
-    /// Calls [`HasPersistedState::to_persisted`] internally to produce
+    /// Calls [`HasDeviceConfig::to_config`] internally to produce
     /// the serializable form, then writes it to the underlying store.
     ///
     /// This should atomically replace the previous state to prevent
@@ -219,7 +219,7 @@ pub trait DeviceStorage: Sized {
 /// All state will be lost on power cycle.
 ///
 /// The type parameter `S` is the runtime state type. It must implement
-/// [`HasPersistedState`] to satisfy the [`DeviceStorage::State`] bound,
+/// [`HasDeviceConfig`] to satisfy the [`DeviceStorage::State`] bound,
 /// but no actual storage occurs.
 pub struct NoStorage<S>(core::marker::PhantomData<S>);
 
@@ -250,7 +250,7 @@ impl<S> core::fmt::Debug for NoStorage<S> {
     }
 }
 
-impl<S: HasPersistedState> DeviceStorage for NoStorage<S> {
+impl<S: HasDeviceConfig> DeviceStorage for NoStorage<S> {
     type State = S;
     type Identity = NoIdentity;
     type Error = core::convert::Infallible;
@@ -261,7 +261,7 @@ impl<S: HasPersistedState> DeviceStorage for NoStorage<S> {
         &NoIdentity
     }
 
-    fn load_persisted(&mut self) -> Result<Option<S::Persisted>, Self::Error> {
+    fn load_config(&mut self) -> Result<Option<S::Config>, Self::Error> {
         Ok(None) // No saved state
     }
 

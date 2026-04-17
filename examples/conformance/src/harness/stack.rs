@@ -735,8 +735,8 @@ pub enum ConformanceStateInit {
         co_tab: conformance_config::CoTab,
         app_table: Application<TestParameters>,
     },
-    /// Restore from a previously-persisted snapshot.
-    Persisted(ConformancePersistedState),
+    /// Restore from a previously-persisted config snapshot.
+    Loaded(ConformanceDeviceConfig),
 }
 
 /// Unified state for conformance tests.
@@ -1293,7 +1293,7 @@ impl StackDefinition for IpcConformanceTestStack {
             ConformanceStateInit::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
                 ConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
-            ConformanceStateInit::Persisted(snapshot) => ConformanceState::from_persisted_snapshot(snapshot),
+            ConformanceStateInit::Loaded(snapshot) => ConformanceState::from_device_config(snapshot),
         }
     }
 
@@ -1323,17 +1323,17 @@ impl StackDefinition for IpcConformanceTestStack {
 // Shared Memory Integration
 // ============================================================================
 //
-// The shared memory stores a `ConformancePersistedState` serialized with
-// postcard. This wraps the stack's own `PersistedState` (which handles
+// The shared memory stores a `ConformanceDeviceConfig` serialized with
+// postcard. This wraps the stack's own `DeviceConfig` (which handles
 // auth keys, tables, load/run state, etc.) plus the test memory regions
 // that the conformance harness needs across restarts.
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use zweidraehte_device::bcus::system_b::{HasPersistedState, PersistedState, Tp1ExtensionConfig};
+use zweidraehte_device::bcus::system_b::{HasDeviceConfig, DeviceConfig, Tp1ExtensionConfig};
 
 /// The persisted state type for the inner `Tp1SystemBDeviceState`.
-type InnerPersistedState = PersistedState<
+type InnerDeviceConfig = DeviceConfig<
     { table_sizes::ADT },
     { table_sizes::AST },
     { table_sizes::COT },
@@ -1343,7 +1343,7 @@ type InnerPersistedState = PersistedState<
 
 /// Full snapshot of conformance test state for shared memory.
 ///
-/// Combines the stack's own `PersistedState` (device address, auth keys,
+/// Combines the stack's own `DeviceConfig` (device address, auth keys,
 /// tables, load/run state, IP config) with the test memory regions that
 /// the conformance harness uses.
 ///
@@ -1351,11 +1351,11 @@ type InnerPersistedState = PersistedState<
 /// built-in array support only covers sizes up to 32.
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-pub struct ConformancePersistedState {
-    /// Core device state — serialized via the stack's `to_persisted()` /
-    /// `from_persisted()` pattern, which correctly handles private fields
+pub struct ConformanceDeviceConfig {
+    /// Core device state — serialized via the stack's `to_config()` /
+    /// `from_config()` pattern, which correctly handles private fields
     /// like auth keys.
-    pub inner: InnerPersistedState,
+    pub inner: InnerDeviceConfig,
 
     /// Test memory regions used by conformance memory map tests.
     #[serde_as(as = "[_; LINEAR_MEMORY_SIZE]")]
@@ -1368,7 +1368,7 @@ pub struct ConformancePersistedState {
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 
-impl ConformancePersistedState {
+impl ConformanceDeviceConfig {
     /// Build a default persisted snapshot without needing runtime state.
     ///
     /// Used by the multiprocess harness to initialize shared memory.
@@ -1384,7 +1384,7 @@ impl ConformancePersistedState {
         app_table.write_lsm(&[LoadEvent::StartLoading.into()], None);
         app_table.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
 
-        let mut inner = InnerPersistedState::factory_default();
+        let mut inner = InnerDeviceConfig::factory_default();
         inner.individual_address = IndividualAddress::new(1, 0, 1);
         inner.address_table = addr_tab;
         inner.association_table = asso_tab;
@@ -1404,12 +1404,12 @@ impl ConformancePersistedState {
 impl ConformanceState {
     /// Reconstruct `ConformanceState` from a persisted snapshot.
     ///
-    /// Uses the stack's `from_persisted()` to reconstruct the inner
+    /// Uses the stack's `from_config()` to reconstruct the inner
     /// device state (including auth keys, tables, load/run states),
     /// then restores the test memory regions.
-    pub fn from_persisted_snapshot(snapshot: ConformancePersistedState) -> Self {
+    pub fn from_device_config(snapshot: ConformanceDeviceConfig) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::from_persisted(identity, snapshot.inner, ());
+        let inner = InnerState::from_config(identity, snapshot.inner, ());
 
         Self {
             inner,
@@ -1425,9 +1425,9 @@ impl ConformanceState {
     ///
     /// Called by the child's restart handler right before exiting.
     /// The snapshot is then written to shared memory via postcard.
-    pub fn to_persisted_snapshot(&self) -> ConformancePersistedState {
-        ConformancePersistedState {
-            inner: self.inner.to_persisted(),
+    pub fn to_device_config(&self) -> ConformanceDeviceConfig {
+        ConformanceDeviceConfig {
+            inner: self.inner.to_config(),
             linear_memory: *self.linear_memory.borrow(),
             level2_memory: *self.level2_memory.borrow(),
             level1_memory: *self.level1_memory.borrow(),

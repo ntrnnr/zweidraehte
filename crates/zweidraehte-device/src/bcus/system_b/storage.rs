@@ -1,7 +1,7 @@
 //! Persistence infrastructure and extension composition for System B devices.
 //!
 //! This module provides System B-specific persistence types
-//! ([`PersistedState`], [`PersistedIpConfig`], [`ExtensionConfig`],
+//! ([`DeviceConfig`], [`PersistedIpConfig`], [`ExtensionConfig`],
 //! [`ExtensionState`]) and the [`Extension`] trait that unifies persistence
 //! with interface object augmentation.
 //!
@@ -10,13 +10,13 @@
 //! The three suffixes carry stable meaning across the stack:
 //!
 //! - `*Config` — serialisable persisted form. Round-trips through `serde`.
-//!   Examples: [`PersistedState`] (the whole-device config), [`PersistedIpConfig`],
+//!   Examples: [`DeviceConfig`] (the whole-device config), [`PersistedIpConfig`],
 //!   and every `*ExtensionConfig`.
 //! - `*State` — runtime in-memory form with interior mutability
 //!   (`Cell`/`RefCell`). Converts to/from `Config` via
 //!   [`ExtensionState::from_config`] / [`ExtensionState::to_config`] at the
-//!   extension level, and via [`HasPersistedState::to_persisted`] plus
-//!   `SystemBDeviceState::from_persisted` at the device level.
+//!   extension level, and via [`HasDeviceConfig::to_config`] plus
+//!   `SystemBDeviceState::from_config` at the device level.
 //! - `*Resources` — non-persistent construction-time inputs (pre-allocated
 //!   channels, `MaybeUninit` buffers, factory-programmed keys such as
 //!   FDSK, platform handles). Never serialised. Fed into
@@ -73,29 +73,29 @@ use zweidraehte_proto::address::IndividualAddress;
 use crate::storage::DeviceIdentity;
 
 // ============================================================================
-// HasPersistedState — bridge between runtime and serializable state
+// HasDeviceConfig — bridge between runtime state and its serializable config
 // ============================================================================
 
-/// Trait for converting between runtime state and its serializable form.
+/// Trait for converting between runtime state and its serializable config.
 ///
 /// Implemented by [`SystemBDeviceState`](super::SystemBDeviceState) to
 /// enable [`DeviceStorage`](crate::storage::DeviceStorage) backends to
 /// work with the runtime state type directly, internalizing the
-/// conversion to/from [`PersistedState`].
+/// conversion to/from [`DeviceConfig`].
 ///
 /// # Contract
 ///
-/// - [`to_persisted`](Self::to_persisted) must capture all state that
-///   survives a power cycle.
-/// - [`from_persisted`](Self::from_persisted) must restore state such
-///   that the device behaves identically to before the power cycle
-///   (modulo volatile state like programming mode and run state).
-pub trait HasPersistedState: Sized {
-    /// The serializable snapshot type.
-    type Persisted: Serialize + for<'de> Deserialize<'de>;
+/// - [`to_config`](Self::to_config) must capture all state that survives
+///   a power cycle.
+/// - `from_config` (inherent, on `SystemBDeviceState`) must restore
+///   state such that the device behaves identically to before the power
+///   cycle (modulo volatile state like programming mode and run state).
+pub trait HasDeviceConfig: Sized {
+    /// The serializable config type (device-level persisted form).
+    type Config: Serialize + for<'de> Deserialize<'de>;
 
-    /// Export current runtime state to a serializable snapshot.
-    fn to_persisted(&self) -> Self::Persisted;
+    /// Export current runtime state to a serializable config.
+    fn to_config(&self) -> Self::Config;
 }
 
 // ============================================================================
@@ -258,13 +258,18 @@ impl Extension<()> for () {
 }
 
 // ============================================================================
-// Persisted state
+// DeviceConfig (device-level serialisable form)
 // ============================================================================
 
-/// All state that must survive power cycles.
+/// All state that must survive power cycles — the device-level persisted
+/// configuration.
 ///
 /// This struct contains everything that ETS can configure and the device
 /// must remember. It's serialized to storage when changes occur.
+///
+/// Plays the same role at the device level that `*ExtensionConfig` plays
+/// at the extension level (see the [vocabulary block](self) at the top
+/// of this module).
 ///
 /// # Generic Parameters
 ///
@@ -279,14 +284,14 @@ impl Extension<()> for () {
 /// Use [`table_sizes`] to calculate the const generics from max entry counts.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound(serialize = "P: Serialize", deserialize = "P: Deserialize<'de>",))]
-pub struct PersistedState<
+pub struct DeviceConfig<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     P: ConstDefault = (),
     E: ExtensionConfig = (),
 > {
-    /// Version of the persisted state format.
+    /// Version of the device config format.
     ///
     /// Increment this when making breaking changes to allow migration.
     pub version: u8,
@@ -334,12 +339,12 @@ pub struct PersistedState<
 }
 
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, E: ExtensionConfig>
-    PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, P, E>
+    DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, P, E>
 {
-    /// Current version of the persisted state format.
+    /// Current version of the device config format.
     pub const VERSION: u8 = 1;
 
-    /// Create a new persisted state with factory defaults.
+    /// Create a new device config with factory defaults.
     pub fn factory_default() -> Self {
         Self {
             version: Self::VERSION,
@@ -366,7 +371,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: Con
 ///
 /// ```rust,ignore
 /// const SIZES: (usize, usize, usize) = table_sizes(64, 64, 32);
-/// type MyPersistedState = PersistedState<{ SIZES.0 }, { SIZES.1 }, { SIZES.2 }, ()>;
+/// type MyDeviceConfig = DeviceConfig<{ SIZES.0 }, { SIZES.1 }, { SIZES.2 }, ()>;
 /// ```
 pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (usize, usize, usize) {
     (

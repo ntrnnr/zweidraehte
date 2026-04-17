@@ -200,10 +200,10 @@ async fn read_exact_async(stream: &Async<UnixStream>, buf: &mut [u8]) -> io::Res
 //
 // The shared memory region stores device state serialized with postcard,
 // using the same `[magic][len][payload]` format as the RP flash storage.
-// This lets us reuse the existing `to_persisted()` / `from_persisted()`
+// This lets us reuse the existing `to_config()` / `from_config()`
 // serialization which correctly handles auth keys, table load/run states,
-// etc. We wrap the `PersistedState` with test memory regions in a
-// `ConformancePersistedState` struct for the full snapshot.
+// etc. We wrap the `DeviceConfig` with test memory regions in a
+// `ConformanceDeviceConfig` struct for the full snapshot.
 
 /// Magic bytes at the start of the shared memory region.
 const SHM_MAGIC: [u8; 4] = *b"KNXS";

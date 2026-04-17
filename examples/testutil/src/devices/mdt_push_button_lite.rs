@@ -14,7 +14,7 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    HasPersistedState, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
+    HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
     create_system_b_objects_from_extension,
 };
 use zweidraehte_device::ets::ets_range_enum;
@@ -3209,20 +3209,20 @@ impl zweidraehte_platform::NetworkConfig for MockIpPlatform {
 /// through the `SystemBStackDefinition` associated consts.
 pub type MdtState = IpStateFor<MdtStack, KnxIpDeviceUdp>;
 
-/// Persisted snapshot type for the MDT device.
-pub type MdtPersistedState = <MdtState as HasPersistedState>::Persisted;
+/// Device config (persisted snapshot) type for the MDT device.
+pub type MdtDeviceConfig = <MdtState as HasDeviceConfig>::Config;
 
 /// Init envelope for constructing `MdtState` inside the runner.
 pub struct MdtStateInit {
     pub serial: [u8; 6],
-    pub persisted: Option<MdtPersistedState>,
+    pub loaded_config: Option<MdtDeviceConfig>,
 }
 
 impl MdtStateInit {
     /// Build the init envelope from a device identity and optional
-    /// persisted snapshot.
-    pub fn new(identity: &impl DeviceIdentity, persisted: Option<MdtPersistedState>) -> Self {
-        Self { serial: *identity.serial_number(), persisted }
+    /// loaded device config.
+    pub fn new(identity: &impl DeviceIdentity, loaded_config: Option<MdtDeviceConfig>) -> Self {
+        Self { serial: *identity.serial_number(), loaded_config }
     }
 }
 
@@ -3247,8 +3247,8 @@ impl StackDefinition for MdtStack {
     fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
         let identity = StaticIdentity::new(init.serial);
-        match init.persisted {
-            Some(persisted) => MdtState::from_persisted(identity, persisted, ()),
+        match init.loaded_config {
+            Some(config) => MdtState::from_config(identity, config, ()),
             None => MdtState::new(identity, comm_objs::MdtComObjects::new(), (), ()),
         }
     }

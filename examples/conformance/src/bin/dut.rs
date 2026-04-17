@@ -18,7 +18,7 @@ use static_cell::StaticCell;
 
 use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
 use zweidraehte_conformance::harness::stack::{
-    ConformanceMemoryMap, ConformancePersistedState, ConformanceStateInit, IpcConformanceTestStack, device_info,
+    ConformanceMemoryMap, ConformanceDeviceConfig, ConformanceStateInit, IpcConformanceTestStack, device_info,
 };
 
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
@@ -125,7 +125,7 @@ fn flush_and_exit(
             _ => {}
         }
     }
-    let snapshot = state.to_persisted_snapshot();
+    let snapshot = state.to_device_config();
     let shm_mut = unsafe { &mut *shm.0.get() };
     if let Err(e) = shm_mut.write_state(&snapshot) {
         log::error!("Failed to flush state to shared memory: {}", e);
@@ -186,7 +186,7 @@ async fn handle_restarts(stack: Stack<'static, IpcConformanceTestStack>, shm: &'
 
         // Flush persistent state to shared memory, then exit.
         // The parent will detect EOF and respawn us.
-        let snapshot = state.to_persisted_snapshot();
+        let snapshot = state.to_device_config();
 
         // SAFETY: Single-threaded embassy executor — no concurrent access.
         let shm_mut = unsafe { &mut *shm.0.get() };
@@ -321,12 +321,12 @@ async fn main(spawner: Spawner) {
     let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
     // Deserialize device state from shared memory.
-    let snapshot: ConformancePersistedState = shm
+    let snapshot: ConformanceDeviceConfig = shm
         .read_state()
         .expect("read shared memory")
         .expect("shared memory uninitialized — parent should have written initial state");
 
-    let state_init = ConformanceStateInit::Persisted(snapshot);
+    let state_init = ConformanceStateInit::Loaded(snapshot);
 
     // Store shm in a static so the restart handler can access it.
     let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));

@@ -37,8 +37,8 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
 use super::{
-    DiagnosticsContext, ExtensionState, HasDiagnosticsContext, HasPersistedState, HasSecurityMode, OperationModeState,
-    PersistedState,
+    DiagnosticsContext, ExtensionState, HasDiagnosticsContext, HasDeviceConfig, HasSecurityMode, OperationModeState,
+    DeviceConfig,
 };
 use crate::storage::DeviceIdentity;
 
@@ -88,9 +88,9 @@ pub trait HasExtensionState {
 ///
 /// # Persistence
 ///
-/// State can be converted to/from [`PersistedState`] for storage.
-/// Use [`from_persisted`](Self::from_persisted) to restore from storage,
-/// and [`to_persisted`](Self::to_persisted) to prepare for saving.
+/// State can be converted to/from [`DeviceConfig`] for storage.
+/// Use [`from_config`](Self::from_config) to restore from storage,
+/// and [`to_config`](HasDeviceConfig::to_config) to prepare for saving.
 ///
 /// # Generic Parameters
 ///
@@ -432,7 +432,7 @@ impl<
 }
 
 // ============================================================================
-// HasPersistedState Implementation
+// HasDeviceConfig Implementation
 // ============================================================================
 
 impl<
@@ -442,13 +442,13 @@ impl<
     D: StackDefinition<P: Clone + serde::Serialize + for<'de> serde::Deserialize<'de>>,
     ES: ExtensionState,
     const MAX_CONN: usize,
-> HasPersistedState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
+> HasDeviceConfig for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
-    type Persisted = PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>;
+    type Config = DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>;
 
-    fn to_persisted(&self) -> Self::Persisted {
-        PersistedState {
-            version: PersistedState::<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>::VERSION,
+    fn to_config(&self) -> Self::Config {
+        DeviceConfig {
+            version: DeviceConfig::<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>::VERSION,
             individual_address: self.individual_address.get(),
             auth_keys: *self.auth_keys.borrow(),
             routing_count: self.routing_count.get(),
@@ -465,7 +465,7 @@ impl<
 }
 
 // ============================================================================
-// from_persisted — inherent method (not trait, because it needs serde bounds)
+// from_config — inherent method (not trait, because it needs serde bounds)
 // ============================================================================
 
 impl<
@@ -477,26 +477,26 @@ impl<
     const MAX_CONN: usize,
 > SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
 {
-    /// Restore device state from a persisted snapshot.
+    /// Restore device state from a persisted [`DeviceConfig`] snapshot.
     ///
     /// Comm objects are runtime-only (not persisted) and are created fresh.
     ///
     /// # Arguments
     ///
     /// - `identity`: Device identity (serial number is copied out).
-    /// - `persisted`: Previously serialised state.
+    /// - `config`: Previously-serialised device config.
     /// - `extension_resources`: Non-serialisable resources for the
     ///   extension state — see [`Self::new`] for details. Secure devices
     ///   pass a [`SecureResources`] carrying the FDSK and sequence-number
     ///   storage handle.
     ///
     /// [`SecureResources`]: crate::bcus::system_b::extensions::security::SecureResources
-    pub fn from_persisted(
+    pub fn from_config(
         identity: D::Identity,
-        persisted: PersistedState<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
+        config: DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
         extension_resources: ES::Resources,
     ) -> Self {
-        let PersistedState {
+        let DeviceConfig {
             individual_address,
             auth_keys,
             routing_count,
@@ -509,7 +509,7 @@ impl<
             pei_program_version,
             extension_config,
             version: _,
-        } = persisted;
+        } = config;
 
         Self {
             individual_address: Cell::new(individual_address),

@@ -207,11 +207,12 @@ pub trait StackDefinition: Copy + 'static {
 
     /// Constructor-args envelope passed to [`create_state`](Self::create_state).
     ///
-    /// This is **not** a persisted `Config` in the serde sense (see the
-    /// vocabulary block at the top of
+    /// This is a construction-time envelope, not a serialisable `*Config`
+    /// (see the vocabulary block at the top of
     /// [`bcus::system_b::storage`](crate::bcus::system_b::storage)). It
     /// bundles the inputs `create_state` needs to produce a runtime
-    /// `Self::State`: typically an optional `PersistedState` snapshot
+    /// `Self::State`: typically an optional
+    /// [`DeviceConfig`](crate::bcus::system_b::DeviceConfig) snapshot
     /// loaded from storage plus non-persisted identity data (serial
     /// number, FDSK).
     ///

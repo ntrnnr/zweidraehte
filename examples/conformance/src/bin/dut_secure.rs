@@ -20,7 +20,7 @@ use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilde
 // `ShmCell` is defined locally so the power-cycle/master-reset command
 // handlers share the same `&'static ShmCell` with the restart handler.
 use zweidraehte_conformance::harness::secure_stack::{
-    IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceStateInit,
+    IpcSecureConformanceTestStack, SecureConformanceDeviceConfig, SecureConformanceStateInit,
 };
 use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
 
@@ -127,7 +127,7 @@ fn flush_and_exit(
             _ => {}
         }
     }
-    let snapshot = state.to_persisted_snapshot();
+    let snapshot = state.to_device_config();
     // SAFETY: Single-threaded embassy executor — no concurrent access.
     let shm_mut = unsafe { &mut *shm.0.get() };
     if let Err(e) = shm_mut.write_state(&snapshot) {
@@ -177,7 +177,7 @@ async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, s
             _ => unreachable!("unsupported erase codes filtered above"),
         }
 
-        let snapshot = state.to_persisted_snapshot();
+        let snapshot = state.to_device_config();
         // SAFETY: Single-threaded embassy executor — no concurrent access.
         let shm_mut = unsafe { &mut *shm.0.get() };
         if let Err(e) = shm_mut.write_state(&snapshot) {
@@ -325,7 +325,7 @@ async fn main(spawner: Spawner) {
     let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
     // Deserialize device state from shared memory.
-    let snapshot: SecureConformancePersistedState = shm
+    let snapshot: SecureConformanceDeviceConfig = shm
         .read_state()
         .expect("read shared memory")
         .expect("shared memory uninitialized — parent should have written initial state");
@@ -335,7 +335,7 @@ async fn main(spawner: Spawner) {
     // the state with the layer context.
     zweidraehte_conformance::harness::secure_stack::set_seq_shm_ptr(shm.seq_region_ptr());
     let seq_storage = IpcSecureConformanceTestStack::create_seq_storage();
-    let state_init = SecureConformanceStateInit::Persisted { snapshot, seq_storage };
+    let state_init = SecureConformanceStateInit::Loaded { config: snapshot, seq_storage };
 
     let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));
 
