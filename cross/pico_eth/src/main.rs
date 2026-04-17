@@ -67,8 +67,8 @@ type Storage = RpFlashStorage<PicoEthState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoEthLightSwitch;
 
-/// State config: identity + optional persisted snapshot.
-pub struct PicoEthStateConfig {
+/// Init envelope: identity + optional persisted snapshot.
+pub struct PicoEthStateInit {
     pub serial: [u8; 6],
     pub persisted: Option<<PicoEthState as HasPersistedState>::Persisted>,
 }
@@ -85,15 +85,15 @@ impl StackDefinition for PicoEthLightSwitch {
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpDeviceUdp>;
     type State = PicoEthState;
-    type StateConfig = PicoEthStateConfig;
+    type StateInit = PicoEthStateInit;
     type Mem = SystemBMemoryMap;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
+    fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
 
-        let identity = StaticIdentity::new(config.serial);
+        let identity = StaticIdentity::new(init.serial);
 
-        match config.persisted {
+        match init.persisted {
             Some(persisted) => PicoEthState::from_persisted(identity, persisted, ()),
             None => PicoEthState::new(identity, LightSwitchComObjects::new(), (), ()),
         }
@@ -499,7 +499,7 @@ async fn main(spawner: Spawner) {
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
     // Build state config from the persisted snapshot loaded earlier (line 430).
-    let state_config = PicoEthStateConfig { serial: *storage.identity().serial_number(), persisted };
+    let state_init = PicoEthStateInit { serial: *storage.identity().serial_number(), persisted };
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.
@@ -553,7 +553,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        state_config,
+        state_init,
         platform,
         PicoEthLightSwitch::memory_map(),
     );

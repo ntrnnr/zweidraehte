@@ -86,8 +86,8 @@ type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoIpInterface;
 
-/// State config: identity + optional persisted snapshot.
-pub struct IpIfStateConfig {
+/// Init envelope: identity + optional persisted snapshot.
+pub struct IpIfStateInit {
     pub serial: [u8; 6],
     pub persisted: Option<<IpIfState as HasPersistedState>::Persisted>,
 }
@@ -113,13 +113,13 @@ impl StackDefinition for PicoIpInterface {
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
     type State = IpIfState;
-    type StateConfig = IpIfStateConfig;
+    type StateInit = IpIfStateInit;
     type Mem = SystemBMemoryMap;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
+    fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(config.serial);
-        match config.persisted {
+        let identity = StaticIdentity::new(init.serial);
+        match init.persisted {
             Some(persisted) => IpIfState::from_persisted(identity, persisted, ()),
             None => IpIfState::new(identity, IpInterfaceComObjects::new(), (), ()),
         }
@@ -391,7 +391,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_config = IpIfStateConfig { serial: *storage.identity().serial_number(), persisted };
+    let state_init = IpIfStateInit { serial: *storage.identity().serial_number(), persisted };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));
@@ -423,7 +423,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        state_config,
+        state_init,
         platform,
         PicoIpInterface::memory_map(),
     );

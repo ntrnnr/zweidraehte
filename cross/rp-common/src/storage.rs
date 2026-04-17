@@ -130,7 +130,7 @@ where
     /// This is useful for inspecting persisted configuration (e.g., the
     /// IP assignment method) before the platform layer is fully
     /// initialized. For the normal boot path, call this method and pass
-    /// the result into the stack's `StateConfig` for state construction.
+    /// the result into the stack's `StateInit` envelope for state construction.
     pub fn load_persisted(&mut self) -> Result<Option<S::Persisted>, FlashError> {
         let mut region = [0u8; STORAGE_SIZE];
         self.flash.blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;

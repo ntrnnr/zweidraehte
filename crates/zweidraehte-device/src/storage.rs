@@ -170,7 +170,7 @@ pub trait DeviceStorage: Sized {
     /// - `Ok(None)` - No saved state exists (factory reset / first boot)
     /// - `Err(e)` - Storage error
     ///
-    /// The caller passes the snapshot into `D::StateConfig` and lets
+    /// The caller passes the snapshot into `D::StateInit` and lets
     /// [`StackDefinition::create_state`](crate::StackDefinition::create_state)
     /// reconstruct runtime state with access to the `LayerContext`.
     fn load_persisted(&mut self) -> Result<Option<<Self::State as HasPersistedState>::Persisted>, Self::Error>;

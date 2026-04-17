@@ -56,8 +56,8 @@ type Storage = RpFlashStorage<PicoWState, rp_common::FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoWLightSwitch;
 
-/// State config: identity + optional persisted snapshot.
-pub struct PicoWStateConfig {
+/// Init envelope: identity + optional persisted snapshot.
+pub struct PicoWStateInit {
     pub serial: [u8; 6],
     pub persisted: Option<<PicoWState as HasPersistedState>::Persisted>,
 }
@@ -74,13 +74,13 @@ impl StackDefinition for PicoWLightSwitch {
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpDeviceUdp>;
     type State = PicoWState;
-    type StateConfig = PicoWStateConfig;
+    type StateInit = PicoWStateInit;
     type Mem = SystemBMemoryMap;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
+    fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(config.serial);
-        match config.persisted {
+        let identity = StaticIdentity::new(init.serial);
+        match init.persisted {
             Some(persisted) => PicoWState::from_persisted(identity, persisted, ()),
             None => PicoWState::new(identity, LightSwitchComObjects::new(), (), ()),
         }
@@ -370,7 +370,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_config = PicoWStateConfig { serial: *storage.identity().serial_number(), persisted };
+    let state_init = PicoWStateInit { serial: *storage.identity().serial_number(), persisted };
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded
@@ -408,7 +408,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        state_config,
+        state_init,
         platform,
         PicoWLightSwitch::memory_map(),
     );

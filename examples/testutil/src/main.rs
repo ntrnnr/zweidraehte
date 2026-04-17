@@ -212,11 +212,11 @@ impl StackDefinition for MyKnxStack {
     type LLB = MockLinkLayerBuilder<8>;
     type ES = ();
     type State = MyState;
-    type StateConfig = MyKnxStackStoredData;
+    type StateInit = MyKnxStackStoredData;
     type Mem = NoMemoryMap;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
-        MyState::new(config.addr_tab, config.asso_tab, config.co_tab)
+    fn create_state(init: Self::StateInit) -> Self::State {
+        MyState::new(init.addr_tab, init.asso_tab, init.co_tab)
     }
 
     // Empty interface objects - this stack doesn't have interface objects

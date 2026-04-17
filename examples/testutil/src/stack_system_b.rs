@@ -177,7 +177,7 @@ async fn main(spawner: Spawner) {
             None
         }
     };
-    let state_config = DemoStateConfig::new(storage.identity(), persisted);
+    let state_init = DemoStateInit::new(storage.identity(), persisted);
 
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);
@@ -204,7 +204,7 @@ async fn main(spawner: Spawner) {
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        state_config,
+        state_init,
         MockIpPlatform::default(),
         DemoStack::memory_map(),
     );

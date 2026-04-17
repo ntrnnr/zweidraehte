@@ -61,8 +61,8 @@ type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 // StackDefinition
 // ----------------------------------------------------------------------------
 
-/// State config: identity + optional persisted snapshot.
-pub struct PicoTp1StateConfig {
+/// Init envelope: identity + optional persisted snapshot.
+pub struct PicoTp1StateInit {
     pub serial: [u8; 6],
     pub persisted: Option<<PicoTp1State as HasPersistedState>::Persisted>,
 }
@@ -89,14 +89,14 @@ impl StackDefinition for PicoTp1LightSwitch {
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type ES = Tp1ExtensionState;
     type State = PicoTp1State;
-    type StateConfig = PicoTp1StateConfig;
+    type StateInit = PicoTp1StateInit;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, (&'a Tp1ExtensionState, EasterEggAugment)>;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
+    fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(config.serial);
-        match config.persisted {
+        let identity = StaticIdentity::new(init.serial);
+        match init.persisted {
             Some(persisted) => PicoTp1State::from_persisted(identity, persisted, ()),
             None => PicoTp1State::new(identity, LightSwitchComObjects::new(), (), ()),
         }
@@ -403,7 +403,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_config = PicoTp1StateConfig { serial: *storage.identity().serial_number(), persisted };
+    let state_init = PicoTp1StateInit { serial: *storage.identity().serial_number(), persisted };
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded
@@ -432,7 +432,7 @@ async fn main(spawner: Spawner) {
     let (knx_stack, knx_runner) = zweidraehte_device::new(
         KNX_RESOURCES.init(StackResources::new()),
         link_layer_builder,
-        state_config,
+        state_init,
         (), // no platform needed for TP1
         PicoTp1LightSwitch::memory_map(),
     );

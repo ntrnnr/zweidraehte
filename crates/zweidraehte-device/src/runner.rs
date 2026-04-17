@@ -255,13 +255,13 @@ fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
 ///
 /// * `resources` - Pre-allocated memory for the stack
 /// * `link_layer_builder` - Link layer builder (e.g., TPUART, KNX/IP, mock)
-/// * `state_config` - Configuration for state construction (identity, persisted snapshot, etc.)
+/// * `state_init` - Inputs for state construction (identity, persisted snapshot, etc.)
 /// * `platform` - Platform abstraction (IP config for KNX/IP, `()` for TP1)
 /// * `memory_map` - Memory map for A_Memory_Read/Write services
 pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'static mut StackResources<D, BUF_SZ, NUM_BUFS>,
     link_layer_builder: D::LLB,
-    state_config: D::StateConfig,
+    state_init: D::StateInit,
     platform: D::Platform,
     memory_map: D::Mem,
 ) -> (Stack<'static, D>, Runner<'static, D>) {
@@ -286,7 +286,7 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     // Step 3: Create state via D::create_state()
     // ================================================================
 
-    let state = D::create_state(state_config);
+    let state = D::create_state(state_init);
 
     // Validate that runtime max_apdu_length doesn't exceed compile-time buffer allocation
     let runtime_max_apdu = state.max_apdu_length();

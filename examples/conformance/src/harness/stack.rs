@@ -727,7 +727,7 @@ type InnerState =
 /// Configuration for constructing a [`ConformanceState`].
 ///
 /// Passed to [`IpcConformanceTestStack::create_state`] to produce the full state.
-pub enum ConformanceStateConfig {
+pub enum ConformanceStateInit {
     /// Build fresh state from pre-built tables and application.
     Fresh {
         addr_tab: conformance_config::AddrTab,
@@ -1285,15 +1285,15 @@ impl StackDefinition for IpcConformanceTestStack {
     type LLB = super::ipc::IpcLinkLayerBuilder;
     type ES = zweidraehte_device::bcus::system_b::Tp1ExtensionState;
     type State = ConformanceState;
-    type StateConfig = ConformanceStateConfig;
+    type StateInit = ConformanceStateInit;
     type Mem = ConformanceMemoryMap;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
-        match config {
-            ConformanceStateConfig::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
+    fn create_state(init: Self::StateInit) -> Self::State {
+        match init {
+            ConformanceStateInit::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
                 ConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
-            ConformanceStateConfig::Persisted(snapshot) => ConformanceState::from_persisted_snapshot(snapshot),
+            ConformanceStateInit::Persisted(snapshot) => ConformanceState::from_persisted_snapshot(snapshot),
         }
     }
 

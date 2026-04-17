@@ -11,7 +11,7 @@
 //! let identity = FileIdentity::load_or_provision("identity.json", serial).unwrap();
 //! let mut storage = JsonStorage::<DemoState, _>::new("device_state.json", identity);
 //! let persisted = storage.load_persisted().unwrap(); // returns Option<DemoPersistedState>
-//! let config = DemoStateConfig::new(storage.identity(), persisted);
+//! let config = DemoStateInit::new(storage.identity(), persisted);
 //! ```
 
 mod file_identity;
@@ -35,7 +35,7 @@ use zweidraehte_device::storage::DeviceIdentity;
 /// internally converts to/from the serializable [`S::Persisted`] form.
 ///
 /// `I` is the device identity type, stored in the backend so that callers
-/// can access it when building the `StateConfig`.
+/// can access it when building the `StateInit`.
 ///
 /// # Usage
 ///
@@ -43,7 +43,7 @@ use zweidraehte_device::storage::DeviceIdentity;
 /// let identity = FileIdentity::load_or_provision("identity.json", serial).unwrap();
 /// let mut storage = JsonStorage::<DemoState, _>::new("device_state.json", identity);
 /// let persisted = storage.load_persisted().unwrap(); // returns Option<Persisted>
-/// let config = DemoStateConfig::new(storage.identity(), persisted);
+/// let config = DemoStateInit::new(storage.identity(), persisted);
 /// // Pass config to zweidraehte_device::new() — the runner calls create_state()
 /// storage.save(&state).unwrap();       // converts to persisted form internally
 /// ```
@@ -123,7 +123,7 @@ where
     ///
     /// Returns `Ok(None)` if no saved state exists (first boot / factory reset).
     /// The caller is responsible for passing the persisted data into the stack's
-    /// `StateConfig` so that `create_state` can reconstruct runtime state with
+    /// `StateInit` so that `create_state` can reconstruct runtime state with
     /// access to the `LayerContext`.
     pub fn load_persisted(&mut self) -> Result<Option<S::Persisted>, JsonStorageError> {
         if !self.path.exists() {

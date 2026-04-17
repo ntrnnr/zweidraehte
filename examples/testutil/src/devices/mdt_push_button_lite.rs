@@ -3212,14 +3212,15 @@ pub type MdtState = IpStateFor<MdtStack, KnxIpDeviceUdp>;
 /// Persisted snapshot type for the MDT device.
 pub type MdtPersistedState = <MdtState as HasPersistedState>::Persisted;
 
-/// Configuration for constructing `MdtState` inside the runner.
-pub struct MdtStateConfig {
+/// Init envelope for constructing `MdtState` inside the runner.
+pub struct MdtStateInit {
     pub serial: [u8; 6],
     pub persisted: Option<MdtPersistedState>,
 }
 
-impl MdtStateConfig {
-    /// Build config from a device identity and optional persisted snapshot.
+impl MdtStateInit {
+    /// Build the init envelope from a device identity and optional
+    /// persisted snapshot.
     pub fn new(identity: &impl DeviceIdentity, persisted: Option<MdtPersistedState>) -> Self {
         Self { serial: *identity.serial_number(), persisted }
     }
@@ -3240,13 +3241,13 @@ impl StackDefinition for MdtStack {
     type Platform = MockIpPlatform;
     type ES = IpExtension<KnxIpDeviceUdp>;
     type State = MdtState;
-    type StateConfig = MdtStateConfig;
+    type StateInit = MdtStateInit;
     type Mem = SystemBMemoryMap;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
+    fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(config.serial);
-        match config.persisted {
+        let identity = StaticIdentity::new(init.serial);
+        match init.persisted {
             Some(persisted) => MdtState::from_persisted(identity, persisted, ()),
             None => MdtState::new(identity, comm_objs::MdtComObjects::new(), (), ()),
         }

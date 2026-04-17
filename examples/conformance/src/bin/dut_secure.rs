@@ -20,7 +20,7 @@ use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilde
 // `ShmCell` is defined locally so the power-cycle/master-reset command
 // handlers share the same `&'static ShmCell` with the restart handler.
 use zweidraehte_conformance::harness::secure_stack::{
-    IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceStateConfig,
+    IpcSecureConformanceTestStack, SecureConformancePersistedState, SecureConformanceStateInit,
 };
 use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
 
@@ -335,7 +335,7 @@ async fn main(spawner: Spawner) {
     // the state with the layer context.
     zweidraehte_conformance::harness::secure_stack::set_seq_shm_ptr(shm.seq_region_ptr());
     let seq_storage = IpcSecureConformanceTestStack::create_seq_storage();
-    let state_config = SecureConformanceStateConfig::Persisted { snapshot, seq_storage };
+    let state_init = SecureConformanceStateInit::Persisted { snapshot, seq_storage };
 
     let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));
 
@@ -356,7 +356,7 @@ async fn main(spawner: Spawner) {
     let (stack, runner) = zweidraehte_device::new(
         resources,
         link_layer_builder,
-        state_config,
+        state_init,
         (),
         ConformanceMemoryMap,
     );

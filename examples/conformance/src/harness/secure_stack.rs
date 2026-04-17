@@ -880,7 +880,7 @@ type SecAugment<'a> = <
 /// Configuration for constructing a [`SecureConformanceState`].
 ///
 /// Passed to [`IpcSecureConformanceTestStack::create_state`] to produce the full state.
-pub enum SecureConformanceStateConfig {
+pub enum SecureConformanceStateInit {
     /// Build fresh state from pre-built tables and application.
     Fresh {
         addr_tab: conformance_config::AddrTab,
@@ -914,7 +914,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         SecureTp1ExtensionState<ShmSeqStorage, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
     type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
-    type StateConfig = SecureConformanceStateConfig;
+    type StateInit = SecureConformanceStateInit;
     type Mem = ConformanceMemoryMap;
 
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
@@ -940,12 +940,12 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         )
     }
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
-        match config {
-            SecureConformanceStateConfig::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
+    fn create_state(init: Self::StateInit) -> Self::State {
+        match init {
+            SecureConformanceStateInit::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
                 SecureConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
-            SecureConformanceStateConfig::Persisted { snapshot, seq_storage } => {
+            SecureConformanceStateInit::Persisted { snapshot, seq_storage } => {
                 SecureConformanceState::from_persisted_snapshot(snapshot, seq_storage)
             }
         }

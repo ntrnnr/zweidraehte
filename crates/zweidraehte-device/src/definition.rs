@@ -205,19 +205,24 @@ pub trait StackDefinition: Copy + 'static {
     /// the FDSK accessor.
     type Identity: DeviceIdentity = StaticIdentity;
 
-    /// Configuration needed to construct the device state.
+    /// Constructor-args envelope passed to [`create_state`](Self::create_state).
     ///
-    /// The runner calls [`create_state`](Self::create_state) with this config
-    /// to produce `Self::State`.
+    /// This is **not** a persisted `Config` in the serde sense (see the
+    /// vocabulary block at the top of
+    /// [`bcus::system_b::storage`](crate::bcus::system_b::storage)). It
+    /// bundles the inputs `create_state` needs to produce a runtime
+    /// `Self::State`: typically an optional `PersistedState` snapshot
+    /// loaded from storage plus non-persisted identity data (serial
+    /// number, FDSK).
     ///
-    /// For `SystemBDeviceState`-based stacks, this is typically an enum of
-    /// fresh identity vs. persisted snapshot.
-    type StateConfig;
+    /// For `SystemBDeviceState`-based stacks this is usually an enum of
+    /// fresh-factory vs. loaded-snapshot variants.
+    type StateInit;
 
-    /// Create device state from configuration.
+    /// Create device state from an init envelope.
     ///
     /// Called by the runner during stack initialization.
-    fn create_state(config: Self::StateConfig) -> Self::State;
+    fn create_state(init: Self::StateInit) -> Self::State;
 
     /// Memory map for A_Memory_Read/Write services.
     ///

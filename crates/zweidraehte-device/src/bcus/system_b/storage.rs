@@ -21,11 +21,11 @@
 //!   channels, `MaybeUninit` buffers, factory-programmed keys such as
 //!   FDSK, platform handles). Never serialised. Fed into
 //!   [`ExtensionState::from_config`] as the second argument.
-//! - `*StateConfig` (on [`StackDefinition`]) — constructor-args envelope
-//!   passed to [`StackDefinition::create_state`]. May carry an optional
-//!   persisted snapshot from storage plus identity data (serial number,
-//!   FDSK) that is not itself persisted. Despite the name it is not a
-//!   `Config` in the serialisable sense — it is an init envelope.
+//! - `*StateInit` (on [`StackDefinition::StateInit`]) — constructor-args
+//!   envelope passed to [`StackDefinition::create_state`]. May carry an
+//!   optional persisted snapshot from storage plus identity data (serial
+//!   number, FDSK) that is not itself persisted. The `Init` suffix
+//!   distinguishes it from a serialisable `*Config`.
 //!
 //! The generic storage traits ([`DeviceStorage`](crate::storage::DeviceStorage),
 //! [`NoStorage`](crate::storage::NoStorage)) live in [`crate::storage`].

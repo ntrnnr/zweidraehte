@@ -541,17 +541,18 @@ pub type DemoState = IpStateFor<DemoStack, KnxIpDeviceTcp>;
 /// Persisted snapshot type for the demo device.
 pub type DemoPersistedState = <DemoState as HasPersistedState>::Persisted;
 
-/// Configuration for constructing `DemoState` inside the runner.
+/// Init envelope for constructing `DemoState` inside the runner.
 ///
 /// Carries the device identity and an optional persisted snapshot.
 /// If `persisted` is `None`, the state is initialized with factory defaults.
-pub struct DemoStateConfig {
+pub struct DemoStateInit {
     pub serial: [u8; 6],
     pub persisted: Option<DemoPersistedState>,
 }
 
-impl DemoStateConfig {
-    /// Build config from a device identity and optional persisted snapshot.
+impl DemoStateInit {
+    /// Build the init envelope from a device identity and optional
+    /// persisted snapshot.
     pub fn new(identity: &impl DeviceIdentity, persisted: Option<DemoPersistedState>) -> Self {
         Self { serial: *identity.serial_number(), persisted }
     }
@@ -572,13 +573,13 @@ impl StackDefinition for DemoStack {
     type Platform = MockIpPlatform;
     type ES = IpExtension<KnxIpDeviceTcp>;
     type State = DemoState;
-    type StateConfig = DemoStateConfig;
+    type StateInit = DemoStateInit;
     type Mem = SystemBMemoryMap;
 
-    fn create_state(config: Self::StateConfig) -> Self::State {
+    fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(config.serial);
-        match config.persisted {
+        let identity = StaticIdentity::new(init.serial);
+        match init.persisted {
             Some(persisted) => DemoState::from_persisted(identity, persisted, ()),
             None => DemoState::new(identity, comm_objs::DemoComObjects::new(), (), ()),
         }
