@@ -66,7 +66,9 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
         | ApciCode::IndividualAddressSerialNumberRead
         | ApciCode::DeviceDescriptorRead
         | ApciCode::AdcRead
-        | ApciCode::UserManufacturerInfoRead => Some(3),
+        | ApciCode::UserManufacturerInfoRead
+        | ApciCode::SystemNetworkParameterRead
+        | ApciCode::SystemNetworkParameterResponse => Some(3),
 
         // Address write: unrestricted at service level. Protection comes from
         // the handler layer — IndividualAddressWrite requires programming mode,
@@ -213,11 +215,12 @@ mod tests {
     #[test]
     fn unknown_service_denied_without_max_access() {
         let min = AccessContext::MIN_ACCESS;
-        // SystemNetworkParameterRead is not in our handled set, falls to `_ => Some(0)`
-        assert_eq!(check_service_access(ApciCode::SystemNetworkParameterRead, &min), AccessDecision::Denied);
+        // Escape is an unhandled/reserved APCI, falls to `_ => Some(0)` which
+        // requires MAX_ACCESS to satisfy.
+        assert_eq!(check_service_access(ApciCode::Escape, &min), AccessDecision::Denied);
 
         let max = AccessContext::MAX_ACCESS;
-        assert_eq!(check_service_access(ApciCode::SystemNetworkParameterRead, &max), AccessDecision::Allowed);
+        assert_eq!(check_service_access(ApciCode::Escape, &max), AccessDecision::Allowed);
     }
 
     #[test]

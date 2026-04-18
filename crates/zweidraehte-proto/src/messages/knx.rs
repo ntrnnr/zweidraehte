@@ -171,17 +171,8 @@ create_protocol_enum!(
         Restart,                    0x0e,   "A_Restart";
         Escape,                     0x0f,   "A_Escape";
 
-        SystemNetworkParameterRead, 0x48,   "A_SystemNetworkParameter_Read";
-
-        UserMemoryRead,             0x80,   "A_UserMemory_Read";
-        UserMemoryResponse,         0x81,   "A_UserMemory_Response";
-        UserMemoryWrite,            0x82,   "A_UserMemory_Write";
-
-        UserManufacturerInfoRead,   0x85,   "A_UserManufacturerInfo_Read";
-        UserManufacturerInfoResponse, 0x86, "A_UserManufacturerInfo_Response";
-        FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
-        FunctionPropertyStateRead,  0x88,   "A_FunctionPropertyState_Read";
-        FunctionPropertyStateResponse, 0x89, "A_FunctionPropertyState_Response";
+        SystemNetworkParameterRead,     0x48,   "A_SystemNetworkParameter_Read";
+        SystemNetworkParameterResponse, 0x49,   "A_SystemNetworkParameter_Response";
 
         // Extended property services (AN163). Wire bytes: 0x01C8–0x01D1.
         // Decoded via apci_raw=7 branch with & 0x7F mask, so stored codes
@@ -202,6 +193,16 @@ create_protocol_enum!(
         FunctionPropertyExtCommand,     0x54,   "A_FunctionPropertyExtCommand";
         FunctionPropertyExtStateRead,   0x55,   "A_FunctionPropertyExtState_Read";
         FunctionPropertyExtStateResponse, 0x56, "A_FunctionPropertyExtState_Response";
+
+        UserMemoryRead,             0x80,   "A_UserMemory_Read";
+        UserMemoryResponse,         0x81,   "A_UserMemory_Response";
+        UserMemoryWrite,            0x82,   "A_UserMemory_Write";
+
+        UserManufacturerInfoRead,   0x85,   "A_UserManufacturerInfo_Read";
+        UserManufacturerInfoResponse, 0x86, "A_UserManufacturerInfo_Response";
+        FunctionPropertyCommand,    0x87,   "A_FunctionPropertyCommand";
+        FunctionPropertyStateRead,  0x88,   "A_FunctionPropertyState_Read";
+        FunctionPropertyStateResponse, 0x89, "A_FunctionPropertyState_Response";
 
         MemoryBitWrite,             0xd0,   "A_MemoryBit_Write";
         AuthorizeRequest,           0xd1,   "A_Authorize_Request";
@@ -1053,7 +1054,11 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
             }
             AddressType::SystemBroadcast => {
-                self.buf[MSG_ADDR_TYPE] &= !0x80;
+                // SystemBroadcast uses group-format addressing with destination
+                // 0x0000 (see `get_address_type`, which requires AT=1 alongside
+                // SB=SysBroadcast). Spec 03/03/02 §2.3: "address_type = group,
+                // destination_address = 0000h".
+                self.buf[MSG_ADDR_TYPE] |= 0x80;
                 self.ctrl_field_mut().set_sb(SystemBroadcast::SysBroadcast);
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
             }

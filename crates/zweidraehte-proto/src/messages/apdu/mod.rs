@@ -27,6 +27,7 @@
 //! - [`secure`] — Secure APDU (S-A_Data) frame parser and builder
 //! - [`group_value`] — `A_GroupValue_Read`, `A_GroupValue_Write`, `A_GroupValue_Response`
 //! - [`go_diagnostics`] — `PID_OPERATION_MODE` and `PID_GO_DIAGNOSTICS` function-property bodies
+//! - [`system_network_parameter`] — `A_SystemNetworkParameter_Read/Response`
 
 pub mod auth;
 pub mod device;
@@ -38,3 +39,4 @@ pub mod property;
 pub mod property_ext;
 pub mod restart;
 pub mod secure;
+pub mod system_network_parameter;

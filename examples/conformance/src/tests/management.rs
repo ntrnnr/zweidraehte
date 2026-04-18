@@ -371,19 +371,29 @@ pub fn create_memory_read_suite() -> TestSuite {
         // T_Connect
         inject_delay("B0 #EDI #BDUT 60 80", 200),
         // Memory_Write: 12 bytes at MEMPOS (0x0200) - accessible memory (seq 0)
-        inject("BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2 #MEM.3 #MEM.4 #MEM.5 #MEM.6 #MEM.7 #MEM.8 #MEM.9 #MEM.10 #MEM.11"),
+        inject(
+            "BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2 #MEM.3 #MEM.4 #MEM.5 #MEM.6 #MEM.7 #MEM.8 #MEM.9 #MEM.10 #MEM.11",
+        ),
         expect("B0 #BDUT #EDI 60 C2", 500),
         // Memory_Write: 12 bytes at MEMPOS+12 (seq 1)
-        inject("BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.12 #MEM.13 #MEM.14 #MEM.15 #MEM.16 #MEM.17 #MEM.18 #MEM.19 #MEM.20 #MEM.21 #MEM.22 #MEM.23"),
+        inject(
+            "BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.12 #MEM.13 #MEM.14 #MEM.15 #MEM.16 #MEM.17 #MEM.18 #MEM.19 #MEM.20 #MEM.21 #MEM.22 #MEM.23",
+        ),
         expect("B0 #BDUT #EDI 60 C6", 500),
         // Memory_Write: 12 bytes at MEMPOS+24 (seq 2)
-        inject("BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 #MEM.24 #MEM.25 #MEM.26 #MEM.27 #MEM.28 #MEM.29 #MEM.30 #MEM.31 #MEM.32 #MEM.33 #MEM.34 #MEM.35"),
+        inject(
+            "BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 #MEM.24 #MEM.25 #MEM.26 #MEM.27 #MEM.28 #MEM.29 #MEM.30 #MEM.31 #MEM.32 #MEM.33 #MEM.34 #MEM.35",
+        ),
         expect("B0 #BDUT #EDI 60 CA", 500),
         // Memory_Write: 12 bytes at MEMPOS+36 (seq 3)
-        inject("BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 #MEM.36 #MEM.37 #MEM.38 #MEM.39 #MEM.40 #MEM.41 #MEM.42 #MEM.43 #MEM.44 #MEM.45 #MEM.46 #MEM.47"),
+        inject(
+            "BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 #MEM.36 #MEM.37 #MEM.38 #MEM.39 #MEM.40 #MEM.41 #MEM.42 #MEM.43 #MEM.44 #MEM.45 #MEM.46 #MEM.47",
+        ),
         expect("B0 #BDUT #EDI 60 CE", 500),
         // Memory_Write: 12 bytes at MEMPOS+48 (seq 4)
-        inject("BC #EDI #BDUT 6F 52 8C #MEMPOS+48 #MEM.48 #MEM.49 #MEM.50 #MEM.51 #MEM.52 #MEM.53 #MEM.54 #MEM.55 #MEM.56 #MEM.57 #MEM.58 #MEM.59"),
+        inject(
+            "BC #EDI #BDUT 6F 52 8C #MEMPOS+48 #MEM.48 #MEM.49 #MEM.50 #MEM.51 #MEM.52 #MEM.53 #MEM.54 #MEM.55 #MEM.56 #MEM.57 #MEM.58 #MEM.59",
+        ),
         expect("B0 #BDUT #EDI 60 D2", 500),
         // Memory_Write: 3 bytes at MEMPOS+60 (seq 5)
         inject("BC #EDI #BDUT 66 56 83 #MEMPOS+60 #MEM.60 #MEM.61 #MEM.62"),
@@ -605,19 +615,29 @@ pub fn create_memory_write_suite() -> TestSuite {
         // T_Connect
         inject_delay("B0 #EDI #BDUT 60 80", 200),
         // Memory_Write: 12 bytes at MEMPOS (0x0200) - accessible memory (seq 0)
-        inject("BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2 #MEM.3 #MEM.4 #MEM.5 #MEM.6 #MEM.7 #MEM.8 #MEM.9 #MEM.10 #MEM.11"),
+        inject(
+            "BC #EDI #BDUT 6F 42 8C #MEMPOS #MEM.0 #MEM.1 #MEM.2 #MEM.3 #MEM.4 #MEM.5 #MEM.6 #MEM.7 #MEM.8 #MEM.9 #MEM.10 #MEM.11",
+        ),
         expect("B0 #BDUT #EDI 60 C2", 500),
         // Memory_Write: 12 bytes at MEMPOS+12 (seq 1)
-        inject("BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.12 #MEM.13 #MEM.14 #MEM.15 #MEM.16 #MEM.17 #MEM.18 #MEM.19 #MEM.20 #MEM.21 #MEM.22 #MEM.23"),
+        inject(
+            "BC #EDI #BDUT 6F 46 8C #MEMPOS+12 #MEM.12 #MEM.13 #MEM.14 #MEM.15 #MEM.16 #MEM.17 #MEM.18 #MEM.19 #MEM.20 #MEM.21 #MEM.22 #MEM.23",
+        ),
         expect("B0 #BDUT #EDI 60 C6", 500),
         // Memory_Write: 12 bytes at MEMPOS+24 (seq 2)
-        inject("BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 #MEM.24 #MEM.25 #MEM.26 #MEM.27 #MEM.28 #MEM.29 #MEM.30 #MEM.31 #MEM.32 #MEM.33 #MEM.34 #MEM.35"),
+        inject(
+            "BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 #MEM.24 #MEM.25 #MEM.26 #MEM.27 #MEM.28 #MEM.29 #MEM.30 #MEM.31 #MEM.32 #MEM.33 #MEM.34 #MEM.35",
+        ),
         expect("B0 #BDUT #EDI 60 CA", 500),
         // Memory_Write: 12 bytes at MEMPOS+36 (seq 3)
-        inject("BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 #MEM.36 #MEM.37 #MEM.38 #MEM.39 #MEM.40 #MEM.41 #MEM.42 #MEM.43 #MEM.44 #MEM.45 #MEM.46 #MEM.47"),
+        inject(
+            "BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 #MEM.36 #MEM.37 #MEM.38 #MEM.39 #MEM.40 #MEM.41 #MEM.42 #MEM.43 #MEM.44 #MEM.45 #MEM.46 #MEM.47",
+        ),
         expect("B0 #BDUT #EDI 60 CE", 500),
         // Memory_Write: 12 bytes at MEMPOS+48 (seq 4)
-        inject("BC #EDI #BDUT 6F 52 8C #MEMPOS+48 #MEM.48 #MEM.49 #MEM.50 #MEM.51 #MEM.52 #MEM.53 #MEM.54 #MEM.55 #MEM.56 #MEM.57 #MEM.58 #MEM.59"),
+        inject(
+            "BC #EDI #BDUT 6F 52 8C #MEMPOS+48 #MEM.48 #MEM.49 #MEM.50 #MEM.51 #MEM.52 #MEM.53 #MEM.54 #MEM.55 #MEM.56 #MEM.57 #MEM.58 #MEM.59",
+        ),
         expect("B0 #BDUT #EDI 60 D2", 500),
         // Memory_Write: 3 bytes at MEMPOS+60 (seq 5)
         inject("BC #EDI #BDUT 66 56 83 #MEMPOS+60 #MEM.60 #MEM.61 #MEM.62"),
@@ -1550,9 +1570,7 @@ pub fn create_restart_suite() -> TestSuite {
         // to set up the BDUT with programming mode and correct IA
     ];
 
-    TestSuite::new("M-2.9 Restart", vars)
-        .with_preparation(preparation)
-        .with_cases(cases)
+    TestSuite::new("M-2.9 Restart", vars).with_preparation(preparation).with_cases(cases)
 }
 
 // ============================================================================
@@ -1570,7 +1588,7 @@ fn create_memorybit_test_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("MEMPOS".to_string(), TestVariable::Bytes(vec![0x02, 0x00])); // 0x0200
     vars.insert("MEMPOS_LASTACCESS".to_string(), TestVariable::Bytes(vec![0x02, 0xFF])); // 0x02FF
     vars.insert("MEMPOS_PROTECTED".to_string(), TestVariable::Bytes(vec![0x10, 0x00])); // 0x1000 - unmapped/protected
-                                                                                        // Memory content: 16 bytes of 0x0F (default value)
+    // Memory content: 16 bytes of 0x0F (default value)
     let mem: Vec<u8> = vec![0x0F; 16];
     vars.insert("MEM".to_string(), TestVariable::Bytes(mem));
     vars
@@ -1608,20 +1626,28 @@ pub fn create_memorybit_write_suite() -> TestSuite {
         inject_delay("B0 #EDI #BDUT 60 80", 200),
         // Block 1: Write 63 bytes starting at 0x0200 (seq 0)
         // LEN = 1(TPCI) + 1(APCI) + 2(ADDR) + 63(DATA) = 67 = 0x43
-        inject("3C 60 #EDI #BDUT 43 42 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 42 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         // Block 2: Write 63 bytes starting at 0x023F (seq 1)
-        inject("3C 60 #EDI #BDUT 43 46 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 46 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 C6", 1000),
         inject_delay("B0 #EDI #BDUT 60 C6", 200),
         // Block 3: Write 63 bytes starting at 0x027E (seq 2)
-        inject("3C 60 #EDI #BDUT 43 4A BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 4A BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 CA", 1000),
         inject_delay("B0 #EDI #BDUT 60 CA", 200),
         // Block 4: Write 63 bytes starting at 0x02BD (seq 3)
         // Covers 0x02BD to 0x02FB
-        inject("3C 60 #EDI #BDUT 43 4E BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 4E BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 CE", 1000),
         inject_delay("B0 #EDI #BDUT 60 CE", 200),
         // Block 5: Write 4 bytes starting at 0x02FC to cover 0x02FC-0x02FF (seq 4)
@@ -1717,25 +1743,33 @@ pub fn create_memorybit_write_verify_suite() -> TestSuite {
         comment("M-2.10 Verify Preparation: Reset linear memory to 0x0F"),
         // Block 1: Write 63 bytes starting at 0x0200
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 42 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 42 BF 02 00 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
         // Block 2: Write 63 bytes starting at 0x023F
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 42 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 42 BF 02 3F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
         // Block 3: Write 63 bytes starting at 0x027E
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 42 BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 42 BF 02 7E 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         inject_delay("B0 #EDI #BDUT 60 81", 200),
         // Block 4: Write 63 bytes starting at 0x02BD (covers 0x02BD to 0x02FB)
         inject_delay("B0 #EDI #BDUT 60 80", 200),
-        inject("3C 60 #EDI #BDUT 43 42 BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F"),
+        inject(
+            "3C 60 #EDI #BDUT 43 42 BF 02 BD 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F",
+        ),
         expect("B0 #BDUT #EDI 60 C2", 1000),
         inject_delay("B0 #EDI #BDUT 60 C2", 200),
         // Block 5: Write 4 bytes starting at 0x02FC to cover 0x02FC-0x02FF
@@ -2915,6 +2949,95 @@ pub fn create_network_parameter_write_suite() -> TestSuite {
     ];
 
     TestSuite::new("M-2.19 NetworkParameter_Write", vars).with_cases(cases)
+}
+
+// ============================================================================
+// SystemNetworkParameter_Read — NM_Read_SerialNumber_By_ProgrammingMode
+// ============================================================================
+
+/// Create the `A_SystemNetworkParameter_Read` test suite.
+///
+/// Tests the `NM_Read_SerialNumber_By_ProgrammingMode` procedure from spec
+/// 03/05/02 §2.20.1.3: MaC sends `A_SystemNetworkParameter_Read` with
+/// `(object_type = Device Object (0x000), PID = PID_SERIAL_NUMBER (11),
+/// operand = 0x01)` on system broadcast; the MaS must respond with its
+/// 6-byte KNX Serial Number iff Programming Mode is active.
+///
+/// Wire encoding (spec Figures 5 and 6):
+/// - APCI: `0x01C8` (Read) / `0x01C9` (Response)
+/// - octet +2: `object_type[11:4]` = `0x00`
+/// - octet +3: `object_type[3:0] << 4 | PID[7:4]` = `0x00` (object_type=0,
+///   PID_hi=0)
+/// - octet +4: `PID[3:0] << 4 | reserved` = `0xB0` (PID_lo=0xB, reserved=0)
+/// - octet +5: operand = `0x01`
+/// - octets +6..: serial number (response only)
+///
+/// System broadcast uses ctrl byte `AC` (SB flag = 0) versus normal
+/// broadcast `BC`.
+pub fn create_system_network_parameter_read_suite() -> TestSuite {
+    let vars = create_test_variables();
+
+    let cases = vec![
+        // ====================================================================
+        // SNP-1 Programming mode off → no response
+        // ====================================================================
+        TestCase::new("SNP-1 SerialNumber_By_ProgrammingMode with ProgMode off").with_steps(vec![
+            comment("Precondition: Programming Mode deactivated"),
+            set_programming_mode(false),
+            comment("Send A_SystemNetworkParameter_Read (object_type=Device, PID=SERIAL_NUMBER, operand=0x01)"),
+            // AC = system broadcast control byte; length 5 = APCI(2) + params(3)
+            inject("AC #EDI 00 00 E5 01 C8 00 00 B0 01"),
+            expect_none(1500),
+            comment("Acceptance: No response is sent while Programming Mode is off (spec §2.20.1.3)"),
+        ]),
+        // ====================================================================
+        // SNP-2 Programming mode on → serial-number response
+        // ====================================================================
+        TestCase::new("SNP-2 SerialNumber_By_ProgrammingMode with ProgMode on").with_steps(vec![
+            comment("Precondition: Activate Programming Mode"),
+            set_programming_mode(true),
+            comment("Send A_SystemNetworkParameter_Read (Device Object, PID_SERIAL_NUMBER, operand=0x01)"),
+            inject("AC #EDI 00 00 E5 01 C8 00 00 B0 01"),
+            // Response length = 5 (request) + 6 (serial) = 11 = 0xB → NPDU byte 0xEB.
+            // On the TP1 wire the CTRL byte is `BC` for both normal and system
+            // broadcast — bit 4 is "always 1" in the TP1 CTRL field (spec
+            // 03/02/02 §2.2.2). The SystemBroadcast vs Broadcast distinction
+            // is conveyed via the LL service primitive, not a wire bit.
+            expect("BC #BDUT 00 00 EB 01 C9 00 00 B0 01 #BDUT_SERIAL_NUMBER", 1500),
+            comment("Acceptance: BDUT responds with A_SystemNetworkParameter_Response carrying the KNX Serial Number"),
+            comment("Cleanup: Deactivate Programming Mode"),
+            set_programming_mode(false),
+        ]),
+        // ====================================================================
+        // SNP-3 Unsupported parameter_type is ignored (prog-mode on)
+        // ====================================================================
+        TestCase::new("SNP-3 Unsupported parameter_type is ignored").with_steps(vec![
+            comment("Precondition: Activate Programming Mode"),
+            set_programming_mode(true),
+            comment("Send SNP_Read with a PID we don't support (PID=0x0C=MANUFACTURER_ID)"),
+            // PID = 0x0C → octet+4 = 0xC0
+            inject("AC #EDI 00 00 E5 01 C8 00 00 C0 01"),
+            expect_none(1500),
+            comment("Acceptance: No response is sent for unsupported parameter_type (spec §2.20)"),
+            set_programming_mode(false),
+        ]),
+        // ====================================================================
+        // SNP-4 Unsupported operand is ignored (prog-mode on)
+        // ====================================================================
+        TestCase::new("SNP-4 Unsupported operand is ignored").with_steps(vec![
+            comment("Precondition: Activate Programming Mode"),
+            set_programming_mode(true),
+            comment(
+                "Send SNP_Read with the correct object_type/PID but operand=0x02 (ExFactoryState, not implemented)",
+            ),
+            inject("AC #EDI 00 00 E5 01 C8 00 00 B0 02"),
+            expect_none(1500),
+            comment("Acceptance: No response is sent for unsupported operand (spec §2.20)"),
+            set_programming_mode(false),
+        ]),
+    ];
+
+    TestSuite::new("SNP SystemNetworkParameter_Read", vars).with_cases(cases)
 }
 
 // ============================================================================

@@ -31,6 +31,7 @@ pub mod manufacturer;
 pub mod memory;
 pub mod property_ext;
 pub mod service;
+pub mod system_network_parameter;
 pub mod user_memory;
 
 pub use adc::AdcService;
@@ -42,6 +43,7 @@ pub use manufacturer::UserManufacturerInfoService;
 pub use memory::MemoryService;
 pub use property_ext::PropertyExtValueService;
 pub use service::{AlService, AlServiceContext};
+pub use system_network_parameter::SystemNetworkParameterService;
 pub use user_memory::UserMemoryService;
 
 /// Right-associate a flat list of types into a nested pair structure:
@@ -83,6 +85,7 @@ pub type SystemBAlServices = nest!(
     UserMemoryService,
     AuthorizationService,
     IndividualAddressSerialNumberService,
+    SystemNetworkParameterService,
     AdcService,
     UserManufacturerInfoService,
     FunctionPropertyService,

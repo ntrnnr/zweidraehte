@@ -282,7 +282,10 @@ async fn execute_step(
         }
 
         TestStep::TriggerSync { peer_ia, tool_access, is_broadcast } => {
-            println!("  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={})", index, peer_ia, tool_access, is_broadcast);
+            println!(
+                "  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={})",
+                index, peer_ia, tool_access, is_broadcast
+            );
             if let Err(e) = harness.trigger_sync(*peer_ia, *tool_access, *is_broadcast).await {
                 println!("        Failed: {}", e);
                 return false;
@@ -338,21 +341,15 @@ async fn execute_step(
 
         TestStep::FullReset { timeout_ms } => {
             let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
-            println!(
-                "  [{}] 🏭 FullReset (rebuild default SHM + respawn, timeout {}ms)",
-                index, effective_ms
-            );
+            println!("  [{}] 🏭 FullReset (rebuild default SHM + respawn, timeout {}ms)", index, effective_ms);
             // Kill the running DUT, overwrite shared memory with the
             // factory-default snapshot (same one the parent writes at
             // startup), and respawn. Used after destructive tests that
             // wipe DUT state (factory reset with table clear, etc.) so
             // the next suite inherits a clean state.
             harness.kill_child().await;
-            let reset_result = if is_secure {
-                harness.reset_shared_memory_secure()
-            } else {
-                harness.reset_shared_memory()
-            };
+            let reset_result =
+                if is_secure { harness.reset_shared_memory_secure() } else { harness.reset_shared_memory() };
             if let Err(e) = reset_result {
                 println!("        ❌ Failed to reset SHM: {}", e);
                 return false;
@@ -869,6 +866,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::management::create_individual_address_serial_number_read_suite(),
         //zweidraehte_conformance::tests::management::create_network_parameter_read_suite(),
         //zweidraehte_conformance::tests::management::create_network_parameter_write_suite(),
+        zweidraehte_conformance::tests::management::create_system_network_parameter_read_suite(),
         zweidraehte_conformance::tests::management::create_illegal_apci_suite(),
         zweidraehte_conformance::tests::management::create_user_memory_read_suite(),
         zweidraehte_conformance::tests::management::create_user_memory_write_suite(),
@@ -1119,8 +1117,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure)
-                    .await
+                if !execute_step(
+                    &mut harness,
+                    &resolved_step,
+                    i,
+                    sec_ctx.as_mut(),
+                    &suite.variables,
+                    time_divisor,
+                    current_dut_is_secure,
+                )
+                .await
                 {
                     prep_passed = false;
                 }
@@ -1172,8 +1178,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
                             continue;
                         }
                     };
-                    if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure)
-                        .await
+                    if !execute_step(
+                        &mut harness,
+                        &resolved_step,
+                        i,
+                        sec_ctx.as_mut(),
+                        &suite.variables,
+                        time_divisor,
+                        current_dut_is_secure,
+                    )
+                    .await
                     {
                         test_passed = false;
                     }
@@ -1191,8 +1205,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure)
-                    .await
+                if !execute_step(
+                    &mut harness,
+                    &resolved_step,
+                    i,
+                    sec_ctx.as_mut(),
+                    &suite.variables,
+                    time_divisor,
+                    current_dut_is_secure,
+                )
+                .await
                 {
                     test_passed = false;
                 }
@@ -1212,7 +1234,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
                             continue;
                         }
                     };
-                    execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure).await;
+                    execute_step(
+                        &mut harness,
+                        &resolved_step,
+                        i,
+                        sec_ctx.as_mut(),
+                        &suite.variables,
+                        time_divisor,
+                        current_dut_is_secure,
+                    )
+                    .await;
                 }
                 total_steps += test.teardown.len();
             }
@@ -1247,7 +1278,16 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor, current_dut_is_secure).await;
+                execute_step(
+                    &mut harness,
+                    &resolved_step,
+                    i,
+                    sec_ctx.as_mut(),
+                    &suite.variables,
+                    time_divisor,
+                    current_dut_is_secure,
+                )
+                .await;
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");
