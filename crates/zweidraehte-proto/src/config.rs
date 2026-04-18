@@ -2,6 +2,25 @@
 //!
 //! These constants define APDU sizes and buffer calculations used by both
 //! device stacks and client implementations.
+//!
+//! # Plaintext vs secure APDU budgets
+//!
+//! `PID_MAX_APDU_LENGTH` (spec 03/05/01 §4.3.7) is a **wire-level** value:
+//! the maximum size of the complete APDU a device can send or receive,
+//! measured from the TPCI byte. The KNX Data Secure envelope
+//! (TPCI/APCI(2) + SCF(1) + SeqNr(6) + plaintext-APDU + MAC(4)) *is*
+//! the APDU when the frame is secure — not a wrapper around it
+//! (spec 03/03/07 Annex C.1.1 shows the secure APDU starting with
+//! `0x03 0xF1` for `T_Data_Individual` + `A_Secure`). A device that
+//! advertises `PID_MAX_APDU_LENGTH = 254` is committing to buffers
+//! that hold a full 254-byte APDU regardless of whether it is plain
+//! or secure.
+//!
+//! [`buffer_size_for_apdu`] sizes for the wire APDU and therefore
+//! naturally accommodates secure frames at the same budget — no
+//! secure-specific sizing is required. Callers that need to know the
+//! plaintext-content budget after secure wrapping can compute it as
+//! `max_apdu - `[`apdu::secure::OVERHEAD`](crate::messages::apdu::secure::OVERHEAD).
 
 // ============================================================================
 // APDU Size Constants
@@ -64,7 +83,8 @@ pub const DEFAULT_HEADROOM: usize = 16;
 ///
 /// The buffer must be large enough to hold:
 /// - Frame overhead (9 bytes for cEMI compatibility)
-/// - Maximum APDU
+/// - Maximum APDU — this covers both plain and secure frames, since
+///   the Data Secure envelope is part of the APDU (see module docs).
 /// - Headroom for protocol headers (16 bytes)
 pub const fn buffer_size_for_apdu(max_apdu_length: u16) -> usize {
     max_apdu_length as usize + FRAME_OVERHEAD + DEFAULT_HEADROOM

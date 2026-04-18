@@ -131,31 +131,55 @@ Contains:
 
 Key modules:
 - `lib.rs` - Main stack entry point, defines core traits, re-exports proto modules
+- `definition.rs` - `StackDefinition` trait (central compile-time "bill of materials")
+- `router.rs` - Synchronous `Layer` trait and compile-time dispatch-table router
+- `runner.rs` - Stack factory (`new()`) and router event loop
+- `composition.rs` - Layer-stack builders (`InsecureDeviceBuilder`, `InsecureIpDeviceBuilder`, `SecureDeviceBuilder`)
+- `context/` - Context-trait surface
+  - `traits.rs` - Small single-responsibility context traits (buffer manager, APDU length, outbox, property service, address table, etc.)
+  - `layer.rs` - `LayerContext<D>` (persistent shared runtime infrastructure, owned by `StackResources`)
+  - `stack.rs` - `StackContext<'a, D>` (transient bundle assembled in `Runner::run`)
+- `resources.rs` - `StackResources<D, BUF_SZ, NUM_BUFS>` pre-allocated static storage
+- `inner.rs` - `Inner<D>` (owned core: state, platform, memory map, &layer_context)
+- `state.rs` - `StackState`, `HasAuthorization`, `HasSecureIdentity`, `HasPersistence`, `CoreDeviceState`
+- `storage.rs` - `DeviceIdentity`, `SecureDeviceIdentity`, `DeviceStorage`, `SequenceNumberStorage`, `HasSequenceStorage`
+- `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
 - `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
-- `context.rs` - Runtime context for buffer management
 - `ets.rs` - ETS integration, parameter export, derive macro re-exports
-- `memory.rs` - Memory management for embedded/no_std environments
-- `router.rs` - Table-driven message router and `Layer` trait
-- `definition.rs` - `StackDefinition` trait
+- `ip.rs` - `IpStackState`, `IpPlatformState` (IP extension state traits), platform re-exports
+- `actor.rs` - Lightweight request/response primitives (`Request<M, R>`, `ActorRequest`)
+- `device_model.rs` - `DeviceModelNotifier` and device-model lifecycle
+- `restart.rs` - Restart request types and erase codes
+- `access_policy.rs` - Access-control policy helpers
 
 Subdirectories:
-- `layers/` - KNX protocol stack layers
-  - `application.rs` - Application layer (handles app-level services)
-  - `network.rs` - Network layer routing
+- `layers/` - KNX protocol stack layers (all synchronous except link layers)
+  - `network.rs` - Network layer (routing, hop count)
   - `transport/` - Transport layer connection management
+    - `mod.rs` - `TransportLayer` (TL state machine per 03/03/04 §5.4)
     - `connection.rs` - Individual connections
     - `state_machine.rs` - Connection state tracking
-  - `linklayers/` - Physical layer implementations
+    - `cemi.rs` - `CemiTransportLayer` wrapper (used by KNX/IP stacks as `(NL, CemiTL<TL>, AL)`)
+  - `application/` - Application layer (`mod.rs` dispatches APCI codes)
+  - `secure_application/` - Secure Application Layer wrapper (KNX Data Secure; wraps plain AL, decrypts/encrypts Secure Service APDUs)
+  - `linklayers/` - Physical layer implementations (each runs as a separate async task, connected to the router via req/ind/conf channels)
     - `tpuart/` - TP-UART serial interface (bus access, state machine, busmon)
-    - `knxip/` - KNX/IP routing and tunneling over IP
+    - `knxip/` - KNX/IP routing, tunneling, discovery, device management
     - `usb/` - USB HID interface support
+    - `ip_interface/` - External KNXnet/IP interface client (feature `ip-interface`)
     - `mock.rs` - Mock link layer for testing
 - `objects/` - KNX interface objects
-  - `comm.rs` - Communication objects (group objects)
-  - `interface/` - Interface object traits and standard objects
-  - `tables/` - Standard KNX tables (address table, app table, association table, CO table)
+  - `comm.rs` - Communication objects (group objects), `ComObjects` trait
+  - `interface/` - Interface object traits, `PropertyServiceHandler`, `InterfaceObjectAugment<D>`, standard objects
+  - `tables/` - Standard KNX tables (address table, app table, association table, CO table) with `Has*` accessor traits
 - `bcus/` - Bus Control Units (BCU) device implementations
-  - `system_b/` - System B BCU implementation
+  - `system_b/` - System B BCU implementation (mask versions 07B0 / 57B0)
+    - `device_state/` - `SystemBDeviceState`
+    - `extensions/` - TP1, IP, Security, OperationMode extensions and augments
+    - `objects/` - `SystemBObjects` container
+    - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary
+    - `memory_map.rs` - `SystemBMemoryMap`
+    - `definition.rs` - `SystemBStackDefinition` convenience supertrait
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
@@ -290,6 +314,14 @@ Contains:
 
 ### Documentation (`/docs`)
 
+- `STACK_ARCHITECTURE.md` - Full reference for the device stack's design
+  philosophy, core components, and the context-trait surface. Covers
+  `StackDefinition`, router + `Layer` trait, `LayerContext` vs.
+  `StackContext`, `Config`/`State`/`Resources`/`StateInit` vocabulary,
+  extensions and augments, link layers, and a dispatch walk-through.
+  Read this first when touching stack internals.
+- `DEVICE_DEFINITION.md` - How to define a concrete device and wire it
+  into `main`.
 - `DSL_REFERENCE.md` - Comprehensive reference for the ETS DSL macros:
   - `#[derive(EtsParams)]` - Parameter struct definitions
   - `#[derive(EtsEnum)]` - Simple enum dropdowns
@@ -302,15 +334,31 @@ Contains:
 
 ### Architecture Layers
 
+NL, TL, and AL are **synchronous** `Layer` implementations dispatched by
+a single async router loop via a compile-time dispatch table keyed on
+`ServiceType`. The link layer runs as a separate async task connected
+to the router via three channels (req/ind/conf). KNX/IP stacks insert
+a `CemiTransportLayer` wrapper between TL and the link layer. KNX Data
+Secure swaps `ApplicationLayer` for `SecureApplicationLayer` (a wrapper
+that decrypts incoming Secure Service APDUs and encrypts responses).
+
 ```
-Application Layer (handlers for services)
-    ↓
-Transport Layer (connection management)
-    ↓
-Network Layer (routing)
-    ↓
-Link Layers (physical: TPUART, KNX/IP, USB, Mock)
+User code  ←─(ApplicationLayerService, ComObject events, restart)→  Application Layer
+                                                                  (or SecureApplicationLayer wrapper)
+                                      ↓ (Outbox + DispatchTable)
+                                  Transport Layer
+                                      ↓
+                           (CemiTransportLayer wrapper — KNX/IP only)
+                                      ↓
+                                  Network Layer
+                                      ↓ (req / ind / conf channels)
+            Link Layer (async task: TPUART, KNX/IP, USB, ip_interface, Mock)
+                                      ↓
+                                  KNX wire
 ```
+
+See `docs/STACK_ARCHITECTURE.md` for the full component / context-trait
+reference.
 
 ### Crate Dependency Graph
 

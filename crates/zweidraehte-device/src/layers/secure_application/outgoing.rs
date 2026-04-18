@@ -134,8 +134,8 @@ pub(crate) fn wrap_outgoing<ADT: AddressTable>(
     let plain_content_len = buf.len();
     let needed_len = plain_content_len + secure::OVERHEAD;
 
-    if needed_len > buf.capacity() + offsets::MSG_TPCI {
-        warn!("S-AL: buffer too small for secure frame ({} > {})", needed_len, buf.capacity() + offsets::MSG_TPCI);
+    if needed_len > buf.capacity() {
+        warn!("S-AL: buffer too small for secure frame ({} > {})", needed_len, buf.capacity());
         return Err(WrapError::BufferTooSmall);
     }
 

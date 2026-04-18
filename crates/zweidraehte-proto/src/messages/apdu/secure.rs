@@ -52,18 +52,11 @@ pub const MAC_LEN: usize = 4;
 
 /// Bytes added by the secure envelope beyond the plaintext frame.
 ///
-/// Secure header replaces the 2-byte TPCI/APCI with: TPCI/APCI(2) +
-/// SCF(1) + SeqNr(6) = 9 bytes, then appends MAC(4). Net overhead
-/// relative to the plaintext frame (which already has TPCI/APCI) is
-/// 9 - 2 + 4 = 11 bytes... but the payload *includes* the original
-/// TPCI/APCI, so total frame growth is SCF(1) + SeqNr(6) + MAC(4) = 11.
-///
-/// More precisely: `secure_len = plain_len + OVERHEAD` where `plain_len`
-/// is measured from offset 0 (full frame including header).
-///
-/// In practice, the code measures plaintext from `MSG_TPCI` (offset 6),
-/// and the secure frame from `MSG_TPCI` is `plain_payload_len + 13`:
-/// TPCI/APCI(2) + SCF(1) + SeqNr(6) + plain_payload_len + MAC(4).
+/// Plain `[header | TPCI/APCI | data]` becomes
+/// `[header | secure TPCI/APCI | SCF(1) | SeqNr(6) | plain TPCI/APCI | data | MAC(4)]` —
+/// a constant +13-byte growth regardless of payload size. The plaintext
+/// TPCI/APCI is preserved inside the encrypted payload so the receiver
+/// can recover the service code after decryption.
 pub const OVERHEAD: usize = 13;
 
 /// Minimum secure frame length (header + SCF + SeqNr + MAC, no payload).
