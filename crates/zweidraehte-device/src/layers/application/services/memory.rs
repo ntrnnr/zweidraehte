@@ -91,8 +91,18 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
 
     debug!("AL Memory_Read: address=0x{:04X}, count={}", acc.address, acc.count);
 
+    // Cap against the effective APDU budget. Per spec 03/03/07 §3.5.3
+    // Error handling: if `number > Maximum APDU Length - 3`, the
+    // A_Memory_Response-PDU shall have `number = 0` with no data.
+    let payload_cap = ctx.response_payload_cap(MemoryResponse::msg_len(0));
+
     let mut data = [0u8; 63]; // Max count is 63 (6 bits)
-    let result = ctx.memory_map.read(ctx.state, acc.address, &mut data[..(acc.count as usize)], ctx.access_ctx);
+    let request_count = (acc.count as usize).min(data.len()).min(payload_cap);
+    let result = if request_count == 0 {
+        Ok(0usize)
+    } else {
+        ctx.memory_map.read(ctx.state, acc.address, &mut data[..request_count], ctx.access_ctx)
+    };
 
     let response_count = match result {
         Ok(bytes_read) => bytes_read as u8,
@@ -159,6 +169,11 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     if !ctx.interface_objects.verify_mode() {
         return;
     }
+
+    // Verify-mode responses are bounded by the same APDU budget; a
+    // count that no longer fits is reported as count=0.
+    let response_count =
+        if ctx.response_fits(MemoryResponse::msg_len(response_count as usize)) { response_count } else { 0 };
 
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
     else {
@@ -269,6 +284,11 @@ fn send_memorybit_response<D: StackDefinition>(
     if !ctx.interface_objects.verify_mode() {
         return;
     }
+
+    // Same budget guard as A_Memory_Read: truncate to count=0 when the
+    // response won't fit.
+    let (count, data) =
+        if ctx.response_fits(MemoryResponse::msg_len(count as usize)) { (count, data) } else { (0u8, &[][..]) };
 
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(count as usize)) else {
         warn!("AL no buffer for response");

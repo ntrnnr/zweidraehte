@@ -32,8 +32,10 @@
 //! handlers may migrate into services incrementally without requiring
 //! a big-bang AL split.
 
+use crate::StackState;
 use crate::definition::StackDefinition;
-use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::access::{AccessContext, SecurityMode};
+use zweidraehte_proto::config::max_outgoing_msg_len;
 use zweidraehte_proto::messages::{
     buffers::{Buffer, DynBufferManager},
     knx::{ApciCode, KnxMessageBuffer},
@@ -71,6 +73,39 @@ impl<'a, D: StackDefinition> AlServiceContext<'a, D> {
     /// Access the buffer manager for allocating response buffers.
     pub fn buffer_manager(&self) -> &'a DynBufferManager<'static> {
         &self.lctx.buffer_manager
+    }
+
+    /// Maximum `msg_len` (internal-format frame length from offset 0)
+    /// a response may pass to `try_alloc_with_size` before exceeding
+    /// the effective APDU ceiling. See
+    /// [`max_outgoing_msg_len`](zweidraehte_proto::config::max_outgoing_msg_len)
+    /// for the wire↔internal length relationship.
+    ///
+    /// Handlers compare their `Response::msg_len(n)` against this
+    /// value and return the appropriate negative return code on
+    /// overflow — `0xF4 E_LENGTH_EXCEEDS_MAX_APDU_LENGTH` for
+    /// property / function-property services, or `number = 0` for
+    /// Memory-family services per 03/03/07 §3.5.3.
+    pub fn effective_apdu_budget(&self) -> usize {
+        max_outgoing_msg_len(self.state.max_apdu_length(), self.access_ctx.security != SecurityMode::Plain)
+    }
+
+    /// Largest payload the current request may place in its response
+    /// given the service's fixed header length.
+    ///
+    /// Shorthand for `effective_apdu_budget() - header_len`, saturating
+    /// at 0 to handle pathological budgets smaller than the header.
+    /// Callers use this to cap a requested read count before invoking
+    /// the handler, keeping the response within the wire ceiling.
+    pub fn response_payload_cap(&self, header_len: usize) -> usize {
+        self.effective_apdu_budget().saturating_sub(header_len)
+    }
+
+    /// Whether a response of total `msg_len` bytes fits within the
+    /// effective APDU budget. `msg_len` is the internal-format frame
+    /// length from offset 0, as returned by `Response::msg_len(n)`.
+    pub fn response_fits(&self, msg_len: usize) -> bool {
+        msg_len <= self.effective_apdu_budget()
     }
 }
 

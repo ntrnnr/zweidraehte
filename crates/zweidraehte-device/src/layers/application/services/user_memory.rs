@@ -83,9 +83,21 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
 
     debug!("AL UserMemory_Read: address=0x{:05X}, count={}", acc.full_address(), acc.count);
 
+    // Cap the read size so the response fits in the effective APDU
+    // budget. Per spec 03/03/07 §3.5.6.2 error handling, an over-budget
+    // read responds with `number = 0` (no dedicated negative RC exists
+    // for A_UserMemory_Read — it has no return-code field on the wire).
+    let payload_cap = ctx.response_payload_cap(UserMemoryResponse::msg_len(0));
+
     let mut data = [0u8; 255];
-    let max_read = core::cmp::min(acc.count as usize, data.len());
-    let result = ctx.memory_map.read(ctx.state, acc.address_low, &mut data[..max_read], ctx.access_ctx);
+    let max_read = (acc.count as usize).min(data.len()).min(payload_cap);
+    let result = if max_read == 0 {
+        // Either the request was for zero bytes or the budget cannot
+        // fit any payload. Both collapse to a count=0 response.
+        Ok(0usize)
+    } else {
+        ctx.memory_map.read(ctx.state, acc.address_low, &mut data[..max_read], ctx.access_ctx)
+    };
 
     let response_count = match result {
         Ok(bytes_read) => bytes_read as u8,
@@ -153,13 +165,23 @@ fn handle_user_memory_write<D: StackDefinition>(
         return;
     }
 
+    // Truncate verify-response count to the effective APDU budget. A
+    // response larger than the budget cannot be placed on the wire;
+    // emit count=0 to signal "no verify data returned" per the same
+    // convention used on the read path.
+    let response_count = if ctx.response_fits(UserMemoryResponse::msg_len(response_count as usize)) {
+        response_count
+    } else {
+        ctx.response_payload_cap(UserMemoryResponse::msg_len(0)).min(response_count as usize) as u8
+    };
+
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
     else {
         warn!("AL no buffer for response");
         return;
     };
 
-    let response_data = if response_count > 0 { acc.data } else { &[] };
+    let response_data = if response_count > 0 { &acc.data[..response_count as usize] } else { &[] };
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::UserMemoryResponse).with_data(|buf| {
         UserMemoryResponse::write(buf, acc.addr_ext, response_count, acc.address_low, response_data);
     });

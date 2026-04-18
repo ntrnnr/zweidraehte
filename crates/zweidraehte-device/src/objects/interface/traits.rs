@@ -603,6 +603,14 @@ pub struct AugmentContext<'a, D: StackDefinition> {
     pub state: &'a D::State,
     /// Shared layer infrastructure (buffer manager, outbox, channels).
     pub lctx: &'a LayerContext<D>,
+    /// Access context of the incoming request that triggered this call.
+    ///
+    /// Carries the caller's authorization level and whether the request
+    /// arrived via KNX Data Secure. Augments use this through
+    /// [`effective_apdu_budget`](Self::effective_apdu_budget) to size
+    /// outgoing responses correctly — a secure request's response must
+    /// leave room for the 13-byte secure envelope.
+    pub access_ctx: AccessContext,
 }
 
 impl<'a, D: StackDefinition> AugmentContext<'a, D> {
@@ -610,6 +618,46 @@ impl<'a, D: StackDefinition> AugmentContext<'a, D> {
     #[inline]
     pub fn buffer_manager(&self) -> &'a DynBufferManager<'static> {
         &self.lctx.buffer_manager
+    }
+
+    /// Maximum on-wire APDU bytes available for an outgoing response to
+    /// the current request.
+    ///
+    /// Mirrors [`AlServiceContext::effective_apdu_budget`](crate::layers::application::services::AlServiceContext::effective_apdu_budget):
+    /// returns `state.max_apdu_length()` (already clamped to
+    /// `D::MAX_APDU_LENGTH` and to any lower LL ceiling), reduced by
+    /// `apdu::secure::OVERHEAD` when the current request arrived over
+    /// KNX Data Secure.
+    pub fn effective_apdu_budget(&self) -> usize
+    where
+        D::State: crate::StackState,
+    {
+        use crate::StackState;
+        use zweidraehte_proto::access::SecurityMode;
+        zweidraehte_proto::config::max_outgoing_msg_len(
+            self.state.max_apdu_length(),
+            self.access_ctx.security != SecurityMode::Plain,
+        )
+    }
+
+    /// Largest payload the current request may place in its response
+    /// given the service's fixed header length. See
+    /// [`AlServiceContext::response_payload_cap`](crate::layers::application::services::AlServiceContext::response_payload_cap).
+    pub fn response_payload_cap(&self, header_len: usize) -> usize
+    where
+        D::State: crate::StackState,
+    {
+        self.effective_apdu_budget().saturating_sub(header_len)
+    }
+
+    /// Whether a response of total `msg_len` fits within the effective
+    /// APDU budget. See
+    /// [`AlServiceContext::response_fits`](crate::layers::application::services::AlServiceContext::response_fits).
+    pub fn response_fits(&self, msg_len: usize) -> bool
+    where
+        D::State: crate::StackState,
+    {
+        msg_len <= self.effective_apdu_budget()
     }
 
     /// Access the shared outbox (for direct, low-level telegram emission).

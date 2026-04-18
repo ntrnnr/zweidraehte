@@ -142,6 +142,17 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         &self.lctx.buffer_manager
     }
 
+    /// Effective APDU budget for an outgoing response, accounting for
+    /// the secure envelope when the request arrived secured. See
+    /// [`AlServiceContext::effective_apdu_budget`](crate::layers::application::services::AlServiceContext::effective_apdu_budget).
+    fn effective_apdu_budget(&self, access_ctx: AccessContext) -> usize {
+        use zweidraehte_proto::access::SecurityMode;
+        zweidraehte_proto::config::max_outgoing_msg_len(
+            self.state.max_apdu_length(),
+            access_ctx.security != SecurityMode::Plain,
+        )
+    }
+
     /// Access the unified device state.
     pub(crate) fn state(&self) -> &'a D::State {
         self.state
@@ -478,8 +489,15 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             hdr.object_idx, hdr.prop_id, hdr.count, hdr.start_idx, access_ctx
         );
 
-        const MAX_PROPERTY_DATA: usize = 64;
-        let mut data_buf = [0u8; MAX_PROPERTY_DATA];
+        // Local scratch buffer for property data — upper bound on what a
+        // single read will ever produce. Not a protocol cap: the actual
+        // response length is gated by the APDU budget below so the
+        // response always fits on the wire.
+        const DATA_SCRATCH: usize = 64;
+        let mut data_buf = [0u8; DATA_SCRATCH];
+
+        let budget = self.effective_apdu_budget(access_ctx);
+        let payload_cap = budget.saturating_sub(PropertyValueResponse::msg_len(0)).min(DATA_SCRATCH);
 
         let req = FullPropertyReadRequest {
             object_idx: hdr.object_idx,
@@ -488,10 +506,10 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             count: hdr.count,
             ctx: access_ctx,
         };
-        let result = self.interface_objects.property_value_read(&req, &mut data_buf);
+        let result = self.interface_objects.property_value_read(&req, &mut data_buf[..payload_cap]);
 
         match result {
-            Ok(data_len) => {
+            Ok(data_len) if PropertyValueResponse::msg_len(data_len) <= budget => {
                 let response_len = PropertyValueResponse::msg_len(data_len);
                 let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
                     warn!("AL no buffer for response");
@@ -516,8 +534,18 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 debug!("AL sending PropertyValueResponse: {} bytes", data_len);
                 self.lctx.push_outbox(msg.into_inner());
             }
-            Err(e) => {
-                warn!("AL PropertyValueRead failed: {:?}", e);
+            // Data too big for the effective APDU budget — spec
+            // 03/03/07 §3.3 return codes: respond with an error
+            // response. The write_error helper produces a count=0
+            // response, signalling to the MaC that the read failed.
+            // (Property service responses have no dedicated 0xF4 field
+            // in this encoding path — count=0 is the error signal.)
+            Ok(_) | Err(_) => {
+                if let Err(e) = &result {
+                    warn!("AL PropertyValueRead failed: {:?}", e);
+                } else {
+                    warn!("AL PropertyValueRead result too large for APDU budget ({})", budget);
+                }
 
                 let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
                 else {
@@ -600,6 +628,27 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 // WriteResponse::Data contains transformed data (e.g., LOAD_STATE_CONTROL)
                 let response_data: &[u8] = write_response.as_slice().unwrap_or(data);
                 let response_len = PropertyValueResponse::msg_len(response_data.len());
+                let budget = self.effective_apdu_budget(access_ctx);
+                if response_len > budget {
+                    // Can't fit the verify echo on the wire. Send an
+                    // error response (count=0) instead — same convention
+                    // as the read path.
+                    warn!(
+                        "AL PropertyValueWrite verify response too large for APDU budget ({} > {})",
+                        response_len, budget
+                    );
+                    let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
+                    else {
+                        warn!("AL no buffer for response");
+                        return;
+                    };
+                    let msg =
+                        ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
+                            PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
+                        });
+                    self.lctx.push_outbox(msg.into_inner());
+                    return;
+                }
                 let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
                     warn!("AL no buffer for response");
                     return;

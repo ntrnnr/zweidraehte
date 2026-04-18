@@ -87,6 +87,13 @@ impl Default for ClientRole {
 /// levels and KNX Data Secure access policies. The security fields default
 /// to `Plain`/`Unlisted`, preserving backward compatibility with code that
 /// only uses the legacy access level.
+///
+/// The `Default` impl returns [`MIN_ACCESS`](Self::MIN_ACCESS) — a
+/// plaintext, unlisted caller at the lowest privilege level. Use it when
+/// passing an access context to a code path that does not consume it
+/// for authorisation (e.g., to size an outgoing response buffer); the
+/// conservative values ensure such uses cannot accidentally grant extra
+/// privileges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct AccessContext {
@@ -106,12 +113,7 @@ impl AccessContext {
     ///
     /// Security defaults to `Plain` and role to `Unlisted`.
     pub const fn new(access_level: u8) -> Self {
-        Self {
-            access_level,
-            security: SecurityMode::Plain,
-            role: ClientRole::Unlisted,
-            source_addr: 0,
-        }
+        Self { access_level, security: SecurityMode::Plain, role: ClientRole::Unlisted, source_addr: 0 }
     }
 
     /// Create a full access context with all fields.
@@ -128,20 +130,20 @@ impl AccessContext {
     }
 
     /// Minimum-access context (level 3, no special privileges).
-    pub const MIN_ACCESS: Self = Self {
-        access_level: 3,
-        security: SecurityMode::Plain,
-        role: ClientRole::Unlisted,
-        source_addr: 0,
-    };
+    pub const MIN_ACCESS: Self =
+        Self { access_level: 3, security: SecurityMode::Plain, role: ClientRole::Unlisted, source_addr: 0 };
 
     /// Maximum-access context (level 0, full system access).
-    pub const MAX_ACCESS: Self = Self {
-        access_level: 0,
-        security: SecurityMode::Plain,
-        role: ClientRole::Unlisted,
-        source_addr: 0,
-    };
+    pub const MAX_ACCESS: Self =
+        Self { access_level: 0, security: SecurityMode::Plain, role: ClientRole::Unlisted, source_addr: 0 };
+}
+
+impl Default for AccessContext {
+    /// Returns [`AccessContext::MIN_ACCESS`] — a plaintext, unlisted
+    /// caller at the lowest privilege level.
+    fn default() -> Self {
+        Self::MIN_ACCESS
+    }
 }
 
 // ============================================================================
@@ -396,7 +398,7 @@ mod tests {
     fn access_policy_open_allows_unlisted_plain() {
         // 3FF / 1FF: sec off = 0x3FF, all bits set
         let ctx = AccessContext::new(3); // Plain, Unlisted
-        assert!(AccessPolicy::OPEN.can_read(&ctx, false));  // bit 8 of 0x3FF
+        assert!(AccessPolicy::OPEN.can_read(&ctx, false)); // bit 8 of 0x3FF
         assert!(AccessPolicy::OPEN.can_write(&ctx, false)); // bit 9 of 0x3FF
     }
 
@@ -404,8 +406,8 @@ mod tests {
     fn access_policy_open_sec_on_unlisted_read_only() {
         // 3FF / 1FF: sec on = 0x1FF, bit 9 clear, bit 8 set
         let ctx = AccessContext::new(3); // Plain, Unlisted
-        assert!(AccessPolicy::OPEN.can_read(&ctx, true));   // bit 8 of 0x1FF = 1
-        assert!(!AccessPolicy::OPEN.can_write(&ctx, true));  // bit 9 of 0x1FF = 0
+        assert!(AccessPolicy::OPEN.can_read(&ctx, true)); // bit 8 of 0x1FF = 1
+        assert!(!AccessPolicy::OPEN.can_write(&ctx, true)); // bit 9 of 0x1FF = 0
     }
 
     #[test]

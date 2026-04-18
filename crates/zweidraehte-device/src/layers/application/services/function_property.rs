@@ -108,6 +108,15 @@ fn handle<D: StackDefinition>(
     let response_data = result.data.as_slice();
     let response_len = FpResponseWriter::msg_len(response_data.len());
 
+    // Plain `A_FunctionPropertyState_Response` has no negative return
+    // code for over-budget responses (unlike the extended
+    // FunctionPropertyExt family). If the handler produced more data
+    // than fits in the wire budget, drop + warn.
+    if !ctx.response_fits(response_len) {
+        warn!("AL FunctionProperty response too large for APDU budget ({} bytes); dropping", response_len);
+        return;
+    }
+
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionProperty response");
         return;

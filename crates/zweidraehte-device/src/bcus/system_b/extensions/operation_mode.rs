@@ -590,6 +590,25 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         let value = &data[5..];
+
+        // Bounds-check the forwarded value against the effective APDU
+        // budget before we try to emit. Per spec 03/05/01 §4.8.1.3.3
+        // Table 37 + NOTE 39, data-size mismatch has no dedicated
+        // return code — `FFh E_ERROR` is the catchall when no other RC
+        // applies. A `Full`-encoded `GroupValue_Write` places `value`
+        // at offset `MSG_APDU`, so the largest permissible length is
+        // `budget - MSG_APDU`.
+        let budget = ctx.effective_apdu_budget();
+        let max_value_len = budget.saturating_sub(zweidraehte_proto::messages::knx::offsets::MSG_APDU);
+        if value.len() > max_value_len {
+            warn!(
+                "GO diag: direct-write value too large for APDU budget (value_len={}, max={})",
+                value.len(),
+                max_value_len,
+            );
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[0x01]) };
+        }
+
         // Bit 7 of flags: 1 = next full octet, 0 = 6 trailing bits after APCI.
         let full_octet = flags & 0x80 != 0;
         let encoding = if !full_octet && value.len() == 1 && value[0] < 64 {

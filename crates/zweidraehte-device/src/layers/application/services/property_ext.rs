@@ -177,8 +177,13 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         return;
     }
 
-    const MAX_PROPERTY_DATA: usize = 64;
-    let mut data_buf = [0u8; MAX_PROPERTY_DATA];
+    // Local scratch — not a protocol cap. The `payload_cap` derived
+    // from `response_payload_cap` is the actual ceiling the handler
+    // may produce.
+    const DATA_SCRATCH: usize = 64;
+    let mut data_buf = [0u8; DATA_SCRATCH];
+
+    let payload_cap = ctx.response_payload_cap(PropertyExtValueResponse::msg_len(0)).min(DATA_SCRATCH);
 
     let req = FullPropertyReadRequest {
         object_idx,
@@ -187,9 +192,15 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         count: hdr.count as u16,
         ctx: ctx.access_ctx,
     };
-    let result = ctx.interface_objects.property_value_read(&req, &mut data_buf);
+    let result = ctx.interface_objects.property_value_read(&req, &mut data_buf[..payload_cap]);
 
     match result {
+        Ok(data_len) if !ctx.response_fits(PropertyExtValueResponse::msg_len(data_len)) => {
+            // Data read successfully but the full response would exceed
+            // the APDU budget — spec 03/03/07 §3.3 dedicated RC.
+            warn!("AL PropertyExtValueRead result too large for APDU budget");
+            send_ext_read_error(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH);
+        }
         Ok(data_len) => {
             let response_len = PropertyExtValueResponse::msg_len(data_len);
             let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
@@ -587,6 +598,12 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     let result = ctx.interface_objects.function_property_command(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
+    if !ctx.response_fits(response_len) {
+        // Response data exceeds the APDU budget (spec 03/03/07 §3.3 RC 0xF4).
+        warn!("AL FunctionPropertyExt result too large for APDU budget ({} bytes)", response_len);
+        send_function_ext_response(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH, &[]);
+        return;
+    }
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
@@ -656,6 +673,12 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     let result = ctx.interface_objects.function_property_state_read(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
+    let budget = ctx.effective_apdu_budget();
+    if response_len > budget {
+        warn!("AL FunctionPropertyExt result too large for APDU budget ({} > {})", response_len, budget);
+        send_function_ext_response(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH, &[]);
+        return;
+    }
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
@@ -899,10 +922,10 @@ fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
     let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access_ctx);
 
     let rc = match result {
-        Ok(_) => 0x00,                                            // E_SUCCESS
-        Err(crate::memory::MemoryError::AccessDenied) => 0xFC,    // E_ILLEGAL_COMMAND
-        Err(crate::memory::MemoryError::WriteProtected) => 0xFB,  // E_READ_ONLY
-        Err(_) => 0xFD,                                           // E_ADDRESS_VOID
+        Ok(_) => 0x00,                                           // E_SUCCESS
+        Err(crate::memory::MemoryError::AccessDenied) => 0xFC,   // E_ILLEGAL_COMMAND
+        Err(crate::memory::MemoryError::WriteProtected) => 0xFB, // E_READ_ONLY
+        Err(_) => 0xFD,                                          // E_ADDRESS_VOID
     };
 
     send_memory_ext_write_response(ind, ctx, rc, addr_hi, addr_mid, addr_lo);
@@ -950,9 +973,20 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 
     let addr16 = (address & 0xFFFF) as u16;
     let mut data_buf = [0u8; 252]; // Max extended memory read
-    let read_len = count.min(data_buf.len());
+    // MemoryExtendedReadResponse: APCI(2) + rc(1) + addr(3) + data(n).
+    // Cap `read_len` so the response fits in the effective APDU
+    // budget. Over-budget reads respond with `count = 0` analog to
+    // A_Memory_Read (spec 03/03/07 §3.5.3 — MemoryExtended has no
+    // dedicated 0xF4 path since the return code field already carries
+    // a 0xFD "address void" variant for size errors).
+    let payload_cap = ctx.response_payload_cap(offsets::MSG_APCI + 6);
+    let read_len = count.min(data_buf.len()).min(payload_cap);
 
-    let result = ctx.memory_map.read(ctx.state, addr16, &mut data_buf[..read_len], ctx.access_ctx);
+    let result = if read_len == 0 {
+        Ok(0usize)
+    } else {
+        ctx.memory_map.read(ctx.state, addr16, &mut data_buf[..read_len], ctx.access_ctx)
+    };
 
     match result {
         Ok(n) => {
@@ -970,9 +1004,9 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
         }
         Err(e) => {
             let rc = match e {
-                crate::memory::MemoryError::AccessDenied => 0xFC,    // E_ILLEGAL_COMMAND
-                crate::memory::MemoryError::WriteProtected => 0xFA,  // E_WRITE_ONLY (read of write-only region)
-                _ => 0xFD,                                           // E_ADDRESS_VOID
+                crate::memory::MemoryError::AccessDenied => 0xFC,   // E_ILLEGAL_COMMAND
+                crate::memory::MemoryError::WriteProtected => 0xFA, // E_WRITE_ONLY (read of write-only region)
+                _ => 0xFD,                                          // E_ADDRESS_VOID
             };
             let resp_len = offsets::MSG_APCI + 6;
             let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };

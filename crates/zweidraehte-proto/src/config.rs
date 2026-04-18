@@ -90,6 +90,31 @@ pub const fn buffer_size_for_apdu(max_apdu_length: u16) -> usize {
     max_apdu_length as usize + FRAME_OVERHEAD + DEFAULT_HEADROOM
 }
 
+/// Maximum internal-format `msg_len` allowed for an outgoing response
+/// at the given wire APDU ceiling.
+///
+/// `max_apdu_length` is the NPDU length-field value (spec 03/05/01
+/// §4.3.7) — the NPDU on the wire is `TPCI + APDU`, encoded as
+/// `total_wire_bytes − 1`. The internal-format frame adds the 6-byte
+/// frame header (offset `MSG_TPCI`), so the corresponding internal
+/// `msg_len` ceiling is `MSG_TPCI + 1 + max_apdu_length`.
+///
+/// When `secure_envelope` is `true`, the ceiling shrinks by
+/// [`apdu::secure::OVERHEAD`](crate::messages::apdu::secure::OVERHEAD)
+/// to leave room for the KNX Data Secure envelope the outgoing frame
+/// will carry (spec 03/03/07 Annex C.1.1).
+///
+/// Used by AL handlers to compare their `Response::msg_len(n)`
+/// directly against the ceiling without redoing the header-offset
+/// math at each call site.
+pub const fn max_outgoing_msg_len(max_apdu_length: u16, secure_envelope: bool) -> usize {
+    use crate::messages::apdu::secure::OVERHEAD;
+    use crate::messages::knx::offsets::MSG_TPCI;
+    let apdu = max_apdu_length as usize;
+    let apdu = if secure_envelope { apdu.saturating_sub(OVERHEAD) } else { apdu };
+    MSG_TPCI + 1 + apdu
+}
+
 /// Common maximum APDU length configurations.
 ///
 /// Use this enum to select a standard APDU size configuration for your device.

@@ -8,7 +8,7 @@
 //! - TL confirmation tracking for pending group sends
 
 use crate::{
-    StackDefinition,
+    StackDefinition, StackState,
     context::EventPublisherContext,
     context::layer::{HasOutbox, LayerContext},
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
@@ -297,6 +297,26 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // Determine the size and offset for the response
             let (object_size, msg_offset) = get_object_size_and_offset(&cot_info);
 
+            // Guard against CO types that wouldn't fit on the wire at
+            // the device's current APDU ceiling. The CO size table
+            // goes up to 252 bytes (`ComObjectType::Byte252`); on
+            // reduced `state.max_apdu_length()` (e.g. USB interfaces
+            // reporting a lower max) a big CO would silently produce
+            // an over-spec frame. Spec does not define a negative
+            // return code for group services — silently drop + warn.
+            let response_len = object_size + msg_offset;
+            // Plain-path ceiling — these sites have no access_ctx to
+            // consult, and the S-AL wrap on secure outputs runs further
+            // downstream with its own capacity check.
+            let max_msg_len = zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), false);
+            if response_len > max_msg_len {
+                warn!(
+                    "AL GroupValueResponse for ASAP {} would exceed APDU ceiling ({} > {}); dropping",
+                    asap, response_len, max_msg_len,
+                );
+                continue;
+            }
+
             // Use the ASAP's sending TSAP for the response destination.
             // For GOs with separate receive/send GAs, this differs from the
             // incoming TSAP (which is the receiving GA's TSAP).
@@ -308,7 +328,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             self.state.comm_objects().borrow_mut().prepare_read(asap, self.state.hook_context());
 
             // Allocate a new message for the response
-            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(object_size + msg_offset) else {
+            let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
                 warn!("AL no buffer for response");
                 return;
             };
@@ -427,6 +447,30 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 object_size,
                 msg_len,
             );
+
+            // Bounds-check against the current wire APDU ceiling. A CO
+            // configured with a size that exceeds `max_apdu_length()`
+            // (common on USB stacks that report a reduced ceiling)
+            // can't be transmitted; drop with an error status and warn.
+            // Group services have no wire-level return code, so the
+            // rejection surfaces through the CO status only.
+            // Plain-path ceiling — these sites have no access_ctx to
+            // consult, and the S-AL wrap on secure outputs runs further
+            // downstream with its own capacity check.
+            let max_msg_len = zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), false);
+            if msg_len > max_msg_len {
+                warn!(
+                    "AL GroupValue {} for ASAP {} would exceed APDU ceiling ({} > {})",
+                    if read { "Read" } else { "Write" },
+                    asap,
+                    msg_len,
+                    max_msg_len,
+                );
+                let new_status =
+                    if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
+                self.state.comm_objects().borrow_mut().set_status(asap, new_status);
+                return true;
+            }
 
             let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(msg_len) else {
                 warn!("AL no buffer for response");
@@ -664,6 +708,20 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
             GroupValueEncoding::Short => GroupValueWriteRequest::SHORT_MSG_LEN,
             GroupValueEncoding::Full => GroupValueWriteRequest::full_msg_len(data.len()),
         };
+
+        // Bounds-check against the device's current APDU ceiling. The
+        // immediate caller (GO diagnostics direct-write) already caps
+        // against `effective_apdu_budget`, but the trait is exposed to
+        // any consumer — defend here so a future caller cannot push an
+        // over-spec frame onto the bus.
+        let max_msg_len = zweidraehte_proto::config::max_outgoing_msg_len(self.state.max_apdu_length(), false);
+        if msg_len > max_msg_len {
+            warn!(
+                "GroupValueAddressedSender: write to TSAP {} ({} bytes) exceeds APDU ceiling ({})",
+                tsap, msg_len, max_msg_len,
+            );
+            return;
+        }
 
         let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(msg_len) else {
             warn!("GroupValueAddressedSender: no buffer for GroupValue_Write to TSAP {}", tsap);
