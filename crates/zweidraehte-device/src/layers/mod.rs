@@ -12,6 +12,14 @@ use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessag
 pub trait Inbox<M> {
     #[must_use = "Must set response for message"]
     async fn next(&mut self) -> M;
+
+    /// Non-blocking poll. Returns `Some(msg)` if one is immediately
+    /// available, `None` if the channel is empty right now. Does not
+    /// await.
+    ///
+    /// The conformance `IpcLinkLayer` uses this to drain every frame
+    /// produced by a single router tick into one `StepComplete` reply.
+    fn try_next(&mut self) -> Option<M>;
 }
 
 impl<'ch, M, MUT, const QUEUE_SIZE: usize> Inbox<M> for Receiver<'ch, MUT, M, QUEUE_SIZE>
@@ -21,6 +29,10 @@ where
 {
     async fn next(&mut self) -> M {
         self.receive().await
+    }
+
+    fn try_next(&mut self) -> Option<M> {
+        self.try_receive().ok()
     }
 }
 
