@@ -44,6 +44,7 @@
 
 use std::collections::BTreeMap;
 
+pub mod dut_common;
 pub mod harness;
 pub mod logger;
 mod telegram;

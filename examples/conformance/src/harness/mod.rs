@@ -9,11 +9,14 @@
 //!   state (transport connections, programming mode, etc.) while persistent
 //!   state survives in shared memory
 
+pub mod framing;
 pub mod ipc;
+pub mod lifecycle;
 pub mod mock;
-pub mod multiprocess;
+pub mod protocol;
 pub mod secure_stack;
+pub mod shm;
 pub mod stack;
 
+pub use lifecycle::{ChildLifecycle, DutMode};
 pub use mock::CapturedLinkLayerMessage;
-pub use multiprocess::MultiProcessHarness;

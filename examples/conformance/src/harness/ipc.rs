@@ -1,430 +1,174 @@
-//! IPC primitives for multi-process conformance testing.
+//! IPC link layer for multi-process conformance testing.
 //!
-//! This module provides:
-//! - Length-prefixed framing over Unix stream sockets
-//! - Shared memory layout for persistent device state
-//! - An IPC-backed link layer that replaces MockLinkLayer in the child process
+//! Speaks the postcard-based [`RunnerMessage`] / [`DutMessage`]
+//! protocol defined in [`super::protocol`] over the child's end of
+//! the socketpair, and sits inside the DUT's stack as an
+//! `embassy`-async link layer.
 //!
-//! # Architecture
+//! # Protocol
 //!
-//! The parent (conformance-runner) creates a `socketpair` and shared memory
-//! region (`memfd_create`), then spawns the child (conformance-dut) passing
-//! both FDs. The child maps the shared memory and creates an `IpcLinkLayer`
-//! that communicates over the socket instead of in-process embassy channels.
-//!
-//! On restart, the child flushes persistent state to shared memory and
-//! exits. The parent detects EOF on the socket, respawns a fresh child,
-//! and the new child starts with clean volatile state (transport connections,
-//! programming mode, COM object status) while persistent state survives
-//! in shared memory.
+//! - Every [`RunnerMessage::Inject`] (and the other step-carrying
+//!   commands) is answered by exactly one
+//!   [`DutMessage::StepComplete`] carrying all outbox frames
+//!   produced while the router drained its queue for that step. No
+//!   more "was this frame caused by my inject or a timer?" race.
+//! - [`DutMessage::Ready`] and [`DutMessage::RoiComplete`] are
+//!   explicit lifecycle signals emitted at startup.
+//! - Timer-driven retransmissions and deferred ROI frames that land
+//!   between steps become [`DutMessage::UnsolicitedFrame`] with a
+//!   monotonic `frame_seq` for diagnostic ordering.
+//! - Restart / power-cycle / master-reset don't sleep to "drain the
+//!   outbox": the `PENDING_EXIT` / `STEP_SETTLED` barrier below lets
+//!   the active step flush its `StepComplete` before the exit path
+//!   writes [`DutMessage::Exiting`] and shuts down the socket.
 
 use core::future::Future;
 use core::mem::MaybeUninit;
-use std::io::{self, Read, Write};
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::io;
+use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_io::Async;
 use embassy_futures::select::{Either, select};
+use embassy_futures::yield_now;
 use embassy_sync::channel::DynamicSender;
 
-use zweidraehte_device::{
-    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase}};
+use zweidraehte_device::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
 use zweidraehte_proto::encoding::tp1;
-use zweidraehte_proto::messages::{
-        buffers::{Buffer, MessageBuffer},
-        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::*,
-    };
+use zweidraehte_proto::messages::buffers::{Buffer, MessageBuffer};
+use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+use zweidraehte_proto::messages::knx::*;
+
+use super::framing::{read_msg_async, write_msg_async};
+use super::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
+
+/// Maximum number of outbox frames a single router tick can produce
+/// before we start logging warnings. All real conformance tests
+/// produce 1-3 frames per inject; 16 is a huge safety margin and
+/// keeps us off the heap on the DUT side if we ever move to no_std.
+const MAX_STEP_FRAMES: usize = 16;
+
+/// Upper bound on drain-loop iterations per step. Protects against a
+/// misbehaving stack that emits a frame on every confirmation forever
+/// (ACK storm). Far larger than any legitimate router tick produces.
+const MAX_DRAIN_ITERS: usize = 128;
 
 // ============================================================================
-// Framing Protocol
+// Step barrier for restart / power-cycle / master-reset
 // ============================================================================
 //
-// Each frame on the IPC socket is:
+// Without a barrier, there is a race between the restart handler
+// (which reads the `RestartRequest` from its channel and then calls
+// `exit(0)`) and the IpcLinkLayer's drain loop (which still has the
+// T_ACK + A_Restart_Response frames to capture and batch into a
+// `StepComplete`). If the restart handler wins, the runner sees the
+// `Exiting` + EOF before any captured frames — so the test's
+// `Expect [T_ACK]` after an `A_Restart` inject times out.
 //
-//   +----------+----------+---------+
-//   | tag (1B) | len (2B) | payload |
-//   +----------+----------+---------+
+// The barrier is a pair of `AtomicBool`s:
 //
-// - tag: Message type discriminator
-// - len: Little-endian u16 payload length
-// - payload: Up to ~300 bytes of raw data
+// - `PENDING_EXIT`: set by the lifecycle handler (restart / power-
+//   cycle / master-reset) before it calls `flush_and_exit`. Signals
+//   "there is an exit pending — do not yield before emitting any
+//   in-flight `StepComplete`".
+// - `STEP_SETTLED`: set by `IpcLinkLayer` after the current step's
+//   `StepComplete` has been written (or, if there is no current step
+//   because the handler was triggered by an IPC command rather than
+//   an injected APDU, immediately). The lifecycle handler polls this
+//   flag and proceeds with the final `Exiting` + shutdown only once
+//   it flips to `true`.
 //
-// The parent and child each read/write frames on their end of the
-// socketpair. EOF on read means the other side exited.
+// Both flags live in static atomics because they are shared between
+// tasks that don't otherwise reference each other (the lifecycle
+// handlers live in dut_common / binary-specific code; the
+// IpcLinkLayer lives in this module).
 
-/// Frame header size: 1 byte tag + 2 bytes length.
-const HEADER_SIZE: usize = 3;
+static PENDING_EXIT: AtomicBool = AtomicBool::new(false);
+static STEP_SETTLED: AtomicBool = AtomicBool::new(false);
 
-/// Maximum payload size. KNX messages are at most ~300 bytes in TP1 format,
-/// but log messages with hex dumps can be much larger.
-const MAX_PAYLOAD: usize = 2048;
+/// Lifecycle handlers call this first. Once set, IpcLinkLayer will
+/// emit its pending `StepComplete` immediately (cutting any drain-
+/// quiet-window short) and then set `STEP_SETTLED`.
+pub fn mark_pending_exit() {
+    PENDING_EXIT.store(true, Ordering::Release);
+}
 
-// Tag values — parent-to-child
-pub const TAG_INJECT: u8 = 0x01;
-pub const TAG_SET_PROGRAMMING_MODE: u8 = 0x03;
-pub const TAG_TRIGGER_READ: u8 = 0x04;
-pub const TAG_TRIGGER_WRITE: u8 = 0x05;
-pub const TAG_SHUTDOWN: u8 = 0x07;
-pub const TAG_TRIGGER_SYNC: u8 = 0x09;
-/// Tell the child to flush persisted state to SHM and exit (simulates a
-/// power cycle). The parent detects EOF and respawns; persisted state
-/// (Security IO properties, seq numbers, tables) survives in SHM.
-pub const TAG_POWER_CYCLE: u8 = 0x0A;
-/// Tell the child to perform a factory reset, flush to SHM, and exit.
-/// Payload byte 0 is the `EraseCode` (same numeric values as the `A_Restart`
-/// erase codes). Reuses the same flush+exit path as `TAG_POWER_CYCLE`.
-pub const TAG_MASTER_RESET: u8 = 0x0B;
+/// Lifecycle handlers spin on this after writing their state snapshot
+/// to SHM. Returns `true` once the IpcLinkLayer has finished the
+/// current step.
+pub fn step_settled() -> bool {
+    STEP_SETTLED.load(Ordering::Acquire)
+}
 
-// Tag values — child-to-parent
-pub const TAG_CAPTURED: u8 = 0x02;
-pub const TAG_READY: u8 = 0x06;
-pub const TAG_LOG: u8 = 0x08;
+/// Reset the barrier — called from within `emit_step_complete` just
+/// before we signal `STEP_SETTLED`, so the next step starts clean.
+fn barrier_reset() {
+    PENDING_EXIT.store(false, Ordering::Release);
+    STEP_SETTLED.store(false, Ordering::Release);
+}
 
-/// A decoded IPC frame.
+// ============================================================================
+// Raw-fd socket shutdown helper
+// ============================================================================
+//
+// The DUT's exit path does `shutdown(SHUT_WR)` + `exit(0)` to guarantee
+// the kernel delivers EOF to the parent only after every buffered write
+// (including the final `DutMessage::Exiting`) has drained. The primary
+// socket fd is registered here at startup so the lifecycle tasks can
+// trigger the shutdown without holding an `Async<UnixStream>`.
+
+use std::sync::atomic::AtomicI32;
+
+static PRIMARY_SOCKET_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Publish the primary socket fd so [`shutdown_ipc_socket`] can reach
+/// it. Called by the DUT binaries once, immediately after `parse_args`.
+pub fn set_primary_socket_fd(fd: RawFd) {
+    PRIMARY_SOCKET_FD.store(fd, Ordering::Relaxed);
+}
+
+/// Half-close the write side of the primary IPC socket. The kernel
+/// delivers EOF to the parent after the send buffer drains — any
+/// `DutMessage::Exiting` frame written immediately before this call is
+/// guaranteed to reach the parent before the EOF.
+pub fn shutdown_ipc_socket() {
+    let fd = PRIMARY_SOCKET_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        // SAFETY: fd was registered from `set_primary_socket_fd` and
+        // outlives the shutdown syscall. `shutdown(SHUT_WR)` is a pure
+        // kernel-side flush barrier.
+        let _ = unsafe { nix::libc::shutdown(fd, nix::libc::SHUT_WR) };
+    }
+}
+
+// ============================================================================
+// IPC command channel
+// ============================================================================
+//
+// Non-inject commands (programming mode, triggers, power-cycle, master
+// reset) are received by the link layer's main loop and dispatched to a
+// separate "command handler" task via an embassy channel. The link layer
+// stays single-purpose; the handler task gets the full `Stack` handle.
+
+/// Command dispatched from the link layer to the DUT-side command
+/// handler. The `seq` field is carried through so the handler can tell
+/// the link layer when it's done — at which point the link layer
+/// emits `StepComplete` back to the runner.
+///
+/// Power-cycle and master-reset don't carry a seq because they don't
+/// produce a `StepComplete`; the runner sees `Exiting` + EOF instead.
 #[derive(Debug)]
-pub struct IpcFrame {
-    pub tag: u8,
-    pub payload: Vec<u8>,
-}
-
-/// Write a framed message to a blocking Unix stream.
-pub fn write_frame_blocking(stream: &mut UnixStream, tag: u8, payload: &[u8]) -> io::Result<()> {
-    assert!(payload.len() <= MAX_PAYLOAD, "IPC payload too large: {}", payload.len());
-    let len = payload.len() as u16;
-    let header = [tag, len as u8, (len >> 8) as u8];
-    stream.write_all(&header)?;
-    if !payload.is_empty() {
-        stream.write_all(payload)?;
-    }
-    Ok(())
-}
-
-/// Read a framed message from a blocking Unix stream.
-///
-/// Returns `None` on EOF (other side closed).
-pub fn read_frame_blocking(stream: &mut UnixStream) -> io::Result<Option<IpcFrame>> {
-    let mut header = [0u8; HEADER_SIZE];
-    match stream.read_exact(&mut header) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e),
-    }
-
-    let tag = header[0];
-    let len = u16::from_le_bytes([header[1], header[2]]) as usize;
-
-    let mut payload = vec![0u8; len];
-    if len > 0 {
-        stream.read_exact(&mut payload)?;
-    }
-
-    Ok(Some(IpcFrame { tag, payload }))
-}
-
-/// Write a framed message to an async Unix stream.
-pub async fn write_frame_async(stream: &Async<UnixStream>, tag: u8, payload: &[u8]) -> io::Result<()> {
-    assert!(payload.len() <= MAX_PAYLOAD, "IPC payload too large: {}", payload.len());
-    let len = payload.len() as u16;
-    let header = [tag, len as u8, (len >> 8) as u8];
-
-    // Write header
-    let mut written = 0;
-    while written < HEADER_SIZE {
-        stream.writable().await?;
-        match stream.get_ref().write(&header[written..]) {
-            Ok(n) => written += n,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(e) => return Err(e),
-        }
-    }
-
-    // Write payload
-    if !payload.is_empty() {
-        let mut written = 0;
-        while written < payload.len() {
-            stream.writable().await?;
-            match stream.get_ref().write(&payload[written..]) {
-                Ok(n) => written += n,
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    Ok(())
-}
-
-/// Read a framed message from an async Unix stream.
-///
-/// Returns `None` on EOF (other side closed/exited).
-pub async fn read_frame_async(stream: &Async<UnixStream>) -> io::Result<Option<IpcFrame>> {
-    let mut header = [0u8; HEADER_SIZE];
-    if !read_exact_async(stream, &mut header).await? {
-        return Ok(None);
-    }
-
-    let tag = header[0];
-    let len = u16::from_le_bytes([header[1], header[2]]) as usize;
-
-    let mut payload = vec![0u8; len];
-    if len > 0 && !read_exact_async(stream, &mut payload).await? {
-        return Ok(None);
-    }
-
-    Ok(Some(IpcFrame { tag, payload }))
-}
-
-/// Read exactly `buf.len()` bytes from an async stream.
-///
-/// Returns `false` on EOF before any bytes are read.
-async fn read_exact_async(stream: &Async<UnixStream>, buf: &mut [u8]) -> io::Result<bool> {
-    let mut filled = 0;
-    while filled < buf.len() {
-        stream.readable().await?;
-        match stream.get_ref().read(&mut buf[filled..]) {
-            Ok(0) if filled == 0 => return Ok(false),
-            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "partial frame")),
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Ok(true)
-}
-
-// ============================================================================
-// Shared Memory
-// ============================================================================
-//
-// The shared memory region stores device state serialized with postcard,
-// using the same `[magic][len][payload]` format as the RP flash storage.
-// This lets us reuse the existing `to_config()` / `from_config()`
-// serialization which correctly handles auth keys, table load/run states,
-// etc. We wrap the `DeviceConfig` with test memory regions in a
-// `ConformanceDeviceConfig` struct for the full snapshot.
-
-/// Magic bytes at the start of the shared memory region.
-const SHM_MAGIC: [u8; 4] = *b"KNXS";
-/// Header: 4 bytes magic + 2 bytes payload length.
-const SHM_HEADER_SIZE: usize = 6;
-
-/// Size of the shared memory region (64 KiB).
-///
-/// Generous for postcard-serialized state (typically ~2-4 KiB).
-pub const SHM_SIZE: usize = 64 * 1024;
-
-/// RAII wrapper around a `memfd_create`-backed shared memory region.
-///
-/// The region stores postcard-serialized device state:
-///
-/// ```text
-/// [magic: 4B "KNXS"] [len: 2B LE] [postcard payload ...]
-/// ```
-///
-/// When the magic doesn't match, the region is uninitialized.
-pub struct SharedMemory {
-    fd: std::os::fd::OwnedFd,
-    ptr: *mut u8,
-    size: usize,
-}
-
-// SAFETY: The shared memory region is only accessed by one process at a
-// time (parent writes before spawn, child has exclusive access while
-// running, parent reads after child dies).
-unsafe impl Send for SharedMemory {}
-
-impl SharedMemory {
-    /// Create a new anonymous shared memory region via `memfd_create`.
-    pub fn create() -> io::Result<Self> {
-        use nix::sys::memfd;
-        use nix::sys::mman;
-
-        let size = SHM_SIZE;
-
-        // Create anonymous fd
-        let fd =
-            memfd::memfd_create(c"conformance_state", memfd::MemFdCreateFlag::MFD_CLOEXEC).map_err(io::Error::other)?;
-
-        // Set the size
-        nix::unistd::ftruncate(&fd, size as i64).map_err(io::Error::other)?;
-
-        // Map into our address space
-        let ptr = unsafe {
-            mman::mmap(
-                None,
-                std::num::NonZeroUsize::new(size).expect("non-zero size"),
-                mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE,
-                mman::MapFlags::MAP_SHARED,
-                &fd,
-                0,
-            )
-            .map_err(io::Error::other)?
-        };
-
-        Ok(Self { fd, ptr: ptr.as_ptr() as *mut u8, size })
-    }
-
-    /// Map an existing shared memory region from a raw fd.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure `fd` is a valid, open file descriptor
-    /// referring to a shared memory region of at least `SHM_SIZE` bytes.
-    /// Ownership of the fd is transferred to this struct.
-    pub unsafe fn from_raw_fd(fd: RawFd) -> io::Result<Self> {
-        use nix::sys::mman;
-        use std::os::fd::OwnedFd;
-
-        let size = SHM_SIZE;
-        let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
-
-        let ptr = unsafe {
-            mman::mmap(
-                None,
-                std::num::NonZeroUsize::new(size).expect("non-zero size"),
-                mman::ProtFlags::PROT_READ | mman::ProtFlags::PROT_WRITE,
-                mman::MapFlags::MAP_SHARED,
-                &owned_fd,
-                0,
-            )
-            .map_err(io::Error::other)?
-        };
-
-        Ok(Self { fd: owned_fd, ptr: ptr.as_ptr() as *mut u8, size })
-    }
-
-    /// Get a raw byte slice of the shared memory region.
-    fn as_slice(&self) -> &[u8] {
-        // SAFETY: ptr is valid for `size` bytes; synchronization is
-        // handled by process lifecycle (no concurrent access).
-        unsafe { std::slice::from_raw_parts(self.ptr, self.size) }
-    }
-
-    /// Get a mutable raw byte slice of the shared memory region.
-    fn as_mut_slice(&mut self) -> &mut [u8] {
-        // SAFETY: ptr is valid for `size` bytes; we have exclusive access.
-        unsafe { std::slice::from_raw_parts_mut(self.ptr, self.size) }
-    }
-
-    /// Write a postcard-serialized blob into shared memory.
-    ///
-    /// Writes the `[magic][len][payload]` header then the serialized bytes.
-    pub fn write_state<T: serde::Serialize>(&mut self, state: &T) -> io::Result<()> {
-        let buf = self.as_mut_slice();
-
-        // Write magic
-        buf[..4].copy_from_slice(&SHM_MAGIC);
-
-        // Serialize directly into the payload region
-        let payload = postcard::to_slice(state, &mut buf[SHM_HEADER_SIZE..])
-            .map_err(|e| io::Error::other(format!("postcard serialize: {e}")))?;
-        let len = payload.len();
-
-        // Write length
-        buf[4..6].copy_from_slice(&(len as u16).to_le_bytes());
-
-        Ok(())
-    }
-
-    /// Read and deserialize state from shared memory.
-    ///
-    /// Returns `None` if the magic doesn't match (uninitialized).
-    pub fn read_state<T: for<'de> serde::Deserialize<'de>>(&self) -> io::Result<Option<T>> {
-        let buf = self.as_slice();
-
-        // Check magic
-        if buf[..4] != SHM_MAGIC {
-            return Ok(None);
-        }
-
-        // Read length
-        let len = u16::from_le_bytes([buf[4], buf[5]]) as usize;
-        if len == 0 || SHM_HEADER_SIZE + len > self.size {
-            return Ok(None);
-        }
-
-        let payload = &buf[SHM_HEADER_SIZE..SHM_HEADER_SIZE + len];
-        let state = postcard::from_bytes(payload)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("postcard deserialize: {e}")))?;
-        Ok(Some(state))
-    }
-
-    /// Get the raw file descriptor (for passing to child process).
-    pub fn fd(&self) -> RawFd {
-        self.fd.as_raw_fd()
-    }
-
-    /// Raw pointer to the sequence number region at the end of the shared
-    /// memory. See `ShmSeqStorage` for the layout (sending seqs, tool
-    /// receiving seq, and per-peer receiving seq table).
-    ///
-    /// The caller must ensure the pointer is only used while the
-    /// `SharedMemory` is alive.
-    pub fn seq_region_ptr(&self) -> *mut u8 {
-        // Reserve last 256 bytes of the shared memory for sequence storage.
-        unsafe { self.ptr.add(self.size - 256) }
-    }
-
-    /// Zero out the 256-byte sequence-number region at the tail of the
-    /// shared memory. Called from `full_reset` so a respawned DUT
-    /// re-initialises its per-peer + tool sending/receiving sequence
-    /// counters from scratch, rather than inheriting stale state from
-    /// the previous DUT instance.
-    pub fn clear_seq_region(&mut self) {
-        let start = self.size - 256;
-        let region = &mut self.as_mut_slice()[start..];
-        region.fill(0);
-    }
-
-    /// Clear the `FD_CLOEXEC` flag so the fd is inherited by the child.
-    pub fn clear_cloexec(&self) -> io::Result<()> {
-        use nix::fcntl;
-        let raw = self.fd.as_raw_fd();
-        let flags = fcntl::fcntl(raw, fcntl::FcntlArg::F_GETFD).map_err(io::Error::other)?;
-        let mut fd_flags = nix::fcntl::FdFlag::from_bits_truncate(flags);
-        fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
-        fcntl::fcntl(raw, fcntl::FcntlArg::F_SETFD(fd_flags)).map_err(io::Error::other)?;
-        Ok(())
-    }
-}
-
-impl Drop for SharedMemory {
-    fn drop(&mut self) {
-        unsafe {
-            let _ =
-                nix::sys::mman::munmap(std::ptr::NonNull::new(self.ptr as *mut _).expect("non-null ptr"), self.size);
-        }
-        // OwnedFd closes the fd when dropped (happens automatically after this)
-    }
-}
-
-// ============================================================================
-// IPC Commands
-// ============================================================================
-//
-// Non-INJECT frames from the parent (SetProgrammingMode, TriggerRead,
-// TriggerWrite) are dispatched by the link layer to a command channel.
-// A separate task in the DUT binary reads from this channel and executes
-// the commands against the stack.
-
-/// Commands received from the parent that need stack access.
 pub enum IpcCommand {
-    /// Set programming mode on/off.
-    SetProgrammingMode(bool),
-    /// Trigger a GroupValue_Read for the given ASAP.
-    TriggerRead(u16),
-    /// Trigger a GroupValue_Write for the given ASAP.
-    TriggerWrite(u16),
-    /// Trigger an S-A_Sync_Req to a peer.
-    TriggerSync { peer_ia: u16, tool_access: bool, is_broadcast: bool },
-    /// Flush state to SHM and exit (simulates power cycle, no erase).
+    SetProgrammingMode { seq: u32, enabled: bool },
+    TriggerRead { seq: u32, asap: u16 },
+    TriggerWrite { seq: u32, asap: u16 },
+    TriggerSync { seq: u32, peer_ia: u16, tool_access: bool, is_broadcast: bool },
+    /// Flush state + exit (no erase). Handler calls [`shutdown_ipc_socket`]
+    /// and `exit(0)` after writing `DutMessage::Exiting`.
     PowerCycle,
-    /// Perform a factory reset with the given erase-code byte, flush to
-    /// SHM, and exit. The byte matches `A_Restart` `EraseCode` encodings:
-    /// 0x00=Basic, 0x01=Confirmed, 0x02=FactoryReset, 0x03=ResetIA,
-    /// 0x04=ResetAP, 0x05=ResetParam, 0x06=ResetLinks, 0x07=FactoryResetKeepIA.
+    /// Apply the erase code, flush, and exit. Handler drives the same
+    /// exit path as `PowerCycle` after applying state.
     MasterReset { erase_code: u8 },
 }
 
@@ -432,26 +176,16 @@ pub enum IpcCommand {
 // IPC Link Layer
 // ============================================================================
 
-/// Link layer that communicates over a Unix socket for multi-process
-/// conformance testing.
-///
-/// Instead of in-process embassy channels, this link layer:
-/// - Reads injected telegrams from the socket (parent → child)
-/// - Writes captured telegrams to the socket (child → parent)
-/// - Dispatches non-INJECT commands to a command channel for the DUT
-///
-/// The parent sends `TAG_INJECT` frames containing TP1 bytes. This layer
-/// converts them to internal format and sends them up as indications.
-///
-/// When the stack sends outgoing requests, this layer converts them to TP1
-/// format and writes `TAG_CAPTURED` frames to the socket, then sends an
-/// immediate L_Data_Con confirmation back to the stack.
+/// Link layer that speaks the new postcard IPC protocol. See the module
+/// docs for semantics.
 pub struct IpcLinkLayer<'a> {
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     socket: Async<UnixStream>,
     buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
     command_tx: DynamicSender<'a, IpcCommand>,
+    /// Monotonic counter for `DutMessage::UnsolicitedFrame::frame_seq`.
+    unsolicited_seq: u32,
 }
 
 impl<'a> IpcLinkLayer<'a> {
@@ -462,159 +196,386 @@ impl<'a> IpcLinkLayer<'a> {
         buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
         command_tx: DynamicSender<'a, IpcCommand>,
     ) -> Self {
-        Self { ind_tx, conf_tx, socket, buffer_manager, command_tx }
+        Self { ind_tx, conf_tx, socket, buffer_manager, command_tx, unsolicited_seq: 0 }
     }
-}
 
-impl<'a> IpcLinkLayer<'a> {
     async fn process(&mut self, mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>) -> ! {
-        loop {
-            match select(read_frame_async(&self.socket), req_rx.next()).await {
-                // Frame from parent (injected telegram or command)
-                Either::First(Ok(Some(frame))) => {
-                    match frame.tag {
-                        TAG_INJECT => {
-                            // Convert from TP1 format to internal format
-                            let mut buffer = self.buffer_manager.alloc().await;
-                            buffer.fill_from_slice(&frame.payload);
-                            let msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
-                            let converted_buf = tp1::tp1_to_knx_message_no_checksum(msg.into_inner());
-                            let internal_msg = KnxMessageBuffer::new(converted_buf, ServiceType::L_Data_Ind);
-                            log::debug!("IPC LL injecting message: {:x?}", internal_msg);
-                            self.ind_tx.send(IndicationMessage::indication(internal_msg)).await;
-                        }
-                        TAG_SET_PROGRAMMING_MODE => {
-                            let enabled = frame.payload.first().copied().unwrap_or(0) != 0;
-                            log::debug!("IPC LL: SetProgrammingMode({})", enabled);
-                            self.command_tx.send(IpcCommand::SetProgrammingMode(enabled)).await;
-                        }
-                        TAG_TRIGGER_READ => {
-                            if frame.payload.len() >= 2 {
-                                let asap = u16::from_le_bytes([frame.payload[0], frame.payload[1]]);
-                                log::debug!("IPC LL: TriggerRead(ASAP {})", asap);
-                                self.command_tx.send(IpcCommand::TriggerRead(asap)).await;
-                            }
-                        }
-                        TAG_TRIGGER_WRITE => {
-                            if frame.payload.len() >= 2 {
-                                let asap = u16::from_le_bytes([frame.payload[0], frame.payload[1]]);
-                                log::debug!("IPC LL: TriggerWrite(ASAP {})", asap);
-                                self.command_tx.send(IpcCommand::TriggerWrite(asap)).await;
-                            }
-                        }
-                        TAG_TRIGGER_SYNC => {
-                            // Payload: [peer_ia_hi, peer_ia_lo, tool_access, is_broadcast?]
-                            // The 4th byte is optional for backward compatibility.
-                            if frame.payload.len() >= 3 {
-                                let peer_ia = u16::from_be_bytes([frame.payload[0], frame.payload[1]]);
-                                let tool_access = frame.payload[2] != 0;
-                                let is_broadcast = frame.payload.get(3).copied().unwrap_or(0) != 0;
-                                log::debug!("IPC LL: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
-                                self.command_tx.send(IpcCommand::TriggerSync { peer_ia, tool_access, is_broadcast }).await;
-                            }
-                        }
-                        TAG_SHUTDOWN => {
-                            log::info!("IPC LL received shutdown, exiting");
-                            std::process::exit(0);
-                        }
-                        TAG_POWER_CYCLE => {
-                            log::info!("IPC LL: PowerCycle");
-                            self.command_tx.send(IpcCommand::PowerCycle).await;
-                        }
-                        TAG_MASTER_RESET => {
-                            let erase_code = frame.payload.first().copied().unwrap_or(0x03);
-                            log::info!("IPC LL: MasterReset(erase_code=0x{:02x})", erase_code);
-                            self.command_tx.send(IpcCommand::MasterReset { erase_code }).await;
-                        }
-                        other => {
-                            log::warn!("IPC LL ignoring unknown tag: 0x{:02x}", other);
-                        }
-                    }
-                }
+        // Lifecycle step 1: tell the runner we're alive. The runner
+        // transitions from `Spawning` to `WaitingRoi` on receipt.
+        if let Err(e) = write_msg_async(&self.socket, &DutMessage::Ready).await {
+            log::error!("IPC LL failed to send Ready: {}", e);
+            std::process::exit(1);
+        }
 
-                // Socket EOF — parent closed its end (we're being killed)
+        // Lifecycle step 2: stream any frames the stack produces at
+        // startup (read-on-init scan) as `UnsolicitedFrame`s. Once the
+        // router settles (no frames for one full yield), we send
+        // `RoiComplete` and transition to the normal step-driven loop.
+        self.drain_roi_and_announce(&mut req_rx).await;
+
+        // Main loop: step-driven with unsolicited-frame passthrough.
+        loop {
+            match select(read_msg_async::<RunnerMessage>(&self.socket), req_rx.next()).await {
+                Either::First(Ok(Some(cmd))) => self.dispatch_command(cmd, &mut req_rx).await,
                 Either::First(Ok(None)) => {
-                    log::info!("IPC LL socket EOF, parent closed connection");
+                    log::info!("IPC LL: EOF from parent, exiting");
                     std::process::exit(0);
                 }
-
-                // Socket error
                 Either::First(Err(e)) => {
-                    log::error!("IPC LL socket error: {}", e);
+                    log::error!("IPC LL: socket read error: {}", e);
                     std::process::exit(1);
                 }
-
-                // Request from upper layers (outgoing message)
+                // A timer-driven frame arrived while idle. Forward it
+                // as UnsolicitedFrame + send the L_Data_Con.
                 Either::Second(msg) => {
-                    log::trace!("IPC LL received request: {:?}", msg);
-
-                    // Capture the outgoing message and send to parent
-                    let data = knx_to_tp1_vec_no_checksum(&msg.buf()[..msg.len()]);
-                    let service_type = msg.service_type();
-
-                    // Build captured frame: service_type byte + TP1 data
-                    let mut payload = Vec::with_capacity(1 + data.len());
-                    payload.push(service_type.into());
-                    payload.extend_from_slice(&data);
-
-                    if let Err(e) = write_frame_async(&self.socket, TAG_CAPTURED, &payload).await {
-                        log::error!("IPC LL failed to write captured frame: {}", e);
-                    }
-
-                    // Send confirmation back to stack (simulate successful transmission)
-                    let mut inner = msg.into_inner();
-                    match inner.service_type() {
-                        ServiceType::L_Data_Req => {
-                            inner.ctrl_field_mut().set_c(Confirm::NoError);
-                            inner.set_service_type(ServiceType::L_Data_Con);
-                            self.conf_tx.send(ConfirmationMessage::confirmation(inner)).await;
-                        }
-                        _ => {
-                            log::warn!("IPC LL: unhandled request service type: {:?}", inner.service_type());
-                            inner.ctrl_field_mut().set_c(Confirm::Err);
-                            self.conf_tx.send(ConfirmationMessage::confirmation(inner)).await;
-                        }
+                    let frame = self.capture_and_confirm(msg).await;
+                    let frame_seq = self.unsolicited_seq;
+                    self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
+                    if let Err(e) = write_msg_async(
+                        &self.socket,
+                        &DutMessage::UnsolicitedFrame { frame_seq, frame },
+                    )
+                    .await
+                    {
+                        log::error!("IPC LL: failed to write UnsolicitedFrame: {}", e);
                     }
                 }
             }
         }
     }
+
+    /// Drain all outbox frames produced during startup (read-on-init
+    /// scan), forwarding each as an `UnsolicitedFrame`. Once the router
+    /// stays quiet for `ROI_QUIET_WINDOW` with no new frames, emit
+    /// `RoiComplete`.
+    ///
+    /// We use unsolicited semantics (not batched) here because the test
+    /// hasn't issued a command yet — there is no pending `StepComplete`
+    /// to attach the frames to.
+    ///
+    /// # Why a timed quiet window, not a yield count
+    ///
+    /// The AL's read-on-init scan fires one `GroupValueRead` per
+    /// object and waits for the group-value responses to come back
+    /// before moving to the next object, with `Timer::after`s between
+    /// CO iterations. In fast mode (`KNX_TIME_DIVISOR=50`) the
+    /// observed full-scan duration is ~650 ms for the conformance
+    /// device (17 GOs with 8 pending responses in between).
+    ///
+    /// A wall-clock quiet window long enough to cover the worst-case
+    /// inter-CO gap avoids declaring `RoiComplete` mid-scan, which
+    /// would leak later ROI reads as `UnsolicitedFrame`s into
+    /// subsequent tests. 800 ms is comfortably longer than any
+    /// observed gap and well under the test-harness per-step budget.
+    ///
+    /// TODO: a cleaner approach is an explicit signal from the AL
+    /// when `ReadOnInitState::Done` fires. That requires plumbing
+    /// through the stack; defer until after Phase 5.
+    async fn drain_roi_and_announce(
+        &mut self,
+        req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>,
+    ) {
+        use embassy_time::{Duration, Timer};
+
+        const ROI_POLL_INTERVAL_MS: u64 = 10;
+        const ROI_QUIET_WINDOW_MS: u64 = 800;
+        const QUIET_TICKS: u64 = ROI_QUIET_WINDOW_MS / ROI_POLL_INTERVAL_MS;
+
+        let mut quiet = 0u64;
+        loop {
+            yield_now().await;
+            match req_rx.try_next() {
+                Some(msg) => {
+                    quiet = 0;
+                    let frame = self.capture_and_confirm(msg).await;
+                    let frame_seq = self.unsolicited_seq;
+                    self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
+                    if let Err(e) = write_msg_async(
+                        &self.socket,
+                        &DutMessage::UnsolicitedFrame { frame_seq, frame },
+                    )
+                    .await
+                    {
+                        log::error!("IPC LL: failed to write ROI frame: {}", e);
+                    }
+                }
+                None => {
+                    quiet += 1;
+                    if quiet >= QUIET_TICKS {
+                        break;
+                    }
+                    Timer::after(Duration::from_millis(ROI_POLL_INTERVAL_MS)).await;
+                }
+            }
+        }
+
+        if let Err(e) = write_msg_async(&self.socket, &DutMessage::RoiComplete).await {
+            log::error!("IPC LL: failed to send RoiComplete: {}", e);
+        }
+    }
+
+    /// Execute one `RunnerMessage`, draining the outbox into a batched
+    /// `StepComplete` reply. For `PowerCycle` / `MasterReset`, the
+    /// command handler task drives the exit path; we just forward.
+    async fn dispatch_command(
+        &mut self,
+        cmd: RunnerMessage,
+        req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>,
+    ) {
+        // Reset the restart barrier — each dispatch starts from a
+        // clean slate. Old flags from a previous step's no-op
+        // shouldn't leak.
+        barrier_reset();
+
+        match cmd {
+            RunnerMessage::Inject { seq, data } => {
+                let mut buffer = self.buffer_manager.alloc().await;
+                buffer.fill_from_slice(&data);
+                let msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
+                let converted_buf = tp1::tp1_to_knx_message_no_checksum(msg.into_inner());
+                let internal_msg = KnxMessageBuffer::new(converted_buf, ServiceType::L_Data_Ind);
+                log::debug!("IPC LL inject seq={}: {:x?}", seq, internal_msg);
+                self.ind_tx.send(IndicationMessage::indication(internal_msg)).await;
+                let frames = self.drain_step(req_rx).await;
+                self.emit_step_complete(seq, frames).await;
+            }
+            RunnerMessage::SetProgrammingMode { seq, enabled } => {
+                self.command_tx.send(IpcCommand::SetProgrammingMode { seq, enabled }).await;
+                let frames = self.drain_step(req_rx).await;
+                self.emit_step_complete(seq, frames).await;
+            }
+            RunnerMessage::TriggerRead { seq, asap } => {
+                self.command_tx.send(IpcCommand::TriggerRead { seq, asap }).await;
+                let frames = self.drain_step(req_rx).await;
+                self.emit_step_complete(seq, frames).await;
+            }
+            RunnerMessage::TriggerWrite { seq, asap } => {
+                self.command_tx.send(IpcCommand::TriggerWrite { seq, asap }).await;
+                let frames = self.drain_step(req_rx).await;
+                self.emit_step_complete(seq, frames).await;
+            }
+            RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast } => {
+                self.command_tx
+                    .send(IpcCommand::TriggerSync { seq, peer_ia, tool_access, is_broadcast })
+                    .await;
+                let frames = self.drain_step(req_rx).await;
+                self.emit_step_complete(seq, frames).await;
+            }
+            RunnerMessage::PowerCycle => {
+                self.command_tx.send(IpcCommand::PowerCycle).await;
+                // No StepComplete: the handler writes Exiting + exits.
+                // The main loop stays alive to forward unsolicited frames
+                // that may slip in before the handler is scheduled; it
+                // will observe EOF and exit naturally.
+            }
+            RunnerMessage::MasterReset { erase_code } => {
+                self.command_tx.send(IpcCommand::MasterReset { erase_code }).await;
+            }
+        }
+    }
+
+    /// Drain every outbox frame produced by the current step.
+    ///
+    /// The router is cooperative and yields after each `ll_req.send()`,
+    /// but response generation can involve a chain of ticks (AL
+    /// enqueues a T_ACK + response, TL drains both onto `ll_req`,
+    /// each separated by yields). A pure `yield_now`-loop can
+    /// declare "drained" while the router is still mid-chain.
+    ///
+    /// The quiet window needs to be tight: the runner's per-step
+    /// round-trip accumulates across many injects, and each extra
+    /// ms pushes the total closer to the DUT's 60 ms TL ACK window
+    /// (fast-mode). Cross that, and the DUT retransmits prior
+    /// responses, polluting later expects.
+    ///
+    /// We use `YIELDS_PER_POLL` consecutive empty `yield_now`s as
+    /// the quiet threshold. Yields are ~1 μs each, so this adds
+    /// essentially zero wall-clock time — just enough router ticks
+    /// to drain any chained sends. Chained retransmissions
+    /// triggered by an inline `L_Data_Con` still get captured
+    /// because `capture_and_confirm` sends the confirmation
+    /// synchronously, and the next iteration re-polls the channel.
+    async fn drain_step(
+        &mut self,
+        req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>,
+    ) -> heapless::Vec<CapturedFrame, MAX_STEP_FRAMES> {
+        const YIELDS_PER_POLL: u32 = 8;
+
+        let mut frames: heapless::Vec<CapturedFrame, MAX_STEP_FRAMES> = heapless::Vec::new();
+        let mut quiet = 0u32;
+        let mut iters = 0usize;
+        loop {
+            yield_now().await;
+            match req_rx.try_next() {
+                Some(msg) => {
+                    quiet = 0;
+                    let frame = self.capture_and_confirm(msg).await;
+                    if frames.push(frame).is_err() {
+                        log::warn!("IPC LL: step produced >{} frames, dropping", MAX_STEP_FRAMES);
+                    }
+                }
+                None => {
+                    // If a lifecycle handler (restart / power-cycle /
+                    // master-reset) is about to exit, shortcut the
+                    // drain. Those handlers set `PENDING_EXIT` before
+                    // any state mutation — see `mark_pending_exit`.
+                    if PENDING_EXIT.load(Ordering::Acquire) {
+                        break;
+                    }
+                    quiet += 1;
+                    if quiet >= YIELDS_PER_POLL {
+                        break;
+                    }
+                }
+            }
+            iters += 1;
+            if iters >= MAX_DRAIN_ITERS {
+                log::warn!("IPC LL: drain_step hit iteration cap ({})", MAX_DRAIN_ITERS);
+                break;
+            }
+        }
+        frames
+    }
+
+    /// Capture one outgoing request frame (serialise to TP1), send the
+    /// stack its `L_Data_Con` back, and return the captured bytes.
+    async fn capture_and_confirm(&mut self, msg: RequestMessage<Buffer<'static>>) -> CapturedFrame {
+        let data = knx_to_tp1_vec_no_checksum(&msg.buf()[..msg.len()]);
+        let service_type: u8 = msg.service_type().into();
+
+        // Send confirmation back up the stack.
+        let mut inner = msg.into_inner();
+        match inner.service_type() {
+            ServiceType::L_Data_Req => {
+                inner.ctrl_field_mut().set_c(Confirm::NoError);
+                inner.set_service_type(ServiceType::L_Data_Con);
+                self.conf_tx.send(ConfirmationMessage::confirmation(inner)).await;
+            }
+            other => {
+                log::warn!("IPC LL: unexpected request service type: {:?}", other);
+                inner.ctrl_field_mut().set_c(Confirm::Err);
+                self.conf_tx.send(ConfirmationMessage::confirmation(inner)).await;
+            }
+        }
+
+        CapturedFrame { service_type, data }
+    }
+
+    async fn emit_step_complete(
+        &mut self,
+        seq: u32,
+        frames: heapless::Vec<CapturedFrame, MAX_STEP_FRAMES>,
+    ) {
+        // heapless::Vec → Vec so we don't force a const generic through
+        // the DutMessage serde derive. Postcard serialises both the
+        // same way on the wire; this is just ergonomics for the enum.
+        let frames: Vec<CapturedFrame> = frames.into_iter().collect();
+        if let Err(e) = write_msg_async(&self.socket, &DutMessage::StepComplete { seq, frames }).await {
+            log::error!("IPC LL: failed to write StepComplete(seq={}): {}", seq, e);
+        }
+        // Release the barrier — any lifecycle handler that was
+        // spinning on `step_settled()` may now proceed to write
+        // `Exiting` + shutdown the socket.
+        STEP_SETTLED.store(true, Ordering::Release);
+    }
 }
 
-/// Convert internal KNX message bytes to TP1 format (no checksum) using Vec.
+// ============================================================================
+// Lifecycle helpers for the command handler task
+// ============================================================================
+
+/// Write `DutMessage::Exiting` on the primary socket (via a dup'd
+/// blocking handle) and then half-close the write side. Called by the
+/// restart / power-cycle / master-reset handlers immediately before
+/// `process::exit`.
 ///
-/// This is the same conversion as `mock.rs::knx_to_tp1_vec_no_checksum`
-/// but exposed here for the IPC link layer.
+/// This uses a blocking write on a dup'd fd rather than the async link
+/// layer's handle so the message is guaranteed to hit the socket before
+/// the process exits — the async LL task may not be scheduled again
+/// between our `Exiting` and the exit syscall.
+pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
+    use embassy_time::{Duration, Instant, Timer};
+
+    // Announce the pending exit so `IpcLinkLayer::drain_step` cuts
+    // its quiet window short and emits `StepComplete` immediately.
+    mark_pending_exit();
+
+    // Cooperatively yield until the IpcLinkLayer has flushed its
+    // pending StepComplete (if any). Capped at ~50 ms of wall-clock
+    // to avoid a hang if the async LL task crashed earlier — we'd
+    // rather exit slightly early than deadlock the DUT.
+    let deadline = Instant::now() + Duration::from_millis(50);
+    while !step_settled() && Instant::now() < deadline {
+        Timer::after(Duration::from_millis(1)).await;
+    }
+
+    let fd = PRIMARY_SOCKET_FD.load(Ordering::Relaxed);
+    if fd < 0 {
+        log::error!("emit_exiting_and_shutdown: primary socket fd not registered");
+        return;
+    }
+
+    // Dup so we get a blocking handle without disturbing the async
+    // link layer's view of the fd. Both ends share the same kernel
+    // send buffer, so `shutdown(SHUT_WR)` below still drains any
+    // bytes queued by the async LL task.
+    let dup_fd = match nix::unistd::dup(fd) {
+        Ok(fd) => fd,
+        Err(e) => {
+            log::error!("emit_exiting_and_shutdown: dup failed: {}", e);
+            return;
+        }
+    };
+
+    // SAFETY: `dup` just returned a fresh fd that we own; wrapping it
+    // in `UnixStream::from_raw_fd` transfers ownership — the stream
+    // closes the fd on drop.
+    let mut stream = unsafe { UnixStream::from_raw_fd(dup_fd) };
+    // Non-blocking mode is a file-description-level flag shared across
+    // dups on Linux. Force blocking for this final write so `write_all`
+    // doesn't WouldBlock while the async LL might still be draining.
+    let _ = stream.set_nonblocking(false);
+
+    if let Err(e) = super::framing::write_msg_blocking(&mut stream, &DutMessage::Exiting { reason }) {
+        log::error!("emit_exiting_and_shutdown: write failed: {}", e);
+    }
+
+    shutdown_ipc_socket();
+    // `stream` closes the dup'd fd here.
+}
+
+// ============================================================================
+// TP1 encoding (internal → wire)
+// ============================================================================
+
+/// Convert internal KNX message bytes to TP1 format (no checksum).
+///
+/// Duplicated from [`super::mock::knx_to_tp1_vec_no_checksum`] for
+/// locality — the `mock` copy serves the in-process test harness
+/// and the two copies are intentionally independent.
 fn knx_to_tp1_vec_no_checksum(src: &[u8]) -> Vec<u8> {
     let len = src.len();
-
-    // Check for standard frame: length <= 23 and lower 4 bits of NPDU are 0
     if (len < 23) && ((src[5] & 0x0f) == 0) {
-        // Standard frame - copy with modified control and length fields
         let mut data = src.to_vec();
         data[5] = (data[5] & 0xf0) | ((len - 7) as u8);
         data[0] = (data[0] & 0x0c) | 0xb0;
         data
     } else {
-        // Extended frame - need to insert extended control field
         let orig_npdu = src[5];
         let mut data = Vec::with_capacity(len + 1);
-
-        // Control byte with extended frame marker
         data.push((src[0] & 0x0C) | 0x30);
-        // Insert extended control field
         data.push(orig_npdu);
-        // Copy bytes 1-5 (source addr, dest addr, NPDU high nibble)
         data.extend_from_slice(&src[1..5]);
-        // Insert length field
         data.push((len - 7) as u8);
-        // Copy remaining data (APDU)
         data.extend_from_slice(&src[6..]);
         data
     }
 }
 
-/// Resources for IpcLinkLayer (minimal — the socket is passed at build time).
+// ============================================================================
+// LinkLayerBuilder plumbing
+// ============================================================================
+
 pub struct IpcLinkLayerResources {
     _private: MaybeUninit<()>,
 }
@@ -631,11 +592,9 @@ impl IpcLinkLayerResources {
     }
 }
 
-/// Builder for the IPC link layer.
-///
-/// Takes the child's end of the socketpair, a buffer manager for
-/// allocating injection buffers, and a command channel sender for
-/// dispatching non-INJECT commands to the stack.
+/// Builder for the new-protocol IPC link layer. Takes the child's end
+/// of the socketpair (raw fd), a buffer manager for inject allocations,
+/// and a command channel sender for non-inject commands.
 pub struct IpcLinkLayerBuilder {
     socket: Async<UnixStream>,
     buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
@@ -643,11 +602,6 @@ pub struct IpcLinkLayerBuilder {
 }
 
 impl IpcLinkLayerBuilder {
-    /// Create a new builder from a raw socket fd, buffer manager, and
-    /// command channel sender.
-    ///
-    /// The fd should be the child's end of a `socketpair`. It will be
-    /// set to non-blocking and wrapped in `async_io::Async`.
     pub fn new(
         socket_fd: RawFd,
         buffer_manager: zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
@@ -680,7 +634,7 @@ impl<CTX> LinkLayerBuilder<CTX> for IpcLinkLayerBuilder {
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl Future<Output = !> + 'a {
-        let mut link_layer = IpcLinkLayer::new(ind_tx, conf_tx, self.socket, self.buffer_manager, self.command_tx);
-        async move { link_layer.process(req_rx).await }
+        let mut ll = IpcLinkLayer::new(ind_tx, conf_tx, self.socket, self.buffer_manager, self.command_tx);
+        async move { ll.process(req_rx).await }
     }
 }

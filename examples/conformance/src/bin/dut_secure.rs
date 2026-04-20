@@ -1,14 +1,11 @@
-//! Secure conformance DUT (Device Under Test) child process.
+//! Conformance DUT (Device Under Test) child process — Data Secure
+//! stack.
 //!
-//! Identical to `dut.rs` but uses [`IpcSecureConformanceTestStack`] with
-//! KNX Data Secure enabled. Spawned by the conformance-runner parent when
-//! running security test suites.
+//! Identical to [`dut.rs`](conformance-dut) but builds
+//! [`IpcSecureConformanceTestStack`] with KNX Data Secure enabled. The
+//! Security Interface Object appears at object index 6.
 //!
-//! Usage: conformance-dut-secure --shm-fd <N> --socket-fd <M>
-
-use std::cell::UnsafeCell;
-use std::os::unix::io::RawFd;
-use std::sync::{Mutex, OnceLock};
+//! Usage: `conformance-dut-secure --shm-fd <N> --socket-fd <M>`
 
 use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -16,22 +13,23 @@ use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::harness::ipc::{self, IpcCommand, IpcLinkLayerBuilder, SharedMemory, TAG_LOG, TAG_READY};
-// `ShmCell` is defined locally so the power-cycle/master-reset command
-// handlers share the same `&'static ShmCell` with the restart handler.
+use zweidraehte_conformance::dut_common::{self, ShmCell};
+use zweidraehte_conformance::harness::shm::SharedMemory;
+use zweidraehte_conformance::harness::ipc::{IpcCommand, IpcLinkLayerBuilder, set_primary_socket_fd};
+use zweidraehte_conformance::harness::protocol::ExitReason;
 use zweidraehte_conformance::harness::secure_stack::{
     IpcSecureConformanceTestStack, SecureConformanceDeviceConfig, SecureConformanceStateInit,
 };
 use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
 
-use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_device::objects::interface::HasDeviceObject;
 use zweidraehte_device::restart::EraseCode;
 use zweidraehte_device::storage::HasSequenceStorage;
 use zweidraehte_device::{Runner, Stack, StackResources};
+use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
 // ============================================================================
-// Static Resources
+// Static resources
 // ============================================================================
 
 static STACK_RESOURCES: StaticCell<StackResources<IpcSecureConformanceTestStack, { device_info::BUFFER_SIZE }, 4>> =
@@ -42,13 +40,10 @@ static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new
 
 static COMMAND_CHANNEL: StaticCell<Channel<NoopRawMutex, IpcCommand, 8>> = StaticCell::new();
 
-struct ShmCell(UnsafeCell<SharedMemory>);
-unsafe impl Sync for ShmCell {}
-
 static SHM: StaticCell<ShmCell> = StaticCell::new();
 
 // ============================================================================
-// Stack Task
+// Stack task
 // ============================================================================
 
 #[embassy_executor::task]
@@ -57,7 +52,7 @@ async fn run_stack(runner: Runner<'static, IpcSecureConformanceTestStack>) {
 }
 
 // ============================================================================
-// Command Handler
+// Command handler
 // ============================================================================
 
 #[embassy_executor::task]
@@ -67,47 +62,46 @@ async fn handle_commands(
     shm: &'static ShmCell,
 ) {
     loop {
-        let cmd = commands.receive().await;
-        match cmd {
-            IpcCommand::SetProgrammingMode(enabled) => {
+        match commands.receive().await {
+            IpcCommand::SetProgrammingMode { enabled, .. } => {
                 log::info!("CMD: SetProgrammingMode({})", enabled);
                 stack.interface_objects().set_programming_mode_enabled(enabled);
             }
-            IpcCommand::TriggerRead(asap) => {
+            IpcCommand::TriggerRead { asap, .. } => {
                 log::info!("CMD: TriggerRead(ASAP {})", asap);
                 let _ = stack.read_object_by_asap(asap).await;
             }
-            IpcCommand::TriggerWrite(asap) => {
+            IpcCommand::TriggerWrite { asap, .. } => {
                 log::info!("CMD: TriggerWrite(ASAP {})", asap);
                 let _ = stack.write_object_by_asap(asap).await;
             }
-            IpcCommand::TriggerSync { peer_ia, tool_access, is_broadcast } => {
-                log::info!("CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
+            IpcCommand::TriggerSync { peer_ia, tool_access, is_broadcast, .. } => {
+                log::info!(
+                    "CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={})",
+                    peer_ia, tool_access, is_broadcast
+                );
                 let _ = stack.initiate_sync(peer_ia, tool_access, is_broadcast).await;
             }
             IpcCommand::PowerCycle => {
                 log::info!("CMD: PowerCycle — flush + exit");
-                // Give the IPC loop a tick to ack the command before we exit.
-                Timer::after(Duration::from_millis(1)).await;
-                flush_and_exit(stack, shm, None);
+                flush_and_exit(stack, shm, None, ExitReason::PowerCycle).await;
             }
             IpcCommand::MasterReset { erase_code } => {
-                log::info!("CMD: MasterReset(erase_code=0x{:02x}) — reset + flush + exit", erase_code);
-                Timer::after(Duration::from_millis(1)).await;
-                flush_and_exit(stack, shm, Some(EraseCode::from(erase_code)));
+                log::info!("CMD: MasterReset(erase_code=0x{:02x})", erase_code);
+                let code = EraseCode::from(erase_code);
+                flush_and_exit(stack, shm, Some(code), ExitReason::MasterReset { erase_code }).await;
             }
         }
     }
 }
 
-/// Shared flush-and-exit used by both the restart handler and the
-/// `PowerCycle` / `MasterReset` IPC commands. Applies an optional erase
-/// code, serializes the current state snapshot into the shared memory
-/// region, and calls `process::exit(0)` so the parent respawns.
-fn flush_and_exit(
+/// Apply an optional erase code, flush state to SHM, emit `Exiting` +
+/// shutdown + exit(0).
+async fn flush_and_exit(
     stack: Stack<'static, IpcSecureConformanceTestStack>,
     shm: &'static ShmCell,
     erase: Option<EraseCode>,
+    reason: ExitReason,
 ) -> ! {
     let state = stack.state();
     if let Some(code) = erase {
@@ -122,222 +116,81 @@ fn flush_and_exit(
                 state.inner().reset_association_table();
             }
             EraseCode::FactoryResetKeepIA => state.inner().factory_reset_keep_ia(),
-            // Unknown codes fall through to a plain flush (matches
-            // the restart handler's behaviour for `Other(_)`).
-            _ => {}
+            EraseCode::Other(_) => log::warn!("apply_erase_code: unsupported {:?}", code),
         }
     }
     let snapshot = state.to_device_config();
-    // SAFETY: Single-threaded embassy executor — no concurrent access.
-    let shm_mut = unsafe { &mut *shm.0.get() };
-    if let Err(e) = shm_mut.write_state(&snapshot) {
-        log::error!("Failed to flush state to shared memory: {}", e);
-    }
-    // Half-close the IPC socket so the kernel delivers EOF to the
-    // parent only after any in-flight captured frames (e.g. the restart
-    // response still being serialised by the LL task) have drained.
-    shutdown_ipc_socket();
-    std::process::exit(0);
+    dut_common::flush_state(shm, &snapshot);
+    dut_common::exit_with_reason(reason).await
 }
 
 // ============================================================================
-// Restart Handler
+// Restart handler
 // ============================================================================
 
 #[embassy_executor::task]
 async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, shm: &'static ShmCell) {
     loop {
         let request = stack.receive_restart_request().await;
-        let state = stack.state();
         let erase_code = request.erase_code;
-
         if matches!(erase_code, EraseCode::Other(_)) {
             continue;
         }
-
-        // Yield long enough for the LL async task to drain the outbox
-        // (T_ACK and the restart response) into the IPC socket. The
-        // subsequent `shutdown_ipc_socket()` handles kernel-side flush,
-        // but that only works once the frames have actually been
-        // written. 30ms leaves plenty of headroom within the test's
-        // 3s per-step timeout while keeping the restart path fast.
-        Timer::after(Duration::from_millis(30)).await;
-
-        match erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => {}
-            EraseCode::FactoryReset => state.inner().factory_reset(),
-            EraseCode::ResetIA => state.inner().reset_individual_address(),
-            EraseCode::ResetAP => state.inner().reset_application(),
-            EraseCode::ResetParam => state.inner().reset_parameters(),
-            EraseCode::ResetLinks => {
-                state.inner().reset_address_table();
-                state.inner().reset_association_table();
-            }
-            EraseCode::FactoryResetKeepIA => state.inner().factory_reset_keep_ia(),
-            _ => unreachable!("unsupported erase codes filtered above"),
+        // Yield so the AL's just-pushed `A_Restart_Response`
+        // transits TL → NL → link layer before we mutate inner
+        // state. Otherwise a Factory Reset wipes the IA while the
+        // response is still sitting in the outbox, and NL emits
+        // the response with src = `FF FF`.
+        for _ in 0..16 {
+            embassy_futures::yield_now().await;
         }
+        let reason = ExitReason::Restart { erase_code: erase_code_to_u8(erase_code) };
+        flush_and_exit(stack, shm, Some(erase_code), reason).await;
+    }
+}
 
-        let snapshot = state.to_device_config();
-        // SAFETY: Single-threaded embassy executor — no concurrent access.
-        let shm_mut = unsafe { &mut *shm.0.get() };
-        if let Err(e) = shm_mut.write_state(&snapshot) {
-            log::error!("Failed to flush state to shared memory: {}", e);
-        }
-
-        shutdown_ipc_socket();
-        std::process::exit(0);
+fn erase_code_to_u8(code: EraseCode) -> u8 {
+    match code {
+        EraseCode::Basic => 0x00,
+        EraseCode::Confirmed => 0x01,
+        EraseCode::FactoryReset => 0x02,
+        EraseCode::ResetIA => 0x03,
+        EraseCode::ResetAP => 0x04,
+        EraseCode::ResetParam => 0x05,
+        EraseCode::ResetLinks => 0x06,
+        EraseCode::FactoryResetKeepIA => 0x07,
+        EraseCode::Other(x) => x,
     }
 }
 
 // ============================================================================
-// IPC Logger (identical to dut.rs)
+// Entry point
 // ============================================================================
-
-static LOG_SOCKET: OnceLock<Mutex<std::os::unix::net::UnixStream>> = OnceLock::new();
-
-/// Raw fd of the primary IPC socket. Stored at startup so
-/// `flush_and_exit` can do an explicit `shutdown(Write)` before exit,
-/// which flushes any pending writes (captured frames, log frames) and
-/// cleanly signals EOF to the parent. Relying on process-exit alone to
-/// close the socket races with in-flight writes queued by the async LL
-/// task — leading to "DUT disconnected" failures when the parent sees
-/// EOF before the captured restart-response frame lands.
-static IPC_SOCKET_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
-
-/// Drain any pending writes on the IPC socket and then half-close the
-/// write side so the kernel delivers EOF to the parent only after every
-/// captured frame has been written. Called just before `process::exit`.
-fn shutdown_ipc_socket() {
-    let fd = IPC_SOCKET_FD.load(std::sync::atomic::Ordering::Relaxed);
-    if fd >= 0 {
-        // `shutdown(SHUT_WR)` on a Unix stream socket tells the kernel:
-        // no more writes from this end; deliver EOF to the peer once
-        // the send buffer drains. That's exactly the barrier we want
-        // before `exit` — waiting on a timer alone raced with the async
-        // LL task's socket writes.
-        let _ = unsafe { nix::libc::shutdown(fd, nix::libc::SHUT_WR) };
-    }
-}
-
-struct IpcLogger {
-    level: log::LevelFilter,
-}
-
-impl log::Log for IpcLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= self.level
-    }
-
-    fn log(&self, record: &log::Record) {
-        if !self.enabled(record.metadata()) {
-            return;
-        }
-
-        let Some(socket_mutex) = LOG_SOCKET.get() else { return };
-        let Ok(mut socket) = socket_mutex.lock() else { return };
-
-        let level_byte = record.level() as u8;
-        let target = record.target();
-        let message = format!("{}", record.args());
-        let mut payload = Vec::with_capacity(1 + target.len() + 1 + message.len());
-        payload.push(level_byte);
-        payload.extend_from_slice(target.as_bytes());
-        payload.push(0);
-        payload.extend_from_slice(message.as_bytes());
-
-        let _ = ipc::write_frame_blocking(&mut socket, TAG_LOG, &payload);
-    }
-
-    fn flush(&self) {}
-}
-
-fn init_ipc_logger(level: log::LevelFilter) {
-    log::set_boxed_logger(Box::new(IpcLogger { level })).expect("set logger");
-    log::set_max_level(level);
-}
-
-// ============================================================================
-// Entry Point
-// ============================================================================
-
-fn parse_args() -> (RawFd, RawFd) {
-    let args: Vec<String> = std::env::args().collect();
-    let mut shm_fd = None;
-    let mut socket_fd = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--shm-fd" => {
-                i += 1;
-                shm_fd = Some(args[i].parse::<RawFd>().expect("invalid --shm-fd value"));
-            }
-            "--socket-fd" => {
-                i += 1;
-                socket_fd = Some(args[i].parse::<RawFd>().expect("invalid --socket-fd value"));
-            }
-            other => {
-                eprintln!("Unknown argument: {}", other);
-                std::process::exit(1);
-            }
-        }
-        i += 1;
-    }
-
-    let shm_fd = shm_fd.unwrap_or_else(|| {
-        eprintln!("Usage: conformance-dut-secure --shm-fd <N> --socket-fd <M>");
-        std::process::exit(1);
-    });
-    let socket_fd = socket_fd.unwrap_or_else(|| {
-        eprintln!("Usage: conformance-dut-secure --shm-fd <N> --socket-fd <M>");
-        std::process::exit(1);
-    });
-
-    (shm_fd, socket_fd)
-}
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let (shm_fd, socket_fd) = parse_args();
+    let (shm_fd, socket_fd) = dut_common::parse_args("conformance-dut-secure");
 
-    // Publish the socket fd so `flush_and_exit` can half-close it on
-    // shutdown (see `shutdown_ipc_socket`).
-    IPC_SOCKET_FD.store(socket_fd, std::sync::atomic::Ordering::Relaxed);
+    set_primary_socket_fd(socket_fd);
+    dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
 
-    // Set up the IPC logger.
-    {
-        use std::os::unix::io::FromRawFd;
-        let dup_fd = nix::unistd::dup(socket_fd).expect("dup socket fd for logger");
-        let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(dup_fd) };
-        LOG_SOCKET.set(Mutex::new(stream)).ok();
-    }
-    let log_level = match std::env::var("RUST_LOG").ok().as_deref() {
-        Some("error") => log::LevelFilter::Error,
-        Some("warn") => log::LevelFilter::Warn,
-        Some("info") => log::LevelFilter::Info,
-        Some("debug") => log::LevelFilter::Debug,
-        Some("trace") => log::LevelFilter::Trace,
-        _ => log::LevelFilter::Debug,
-    };
-    init_ipc_logger(log_level);
-
-    // Map the parent's shared memory region.
+    // SAFETY: parent passed us a valid SHM fd.
     let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    // Deserialize device state from shared memory.
     let snapshot: SecureConformanceDeviceConfig = shm
         .read_state()
         .expect("read shared memory")
         .expect("shared memory uninitialized — parent should have written initial state");
 
-    // Create the sequence number storage from the shared memory region,
-    // then pass it as part of the state config so the runner can construct
-    // the state with the layer context.
+    // Set up per-peer seqnr storage from the tail of the SHM region.
+    // SAFETY: the region is owned by this process for the duration of
+    // the program; `seq_region_ptr` stays valid until `shm` is dropped
+    // (at `process::exit`).
     zweidraehte_conformance::harness::secure_stack::set_seq_shm_ptr(shm.seq_region_ptr());
     let seq_storage = IpcSecureConformanceTestStack::create_seq_storage();
     let state_init = SecureConformanceStateInit::Loaded { config: snapshot, seq_storage };
 
-    let shm = SHM.init(ShmCell(UnsafeCell::new(shm)));
+    let shm = SHM.init(ShmCell::new(shm));
 
     let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
     let buffer_manager = INJECTION_BUFFER_MANAGER.init(unsafe { BufferManager::new(buffers) });
@@ -349,31 +202,15 @@ async fn main(spawner: Spawner) {
     let command_tx = unsafe { core::mem::transmute(command_tx) };
 
     let link_layer_builder =
-        IpcLinkLayerBuilder::new(socket_fd, dyn_buffer_manager, command_tx).expect("create IPC link layer");
+        IpcLinkLayerBuilder::new(socket_fd, dyn_buffer_manager, command_tx).expect("build IPC link layer");
 
     let resources = STACK_RESOURCES.init(StackResources::new());
 
-    let (stack, runner) = zweidraehte_device::new(
-        resources,
-        link_layer_builder,
-        state_init,
-        (),
-        ConformanceMemoryMap,
-    );
+    let (stack, runner) = zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap);
 
-    // Patch the hook context with the COT reference.
+    // SAFETY: COT is 'static via StackResources.
     unsafe {
         stack.hook_context().set_cot(stack.communication_object_table());
-    }
-
-    // Send Ready frame to the parent.
-    {
-        use std::os::unix::io::FromRawFd;
-        use std::os::unix::net::UnixStream;
-
-        let dup_fd = nix::unistd::dup(socket_fd).expect("dup socket fd for Ready frame");
-        let mut stream = unsafe { UnixStream::from_raw_fd(dup_fd) };
-        ipc::write_frame_blocking(&mut stream, TAG_READY, &[]).expect("send Ready frame");
     }
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");

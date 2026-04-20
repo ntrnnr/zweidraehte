@@ -1,13 +1,13 @@
-//! KNX Conformance Test Runner
+//! KNX Conformance Test Runner.
 //!
-//! Runs KNX conformance tests against a DUT (Device Under Test) running in
-//! a separate child process. The runner owns persistent device state in
-//! shared memory and communicates with the DUT over a Unix socketpair.
-//!
-//! On restart, the DUT child flushes persistent state to shared memory and
-//! exits. The runner detects EOF, respawns a fresh child, and the new child
-//! starts with clean volatile state (transport connections, programming mode)
-//! while persistent state survives in shared memory.
+//! Drives `conformance-dut` / `conformance-dut-secure` child processes
+//! over the new postcard IPC protocol (see
+//! [`zweidraehte_conformance::harness::protocol`]). Every inject/
+//! trigger/programming-mode step is synchronous:
+//! [`ChildLifecycle::step`](zweidraehte_conformance::harness::ChildLifecycle::step)
+//! sends the command and waits for `StepComplete` before returning.
+//! Outbox frames land in a per-lifecycle buffer that `Expect*` steps
+//! consume via `pop_unsolicited` / `next_frame`.
 //!
 //! Usage:
 //!   cargo run --bin conformance-runner [--realtime] [--non-secure] [filter...]
@@ -18,48 +18,32 @@
 //!                 IPC-connected testing.
 //!   --non-secure  Run against the plain (`conformance-dut`) DUT and SKIP
 //!                 any suite that requires the secure stack
-//!                 (`TestSuite::use_secure_dut == true`). Default is to run
-//!                 all suites against the secure DUT (`conformance-dut-secure`);
-//!                 a Data-Secure device with Security Mode off behaves like a
-//!                 plain device, so non-secure suites still pass.
+//!                 (`TestSuite::use_secure_dut == true`).
 //!   filter        Optional filters (case-insensitive substring match)
-//!                 - Suite filters: "network", "transport", "NL", "TL"
-//!                 - Test case filters: "2.1", "3.4", "broadcast"
-//!                 Multiple filters are OR'd together
-//!
-//! Examples:
-//!   cargo run --bin conformance-runner              # Secure DUT, all suites (fast mode)
-//!   cargo run --bin conformance-runner --non-secure # Plain DUT, skip secure-only suites
-//!   cargo run --bin conformance-runner --realtime   # Spec timeouts, secure DUT
-//!   cargo run --bin conformance-runner network      # Secure DUT, network layer suite
-//!   cargo run --bin conformance-runner 2.3          # Secure DUT, test 2.3 only
-//!   cargo run --bin conformance-runner 2.1 2.3      # Secure DUT, tests 2.1 and 2.3
-//!   cargo run --bin conformance-runner broadcast    # Secure DUT, "broadcast" matches
 //!
 //! Environment:
 //!   RUST_LOG    Set log level (error, warn, info, debug, trace)
 //!   LIVE_LOGS   If set, print logs in real-time instead of buffering
+//!   KNX_TIME_DIVISOR  Exported from `--realtime` for the DUT child
+//!                     so its TL timers scale identically.
 
+use std::collections::BTreeMap;
 use std::env;
 
-use embassy_futures::select::{Either, select};
 use embassy_time::{Duration, Timer};
 use log::LevelFilter;
 
-use zweidraehte_conformance::harness::MultiProcessHarness;
-use zweidraehte_conformance::harness::multiprocess::DutMode;
+use zweidraehte_conformance::harness::protocol::RunnerMessage;
+use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests::security::context::SecurityTestContext;
 use zweidraehte_conformance::tests::security::crypto;
 use zweidraehte_conformance::*;
 
 // ============================================================================
-// TP1 ↔ Internal Format Conversion Helpers
+// TP1 ↔ internal format helpers (unchanged from the old runner)
 // ============================================================================
 
-/// Convert TP1 wire format bytes to internal KNX message format.
-///
-/// Wraps the `tp1_to_knx_message_no_checksum` function for use with `Vec<u8>`.
 fn tp1_to_internal(tp1: &[u8]) -> Vec<u8> {
     use zweidraehte_proto::encoding::tp1;
     let mut buf = tp1.to_vec();
@@ -67,9 +51,6 @@ fn tp1_to_internal(tp1: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Convert internal KNX message format to TP1 wire format (no checksum).
-///
-/// Wraps the `knx_to_tp1_message_no_checksum` function for use with `Vec<u8>`.
 fn internal_to_tp1(internal: &[u8]) -> Vec<u8> {
     use zweidraehte_proto::encoding::tp1;
     let mut buf = internal.to_vec();
@@ -77,22 +58,15 @@ fn internal_to_tp1(internal: &[u8]) -> Vec<u8> {
     buf
 }
 
-/// Shrink a per-byte metadata array to match the internal format of a TP1 frame.
-///
-/// For extended frames (CTRL bit 7 = 0), the TP1 ext ctrl byte at position 1
-/// is removed during conversion, so we drop the entry at index 1.
-/// For standard frames, the length stays the same.
 fn tp1_shrink_per_byte<T: Copy>(per_byte: &[T], tp1_data: &[u8]) -> Vec<T> {
     if tp1_data.is_empty() {
         return per_byte.to_vec();
     }
-    // Extended frame: CTRL bit 7 = 0
     if (tp1_data[0] & 0x80) == 0 && per_byte.len() > 1 {
         let mut result: Vec<T> = Vec::with_capacity(per_byte.len() - 1);
-        result.push(per_byte[0]); // CTRL
-        // Skip index 1 (ext ctrl — absorbed into position 5 by tp1_to_internal)
+        result.push(per_byte[0]);
         result.extend_from_slice(&per_byte[2..]);
-        let internal_len = tp1_data.len() - 1; // extended frames shrink by 1
+        let internal_len = tp1_data.len() - 1;
         result.truncate(internal_len);
         result
     } else {
@@ -101,699 +75,851 @@ fn tp1_shrink_per_byte<T: Copy>(per_byte: &[T], tp1_data: &[u8]) -> Vec<T> {
 }
 
 // ============================================================================
-// Time Scaling
+// Time scaling — unified single rule (Phase 6 polish pending)
 // ============================================================================
 //
-// When running against an IPC-connected DUT (the default), protocol-level
-// delays and expect windows can be shortened dramatically since there is no
-// real bus latency. The `time_divisor` divides all test-step timeouts at
-// execution time. A floor prevents values from collapsing to zero.
+// The `--realtime` flag disables scaling (divisor = 1). Otherwise we
+// divide every millisecond value by the divisor (default 50) with a
+// floor of `IPC_FLOOR_MS`. The floor exists because even an empty
+// IPC round-trip (socket write → embassy wake → socket read) takes a
+// few ms in practice.
 //
-// Default divisor is 50 (fast mode). Pass `--realtime` to use divisor 1.
+// The DUT inherits `KNX_TIME_DIVISOR` via environment and scales its
+// own TL timers by the same factor when the `conformance` feature is
+// enabled, so protocol-level timing stays coherent.
 
 const DEFAULT_TIME_DIVISOR: u64 = 50;
 
-/// Minimum time (ms) for an IPC round-trip: inject → DUT processes →
-/// response captured. Even with zero protocol delay, the embassy executor
-/// needs a few ticks and the IPC socket needs to deliver frames.
-const IPC_FLOOR_MS: u64 = 15;
-
-/// Compute the floor for an expect/wait timeout.
+/// Floor for `Expect` / `ExpectNone` / `ExpectSecure` timeouts.
 ///
-/// Short timeouts (≤ 1s original) are protocol response waits — the
-/// DUT's TL timeouts are scaled, so `IPC_FLOOR_MS` suffices. Longer
-/// timeouts wait for DUT-internal behaviour (ROI scans, connection
-/// timeouts) whose timing is NOT scaled, so the floor must be the
-/// original value to avoid false timeouts.
-fn expect_floor(original_ms: u32) -> u64 {
-    if original_ms > 1000 {
-        // DUT-internal timing: don't scale at all
-        original_ms as u64
-    } else {
-        IPC_FLOOR_MS
-    }
-}
+/// Even with zero protocol delay, the embassy executor needs a few
+/// ticks and the IPC socket needs to round-trip the frame.
+const EXPECT_FLOOR_MS: u64 = 15;
 
-/// Scale a millisecond value by the time divisor, clamping to a floor.
-fn scale_ms(ms: u32, divisor: u64, floor: u64) -> u64 {
+/// Floor for `Inject` / `InjectSecure` inter-step delays.
+///
+/// Tests use `delay_before_ms` to let the DUT finish a prior
+/// action before the next inject lands. If this floor is set
+/// high enough to noticeably delay injects, the DUT's internal
+/// TL ACK timer (60 ms in fast mode) fires between injects and
+/// the DUT retransmits earlier responses — which then appear as
+/// unsolicited frames polluting subsequent expects. Keep this
+/// very low so baseline-speed timing is preserved.
+const DELAY_FLOOR_MS: u64 = 2;
+
+/// Floor for lifecycle-terminating commands (`PowerCycle`,
+/// `MasterReset`). These need time for the DUT to flush state
+/// to SHM + write `Exiting` + shutdown the socket — noticeably
+/// more than a plain step round-trip.
+const LIFECYCLE_FLOOR_MS: u64 = 80;
+
+fn scale_with_floor(ms: u32, divisor: u64, floor: u64) -> u64 {
     if divisor <= 1 {
         return ms as u64;
     }
     (ms as u64 / divisor).max(floor)
 }
 
-/// Scale the hardcoded post-inject/trigger processing delay.
-fn processing_delay(divisor: u64) -> Duration {
-    Duration::from_millis(scale_ms(10, divisor, 2))
+/// Scale an `Expect`-family timeout.
+fn scale_ms(ms: u32, divisor: u64) -> u64 {
+    scale_with_floor(ms, divisor, EXPECT_FLOOR_MS)
+}
+
+/// Scale a short inter-step delay. Uses the low
+/// [`DELAY_FLOOR_MS`] so scaling matches baseline timing — too
+/// much delay provokes DUT TL retransmissions that pollute the
+/// unsolicited-frame buffer.
+fn scale_delay_ms(ms: u32, divisor: u64) -> u64 {
+    scale_with_floor(ms, divisor, DELAY_FLOOR_MS)
+}
+
+/// Scale a lifecycle-terminating timeout.
+fn scale_lifecycle_ms(ms: u32, divisor: u64) -> u64 {
+    scale_with_floor(ms, divisor, LIFECYCLE_FLOOR_MS)
 }
 
 // ============================================================================
-// Step Execution
+// Step result
 // ============================================================================
-//
-// Each test step is executed the same way whether it appears in preparation,
-// the test body, or teardown. The only difference is how failures are
-// reported (preparation failures skip the suite, test failures mark the
-// test as failed, teardown failures are logged but don't affect results).
 
-/// Execute a single resolved test step.
-///
-/// Returns `false` if the step failed (mismatch, timeout, error).
-/// `sec_ctx` is `Some` for security test suites, `None` for non-secure.
-/// `variables` is needed for resolving secure templates at execution time.
-/// `time_divisor` scales all delays and timeouts (1 = realtime, 50 = fast).
+/// Shared outcome type so every per-variant handler has the same
+/// return shape. `false` is a test failure; `true` passes.
+type StepOk = bool;
+
+// ============================================================================
+// Step dispatch
+// ============================================================================
+
+/// Execute one resolved `TestStep`. Dispatches to a per-variant
+/// handler. Splitting the 700-line match into named functions makes
+/// each variant independently readable and grep-able.
 async fn execute_step(
-    harness: &mut MultiProcessHarness,
+    harness: &mut ChildLifecycle,
     step: &TestStep,
     index: usize,
     sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &std::collections::BTreeMap<String, TestVariable>,
+    variables: &BTreeMap<String, TestVariable>,
     time_divisor: u64,
-) -> bool {
+) -> StepOk {
     match step {
-        TestStep::Comment(text) => {
-            println!("  [{}] 💬 {}", index, text);
-            true
-        }
-
+        TestStep::Comment(text) => step_comment(index, text),
         TestStep::Inject { telegram, delay_before_ms } => {
-            println!("  [{}] ⬇️  Inject: {:02X?}", index, telegram.data);
-            if *delay_before_ms > 0 {
-                let delay = scale_ms(*delay_before_ms, time_divisor, 10);
-                println!("        (delay: {}ms)", delay);
-                Timer::after(Duration::from_millis(delay)).await;
-            }
-            // If the child died (e.g., after a restart inject), the
-            // inject below triggers a respawn + ROI drain. No extra
-            // delay needed here — send_command handles it.
-            if let Err(e) = harness.inject(&telegram.data).await {
-                println!("        ❌ Inject failed: {}", e);
-                return false;
-            }
-            Timer::after(processing_delay(time_divisor)).await;
-            true
+            step_inject(harness, index, &telegram.data, *delay_before_ms, time_divisor).await
         }
-
         TestStep::Expect { matcher, timeout_ms } => {
-            let effective_ms = if *timeout_ms > 0 {
-                scale_ms(*timeout_ms, time_divisor, expect_floor(*timeout_ms))
-            } else {
-                scale_ms(1000, time_divisor, IPC_FLOOR_MS)
-            };
-            println!("  [{}] ⬆️  Expect: {:02X?} ({}ms)", index, matcher.expected, effective_ms);
-            let timeout = Duration::from_millis(effective_ms);
-            match select(harness.receive_captured(), Timer::after(timeout)).await {
-                Either::First(Some(msg)) => {
-                    if matcher.matches(&msg.data) {
-                        println!("        ✅ Matched: {:02X?}", msg.data.as_slice());
-                        true
-                    } else {
-                        println!("        ❌ Mismatch!");
-                        println!("           Expected: {:02X?}", matcher.expected);
-                        println!("           Got:      {:02X?}", msg.data.as_slice());
-                        false
-                    }
-                }
-                Either::First(None) => {
-                    println!("        ⚠️  Capture not available (child exited?)");
-                    false
-                }
-                Either::Second(_) => {
-                    println!("        ⏰ Timeout: No message received within {}ms", timeout.as_millis());
-                    false
-                }
-            }
+            step_expect(harness, index, matcher, *timeout_ms, time_divisor).await
         }
-
-        TestStep::ExpectNone { timeout_ms } => {
-            let effective_ms = scale_ms(*timeout_ms, time_divisor, expect_floor(*timeout_ms));
-            println!("  [{}] 🚫 ExpectNone (timeout {}ms)", index, effective_ms);
-            let timeout = Duration::from_millis(effective_ms);
-            match select(harness.receive_captured(), Timer::after(timeout)).await {
-                Either::First(Some(msg)) => {
-                    println!("        ❌ Unexpected message received!");
-                    println!("           Got: {:02X?}", msg.data.as_slice());
-                    false
-                }
-                Either::First(None) => {
-                    // Child exited — no message, which is what we wanted
-                    println!("        ✅ No message (child exited)");
-                    true
-                }
-                Either::Second(_) => {
-                    println!("        ✅ No message received (as expected)");
-                    true
-                }
-            }
-        }
-
-        TestStep::Wait { duration_ms } => {
-            let effective_ms = scale_ms(*duration_ms, time_divisor, 2);
-            println!("  [{}] ⏳ Wait {}ms", index, effective_ms);
-            Timer::after(Duration::from_millis(effective_ms)).await;
-            true
-        }
-
-        TestStep::Custom => {
-            println!("  [{}] 🔧 Custom step", index);
-            true
-        }
-
-        TestStep::SetProgrammingMode(enabled) => {
-            println!("  [{}] 🔧 SetProgrammingMode({})", index, enabled);
-            if let Err(e) = harness.set_programming_mode(*enabled).await {
-                println!("        ❌ Failed: {}", e);
-                return false;
-            }
-            true
-        }
-
-        TestStep::TriggerRead { asap } => {
-            println!("  [{}] 📤 TriggerRead(ASAP {})", index, asap);
-            if let Err(e) = harness.trigger_read(*asap).await {
-                println!("        ❌ Failed: {}", e);
-                return false;
-            }
-            Timer::after(processing_delay(time_divisor)).await;
-            true
-        }
-
-        TestStep::TriggerWrite { asap } => {
-            println!("  [{}] 📤 TriggerWrite(ASAP {})", index, asap);
-            if let Err(e) = harness.trigger_write(*asap).await {
-                println!("        ❌ Failed: {}", e);
-                return false;
-            }
-            Timer::after(processing_delay(time_divisor)).await;
-            true
-        }
-
+        TestStep::ExpectNone { timeout_ms } => step_expect_none(harness, index, *timeout_ms, time_divisor).await,
+        TestStep::Wait { duration_ms } => step_wait(index, *duration_ms, time_divisor).await,
+        TestStep::Custom => step_custom(index),
+        TestStep::SetProgrammingMode(enabled) => step_set_programming_mode(harness, index, *enabled).await,
+        TestStep::TriggerRead { asap } => step_trigger_read(harness, index, *asap).await,
+        TestStep::TriggerWrite { asap } => step_trigger_write(harness, index, *asap).await,
         TestStep::TriggerSync { peer_ia, tool_access, is_broadcast } => {
-            println!(
-                "  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={})",
-                index, peer_ia, tool_access, is_broadcast
-            );
-            if let Err(e) = harness.trigger_sync(*peer_ia, *tool_access, *is_broadcast).await {
-                println!("        Failed: {}", e);
-                return false;
-            }
-            Timer::after(processing_delay(time_divisor)).await;
-            true
+            step_trigger_sync(harness, index, *peer_ia, *tool_access, *is_broadcast).await
         }
-
-        TestStep::Drain { settle_ms } => {
-            let effective_ms = scale_ms(*settle_ms, time_divisor, 10);
-            println!("  [{}] Drain (settle {}ms)", index, effective_ms);
-            Timer::after(Duration::from_millis(effective_ms)).await;
-            let drained = harness.drain_captured();
-            println!("        Drained {} messages", drained);
-            true
-        }
-
-        TestStep::WaitForRestart { timeout_ms } => {
-            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
-            println!("  [{}] 🔄 WaitForRestart (timeout {}ms)", index, effective_ms);
-            let timeout = Duration::from_millis(effective_ms);
-            if let Err(e) = harness.wait_for_restart(timeout).await {
-                println!("        ❌ Failed: {}", e);
-                return false;
-            }
-            println!("        ✅ DUT restarted");
-            true
-        }
-
-        TestStep::PowerCycle { timeout_ms } => {
-            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
-            println!("  [{}] 🔌 PowerCycle (timeout {}ms)", index, effective_ms);
-            let timeout = Duration::from_millis(effective_ms);
-            if let Err(e) = harness.power_cycle(timeout).await {
-                println!("        ❌ Failed: {}", e);
-                return false;
-            }
-            println!("        ✅ DUT power-cycled");
-            true
-        }
-
+        TestStep::Drain { settle_ms } => step_drain(harness, index, *settle_ms, time_divisor).await,
+        TestStep::WaitForRestart { timeout_ms } => step_wait_for_restart(harness, index, *timeout_ms).await,
+        TestStep::PowerCycle { timeout_ms } => step_power_cycle(harness, index, *timeout_ms, time_divisor).await,
         TestStep::MasterReset { erase_code, timeout_ms } => {
-            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
-            println!("  [{}] ♻️  MasterReset(erase=0x{:02x}, timeout {}ms)", index, erase_code, effective_ms);
-            let timeout = Duration::from_millis(effective_ms);
-            if let Err(e) = harness.master_reset(*erase_code, timeout).await {
-                println!("        ❌ Failed: {}", e);
-                return false;
-            }
-            println!("        ✅ DUT reset");
-            true
+            step_master_reset(harness, index, *erase_code, *timeout_ms, time_divisor).await
         }
-
         TestStep::FullReset { timeout_ms } => {
-            let effective_ms = scale_ms(*timeout_ms, time_divisor, 50);
-            println!("  [{}] 🏭 FullReset (rebuild default SHM + respawn, timeout {}ms)", index, effective_ms);
-            // Kill the running DUT, overwrite shared memory with the
-            // factory-default snapshot (same one the parent writes at
-            // startup), and respawn. Used after destructive tests that
-            // wipe DUT state (factory reset with table clear, etc.) so
-            // the next suite inherits a clean state.
-            harness.kill_child().await;
-            if let Err(e) = harness.reset_shared_memory() {
-                println!("        ❌ Failed to reset SHM: {}", e);
-                return false;
-            }
-            if let Err(e) = harness.spawn_child().await {
-                println!("        ❌ Failed to respawn DUT: {}", e);
-                return false;
-            }
-            // Drain any Read-On-Init frames from the fresh DUT — same
-            // pattern as the master_reset / power_cycle helpers.
-            let settle_ms = scale_ms(500, time_divisor, 100);
-            loop {
-                Timer::after(Duration::from_millis(settle_ms)).await;
-                if harness.drain_captured() == 0 {
-                    break;
-                }
-            }
-            // Tool / peer sequence counters in the persistent secure
-            // context are now stale — the DUT is back at factory
-            // defaults. Clearing the context forces the next secure
-            // step to re-sync seq numbers from scratch.
-            if let Some(ctx) = sec_ctx {
-                ctx.reset_peer_state();
-            }
-            println!("        ✅ DUT fully reset to defaults");
-            true
+            step_full_reset(harness, sec_ctx, index, *timeout_ms, time_divisor).await
         }
-
         TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
-            // These should have been resolved before reaching here
             println!("  [{}] ❌ Unresolved template", index);
             false
         }
-
-        // ============================================================
-        // Secure test steps — resolved at execution time
-        // ============================================================
         TestStep::InjectSecure { template, sec_params, delay_before_ms } => {
-            let Some(ctx) = sec_ctx else {
-                println!("  [{}] ❌ InjectSecure used without SecurityTestContext", index);
-                return false;
-            };
-            // Resolve the plaintext template (produces TP1 wire format bytes).
-            let plaintext = match Telegram::parse(template, variables) {
-                Ok(t) => t,
-                Err(e) => {
-                    println!("  [{}] ❌ Template error: {}", index, e);
-                    return false;
-                }
-            };
-            // Convert TP1 → internal format for wrap_secure.
-            let internal = tp1_to_internal(&plaintext.data);
-            // Wrap in secure APDU (internal format).
-            let secure_internal = crypto::wrap_secure(&internal, sec_params, ctx);
-            // Convert back to TP1 wire format for injection.
-            let secure_tp1 = internal_to_tp1(&secure_internal);
-            println!(
-                "  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
-                index,
-                sec_params.sec_type,
-                sec_params.key_name,
-                secure_tp1.len()
-            );
-            if *delay_before_ms > 0 {
-                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
-            }
-            if let Err(e) = harness.inject(&secure_tp1).await {
-                println!("        ❌ Inject failed: {}", e);
-                return false;
-            }
-            true
+            step_inject_secure(harness, sec_ctx, variables, index, template, sec_params, *delay_before_ms, time_divisor)
+                .await
         }
-
         TestStep::ExpectSecure { template, sec_params, timeout_ms } => {
-            let Some(ctx) = sec_ctx else {
-                println!("  [{}] ❌ ExpectSecure used without SecurityTestContext", index);
-                return false;
-            };
-            let effective_ms = if *timeout_ms == 0 {
-                scale_ms(1000, time_divisor, IPC_FLOOR_MS)
+            step_expect_secure(harness, sec_ctx, variables, index, template, sec_params, *timeout_ms, time_divisor)
+                .await
+        }
+        TestStep::InjectSecureInvalid { template, sec_params, invalid, delay_before_ms } => {
+            step_inject_secure_invalid(
+                harness,
+                sec_ctx,
+                variables,
+                index,
+                template,
+                sec_params,
+                invalid,
+                *delay_before_ms,
+                time_divisor,
+            )
+            .await
+        }
+        TestStep::InjectSyncReq { sync_params, delay_before_ms } => {
+            step_inject_sync_req(harness, sec_ctx, variables, index, sync_params, *delay_before_ms, time_divisor).await
+        }
+        TestStep::InjectSyncReqInvalid { sync_params, invalid, delay_before_ms } => {
+            step_inject_sync_req_invalid(
+                harness,
+                sec_ctx,
+                variables,
+                index,
+                sync_params,
+                invalid,
+                *delay_before_ms,
+                time_divisor,
+            )
+            .await
+        }
+        TestStep::ExpectSyncRes { sync_expect, timeout_ms } => {
+            step_expect_sync_res(harness, sec_ctx, index, sync_expect, *timeout_ms, time_divisor).await
+        }
+        TestStep::ExpectSyncReqThenRespond { params, timeout_ms } => {
+            step_expect_sync_req_then_respond(
+                harness,
+                sec_ctx,
+                variables,
+                index,
+                params,
+                *timeout_ms,
+                time_divisor,
+            )
+            .await
+        }
+    }
+}
+
+// ============================================================================
+// Simple steps
+// ============================================================================
+
+fn step_comment(index: usize, text: &str) -> StepOk {
+    println!("  [{}] 💬 {}", index, text);
+    true
+}
+
+fn step_custom(index: usize) -> StepOk {
+    println!("  [{}] 🔧 Custom step", index);
+    true
+}
+
+async fn step_wait(index: usize, duration_ms: u32, time_divisor: u64) -> StepOk {
+    let effective_ms = scale_ms(duration_ms, time_divisor);
+    println!("  [{}] ⏳ Wait {}ms", index, effective_ms);
+    Timer::after(Duration::from_millis(effective_ms)).await;
+    true
+}
+
+/// `WaitForRestart` respawns the DUT with post-respawn ROI frames
+/// *preserved* in the unsolicited buffer. Use it after an
+/// `A_Restart` inject when the test wants to observe the ROI scan
+/// (e.g. test 1.4.1.6).
+///
+/// Without this step, the default path in
+/// [`ChildLifecycle::step`] auto-respawns on the next inject and
+/// discards ROI — which is what most tests want, since ROI frames
+/// would otherwise poison unrelated expects.
+async fn step_wait_for_restart(harness: &mut ChildLifecycle, index: usize, _timeout_ms: u32) -> StepOk {
+    println!("  [{}] 🔄 WaitForRestart (respawn, preserving ROI)", index);
+    match harness.auto_respawn_if_dead(true).await {
+        Ok(()) => true,
+        Err(e) => {
+            println!("        ❌ Failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_drain(harness: &mut ChildLifecycle, index: usize, settle_ms: u32, time_divisor: u64) -> StepOk {
+    let effective_ms = scale_ms(settle_ms, time_divisor);
+    println!("  [{}] 🧹 Drain (settle {}ms)", index, effective_ms);
+    if effective_ms > 0 {
+        Timer::after(Duration::from_millis(effective_ms)).await;
+    }
+    // Give any in-flight UnsolicitedFrames a chance to land, then
+    // discard everything buffered.
+    let _ = harness.next_frame(Duration::from_millis(1)).await;
+    harness.discard_unsolicited();
+    true
+}
+
+// ============================================================================
+// Inject / expect
+// ============================================================================
+
+async fn step_inject(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    data: &[u8],
+    delay_before_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    println!("  [{}] ⬇️  Inject: {:02X?}", index, data);
+    if delay_before_ms > 0 {
+        let delay = scale_delay_ms(delay_before_ms, time_divisor);
+        println!("        (delay: {}ms)", delay);
+        Timer::after(Duration::from_millis(delay)).await;
+    }
+    let data = data.to_vec();
+    match harness.step(|seq| RunnerMessage::Inject { seq, data: data.clone() }).await {
+        Ok(n) => {
+            if n > 0 {
+                log::debug!("Inject produced {} outbox frame(s)", n);
+            }
+            true
+        }
+        Err(e) => {
+            println!("        ❌ Inject failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_expect(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    matcher: &TelegramMatcher,
+    timeout_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let ms = if timeout_ms == 0 { scale_ms(1000, time_divisor) } else { scale_ms(timeout_ms, time_divisor) };
+    println!("  [{}] ⬆️  Expect: {:02X?} ({}ms)", index, matcher.expected, ms);
+    match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(msg)) => {
+            if matcher.matches(&msg.data) {
+                println!("        ✅ Matched: {:02X?}", msg.data.as_slice());
+                true
             } else {
-                scale_ms(*timeout_ms, time_divisor, expect_floor(*timeout_ms))
-            };
-            let timeout = Duration::from_millis(effective_ms);
-            println!(
-                "  [{}] 🔒⬆️  ExpectSecure ({:?}, key={}, timeout={}ms)",
-                index, sec_params.sec_type, sec_params.key_name, effective_ms
-            );
-
-            let captured = select(harness.receive_captured(), Timer::after(timeout)).await;
-
-            match captured {
-                Either::First(Some(msg)) => {
-                    // Captured data is in TP1 wire format. Convert to internal
-                    // format for unwrap_secure.
-                    let internal = tp1_to_internal(&msg.data);
-                    // Decrypt the captured frame.
-                    match crypto::unwrap_secure(&internal, sec_params, ctx) {
-                        Some(plaintext_apdu) => {
-                            // Reconstruct plaintext in internal format:
-                            // header (6 bytes from captured frame) + decrypted APDU.
-                            let mut plain_internal = internal[..6].to_vec();
-                            plain_internal.extend_from_slice(&plaintext_apdu);
-
-                            // Convert expected template from TP1 to internal format
-                            // for matching (avoids standard/extended frame ambiguity).
-                            let matcher = match TelegramMatcher::parse(template, variables) {
-                                Ok(m) => m,
-                                Err(e) => {
-                                    println!("        ❌ Template error: {}", e);
-                                    return false;
-                                }
-                            };
-                            let expected_internal = tp1_to_internal(&matcher.expected);
-                            let masks_internal = tp1_shrink_per_byte(&matcher.masks, &matcher.expected);
-                            let wildcards_internal = tp1_shrink_per_byte(&matcher.wildcards, &matcher.expected);
-                            let internal_matcher = TelegramMatcher {
-                                expected: expected_internal,
-                                masks: masks_internal,
-                                wildcards: wildcards_internal,
-                            };
-                            if internal_matcher.matches(&plain_internal) {
-                                println!("        ✅ Secure response matches");
-                                true
-                            } else {
-                                println!("        ❌ Plaintext mismatch:");
-                                println!("           {}", internal_matcher.diff(&plain_internal));
-                                false
-                            }
-                        }
-                        None => {
-                            println!("        ❌ Decryption/verification failed");
-                            println!("           Raw: {:02X?}", msg.data);
-                            false
-                        }
-                    }
-                }
-                Either::First(None) => {
-                    println!("        ❌ DUT disconnected");
-                    false
-                }
-                Either::Second(_) => {
-                    println!("        ❌ Timeout (no secure response)");
-                    false
-                }
+                println!("        ❌ Mismatch!");
+                println!("           Expected: {:02X?}", matcher.expected);
+                println!("           Got:      {:02X?}", msg.data.as_slice());
+                false
             }
         }
+        Ok(None) => {
+            println!("        ⏰ Timeout: No message received within {}ms", ms);
+            false
+        }
+        Err(e) => {
+            println!("        ⚠️  Socket error: {}", e);
+            false
+        }
+    }
+}
 
-        TestStep::InjectSecureInvalid { template, sec_params, invalid, delay_before_ms } => {
-            let Some(ctx) = sec_ctx else {
-                println!("  [{}] ❌ InjectSecureInvalid used without SecurityTestContext", index);
-                return false;
-            };
-            let plaintext = match Telegram::parse(template, variables) {
-                Ok(t) => t,
+async fn step_expect_none(harness: &mut ChildLifecycle, index: usize, timeout_ms: u32, time_divisor: u64) -> StepOk {
+    let ms = scale_ms(timeout_ms, time_divisor);
+    println!("  [{}] 🚫 ExpectNone (timeout {}ms)", index, ms);
+    match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(msg)) => {
+            println!("        ❌ Unexpected message received!");
+            println!("           Got: {:02X?}", msg.data.as_slice());
+            false
+        }
+        Ok(None) => {
+            println!("        ✅ No message received (as expected)");
+            true
+        }
+        Err(e) => {
+            // A socket-level disconnect during ExpectNone is treated
+            // as a pass — the DUT clearly didn't send us anything.
+            println!("        ✅ No message (socket: {})", e);
+            true
+        }
+    }
+}
+
+// ============================================================================
+// Triggers
+// ============================================================================
+
+async fn step_set_programming_mode(harness: &mut ChildLifecycle, index: usize, enabled: bool) -> StepOk {
+    println!("  [{}] 🔧 SetProgrammingMode({})", index, enabled);
+    match harness.step(|seq| RunnerMessage::SetProgrammingMode { seq, enabled }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        ❌ Failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_trigger_read(harness: &mut ChildLifecycle, index: usize, asap: u16) -> StepOk {
+    println!("  [{}] 📤 TriggerRead(ASAP {})", index, asap);
+    match harness.step(|seq| RunnerMessage::TriggerRead { seq, asap }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        ❌ Failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_trigger_write(harness: &mut ChildLifecycle, index: usize, asap: u16) -> StepOk {
+    println!("  [{}] 📤 TriggerWrite(ASAP {})", index, asap);
+    match harness.step(|seq| RunnerMessage::TriggerWrite { seq, asap }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        ❌ Failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_trigger_sync(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    peer_ia: u16,
+    tool_access: bool,
+    is_broadcast: bool,
+) -> StepOk {
+    println!("  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={})", index, peer_ia, tool_access, is_broadcast);
+    match harness
+        .step(|seq| RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast })
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        Failed: {}", e);
+            false
+        }
+    }
+}
+
+// ============================================================================
+// Lifecycle commands
+// ============================================================================
+
+async fn step_power_cycle(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    timeout_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let ms = scale_lifecycle_ms(timeout_ms, time_divisor);
+    println!("  [{}] 🔌 PowerCycle (timeout {}ms)", index, ms);
+    match harness.step_exiting(RunnerMessage::PowerCycle, Duration::from_millis(ms)).await {
+        Ok(_) => {
+            println!("        ✅ DUT power-cycled");
+            true
+        }
+        Err(e) => {
+            println!("        ❌ Failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_master_reset(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    erase_code: u8,
+    timeout_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let ms = scale_lifecycle_ms(timeout_ms, time_divisor);
+    println!("  [{}] ♻️  MasterReset(erase=0x{:02x}, timeout {}ms)", index, erase_code, ms);
+    match harness.step_exiting(RunnerMessage::MasterReset { erase_code }, Duration::from_millis(ms)).await {
+        Ok(_) => {
+            println!("        ✅ DUT reset");
+            true
+        }
+        Err(e) => {
+            println!("        ❌ Failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_full_reset(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    index: usize,
+    _timeout_ms: u32,
+    _time_divisor: u64,
+) -> StepOk {
+    println!("  [{}] 🏭 FullReset (wipe SHM + respawn)", index);
+    harness.kill().await;
+    if let Err(e) = harness.reset_shared_memory() {
+        println!("        ❌ Failed to reset SHM: {}", e);
+        return false;
+    }
+    if let Err(e) = harness.spawn_and_wait_roi().await {
+        println!("        ❌ Failed to respawn DUT: {}", e);
+        return false;
+    }
+    // Drop the fresh DUT's startup ROI scan — a `FullReset` is used
+    // as teardown, so the next suite shouldn't inherit ROI frames.
+    harness.discard_unsolicited();
+    // Any persisted sec_ctx is stale because the DUT is
+    // factory-fresh.
+    if let Some(ctx) = sec_ctx {
+        ctx.reset_peer_state();
+    }
+    println!("        ✅ DUT fully reset to defaults");
+    true
+}
+
+// ============================================================================
+// Secure steps
+// ============================================================================
+
+async fn step_inject_secure(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    variables: &BTreeMap<String, TestVariable>,
+    index: usize,
+    template: &str,
+    sec_params: &SecureParams,
+    delay_before_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let Some(ctx) = sec_ctx else {
+        println!("  [{}] ❌ InjectSecure used without SecurityTestContext", index);
+        return false;
+    };
+    let plaintext = match Telegram::parse(template, variables) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  [{}] ❌ Template error: {}", index, e);
+            return false;
+        }
+    };
+    let internal = tp1_to_internal(&plaintext.data);
+    let secure_internal = crypto::wrap_secure(&internal, sec_params, ctx);
+    let secure_tp1 = internal_to_tp1(&secure_internal);
+    println!(
+        "  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
+        index, sec_params.sec_type, sec_params.key_name, secure_tp1.len()
+    );
+    if delay_before_ms > 0 {
+        Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
+    }
+    match harness.step(|seq| RunnerMessage::Inject { seq, data: secure_tp1.clone() }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        ❌ Inject failed: {}", e);
+            false
+        }
+    }
+}
+
+async fn step_expect_secure(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    variables: &BTreeMap<String, TestVariable>,
+    index: usize,
+    template: &str,
+    sec_params: &SecureParams,
+    timeout_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let Some(ctx) = sec_ctx else {
+        println!("  [{}] ❌ ExpectSecure used without SecurityTestContext", index);
+        return false;
+    };
+    let ms = if timeout_ms == 0 { scale_ms(1000, time_divisor) } else { scale_ms(timeout_ms, time_divisor) };
+    println!(
+        "  [{}] 🔒⬆️  ExpectSecure ({:?}, key={}, timeout={}ms)",
+        index, sec_params.sec_type, sec_params.key_name, ms
+    );
+
+    let msg = match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(msg)) => msg,
+        Ok(None) => {
+            println!("        ❌ Timeout (no secure response)");
+            return false;
+        }
+        Err(e) => {
+            println!("        ❌ Socket error: {}", e);
+            return false;
+        }
+    };
+
+    let internal = tp1_to_internal(&msg.data);
+    match crypto::unwrap_secure(&internal, sec_params, ctx) {
+        Some(plaintext_apdu) => {
+            let mut plain_internal = internal[..6].to_vec();
+            plain_internal.extend_from_slice(&plaintext_apdu);
+            let matcher = match TelegramMatcher::parse(template, variables) {
+                Ok(m) => m,
                 Err(e) => {
-                    println!("  [{}] ❌ Template error: {}", index, e);
+                    println!("        ❌ Template error: {}", e);
                     return false;
                 }
             };
-            let internal = tp1_to_internal(&plaintext.data);
-            let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, ctx, invalid);
-            let secure_tp1 = internal_to_tp1(&secure_internal);
-            println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes", index, invalid, secure_tp1.len());
-            if *delay_before_ms > 0 {
-                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
-            }
-            if let Err(e) = harness.inject(&secure_tp1).await {
-                println!("        ❌ Inject failed: {}", e);
-                return false;
-            }
-            true
-        }
-
-        // ================================================================
-        // S-A_Sync steps
-        // ================================================================
-        TestStep::InjectSyncReq { sync_params, delay_before_ms } => {
-            let Some(ctx) = sec_ctx else {
-                println!("  [{}] ❌ InjectSyncReq requires security context", index);
-                return false;
+            let expected_internal = tp1_to_internal(&matcher.expected);
+            let masks_internal = tp1_shrink_per_byte(&matcher.masks, &matcher.expected);
+            let wildcards_internal = tp1_shrink_per_byte(&matcher.wildcards, &matcher.expected);
+            let internal_matcher = TelegramMatcher {
+                expected: expected_internal,
+                masks: masks_internal,
+                wildcards: wildcards_internal,
             };
-
-            let key = ctx.key(&sync_params.key_name);
-            let seq_nr_local =
-                zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
-
-            // Resolve src/dst templates.
-            let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
-                .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
-                .unwrap_or(0);
-            let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
-                .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
-                .unwrap_or(0);
-
-            // Build SCF byte.
-            let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
-                service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
-                system_broadcast: sync_params.system_broadcast,
-                confidentiality: true,
-                tool_access: sync_params.tool_access,
-            };
-            let scf_byte = scf.encode();
-
-            let frame = crypto::wrap_sync_req(
-                sync_params.ctrl_byte,
-                src_bytes,
-                dst_bytes,
-                sync_params.npdu_byte,
-                sync_params.tpci_high,
-                &key,
-                scf_byte,
-                &seq_nr_local,
-                &sync_params.serial_number,
-                &sync_params.challenge,
-            );
-
-            let tp1 = internal_to_tp1(&frame);
-            println!("  [{}] 🔄⬇️  InjectSyncReq: {} bytes, seqLocal={}", index, tp1.len(), sync_params.seq_nr_local);
-
-            if *delay_before_ms > 0 {
-                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
-            }
-            if let Err(e) = harness.inject(&tp1).await {
-                println!("        ❌ Inject failed: {}", e);
-                return false;
-            }
-            true
-        }
-
-        TestStep::InjectSyncReqInvalid { sync_params, invalid, delay_before_ms } => {
-            let Some(ctx) = sec_ctx else {
-                println!("  [{}] ❌ InjectSyncReqInvalid requires security context", index);
-                return false;
-            };
-
-            let key = ctx.key(&sync_params.key_name);
-            let seq_nr_local =
-                zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
-
-            let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
-                .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
-                .unwrap_or(0);
-            let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
-                .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
-                .unwrap_or(0);
-
-            let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
-                service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
-                system_broadcast: sync_params.system_broadcast,
-                confidentiality: true,
-                tool_access: sync_params.tool_access,
-            };
-            let scf_byte = scf.encode();
-
-            let frame = crypto::wrap_sync_req_invalid(
-                sync_params.ctrl_byte,
-                src_bytes,
-                dst_bytes,
-                sync_params.npdu_byte,
-                sync_params.tpci_high,
-                &key,
-                scf_byte,
-                &seq_nr_local,
-                &sync_params.serial_number,
-                &sync_params.challenge,
-                invalid,
-            );
-
-            let tp1 = internal_to_tp1(&frame);
-            println!("  [{}] 🔄💥⬇️  InjectSyncReqInvalid ({:?}): {} bytes", index, invalid, tp1.len());
-
-            if *delay_before_ms > 0 {
-                Timer::after(Duration::from_millis(scale_ms(*delay_before_ms, time_divisor, 10))).await;
-            }
-            if let Err(e) = harness.inject(&tp1).await {
-                println!("        ❌ Inject failed: {}", e);
-                return false;
-            }
-            true
-        }
-
-        TestStep::ExpectSyncRes { sync_expect, timeout_ms } => {
-            let Some(ctx) = sec_ctx else {
-                println!("  [{}] ❌ ExpectSyncRes requires security context", index);
-                return false;
-            };
-
-            let effective_ms = scale_ms(*timeout_ms, time_divisor, 100);
-            let timeout = Duration::from_millis(effective_ms);
-
-            println!("  [{}] 🔄⬆️  ExpectSyncRes (timeout={}ms)", index, effective_ms);
-
-            let captured = embassy_futures::select::select(harness.receive_captured(), Timer::after(timeout)).await;
-
-            match captured {
-                embassy_futures::select::Either::First(Some(msg)) => {
-                    let internal = tp1_to_internal(&msg.data);
-                    let key = ctx.key(&sync_expect.key_name);
-
-                    match crypto::unwrap_sync_res(&internal, &key, &sync_expect.challenge) {
-                        Some(decoded) => {
-                            let seq_remote = zweidraehte_conformance::tests::security::context::seq_from_bytes(
-                                &decoded.seq_nr_remote,
-                            );
-                            let seq_local = zweidraehte_conformance::tests::security::context::seq_from_bytes(
-                                &decoded.seq_nr_local,
-                            );
-
-                            println!("        SeqNr_remote={}, SeqNr_local={}", seq_remote, seq_local);
-
-                            // Verify expected values if specified.
-                            let mut ok = true;
-                            if let Some(expected) = sync_expect.expected_seq_remote {
-                                if seq_remote != expected {
-                                    println!("        ❌ SeqNr_remote: expected {}, got {}", expected, seq_remote);
-                                    ok = false;
-                                }
-                            }
-                            if let Some(expected) = sync_expect.expected_seq_local {
-                                if seq_local != expected {
-                                    println!("        ❌ SeqNr_local: expected {}, got {}", expected, seq_local);
-                                    ok = false;
-                                }
-                            }
-
-                            // Update runner's table_seq_nr from the DUT's response.
-                            // The DUT reported its sending seqnr as seq_remote.
-                            ctx.update_table_seq(seq_remote);
-
-                            // Update tool_seq_nr from the DUT's seq_local.
-                            // The DUT reported what it expects as our next
-                            // data sequence number. This is critical after
-                            // sync tests that send high seq_nr_local values
-                            // (e.g., 3.3.15) — the DUT raises its stored
-                            // receiving seq accordingly, and subsequent
-                            // data frames must use seq >= seq_local.
-                            if sync_expect.tool_access && seq_local > ctx.tool_seq_nr {
-                                ctx.tool_seq_nr = seq_local;
-                            }
-
-                            if ok {
-                                println!("        ✅ Sync response matches");
-                            }
-                            ok
-                        }
-                        None => {
-                            println!("        ❌ Sync response decryption/verification failed");
-                            false
-                        }
-                    }
-                }
-                embassy_futures::select::Either::First(None) => {
-                    println!("        ❌ DUT disconnected while waiting for sync response");
-                    false
-                }
-                embassy_futures::select::Either::Second(_) => {
-                    println!("        ❌ Timeout waiting for sync response");
-                    false
-                }
+            if internal_matcher.matches(&plain_internal) {
+                println!("        ✅ Secure response matches");
+                true
+            } else {
+                println!("        ❌ Plaintext mismatch:");
+                println!("           {}", internal_matcher.diff(&plain_internal));
+                false
             }
         }
+        None => {
+            println!("        ❌ Decryption/verification failed");
+            println!("           Raw: {:02X?}", msg.data);
+            false
+        }
+    }
+}
 
-        TestStep::ExpectSyncReqThenRespond { params, timeout_ms } => {
-            let Some(ctx) = sec_ctx else {
-                println!("  [{}] ExpectSyncReqThenRespond requires security context", index);
-                return false;
-            };
+async fn step_inject_secure_invalid(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    variables: &BTreeMap<String, TestVariable>,
+    index: usize,
+    template: &str,
+    sec_params: &SecureParams,
+    invalid: &InvalidSecurityParam,
+    delay_before_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let Some(ctx) = sec_ctx else {
+        println!("  [{}] ❌ InjectSecureInvalid used without SecurityTestContext", index);
+        return false;
+    };
+    let plaintext = match Telegram::parse(template, variables) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  [{}] ❌ Template error: {}", index, e);
+            return false;
+        }
+    };
+    let internal = tp1_to_internal(&plaintext.data);
+    let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, ctx, invalid);
+    let secure_tp1 = internal_to_tp1(&secure_internal);
+    println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes", index, invalid, secure_tp1.len());
+    if delay_before_ms > 0 {
+        Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
+    }
+    match harness.step(|seq| RunnerMessage::Inject { seq, data: secure_tp1.clone() }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        ❌ Inject failed: {}", e);
+            false
+        }
+    }
+}
 
-            let effective_ms = scale_ms(*timeout_ms, time_divisor, 100);
-            let timeout = Duration::from_millis(effective_ms);
+// ============================================================================
+// Sync (S-A_Sync_Req / _Res)
+// ============================================================================
 
-            println!("  [{}] ExpectSyncReqThenRespond (timeout={}ms)", index, effective_ms);
+async fn step_inject_sync_req(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    variables: &BTreeMap<String, TestVariable>,
+    index: usize,
+    sync_params: &SyncReqParams,
+    delay_before_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let Some(ctx) = sec_ctx else {
+        println!("  [{}] ❌ InjectSyncReq requires security context", index);
+        return false;
+    };
+    let key = ctx.key(&sync_params.key_name);
+    let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
 
-            let captured = embassy_futures::select::select(harness.receive_captured(), Timer::after(timeout)).await;
+    let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
+        .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
+        .unwrap_or(0);
+    let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
+        .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
+        .unwrap_or(0);
 
-            match captured {
-                embassy_futures::select::Either::First(Some(msg)) => {
-                    let internal = tp1_to_internal(&msg.data);
-                    let key = ctx.key(&params.key_name);
+    let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
+        service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
+        system_broadcast: sync_params.system_broadcast,
+        confidentiality: true,
+        tool_access: sync_params.tool_access,
+    };
+    let scf_byte = scf.encode();
 
-                    // Parse and decrypt the DUT's sync request.
-                    let Some(decoded_req) = crypto::unwrap_sync_req(&internal, &key) else {
-                        println!("        Failed to decrypt DUT sync request");
-                        return false;
-                    };
+    let frame = crypto::wrap_sync_req(
+        sync_params.ctrl_byte,
+        src_bytes,
+        dst_bytes,
+        sync_params.npdu_byte,
+        sync_params.tpci_high,
+        &key,
+        scf_byte,
+        &seq_nr_local,
+        &sync_params.serial_number,
+        &sync_params.challenge,
+    );
 
-                    let seq_local_val =
-                        zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded_req.seq_nr_local);
-                    println!(
-                        "        DUT SyncReq: SeqNr_local={}, challenge={:02x?}",
-                        seq_local_val, decoded_req.challenge
-                    );
+    let tp1 = internal_to_tp1(&frame);
+    println!("  [{}] 🔄⬇️  InjectSyncReq: {} bytes, seqLocal={}", index, tp1.len(), sync_params.seq_nr_local);
+    if delay_before_ms > 0 {
+        Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
+    }
+    match harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        ❌ Inject failed: {}", e);
+            false
+        }
+    }
+}
 
-                    // Build and inject a sync response.
-                    let seq_nr_remote =
-                        zweidraehte_conformance::tests::security::context::seq_to_bytes(params.seq_nr_remote);
-                    let seq_nr_local =
-                        zweidraehte_conformance::tests::security::context::seq_to_bytes(params.seq_nr_local);
+async fn step_inject_sync_req_invalid(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    variables: &BTreeMap<String, TestVariable>,
+    index: usize,
+    sync_params: &SyncReqParams,
+    invalid: &InvalidSecurityParam,
+    delay_before_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let Some(ctx) = sec_ctx else {
+        println!("  [{}] ❌ InjectSyncReqInvalid requires security context", index);
+        return false;
+    };
+    let key = ctx.key(&sync_params.key_name);
+    let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
 
-                    // Resolve source address for the response.
-                    let response_src =
-                        Telegram::parse(&format!("00 00 {} 00 00 00 00", params.src_template), variables)
-                            .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
-                            .unwrap_or(0);
+    let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
+        .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
+        .unwrap_or(0);
+    let dst_bytes = Telegram::parse(&format!("00 00 00 00 {} 00 00", sync_params.dst_template), variables)
+        .map(|t| u16::from_be_bytes([t.data[4], t.data[5]]))
+        .unwrap_or(0);
 
-                    let response = crypto::wrap_sync_res(
-                        &decoded_req,
-                        &key,
-                        &seq_nr_remote,
-                        &seq_nr_local,
-                        response_src,
-                        Some(params.system_broadcast),
-                    );
+    let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
+        service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
+        system_broadcast: sync_params.system_broadcast,
+        confidentiality: true,
+        tool_access: sync_params.tool_access,
+    };
+    let scf_byte = scf.encode();
 
-                    let tp1 = internal_to_tp1(&response);
-                    println!(
-                        "        Injecting SyncRes: {} bytes, seqRemote={}, seqLocal={}",
-                        tp1.len(),
-                        params.seq_nr_remote,
-                        params.seq_nr_local
-                    );
+    let frame = crypto::wrap_sync_req_invalid(
+        sync_params.ctrl_byte,
+        src_bytes,
+        dst_bytes,
+        sync_params.npdu_byte,
+        sync_params.tpci_high,
+        &key,
+        scf_byte,
+        &seq_nr_local,
+        &sync_params.serial_number,
+        &sync_params.challenge,
+        invalid,
+    );
 
-                    if let Err(e) = harness.inject(&tp1).await {
-                        println!("        Inject SyncRes failed: {}", e);
-                        return false;
-                    }
+    let tp1 = internal_to_tp1(&frame);
+    println!("  [{}] 🔄💥⬇️  InjectSyncReqInvalid ({:?}): {} bytes", index, invalid, tp1.len());
+    if delay_before_ms > 0 {
+        Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
+    }
+    match harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        ❌ Inject failed: {}", e);
+            false
+        }
+    }
+}
 
-                    true
-                }
-                embassy_futures::select::Either::First(None) => {
-                    println!("        DUT disconnected while waiting for sync request");
-                    false
-                }
-                embassy_futures::select::Either::Second(_) => {
-                    println!("        Timeout waiting for DUT sync request");
-                    false
+async fn step_expect_sync_res(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    index: usize,
+    sync_expect: &SyncResExpect,
+    timeout_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let Some(ctx) = sec_ctx else {
+        println!("  [{}] ❌ ExpectSyncRes requires security context", index);
+        return false;
+    };
+    let ms = scale_ms(timeout_ms, time_divisor);
+    println!("  [{}] 🔄⬆️  ExpectSyncRes (timeout={}ms)", index, ms);
+
+    let msg = match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(msg)) => msg,
+        Ok(None) => {
+            println!("        ❌ Timeout waiting for sync response");
+            return false;
+        }
+        Err(e) => {
+            println!("        ❌ Socket error: {}", e);
+            return false;
+        }
+    };
+
+    let internal = tp1_to_internal(&msg.data);
+    let key = ctx.key(&sync_expect.key_name);
+    match crypto::unwrap_sync_res(&internal, &key, &sync_expect.challenge) {
+        Some(decoded) => {
+            let seq_remote = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded.seq_nr_remote);
+            let seq_local = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded.seq_nr_local);
+            println!("        SeqNr_remote={}, SeqNr_local={}", seq_remote, seq_local);
+
+            let mut ok = true;
+            if let Some(expected) = sync_expect.expected_seq_remote {
+                if seq_remote != expected {
+                    println!("        ❌ SeqNr_remote: expected {}, got {}", expected, seq_remote);
+                    ok = false;
                 }
             }
+            if let Some(expected) = sync_expect.expected_seq_local {
+                if seq_local != expected {
+                    println!("        ❌ SeqNr_local: expected {}, got {}", expected, seq_local);
+                    ok = false;
+                }
+            }
+
+            ctx.update_table_seq(seq_remote);
+            if sync_expect.tool_access && seq_local > ctx.tool_seq_nr {
+                ctx.tool_seq_nr = seq_local;
+            }
+            if ok {
+                println!("        ✅ Sync response matches");
+            }
+            ok
+        }
+        None => {
+            println!("        ❌ Sync response decryption/verification failed");
+            false
+        }
+    }
+}
+
+async fn step_expect_sync_req_then_respond(
+    harness: &mut ChildLifecycle,
+    sec_ctx: Option<&mut SecurityTestContext>,
+    variables: &BTreeMap<String, TestVariable>,
+    index: usize,
+    params: &SyncResponseParams,
+    timeout_ms: u32,
+    time_divisor: u64,
+) -> StepOk {
+    let Some(ctx) = sec_ctx else {
+        println!("  [{}] ExpectSyncReqThenRespond requires security context", index);
+        return false;
+    };
+    let ms = scale_ms(timeout_ms, time_divisor);
+    println!("  [{}] ExpectSyncReqThenRespond (timeout={}ms)", index, ms);
+
+    let msg = match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(msg)) => msg,
+        Ok(None) => {
+            println!("        Timeout waiting for DUT sync request");
+            return false;
+        }
+        Err(e) => {
+            println!("        Socket error: {}", e);
+            return false;
+        }
+    };
+
+    let internal = tp1_to_internal(&msg.data);
+    let key = ctx.key(&params.key_name);
+    let Some(decoded_req) = crypto::unwrap_sync_req(&internal, &key) else {
+        println!("        Failed to decrypt DUT sync request");
+        return false;
+    };
+    let seq_local_val = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded_req.seq_nr_local);
+    println!("        DUT SyncReq: SeqNr_local={}, challenge={:02x?}", seq_local_val, decoded_req.challenge);
+
+    let seq_nr_remote = zweidraehte_conformance::tests::security::context::seq_to_bytes(params.seq_nr_remote);
+    let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(params.seq_nr_local);
+    let response_src = Telegram::parse(&format!("00 00 {} 00 00 00 00", params.src_template), variables)
+        .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
+        .unwrap_or(0);
+
+    let response = crypto::wrap_sync_res(
+        &decoded_req,
+        &key,
+        &seq_nr_remote,
+        &seq_nr_local,
+        response_src,
+        Some(params.system_broadcast),
+    );
+
+    let tp1 = internal_to_tp1(&response);
+    println!(
+        "        Injecting SyncRes: {} bytes, seqRemote={}, seqLocal={}",
+        tp1.len(),
+        params.seq_nr_remote,
+        params.seq_nr_local
+    );
+    match harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await {
+        Ok(_) => true,
+        Err(e) => {
+            println!("        Inject SyncRes failed: {}", e);
+            false
         }
     }
 }
@@ -804,28 +930,20 @@ async fn execute_step(
 
 #[embassy_executor::main]
 async fn main(_spawner: embassy_executor::Spawner) {
-    // Parse command line arguments: flags and test-name filters.
-    //
-    // Recognised flags:
-    //   --realtime    disable fast-mode time scaling
-    //   --non-secure  run the plain DUT and skip secure-only suites
-    // Everything else is treated as a filter (suite or test name substring).
+    // Argument parsing — same surface as before: flags + filters.
     let args: Vec<String> = env::args().collect();
     let realtime = args.iter().any(|a| a == "--realtime");
     let non_secure = args.iter().any(|a| a == "--non-secure");
     let time_divisor: u64 = if realtime { 1 } else { DEFAULT_TIME_DIVISOR };
-
     let dut_mode = if non_secure { DutMode::Plain } else { DutMode::Secure };
 
-    // Export the divisor so the DUT child process (which inherits our
-    // environment) scales its transport layer timeouts to match.
-    // Safety: this runs single-threaded before any child is spawned.
+    // Export the divisor so the DUT child scales its TL timers to match.
+    // SAFETY: single-threaded before any child is spawned.
     unsafe { env::set_var("KNX_TIME_DIVISOR", time_divisor.to_string()) };
 
     let filters: Vec<&str> =
         args.iter().skip(1).filter(|s| *s != "--realtime" && *s != "--non-secure").map(|s| s.as_str()).collect();
 
-    // Parse log level from RUST_LOG env var
     let log_level = match env::var("RUST_LOG").ok().as_deref() {
         Some("error") => LevelFilter::Error,
         Some("warn") => LevelFilter::Warn,
@@ -834,11 +952,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         Some("trace") => LevelFilter::Trace,
         _ => LevelFilter::Debug,
     };
-
-    // Check if we should print logs live
     let live_logs = env::var("LIVE_LOGS").is_ok();
-
-    // Initialize our custom logger
     logger::init(log_level, live_logs);
 
     println!("╔═════════════════════════════════════════════════════════════╗");
@@ -851,7 +965,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     }
     println!("Log level: {:?}, Live logs: {}\n", log_level, live_logs);
 
-    // Collect all test suites
+    // Collect all test suites (unchanged from the old runner).
     let all_suites = vec![
         zweidraehte_conformance::tests::network_layer::create_network_layer_suite(),
         zweidraehte_conformance::tests::transport_layer_general::create_transport_layer_suite(),
@@ -870,37 +984,23 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::management::create_memorybit_write_verify_suite(),
         zweidraehte_conformance::tests::management::create_authorization_suite(),
         zweidraehte_conformance::tests::management::create_key_write_suite(),
-        // Restart suite placed after authorization/key_write because M-2.9.11
-        // (access denied) requires the auth keys set up by M-2.11. Note that
-        // destructive tests (factory reset, reset IA/AP/links) will corrupt
-        // state for subsequent tests in the same suite.
         zweidraehte_conformance::tests::management::create_restart_suite(),
-        //zweidraehte_conformance::tests::management::create_property_value_read_suite(),
         zweidraehte_conformance::tests::management::create_individual_address_serial_number_write_suite(),
         zweidraehte_conformance::tests::management::create_individual_address_serial_number_read_suite(),
-        //zweidraehte_conformance::tests::management::create_network_parameter_read_suite(),
-        //zweidraehte_conformance::tests::management::create_network_parameter_write_suite(),
         zweidraehte_conformance::tests::management::create_system_network_parameter_read_suite(),
         zweidraehte_conformance::tests::management::create_illegal_apci_suite(),
         zweidraehte_conformance::tests::management::create_user_memory_read_suite(),
         zweidraehte_conformance::tests::management::create_user_memory_write_suite(),
         zweidraehte_conformance::tests::management::create_user_memory_write_verify_suite(),
         zweidraehte_conformance::tests::management::create_user_manufacturer_info_read_suite(),
-        // Load State Machine Tests
         zweidraehte_conformance::tests::load_state_machines::create_preparation_suite(),
         zweidraehte_conformance::tests::load_state_machines::create_unloaded_state_suite(),
         zweidraehte_conformance::tests::load_state_machines::create_loaded_state_suite(),
         zweidraehte_conformance::tests::load_state_machines::create_loading_state_suite(),
         zweidraehte_conformance::tests::load_state_machines::create_error_state_suite(),
         zweidraehte_conformance::tests::load_state_machines::create_no_access_rights_suite(),
-        // Run State Machine Tests
-        // NOTE: These tests use AbsoluteData (0x00) load segments in their preparation steps.
-        // System B devices only support RelativeData (0x0b) segments, so these tests cannot
-        // pass until we either: (a) add AbsoluteData support, or (b) rewrite the test
-        // preparations to use RelativeData segments.
         zweidraehte_conformance::tests::run_state_machines::create_preparation_suite(),
         zweidraehte_conformance::tests::run_state_machines::create_halted_state_suite(),
-        // Data Security conformance tests
         zweidraehte_conformance::tests::security::section_3_1::create_section_3_1_suite(),
         zweidraehte_conformance::tests::security::section_3_3::create_section_3_3_suite(),
         zweidraehte_conformance::tests::security::section_3_4::create_section_3_4_suite(),
@@ -935,43 +1035,26 @@ async fn main(_spawner: embassy_executor::Spawner) {
         zweidraehte_conformance::tests::security::section_5::create_section_5_suite(),
         zweidraehte_conformance::tests::security::section_6::create_section_6_suite(),
         zweidraehte_conformance::tests::security::section_6::create_section_6_2_suite(),
-        // Section 3.2 modifies GO security flags, so it runs last among
-        // security suites to avoid state leakage to other tests.
         zweidraehte_conformance::tests::security::section_3_2::create_section_3_2_suite(),
-        // zweidraehte_conformance::tests::run_state_machines::create_running_state_suite(),
-        // zweidraehte_conformance::tests::run_state_machines::create_ready_state_suite(),
-        // zweidraehte_conformance::tests::run_state_machines::create_terminated_state_suite(),
-        // Manual intervention required
-        //zweidraehte_conformance::tests::group_objects::create_association_table_receiving_suite(),
-        //zweidraehte_conformance::tests::group_objects::create_association_table_sending_suite(),
     ];
 
-    // Helper to check if a filter matches a suite or test name
     let matches_filter = |name: &str, filter: &str| -> bool { name.to_lowercase().contains(&filter.to_lowercase()) };
-
-    // Check if any filter matches a test case name in any suite
     let has_test_case_filter =
         filters.iter().any(|f| all_suites.iter().any(|s| s.cases.iter().any(|c| matches_filter(c.name, f))));
 
-    // Filter suites - include if suite name matches OR if any test case matches
     let mut suites: Vec<_> = if filters.is_empty() {
         all_suites
     } else {
         all_suites
             .into_iter()
             .filter(|s| {
-                // Include suite if its name matches any filter
                 let suite_matches = filters.iter().any(|f| matches_filter(s.name, f));
-                // Or if any of its test cases match any filter
                 let case_matches = s.cases.iter().any(|c| filters.iter().any(|f| matches_filter(c.name, f)));
                 suite_matches || case_matches
             })
             .collect()
     };
 
-    // `--non-secure` runs the plain DUT, which cannot exercise any suite
-    // that relies on KNX Data Secure features. Strip those suites here
-    // so the runner doesn't try to inject secure frames at a plain stack.
     if dut_mode == DutMode::Plain {
         let before = suites.len();
         suites.retain(|s| !s.use_secure_dut);
@@ -983,47 +1066,6 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     if suites.is_empty() {
         println!("No suites or tests matched filters: {:?}", filters);
-        println!();
-        println!("Available suites:");
-        println!("  - Network Layer Tests (3.1, 3.2, 3.3, 3.4)");
-        println!("  - Transport Layer General Tests (2.1, 2.2, 2.3, 2.4, 2.5)");
-        println!("  - Transport Layer Timing Tests (4.1, 4.2)");
-        println!("  - Transport Layer State Machine Tests (6.2.x, 6.3.x, 6.4.x, 6.5.x)");
-        println!("  - Group Objects UINT1 Tests (1.4.1.x)");
-        println!("  - Association Table Tests (5.2.1, 5.2.2)");
-        println!("  - Management Tests:");
-        println!("      M-2.3 IndividualAddress_Read");
-        println!("      M-2.4 IndividualAddress_Write");
-        println!("      M-2.5 DeviceDescriptor (Type 0, Type 2, Illegal Types)");
-        println!("      M-2.6 Memory_Read");
-        println!("      M-2.7 Memory_Write");
-        println!("      M-2.8 ADC_Read");
-        println!("      M-2.9 Restart");
-        println!("      M-2.10 MemoryBit_Write");
-        println!("      M-2.11 Authorization");
-        println!("      M-2.12 Key_Write");
-        println!("      M-2.13 PropertyValue_Read");
-        println!("      M-2.16 IndividualAddressSerialNumber_Write");
-        println!("      M-2.17 IndividualAddressSerialNumber_Read");
-        println!("      M-2.18 NetworkParameter_Read");
-        println!("      M-2.19 NetworkParameter_Write");
-        println!("      M-2.20 Illegal APCI");
-        println!("      M-2.31 UserMemory_Read");
-        println!("      M-2.32 UserMemory_Write");
-        println!("      M-2.33 UserManufacturerInfo_Read");
-        println!("  - Load State Machine Tests:");
-        println!("      L-2.1 Test Preparation");
-        println!("      L-2.2 Tests with initial state LOAD_STATE_UNLOADED");
-        println!("      L-2.3 Tests with initial state LOAD_STATE_LOADED");
-        println!("      L-2.4 Tests with initial state LOAD_STATE_LOADING");
-        println!("      L-2.5 Tests with initial state LOAD_STATE_ERROR");
-        println!("      L-2.6 Test without access rights");
-        println!("  - Run State Machine Tests:");
-        println!("      R-2.1 Test preparation");
-        println!("      R-2.2 Tests with initial state RUNSTATE_HALTED");
-        println!("      R-2.3 Tests with initial state RUNSTATE_RUNNING");
-        println!("      R-2.4 Tests with initial state RUNSTATE_READY");
-        println!("      R-2.5 Tests with initial state RUNSTATE_TERMINATED");
         std::process::exit(1);
     }
 
@@ -1035,11 +1077,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
     }
 
-    // Create the multi-process harness (shared memory + child management).
-    // The DUT mode is fixed for the whole run — `--non-secure` selects the
-    // plain DUT, otherwise the secure DUT runs every suite.
-    let mut harness = MultiProcessHarness::new(dut_mode).expect("create multi-process harness");
-
+    // Create the lifecycle (SHM + per-mode child management).
+    let mut harness = ChildLifecycle::new(dut_mode).expect("create child lifecycle");
     println!(
         "DUT mode: {}",
         match dut_mode {
@@ -1048,60 +1087,36 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
     );
 
-    // Spawn the DUT child process.
-    harness.spawn_child().await.expect("spawn DUT child");
-
-    // Drain read-on-init messages sent during startup. The ROI scan
-    // processes one object per ~100ms tick, so we need to wait long enough
-    // for all ROI-flagged objects to fire. Drain in a loop until no new
-    // messages arrive within a settle window.
-    let mut roi_drained = 0;
-    loop {
-        Timer::after(Duration::from_millis(scale_ms(500, time_divisor, 100))).await;
-        let batch = harness.drain_captured();
-        roi_drained += batch;
-        if batch == 0 {
-            break;
-        }
-    }
-    if roi_drained > 0 {
-        println!("(Drained {} read-on-init messages from startup)\n", roi_drained);
-    }
+    // Spawn + wait for Ready + RoiComplete. The new protocol's
+    // `RoiComplete` replaces the old timed-drain loop — no more
+    // guessing how long ROI takes.
+    harness.spawn_and_wait_roi().await.expect("spawn DUT child");
+    // Startup ROI frames are an implementation detail — tests that
+    // care about ROI trigger it explicitly via A_Restart and
+    // observe the post-restart scan (see 1.4.1.6). For every other
+    // test the initial scan is noise; drop the buffered frames so
+    // they can't poison the first suite's expects.
+    harness.discard_unsolicited();
 
     let mut passed = 0;
     let mut failed = 0;
     let mut total_steps = 0;
     let mut total_tests = 0;
 
-    // Persistent security context — survives across consecutive security
-    // suites so the tool's sending sequence number stays monotonic.
     let mut persistent_sec_ctx: Option<SecurityTestContext> = None;
 
-    // Track whether the previous suite was a security one. When crossing
-    // from a non-secure suite into a secure suite on the secure DUT, we
-    // kill & respawn the child after wiping the SHM (including the
-    // sequence-number region). Reason: non-secure suites leave the
-    // Security-IO sequence counters untouched, but they may have left
-    // volatile TL state (open connections, pending ROI frames) behind
-    // that interferes with the strict sync-required timing of secure
-    // tests. A fresh DUT eliminates that class of interference.
+    // Cross-suite plain→secure reset hook — same as before. Problem
+    // 9 (SHM seqnr leak) remains solvable by this + `FullReset`;
+    // eliminating the implicit hook entirely is a Phase-6 task.
     let mut prev_was_secure = false;
 
     for suite in &suites {
         if suite.use_secure_dut && !prev_was_secure && dut_mode == DutMode::Secure {
             println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
-            harness.kill_child().await;
+            harness.kill().await;
             harness.reset_shared_memory().expect("reset shared memory before secure suite");
-            harness.spawn_child().await.expect("respawn DUT child");
-            // Drain any fresh-DUT ROI frames.
-            loop {
-                Timer::after(Duration::from_millis(scale_ms(500, time_divisor, 100))).await;
-                if harness.drain_captured() == 0 {
-                    break;
-                }
-            }
-            // The restart invalidates the persisted tool context: tool
-            // sending seqnr needs to match the freshly-wiped DUT.
+            harness.spawn_and_wait_roi().await.expect("respawn DUT child");
+            harness.discard_unsolicited();
             persistent_sec_ctx = None;
         }
         prev_was_secure = suite.use_secure_dut;
@@ -1115,28 +1130,22 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
         println!();
 
-        // Take the persistent SecurityTestContext for this suite iteration,
-        // or create a new one. The context persists across consecutive
-        // security suites so that the tool's sending sequence number stays
-        // monotonic — resetting to seq=1 between suites would cause the
-        // DUT to reject frames as sequence number replays.
         let mut sec_ctx = if suite.use_secure_dut {
             let mut ctx = persistent_sec_ctx
                 .take()
                 .unwrap_or_else(|| zweidraehte_conformance::tests::security::variables::create_security_context());
-            // Reset the DUT's expected sending seqnr — the DUT may have
-            // restarted, but the runner's tool seqnr continues from where
-            // it left off.
             ctx.table_seq_nr = 1;
             Some(ctx)
         } else {
             None
         };
 
-        // Run suite preparation steps if any
         if !suite.preparation.is_empty() {
             println!("Preparation:");
             println!("--------------------------------------------------------------------");
+            // Drop any unsolicited frames left over from the previous
+            // suite — most often post-restart ROI from the last test.
+            harness.discard_unsolicited();
             let mut prep_passed = true;
             for (i, step) in suite.preparation.iter().enumerate() {
                 let resolved_step = match step.resolve(&suite.variables) {
@@ -1147,15 +1156,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(
-                    &mut harness,
-                    &resolved_step,
-                    i,
-                    sec_ctx.as_mut(),
-                    &suite.variables,
-                    time_divisor,
-                )
-                .await
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                    .await
                 {
                     prep_passed = false;
                 }
@@ -1166,36 +1168,34 @@ async fn main(_spawner: embassy_executor::Spawner) {
                 println!("✅ Preparation completed successfully\n");
             } else {
                 println!("❌ Preparation failed - skipping suite tests\n");
-                continue; // Skip all tests in this suite if preparation failed
+                continue;
             }
         }
 
         for test in &suite.cases {
-            // Skip test if we have case-level filters and this test doesn't match
             if has_test_case_filter && !filters.iter().any(|f| matches_filter(test.name, f)) {
                 continue;
             }
-
             total_tests += 1;
 
-            // Drain any leftover captured messages from previous tests.
-            // Wait for in-flight messages to arrive, then drain.
-            Timer::after(Duration::from_millis(scale_ms(100, time_divisor, 10))).await;
-            let drained = harness.drain_captured();
-            if drained > 0 {
-                println!("(Drained {} leftover messages from previous test)", drained);
-            }
+            // Between tests, discard any leftover outbox frames so
+            // one test's stray response can't match the next test's
+            // Expect. The new protocol makes this cheap — no timed
+            // drain loop needed.
+            //
+            // Also: give any in-flight asynchronous frames (timer-
+            // driven retransmits, post-restart ROI bleeding past
+            // RoiComplete) a chance to land, then drain them. 30 ms
+            // is comfortable in fast mode without inflating test
+            // wall-clock.
+            let _ = harness.next_frame(Duration::from_millis(30)).await;
+            harness.discard_unsolicited();
 
             logger::start_test(test.name);
             println!("Test: {}", test.name);
             println!("----------------------------------------------------------------------");
             let mut test_passed = true;
 
-            // Per-case preparation (e.g. provisioning TK1 via an
-            // FDSK-encrypted `PID_TOOL_KEY` write before a test that
-            // assumes TK1 is the active tool key). A failed prep step
-            // fails the test but we still run teardown so the DUT
-            // doesn't leak broken state to the next case.
             if !test.preparation.is_empty() {
                 println!("  --- Preparation ---------------------------------------------------");
                 for (i, step) in test.preparation.iter().enumerate() {
@@ -1207,15 +1207,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
                             continue;
                         }
                     };
-                    if !execute_step(
-                        &mut harness,
-                        &resolved_step,
-                        i,
-                        sec_ctx.as_mut(),
-                        &suite.variables,
-                        time_divisor,
-                    )
-                    .await
+                    if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                        .await
                     {
                         test_passed = false;
                     }
@@ -1233,24 +1226,14 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(
-                    &mut harness,
-                    &resolved_step,
-                    i,
-                    sec_ctx.as_mut(),
-                    &suite.variables,
-                    time_divisor,
-                )
-                .await
+                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                    .await
                 {
                     test_passed = false;
                 }
             }
             total_steps += test.steps.len();
 
-            // Per-case teardown runs regardless of pass/fail so the DUT
-            // is restored to a known state for the next case.
-            // Failures here are logged but do NOT flip the case result.
             if !test.teardown.is_empty() {
                 println!("  --- Teardown ------------------------------------------------------");
                 for (i, step) in test.teardown.iter().enumerate() {
@@ -1261,15 +1244,8 @@ async fn main(_spawner: embassy_executor::Spawner) {
                             continue;
                         }
                     };
-                    execute_step(
-                        &mut harness,
-                        &resolved_step,
-                        i,
-                        sec_ctx.as_mut(),
-                        &suite.variables,
-                        time_divisor,
-                    )
-                    .await;
+                    execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
+                        .await;
                 }
                 total_steps += test.teardown.len();
             }
@@ -1292,7 +1268,6 @@ async fn main(_spawner: embassy_executor::Spawner) {
             println!();
         }
 
-        // Run suite teardown steps if any
         if !suite.teardown.is_empty() {
             println!("Teardown:");
             println!("--------------------------------------------------------------------");
@@ -1304,26 +1279,23 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                execute_step(
-                    &mut harness,
-                    &resolved_step,
-                    i,
-                    sec_ctx.as_mut(),
-                    &suite.variables,
-                    time_divisor,
-                )
-                .await;
+                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor).await;
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");
         }
 
-        // Return the security context to persistent storage so the next
-        // suite can continue with the same tool sequence number.
         if sec_ctx.is_some() {
             persistent_sec_ctx = sec_ctx;
         }
+
+        // End-of-suite: drop any leftover outbox frames (typically
+        // post-A_Restart ROI from the last test). The next suite's
+        // preparation-step expects would otherwise match the wrong
+        // frame.
+        harness.discard_unsolicited();
     }
+
     println!("====================================================================");
     println!("SUMMARY");
     println!("====================================================================");
