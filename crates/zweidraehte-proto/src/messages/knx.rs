@@ -790,12 +790,19 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
 
     /// Get the APCI value from the message as an enum.
     ///
-    /// See also [`decode_apci_code`] for a standalone version that works on
-    /// raw `&[u8]` slices without a `KnxMessageBuffer`.
+    /// Returns `ApciCode::Empty` for messages shorter than
+    /// `MSG_APCI + 2` (pure transport-control frames like
+    /// `T_Connect` / `T_Disconnect` / `T_ACK` that legitimately
+    /// carry no APDU). Callers that only care about specific
+    /// APCI codes (e.g. `SecureService`) will see `Empty` for
+    /// these frames and forward them unchanged; callers that
+    /// assumed the message had an APDU were already buggy and
+    /// the old panic merely deferred the crash.
+    ///
+    /// See also [`decode_apci_code`] for a standalone version
+    /// that works on raw `&[u8]` slices.
     pub fn get_apci_code(&self) -> ApciCode {
-        // The buffer is guaranteed to be at least MSG_APCI + 2 bytes for any
-        // valid message, so unwrap is safe here.
-        decode_apci_code(&self.buf).expect("message buffer too short for APCI")
+        decode_apci_code(&self.buf).unwrap_or(ApciCode::Empty)
     }
 
     /// Get the 6-bit data field from a short APCI message.
