@@ -10,24 +10,31 @@
 //! while persistent state survives in shared memory.
 //!
 //! Usage:
-//!   cargo run --bin conformance-runner [--realtime] [filter...]
+//!   cargo run --bin conformance-runner [--realtime] [--non-secure] [filter...]
 //!
 //! Arguments:
-//!   --realtime  Use spec-compliant timeouts (for real hardware testing).
-//!               Without this flag, timeouts are divided by 50 for fast
-//!               IPC-connected testing.
-//!   filter      Optional filters (case-insensitive substring match)
-//!               - Suite filters: "network", "transport", "NL", "TL"
-//!               - Test case filters: "2.1", "3.4", "broadcast"
-//!               Multiple filters are OR'd together
+//!   --realtime    Use spec-compliant timeouts (for real hardware testing).
+//!                 Without this flag, timeouts are divided by 50 for fast
+//!                 IPC-connected testing.
+//!   --non-secure  Run against the plain (`conformance-dut`) DUT and SKIP
+//!                 any suite that requires the secure stack
+//!                 (`TestSuite::use_secure_dut == true`). Default is to run
+//!                 all suites against the secure DUT (`conformance-dut-secure`);
+//!                 a Data-Secure device with Security Mode off behaves like a
+//!                 plain device, so non-secure suites still pass.
+//!   filter        Optional filters (case-insensitive substring match)
+//!                 - Suite filters: "network", "transport", "NL", "TL"
+//!                 - Test case filters: "2.1", "3.4", "broadcast"
+//!                 Multiple filters are OR'd together
 //!
 //! Examples:
-//!   cargo run --bin conformance-runner              # Run all tests (fast mode)
-//!   cargo run --bin conformance-runner --realtime   # Run with spec timeouts
-//!   cargo run --bin conformance-runner network      # Run network layer suite
-//!   cargo run --bin conformance-runner 2.3          # Run test 2.3 only
-//!   cargo run --bin conformance-runner 2.1 2.3      # Run tests 2.1 and 2.3
-//!   cargo run --bin conformance-runner broadcast    # Run tests with "broadcast" in name
+//!   cargo run --bin conformance-runner              # Secure DUT, all suites (fast mode)
+//!   cargo run --bin conformance-runner --non-secure # Plain DUT, skip secure-only suites
+//!   cargo run --bin conformance-runner --realtime   # Spec timeouts, secure DUT
+//!   cargo run --bin conformance-runner network      # Secure DUT, network layer suite
+//!   cargo run --bin conformance-runner 2.3          # Secure DUT, test 2.3 only
+//!   cargo run --bin conformance-runner 2.1 2.3      # Secure DUT, tests 2.1 and 2.3
+//!   cargo run --bin conformance-runner broadcast    # Secure DUT, "broadcast" matches
 //!
 //! Environment:
 //!   RUST_LOG    Set log level (error, warn, info, debug, trace)
@@ -40,6 +47,7 @@ use embassy_time::{Duration, Timer};
 use log::LevelFilter;
 
 use zweidraehte_conformance::harness::MultiProcessHarness;
+use zweidraehte_conformance::harness::multiprocess::DutMode;
 use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests::security::context::SecurityTestContext;
 use zweidraehte_conformance::tests::security::crypto;
@@ -161,7 +169,6 @@ async fn execute_step(
     sec_ctx: Option<&mut SecurityTestContext>,
     variables: &std::collections::BTreeMap<String, TestVariable>,
     time_divisor: u64,
-    is_secure: bool,
 ) -> bool {
     match step {
         TestStep::Comment(text) => {
@@ -348,9 +355,7 @@ async fn execute_step(
             // wipe DUT state (factory reset with table clear, etc.) so
             // the next suite inherits a clean state.
             harness.kill_child().await;
-            let reset_result =
-                if is_secure { harness.reset_shared_memory_secure() } else { harness.reset_shared_memory() };
-            if let Err(e) = reset_result {
+            if let Err(e) = harness.reset_shared_memory() {
                 println!("        ❌ Failed to reset SHM: {}", e);
                 return false;
             }
@@ -799,17 +804,26 @@ async fn execute_step(
 
 #[embassy_executor::main]
 async fn main(_spawner: embassy_executor::Spawner) {
-    // Parse command line arguments: `--realtime` flag and test name filters
+    // Parse command line arguments: flags and test-name filters.
+    //
+    // Recognised flags:
+    //   --realtime    disable fast-mode time scaling
+    //   --non-secure  run the plain DUT and skip secure-only suites
+    // Everything else is treated as a filter (suite or test name substring).
     let args: Vec<String> = env::args().collect();
     let realtime = args.iter().any(|a| a == "--realtime");
+    let non_secure = args.iter().any(|a| a == "--non-secure");
     let time_divisor: u64 = if realtime { 1 } else { DEFAULT_TIME_DIVISOR };
+
+    let dut_mode = if non_secure { DutMode::Plain } else { DutMode::Secure };
 
     // Export the divisor so the DUT child process (which inherits our
     // environment) scales its transport layer timeouts to match.
     // Safety: this runs single-threaded before any child is spawned.
     unsafe { env::set_var("KNX_TIME_DIVISOR", time_divisor.to_string()) };
 
-    let filters: Vec<&str> = args.iter().skip(1).filter(|s| *s != "--realtime").map(|s| s.as_str()).collect();
+    let filters: Vec<&str> =
+        args.iter().skip(1).filter(|s| *s != "--realtime" && *s != "--non-secure").map(|s| s.as_str()).collect();
 
     // Parse log level from RUST_LOG env var
     let log_level = match env::var("RUST_LOG").ok().as_deref() {
@@ -940,7 +954,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         filters.iter().any(|f| all_suites.iter().any(|s| s.cases.iter().any(|c| matches_filter(c.name, f))));
 
     // Filter suites - include if suite name matches OR if any test case matches
-    let suites: Vec<_> = if filters.is_empty() {
+    let mut suites: Vec<_> = if filters.is_empty() {
         all_suites
     } else {
         all_suites
@@ -954,6 +968,18 @@ async fn main(_spawner: embassy_executor::Spawner) {
             })
             .collect()
     };
+
+    // `--non-secure` runs the plain DUT, which cannot exercise any suite
+    // that relies on KNX Data Secure features. Strip those suites here
+    // so the runner doesn't try to inject secure frames at a plain stack.
+    if dut_mode == DutMode::Plain {
+        let before = suites.len();
+        suites.retain(|s| !s.use_secure_dut);
+        let skipped = before - suites.len();
+        if skipped > 0 {
+            println!("⚠️  Skipped {} secure-only suite(s) because --non-secure is active", skipped);
+        }
+    }
 
     if suites.is_empty() {
         println!("No suites or tests matched filters: {:?}", filters);
@@ -1009,15 +1035,20 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
     }
 
-    // Create the multi-process harness (shared memory + child management)
-    let mut harness = MultiProcessHarness::new().expect("create multi-process harness");
+    // Create the multi-process harness (shared memory + child management).
+    // The DUT mode is fixed for the whole run — `--non-secure` selects the
+    // plain DUT, otherwise the secure DUT runs every suite.
+    let mut harness = MultiProcessHarness::new(dut_mode).expect("create multi-process harness");
 
-    // Track which DUT variant is currently running so we can switch
-    // between secure and non-secure DUT binaries when needed.
-    let mut current_dut_is_secure = false;
+    println!(
+        "DUT mode: {}",
+        match dut_mode {
+            DutMode::Secure => "secure (conformance-dut-secure)",
+            DutMode::Plain => "plain (conformance-dut)",
+        }
+    );
 
-    // Spawn the initial (non-secure) DUT child process.
-    // If the first suite needs the secure DUT, it will be switched below.
+    // Spawn the DUT child process.
     harness.spawn_child().await.expect("spawn DUT child");
 
     // Drain read-on-init messages sent during startup. The ROI scan
@@ -1046,36 +1077,35 @@ async fn main(_spawner: embassy_executor::Spawner) {
     // suites so the tool's sending sequence number stays monotonic.
     let mut persistent_sec_ctx: Option<SecurityTestContext> = None;
 
+    // Track whether the previous suite was a security one. When crossing
+    // from a non-secure suite into a secure suite on the secure DUT, we
+    // kill & respawn the child after wiping the SHM (including the
+    // sequence-number region). Reason: non-secure suites leave the
+    // Security-IO sequence counters untouched, but they may have left
+    // volatile TL state (open connections, pending ROI frames) behind
+    // that interferes with the strict sync-required timing of secure
+    // tests. A fresh DUT eliminates that class of interference.
+    let mut prev_was_secure = false;
+
     for suite in &suites {
-        // Switch DUT binary if the suite requires a different variant.
-        if suite.use_secure_dut != current_dut_is_secure {
-            // DUT type switch: clear the persistent context since the
-            // shared memory (and thus the DUT's stored seqnrs) is reset.
-            persistent_sec_ctx = None;
-            println!("🔄 Switching to {} DUT...", if suite.use_secure_dut { "secure" } else { "non-secure" });
-
-            // Kill the current child and respawn with the correct binary.
+        if suite.use_secure_dut && !prev_was_secure && dut_mode == DutMode::Secure {
+            println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
             harness.kill_child().await;
-            if suite.use_secure_dut {
-                harness.reset_shared_memory_secure().expect("reset shared memory for secure DUT");
-            } else {
-                harness.reset_shared_memory().expect("reset shared memory for DUT");
-            }
-
-            if suite.use_secure_dut {
-                harness.use_secure_dut();
-            }
-            harness.spawn_child().await.expect("spawn DUT child");
-            current_dut_is_secure = suite.use_secure_dut;
-
-            // Drain ROI messages from the new DUT.
+            harness.reset_shared_memory().expect("reset shared memory before secure suite");
+            harness.spawn_child().await.expect("respawn DUT child");
+            // Drain any fresh-DUT ROI frames.
             loop {
                 Timer::after(Duration::from_millis(scale_ms(500, time_divisor, 100))).await;
                 if harness.drain_captured() == 0 {
                     break;
                 }
             }
+            // The restart invalidates the persisted tool context: tool
+            // sending seqnr needs to match the freshly-wiped DUT.
+            persistent_sec_ctx = None;
         }
+        prev_was_secure = suite.use_secure_dut;
+
         println!("====================================================================");
         println!("Suite: {}", suite.name);
         println!("--------------------------------------------------------------------");
@@ -1124,7 +1154,6 @@ async fn main(_spawner: embassy_executor::Spawner) {
                     sec_ctx.as_mut(),
                     &suite.variables,
                     time_divisor,
-                    current_dut_is_secure,
                 )
                 .await
                 {
@@ -1185,7 +1214,6 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         sec_ctx.as_mut(),
                         &suite.variables,
                         time_divisor,
-                        current_dut_is_secure,
                     )
                     .await
                     {
@@ -1212,7 +1240,6 @@ async fn main(_spawner: embassy_executor::Spawner) {
                     sec_ctx.as_mut(),
                     &suite.variables,
                     time_divisor,
-                    current_dut_is_secure,
                 )
                 .await
                 {
@@ -1241,7 +1268,6 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         sec_ctx.as_mut(),
                         &suite.variables,
                         time_divisor,
-                        current_dut_is_secure,
                     )
                     .await;
                 }
@@ -1285,7 +1311,6 @@ async fn main(_spawner: embassy_executor::Spawner) {
                     sec_ctx.as_mut(),
                     &suite.variables,
                     time_divisor,
-                    current_dut_is_secure,
                 )
                 .await;
                 total_steps += 1;

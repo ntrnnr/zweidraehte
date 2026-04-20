@@ -648,7 +648,7 @@ pub mod device_info {
     /// Device serial number (6 bytes)
     /// Must match BDUT_SERIAL_NUMBER in test variables (management.rs)
     /// NOTE: This is stored in runtime state, not the device descriptor
-    pub const SERIAL_NUMBER: [u8; 6] = [0x30, 0x30, 0x30, 0x30, 0x30, 0x30];
+    pub const SERIAL_NUMBER: [u8; 6] = [0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE];
 
     /// Maximum APDU length for this device.
     ///

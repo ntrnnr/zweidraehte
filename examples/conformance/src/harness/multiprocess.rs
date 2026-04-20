@@ -21,6 +21,7 @@ use super::ipc::{
     TAG_SET_PROGRAMMING_MODE, TAG_TRIGGER_READ, TAG_TRIGGER_SYNC, TAG_TRIGGER_WRITE,
 };
 use super::mock::CapturedLinkLayerMessage;
+use super::secure_stack::SecureConformanceDeviceConfig;
 use super::stack::ConformanceDeviceConfig;
 
 use crate::logger::{self, LogEntry};
@@ -38,6 +39,40 @@ enum ChildState {
 }
 
 // ============================================================================
+// DUT mode
+// ============================================================================
+
+/// Which DUT binary the harness manages for its lifetime.
+///
+/// The mode is chosen at harness construction and **does not change**;
+/// the runner is configured up front by the user (default `Secure`, or
+/// `Plain` via the `--non-secure` flag). All suites run against whichever
+/// DUT was selected — with the caveat that the runner filters out
+/// secure-only suites when `Plain` is active (see `TestSuite::use_secure_dut`).
+///
+/// Rationale: a KNX Data Secure device must behave identically to a
+/// plain device when Security Mode is off, so the secure DUT is a
+/// strict superset. The plain DUT exists solely to keep the non-secure
+/// code paths (plain `ApplicationLayer`, no `SecurityAugment`, etc.)
+/// under test.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DutMode {
+    /// Plain DUT — the `conformance-dut` binary with no KNX Data Secure.
+    Plain,
+    /// Data-Secure DUT — the `conformance-dut-secure` binary.
+    Secure,
+}
+
+impl DutMode {
+    fn binary_name(self) -> &'static str {
+        match self {
+            Self::Plain => "conformance-dut",
+            Self::Secure => "conformance-dut-secure",
+        }
+    }
+}
+
+// ============================================================================
 // Multi-Process Harness
 // ============================================================================
 
@@ -46,38 +81,46 @@ enum ChildState {
 /// The parent creates shared memory, initializes device state, and spawns
 /// a child process running the DUT stack. Test steps communicate with the
 /// child over a Unix socket.
+///
+/// The [`DutMode`] is fixed at construction: the harness never switches
+/// between plain and secure DUTs at runtime. To change modes, tear the
+/// harness down and build a new one.
 pub struct MultiProcessHarness {
     shm: SharedMemory,
     child: ChildState,
-    /// Which DUT binary to spawn (and respawn after restart).
-    dut_binary: &'static str,
+    mode: DutMode,
+    /// Set by `inject` after an `A_Restart` payload. Consumed by the
+    /// next `send_command`: if the child has actually exited within a
+    /// short window, respawn with a fresh DUT; otherwise (restart was
+    /// rejected, e.g. bad erase code), leave the live child alone.
+    restart_pending: bool,
 }
 
 impl MultiProcessHarness {
-    /// Create a new harness with initialized shared memory.
+    /// Create a new harness with initialized shared memory for `mode`.
     ///
-    /// This sets up the shared memory with the default conformance test
-    /// device state (address 1.0.1, loaded tables, running application)
-    /// but does NOT spawn the child yet. Call `ensure_child_running()`
-    /// or `spawn_child()` to start the DUT.
-    pub fn new() -> io::Result<Self> {
+    /// Seeds the shared memory with the default persisted snapshot
+    /// appropriate for the chosen DUT (plain or secure state layout)
+    /// but does NOT spawn the child yet. Call [`spawn_child`] or
+    /// [`ensure_child_running`] to start the DUT.
+    pub fn new(mode: DutMode) -> io::Result<Self> {
         let mut shm = SharedMemory::create()?;
-
-        // Build the default persisted snapshot directly (no runtime state needed).
-        let snapshot = ConformanceDeviceConfig::default_snapshot();
-        shm.write_state(&snapshot)?;
-
-        Ok(Self { shm, child: ChildState::Dead, dut_binary: "conformance-dut" })
+        match mode {
+            DutMode::Plain => shm.write_state(&ConformanceDeviceConfig::default_snapshot())?,
+            DutMode::Secure => shm.write_state(&SecureConformanceDeviceConfig::default_snapshot())?,
+        }
+        Ok(Self { shm, child: ChildState::Dead, mode, restart_pending: false })
     }
 
-    /// Spawn the DUT child process (uses whichever binary was configured).
+    /// Which DUT variant this harness manages.
+    pub fn mode(&self) -> DutMode {
+        self.mode
+    }
+
+    /// Spawn the DUT child process using the harness's configured mode.
     pub async fn spawn_child(&mut self) -> io::Result<()> {
-        self.spawn_child_binary(self.dut_binary).await
-    }
-
-    /// Set the DUT binary to the secure variant for subsequent spawns.
-    pub fn use_secure_dut(&mut self) {
-        self.dut_binary = "conformance-dut-secure";
+        let binary = self.mode.binary_name();
+        self.spawn_child_binary(binary).await
     }
 
     /// Spawn a DUT child process with the given binary name.
@@ -179,20 +222,24 @@ impl MultiProcessHarness {
         self.child = ChildState::Dead;
     }
 
-    /// Re-initialize shared memory with the default conformance state.
+    /// Re-initialize shared memory with the default snapshot for this
+    /// harness's DUT mode.
+    ///
+    /// For [`DutMode::Secure`] this additionally wipes the sequence-number
+    /// region at the tail of the SHM (see below) so the respawned DUT
+    /// doesn't inherit stale counters.
     pub fn reset_shared_memory(&mut self) -> io::Result<()> {
-        use super::stack::ConformanceDeviceConfig;
-
-        let snapshot = ConformanceDeviceConfig::default_snapshot();
-        self.shm
-            .write_state(&snapshot)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e)))
+        match self.mode {
+            DutMode::Plain => self
+                .shm
+                .write_state(&ConformanceDeviceConfig::default_snapshot())
+                .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("write shared memory: {}", e))),
+            DutMode::Secure => self.reset_shared_memory_secure_impl(),
+        }
     }
 
-    /// Re-initialize shared memory with the default secure conformance state.
-    pub fn reset_shared_memory_secure(&mut self) -> io::Result<()> {
-        use super::secure_stack::SecureConformanceDeviceConfig;
-
+    /// Secure-specific reset: default snapshot plus seqnr wipe.
+    fn reset_shared_memory_secure_impl(&mut self) -> io::Result<()> {
         let snapshot = SecureConformanceDeviceConfig::default_snapshot();
         self.shm
             .write_state(&snapshot)
@@ -224,8 +271,80 @@ impl MultiProcessHarness {
     ///
     /// If the write fails with `BrokenPipe` (child exited due to restart),
     /// the harness automatically respawns and retries the injection.
+    ///
+    /// When the injected APDU carries `A_Restart`, the harness arms a
+    /// short "restart settle" window that's consumed by the next
+    /// `send_command` — see [`settle_pending_restart`](Self::settle_pending_restart).
+    /// The DUT may still *reject* the restart (bad erase code, access
+    /// denied, etc.); in that case the settle window simply times out
+    /// without touching the child, and normal flow resumes.
     pub async fn inject(&mut self, data: &[u8]) -> io::Result<()> {
-        self.send_command(TAG_INJECT, data).await
+        let result = self.send_command(TAG_INJECT, data).await;
+        if result.is_ok() && injection_is_restart(data) {
+            self.restart_pending = true;
+        }
+        result
+    }
+
+    /// If an `A_Restart` was injected earlier, poll the DUT child: if
+    /// it has actually exited, respawn with a fresh child so the next
+    /// command sees clean TL state; otherwise (restart rejected, e.g.
+    /// bad erase code / access denied), leave the live child alone.
+    ///
+    /// Polls at a short interval up to `timeout` to give the secure DUT
+    /// time to finish its ~30 ms restart drain before exiting.
+    ///
+    /// Why: the secure DUT's restart handler holds the process open for
+    /// ~30 ms after `A_Restart` so the async LL task can flush the
+    /// response. During that window the still-live stack keeps
+    /// processing incoming frames, which breaks restart-followed-by-
+    /// reconnect tests (L-2.2.6, R-2.2.7, 6.3.1.2) — the DUT reuses the
+    /// pre-restart TL connection slot with stale sequence numbers.
+    /// Waiting here for the child to actually exit before the next
+    /// inject forces those tests to see a clean TL.
+    async fn settle_pending_restart(&mut self) {
+        if !self.restart_pending {
+            return;
+        }
+
+        // Non-blocking single probe. If the DUT has already exited
+        // (accepted restart + finished drain), respawn now. If it's
+        // still alive — either mid-drain or rejected the restart — do
+        // nothing. Blocking here would hold back the next T_ACK the
+        // test needs to send, causing DUT-side retransmissions that
+        // reorder the frames the test expects. We leave the flag set
+        // so subsequent `send_command` calls re-check: eventually,
+        // for accepted restarts the DUT exits and we swap it out.
+        let exited = match &mut self.child {
+            ChildState::Running { child, .. } => matches!(child.try_wait(), Ok(Some(_))),
+            ChildState::Dead => true,
+        };
+        if !exited {
+            return;
+        }
+
+        self.restart_pending = false;
+        self.mark_dead();
+        if let Err(e) = self.spawn_child().await {
+            log::warn!("Failed to respawn DUT after restart drain: {}", e);
+            return;
+        }
+        // Drain ROI (read-on-init) frames the fresh DUT emits. Without
+        // this, the test's next `expect(...)` may mismatch against a
+        // stray ROI. Mirrors the broken-pipe respawn path in
+        // `send_command`.
+        let mut drained = 0;
+        loop {
+            embassy_time::Timer::after(embassy_time::Duration::from_millis(100)).await;
+            let batch = self.drain_captured();
+            drained += batch;
+            if batch == 0 {
+                break;
+            }
+        }
+        if drained > 0 {
+            log::info!("Drained {} ROI messages after restart respawn", drained);
+        }
     }
 
     /// Receive a captured outgoing telegram from the DUT.
@@ -283,6 +402,7 @@ impl MultiProcessHarness {
         };
 
         let mut count = 0;
+
         loop {
             // Try a non-blocking read
             let mut header = [0u8; 3];
@@ -448,6 +568,17 @@ impl MultiProcessHarness {
 
     /// Send a command frame, respawning the child on broken pipe.
     async fn send_command(&mut self, tag: u8, payload: &[u8]) -> io::Result<()> {
+        // If the previous inject was an `A_Restart`, wait for the DUT
+        // to finish its restart handler and exit before sending this
+        // command. Otherwise, on the secure DUT, a T_Connect sent
+        // immediately after the restart lands on the still-alive stack
+        // during its 30 ms drain window and reuses the stale TL slot.
+        // 60 ms is twice the secure-DUT drain window plus a small
+        // margin; on timeout we fall through (no restart was pending
+        // after all, or the DUT hung — next write will error out
+        // normally).
+        self.settle_pending_restart().await;
+
         self.ensure_child_running().await?;
         let socket = self.socket()?;
         match ipc::write_frame_async(socket, tag, payload).await {
@@ -550,4 +681,21 @@ fn clear_cloexec(fd: std::os::unix::io::RawFd) -> io::Result<()> {
     fd_flags.remove(nix::fcntl::FdFlag::FD_CLOEXEC);
     fcntl::fcntl(fd, fcntl::FcntlArg::F_SETFD(fd_flags)).map_err(io::Error::other)?;
     Ok(())
+}
+
+/// Decide whether a TP1-wire inject carries `A_Restart`.
+///
+/// The runner keeps this in the harness layer so restart-triggered
+/// test flows don't need to explicitly signal "DUT is about to die"
+/// — the harness detects it from the frame itself. Handles both
+/// standard and extended TP1 frames via `tp1_to_knx_message_no_checksum`.
+fn injection_is_restart(tp1_data: &[u8]) -> bool {
+    use zweidraehte_proto::encoding::tp1;
+    use zweidraehte_proto::messages::knx::{ApciCode, decode_apci_code};
+    // `tp1_to_knx_message_no_checksum` works on a buffer it owns and
+    // doesn't return the length. We clone the data, run the conversion,
+    // and decode from the result.
+    let mut buf = tp1_data.to_vec();
+    buf = tp1::tp1_to_knx_message_no_checksum(buf);
+    decode_apci_code(&buf) == Some(ApciCode::Restart)
 }

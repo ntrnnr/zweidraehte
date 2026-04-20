@@ -20,12 +20,14 @@ use crate::{TestCase, TestSuite, TestVariable};
 /// Based on the EITT specification:
 /// - EDI: External Device Interface (10.15.254 = AF FE)
 /// - BDUT: Basic Device Under Test (1.0.1 = 10 01)
-/// - BDUT_SERIAL_NUMBER: Serial number of the BDUT (default: 30 30 30 30 30 30)
+/// - BDUT_SERIAL_NUMBER: Serial number of the BDUT (default: FE ED BA BE CA FE).
+///   Matches the security test fixtures' `SER_NUM` so a single conformance DUT
+///   (plain or secure) satisfies both management and security suites.
 pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = BTreeMap::new();
     vars.insert("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
     vars.insert("BDUT".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
-    vars.insert("BDUT_SERIAL_NUMBER".to_string(), TestVariable::Bytes(vec![0x30, 0x30, 0x30, 0x30, 0x30, 0x30]));
+    vars.insert("BDUT_SERIAL_NUMBER".to_string(), TestVariable::Bytes(vec![0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]));
     vars
 }
 
@@ -3818,7 +3820,7 @@ mod tests {
 
         assert_eq!(vars["EDI"].as_bytes(), &[0xAF, 0xFE]);
         assert_eq!(vars["BDUT"].as_bytes(), &[0x10, 0x01]);
-        assert_eq!(vars["BDUT_SERIAL_NUMBER"].as_bytes(), &[0x30, 0x30, 0x30, 0x30, 0x30, 0x30]);
+        assert_eq!(vars["BDUT_SERIAL_NUMBER"].as_bytes(), &[0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]);
     }
 
     #[test]

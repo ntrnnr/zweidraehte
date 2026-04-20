@@ -121,8 +121,10 @@ impl SecureConformanceState {
         let inner =
             SecureInnerState::new(identity, ConformanceComObjects::new(), ConformanceHookContext::new(), resources);
 
-        // Set the secure conformance test individual address (1.1.1 = 0x1101).
-        inner.set_individual_address(IndividualAddress::new(1, 1, 1));
+        // Set the secure conformance test individual address (1.0.1 = 0x1001).
+        // Matches the plain conformance default so tests that hard-code the
+        // BDUT IA (as a source-address match) pass against either DUT.
+        inner.set_individual_address(IndividualAddress::new(1, 0, 1));
 
         // Load pre-built tables.
         *inner.adt.borrow_mut() = addr_tab;
@@ -1186,7 +1188,7 @@ impl SecureConformanceDeviceConfig {
         let sec_config = conformance_config::ConformanceTestConfig::create_security_config();
 
         let mut inner = SecureInnerDeviceConfig::factory_default();
-        inner.individual_address = IndividualAddress::new(1, 1, 1);
+        inner.individual_address = IndividualAddress::new(1, 0, 1);
         inner.address_table = addr_tab;
         inner.association_table = asso_tab;
         inner.group_object_table = co_tab;

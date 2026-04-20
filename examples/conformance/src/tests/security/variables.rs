@@ -94,7 +94,7 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     let mut vars = BTreeMap::new();
 
     // Addresses.
-    vars.insert("BDUT_ADDR".into(), TestVariable::Bytes(vec![0x11, 0x01]));
+    vars.insert("BDUT_ADDR".into(), TestVariable::Bytes(vec![0x10, 0x01]));
     vars.insert("EDI".into(), TestVariable::Bytes(vec![0xAF, 0xFE]));
     vars.insert("ALT_SRC_ADDR".into(), TestVariable::Bytes(vec![0xAF, 0xFD]));
     vars.insert("SER_NUM".into(), TestVariable::Bytes(vec![0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]));
