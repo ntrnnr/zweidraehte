@@ -972,21 +972,7 @@ impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
     }
 
     fn apply_erase_code(state: &Self::State, code: zweidraehte_device::restart::EraseCode) {
-        use zweidraehte_device::restart::EraseCode;
-        let inner = state.inner();
-        match code {
-            EraseCode::Basic | EraseCode::Confirmed => {}
-            EraseCode::FactoryReset => inner.factory_reset(),
-            EraseCode::ResetIA => inner.reset_individual_address(),
-            EraseCode::ResetAP => inner.reset_application(),
-            EraseCode::ResetParam => inner.reset_parameters(),
-            EraseCode::ResetLinks => {
-                inner.reset_address_table();
-                inner.reset_association_table();
-            }
-            EraseCode::FactoryResetKeepIA => inner.factory_reset_keep_ia(),
-            EraseCode::Other(_) => log::warn!("apply_erase_code: unsupported {:?}", code),
-        }
+        crate::dut_common::apply_erase_code_to_system_b(state.inner(), code);
     }
 }
 

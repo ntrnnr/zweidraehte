@@ -136,6 +136,16 @@ pub fn wait(duration_ms: u32) -> TestStep {
     TestStep::Wait { duration_ms }
 }
 
+/// Wait for a real wall-clock duration, bypassing `KNX_TIME_DIVISOR`.
+///
+/// Use only when the test needs a true elapsed duration (e.g. a
+/// device-side timer whose scale factor doesn't match the runner's).
+/// Prefer `wait()` for everything else.
+#[allow(dead_code)]
+pub fn wall_clock_wait(duration_ms: u32) -> TestStep {
+    TestStep::WallClockWait { duration_ms }
+}
+
 /// Drain all pending captured messages after waiting `settle_ms` for
 /// in-flight messages to arrive.
 ///

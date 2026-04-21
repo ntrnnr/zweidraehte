@@ -207,6 +207,7 @@ async fn execute_step(
         }
         TestStep::ExpectNone { timeout_ms } => step_expect_none(harness, index, *timeout_ms, ctx.divisor).await,
         TestStep::Wait { duration_ms } => step_wait(index, *duration_ms, ctx.divisor).await,
+        TestStep::WallClockWait { duration_ms } => step_wall_clock_wait(index, *duration_ms).await,
         TestStep::Custom => step_custom(index),
         TestStep::SetProgrammingMode(enabled) => step_set_programming_mode(harness, index, *enabled).await,
         TestStep::TriggerRead { asap } => step_trigger_read(harness, index, *asap).await,
@@ -270,6 +271,12 @@ async fn step_wait(index: usize, duration_ms: u32, time_divisor: u64) -> StepOk 
     let effective_ms = scale_ms(duration_ms, time_divisor);
     println!("  [{}] ⏳ Wait {}ms", index, effective_ms);
     Timer::after(Duration::from_millis(effective_ms)).await;
+    true
+}
+
+async fn step_wall_clock_wait(index: usize, duration_ms: u32) -> StepOk {
+    println!("  [{}] ⏳ WallClockWait {}ms", index, duration_ms);
+    Timer::after(Duration::from_millis(duration_ms as u64)).await;
     true
 }
 

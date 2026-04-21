@@ -28,6 +28,7 @@ use embassy_sync::channel::Channel;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
 use zweidraehte_device::{Stack, StackDefinition, restart::EraseCode};
 
 use crate::harness::framing;
@@ -291,9 +292,42 @@ pub trait ConformanceStack: StackDefinition + 'static {
     /// Apply an erase code against the inner device state.
     ///
     /// Both plain (`Tp1SystemBDeviceState`) and secure (`SecureTp1DeviceState`)
-    /// variants expose the same reset methods, so the implementation is
-    /// mechanically identical but must be written per-stack.
+    /// variants expose the same reset methods. Implementations should usually
+    /// just delegate to [`apply_erase_code_to_system_b`] with their inner
+    /// state reference.
     fn apply_erase_code(state: &Self::State, code: EraseCode);
+}
+
+/// Shared `EraseCode` → reset-method dispatch for any `SystemBDeviceState<...>`.
+///
+/// Both conformance DUTs wrap a different `SystemBDeviceState` instantiation
+/// (plain TP1 vs Data-Secure TP1). The concrete inner types differ only in
+/// their `ExtensionState` parameter, but the reset API is inherent on
+/// `SystemBDeviceState` and identical for both. Calling this helper from each
+/// DUT's `apply_erase_code` keeps the match arms in one place.
+pub fn apply_erase_code_to_system_b<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: StackDefinition,
+    ES: ExtensionState,
+>(
+    inner: &SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
+    code: EraseCode,
+) {
+    match code {
+        EraseCode::Basic | EraseCode::Confirmed => {}
+        EraseCode::FactoryReset => inner.factory_reset(),
+        EraseCode::ResetIA => inner.reset_individual_address(),
+        EraseCode::ResetAP => inner.reset_application(),
+        EraseCode::ResetParam => inner.reset_parameters(),
+        EraseCode::ResetLinks => {
+            inner.reset_address_table();
+            inner.reset_association_table();
+        }
+        EraseCode::FactoryResetKeepIA => inner.factory_reset_keep_ia(),
+        EraseCode::Other(_) => log::warn!("apply_erase_code: unsupported {:?}", code),
+    }
 }
 
 /// Handle one [`IpcCommand`] dispatched by the link layer.

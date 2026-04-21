@@ -123,8 +123,15 @@ pub enum TestStep {
     /// Format: "BC #BDUT #GO_ADDR E2 00 40 ??"
     ExpectTemplate { template: String, timeout_ms: u32 },
 
-    /// Wait for a specific duration
+    /// Wait for a specific duration (scaled by `KNX_TIME_DIVISOR`).
     Wait { duration_ms: u32 },
+
+    /// Wait for a real wall-clock duration, *not* scaled by
+    /// `KNX_TIME_DIVISOR`. Use only when the test depends on a
+    /// true elapsed duration (e.g. exercising a device-side timer
+    /// whose scale factor doesn't match the runner's). Prefer
+    /// `Wait` for everything else.
+    WallClockWait { duration_ms: u32 },
 
     /// Set programming mode on the DUT
     /// When enabled, the device responds to A_IndividualAddress_Read broadcasts
