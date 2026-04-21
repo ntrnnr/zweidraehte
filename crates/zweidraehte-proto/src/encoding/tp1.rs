@@ -221,6 +221,59 @@ pub fn knx_to_tp1_message_no_checksum<B: MessageBuffer>(mut msg: B) -> B {
     msg
 }
 
+// ================================================================================
+// Allocation-free and allocating byte-slice helpers
+// ================================================================================
+//
+// The `*_message_*` functions above are generic over `MessageBuffer`. Callers
+// that already have an owned `Vec<u8>` or need a fixed-capacity `heapless::Vec`
+// output — typical in mock / capture paths where we don't own the incoming
+// buffer — reach for the helpers below. They wrap the generic implementations
+// to avoid duplicating the bit-shuffling logic.
+
+/// Convert internal KNX bytes to TP1-like format (no checksum) into a
+/// fixed-capacity `heapless::Vec`.
+///
+/// The generic variant [`knx_to_tp1_message_no_checksum`] operates on a
+/// `MessageBuffer`, which `heapless::Vec` does not implement — so this helper
+/// reproduces the same byte shuffling locally. Extended frames need `N >=
+/// src.len() + 1`; standard frames need only `N >= src.len()`. Panics if the
+/// destination is too small.
+pub fn knx_to_tp1_bytes_no_checksum<const N: usize>(src: &[u8]) -> heapless::Vec<u8, N> {
+    let len = src.len();
+    let mut out: heapless::Vec<u8, N> = heapless::Vec::new();
+
+    if (len < 23) && ((src[5] & 0x0f) == 0) {
+        // Standard frame: copy as-is, then rewrite bytes [0] and [5].
+        out.extend_from_slice(src).expect("destination capacity too small for TP1 conversion");
+        out[5] = (out[5] & 0xf0) | ((len - 7) as u8);
+        out[0] = (out[0] & 0x0c) | 0xb0;
+    } else {
+        // Extended frame: insert the extended-control byte at position 1 and
+        // shift the rest rightward. Output length is `len + 1`.
+        out.push((src[0] & 0x0C) | 0x30)
+            .expect("destination capacity too small for TP1 conversion");
+        out.push(src[5]).expect("destination capacity too small for TP1 conversion");
+        out.extend_from_slice(&src[1..5]).expect("destination capacity too small for TP1 conversion");
+        out.push((len - 7) as u8).expect("destination capacity too small for TP1 conversion");
+        out.extend_from_slice(&src[6..]).expect("destination capacity too small for TP1 conversion");
+    }
+
+    out
+}
+
+/// Convert internal KNX bytes to TP1-like format (no checksum) into a `Vec<u8>`.
+#[cfg(feature = "alloc")]
+pub fn knx_to_tp1_vec_no_checksum(src: &[u8]) -> alloc::vec::Vec<u8> {
+    knx_to_tp1_message_no_checksum(src.to_vec())
+}
+
+/// Convert TP1-like bytes (no checksum) to internal KNX format into a `Vec<u8>`.
+#[cfg(feature = "alloc")]
+pub fn tp1_to_knx_vec_no_checksum(src: &[u8]) -> alloc::vec::Vec<u8> {
+    tp1_to_knx_message_no_checksum(src.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

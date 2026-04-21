@@ -1,3 +1,5 @@
+pub mod mock;
+
 #[cfg(feature = "knxip")]
 pub mod knxip;
 

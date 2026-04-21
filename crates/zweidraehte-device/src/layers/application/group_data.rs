@@ -683,6 +683,13 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         // All objects scanned — cycle complete.
         info!("AL read-on-init: cycle complete ({} objects scanned)", entry_count);
         self.lctx.group_data.read_on_init.set(ReadOnInitState::Done);
+
+        // Signal the conformance IPC link layer that ROI is done. This
+        // replaces an 800 ms quiet-window heuristic on the runner side
+        // that relied on the outbox staying silent long enough for the
+        // scan to "look complete". See `crate::device_model::roi_done`.
+        #[cfg(feature = "conformance")]
+        crate::device_model::read_on_init_done_signal().signal(());
     }
 }
 

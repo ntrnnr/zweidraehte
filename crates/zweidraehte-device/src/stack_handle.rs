@@ -19,7 +19,8 @@ use crate::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
     },
-    restart};
+    restart,
+};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 
@@ -570,6 +571,28 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// ```
     pub async fn receive_restart_request(&self) -> restart::RestartRequest {
         self.restart_receiver.receive().await
+    }
+
+    /// Yield until the router's outbox has no pending messages.
+    ///
+    /// Call sites that mutate device state in reaction to stack events
+    /// (most notably restart handlers after a `FactoryReset`) need to
+    /// let the router drain any already-queued frames before wiping
+    /// state. Otherwise the in-flight `A_Restart_Response` — pushed to
+    /// the outbox by the application layer before the handler was
+    /// woken — picks up the zeroed individual address on its way out.
+    ///
+    /// The wait polls the outbox per yield. There is no embedded
+    /// timeout: callers with a timing budget should wrap this in
+    /// `embassy_futures::select` against a `Timer`.
+    pub async fn await_outbox_drained(&self) {
+        use crate::context::OutboxContext;
+        loop {
+            if self.inner.layer_context.outbox().borrow().is_fully_empty() {
+                return;
+            }
+            embassy_futures::yield_now().await;
+        }
     }
 
     /// Returns the current buffer pool usage as `(allocated, total)`.

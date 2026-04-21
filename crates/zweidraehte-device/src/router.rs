@@ -141,6 +141,17 @@ impl Outbox {
         self.messages[self.head].as_ref().map(|m| m.service_type())
     }
 
+    /// Return `true` when the outbox has no messages queued (main or deferred).
+    ///
+    /// Used by async callers that need to wait for the stack to finish
+    /// processing before mutating state — e.g., the conformance DUT's
+    /// restart handler, which must let the router push the
+    /// `A_Restart_Response` to the link layer before it wipes the
+    /// individual address.
+    pub fn is_fully_empty(&self) -> bool {
+        self.count == 0 && self.deferred_count == 0
+    }
+
     /// Take the next message from the outbox, if any.
     pub fn take_next(&mut self) -> Option<KnxMessageBuffer<Buffer<'static>>> {
         if self.count == 0 {
