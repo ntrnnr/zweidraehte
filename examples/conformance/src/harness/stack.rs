@@ -1320,6 +1320,40 @@ impl StackDefinition for IpcConformanceTestStack {
 }
 
 // ============================================================================
+// ConformanceStack Integration
+// ============================================================================
+//
+// Wires the plain stack into the generic DUT helpers in
+// `crate::dut_common`, specifying how to snapshot state into the shared
+// memory region and how to apply erase codes.
+
+impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
+    type DeviceConfig = ConformanceDeviceConfig;
+
+    fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
+        state.to_device_config()
+    }
+
+    fn apply_erase_code(state: &Self::State, code: zweidraehte_device::restart::EraseCode) {
+        use zweidraehte_device::restart::EraseCode;
+        let inner = state.inner();
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => {}
+            EraseCode::FactoryReset => inner.factory_reset(),
+            EraseCode::ResetIA => inner.reset_individual_address(),
+            EraseCode::ResetAP => inner.reset_application(),
+            EraseCode::ResetParam => inner.reset_parameters(),
+            EraseCode::ResetLinks => {
+                inner.reset_address_table();
+                inner.reset_association_table();
+            }
+            EraseCode::FactoryResetKeepIA => inner.factory_reset_keep_ia(),
+            EraseCode::Other(_) => log::warn!("apply_erase_code: unsupported {:?}", code),
+        }
+    }
+}
+
+// ============================================================================
 // Shared Memory Integration
 // ============================================================================
 //
@@ -1330,16 +1364,11 @@ impl StackDefinition for IpcConformanceTestStack {
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use zweidraehte_device::bcus::system_b::{HasDeviceConfig, DeviceConfig, Tp1ExtensionConfig};
+use zweidraehte_device::bcus::system_b::{DeviceConfig, HasDeviceConfig, Tp1ExtensionConfig};
 
 /// The persisted state type for the inner `Tp1SystemBDeviceState`.
-type InnerDeviceConfig = DeviceConfig<
-    { table_sizes::ADT },
-    { table_sizes::AST },
-    { table_sizes::COT },
-    TestParameters,
-    Tp1ExtensionConfig,
->;
+type InnerDeviceConfig =
+    DeviceConfig<{ table_sizes::ADT }, { table_sizes::AST }, { table_sizes::COT }, TestParameters, Tp1ExtensionConfig>;
 
 /// Full snapshot of conformance test state for shared memory.
 ///

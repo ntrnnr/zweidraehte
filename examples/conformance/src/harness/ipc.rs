@@ -27,12 +27,14 @@ use core::mem::MaybeUninit;
 use std::io;
 use std::os::unix::io::{FromRawFd, RawFd};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::Ordering;
 
 use async_io::Async;
 use embassy_futures::select::{Either, select};
 use embassy_futures::yield_now;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::DynamicSender;
+use embassy_sync::signal::Signal;
 
 use zweidraehte_device::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
 use zweidraehte_proto::encoding::tp1;
@@ -79,33 +81,45 @@ const MAX_DRAIN_ITERS: usize = 128;
 //   flag and proceeds with the final `Exiting` + shutdown only once
 //   it flips to `true`.
 //
-// Both flags live in static atomics because they are shared between
-// tasks that don't otherwise reference each other (the lifecycle
-// handlers live in dut_common / binary-specific code; the
-// IpcLinkLayer lives in this module).
+// The barrier state lives in process-global `embassy_sync::Signal`s
+// because the lifecycle handlers (dut_common) and the `IpcLinkLayer`
+// (this module) have no direct shared reference. The signals provide
+// proper "wait until" semantics without polling sleeps, at the cost
+// of a `CriticalSectionRawMutex` — cheap on the single-threaded
+// executor used by the DUT binaries.
 
-static PENDING_EXIT: AtomicBool = AtomicBool::new(false);
-static STEP_SETTLED: AtomicBool = AtomicBool::new(false);
-
-/// Lifecycle handlers call this first. Once set, IpcLinkLayer will
-/// emit its pending `StepComplete` immediately (cutting any drain-
-/// quiet-window short) and then set `STEP_SETTLED`.
-pub fn mark_pending_exit() {
-    PENDING_EXIT.store(true, Ordering::Release);
+struct BarrierState {
+    pending_exit: Signal<CriticalSectionRawMutex, ()>,
+    step_settled: Signal<CriticalSectionRawMutex, ()>,
 }
 
-/// Lifecycle handlers spin on this after writing their state snapshot
-/// to SHM. Returns `true` once the IpcLinkLayer has finished the
-/// current step.
-pub fn step_settled() -> bool {
-    STEP_SETTLED.load(Ordering::Acquire)
+impl BarrierState {
+    const fn new() -> Self {
+        Self { pending_exit: Signal::new(), step_settled: Signal::new() }
+    }
+}
+
+static BARRIER: BarrierState = BarrierState::new();
+
+/// Lifecycle handlers call this first. Once signalled, the
+/// IpcLinkLayer will emit its pending `StepComplete` immediately
+/// (cutting any drain quiet-window short) and then signal
+/// `step_settled`.
+pub fn mark_pending_exit() {
+    BARRIER.pending_exit.signal(());
+}
+
+/// Non-blocking probe used inside the drain loop to decide whether to
+/// shortcut the quiet-window wait.
+fn pending_exit_raised() -> bool {
+    BARRIER.pending_exit.signaled()
 }
 
 /// Reset the barrier — called from within `emit_step_complete` just
-/// before we signal `STEP_SETTLED`, so the next step starts clean.
+/// before we re-signal `step_settled`, so the next step starts clean.
 fn barrier_reset() {
-    PENDING_EXIT.store(false, Ordering::Release);
-    STEP_SETTLED.store(false, Ordering::Release);
+    BARRIER.pending_exit.reset();
+    BARRIER.step_settled.reset();
 }
 
 // ============================================================================
@@ -147,30 +161,23 @@ pub fn shutdown_ipc_socket() {
 // ============================================================================
 //
 // Non-inject commands (programming mode, triggers, power-cycle, master
-// reset) are received by the link layer's main loop and dispatched to a
-// separate "command handler" task via an embassy channel. The link layer
-// stays single-purpose; the handler task gets the full `Stack` handle.
+// reset) are received by the link layer's main loop and forwarded to a
+// separate "command handler" task via an embassy channel. The channel
+// carries plain [`RunnerMessage`]s — the same type deserialised from
+// the socket — so the handler side is the single source of truth for
+// command semantics. Inject variants never reach the handler: the link
+// layer processes those inline.
+//
+// An earlier revision used a dedicated `IpcCommand` enum that mirrored
+// the dispatchable subset of `RunnerMessage`. It doubled the
+// maintenance cost every time a new command variant was added, so the
+// two enums were collapsed in Phase 9 of the conformance refactor.
 
-/// Command dispatched from the link layer to the DUT-side command
-/// handler. The `seq` field is carried through so the handler can tell
-/// the link layer when it's done — at which point the link layer
-/// emits `StepComplete` back to the runner.
-///
-/// Power-cycle and master-reset don't carry a seq because they don't
-/// produce a `StepComplete`; the runner sees `Exiting` + EOF instead.
-#[derive(Debug)]
-pub enum IpcCommand {
-    SetProgrammingMode { seq: u32, enabled: bool },
-    TriggerRead { seq: u32, asap: u16 },
-    TriggerWrite { seq: u32, asap: u16 },
-    TriggerSync { seq: u32, peer_ia: u16, tool_access: bool, is_broadcast: bool },
-    /// Flush state + exit (no erase). Handler calls [`shutdown_ipc_socket`]
-    /// and `exit(0)` after writing `DutMessage::Exiting`.
-    PowerCycle,
-    /// Apply the erase code, flush, and exit. Handler drives the same
-    /// exit path as `PowerCycle` after applying state.
-    MasterReset { erase_code: u8 },
-}
+/// Alias preserving a clear name for the channel item type. The link
+/// layer never pushes `Inject` through the channel, but the type is
+/// wide enough to carry it; the handler matches on the variants it
+/// cares about and logs a warning on the rest.
+pub type IpcCommand = RunnerMessage;
 
 // ============================================================================
 // IPC Link Layer
@@ -231,11 +238,8 @@ impl<'a> IpcLinkLayer<'a> {
                     let frame = self.capture_and_confirm(msg).await;
                     let frame_seq = self.unsolicited_seq;
                     self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
-                    if let Err(e) = write_msg_async(
-                        &self.socket,
-                        &DutMessage::UnsolicitedFrame { frame_seq, frame },
-                    )
-                    .await
+                    if let Err(e) =
+                        write_msg_async(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await
                     {
                         log::error!("IPC LL: failed to write UnsolicitedFrame: {}", e);
                     }
@@ -245,67 +249,74 @@ impl<'a> IpcLinkLayer<'a> {
     }
 
     /// Drain all outbox frames produced during startup (read-on-init
-    /// scan), forwarding each as an `UnsolicitedFrame`. Once the router
-    /// stays quiet for `ROI_QUIET_WINDOW` with no new frames, emit
-    /// `RoiComplete`.
+    /// scan), forwarding each as an `UnsolicitedFrame`. Emit
+    /// `RoiComplete` once the AL has signalled that the scan has run
+    /// to `ReadOnInitState::Done`.
     ///
     /// We use unsolicited semantics (not batched) here because the test
     /// hasn't issued a command yet — there is no pending `StepComplete`
     /// to attach the frames to.
     ///
-    /// # Why a timed quiet window, not a yield count
+    /// # Done-detection
     ///
-    /// The AL's read-on-init scan fires one `GroupValueRead` per
-    /// object and waits for the group-value responses to come back
-    /// before moving to the next object, with `Timer::after`s between
-    /// CO iterations. In fast mode (`KNX_TIME_DIVISOR=50`) the
-    /// observed full-scan duration is ~650 ms for the conformance
-    /// device (17 GOs with 8 pending responses in between).
-    ///
-    /// A wall-clock quiet window long enough to cover the worst-case
-    /// inter-CO gap avoids declaring `RoiComplete` mid-scan, which
-    /// would leak later ROI reads as `UnsolicitedFrame`s into
-    /// subsequent tests. 800 ms is comfortably longer than any
-    /// observed gap and well under the test-harness per-step budget.
-    ///
-    /// TODO: a cleaner approach is an explicit signal from the AL
-    /// when `ReadOnInitState::Done` fires. That requires plumbing
-    /// through the stack; defer until after Phase 5.
-    async fn drain_roi_and_announce(
-        &mut self,
-        req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>,
-    ) {
+    /// The AL fires [`read_on_init_done_signal`] exactly once when its
+    /// scan completes (conformance-feature-gated). We `select!` on
+    /// `req_rx` and that signal, falling through with a generous
+    /// safety-net timer only if the signal never arrives (5 s; hit
+    /// only when the stack is broken). After the done signal, we still
+    /// drain one extra pass for frames that may already sit in the
+    /// request channel, since the signal fires on state transition —
+    /// the request that produced the last frame may land a tick after.
+    async fn drain_roi_and_announce(&mut self, req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>) {
+        use embassy_futures::select::{Either, select};
         use embassy_time::{Duration, Timer};
+        use zweidraehte_device::device_model::read_on_init_done_signal;
 
-        const ROI_POLL_INTERVAL_MS: u64 = 10;
-        const ROI_QUIET_WINDOW_MS: u64 = 800;
-        const QUIET_TICKS: u64 = ROI_QUIET_WINDOW_MS / ROI_POLL_INTERVAL_MS;
+        // Reset any stale completion from a previous run (respawn paths
+        // reuse the same process-global signal).
+        let signal = read_on_init_done_signal();
+        signal.reset();
 
-        let mut quiet = 0u64;
+        // Outer loop: pump ROI frames until the AL signals done (or
+        // the safety-net timer fires). The done + deadline futures
+        // need to survive across iterations, so pin them on the stack
+        // and re-borrow on each `select`.
+        let done_fut = signal.wait();
+        let deadline = Timer::after(Duration::from_secs(5));
+        let mut done_fut = core::pin::pin!(done_fut);
+        let mut deadline = core::pin::pin!(deadline);
+
         loop {
-            yield_now().await;
-            match req_rx.try_next() {
-                Some(msg) => {
-                    quiet = 0;
+            match select(req_rx.next(), select(done_fut.as_mut(), deadline.as_mut())).await {
+                Either::First(msg) => {
                     let frame = self.capture_and_confirm(msg).await;
                     let frame_seq = self.unsolicited_seq;
                     self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
-                    if let Err(e) = write_msg_async(
-                        &self.socket,
-                        &DutMessage::UnsolicitedFrame { frame_seq, frame },
-                    )
-                    .await
+                    if let Err(e) =
+                        write_msg_async(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await
                     {
                         log::error!("IPC LL: failed to write ROI frame: {}", e);
                     }
                 }
-                None => {
-                    quiet += 1;
-                    if quiet >= QUIET_TICKS {
-                        break;
-                    }
-                    Timer::after(Duration::from_millis(ROI_POLL_INTERVAL_MS)).await;
+                Either::Second(Either::First(())) => {
+                    log::debug!("IPC LL: ROI done signal received");
+                    break;
                 }
+                Either::Second(Either::Second(_)) => {
+                    log::warn!("IPC LL: ROI done signal not received within 5s — proceeding anyway");
+                    break;
+                }
+            }
+        }
+
+        // Final drain: pick up anything that landed after the done
+        // signal but before we broke out of the loop.
+        while let Some(msg) = req_rx.try_next() {
+            let frame = self.capture_and_confirm(msg).await;
+            let frame_seq = self.unsolicited_seq;
+            self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
+            if let Err(e) = write_msg_async(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await {
+                log::error!("IPC LL: failed to write trailing ROI frame: {}", e);
             }
         }
 
@@ -317,11 +328,7 @@ impl<'a> IpcLinkLayer<'a> {
     /// Execute one `RunnerMessage`, draining the outbox into a batched
     /// `StepComplete` reply. For `PowerCycle` / `MasterReset`, the
     /// command handler task drives the exit path; we just forward.
-    async fn dispatch_command(
-        &mut self,
-        cmd: RunnerMessage,
-        req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>,
-    ) {
+    async fn dispatch_command(&mut self, cmd: RunnerMessage, req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>) {
         // Reset the restart barrier — each dispatch starts from a
         // clean slate. Old flags from a previous step's no-op
         // shouldn't leak.
@@ -355,9 +362,7 @@ impl<'a> IpcLinkLayer<'a> {
                 self.emit_step_complete(seq, frames).await;
             }
             RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast } => {
-                self.command_tx
-                    .send(IpcCommand::TriggerSync { seq, peer_ia, tool_access, is_broadcast })
-                    .await;
+                self.command_tx.send(IpcCommand::TriggerSync { seq, peer_ia, tool_access, is_broadcast }).await;
                 let frames = self.drain_step(req_rx).await;
                 self.emit_step_complete(seq, frames).await;
             }
@@ -417,9 +422,10 @@ impl<'a> IpcLinkLayer<'a> {
                 None => {
                     // If a lifecycle handler (restart / power-cycle /
                     // master-reset) is about to exit, shortcut the
-                    // drain. Those handlers set `PENDING_EXIT` before
-                    // any state mutation — see `mark_pending_exit`.
-                    if PENDING_EXIT.load(Ordering::Acquire) {
+                    // drain. Those handlers signal `pending_exit`
+                    // before any state mutation — see
+                    // `mark_pending_exit`.
+                    if pending_exit_raised() {
                         break;
                     }
                     quiet += 1;
@@ -440,7 +446,7 @@ impl<'a> IpcLinkLayer<'a> {
     /// Capture one outgoing request frame (serialise to TP1), send the
     /// stack its `L_Data_Con` back, and return the captured bytes.
     async fn capture_and_confirm(&mut self, msg: RequestMessage<Buffer<'static>>) -> CapturedFrame {
-        let data = knx_to_tp1_vec_no_checksum(&msg.buf()[..msg.len()]);
+        let data = tp1::knx_to_tp1_vec_no_checksum(&msg.buf()[..msg.len()]);
         let service_type: u8 = msg.service_type().into();
 
         // Send confirmation back up the stack.
@@ -461,11 +467,7 @@ impl<'a> IpcLinkLayer<'a> {
         CapturedFrame { service_type, data }
     }
 
-    async fn emit_step_complete(
-        &mut self,
-        seq: u32,
-        frames: heapless::Vec<CapturedFrame, MAX_STEP_FRAMES>,
-    ) {
+    async fn emit_step_complete(&mut self, seq: u32, frames: heapless::Vec<CapturedFrame, MAX_STEP_FRAMES>) {
         // heapless::Vec → Vec so we don't force a const generic through
         // the DutMessage serde derive. Postcard serialises both the
         // same way on the wire; this is just ergonomics for the enum.
@@ -473,10 +475,10 @@ impl<'a> IpcLinkLayer<'a> {
         if let Err(e) = write_msg_async(&self.socket, &DutMessage::StepComplete { seq, frames }).await {
             log::error!("IPC LL: failed to write StepComplete(seq={}): {}", seq, e);
         }
-        // Release the barrier — any lifecycle handler that was
-        // spinning on `step_settled()` may now proceed to write
-        // `Exiting` + shutdown the socket.
-        STEP_SETTLED.store(true, Ordering::Release);
+        // Release the barrier — any lifecycle handler awaiting the
+        // `step_settled` signal may now proceed to write `Exiting`
+        // + shutdown the socket.
+        BARRIER.step_settled.signal(());
     }
 }
 
@@ -494,20 +496,17 @@ impl<'a> IpcLinkLayer<'a> {
 /// the process exits — the async LL task may not be scheduled again
 /// between our `Exiting` and the exit syscall.
 pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
-    use embassy_time::{Duration, Instant, Timer};
+    use embassy_time::{Duration, Timer};
 
     // Announce the pending exit so `IpcLinkLayer::drain_step` cuts
     // its quiet window short and emits `StepComplete` immediately.
     mark_pending_exit();
 
-    // Cooperatively yield until the IpcLinkLayer has flushed its
-    // pending StepComplete (if any). Capped at ~50 ms of wall-clock
-    // to avoid a hang if the async LL task crashed earlier — we'd
-    // rather exit slightly early than deadlock the DUT.
-    let deadline = Instant::now() + Duration::from_millis(50);
-    while !step_settled() && Instant::now() < deadline {
-        Timer::after(Duration::from_millis(1)).await;
-    }
+    // Wait until the IpcLinkLayer has flushed its pending
+    // `StepComplete`. Capped at ~50 ms against a hang if the async LL
+    // task crashed earlier — we'd rather exit slightly early than
+    // deadlock the DUT.
+    let _ = select(BARRIER.step_settled.wait(), Timer::after(Duration::from_millis(50))).await;
 
     let fd = PRIMARY_SOCKET_FD.load(Ordering::Relaxed);
     if fd < 0 {
@@ -547,30 +546,6 @@ pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
 // ============================================================================
 // TP1 encoding (internal → wire)
 // ============================================================================
-
-/// Convert internal KNX message bytes to TP1 format (no checksum).
-///
-/// Duplicated from [`super::mock::knx_to_tp1_vec_no_checksum`] for
-/// locality — the `mock` copy serves the in-process test harness
-/// and the two copies are intentionally independent.
-fn knx_to_tp1_vec_no_checksum(src: &[u8]) -> Vec<u8> {
-    let len = src.len();
-    if (len < 23) && ((src[5] & 0x0f) == 0) {
-        let mut data = src.to_vec();
-        data[5] = (data[5] & 0xf0) | ((len - 7) as u8);
-        data[0] = (data[0] & 0x0c) | 0xb0;
-        data
-    } else {
-        let orig_npdu = src[5];
-        let mut data = Vec::with_capacity(len + 1);
-        data.push((src[0] & 0x0C) | 0x30);
-        data.push(orig_npdu);
-        data.extend_from_slice(&src[1..5]);
-        data.push((len - 7) as u8);
-        data.extend_from_slice(&src[6..]);
-        data
-    }
-}
 
 // ============================================================================
 // LinkLayerBuilder plumbing

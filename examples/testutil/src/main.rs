@@ -11,14 +11,15 @@ use embassy_time::{Duration, Timer};
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
-use zweidraehte_conformance::harness::mock::MockLinkLayerBuilder;
+use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     context::layer::LayerContext,
+    device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::{
         AddrTab7, AddressTable, Application, AssoTab6, AssociationTable, CoTab7, CommunicationObjectTable,
-    }};
+    },
+};
 use zweidraehte_proto::dpt::DPT_Switch;
 use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 
@@ -76,11 +77,7 @@ pub struct MyState {
 }
 
 impl MyState {
-    pub fn new(
-        adt: AddrTab7<30>,
-        ast: AssoTab6<15>,
-        cot: CoTab7<30>,
-    ) -> Self {
+    pub fn new(adt: AddrTab7<30>, ast: AssoTab6<15>, cot: CoTab7<30>) -> Self {
         Self {
             individual_address: core::cell::Cell::new(IndividualAddress::new(1, 0, 1)),
             adt: RefCell::new(adt),

@@ -23,7 +23,15 @@ use std::cell::UnsafeCell;
 use std::os::unix::io::RawFd;
 use std::sync::{Mutex, OnceLock};
 
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::channel::Channel;
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+
+use zweidraehte_device::{Stack, StackDefinition, restart::EraseCode};
+
 use crate::harness::framing;
+use crate::harness::ipc::IpcCommand;
 use crate::harness::protocol::{DutMessage, ExitReason};
 
 // ============================================================================
@@ -207,3 +215,131 @@ pub async fn exit_with_reason(reason: ExitReason) -> ! {
     crate::harness::ipc::emit_exiting_and_shutdown(reason).await;
     std::process::exit(0);
 }
+
+// ============================================================================
+// ConformanceStack trait — dedupe logic between plain and secure DUT binaries
+// ============================================================================
+//
+// The two DUT entry-points (`conformance-dut`, `conformance-dut-secure`) used
+// to carry ~200 LoC of identical task bodies. They now delegate to the
+// generic helpers below (`handle_ipc_command`, `handle_restart_request`),
+// specialised via `<S as ConformanceStack>`. Each binary still owns its
+// `StaticCell`s (embassy tasks and `StackResources` both need monomorphic
+// names), but the command/restart tasks shrink to a handful of lines.
+
+/// Stack-specific glue each conformance DUT binary must supply.
+///
+/// This trait bundles the two places the plain and secure DUTs genuinely
+/// differ:
+///
+/// * the serialisable snapshot type for shared-memory persistence, and
+/// * how to apply an [`EraseCode`] to the state's inner (`Tp1SystemBDeviceState`
+///   variant) — the method set is identical, but the concrete inner type
+///   differs, so the dispatch can't be written generically against the outer
+///   `State` type alone.
+pub trait ConformanceStack: StackDefinition + 'static {
+    /// The `Serialize + DeserializeOwned` snapshot type persisted in shared
+    /// memory across restarts.
+    type DeviceConfig: Serialize + DeserializeOwned;
+
+    /// Project the current state to a snapshot suitable for `flush_state`.
+    fn to_device_config(state: &Self::State) -> Self::DeviceConfig;
+
+    /// Apply an erase code against the inner device state.
+    ///
+    /// Both plain (`Tp1SystemBDeviceState`) and secure (`SecureTp1DeviceState`)
+    /// variants expose the same reset methods, so the implementation is
+    /// mechanically identical but must be written per-stack.
+    fn apply_erase_code(state: &Self::State, code: EraseCode);
+}
+
+/// Handle one [`IpcCommand`] dispatched by the link layer.
+///
+/// Runs the command against `stack` (read/write trigger, programming mode,
+/// sync-request, or lifecycle termination). For power-cycle / master-reset
+/// the function does not return — it falls through to `exit_with_reason`.
+pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, shm: &'static ShmCell, cmd: IpcCommand) {
+    use crate::harness::protocol::RunnerMessage;
+    match cmd {
+        RunnerMessage::Inject { seq, .. } => {
+            // `Inject` is processed inline by the IPC link layer —
+            // it should never reach the command handler. Log loudly
+            // if the invariant breaks so we notice during any future
+            // plumbing change instead of silently stalling.
+            log::error!("handle_ipc_command: unexpected Inject(seq={}) on the command channel", seq);
+        }
+        RunnerMessage::SetProgrammingMode { enabled, .. } => {
+            log::info!("CMD: SetProgrammingMode({})", enabled);
+            use zweidraehte_device::objects::interface::HasDeviceObject;
+            stack.interface_objects().set_programming_mode_enabled(enabled);
+        }
+        RunnerMessage::TriggerRead { asap, .. } => {
+            log::info!("CMD: TriggerRead(ASAP {})", asap);
+            let _ = stack.read_object_by_asap(asap).await;
+        }
+        RunnerMessage::TriggerWrite { asap, .. } => {
+            log::info!("CMD: TriggerWrite(ASAP {})", asap);
+            let _ = stack.write_object_by_asap(asap).await;
+        }
+        RunnerMessage::TriggerSync { peer_ia, tool_access, is_broadcast, .. } => {
+            log::info!("CMD: TriggerSync(peer={:#06X}, tool={}, broadcast={})", peer_ia, tool_access, is_broadcast);
+            // Plain stacks reply `SyncFailed` synchronously (see
+            // `ApplicationLayer::handle_service`) rather than panicking, so
+            // we can dispatch unconditionally and rely on the app layer to
+            // fall through for non-secure builds.
+            let _ = stack.initiate_sync(peer_ia, tool_access, is_broadcast).await;
+        }
+        RunnerMessage::PowerCycle => {
+            log::info!("CMD: PowerCycle — flush + exit");
+            flush_and_exit::<S>(stack, shm, None, ExitReason::PowerCycle).await;
+        }
+        RunnerMessage::MasterReset { erase_code } => {
+            log::info!("CMD: MasterReset(erase_code=0x{:02x})", erase_code);
+            let code = EraseCode::from(erase_code);
+            flush_and_exit::<S>(stack, shm, Some(code), ExitReason::MasterReset { erase_code }).await;
+        }
+    }
+}
+
+/// Handle one `A_Restart` request delivered by the stack.
+///
+/// The application layer already pushed the `A_Restart_Response` to the
+/// outbox before this returns, but it hasn't traversed the router yet.
+/// If we mutate inner state right away — e.g. `FactoryReset` wipes the
+/// individual address — the response picks up `src = FF FF` on its way
+/// out. Wait for the outbox to drain via
+/// [`Stack::await_outbox_drained`] before applying the erase code and
+/// flushing state.
+pub async fn handle_restart_request<S: ConformanceStack>(
+    stack: Stack<'static, S>,
+    shm: &'static ShmCell,
+    erase_code: EraseCode,
+) {
+    if matches!(erase_code, EraseCode::Other(_)) {
+        return;
+    }
+
+    stack.await_outbox_drained().await;
+
+    let reason = ExitReason::Restart { erase_code: u8::from(erase_code) };
+    flush_and_exit::<S>(stack, shm, Some(erase_code), reason).await;
+}
+
+async fn flush_and_exit<S: ConformanceStack>(
+    stack: Stack<'static, S>,
+    shm: &'static ShmCell,
+    erase: Option<EraseCode>,
+    reason: ExitReason,
+) -> ! {
+    let state = stack.state();
+    if let Some(code) = erase {
+        S::apply_erase_code(state, code);
+    }
+    let snapshot = S::to_device_config(state);
+    flush_state(shm, &snapshot);
+    exit_with_reason(reason).await
+}
+
+// `Channel` re-export for binaries — saves each bin importing both
+// embassy_sync paths and keeps the dependency surface small.
+pub type CommandChannel = Channel<NoopRawMutex, IpcCommand, 8>;

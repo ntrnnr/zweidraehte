@@ -39,11 +39,11 @@ use embassy_time::{Duration, Timer};
 
 use zweidraehte_proto::messages::knx::ServiceType;
 
+use super::frame_source::{CapturedLinkLayerMessage, FrameSource, TaggedFrame};
 use super::framing::{read_msg_async, write_msg_async};
-use super::shm::SharedMemory;
-use super::mock::CapturedLinkLayerMessage;
 use super::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use super::secure_stack::SecureConformanceDeviceConfig;
+use super::shm::SharedMemory;
 use super::stack::ConformanceDeviceConfig;
 
 use crate::logger::{self, LogEntry};
@@ -76,7 +76,10 @@ impl DutMode {
 
 enum LifecycleState {
     Dead,
-    Running { child: Child, socket: Async<UnixStream> },
+    Running {
+        child: Child,
+        socket: Async<UnixStream>,
+    },
     /// Set by [`ChildLifecycle::step`] when the DUT replied with
     /// `Exiting` instead of `StepComplete`. The caller (usually the
     /// test runner) knows to wait for EOF + respawn.
@@ -115,9 +118,13 @@ pub struct ChildLifecycle {
     /// Monotonic counter for step `seq` values. Wraps at `u32::MAX`
     /// but a single test run never exceeds ~100 000 steps.
     next_seq: u32,
-    /// Buffered `UnsolicitedFrame` payloads that arrived between
-    /// steps. Drained by `Expect` steps via [`pop_unsolicited`].
-    unsolicited_frames: VecDeque<CapturedFrame>,
+    /// Buffered outbox frames waiting to be consumed by `Expect*`
+    /// steps. Each entry carries a [`FrameSource`] tag recording
+    /// whether it came from a `StepComplete` batch, an
+    /// `UnsolicitedFrame`, or a post-respawn ROI scan — so mismatch
+    /// diagnostics can explain "this frame was a late retransmit, not
+    /// your expected response".
+    unsolicited_frames: VecDeque<TaggedFrame>,
 }
 
 impl ChildLifecycle {
@@ -130,13 +137,7 @@ impl ChildLifecycle {
             DutMode::Plain => shm.write_state(&ConformanceDeviceConfig::default_snapshot())?,
             DutMode::Secure => shm.write_state(&SecureConformanceDeviceConfig::default_snapshot())?,
         }
-        Ok(Self {
-            shm,
-            state: LifecycleState::Dead,
-            mode,
-            next_seq: 0,
-            unsolicited_frames: VecDeque::new(),
-        })
+        Ok(Self { shm, state: LifecycleState::Dead, mode, next_seq: 0, unsolicited_frames: VecDeque::new() })
     }
 
     pub fn mode(&self) -> DutMode {
@@ -206,6 +207,34 @@ impl ChildLifecycle {
         Ok(())
     }
 
+    /// Factory-reset the DUT as a single transactional unit: kill the
+    /// current child → reinitialise SHM with the default snapshot →
+    /// respawn and wait for ROI.
+    ///
+    /// The runner-side `TestStep::FullReset` previously ran this
+    /// sequence inline and bailed on the first error, leaving the
+    /// lifecycle wedged in `Dead` between sub-steps. This method keeps
+    /// the sequence all-or-nothing: on any intermediate failure the
+    /// lifecycle ends in `Dead`, and the caller's next command will
+    /// auto-respawn from the (possibly partially-reset) SHM. Buffered
+    /// unsolicited frames are discarded either way so the next suite
+    /// doesn't inherit leftover ROI.
+    pub async fn full_reset(&mut self) -> io::Result<()> {
+        self.kill().await;
+        let reset_result = self.reset_shared_memory();
+        // Always discard buffered unsolicited frames — even on partial
+        // failure, what's buffered no longer reflects the DUT we're
+        // about to run.
+        self.discard_unsolicited();
+        reset_result?;
+        self.spawn_and_wait_roi().await?;
+        // Drop the fresh DUT's startup ROI scan — `full_reset` is
+        // used as teardown, so the next suite shouldn't inherit ROI
+        // frames.
+        self.discard_unsolicited();
+        Ok(())
+    }
+
     // ========================================================================
     // Step-driven command flow
     // ========================================================================
@@ -258,12 +287,13 @@ impl ChildLifecycle {
         Ok(reason)
     }
 
-    /// Pop the next buffered unsolicited frame from the DUT, if any.
+    /// Pop the next buffered outbox frame from the DUT, if any.
     /// Returns `None` when the buffer is empty — callers should then
     /// fall through to [`next_frame`](Self::next_frame) to wait for
-    /// more.
-    pub fn pop_unsolicited(&mut self) -> Option<CapturedLinkLayerMessage> {
-        self.unsolicited_frames.pop_front().map(captured_frame_to_message)
+    /// more. The returned [`TaggedFrame`] exposes the frame's
+    /// provenance for diagnostic output.
+    pub fn pop_unsolicited(&mut self) -> Option<TaggedFrame> {
+        self.unsolicited_frames.pop_front()
     }
 
     /// Wait (with timeout) for the next frame from the DUT. Reads
@@ -272,11 +302,13 @@ impl ChildLifecycle {
     /// `RoiComplete` in the stream are handled transparently
     /// (forwarded to the logger / ignored respectively).
     ///
-    /// Returns `Ok(Some(msg))` when a frame is available,
-    /// `Ok(None)` on timeout, and `Err` on socket failure.
-    pub async fn next_frame(&mut self, timeout: Duration) -> io::Result<Option<CapturedLinkLayerMessage>> {
-        if let Some(msg) = self.pop_unsolicited() {
-            return Ok(Some(msg));
+    /// Returns `Ok(Some(frame))` when a frame is available,
+    /// `Ok(None)` on timeout, and `Err` on socket failure. The
+    /// returned [`TaggedFrame`] carries a [`FrameSource`] so callers
+    /// can surface provenance in mismatch diagnostics.
+    pub async fn next_frame(&mut self, timeout: Duration) -> io::Result<Option<TaggedFrame>> {
+        if let Some(frame) = self.pop_unsolicited() {
+            return Ok(Some(frame));
         }
         // If the child is dead (previous step's A_Restart), respawn
         // transparently and try reading from the fresh DUT. Post-
@@ -285,15 +317,15 @@ impl ChildLifecycle {
         // ROI around for tests that want to observe it.
         if !self.is_child_running() {
             self.auto_respawn_if_dead(false).await?;
-            if let Some(msg) = self.pop_unsolicited() {
-                return Ok(Some(msg));
+            if let Some(frame) = self.pop_unsolicited() {
+                return Ok(Some(frame));
             }
         }
         let deadline = Timer::after(timeout);
         let mut deadline = std::pin::pin!(deadline);
         loop {
-            if let Some(msg) = self.pop_unsolicited() {
-                return Ok(Some(msg));
+            if let Some(frame) = self.pop_unsolicited() {
+                return Ok(Some(frame));
             }
             let socket = match self.state.socket() {
                 Some(s) => s,
@@ -301,8 +333,8 @@ impl ChildLifecycle {
             };
             match select(read_msg_async::<DutMessage>(socket), deadline.as_mut()).await {
                 Either::First(Ok(Some(msg))) => {
-                    if let Some(captured) = self.ingest_dut_message(msg) {
-                        return Ok(Some(captured));
+                    if let Some(frame) = self.ingest_dut_message(msg) {
+                        return Ok(Some(frame));
                     }
                     // continue — message was a log / RoiComplete /
                     // lifecycle event that next_frame swallows
@@ -389,10 +421,7 @@ impl ChildLifecycle {
             let socket = match self.state.socket() {
                 Some(s) => s,
                 None => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::NotConnected,
-                        "child died while awaiting StepComplete",
-                    ));
+                    return Err(io::Error::new(io::ErrorKind::NotConnected, "child died while awaiting StepComplete"));
                 }
             };
 
@@ -423,12 +452,20 @@ impl ChildLifecycle {
                         log::warn!("StepComplete seq mismatch: got {}, want {}", seq, want_seq);
                     }
                     let n = frames.len();
-                    self.unsolicited_frames.extend(frames);
+                    let source = FrameSource::StepReply(seq);
+                    self.unsolicited_frames.extend(
+                        frames
+                            .into_iter()
+                            .map(|frame| TaggedFrame { source, message: captured_frame_to_message(frame) }),
+                    );
                     appended += n;
                     got_step_complete = true;
                 }
-                Some(DutMessage::UnsolicitedFrame { frame, .. }) => {
-                    self.unsolicited_frames.push_back(frame);
+                Some(DutMessage::UnsolicitedFrame { frame_seq, frame }) => {
+                    self.unsolicited_frames.push_back(TaggedFrame {
+                        source: FrameSource::Unsolicited(frame_seq),
+                        message: captured_frame_to_message(frame),
+                    });
                     appended += 1;
                 }
                 Some(DutMessage::Log { level, target, message }) => {
@@ -462,28 +499,31 @@ impl ChildLifecycle {
                         return Ok(appended);
                     }
                     self.mark_dead();
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "DUT disconnected before StepComplete",
-                    ));
+                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "DUT disconnected before StepComplete"));
                 }
             }
         }
     }
 
     /// Interpret an incoming `DutMessage`. Returns the captured frame
-    /// if the message carried one; otherwise returns `None` after
-    /// handling it (log forwarding, lifecycle transitions).
-    fn ingest_dut_message(&mut self, msg: DutMessage) -> Option<CapturedLinkLayerMessage> {
+    /// (with its source tag) if the message carried one; otherwise
+    /// returns `None` after handling it (log forwarding, lifecycle
+    /// transitions).
+    fn ingest_dut_message(&mut self, msg: DutMessage) -> Option<TaggedFrame> {
         match msg {
-            DutMessage::UnsolicitedFrame { frame, .. } => Some(captured_frame_to_message(frame)),
-            DutMessage::StepComplete { frames, .. } => {
+            DutMessage::UnsolicitedFrame { frame_seq, frame } => Some(TaggedFrame {
+                source: FrameSource::Unsolicited(frame_seq),
+                message: captured_frame_to_message(frame),
+            }),
+            DutMessage::StepComplete { seq, frames } => {
                 // Shouldn't happen outside a `step()` context, but be
                 // defensive: buffer extras and return the first.
-                let mut iter = frames.into_iter();
+                let source = FrameSource::StepReply(seq);
+                let mut iter =
+                    frames.into_iter().map(|frame| TaggedFrame { source, message: captured_frame_to_message(frame) });
                 let first = iter.next();
                 self.unsolicited_frames.extend(iter);
-                first.map(captured_frame_to_message)
+                first
             }
             DutMessage::Log { level, target, message } => {
                 forward_log(level, target, message);
@@ -598,7 +638,16 @@ impl ChildLifecycle {
             match read_msg_async::<DutMessage>(socket).await {
                 Ok(Some(DutMessage::RoiComplete)) => return Ok(()),
                 Ok(Some(DutMessage::UnsolicitedFrame { frame, .. })) => {
-                    self.unsolicited_frames.push_back(frame);
+                    // Frames that land during `wait_for_roi_complete`
+                    // are by definition the read-on-init scan — even
+                    // though they arrive as `UnsolicitedFrame` on the
+                    // wire, tag them as `RoiScan` so mismatch
+                    // diagnostics can distinguish ROI leakage from
+                    // real retransmits.
+                    self.unsolicited_frames.push_back(TaggedFrame {
+                        source: FrameSource::RoiScan,
+                        message: captured_frame_to_message(frame),
+                    });
                 }
                 Ok(Some(DutMessage::Log { level, target, message })) => forward_log(level, target, message),
                 Ok(Some(other)) => {
@@ -684,10 +733,7 @@ impl Drop for ChildLifecycle {
 // ============================================================================
 
 fn captured_frame_to_message(frame: CapturedFrame) -> CapturedLinkLayerMessage {
-    CapturedLinkLayerMessage {
-        service_type: ServiceType::from(frame.service_type),
-        data: frame.data,
-    }
+    CapturedLinkLayerMessage { service_type: ServiceType::from(frame.service_type), data: frame.data }
 }
 
 fn forward_log(level: u8, target: String, message: String) {

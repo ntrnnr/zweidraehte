@@ -15,7 +15,7 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     StackDefinition,
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, HasExtensionState, HasDeviceConfig, HasSecurityMode, DeviceConfig,
+        DefaultSystemBInterfaceObjects, DeviceConfig, HasDeviceConfig, HasExtensionState, HasSecurityMode,
         SecureExtensionConfig, SecureResources, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
         create_system_b_objects_with_extra,
     },
@@ -958,6 +958,41 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         zweidraehte_device::layers::application::services::PropertyExtValueService,
     );
     type LayerBuilder = SecureDeviceBuilder<zweidraehte_device::layers::secure_application::WithP2p>;
+}
+
+// ============================================================================
+// ConformanceStack Integration
+// ============================================================================
+//
+// Wires the secure stack into the generic DUT helpers in
+// `crate::dut_common`. Mirrors the plain-stack implementation in
+// `super::stack`, differing only in the inner state type the erase-code
+// dispatch targets.
+
+impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
+    type DeviceConfig = SecureConformanceDeviceConfig;
+
+    fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
+        state.to_device_config()
+    }
+
+    fn apply_erase_code(state: &Self::State, code: zweidraehte_device::restart::EraseCode) {
+        use zweidraehte_device::restart::EraseCode;
+        let inner = state.inner();
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => {}
+            EraseCode::FactoryReset => inner.factory_reset(),
+            EraseCode::ResetIA => inner.reset_individual_address(),
+            EraseCode::ResetAP => inner.reset_application(),
+            EraseCode::ResetParam => inner.reset_parameters(),
+            EraseCode::ResetLinks => {
+                inner.reset_address_table();
+                inner.reset_association_table();
+            }
+            EraseCode::FactoryResetKeepIA => inner.factory_reset_keep_ia(),
+            EraseCode::Other(_) => log::warn!("apply_erase_code: unsupported {:?}", code),
+        }
+    }
 }
 
 // ============================================================================

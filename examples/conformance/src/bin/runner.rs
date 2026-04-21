@@ -139,12 +139,50 @@ fn scale_lifecycle_ms(ms: u32, divisor: u64) -> u64 {
 }
 
 // ============================================================================
-// Step result
+// Step result & context
 // ============================================================================
 
 /// Shared outcome type so every per-variant handler has the same
 /// return shape. `false` is a test failure; `true` passes.
 type StepOk = bool;
+
+/// Per-step runtime context threaded into every `step_*` function.
+///
+/// Collapsing `sec_ctx` + `variables` + `time_divisor` into one struct
+/// keeps new pieces of shared runtime state a single-line edit rather
+/// than a 20-signature refactor. Secure steps panic if `sec` is `None`
+/// — that invariant is enforced by test authorship, not by type.
+pub struct StepContext<'a> {
+    /// Security state (keys, sequence numbers). `Some` for secure
+    /// suites, `None` for plain.
+    pub sec: Option<&'a mut SecurityTestContext>,
+    /// Named telegram variables (`#EDI`, `#BDUT_ADDR`, group
+    /// addresses) used by `InjectTemplate` / `ExpectTemplate` /
+    /// secure templates.
+    pub vars: &'a BTreeMap<String, TestVariable>,
+    /// Time-scaling divisor passed through to `scale_ms` etc.
+    /// Normally 50 (fast mode) or 1 (`--realtime`).
+    pub divisor: u64,
+}
+
+impl<'a> StepContext<'a> {
+    pub fn new(
+        sec: Option<&'a mut SecurityTestContext>,
+        vars: &'a BTreeMap<String, TestVariable>,
+        divisor: u64,
+    ) -> Self {
+        Self { sec, vars, divisor }
+    }
+
+    /// Borrow the security context mutably without consuming the
+    /// wrapper. Secure steps that used to take
+    /// `Option<&mut SecurityTestContext>` take `&mut StepContext` now
+    /// and call this helper.
+    #[inline]
+    pub fn sec_mut(&mut self) -> Option<&mut SecurityTestContext> {
+        self.sec.as_deref_mut()
+    }
+}
 
 // ============================================================================
 // Step dispatch
@@ -157,20 +195,18 @@ async fn execute_step(
     harness: &mut ChildLifecycle,
     step: &TestStep,
     index: usize,
-    sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &BTreeMap<String, TestVariable>,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
     match step {
         TestStep::Comment(text) => step_comment(index, text),
         TestStep::Inject { telegram, delay_before_ms } => {
-            step_inject(harness, index, &telegram.data, *delay_before_ms, time_divisor).await
+            step_inject(harness, index, &telegram.data, *delay_before_ms, ctx.divisor).await
         }
         TestStep::Expect { matcher, timeout_ms } => {
-            step_expect(harness, index, matcher, *timeout_ms, time_divisor).await
+            step_expect(harness, index, matcher, *timeout_ms, ctx.divisor).await
         }
-        TestStep::ExpectNone { timeout_ms } => step_expect_none(harness, index, *timeout_ms, time_divisor).await,
-        TestStep::Wait { duration_ms } => step_wait(index, *duration_ms, time_divisor).await,
+        TestStep::ExpectNone { timeout_ms } => step_expect_none(harness, index, *timeout_ms, ctx.divisor).await,
+        TestStep::Wait { duration_ms } => step_wait(index, *duration_ms, ctx.divisor).await,
         TestStep::Custom => step_custom(index),
         TestStep::SetProgrammingMode(enabled) => step_set_programming_mode(harness, index, *enabled).await,
         TestStep::TriggerRead { asap } => step_trigger_read(harness, index, *asap).await,
@@ -178,71 +214,40 @@ async fn execute_step(
         TestStep::TriggerSync { peer_ia, tool_access, is_broadcast } => {
             step_trigger_sync(harness, index, *peer_ia, *tool_access, *is_broadcast).await
         }
-        TestStep::Drain { settle_ms } => step_drain(harness, index, *settle_ms, time_divisor).await,
+        TestStep::Drain { settle_ms } => step_drain(harness, index, *settle_ms, ctx.divisor).await,
         TestStep::WaitForRestart { timeout_ms } => step_wait_for_restart(harness, index, *timeout_ms).await,
-        TestStep::PowerCycle { timeout_ms } => step_power_cycle(harness, index, *timeout_ms, time_divisor).await,
+        TestStep::PowerCycle { timeout_ms } => step_power_cycle(harness, index, *timeout_ms, ctx.divisor).await,
         TestStep::MasterReset { erase_code, timeout_ms } => {
-            step_master_reset(harness, index, *erase_code, *timeout_ms, time_divisor).await
+            step_master_reset(harness, index, *erase_code, *timeout_ms, ctx.divisor).await
         }
         TestStep::FullReset { timeout_ms } => {
-            step_full_reset(harness, sec_ctx, index, *timeout_ms, time_divisor).await
+            let divisor = ctx.divisor;
+            step_full_reset(harness, ctx.sec_mut(), index, *timeout_ms, divisor).await
         }
         TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
             println!("  [{}] ❌ Unresolved template", index);
             false
         }
         TestStep::InjectSecure { template, sec_params, delay_before_ms } => {
-            step_inject_secure(harness, sec_ctx, variables, index, template, sec_params, *delay_before_ms, time_divisor)
-                .await
+            step_inject_secure(harness, index, template, sec_params, *delay_before_ms, ctx).await
         }
         TestStep::ExpectSecure { template, sec_params, timeout_ms } => {
-            step_expect_secure(harness, sec_ctx, variables, index, template, sec_params, *timeout_ms, time_divisor)
-                .await
+            step_expect_secure(harness, index, template, sec_params, *timeout_ms, ctx).await
         }
         TestStep::InjectSecureInvalid { template, sec_params, invalid, delay_before_ms } => {
-            step_inject_secure_invalid(
-                harness,
-                sec_ctx,
-                variables,
-                index,
-                template,
-                sec_params,
-                invalid,
-                *delay_before_ms,
-                time_divisor,
-            )
-            .await
+            step_inject_secure_invalid(harness, index, template, sec_params, invalid, *delay_before_ms, ctx).await
         }
         TestStep::InjectSyncReq { sync_params, delay_before_ms } => {
-            step_inject_sync_req(harness, sec_ctx, variables, index, sync_params, *delay_before_ms, time_divisor).await
+            step_inject_sync_req(harness, index, sync_params, *delay_before_ms, ctx).await
         }
         TestStep::InjectSyncReqInvalid { sync_params, invalid, delay_before_ms } => {
-            step_inject_sync_req_invalid(
-                harness,
-                sec_ctx,
-                variables,
-                index,
-                sync_params,
-                invalid,
-                *delay_before_ms,
-                time_divisor,
-            )
-            .await
+            step_inject_sync_req_invalid(harness, index, sync_params, invalid, *delay_before_ms, ctx).await
         }
         TestStep::ExpectSyncRes { sync_expect, timeout_ms } => {
-            step_expect_sync_res(harness, sec_ctx, index, sync_expect, *timeout_ms, time_divisor).await
+            step_expect_sync_res(harness, index, sync_expect, *timeout_ms, ctx).await
         }
         TestStep::ExpectSyncReqThenRespond { params, timeout_ms } => {
-            step_expect_sync_req_then_respond(
-                harness,
-                sec_ctx,
-                variables,
-                index,
-                params,
-                *timeout_ms,
-                time_divisor,
-            )
-            .await
+            step_expect_sync_req_then_respond(harness, index, params, *timeout_ms, ctx).await
         }
     }
 }
@@ -343,14 +348,15 @@ async fn step_expect(
     let ms = if timeout_ms == 0 { scale_ms(1000, time_divisor) } else { scale_ms(timeout_ms, time_divisor) };
     println!("  [{}] ⬆️  Expect: {:02X?} ({}ms)", index, matcher.expected, ms);
     match harness.next_frame(Duration::from_millis(ms)).await {
-        Ok(Some(msg)) => {
-            if matcher.matches(&msg.data) {
-                println!("        ✅ Matched: {:02X?}", msg.data.as_slice());
+        Ok(Some(tagged)) => {
+            let data = &tagged.message.data;
+            if matcher.matches(data) {
+                println!("        ✅ Matched: {:02X?}", data.as_slice());
                 true
             } else {
                 println!("        ❌ Mismatch!");
                 println!("           Expected: {:02X?}", matcher.expected);
-                println!("           Got:      {:02X?}", msg.data.as_slice());
+                println!("           Got:      {:02X?}  (source: {})", data.as_slice(), tagged.source.label());
                 false
             }
         }
@@ -369,9 +375,9 @@ async fn step_expect_none(harness: &mut ChildLifecycle, index: usize, timeout_ms
     let ms = scale_ms(timeout_ms, time_divisor);
     println!("  [{}] 🚫 ExpectNone (timeout {}ms)", index, ms);
     match harness.next_frame(Duration::from_millis(ms)).await {
-        Ok(Some(msg)) => {
+        Ok(Some(tagged)) => {
             println!("        ❌ Unexpected message received!");
-            println!("           Got: {:02X?}", msg.data.as_slice());
+            println!("           Got: {:02X?}  (source: {})", tagged.message.data.as_slice(), tagged.source.label());
             false
         }
         Ok(None) => {
@@ -432,10 +438,7 @@ async fn step_trigger_sync(
     is_broadcast: bool,
 ) -> StepOk {
     println!("  [{}] TriggerSync(peer={:#06X}, tool={}, broadcast={})", index, peer_ia, tool_access, is_broadcast);
-    match harness
-        .step(|seq| RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast })
-        .await
-    {
+    match harness.step(|seq| RunnerMessage::TriggerSync { seq, peer_ia, tool_access, is_broadcast }).await {
         Ok(_) => true,
         Err(e) => {
             println!("        Failed: {}", e);
@@ -448,12 +451,7 @@ async fn step_trigger_sync(
 // Lifecycle commands
 // ============================================================================
 
-async fn step_power_cycle(
-    harness: &mut ChildLifecycle,
-    index: usize,
-    timeout_ms: u32,
-    time_divisor: u64,
-) -> StepOk {
+async fn step_power_cycle(harness: &mut ChildLifecycle, index: usize, timeout_ms: u32, time_divisor: u64) -> StepOk {
     let ms = scale_lifecycle_ms(timeout_ms, time_divisor);
     println!("  [{}] 🔌 PowerCycle (timeout {}ms)", index, ms);
     match harness.step_exiting(RunnerMessage::PowerCycle, Duration::from_millis(ms)).await {
@@ -497,20 +495,11 @@ async fn step_full_reset(
     _time_divisor: u64,
 ) -> StepOk {
     println!("  [{}] 🏭 FullReset (wipe SHM + respawn)", index);
-    harness.kill().await;
-    if let Err(e) = harness.reset_shared_memory() {
-        println!("        ❌ Failed to reset SHM: {}", e);
+    if let Err(e) = harness.full_reset().await {
+        println!("        ❌ Failed to full-reset DUT: {}", e);
         return false;
     }
-    if let Err(e) = harness.spawn_and_wait_roi().await {
-        println!("        ❌ Failed to respawn DUT: {}", e);
-        return false;
-    }
-    // Drop the fresh DUT's startup ROI scan — a `FullReset` is used
-    // as teardown, so the next suite shouldn't inherit ROI frames.
-    harness.discard_unsolicited();
-    // Any persisted sec_ctx is stale because the DUT is
-    // factory-fresh.
+    // Any persisted sec_ctx is stale because the DUT is factory-fresh.
     if let Some(ctx) = sec_ctx {
         ctx.reset_peer_state();
     }
@@ -524,15 +513,15 @@ async fn step_full_reset(
 
 async fn step_inject_secure(
     harness: &mut ChildLifecycle,
-    sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &BTreeMap<String, TestVariable>,
     index: usize,
     template: &str,
     sec_params: &SecureParams,
     delay_before_ms: u32,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    let Some(ctx) = sec_ctx else {
+    let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
+    let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ InjectSecure used without SecurityTestContext", index);
         return false;
     };
@@ -544,11 +533,14 @@ async fn step_inject_secure(
         }
     };
     let internal = tp1_to_internal(&plaintext.data);
-    let secure_internal = crypto::wrap_secure(&internal, sec_params, ctx);
+    let secure_internal = crypto::wrap_secure(&internal, sec_params, sec);
     let secure_tp1 = internal_to_tp1(&secure_internal);
     println!(
         "  [{}] 🔒⬇️  InjectSecure ({:?}, key={}): {} bytes",
-        index, sec_params.sec_type, sec_params.key_name, secure_tp1.len()
+        index,
+        sec_params.sec_type,
+        sec_params.key_name,
+        secure_tp1.len()
     );
     if delay_before_ms > 0 {
         Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
@@ -564,15 +556,15 @@ async fn step_inject_secure(
 
 async fn step_expect_secure(
     harness: &mut ChildLifecycle,
-    sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &BTreeMap<String, TestVariable>,
     index: usize,
     template: &str,
     sec_params: &SecureParams,
     timeout_ms: u32,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    let Some(ctx) = sec_ctx else {
+    let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
+    let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ ExpectSecure used without SecurityTestContext", index);
         return false;
     };
@@ -582,8 +574,8 @@ async fn step_expect_secure(
         index, sec_params.sec_type, sec_params.key_name, ms
     );
 
-    let msg = match harness.next_frame(Duration::from_millis(ms)).await {
-        Ok(Some(msg)) => msg,
+    let tagged = match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(t)) => t,
         Ok(None) => {
             println!("        ❌ Timeout (no secure response)");
             return false;
@@ -594,8 +586,8 @@ async fn step_expect_secure(
         }
     };
 
-    let internal = tp1_to_internal(&msg.data);
-    match crypto::unwrap_secure(&internal, sec_params, ctx) {
+    let internal = tp1_to_internal(&tagged.message.data);
+    match crypto::unwrap_secure(&internal, sec_params, sec) {
         Some(plaintext_apdu) => {
             let mut plain_internal = internal[..6].to_vec();
             plain_internal.extend_from_slice(&plaintext_apdu);
@@ -609,23 +601,20 @@ async fn step_expect_secure(
             let expected_internal = tp1_to_internal(&matcher.expected);
             let masks_internal = tp1_shrink_per_byte(&matcher.masks, &matcher.expected);
             let wildcards_internal = tp1_shrink_per_byte(&matcher.wildcards, &matcher.expected);
-            let internal_matcher = TelegramMatcher {
-                expected: expected_internal,
-                masks: masks_internal,
-                wildcards: wildcards_internal,
-            };
+            let internal_matcher =
+                TelegramMatcher { expected: expected_internal, masks: masks_internal, wildcards: wildcards_internal };
             if internal_matcher.matches(&plain_internal) {
                 println!("        ✅ Secure response matches");
                 true
             } else {
-                println!("        ❌ Plaintext mismatch:");
+                println!("        ❌ Plaintext mismatch (source: {}):", tagged.source.label());
                 println!("           {}", internal_matcher.diff(&plain_internal));
                 false
             }
         }
         None => {
-            println!("        ❌ Decryption/verification failed");
-            println!("           Raw: {:02X?}", msg.data);
+            println!("        ❌ Decryption/verification failed (source: {})", tagged.source.label());
+            println!("           Raw: {:02X?}", tagged.message.data);
             false
         }
     }
@@ -633,16 +622,16 @@ async fn step_expect_secure(
 
 async fn step_inject_secure_invalid(
     harness: &mut ChildLifecycle,
-    sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &BTreeMap<String, TestVariable>,
     index: usize,
     template: &str,
     sec_params: &SecureParams,
     invalid: &InvalidSecurityParam,
     delay_before_ms: u32,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    let Some(ctx) = sec_ctx else {
+    let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
+    let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ InjectSecureInvalid used without SecurityTestContext", index);
         return false;
     };
@@ -654,7 +643,7 @@ async fn step_inject_secure_invalid(
         }
     };
     let internal = tp1_to_internal(&plaintext.data);
-    let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, ctx, invalid);
+    let secure_internal = crypto::wrap_secure_invalid(&internal, sec_params, sec, invalid);
     let secure_tp1 = internal_to_tp1(&secure_internal);
     println!("  [{}] 🔒💥⬇️  InjectSecureInvalid ({:?}): {} bytes", index, invalid, secure_tp1.len());
     if delay_before_ms > 0 {
@@ -675,18 +664,18 @@ async fn step_inject_secure_invalid(
 
 async fn step_inject_sync_req(
     harness: &mut ChildLifecycle,
-    sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &BTreeMap<String, TestVariable>,
     index: usize,
     sync_params: &SyncReqParams,
     delay_before_ms: u32,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    let Some(ctx) = sec_ctx else {
+    let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
+    let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ InjectSyncReq requires security context", index);
         return false;
     };
-    let key = ctx.key(&sync_params.key_name);
+    let key = sec.key(&sync_params.key_name);
     let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
 
     let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
@@ -733,19 +722,19 @@ async fn step_inject_sync_req(
 
 async fn step_inject_sync_req_invalid(
     harness: &mut ChildLifecycle,
-    sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &BTreeMap<String, TestVariable>,
     index: usize,
     sync_params: &SyncReqParams,
     invalid: &InvalidSecurityParam,
     delay_before_ms: u32,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    let Some(ctx) = sec_ctx else {
+    let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
+    let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ InjectSyncReqInvalid requires security context", index);
         return false;
     };
-    let key = ctx.key(&sync_params.key_name);
+    let key = sec.key(&sync_params.key_name);
     let seq_nr_local = zweidraehte_conformance::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
 
     let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
@@ -793,21 +782,21 @@ async fn step_inject_sync_req_invalid(
 
 async fn step_expect_sync_res(
     harness: &mut ChildLifecycle,
-    sec_ctx: Option<&mut SecurityTestContext>,
     index: usize,
     sync_expect: &SyncResExpect,
     timeout_ms: u32,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    let Some(ctx) = sec_ctx else {
+    let time_divisor = ctx.divisor;
+    let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ❌ ExpectSyncRes requires security context", index);
         return false;
     };
     let ms = scale_ms(timeout_ms, time_divisor);
     println!("  [{}] 🔄⬆️  ExpectSyncRes (timeout={}ms)", index, ms);
 
-    let msg = match harness.next_frame(Duration::from_millis(ms)).await {
-        Ok(Some(msg)) => msg,
+    let tagged = match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(t)) => t,
         Ok(None) => {
             println!("        ❌ Timeout waiting for sync response");
             return false;
@@ -818,8 +807,8 @@ async fn step_expect_sync_res(
         }
     };
 
-    let internal = tp1_to_internal(&msg.data);
-    let key = ctx.key(&sync_expect.key_name);
+    let internal = tp1_to_internal(&tagged.message.data);
+    let key = sec.key(&sync_expect.key_name);
     match crypto::unwrap_sync_res(&internal, &key, &sync_expect.challenge) {
         Some(decoded) => {
             let seq_remote = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded.seq_nr_remote);
@@ -840,9 +829,9 @@ async fn step_expect_sync_res(
                 }
             }
 
-            ctx.update_table_seq(seq_remote);
-            if sync_expect.tool_access && seq_local > ctx.tool_seq_nr {
-                ctx.tool_seq_nr = seq_local;
+            sec.update_table_seq(seq_remote);
+            if sync_expect.tool_access && seq_local > sec.tool_seq_nr {
+                sec.tool_seq_nr = seq_local;
             }
             if ok {
                 println!("        ✅ Sync response matches");
@@ -858,22 +847,22 @@ async fn step_expect_sync_res(
 
 async fn step_expect_sync_req_then_respond(
     harness: &mut ChildLifecycle,
-    sec_ctx: Option<&mut SecurityTestContext>,
-    variables: &BTreeMap<String, TestVariable>,
     index: usize,
     params: &SyncResponseParams,
     timeout_ms: u32,
-    time_divisor: u64,
+    ctx: &mut StepContext<'_>,
 ) -> StepOk {
-    let Some(ctx) = sec_ctx else {
+    let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
+    let Some(sec) = ctx.sec_mut() else {
         println!("  [{}] ExpectSyncReqThenRespond requires security context", index);
         return false;
     };
     let ms = scale_ms(timeout_ms, time_divisor);
     println!("  [{}] ExpectSyncReqThenRespond (timeout={}ms)", index, ms);
 
-    let msg = match harness.next_frame(Duration::from_millis(ms)).await {
-        Ok(Some(msg)) => msg,
+    let tagged = match harness.next_frame(Duration::from_millis(ms)).await {
+        Ok(Some(t)) => t,
         Ok(None) => {
             println!("        Timeout waiting for DUT sync request");
             return false;
@@ -884,10 +873,10 @@ async fn step_expect_sync_req_then_respond(
         }
     };
 
-    let internal = tp1_to_internal(&msg.data);
-    let key = ctx.key(&params.key_name);
+    let internal = tp1_to_internal(&tagged.message.data);
+    let key = sec.key(&params.key_name);
     let Some(decoded_req) = crypto::unwrap_sync_req(&internal, &key) else {
-        println!("        Failed to decrypt DUT sync request");
+        println!("        Failed to decrypt DUT sync request (source: {})", tagged.source.label());
         return false;
     };
     let seq_local_val = zweidraehte_conformance::tests::security::context::seq_from_bytes(&decoded_req.seq_nr_local);
@@ -1079,13 +1068,10 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     // Create the lifecycle (SHM + per-mode child management).
     let mut harness = ChildLifecycle::new(dut_mode).expect("create child lifecycle");
-    println!(
-        "DUT mode: {}",
-        match dut_mode {
-            DutMode::Secure => "secure (conformance-dut-secure)",
-            DutMode::Plain => "plain (conformance-dut)",
-        }
-    );
+    println!("DUT mode: {}", match dut_mode {
+        DutMode::Secure => "secure (conformance-dut-secure)",
+        DutMode::Plain => "plain (conformance-dut)",
+    });
 
     // Spawn + wait for Ready + RoiComplete. The new protocol's
     // `RoiComplete` replaces the old timed-drain loop — no more
@@ -1156,8 +1142,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
-                    .await
+                if !execute_step(
+                    &mut harness,
+                    &resolved_step,
+                    i,
+                    &mut StepContext::new(sec_ctx.as_mut(), &suite.variables, time_divisor),
+                )
+                .await
                 {
                     prep_passed = false;
                 }
@@ -1207,8 +1198,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
                             continue;
                         }
                     };
-                    if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
-                        .await
+                    if !execute_step(
+                        &mut harness,
+                        &resolved_step,
+                        i,
+                        &mut StepContext::new(sec_ctx.as_mut(), &suite.variables, time_divisor),
+                    )
+                    .await
                     {
                         test_passed = false;
                     }
@@ -1226,8 +1222,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                if !execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
-                    .await
+                if !execute_step(
+                    &mut harness,
+                    &resolved_step,
+                    i,
+                    &mut StepContext::new(sec_ctx.as_mut(), &suite.variables, time_divisor),
+                )
+                .await
                 {
                     test_passed = false;
                 }
@@ -1244,8 +1245,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
                             continue;
                         }
                     };
-                    execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor)
-                        .await;
+                    execute_step(
+                        &mut harness,
+                        &resolved_step,
+                        i,
+                        &mut StepContext::new(sec_ctx.as_mut(), &suite.variables, time_divisor),
+                    )
+                    .await;
                 }
                 total_steps += test.teardown.len();
             }
@@ -1279,7 +1285,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
                         continue;
                     }
                 };
-                execute_step(&mut harness, &resolved_step, i, sec_ctx.as_mut(), &suite.variables, time_divisor).await;
+                execute_step(
+                    &mut harness,
+                    &resolved_step,
+                    i,
+                    &mut StepContext::new(sec_ctx.as_mut(), &suite.variables, time_divisor),
+                )
+                .await;
                 total_steps += 1;
             }
             println!("✅ Teardown completed\n");
