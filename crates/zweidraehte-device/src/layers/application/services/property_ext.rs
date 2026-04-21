@@ -763,42 +763,27 @@ fn handle_ext_description_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlServiceContext<'_, D>,
 ) {
-    use zweidraehte_proto::messages::knx::offsets;
+    use zweidraehte_proto::messages::apdu::property_ext::{
+        PropertyExtDescriptionHeader, PropertyExtDescriptionResponse,
+    };
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtDescriptionRead unexpected service type: {:?}", ind.service_type());
         return;
     }
 
-    let buf = ind.buf();
-    // Min length: APCI(2) + IOT(2) + INST(2) + PID(1) + descType_propIdx(2) = 9 bytes from MSG_APCI
-    if buf.len() < offsets::MSG_APCI + 9 {
+    let Some(hdr) = PropertyExtDescriptionHeader::parse(ind.buf()) else {
         error!("PropertyExtDescriptionRead too short: {}", ind.len());
         return;
-    }
-
-    // Per spec 03_03_07 §3.4.3.2, octets 4-6 carry a 12/12-bit
-    // packing: `object_instance[11:0] | property_id[11:0]`. Octets
-    // 7-8 carry `desc_type[3:0] | prop_index[11:0]`.
-    let base = offsets::MSG_APCI;
-    let object_type = u16::from_be_bytes([buf[base + 2], buf[base + 3]]);
-    let b5 = buf[base + 5];
-    let object_instance = ((buf[base + 4] as u16) << 4) | ((b5 as u16) >> 4);
-    let pid = (((b5 & 0x0F) as u16) << 8) | buf[base + 6] as u16;
-    let desc_type_prop_idx_hi = buf[base + 7];
-    let prop_idx_lo = buf[base + 8];
-    let prop_idx = (((desc_type_prop_idx_hi & 0x0F) as u16) << 8) | prop_idx_lo as u16;
+    };
 
     debug!(
         "AL PropertyExtDescriptionRead: iot=0x{:04X}, inst=0x{:04X}, pid={}, prop_idx={}",
-        object_type, object_instance, pid, prop_idx
+        hdr.object_type, hdr.object_instance, hdr.prop_id, hdr.prop_idx
     );
 
-    // Response is always 16 bytes APDU.
-    const RESP_LEN: usize = offsets::MSG_APCI + 17;
-
     // Resolve IOT + instance.
-    let object_idx = ctx.interface_objects.resolve_ext_object_index(object_type, object_instance);
+    let object_idx = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance);
 
     // The service-level access policy is 3FF/3FF (spec 03/03/07 Table 11),
     // so the service itself is never rejected. However, the per-property
@@ -807,7 +792,7 @@ fn handle_ext_description_read<D: StackDefinition>(
     // Security IO) return all-zero when accessed in plain mode with
     // security mode enabled.
     let desc_result = object_idx.and_then(|idx| {
-        let desc_resp = ctx.interface_objects.property_description_read(idx, pid, prop_idx).ok()?;
+        let desc_resp = ctx.interface_objects.property_description_read(idx, hdr.prop_id, hdr.prop_idx).ok()?;
 
         // Check per-property access policy via a dummy element-count read.
         // If the property value is access-denied, hide the descriptor too.
@@ -825,54 +810,22 @@ fn handle_ext_description_read<D: StackDefinition>(
         }
     });
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(RESP_LEN) else {
+    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtDescriptionResponse::MSG_LEN) else {
         warn!("AL no buffer for PropertyExtDescriptionResponse");
         return;
     };
 
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtDescriptionResponse).with_data(|buf| {
-        let b = offsets::MSG_APCI;
-        buf[b + 2..b + 4].copy_from_slice(&object_type.to_be_bytes());
-
-        // Pack object_instance[11:0] | response_pid[11:0] into octets
-        // [4..=6] per spec 03_03_07 §3.4.3.2.
-        let response_pid: u16 = match &desc_result {
-            Some(desc) => desc.prop_id as u16,
-            None => pid as u16,
-        };
-        let oi = object_instance & 0x0FFF;
-        let pi = response_pid & 0x0FFF;
-        buf[b + 4] = (oi >> 4) as u8;
-        buf[b + 5] = (((oi & 0x000F) << 4) | (pi >> 8)) as u8;
-        buf[b + 6] = (pi & 0x00FF) as u8;
-
-        match desc_result {
-            Some(desc) => {
-                // PropIdx as 12 bits: desc_type (high nibble of [7]) = 0,
-                // prop_idx high nibble in low nibble of [7], low byte in [8].
-                buf[b + 7] = (desc.prop_idx >> 8) as u8 & 0x0F;
-                buf[b + 8] = desc.prop_idx as u8;
-                // PDT + Writeable flag
-                buf[b + 9] = if desc.writeable { 0x80 } else { 0x00 } | (desc.pdt & 0x3F);
-                // MaxElements (2 bytes, upper 4 bits from PDT)
-                let pdt_max = ((desc.pdt as u16 & 0x3F) << 12) | (desc.max_elements & 0x0FFF);
-                buf[b + 10] = (pdt_max >> 8) as u8;
-                buf[b + 11] = pdt_max as u8;
-                // Access levels
-                buf[b + 12] = (desc.read_level << 4) | desc.write_level;
-                // Remaining bytes zero (padding to 16 bytes APDU).
-                for i in (b + 13)..(b + 16) {
-                    buf[i] = 0;
-                }
-            }
-            None => {
-                // Error: echo desc_type + prop_idx from request, zero the rest.
-                buf[b + 7] = desc_type_prop_idx_hi;
-                buf[b + 8] = prop_idx_lo;
-                for i in (b + 9)..(b + 16) {
-                    buf[i] = 0;
-                }
-            }
+        match &desc_result {
+            Some(desc) => PropertyExtDescriptionResponse::write(buf, hdr.object_type, hdr.object_instance, desc),
+            None => PropertyExtDescriptionResponse::write_error(
+                buf,
+                hdr.object_type,
+                hdr.object_instance,
+                hdr.prop_id,
+                hdr.desc_type,
+                hdr.prop_idx,
+            ),
         }
     });
 
