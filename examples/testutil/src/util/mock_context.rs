@@ -123,7 +123,7 @@ impl DeviceInfoContext for &MockContext {
         zweidraehte_proto::messages::knxip::substructs::ExtendedDeviceInformation {
             medium_status: 0x00,
             max_local_apdu_len: self.max_apdu_length.get(),
-            device_descriptor_type0: 0x091A, // System B TP1
+            device_descriptor_type0: 0x07B0, // System B TP1
         }
     }
 
@@ -141,7 +141,7 @@ impl DeviceInfoContext for &mut MockContext {
         zweidraehte_proto::messages::knxip::substructs::ExtendedDeviceInformation {
             medium_status: 0x00,
             max_local_apdu_len: self.max_apdu_length.get(),
-            device_descriptor_type0: 0x091A, // System B TP1
+            device_descriptor_type0: 0x07B0, // System B TP1
         }
     }
 
