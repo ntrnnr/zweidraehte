@@ -44,24 +44,10 @@ where
         self.object_type_for(object_idx)
     }
 
-    /// Extended property service instance resolution.
-    ///
-    /// Uses 0x0010-based per-type instance numbering: instance 0x0010 is
-    /// the first object of the given type, 0x0011 the second, etc. This
-    /// matches the convention used by the KNX conformance test templates.
-    fn resolve_ext_object_index(&self, object_type: u16, object_instance: u16) -> Option<u16> {
-        // Instance base: 0x0010 = first instance of each type.
-        if object_instance < 0x0010 {
-            return None;
-        }
-        let per_type_instance = (object_instance - 0x0010 + 1) as u8;
-        self.resolve_object_index(object_type, per_type_instance)
-    }
-
     fn property_description_read(
         &self,
         object_idx: u16,
-        prop_id: u8,
+        prop_id: u16,
         prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         use crate::objects::interface::PropertyLookup;

@@ -206,7 +206,7 @@ const KNXNETIP_CAP_TUNNELING_BIT: u16 = 1 << 1;
 // ============================================================================
 
 // Helper to build a simple non-array property descriptor.
-const fn simple_desc(pid: u8, pdt_id: u8, access: PropertyAccess) -> PropertyDescriptor {
+const fn simple_desc(pid: u16, pdt_id: u8, access: PropertyAccess) -> PropertyDescriptor {
     let (read_level, write_level) = match access {
         PropertyAccess::ReadOnly | PropertyAccess::WriteOnly => (3, 0),
         PropertyAccess::ReadWrite => (3, 3),
@@ -260,7 +260,7 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
     }
 
     /// Look up a property descriptor by PID.
-    fn ip_descriptor_by_pid(&self, prop_id: u8) -> Option<PropertyDescriptor> {
+    fn ip_descriptor_by_pid(&self, prop_id: u16) -> Option<PropertyDescriptor> {
         if self.tunneling_enabled() {
             let max_addrs = N as u16;
             match prop_id {

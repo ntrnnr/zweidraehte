@@ -31,7 +31,7 @@ use crate::messages::knx::offsets;
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionPropertyHeader {
     pub object_idx: u8,
-    pub prop_id: u8,
+    pub prop_id: u16,
 }
 
 impl FunctionPropertyHeader {
@@ -43,10 +43,7 @@ impl FunctionPropertyHeader {
         if buf.len() < Self::MIN_MSG_LEN {
             return None;
         }
-        Some(Self {
-            object_idx: buf[offsets::MSG_APCI + 2],
-            prop_id: buf[offsets::MSG_APCI + 3],
-        })
+        Some(Self { object_idx: buf[offsets::MSG_APCI + 2], prop_id: buf[offsets::MSG_APCI + 3] as u16 })
     }
 
     /// Return a slice over the service data following the header.
@@ -56,9 +53,9 @@ impl FunctionPropertyHeader {
     }
 
     /// Write the header fields into a message buffer.
-    pub fn write(buf: &mut [u8], object_idx: u8, prop_id: u8, service_data: &[u8]) {
+    pub fn write(buf: &mut [u8], object_idx: u8, prop_id: u16, service_data: &[u8]) {
         buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id;
+        buf[offsets::MSG_APCI + 3] = prop_id as u8;
         if !service_data.is_empty() {
             let start = offsets::MSG_APCI + 4;
             buf[start..start + service_data.len()].copy_from_slice(service_data);
@@ -91,7 +88,7 @@ impl FunctionPropertyHeader {
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionPropertyResponse {
     pub object_idx: u8,
-    pub prop_id: u8,
+    pub prop_id: u16,
     pub return_code: u8,
 }
 
@@ -106,7 +103,7 @@ impl FunctionPropertyResponse {
         }
         Some(Self {
             object_idx: buf[offsets::MSG_APCI + 2],
-            prop_id: buf[offsets::MSG_APCI + 3],
+            prop_id: buf[offsets::MSG_APCI + 3] as u16,
             return_code: buf[offsets::MSG_APCI + 4],
         })
     }
@@ -118,9 +115,9 @@ impl FunctionPropertyResponse {
     }
 
     /// Write a response into a message buffer.
-    pub fn write(buf: &mut [u8], object_idx: u8, prop_id: u8, return_code: u8, data: &[u8]) {
+    pub fn write(buf: &mut [u8], object_idx: u8, prop_id: u16, return_code: u8, data: &[u8]) {
         buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id;
+        buf[offsets::MSG_APCI + 3] = prop_id as u8;
         buf[offsets::MSG_APCI + 4] = return_code;
         if !data.is_empty() {
             let start = offsets::MSG_APCI + 5;

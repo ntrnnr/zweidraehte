@@ -153,7 +153,7 @@ impl WriteResponse {
 #[derive(Debug, Clone, Copy)]
 pub struct PropertyReadRequest {
     /// Property ID to read.
-    pub pid: u8,
+    pub pid: u16,
     /// 1-based start index for array properties (0 = query element count).
     pub start_idx: u16,
     /// Number of elements to read.
@@ -166,7 +166,7 @@ pub struct PropertyReadRequest {
 #[derive(Debug, Clone, Copy)]
 pub struct PropertyWriteRequest<'a> {
     /// Property ID to write.
-    pub pid: u8,
+    pub pid: u16,
     /// 1-based start index for array properties.
     pub start_idx: u16,
     /// Data to write.
@@ -183,7 +183,7 @@ pub struct FullPropertyReadRequest {
     /// Object index (0-based).
     pub object_idx: u16,
     /// Property ID to read.
-    pub pid: u8,
+    pub pid: u16,
     /// 1-based start index for array properties (0 = query element count).
     pub start_idx: u16,
     /// Number of elements to read.
@@ -215,7 +215,7 @@ pub struct FullPropertyWriteRequest<'a> {
     /// Object index (0-based).
     pub object_idx: u16,
     /// Property ID to write.
-    pub pid: u8,
+    pub pid: u16,
     /// Number of elements to write (from the wire header).
     pub count: u16,
     /// 1-based start index for array properties.
@@ -261,7 +261,7 @@ pub struct FunctionPropertyRequest<'a> {
     /// Object index (0-based).
     pub object_idx: u16,
     /// Property ID of the function property.
-    pub prop_id: u8,
+    pub prop_id: u16,
     /// Opaque service data from the request.
     pub service_data: &'a [u8],
     /// Caller's access context.
@@ -485,14 +485,21 @@ pub trait PropertyServiceHandler {
 
     /// Resolve a (object_type, object_instance) pair to a flat object index.
     ///
-    /// The `object_instance` is 1-based per the cEMI Local Management
-    /// convention: instance 1 is the first object of that type, instance 2
-    /// is the second, etc.
+    /// `object_instance` is 1-based per spec 03_05_01 §4.18.5.2.5:
+    /// instance 1 is the first object of that type, instance 2 the
+    /// second, etc. The field is 12-bit on the extended services wire
+    /// (range `1..=0xFFF`) and 8-bit on the cEMI Local Management
+    /// wire; callers from the narrower path widen to `u16` before
+    /// calling.
     ///
-    /// Returns `None` if no object with that type and instance exists.
-    fn resolve_object_index(&self, object_type: u16, object_instance: u8) -> Option<u16> {
+    /// Returns `None` if no object with that type and instance exists,
+    /// or if `object_instance` is 0.
+    fn resolve_object_index(&self, object_type: u16, object_instance: u16) -> Option<u16> {
+        if object_instance == 0 {
+            return None;
+        }
         let target_type = InterfaceObjectType::from(object_type);
-        let mut instance_count: u8 = 0;
+        let mut instance_count: u16 = 0;
 
         for idx in 0..self.object_count() {
             if self.object_type_at(idx) == Some(target_type) {
@@ -506,20 +513,14 @@ pub trait PropertyServiceHandler {
         None
     }
 
-    /// Resolve an extended `(object_type, object_instance)` pair to a flat
-    /// object index for AN163 extended property services.
+    /// Resolve an extended `(object_type, object_instance)` pair to a
+    /// flat object index for AN163 extended property services.
     ///
-    /// The extended services use 16-bit object instances. The default
-    /// implementation delegates to [`resolve_object_index`] by truncating
-    /// the instance to `u8`. Devices that use a different instance numbering
-    /// convention (e.g., conformance test DUTs where instance 0x0010 means
-    /// "first instance") should override this method.
+    /// The extended-services wire carries `object_instance` as 12 bits
+    /// (spec 03_03_07 §3.4.3.2), so the default delegates straight to
+    /// [`resolve_object_index`] without narrowing.
     fn resolve_ext_object_index(&self, object_type: u16, object_instance: u16) -> Option<u16> {
-        if object_instance > u8::MAX as u16 {
-            return None;
-        }
-
-        self.resolve_object_index(object_type, object_instance as u8)
+        self.resolve_object_index(object_type, object_instance)
     }
 
     /// Handle A_PropertyDescription_Read request.
@@ -533,7 +534,7 @@ pub trait PropertyServiceHandler {
     fn property_description_read(
         &self,
         object_idx: u16,
-        prop_id: u8,
+        prop_id: u16,
         prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError>;
 
@@ -579,8 +580,10 @@ pub trait PropertyServiceHandler {
 /// the `prop_id == 0` convention themselves.
 #[derive(Debug, Clone, Copy)]
 pub enum PropertyLookup {
-    /// Look up by Property ID (direct access).
-    ByPid(u8),
+    /// Look up by Property ID (direct access). `u16` holds the 12-bit
+    /// PID from the extended services wire format (spec 03_03_07
+    /// §3.4.3.2) as well as 8-bit PIDs from the regular services.
+    ByPid(u16),
     /// Look up by augment-local 0-based index (during property scanning).
     ByIndex(u16),
 }
@@ -724,7 +727,7 @@ pub trait InterfaceObjectAugment<D: StackDefinition> {
     /// Returns `None` if this augment doesn't handle the given object type
     /// or PID. Used by the dispatch layer to check access policies before
     /// delegating reads/writes.
-    fn get_property_descriptor(&self, _object_type: InterfaceObjectType, _prop_id: u8) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, _object_type: InterfaceObjectType, _prop_id: u16) -> Option<PropertyDescriptor> {
         None
     }
 
@@ -812,7 +815,7 @@ impl<D: StackDefinition> InterfaceObjectAugment<D> for () {}
 /// parameter to `create_system_b_objects`. The augment then accesses its own
 /// state directly via `&self` instead of going through `Has*` traits on `S`.
 impl<D: StackDefinition, A: InterfaceObjectAugment<D>> InterfaceObjectAugment<D> for &A {
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
         (**self).get_property_descriptor(object_type, prop_id)
     }
 
@@ -878,7 +881,7 @@ where
     Head: InterfaceObjectAugment<D>,
     Tail: InterfaceObjectAugment<D>,
 {
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
         self.0
             .get_property_descriptor(object_type, prop_id)
             .or_else(|| self.1.get_property_descriptor(object_type, prop_id))
@@ -1020,7 +1023,7 @@ pub trait InterfaceObject {
     /// Get property descriptor and index by Property ID (PID).
     ///
     /// Returns `Some((prop_idx, descriptor))` if found, `None` otherwise.
-    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)>;
+    fn property_descriptor_by_id(&self, pid: u16) -> Option<(u16, PropertyDescriptor)>;
 
     /// Read property value into a buffer.
     fn read_property(&self, req: PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError>;
@@ -1032,7 +1035,7 @@ pub trait InterfaceObject {
     ///
     /// For single-value properties, this returns 1.
     /// For array properties, returns the current number of elements.
-    fn property_element_count(&self, pid: u8) -> Result<u16, PropertyError>;
+    fn property_element_count(&self, pid: u16) -> Result<u16, PropertyError>;
 
     /// Handle property description request.
     ///
@@ -1041,7 +1044,7 @@ pub trait InterfaceObject {
     fn property_description(
         &self,
         object_idx: u16,
-        prop_id: u8,
+        prop_id: u16,
         prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         let (idx, desc) = if prop_id != 0 {
@@ -1097,7 +1100,7 @@ impl PropertyServiceHandler for () {
     fn property_description_read(
         &self,
         _object_idx: u16,
-        _prop_id: u8,
+        _prop_id: u16,
         _prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         Err(PropertyError::InvalidObjectIndex)
@@ -1180,7 +1183,7 @@ where
     fn property_description_read(
         &self,
         object_idx: u16,
-        prop_id: u8,
+        prop_id: u16,
         prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
         let base_count = self.0.object_count();

@@ -24,7 +24,7 @@ use crate::messages::knx::offsets;
 #[derive(Debug, Clone, Copy)]
 pub struct PropertyValueHeader {
     pub object_idx: u16,
-    pub prop_id: u8,
+    pub prop_id: u16,
     pub count: u16,
     pub start_idx: u16,
 }
@@ -41,7 +41,7 @@ impl PropertyValueHeader {
         let count_start = u16::from_be_bytes([buf[offsets::MSG_APCI + 4], buf[offsets::MSG_APCI + 5]]);
         Some(Self {
             object_idx: buf[offsets::MSG_APCI + 2] as u16,
-            prop_id: buf[offsets::MSG_APCI + 3],
+            prop_id: buf[offsets::MSG_APCI + 3] as u16,
             count: count_start >> 12,
             start_idx: count_start & 0x0FFF,
         })
@@ -66,9 +66,9 @@ pub struct PropertyValueResponse;
 
 impl PropertyValueResponse {
     /// Write a successful response header and data payload.
-    pub fn write(buf: &mut [u8], object_idx: u8, prop_id: u8, count: u16, start_idx: u16, data: &[u8]) {
+    pub fn write(buf: &mut [u8], object_idx: u8, prop_id: u16, count: u16, start_idx: u16, data: &[u8]) {
         buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id;
+        buf[offsets::MSG_APCI + 3] = prop_id as u8;
         let packed = PropertyValueHeader::pack_count_start(count, start_idx);
         buf[offsets::MSG_APCI + 4..offsets::MSG_APCI + 6].copy_from_slice(&packed);
         if !data.is_empty() {
@@ -78,9 +78,9 @@ impl PropertyValueResponse {
     }
 
     /// Write an error response (count = 0, no data payload).
-    pub fn write_error(buf: &mut [u8], object_idx: u8, prop_id: u8, start_idx: u16) {
+    pub fn write_error(buf: &mut [u8], object_idx: u8, prop_id: u16, start_idx: u16) {
         buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id;
+        buf[offsets::MSG_APCI + 3] = prop_id as u8;
         let packed = PropertyValueHeader::pack_count_start(0, start_idx);
         buf[offsets::MSG_APCI + 4..offsets::MSG_APCI + 6].copy_from_slice(&packed);
     }
@@ -111,7 +111,7 @@ impl PropertyValueResponse {
 #[derive(Debug, Clone, Copy)]
 pub struct PropertyDescriptionRead {
     pub object_idx: u16,
-    pub prop_id: u8,
+    pub prop_id: u16,
     pub prop_idx: u8,
 }
 
@@ -124,15 +124,15 @@ impl PropertyDescriptionRead {
         }
         Some(Self {
             object_idx: buf[offsets::MSG_APCI + 2] as u16,
-            prop_id: buf[offsets::MSG_APCI + 3],
+            prop_id: buf[offsets::MSG_APCI + 3] as u16,
             prop_idx: buf[offsets::MSG_APCI + 4],
         })
     }
 
     /// Write an `A_PropertyDescription_Read` request into a message buffer.
-    pub fn write(buf: &mut [u8], obj_idx: u8, prop_id: u8, prop_idx: u8) {
+    pub fn write(buf: &mut [u8], obj_idx: u8, prop_id: u16, prop_idx: u8) {
         buf[offsets::MSG_APCI + 2] = obj_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id;
+        buf[offsets::MSG_APCI + 3] = prop_id as u8;
         buf[offsets::MSG_APCI + 4] = prop_idx;
     }
 }
@@ -149,9 +149,9 @@ impl PropertyDescriptionResponse {
 
     /// Write an error response: echo back ObjIdx, PID, PropIdx; zero out
     /// descriptor fields.
-    pub fn write_error(buf: &mut [u8], object_idx: u8, prop_id: u8, prop_idx: u8) {
+    pub fn write_error(buf: &mut [u8], object_idx: u8, prop_id: u16, prop_idx: u8) {
         buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id;
+        buf[offsets::MSG_APCI + 3] = prop_id as u8;
         buf[offsets::MSG_APCI + 4] = prop_idx;
         buf[offsets::MSG_APCI + 5] = 0; // Type (WrEnab=0, PDT=0)
         buf[offsets::MSG_APCI + 6] = 0; // MaxNo high byte

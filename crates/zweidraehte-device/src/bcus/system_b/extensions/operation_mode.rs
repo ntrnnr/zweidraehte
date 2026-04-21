@@ -962,7 +962,7 @@ where
         + HasExtensionState,
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
 {
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
         if object_type == InterfaceObjectType::ApplicationProgram && prop_id == pid::OPERATION_MODE {
             Some(OPERATION_MODE_DESCRIPTOR)
         } else if object_type == InterfaceObjectType::GroupObjectTable && prop_id == pid::GO_DIAGNOSTICS {

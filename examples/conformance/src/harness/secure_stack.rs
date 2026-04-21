@@ -633,7 +633,7 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
 const CERTIFICATION_OBJECT_TYPE: InterfaceObjectType = InterfaceObjectType::Other(0xC351);
 
 /// Property ID used for role-based access testing.
-const ROLES_PID: u8 = 51; // 0x33
+const ROLES_PID: u16 = 51; // 0x33
 
 /// Augment that adds a Certification Object (IOT 0xC351) for Section 3.6
 /// role-based access control conformance tests.
@@ -749,7 +749,7 @@ impl CertificationObjectAugment {
 const CERT_PID51_POLICY: AccessPolicy = AccessPolicy::new(0x3FF, 0x0FF);
 
 /// Return a property descriptor for the Certification Object's properties.
-fn certification_descriptor(pid: u8) -> Option<PropertyDescriptor> {
+fn certification_descriptor(pid: u16) -> Option<PropertyDescriptor> {
     match pid {
         1 => Some(PropertyDescriptor::from_type::<PDT_UnsignedChar>(1, PropertyAccess::ReadOnly, 3, 0)),
         ROLES_PID => Some(PropertyDescriptor::with_policy(
@@ -774,7 +774,7 @@ impl<D: StackDefinition> InterfaceObjectAugment<D> for CertificationObjectAugmen
         if index == 0 { Some(CERTIFICATION_OBJECT_TYPE) } else { None }
     }
 
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
         if object_type != CERTIFICATION_OBJECT_TYPE {
             return None;
         }
@@ -794,13 +794,13 @@ impl<D: StackDefinition> InterfaceObjectAugment<D> for CertificationObjectAugmen
 
         let (pid, prop_index) = match lookup {
             PropertyLookup::ByPid(pid) => match pid {
-                1 => (1u8, 0u16),
-                ROLES_PID => (ROLES_PID, 1),
+                1 => (1u16, 0u16),
+                ROLES_PID => (ROLES_PID, 1u16),
                 _ => return Some(Err(PropertyError::InvalidPropertyId)),
             },
             PropertyLookup::ByIndex(idx) => match idx {
-                0 => (1u8, 0u16),
-                1 => (ROLES_PID, 1),
+                0 => (1u16, 0u16),
+                1 => (ROLES_PID, 1u16),
                 _ => return Some(Err(PropertyError::InvalidPropertyId)),
             },
         };

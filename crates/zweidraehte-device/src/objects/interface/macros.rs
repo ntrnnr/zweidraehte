@@ -265,7 +265,7 @@ macro_rules! define_interface_object {
 
             fn property_descriptor_by_id(
                 &self,
-                pid: u8,
+                pid: u16,
             ) -> Option<(u16, $crate::objects::interface::PropertyDescriptor)> {
                 Self::PROPERTY_DESCRIPTORS
                     .iter()
@@ -340,7 +340,7 @@ macro_rules! define_interface_object {
 
             fn property_element_count(
                 &self,
-                pid: u8,
+                pid: u16,
             ) -> Result<u16, $crate::objects::interface::PropertyError> {
                 match pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => Ok(1),
@@ -490,7 +490,7 @@ macro_rules! define_interface_object {
 
             fn property_descriptor_by_id(
                 &self,
-                pid: u8,
+                pid: u16,
             ) -> Option<(u16, $crate::objects::interface::PropertyDescriptor)> {
                 Self::PROPERTY_DESCRIPTORS
                     .iter()
@@ -599,7 +599,7 @@ macro_rules! define_interface_object {
 
             fn property_element_count(
                 &self,
-                pid: u8,
+                pid: u16,
             ) -> Result<u16, $crate::objects::interface::PropertyError> {
                 match pid {
                     $crate::objects::interface::pid::OBJECT_TYPE => Ok(1),
@@ -865,11 +865,10 @@ pub trait HasProperty<T> {
 
 #[cfg(test)]
 mod tests {
-    use zweidraehte_proto::dpt::*;
     use crate::objects::interface::{
-        InterfaceObject, PropertyAccess, PropertyError, PropertyReadRequest, PropertyWriteRequest,
-        pid,
+        InterfaceObject, PropertyAccess, PropertyError, PropertyReadRequest, PropertyWriteRequest, pid,
     };
+    use zweidraehte_proto::dpt::*;
 
     define_interface_object! {
         /// Test device object
@@ -927,11 +926,8 @@ mod tests {
         let mut obj = TestDeviceObject::new();
 
         // Write serial number
-        let req = PropertyWriteRequest {
-            pid: pid::SERIAL_NUMBER,
-            start_idx: 1,
-            data: &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06],
-        };
+        let req =
+            PropertyWriteRequest { pid: pid::SERIAL_NUMBER, start_idx: 1, data: &[0x01, 0x02, 0x03, 0x04, 0x05, 0x06] };
         obj.write_property(req).unwrap();
 
         // Read it back
@@ -991,10 +987,7 @@ mod tests {
 
     impl MockArrayState {
         fn new() -> Self {
-            Self {
-                name: Cell::new([0; 8]),
-                name_len: Cell::new(0),
-            }
+            Self { name: Cell::new([0; 8]), name_len: Cell::new(0) }
         }
 
         fn name(&self) -> [u8; 8] {
@@ -1022,9 +1015,15 @@ mod tests {
     }
 
     impl HasName for MockArrayState {
-        fn name(&self) -> [u8; 8] { self.name() }
-        fn name_len(&self) -> usize { self.name_len() }
-        fn set_name(&self, data: &[u8]) { self.set_name(data) }
+        fn name(&self) -> [u8; 8] {
+            self.name()
+        }
+        fn name_len(&self) -> usize {
+            self.name_len()
+        }
+        fn set_name(&self, data: &[u8]) {
+            self.set_name(data)
+        }
     }
 
     // PID 200 is unused — suitable for testing.
@@ -1092,10 +1091,7 @@ mod tests {
         // start_idx=3 is past the 2-element content
         let mut buf = [0u8; 4];
         let req = PropertyReadRequest { pid: TEST_ARRAY_PID, start_idx: 3, count: 1 };
-        assert_eq!(
-            obj.read_property(req, &mut buf),
-            Err(PropertyError::InvalidStartIndex)
-        );
+        assert_eq!(obj.read_property(req, &mut buf), Err(PropertyError::InvalidStartIndex));
     }
 
     #[test]
@@ -1103,11 +1099,7 @@ mod tests {
         let state = MockArrayState::new();
         let mut obj = TestArrayObject::new(&state);
 
-        let req = PropertyWriteRequest {
-            pid: TEST_ARRAY_PID,
-            start_idx: 1,
-            data: b"World",
-        };
+        let req = PropertyWriteRequest { pid: TEST_ARRAY_PID, start_idx: 1, data: b"World" };
         obj.write_property(req).unwrap();
 
         assert_eq!(state.name_len(), 5);
@@ -1145,11 +1137,7 @@ mod tests {
         let mut obj = TestArrayObject::new(&state);
 
         // Overwrite bytes at positions 2-3 (start_idx=3, 1-based)
-        let req = PropertyWriteRequest {
-            pid: TEST_ARRAY_PID,
-            start_idx: 3,
-            data: b"LL",
-        };
+        let req = PropertyWriteRequest { pid: TEST_ARRAY_PID, start_idx: 3, data: b"LL" };
         obj.write_property(req).unwrap();
 
         assert_eq!(state.name_len(), 5);
@@ -1163,11 +1151,7 @@ mod tests {
         let mut obj = TestArrayObject::new(&state);
 
         // Write at start_idx=3 (1-based), extending beyond current length
-        let req = PropertyWriteRequest {
-            pid: TEST_ARRAY_PID,
-            start_idx: 3,
-            data: b"!",
-        };
+        let req = PropertyWriteRequest { pid: TEST_ARRAY_PID, start_idx: 3, data: b"!" };
         obj.write_property(req).unwrap();
 
         // Length should extend to 3 (positions 0,1,2 now occupied)
@@ -1180,14 +1164,7 @@ mod tests {
         let state = MockArrayState::new();
         let mut obj = TestArrayObject::new(&state);
 
-        let req = PropertyWriteRequest {
-            pid: TEST_ARRAY_PID,
-            start_idx: 0,
-            data: b"X",
-        };
-        assert_eq!(
-            obj.write_property(req),
-            Err(PropertyError::InvalidStartIndex)
-        );
+        let req = PropertyWriteRequest { pid: TEST_ARRAY_PID, start_idx: 0, data: b"X" };
+        assert_eq!(obj.write_property(req), Err(PropertyError::InvalidStartIndex));
     }
 }

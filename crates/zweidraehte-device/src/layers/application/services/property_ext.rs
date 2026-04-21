@@ -777,13 +777,16 @@ fn handle_ext_description_read<D: StackDefinition>(
         return;
     }
 
+    // Per spec 03_03_07 §3.4.3.2, octets 4-6 carry a 12/12-bit
+    // packing: `object_instance[11:0] | property_id[11:0]`. Octets
+    // 7-8 carry `desc_type[3:0] | prop_index[11:0]`.
     let base = offsets::MSG_APCI;
     let object_type = u16::from_be_bytes([buf[base + 2], buf[base + 3]]);
-    let object_instance = u16::from_be_bytes([buf[base + 4], buf[base + 5]]);
-    let pid = buf[base + 6];
+    let b5 = buf[base + 5];
+    let object_instance = ((buf[base + 4] as u16) << 4) | ((b5 as u16) >> 4);
+    let pid = (((b5 & 0x0F) as u16) << 8) | buf[base + 6] as u16;
     let desc_type_prop_idx_hi = buf[base + 7];
     let prop_idx_lo = buf[base + 8];
-    // prop_index is in the lower 12 bits: high nibble of [7] low 4 bits + all of [8]
     let prop_idx = (((desc_type_prop_idx_hi & 0x0F) as u16) << 8) | prop_idx_lo as u16;
 
     debug!(
@@ -828,14 +831,23 @@ fn handle_ext_description_read<D: StackDefinition>(
     };
 
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::PropertyExtDescriptionResponse).with_data(|buf| {
-        // Write IOT + INST + PID header.
         let b = offsets::MSG_APCI;
         buf[b + 2..b + 4].copy_from_slice(&object_type.to_be_bytes());
-        buf[b + 4..b + 6].copy_from_slice(&object_instance.to_be_bytes());
+
+        // Pack object_instance[11:0] | response_pid[11:0] into octets
+        // [4..=6] per spec 03_03_07 §3.4.3.2.
+        let response_pid: u16 = match &desc_result {
+            Some(desc) => desc.prop_id as u16,
+            None => pid as u16,
+        };
+        let oi = object_instance & 0x0FFF;
+        let pi = response_pid & 0x0FFF;
+        buf[b + 4] = (oi >> 4) as u8;
+        buf[b + 5] = (((oi & 0x000F) << 4) | (pi >> 8)) as u8;
+        buf[b + 6] = (pi & 0x00FF) as u8;
 
         match desc_result {
             Some(desc) => {
-                buf[b + 6] = desc.prop_id;
                 // PropIdx as 12 bits: desc_type (high nibble of [7]) = 0,
                 // prop_idx high nibble in low nibble of [7], low byte in [8].
                 buf[b + 7] = (desc.prop_idx >> 8) as u8 & 0x0F;
@@ -854,8 +866,7 @@ fn handle_ext_description_read<D: StackDefinition>(
                 }
             }
             None => {
-                // Error: echo PID, zero everything else.
-                buf[b + 6] = pid;
+                // Error: echo desc_type + prop_idx from request, zero the rest.
                 buf[b + 7] = desc_type_prop_idx_hi;
                 buf[b + 8] = prop_idx_lo;
                 for i in (b + 9)..(b + 16) {

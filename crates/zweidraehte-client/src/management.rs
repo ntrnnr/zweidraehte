@@ -21,7 +21,7 @@ pub struct FunctionPropertyResult {
 /// Result of a property description read.
 #[derive(Debug, Clone)]
 pub struct PropertyDescription {
-    pub prop_id: u8,
+    pub prop_id: u16,
     pub prop_idx: u8,
     pub write_enabled: bool,
     pub pdt: u8,
@@ -38,9 +38,7 @@ pub struct PropertyDescription {
 pub fn expected_response_apci(request: ApciCode) -> Option<ApciCode> {
     match request {
         ApciCode::DeviceDescriptorRead => Some(ApciCode::DeviceDescriptorResponse),
-        ApciCode::PropertyValueRead | ApciCode::PropertyValueWrite => {
-            Some(ApciCode::PropertyValueResponse)
-        }
+        ApciCode::PropertyValueRead | ApciCode::PropertyValueWrite => Some(ApciCode::PropertyValueResponse),
         ApciCode::PropertyDescriptionRead => Some(ApciCode::PropertyDescriptionResponse),
         ApciCode::FunctionPropertyCommand | ApciCode::FunctionPropertyStateRead => {
             Some(ApciCode::FunctionPropertyStateResponse)

@@ -91,8 +91,10 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
             ConnectionStatus::DataConnectionError
         })?;
 
-        let object_idx =
-            self.property_handler.resolve_object_index(frame.object_type, frame.object_instance).ok_or_else(|| {
+        let object_idx = self
+            .property_handler
+            .resolve_object_index(frame.object_type, frame.object_instance.into())
+            .ok_or_else(|| {
                 debug!(
                     "Unknown interface object: type=0x{:04x}, instance={}",
                     frame.object_type, frame.object_instance
@@ -180,7 +182,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
         // TODO: Revisit when secure tunneling is implemented.
         let req = FullPropertyReadRequest {
             object_idx,
-            pid: frame.property_id,
+            pid: frame.property_id as u16,
             start_idx: frame.start_index,
             count: frame.count,
             ctx: AccessContext::MAX_ACCESS,
@@ -212,7 +214,7 @@ impl<'a> DeviceMgmtConnectionHandler<'a> {
     ) -> Result<(), ConnectionStatus> {
         let req = FullPropertyWriteRequest {
             object_idx,
-            pid: frame.property_id,
+            pid: frame.property_id as u16,
             count: frame.count,
             start_idx: frame.start_index,
             data: frame.data,

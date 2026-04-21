@@ -21,17 +21,17 @@
 //! ```
 
 use zweidraehte_device::StackDefinition;
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_device::objects::interface::{
     AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
     PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
 };
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 
 /// Manufacturer-specific property ID used for the easter egg.
 ///
 /// PID 255 is in the manufacturer-specific range (200-255) and unlikely
 /// to conflict with any standard property.
-const EASTER_EGG_PID: u8 = 255;
+const EASTER_EGG_PID: u16 = 255;
 
 /// Augment that adds a hidden function property easter egg to the Device Object.
 #[derive(Debug, Clone, Copy)]

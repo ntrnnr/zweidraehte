@@ -4,10 +4,10 @@ use core::net::SocketAddrV4;
 
 use tokio::sync::{mpsc, oneshot};
 
-use zweidraehte_proto::messages::knx::{ApciCode, offsets};
-use zweidraehte_proto::messages::apdu::property::{PropertyValueHeader, PropertyValueResponse};
-use zweidraehte_proto::messages::apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse};
 use zweidraehte_proto::messages::apdu::device::DeviceDescriptorRead;
+use zweidraehte_proto::messages::apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse};
+use zweidraehte_proto::messages::apdu::property::{PropertyValueHeader, PropertyValueResponse};
+use zweidraehte_proto::messages::knx::{ApciCode, offsets};
 
 use crate::device::DeviceConnection;
 use crate::error::{Error, Result};
@@ -50,12 +50,7 @@ impl KnxClient {
 
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
 
-        let client = Self {
-            cmd_tx,
-            assigned_address,
-            cemi_mode: CemiMode::LData,
-            tunnel_max_apdu,
-        };
+        let client = Self { cmd_tx, assigned_address, cemi_mode: CemiMode::LData, tunnel_max_apdu };
 
         Ok((client, worker, cmd_rx))
     }
@@ -89,12 +84,11 @@ impl KnxClient {
         addr: zweidraehte_proto::address::IndividualAddress,
         descriptor_type: u8,
     ) -> Result<Vec<u8>> {
-        let buf = self.send_unconnected(
-            addr,
-            ApciCode::DeviceDescriptorRead,
-            DeviceDescriptorRead::MIN_MSG_LEN,
-            |buf| DeviceDescriptorRead::write(buf, descriptor_type),
-        ).await?;
+        let buf = self
+            .send_unconnected(addr, ApciCode::DeviceDescriptorRead, DeviceDescriptorRead::MIN_MSG_LEN, |buf| {
+                DeviceDescriptorRead::write(buf, descriptor_type)
+            })
+            .await?;
         // Device descriptor data starts at APDU offset (MSG_APDU = 8).
         if buf.len() < offsets::MSG_APDU {
             return Err(Error::Parse("DeviceDescriptorResponse too short"));
@@ -107,18 +101,16 @@ impl KnxClient {
         &self,
         addr: zweidraehte_proto::address::IndividualAddress,
         obj_idx: u8,
-        prop_id: u8,
+        prop_id: u16,
         start_idx: u16,
         count: u16,
     ) -> Result<Vec<u8>> {
-        let buf = self.send_unconnected(
-            addr,
-            ApciCode::PropertyValueRead,
-            PropertyValueHeader::MIN_MSG_LEN,
-            |buf| PropertyValueResponse::write(buf, obj_idx, prop_id, count, start_idx, &[]),
-        ).await?;
-        let hdr = PropertyValueHeader::parse(&buf)
-            .ok_or(Error::Parse("PropertyValueResponse too short"))?;
+        let buf = self
+            .send_unconnected(addr, ApciCode::PropertyValueRead, PropertyValueHeader::MIN_MSG_LEN, |buf| {
+                PropertyValueResponse::write(buf, obj_idx, prop_id, count, start_idx, &[])
+            })
+            .await?;
+        let hdr = PropertyValueHeader::parse(&buf).ok_or(Error::Parse("PropertyValueResponse too short"))?;
         if hdr.count == 0 {
             return Err(Error::DeviceError(0));
         }
@@ -130,21 +122,19 @@ impl KnxClient {
         &self,
         addr: zweidraehte_proto::address::IndividualAddress,
         obj_idx: u8,
-        prop_id: u8,
+        prop_id: u16,
         service_data: &[u8],
     ) -> Result<crate::FunctionPropertyResult> {
-        let buf = self.send_unconnected(
-            addr,
-            ApciCode::FunctionPropertyCommand,
-            FunctionPropertyHeader::msg_len(service_data.len()),
-            |buf| FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data),
-        ).await?;
-        let resp = FunctionPropertyResponse::parse(&buf)
-            .ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
-        Ok(crate::FunctionPropertyResult {
-            return_code: resp.return_code,
-            data: resp.data(&buf).to_vec(),
-        })
+        let buf = self
+            .send_unconnected(
+                addr,
+                ApciCode::FunctionPropertyCommand,
+                FunctionPropertyHeader::msg_len(service_data.len()),
+                |buf| FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data),
+            )
+            .await?;
+        let resp = FunctionPropertyResponse::parse(&buf).ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
+        Ok(crate::FunctionPropertyResult { return_code: resp.return_code, data: resp.data(&buf).to_vec() })
     }
 
     /// Read the state of a function property on a device (unconnected).
@@ -152,21 +142,19 @@ impl KnxClient {
         &self,
         addr: zweidraehte_proto::address::IndividualAddress,
         obj_idx: u8,
-        prop_id: u8,
+        prop_id: u16,
         service_data: &[u8],
     ) -> Result<crate::FunctionPropertyResult> {
-        let buf = self.send_unconnected(
-            addr,
-            ApciCode::FunctionPropertyStateRead,
-            FunctionPropertyHeader::msg_len(service_data.len()),
-            |buf| FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data),
-        ).await?;
-        let resp = FunctionPropertyResponse::parse(&buf)
-            .ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
-        Ok(crate::FunctionPropertyResult {
-            return_code: resp.return_code,
-            data: resp.data(&buf).to_vec(),
-        })
+        let buf = self
+            .send_unconnected(
+                addr,
+                ApciCode::FunctionPropertyStateRead,
+                FunctionPropertyHeader::msg_len(service_data.len()),
+                |buf| FunctionPropertyHeader::write(buf, obj_idx, prop_id, service_data),
+            )
+            .await?;
+        let resp = FunctionPropertyResponse::parse(&buf).ok_or(Error::Parse("FunctionPropertyResponse too short"))?;
+        Ok(crate::FunctionPropertyResult { return_code: resp.return_code, data: resp.data(&buf).to_vec() })
     }
 
     // ========================================================================
@@ -184,29 +172,19 @@ impl KnxClient {
 
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(Command::SendFrameNoResponse {
-                cemi,
-                response_tx: tx,
-            })
+            .send(Command::SendFrameNoResponse { cemi, response_tx: tx })
             .await
             .map_err(|_| Error::WorkerGone)?;
 
         rx.await.map_err(|_| Error::WorkerGone)??;
 
-        Ok(DeviceConnection::new(
-            addr,
-            self.assigned_address,
-            self.cmd_tx.clone(),
-        ))
+        Ok(DeviceConnection::new(addr, self.assigned_address, self.cmd_tx.clone()))
     }
 
     /// Disconnect from the KNX/IP interface.
     pub async fn disconnect(self) -> Result<()> {
         let (tx, rx) = oneshot::channel();
-        self.cmd_tx
-            .send(Command::Disconnect { response_tx: tx })
-            .await
-            .map_err(|_| Error::WorkerGone)?;
+        self.cmd_tx.send(Command::Disconnect { response_tx: tx }).await.map_err(|_| Error::WorkerGone)?;
 
         rx.await.map_err(|_| Error::WorkerGone)?
     }
@@ -222,36 +200,21 @@ impl KnxClient {
         msg_len: usize,
         data_writer: impl FnOnce(&mut [u8]),
     ) -> Result<Vec<u8>> {
-        let cemi = transport::build_unconnected_cemi(
-            self.assigned_address,
-            dest,
-            apci,
-            msg_len,
-            data_writer,
-            self.cemi_mode,
-        );
+        let cemi =
+            transport::build_unconnected_cemi(self.assigned_address, dest, apci, msg_len, data_writer, self.cemi_mode);
 
         let expected_apci = management::expected_response_apci(apci);
 
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
-            .send(Command::SendFrame {
-                cemi,
-                expected_source: Some(dest),
-                expected_apci,
-                response_tx: tx,
-            })
+            .send(Command::SendFrame { cemi, expected_source: Some(dest), expected_apci, response_tx: tx })
             .await
             .map_err(|_| Error::WorkerGone)?;
 
         // The worker returns the response in internal message format.
         let internal_buf = rx.await.map_err(|_| Error::WorkerGone)??;
 
-        log::debug!(
-            "Response internal ({} bytes): {:02x?}",
-            internal_buf.len(),
-            internal_buf,
-        );
+        log::debug!("Response internal ({} bytes): {:02x?}", internal_buf.len(), internal_buf,);
 
         Ok(internal_buf)
     }

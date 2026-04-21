@@ -302,7 +302,7 @@ where
     }
 
     /// Get a property descriptor for a base object's property.
-    fn get_descriptor(&self, obj_idx: u16, prop_id: u8) -> Option<PropertyDescriptor> {
+    fn get_descriptor(&self, obj_idx: u16, prop_id: u16) -> Option<PropertyDescriptor> {
         // PID_IO_LIST is served by the container, not the DeviceObject.
         if obj_idx == 0 && prop_id == pid::IO_LIST {
             return Some(self.io_list_descriptor());

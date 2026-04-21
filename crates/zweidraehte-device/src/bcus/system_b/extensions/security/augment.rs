@@ -7,20 +7,20 @@
 use core::cell::RefCell;
 
 use super::SecurityTable;
-use zweidraehte_proto::access::AccessPolicy;
-use zweidraehte_proto::dpt::{
-    InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
-    PDT_Generic08, PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
-};
+use crate::StackDefinition;
 use crate::objects::interface::{
     AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
     InterfaceObjectAugment, PropertyAccess, PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor,
     PropertyError, PropertyLookup, WriteResponse, pid,
 };
 use crate::objects::tables::LoadState;
-use zweidraehte_proto::properties::PropertyRead;
 use crate::storage::SequenceNumberStorage;
-use crate::StackDefinition;
+use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::dpt::{
+    InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
+    PDT_Generic08, PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
+};
+use zweidraehte_proto::properties::PropertyRead;
 
 use super::SecurityState;
 
@@ -199,7 +199,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const G
     ];
 
     /// Find a descriptor by PID.
-    fn descriptor_by_pid(pid_val: u8) -> Option<(u16, &'static PropertyDescriptor)> {
+    fn descriptor_by_pid(pid_val: u16) -> Option<(u16, &'static PropertyDescriptor)> {
         Self::DESCRIPTORS.iter().enumerate().find(|(_, d)| d.pid == pid_val).map(|(i, d)| (i as u16, d))
     }
 
@@ -212,7 +212,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const G
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
     InterfaceObjectAugment<D> for SecurityAugment<'a, SEQ, GRP, P2P, GO>
 {
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u8) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
         if object_type != InterfaceObjectType::Security {
             return None;
         }

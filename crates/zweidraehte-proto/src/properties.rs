@@ -106,7 +106,7 @@ impl PropertyError {
 #[derive(Clone, Copy, Debug)]
 pub struct PropertyDescriptor {
     /// Property Identifier (PID)
-    pub pid: u8,
+    pub pid: u16,
     /// Property Data Type identifier (PDT)
     pub pdt_id: u8,
     /// Maximum number of elements (0 = current count, for variable-length properties)
@@ -131,7 +131,7 @@ impl PropertyDescriptor {
     /// A caller with level N can access a property if their level <= the property's level.
     /// The access policy provides additional KNX Data Secure access control.
     pub const fn new(
-        pid: u8,
+        pid: u16,
         pdt_id: u8,
         max_elements: u16,
         access: PropertyAccess,
@@ -151,7 +151,7 @@ impl PropertyDescriptor {
 
     /// Create a new property descriptor with explicit access policy.
     pub const fn with_policy(
-        pid: u8,
+        pid: u16,
         pdt_id: u8,
         max_elements: u16,
         access: PropertyAccess,
@@ -172,7 +172,7 @@ impl PropertyDescriptor {
 
     /// Create a property descriptor for a type implementing PropertyDataDefinition
     pub const fn from_type<T: PropertyDataDefinition>(
-        pid: u8,
+        pid: u16,
         access: PropertyAccess,
         read_level: u8,
         write_level: u8,
@@ -182,7 +182,7 @@ impl PropertyDescriptor {
 
     /// Create a property descriptor for an array property
     pub const fn array<T: PropertyDataDefinition>(
-        pid: u8,
+        pid: u16,
         max_elements: u16,
         access: PropertyAccess,
         read_level: u8,
@@ -254,8 +254,9 @@ impl PropertyDescriptor {
 pub struct PropertyDescriptionResponse {
     /// Object index
     pub object_idx: u16,
-    /// Property ID
-    pub prop_id: u8,
+    /// Property ID (12 bit on the extended services wire, 8 bit on the
+    /// regular services wire; stored as the union).
+    pub prop_id: u16,
     /// Property index (0-based, up to 12 bits for extended services)
     pub prop_idx: u16,
     /// Writability flag (1 = writable)
@@ -294,7 +295,12 @@ impl PropertyDescriptionResponse {
             return 0;
         }
         buf[0] = self.object_idx as u8;
-        buf[1] = self.prop_id;
+        // Regular A_PropertyDescription_Response carries an 8-bit
+        // prop_id on the wire. The field is widened to `u16` to share
+        // storage with the Extended services; regular services never
+        // originate PIDs above 255, so this cast is lossless in
+        // practice.
+        buf[1] = self.prop_id as u8;
         buf[2] = self.prop_idx as u8;
         // Type+MaxElements: [Writeable:1][reserved:1][PDT:6][MaxElements:12] - but overlaps!
         // Actually per spec: byte3=[W:1][PDT:7], bytes 4-5 = [PDT:4][MaxElements:12]
@@ -321,7 +327,7 @@ impl PropertyDescriptionResponse {
 ///
 /// # Example
 /// ```ignore
-/// fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+/// fn read_property(&self, pid: u16, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
 ///     match pid {
 ///         pid::PROGRAM_VERSION => self.program_version.read_property(start_idx, count, buf),
 ///         pid::PEI_TYPE => self.pei_type.read_property(start_idx, count, buf),
@@ -396,7 +402,7 @@ impl<T: AsMut<[u8]>> PropertyWrite for T {
 ///
 /// # Example
 /// ```ignore
-/// fn read_property(&self, pid: u8, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+/// fn read_property(&self, pid: u16, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
 ///     match pid {
 ///         pid::TABLE => self.table_data.read_array_property(start_idx, count, 2, buf), // 2 bytes per element
 ///         _ => Err(PropertyError::InvalidPropertyId),

@@ -344,7 +344,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
         Self::property_descriptors().get(prop_idx as usize).copied()
     }
 
-    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
+    fn property_descriptor_by_id(&self, pid: u16) -> Option<(u16, PropertyDescriptor)> {
         Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
     }
 
@@ -409,7 +409,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
         }
     }
 
-    fn property_element_count(&self, pid: u8) -> Result<u16, PropertyError> {
+    fn property_element_count(&self, pid: u16) -> Result<u16, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE
             | super::pid::LOAD_STATE_CONTROL
@@ -537,7 +537,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for PeiPro
         Self::property_descriptors().get(prop_idx as usize).copied()
     }
 
-    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
+    fn property_descriptor_by_id(&self, pid: u16) -> Option<(u16, PropertyDescriptor)> {
         Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
     }
 
@@ -589,7 +589,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for PeiPro
         }
     }
 
-    fn property_element_count(&self, pid: u8) -> Result<u16, PropertyError> {
+    fn property_element_count(&self, pid: u16) -> Result<u16, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE
             | super::pid::LOAD_STATE_CONTROL
@@ -767,7 +767,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
         Some(desc)
     }
 
-    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
+    fn property_descriptor_by_id(&self, pid: u16) -> Option<(u16, PropertyDescriptor)> {
         let descriptors = Self::property_descriptors();
         descriptors.iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| {
             let mut desc = *d;
@@ -839,7 +839,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
         }
     }
 
-    fn property_element_count(&self, pid: u8) -> Result<u16, PropertyError> {
+    fn property_element_count(&self, pid: u16) -> Result<u16, PropertyError> {
         match pid {
             super::pid::OBJECT_TYPE => Ok(1),
             super::pid::LOAD_STATE_CONTROL => Ok(1),
@@ -1386,7 +1386,7 @@ impl InterfaceObject for SecurityInterfaceObject {
         Self::DESCRIPTORS.get(prop_idx as usize).copied()
     }
 
-    fn property_descriptor_by_id(&self, pid: u8) -> Option<(u16, PropertyDescriptor)> {
+    fn property_descriptor_by_id(&self, pid: u16) -> Option<(u16, PropertyDescriptor)> {
         Self::DESCRIPTORS.iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
     }
 
@@ -1420,7 +1420,7 @@ impl InterfaceObject for SecurityInterfaceObject {
         }
     }
 
-    fn property_element_count(&self, pid_val: u8) -> Result<u16, PropertyError> {
+    fn property_element_count(&self, pid_val: u16) -> Result<u16, PropertyError> {
         match pid_val {
             pid::OBJECT_TYPE | pid::SECURITY_MODE | pid::TOOL_KEY | pid::SEQUENCE_NUMBER_SENDING => Ok(1),
             pid::LOAD_STATE_CONTROL => Ok(1),
