@@ -349,11 +349,14 @@ macro_rules! impl_layer_stack {
             }
 
             fn poll(&mut self) {
-                $(
-                    if self.$idx.next_deadline().is_some() {
-                        self.$idx.poll();
-                    }
-                )+
+                // Call every layer's `poll()` unconditionally. Layers
+                // early-return when there's nothing to do, and this
+                // removes a gate that stops `poll()` from ever running
+                // for a layer whose `next_deadline()` is permanently
+                // `None` (e.g. the AL on a factory-reset DUT, where
+                // read-on-init can't start but still wants to emit
+                // its "settled" conformance signal).
+                $(self.$idx.poll();)+
             }
 
             fn init(&mut self) {

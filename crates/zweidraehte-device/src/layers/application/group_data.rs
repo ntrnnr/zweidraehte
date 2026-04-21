@@ -71,6 +71,17 @@ pub struct GroupDataState {
     /// populated, the next TL confirmation resolves the matching
     /// communication object status.
     pub(crate) pending_group_send: core::cell::Cell<Option<PendingGroupSend>>,
+
+    /// One-shot flag tracking whether the conformance "read-on-init
+    /// settled" notification has fired since the last app startup.
+    /// Ensures external consumers (the IPC link layer's
+    /// `drain_roi_and_announce`) see exactly one signal per AL startup
+    /// cycle, whether the scan had work to do or not.
+    ///
+    /// Only observed when the `conformance` feature is enabled, but
+    /// kept unconditional so the struct's layout doesn't change with
+    /// the feature flag.
+    pub(crate) roi_settled_fired: core::cell::Cell<bool>,
 }
 
 impl GroupDataState {
@@ -78,6 +89,7 @@ impl GroupDataState {
         Self {
             read_on_init: core::cell::Cell::new(ReadOnInitState::Idle),
             pending_group_send: core::cell::Cell::new(None),
+            roi_settled_fired: core::cell::Cell::new(false),
         }
     }
 }
@@ -586,9 +598,11 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
     /// per call when scanning.
     pub fn poll(&self) {
         // Reset Done → Idle when the app stops, so the next startup triggers
-        // a fresh ROI scan.
+        // a fresh ROI scan. Same reset applies to the "settled" one-shot
+        // flag so the next startup re-fires the conformance signal.
         if self.lctx.group_data.read_on_init.get() == ReadOnInitState::Done && !self.state.app().borrow().is_running() {
             self.lctx.group_data.read_on_init.set(ReadOnInitState::Idle);
+            self.lctx.group_data.roi_settled_fired.set(false);
         }
 
         // Start ROI scan if the conditions are met (app running, AST loaded,
@@ -603,6 +617,21 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         }
 
         self.read_on_init_step();
+
+        // If the state machine is settled (scan complete, or
+        // preconditions can't be met on this startup — e.g. factory-
+        // reset state with no app loaded), fire the conformance
+        // "read-on-init settled" signal once. The IPC link layer waits
+        // on this to know it can transition to `RoiComplete`.
+        #[cfg(feature = "conformance")]
+        {
+            let state = self.lctx.group_data.read_on_init.get();
+            let settled = matches!(state, ReadOnInitState::Done | ReadOnInitState::Idle);
+            if settled && !self.lctx.group_data.roi_settled_fired.get() {
+                self.lctx.group_data.roi_settled_fired.set(true);
+                crate::device_model::read_on_init_done_signal().signal(());
+            }
+        }
     }
 
     /// Process one step of the read-on-init cycle.
@@ -680,16 +709,14 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             return;
         }
 
-        // All objects scanned — cycle complete.
+        // All objects scanned — cycle complete. The conformance "ROI
+        // settled" signal is fired from `poll()` after the state
+        // machine lands on `Done`, so `drain_roi_and_announce` on the
+        // runner side can transition without hitting its safety-net
+        // timer. The signal is also fired from `poll()` when ROI
+        // preconditions can't be met on this startup.
         info!("AL read-on-init: cycle complete ({} objects scanned)", entry_count);
         self.lctx.group_data.read_on_init.set(ReadOnInitState::Done);
-
-        // Signal the conformance IPC link layer that ROI is done. This
-        // replaces an 800 ms quiet-window heuristic on the runner side
-        // that relied on the outbox staying silent long enough for the
-        // scan to "look complete". See `crate::device_model::roi_done`.
-        #[cfg(feature = "conformance")]
-        crate::device_model::read_on_init_done_signal().signal(());
     }
 }
 

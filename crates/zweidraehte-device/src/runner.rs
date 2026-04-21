@@ -98,6 +98,13 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // the application is already running).
         layers.init();
 
+        // Do one poll pass straight after init so the layers get a
+        // chance to evaluate their startup state — the AL uses this
+        // to either begin read-on-init or settle on "nothing to do"
+        // without waiting for the first timer deadline (which may
+        // never arrive on a DUT with no application loaded).
+        layers.poll();
+
         // ================================================================
         // Link layer task
         // ================================================================

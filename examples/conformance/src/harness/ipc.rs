@@ -272,17 +272,23 @@ impl<'a> IpcLinkLayer<'a> {
         use embassy_time::{Duration, Timer};
         use zweidraehte_device::device_model::read_on_init_done_signal;
 
-        // Reset any stale completion from a previous run (respawn paths
-        // reuse the same process-global signal).
+        // The signal is process-local (static in the DUT's address
+        // space), so a respawned DUT sees a fresh `Signal` — no need
+        // to reset here. Resetting would race with the router task's
+        // `layers.init() → layers.poll()` fire-once path if poll
+        // reached the state machine before this task got to
+        // `signal.wait()`.
         let signal = read_on_init_done_signal();
-        signal.reset();
 
-        // Outer loop: pump ROI frames until the AL signals done (or
-        // the safety-net timer fires). The done + deadline futures
-        // need to survive across iterations, so pin them on the stack
-        // and re-borrow on each `select`.
+        // Outer loop: pump ROI frames until the AL signals settled
+        // (either `Done` or "no ROI needed on this startup"; see
+        // `GroupDataProvider::poll`). The safety-net timer is a
+        // belt-and-braces cap for the case where the stack hangs
+        // before it can poll — it should never fire under normal
+        // operation, so we keep it tight so broken runs fail fast
+        // rather than idle for seconds per respawn.
         let done_fut = signal.wait();
-        let deadline = Timer::after(Duration::from_secs(5));
+        let deadline = Timer::after(Duration::from_millis(1000));
         let mut done_fut = core::pin::pin!(done_fut);
         let mut deadline = core::pin::pin!(deadline);
 
@@ -299,11 +305,11 @@ impl<'a> IpcLinkLayer<'a> {
                     }
                 }
                 Either::Second(Either::First(())) => {
-                    log::debug!("IPC LL: ROI done signal received");
+                    log::debug!("IPC LL: ROI settled signal received");
                     break;
                 }
                 Either::Second(Either::Second(_)) => {
-                    log::warn!("IPC LL: ROI done signal not received within 5s — proceeding anyway");
+                    log::warn!("IPC LL: ROI settled signal not received within 1s — proceeding anyway");
                     break;
                 }
             }
