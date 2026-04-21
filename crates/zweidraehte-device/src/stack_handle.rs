@@ -520,15 +520,6 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self.inner.state
     }
 
-    /// Get access to the hook context for communication object hooks.
-    ///
-    /// This is useful for setting up hook context after stack initialization,
-    /// for example when the hook context needs references to stack-internal
-    /// structures like the COT.
-    pub fn hook_context(&self) -> &<D::CO as ComObjects>::HookContext {
-        self.inner.state.hook_context()
-    }
-
     /// Receive the next restart request from the application layer.
     ///
     /// When the stack receives an A_Restart message from the KNX bus, it validates

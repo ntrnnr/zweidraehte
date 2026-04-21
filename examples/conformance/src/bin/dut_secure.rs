@@ -109,9 +109,13 @@ async fn main(spawner: Spawner) {
 
     let (stack, runner) = zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap);
 
-    // SAFETY: COT is 'static via StackResources.
+    // Publish the CoTab reference used by the conformance-specific
+    // shadow-object hook (`ComObjectBusHook` impl on
+    // `ConformanceComObjects`). SAFETY: the CoTab lives inside
+    // `StackResources` which is 'static — the pointer remains valid
+    // for the process.
     unsafe {
-        stack.hook_context().set_cot(stack.communication_object_table());
+        zweidraehte_conformance::harness::stack::set_conformance_cot(stack.communication_object_table());
     }
 
     // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its

@@ -180,10 +180,6 @@ impl zweidraehte_device::objects::comm::HasCommObjects for MyState {
     fn comm_objects(&self) -> &RefCell<Self::CO> {
         &self.comm_objs
     }
-
-    fn hook_context(&self) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
-        &()
-    }
 }
 
 /// Device descriptor for test utility

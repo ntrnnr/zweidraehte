@@ -37,8 +37,8 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
 use super::{
-    DiagnosticsContext, ExtensionState, HasDiagnosticsContext, HasDeviceConfig, HasSecurityMode, OperationModeState,
-    DeviceConfig,
+    DeviceConfig, DiagnosticsContext, ExtensionState, HasDeviceConfig, HasDiagnosticsContext, HasSecurityMode,
+    OperationModeState,
 };
 use crate::storage::DeviceIdentity;
 
@@ -169,12 +169,12 @@ pub struct SystemBDeviceState<
     // ========================================================================
     /// Group object values and runtime status.
     ///
-    /// Holds the actual data values for each communication object, their
-    /// transmission status, and the hook context for application callbacks.
+    /// Holds the actual data values for each communication object plus
+    /// their transmission status. Bus-inbound hooks (`prepare_read` /
+    /// `handle_write`) are implemented on the concrete `D::CO` type via
+    /// the [`ComObjectBusHook`] trait — any context the hook needs must
+    /// be held inside `D::CO` itself.
     pub comm_objs: RefCell<D::CO>,
-
-    /// Hook context for communication object callbacks (prepare_read, handle_write).
-    pub co_hook_context: <D::CO as ComObjects>::HookContext,
 
     // ========================================================================
     // Diagnostics
@@ -248,8 +248,10 @@ impl<
     /// - `identity`: Factory-programmed device identity (serial number is
     ///   copied out; the FDSK, if present, travels separately through
     ///   `extension_resources`).
-    /// - `comm_objs`: Communication objects (group object values + status)
-    /// - `hook_context`: Hook context for comm object callbacks
+    /// - `comm_objs`: Communication objects (group object values + status).
+    ///   Any bus-inbound hook state (e.g. `CoTab` references used by
+    ///   conformance-style shadow objects) must live inside `comm_objs`
+    ///   itself — see [`ComObjectBusHook`].
     /// - `extension_resources`: Non-serialisable resources required by
     ///   the extension state. `()` for non-secure devices;
     ///   [`SecureResources`] for Data Secure devices — the FDSK lives in
@@ -257,12 +259,7 @@ impl<
     ///   it during `from_config`.
     ///
     /// [`SecureResources`]: crate::bcus::system_b::extensions::security::SecureResources
-    pub fn new(
-        identity: D::Identity,
-        comm_objs: D::CO,
-        hook_context: <D::CO as ComObjects>::HookContext,
-        extension_resources: ES::Resources,
-    ) -> Self {
+    pub fn new(identity: D::Identity, comm_objs: D::CO, extension_resources: ES::Resources) -> Self {
         // Extension is fully initialised in a single call — the FDSK (if
         // any) lives in `extension_resources` and gets baked into the
         // initial tool key by the secure extension's `from_config`.
@@ -281,7 +278,6 @@ impl<
             program_version: RefCell::new([0; 5]),
             pei_program_version: RefCell::new([0; 5]),
             comm_objs: RefCell::new(comm_objs),
-            co_hook_context: hook_context,
             operation_mode: OperationModeState::new(30),
             access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
             extension_state,
@@ -525,7 +521,6 @@ impl<
             program_version: RefCell::new(program_version),
             pei_program_version: RefCell::new(pei_program_version),
             comm_objs: RefCell::new(D::CO::new()),
-            co_hook_context: Default::default(),
             operation_mode: OperationModeState::new(30),
             access_store: zweidraehte_proto::ConnectionAuthLevels::new(),
             extension_state: ES::from_config(extension_config, extension_resources),
@@ -805,10 +800,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn comm_objects(&self) -> &RefCell<Self::CO> {
         &self.comm_objs
-    }
-
-    fn hook_context(&self) -> &<Self::CO as ComObjects>::HookContext {
-        &self.co_hook_context
     }
 }
 

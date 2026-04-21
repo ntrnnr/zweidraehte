@@ -40,8 +40,8 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition};
 
 use super::stack::{
-    CONFORMANCE_DD2, CONFORMANCE_MEMORY_LAYOUT, CONFORMANCE_USER_MANUFACTURER_INFO, ConformanceHookContext,
-    ConformanceMemoryMap, LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE, TestParameters, USER_MEMORY_SIZE,
+    CONFORMANCE_DD2, CONFORMANCE_MEMORY_LAYOUT, CONFORMANCE_USER_MANUFACTURER_INFO, ConformanceMemoryMap,
+    LEVEL1_MEMORY_SIZE, LEVEL2_MEMORY_SIZE, LINEAR_MEMORY_SIZE, TestParameters, USER_MEMORY_SIZE,
     comm_objs::ConformanceComObjects, conformance_config, device_info, table_sizes,
 };
 
@@ -118,8 +118,7 @@ impl SecureConformanceState {
             seq_storage: IpcSecureConformanceTestStack::create_seq_storage(),
             fdsk: SECURE_FDSK,
         };
-        let inner =
-            SecureInnerState::new(identity, ConformanceComObjects::new(), ConformanceHookContext::new(), resources);
+        let inner = SecureInnerState::new(identity, ConformanceComObjects::new(), resources);
 
         // Set the secure conformance test individual address (1.0.1 = 0x1001).
         // Matches the plain conformance default so tests that hard-code the
@@ -313,10 +312,6 @@ impl zweidraehte_device::objects::comm::HasCommObjects for SecureConformanceStat
 
     fn comm_objects(&self) -> &RefCell<Self::CO> {
         self.inner.comm_objects()
-    }
-
-    fn hook_context(&self) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
-        self.inner.hook_context()
     }
 }
 

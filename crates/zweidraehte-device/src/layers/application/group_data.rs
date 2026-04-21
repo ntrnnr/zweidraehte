@@ -13,7 +13,10 @@ use crate::{
     context::layer::{HasOutbox, LayerContext},
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects, LifecycleEvent},
+        comm::{
+            ComObjectBusHook, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects,
+            LifecycleEvent,
+        },
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
@@ -225,7 +228,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                     objs.set_status(asap, ComObjectStatus::Updated);
 
                     // Call write hook
-                    objs.handle_write(asap, self.state.hook_context());
+                    objs.handle_write(asap);
                 }
 
                 // Publish event to the event channel
@@ -338,7 +341,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, response_tsap, object_size);
 
             // Call read hook
-            self.state.comm_objects().borrow_mut().prepare_read(asap, self.state.hook_context());
+            self.state.comm_objects().borrow_mut().prepare_read(asap);
 
             // Allocate a new message for the response
             let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {

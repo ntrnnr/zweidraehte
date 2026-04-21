@@ -581,7 +581,7 @@ impl StackDefinition for DemoStack {
         let identity = StaticIdentity::new(init.serial);
         match init.loaded_config {
             Some(config) => DemoState::from_config(identity, config, ()),
-            None => DemoState::new(identity, comm_objs::DemoComObjects::new(), (), ()),
+            None => DemoState::new(identity, comm_objs::DemoComObjects::new(), ()),
         }
     }
 

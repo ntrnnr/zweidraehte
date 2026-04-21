@@ -18,9 +18,7 @@ use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
-use zweidraehte_device::objects::comm::{
-    ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
-};
+use zweidraehte_device::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
 
 // ============================================================================
 // Device Identity
@@ -114,7 +112,6 @@ pub struct IpInterfaceComObjects;
 
 impl ComObjects for IpInterfaceComObjects {
     type Index = IpInterfaceComObjectIndex;
-    type HookContext = ();
 
     fn new() -> Self {
         Self
@@ -128,3 +125,5 @@ impl ComObjects for IpInterfaceComObjects {
         panic!("IP Interface has no communication objects");
     }
 }
+
+impl zweidraehte_device::objects::comm::ComObjectBusHook for IpInterfaceComObjects {}

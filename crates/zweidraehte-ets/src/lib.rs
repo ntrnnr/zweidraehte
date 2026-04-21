@@ -106,10 +106,10 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{
+    Attribute, Data, DeriveInput, Expr, Fields, Lit, Token, Type,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
-    Attribute, Data, DeriveInput, Expr, Fields, Lit, Token, Type,
 };
 
 /// A single enum variant: "Name" => value
@@ -165,7 +165,7 @@ fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 return Err(syn::Error::new_spanned(
                     input,
                     "EtsParams can only be derived for structs with named fields",
-                ))
+                ));
             }
         },
         _ => return Err(syn::Error::new_spanned(input, "EtsParams can only be derived for structs")),
@@ -923,19 +923,21 @@ fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
         Type::Array(array) => {
             // Handle [u8; N] arrays
             if let Type::Path(inner) = array.elem.as_ref()
-                && inner.path.is_ident("u8") {
-                    // Extract array length
-                    if let Expr::Lit(lit) = &array.len
-                        && let Lit::Int(int) = &lit.lit {
-                            let len: usize = int.base10_parse()?;
-                            return Ok(TypeInfo {
-                                size_bytes: len,
-                                size_bits: (len * 8) as u8,
-                                align: 1, // [u8; N] has alignment of 1
-                                param_type: quote!(zweidraehte_device::ets::EtsParamType::None),
-                            });
-                        }
+                && inner.path.is_ident("u8")
+            {
+                // Extract array length
+                if let Expr::Lit(lit) = &array.len
+                    && let Lit::Int(int) = &lit.lit
+                {
+                    let len: usize = int.base10_parse()?;
+                    return Ok(TypeInfo {
+                        size_bytes: len,
+                        size_bits: (len * 8) as u8,
+                        align: 1, // [u8; N] has alignment of 1
+                        param_type: quote!(zweidraehte_device::ets::EtsParamType::None),
+                    });
                 }
+            }
             Err(syn::Error::new_spanned(ty, "Only [u8; N] arrays are supported"))
         }
         _ => Err(syn::Error::new_spanned(ty, "Unsupported type")),
@@ -1059,9 +1061,10 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         if let syn::Fields::Named(fields) = &variant.fields {
             for field in &fields.named {
                 if let Ok(type_info) = get_type_info(&field.ty)
-                    && type_info.align > max_align {
-                        max_align = type_info.align;
-                    }
+                    && type_info.align > max_align
+                {
+                    max_align = type_info.align;
+                }
             }
         }
     }
@@ -1081,13 +1084,12 @@ fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     for variant in variants.iter() {
         let variant_name = &variant.ident;
         // Get explicit discriminant if present, otherwise use auto-incrementing value
-        let discriminant_value = if let Some((_, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }))) =
-            &variant.discriminant
-        {
-            lit.base10_parse::<i64>().unwrap_or(current_discriminant)
-        } else {
-            current_discriminant
-        };
+        let discriminant_value =
+            if let Some((_, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }))) = &variant.discriminant {
+                lit.base10_parse::<i64>().unwrap_or(current_discriminant)
+            } else {
+                current_discriminant
+            };
         current_discriminant = discriminant_value + 1;
 
         // Parse variant attributes for display name
@@ -2013,7 +2015,7 @@ fn parse_flags_expr(input: ParseStream) -> syn::Result<u8> {
                         "unknown flag `{}`. Expected: C/CE, R/RE, W/WE, T/TE, U/UE, ROI, LOW, HIGH, ALARM, SYSTEM",
                         ident_str
                     ),
-                ))
+                ));
             }
         }
         // If next token is `|`, consume it and continue; otherwise stop
@@ -2136,11 +2138,12 @@ struct ComObjectField {
 fn extract_inner_type(ty: &syn::Type) -> syn::Type {
     if let syn::Type::Path(type_path) = ty
         && let Some(segment) = type_path.path.segments.last()
-            && segment.ident == "ComObject"
-                && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
-                    && let Some(syn::GenericArgument::Type(inner)) = args.args.first() {
-                        return inner.clone();
-                    }
+        && segment.ident == "ComObject"
+        && let syn::PathArguments::AngleBracketed(args) = &segment.arguments
+        && let Some(syn::GenericArgument::Type(inner)) = args.args.first()
+    {
+        return inner.clone();
+    }
     ty.clone()
 }
 
@@ -2173,9 +2176,10 @@ fn extract_array_info(ty: &syn::Type) -> Option<(syn::Type, ArrayLen)> {
         let elem = (*arr.elem).clone();
         // Try to parse the length expression as a literal first
         if let syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit_int), .. }) = &arr.len
-            && let Ok(len) = lit_int.base10_parse::<usize>() {
-                return Some((elem, ArrayLen::Literal(len)));
-            }
+            && let Ok(len) = lit_int.base10_parse::<usize>()
+        {
+            return Some((elem, ArrayLen::Literal(len)));
+        }
         // Otherwise, keep the expression (could be a const like NUM_CHANNELS)
         return Some((elem, ArrayLen::Expr(arr.len.clone())));
     }
@@ -2208,7 +2212,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                 return Err(syn::Error::new_spanned(
                     input,
                     "EtsComObjects can only be derived for structs with named fields",
-                ))
+                ));
             }
         },
         _ => return Err(syn::Error::new_spanned(input, "EtsComObjects can only be derived for structs")),
@@ -2249,14 +2253,7 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
         // Multi-DPT objects have selector_param and use ComObjectStorage for runtime type selection
         let is_multi_dpt = attrs.selector_param.is_some();
 
-        com_objects.push(ComObjectField {
-            ident: field_ident,
-            inner_ty,
-            attrs,
-            refs,
-            has_refs,
-            is_multi_dpt,
-        });
+        com_objects.push(ComObjectField { ident: field_ident, inner_ty, attrs, refs, has_refs, is_multi_dpt });
     }
 
     // For now, we support at most one module field
@@ -2431,12 +2428,12 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                         // Extract the last path segment as the variant name for
                         // translation resolution (e.g., "Switch" from
                         // "ButtonConfigDiscriminant::Switch").
-                        let variant_name = path.segments.last()
-                            .map(|seg| seg.ident.to_string())
-                            .unwrap_or_default();
+                        let variant_name = path.segments.last().map(|seg| seg.ident.to_string()).unwrap_or_default();
                         (quote!(Some(#path as i64)), quote!(Some(#variant_name)), selector_param_tokens.clone())
                     }
-                    Some(SelectorValue::Int(val)) => (quote!(Some(#val as i64)), quote!(None), selector_param_tokens.clone()),
+                    Some(SelectorValue::Int(val)) => {
+                        (quote!(Some(#val as i64)), quote!(None), selector_param_tokens.clone())
+                    }
                     None => {
                         // No `when` = unconditional ref, clear selector_param
                         (quote!(None), quote!(None), quote!(None))
@@ -2517,14 +2514,17 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
         quote!()
     };
 
-    // Generate ComObjects impl unless manual_impl is set
+    // Generate ComObjects impl unless manual_impl is set. Always also emit
+    // an empty `ComObjectBusHook` so the generated container satisfies the
+    // `StackDefinition::CO: ComObjects + ComObjectBusHook` bound — devices
+    // that need bus hooks override the trait manually alongside their own
+    // `ComObjects` impl.
     let com_objects_impl = if struct_attrs.manual_impl {
         quote!()
     } else {
         quote! {
             impl zweidraehte_device::objects::comm::ComObjects for #struct_name {
                 type Index = Index;
-                type HookContext = ();
 
                 fn new() -> Self {
                     Self {
@@ -2544,6 +2544,12 @@ fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2>
                     }
                 }
             }
+
+            // Empty `ComObjectBusHook` impl — macro-generated devices rarely
+            // need bus-inbound side effects. Users that do want to override
+            // `prepare_read` / `handle_write` should set `#[ets(manual_impl)]`
+            // on the struct and write both traits themselves.
+            impl zweidraehte_device::objects::comm::ComObjectBusHook for #struct_name {}
         }
     };
 
@@ -2679,14 +2685,16 @@ fn generate_module_based_impl(
     // we don't know the module's object names. Instead, we use a numeric index approach.
     // Users can still use helper methods to get human-readable indices.
 
-    // Generate ComObjects impl that forwards to the array elements
+    // Generate ComObjects impl that forwards to the array elements.
+    // Also emit an empty `ComObjectBusHook` so the resulting type
+    // satisfies the `StackDefinition::CO` bound; manual_impl users must
+    // write both.
     let com_objects_impl = if struct_attrs.manual_impl {
         quote!()
     } else {
         quote! {
             impl zweidraehte_device::objects::comm::ComObjects for #struct_name {
                 type Index = Index;
-                type HookContext = ();
 
                 fn new() -> Self {
                     Self {
@@ -2708,6 +2716,8 @@ fn generate_module_based_impl(
                     self.#field_ident[instance].info_mut(local_idx as u16)
                 }
             }
+
+            impl zweidraehte_device::objects::comm::ComObjectBusHook for #struct_name {}
         }
     };
 
@@ -3149,7 +3159,7 @@ impl syn::parse::Parse for EtsRangeEnumInput {
                     return Err(syn::Error::new(
                         formula_name.span(),
                         "unknown formula, expected 'direct' or 'percent_to_byte'",
-                    ))
+                    ));
                 }
             }
         } else {

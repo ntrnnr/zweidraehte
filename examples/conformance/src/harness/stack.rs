@@ -160,68 +160,56 @@ pub mod comm_objs {
 
 // Manual ComObjects implementation with custom hooks for shadow objects
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
-use core::cell::UnsafeCell;
-use zweidraehte_device::objects::comm::{ComObjectInfo, ComObjectInfoMut};
+use std::sync::atomic::{AtomicPtr, Ordering};
+use zweidraehte_device::objects::comm::{ComObjectBusHook, ComObjectInfo, ComObjectInfoMut};
 use zweidraehte_device::objects::tables::CommunicationObjectTable;
 use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 
-/// Hook context for conformance tests that provides access to the COT.
+// ============================================================================
+// CoTab pointer for the ComObjectBusHook shadow objects
+// ============================================================================
+//
+// The 1.4.1 group-object tests synthesise BCU1-style "shadow" GOs
+// (GO1/GO2/GO3) that mirror GO0's status + configured CoTab flags +
+// value. `GO2 ← bus-write` mutates the live CoTab (to toggle ROI),
+// which means `ComObjectBusHook::handle_write` needs a reference to
+// the CoTab from `&mut self` alone. Rather than fight the
+// `#[derive(EtsComObjects)]` macro — which requires every struct
+// field to be a ComObject with an index — we park the CoTab pointer
+// in a process-global static set once from each DUT binary's startup.
+// Same pattern as `harness::ipc::PRIMARY_SOCKET_FD`.
+//
+// This replaces the earlier `ConformanceHookContext` struct whose
+// raw pointer lived in the device-stack's `HookContext` associated
+// type. All the unsafety is now localised to the conformance crate
+// and no longer affects the library's public traits.
+
+static COT_PTR: AtomicPtr<RefCell<conformance_config::CoTab>> = AtomicPtr::new(core::ptr::null_mut());
+
+/// Publish the COT reference used by the shadow-object hook.
 ///
-/// This struct uses interior mutability to allow setting the COT reference
-/// after stack initialization.
+/// Call once from each DUT binary's `main` after stack construction.
+/// The reference must outlive the hook's use of it — the conformance
+/// DUT keeps the stack + its tables alive for the entire process, so
+/// any reference from the stack's `communication_object_table()`
+/// satisfies that.
 ///
 /// # Safety
-///
-/// The COT pointer is initialized to null and must be set via `set_cot()`
-/// before any hooks are called. The pointer must remain valid for the
-/// lifetime of the stack.
-pub struct ConformanceHookContext {
-    /// Pointer to the COT, set after stack initialization.
-    /// Using UnsafeCell because we need to mutate this after creation.
-    cot: UnsafeCell<*const RefCell<conformance_config::CoTab>>,
+/// The caller guarantees that `cot` remains a valid reference for
+/// the duration of the process.
+pub unsafe fn set_conformance_cot(cot: &RefCell<conformance_config::CoTab>) {
+    COT_PTR.store(cot as *const _ as *mut _, Ordering::Release);
 }
 
-impl Default for ConformanceHookContext {
-    fn default() -> Self {
-        Self::new()
-    }
+fn conformance_cot() -> Option<&'static RefCell<conformance_config::CoTab>> {
+    let ptr = COT_PTR.load(Ordering::Acquire);
+    // SAFETY: if non-null, the pointer was installed by `set_conformance_cot`
+    // with the caller's guarantee that the referent outlives the process.
+    unsafe { ptr.as_ref() }
 }
-
-impl ConformanceHookContext {
-    /// Create a new hook context with no COT reference.
-    pub const fn new() -> Self {
-        Self { cot: UnsafeCell::new(core::ptr::null()) }
-    }
-
-    /// Set the COT reference. Must be called after stack initialization.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure the COT reference remains valid for the
-    /// lifetime of the stack.
-    pub unsafe fn set_cot(&self, cot: &RefCell<conformance_config::CoTab>) {
-        // SAFETY: Caller guarantees the COT reference outlives the stack.
-        unsafe { *self.cot.get() = cot as *const _ };
-    }
-
-    /// Get a reference to the COT if it has been set.
-    fn cot(&self) -> Option<&RefCell<conformance_config::CoTab>> {
-        // SAFETY: We only read the pointer, and if non-null, it was set
-        // to a valid reference by set_cot().
-        unsafe {
-            let ptr = *self.cot.get();
-            if ptr.is_null() { None } else { Some(&*ptr) }
-        }
-    }
-}
-
-// SAFETY: The UnsafeCell is only accessed from single-threaded embassy context
-unsafe impl Send for ConformanceHookContext {}
-unsafe impl Sync for ConformanceHookContext {}
 
 impl ComObjects for ConformanceComObjects {
     type Index = CoIndex;
-    type HookContext = ConformanceHookContext;
 
     fn new() -> Self {
         Self {
@@ -363,8 +351,22 @@ impl ComObjects for ConformanceComObjects {
             }
         }
     }
+}
 
-    fn prepare_read(&mut self, idx: u16, ctx: &Self::HookContext) {
+// ============================================================================
+// BCU1-style shadow-object hook
+// ============================================================================
+//
+// GO1/GO2/GO3 (and their BYTE3 siblings) are synthesised objects that
+// mirror GO0's runtime state for the 1.4.1 group-object conformance
+// tests. The AL calls `prepare_read` before emitting a
+// `GroupValue_Response` and `handle_write` after accepting a
+// `GroupValue_Write`, giving us a synchronous place to wire the
+// mirroring logic. The CoTab pointer used by GO2's runtime-flag
+// mutation comes from the static installed by `set_conformance_cot`.
+
+impl ComObjectBusHook for ConformanceComObjects {
+    fn prepare_read(&mut self, idx: u16) {
         match CoIndex::from_index(idx) {
             Some(CoIndex::Go1CommFlags) => {
                 // GO1 reads GO0's communication status
@@ -374,7 +376,7 @@ impl ComObjects for ConformanceComObjects {
             Some(CoIndex::Go2ConfigFlags) => {
                 // GO2 reads GO0's configuration flags from the COT
                 // GO0 is at ASAP 1 (index 1 in the COT)
-                if let Some(cot) = ctx.cot()
+                if let Some(cot) = conformance_cot()
                     && let Some(flags) = cot.borrow().object_flags(1)
                 {
                     self.go_2_config_flags.value.as_mut()[0] = flags.to_byte();
@@ -394,7 +396,7 @@ impl ComObjects for ConformanceComObjects {
             Some(CoIndex::Go2Byte3ConfigFlags) => {
                 // GO2_BYTE3 reads GO0_BYTE3's configuration flags from the COT
                 // GO0_BYTE3 is at ASAP 5 (index 5 in the COT)
-                if let Some(cot) = ctx.cot()
+                if let Some(cot) = conformance_cot()
                     && let Some(flags) = cot.borrow().object_flags(5)
                 {
                     self.go_2_byte3_config_flags.value.as_mut()[0] = flags.to_byte();
@@ -409,7 +411,7 @@ impl ComObjects for ConformanceComObjects {
         }
     }
 
-    fn handle_write(&mut self, idx: u16, ctx: &Self::HookContext) {
+    fn handle_write(&mut self, idx: u16) {
         match CoIndex::from_index(idx) {
             Some(CoIndex::Go1CommFlags) => {
                 // GO1 write sets GO0's communication flags directly
@@ -420,7 +422,7 @@ impl ComObjects for ConformanceComObjects {
             Some(CoIndex::Go2ConfigFlags) => {
                 // GO2 write modifies GO0's configuration flags in the COT
                 // GO0 is at ASAP 1 (index 1 in the COT)
-                if let Some(cot) = ctx.cot() {
+                if let Some(cot) = conformance_cot() {
                     let new_flags = ComObjectFlags::from_byte(self.go_2_config_flags.value.as_ref()[0]);
                     cot.borrow_mut().set_object_flags(1, new_flags);
                 }
@@ -439,7 +441,7 @@ impl ComObjects for ConformanceComObjects {
             Some(CoIndex::Go2Byte3ConfigFlags) => {
                 // GO2_BYTE3 write modifies GO0_BYTE3's configuration flags in the COT
                 // GO0_BYTE3 is at ASAP 5 (index 5 in the COT)
-                if let Some(cot) = ctx.cot() {
+                if let Some(cot) = conformance_cot() {
                     let new_flags = ComObjectFlags::from_byte(self.go_2_byte3_config_flags.value.as_ref()[0]);
                     cot.borrow_mut().set_object_flags(5, new_flags);
                 }
@@ -780,7 +782,7 @@ impl ConformanceState {
         app_table: Application<TestParameters>,
     ) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
-        let inner = InnerState::new(identity, ConformanceComObjects::new(), ConformanceHookContext::new(), ());
+        let inner = InnerState::new(identity, ConformanceComObjects::new(), ());
 
         // Set the conformance test individual address (1.0.1).
         inner.set_individual_address(IndividualAddress::new(1, 0, 1));
@@ -921,10 +923,6 @@ impl zweidraehte_device::objects::comm::HasCommObjects for ConformanceState {
 
     fn comm_objects(&self) -> &RefCell<Self::CO> {
         self.inner.comm_objects()
-    }
-
-    fn hook_context(&self) -> &<Self::CO as zweidraehte_device::objects::comm::ComObjects>::HookContext {
-        self.inner.hook_context()
     }
 }
 

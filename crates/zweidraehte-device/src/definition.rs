@@ -158,7 +158,13 @@ pub trait StackDefinition: Copy + 'static {
     type Platform: 'static = ();
 
     type P: ConstDefault;
-    type CO: ComObjects;
+    /// Communication-object container. Must also implement
+    /// [`ComObjectBusHook`](crate::objects::comm::ComObjectBusHook) —
+    /// most devices pick up an empty impl (either written by hand or
+    /// emitted by `#[derive(EtsComObjects)]`); harnesses that need
+    /// bus-inbound side effects (e.g. BCU1-style shadow objects)
+    /// override the trait's default no-op methods.
+    type CO: ComObjects + crate::objects::comm::ComObjectBusHook;
     type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
 
     /// Medium extension providing both state persistence and interface

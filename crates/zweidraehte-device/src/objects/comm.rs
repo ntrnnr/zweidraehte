@@ -336,8 +336,6 @@ pub const trait ComObjectIndex: Clone + Sized {
 /// Trait for managing communication objects in a KNX application.
 pub trait ComObjects {
     type Index: ComObjectIndex;
-    /// Context type for hooks. Use `()` if not needed.
-    type HookContext: Default;
 
     fn new() -> Self;
     fn info<'a>(&'a self, idx: u16) -> ComObjectInfo<'a>;
@@ -365,18 +363,6 @@ pub trait ComObjects {
     fn value_mut(&mut self, idx: u16) -> &mut [u8] {
         let info = self.info_mut(idx);
         info.value
-    }
-
-    /// Called before reading an object's value.
-    #[inline]
-    fn prepare_read(&mut self, _idx: u16, _ctx: &Self::HookContext) {
-        // Default: no-op
-    }
-
-    /// Called after writing an object's value.
-    #[inline]
-    fn handle_write(&mut self, _idx: u16, _ctx: &Self::HookContext) {
-        // Default: no-op
     }
 
     /// Acknowledge that an update has been processed by the application.
@@ -407,6 +393,38 @@ pub trait ComObjects {
     }
 }
 
+/// Opt-in bus-inbound hook for comm-object containers.
+///
+/// The application layer calls [`prepare_read`](Self::prepare_read) before
+/// serving an incoming `GroupValue_Read` and
+/// [`handle_write`](Self::handle_write) after processing an incoming
+/// `GroupValue_Write` or `GroupValue_Response`. The vast majority of
+/// devices don't need either hook — the ETS-macro-generated containers
+/// rely on the empty defaults below.
+///
+/// Devices that do need the hooks (e.g. BCU1-style shadow objects in
+/// the conformance harness) override them on their concrete
+/// `ComObjects` type. Any references to other stack state the hook
+/// needs (e.g. the CoTab for runtime flag mutation) must be held by the
+/// implementing type directly — the trait deliberately has no
+/// associated "context" type so that the `ComObjects` trait itself
+/// stays minimal.
+pub trait ComObjectBusHook {
+    /// Called synchronously just before a `GroupValue_Read` response
+    /// is serialised. Typical use: populate a synthesised value into
+    /// `self` that mirrors some other live state.
+    #[inline]
+    fn prepare_read(&mut self, _idx: u16) {}
+
+    /// Called synchronously immediately after a bus-originated update
+    /// to the object at `idx`. The new value has already been written
+    /// into `self` and the status set to `Updated`. Typical use:
+    /// propagate the write elsewhere (side-effect another object,
+    /// mutate a live CoTab entry, …).
+    #[inline]
+    fn handle_write(&mut self, _idx: u16) {}
+}
+
 /// Trait for device states that provide access to communication objects.
 ///
 /// Mirrors `HasAddressTable` / `HasAssociationTable` — device states that
@@ -418,9 +436,6 @@ pub trait HasCommObjects {
 
     /// Get a reference to the communication objects.
     fn comm_objects(&self) -> &RefCell<Self::CO>;
-
-    /// Get a reference to the hook context for communication object hooks.
-    fn hook_context(&self) -> &<Self::CO as ComObjects>::HookContext;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

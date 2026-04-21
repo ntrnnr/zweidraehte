@@ -3249,7 +3249,7 @@ impl StackDefinition for MdtStack {
         let identity = StaticIdentity::new(init.serial);
         match init.loaded_config {
             Some(config) => MdtState::from_config(identity, config, ()),
-            None => MdtState::new(identity, comm_objs::MdtComObjects::new(), (), ()),
+            None => MdtState::new(identity, comm_objs::MdtComObjects::new(), ()),
         }
     }
 
