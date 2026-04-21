@@ -133,44 +133,6 @@ impl DeviceModelNotifier for DmNotificationSlot {
 }
 
 // ============================================================================
-// Read-on-init completion signal (conformance hook)
-// ============================================================================
-//
-// The conformance IPC link layer needs to know when the application layer's
-// read-on-init scan has finished — see
-// `examples/conformance/src/harness/ipc.rs::drain_roi_and_announce`. It used
-// to detect "done" via an 800 ms quiet window on the outbox, which was
-// fragile: adding a comm object or changing the scale divisor broke the
-// heuristic silently. This signal is the direct replacement.
-//
-// The signal lives in the device crate (rather than the conformance crate)
-// so the group-data layer can fire it without a new dependency direction.
-// Gated on `cfg(feature = "conformance")` to keep production builds
-// zero-cost.
-
-#[cfg(feature = "conformance")]
-pub use roi_done::read_on_init_done_signal;
-
-#[cfg(feature = "conformance")]
-mod roi_done {
-    use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-    use embassy_sync::signal::Signal;
-
-    static ROI_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-
-    /// Return the process-global "read-on-init scan complete" signal.
-    ///
-    /// Fired once per AL startup cycle from
-    /// `layers::application::group_data::read_on_init_step` when
-    /// `ReadOnInitState` transitions to `Done`. Consumed by the
-    /// conformance IPC link layer as an explicit replacement for the
-    /// previous quiet-window heuristic.
-    pub fn read_on_init_done_signal() -> &'static Signal<CriticalSectionRawMutex, ()> {
-        &ROI_DONE
-    }
-}
-
-// ============================================================================
 // DeviceModel trait
 // ============================================================================
 

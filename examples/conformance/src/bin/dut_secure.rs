@@ -114,6 +114,17 @@ async fn main(spawner: Spawner) {
         stack.hook_context().set_cot(stack.communication_object_table());
     }
 
+    // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its
+    // subscriber is registered on the PubSubChannel before the AL's
+    // first `poll()` publishes `ReadOnInitComplete`.
+    let lifecycle_sub = stack.lifecycle_events();
+    // SAFETY: `stack` lives for the duration of the process via
+    // `STACK_RESOURCES: StaticCell<...>`, so the subscriber borrows
+    // from a `'static` channel.
+    let lifecycle_sub: embassy_sync::pubsub::DynSubscriber<'static, zweidraehte_device::objects::comm::LifecycleEvent> =
+        unsafe { core::mem::transmute(lifecycle_sub) };
+    spawner.spawn(dut_common::bridge_lifecycle_to_ipc(lifecycle_sub)).expect("spawn lifecycle bridge");
+
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
     spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
     spawner.spawn(handle_restarts(stack, shm)).expect("spawn restart handler");

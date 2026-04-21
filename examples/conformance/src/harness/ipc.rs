@@ -101,6 +101,30 @@ impl BarrierState {
 
 static BARRIER: BarrierState = BarrierState::new();
 
+// ============================================================================
+// Read-on-init-complete signal
+// ============================================================================
+//
+// The device stack publishes `LifecycleEvent::ReadOnInitComplete` through
+// its public pub/sub channel (see `Stack::lifecycle_events`) when the AL's
+// read-on-init scan reaches `Done` — or settles in `Idle` on a startup
+// where preconditions can't be met (factory-reset state with no app
+// loaded). A small bridge task in `dut_common` subscribes to that channel
+// and fires this signal so `drain_roi_and_announce` below can wait on a
+// single primitive without pulling `LifecycleEvent` into the link layer.
+
+static ROI_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
+
+/// Fire the "read-on-init settled" signal. Called from the DUT's
+/// lifecycle-event bridge task; see `crate::dut_common`.
+pub fn signal_roi_done() {
+    ROI_DONE.signal(());
+}
+
+fn roi_done_signal() -> &'static Signal<CriticalSectionRawMutex, ()> {
+    &ROI_DONE
+}
+
 /// Lifecycle handlers call this first. Once signalled, the
 /// IpcLinkLayer will emit its pending `StepComplete` immediately
 /// (cutting any drain quiet-window short) and then signal
@@ -259,26 +283,26 @@ impl<'a> IpcLinkLayer<'a> {
     ///
     /// # Done-detection
     ///
-    /// The AL fires [`read_on_init_done_signal`] exactly once when its
-    /// scan completes (conformance-feature-gated). We `select!` on
-    /// `req_rx` and that signal, falling through with a generous
-    /// safety-net timer only if the signal never arrives (5 s; hit
-    /// only when the stack is broken). After the done signal, we still
-    /// drain one extra pass for frames that may already sit in the
-    /// request channel, since the signal fires on state transition —
-    /// the request that produced the last frame may land a tick after.
+    /// The AL publishes [`LifecycleEvent::ReadOnInitComplete`] exactly
+    /// once per startup when its scan settles; a bridge task in
+    /// [`crate::dut_common::bridge_lifecycle_to_ipc`] forwards that
+    /// publish into the local [`ROI_DONE`] signal. We `select!` on
+    /// `req_rx` and that signal, falling through with a tight
+    /// safety-net timer if the signal never arrives (broken stack).
+    /// After the done signal we still drain one extra pass for frames
+    /// that may already sit in the request channel, since the signal
+    /// fires on state transition and the request that produced the
+    /// last frame may land a tick after.
     async fn drain_roi_and_announce(&mut self, req_rx: &mut impl Inbox<RequestMessage<Buffer<'static>>>) {
         use embassy_futures::select::{Either, select};
         use embassy_time::{Duration, Timer};
-        use zweidraehte_device::device_model::read_on_init_done_signal;
 
         // The signal is process-local (static in the DUT's address
         // space), so a respawned DUT sees a fresh `Signal` — no need
-        // to reset here. Resetting would race with the router task's
-        // `layers.init() → layers.poll()` fire-once path if poll
-        // reached the state machine before this task got to
-        // `signal.wait()`.
-        let signal = read_on_init_done_signal();
+        // to reset here. Resetting would race with the bridge task's
+        // `signal_roi_done()` call if the task fired before this task
+        // got to `signal.wait()`.
+        let signal = roi_done_signal();
 
         // Outer loop: pump ROI frames until the AL signals settled
         // (either `Done` or "no ROI needed on this startup"; see

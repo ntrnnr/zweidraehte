@@ -217,6 +217,49 @@ pub async fn exit_with_reason(reason: ExitReason) -> ! {
 }
 
 // ============================================================================
+// Lifecycle-event → IPC signal bridge
+// ============================================================================
+//
+// The device stack publishes `LifecycleEvent::ReadOnInitComplete` on its
+// public pub/sub channel when the AL's read-on-init scan settles. The IPC
+// link layer waits on a local signal (`harness::ipc::ROI_DONE`) before
+// it sends `RoiComplete` to the runner. This task bridges the two — it
+// subscribes to the stack's lifecycle events and fires the IPC signal
+// when `ReadOnInitComplete` arrives.
+//
+// We use the public subscriber API instead of a library-side hook so the
+// device crate stays free of conformance-specific signalling.
+
+/// Embassy task that forwards `LifecycleEvent::ReadOnInitComplete` from
+/// the stack's public lifecycle channel to the IPC link layer's local
+/// `ROI_DONE` signal.
+///
+/// The subscriber must be created with `'static` lifetime (both DUT
+/// binaries own their `StackResources` in a `StaticCell`), which
+/// callers typically achieve with a small `core::mem::transmute` after
+/// `stack.lifecycle_events()`.
+#[embassy_executor::task]
+pub async fn bridge_lifecycle_to_ipc(
+    mut events: embassy_sync::pubsub::DynSubscriber<'static, zweidraehte_device::objects::comm::LifecycleEvent>,
+) {
+    use embassy_sync::pubsub::WaitResult;
+    use zweidraehte_device::objects::comm::LifecycleEvent;
+    loop {
+        match events.next_message().await {
+            WaitResult::Message(LifecycleEvent::ReadOnInitComplete) => {
+                crate::harness::ipc::signal_roi_done();
+            }
+            WaitResult::Message(_) => {
+                // Other variants are not consumed by the harness today.
+            }
+            WaitResult::Lagged(n) => {
+                log::warn!("DUT lifecycle bridge lagged by {n} messages");
+            }
+        }
+    }
+}
+
+// ============================================================================
 // ConformanceStack trait — dedupe logic between plain and secure DUT binaries
 // ============================================================================
 //

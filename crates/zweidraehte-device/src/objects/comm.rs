@@ -452,6 +452,7 @@ pub enum ComObjectEvent {
 /// the `Pei*` variants are surfaced for completeness so that tools observing
 /// the full ETS programming cascade can see both halves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LifecycleEvent {
     /// The application program transitioned to RUNNING.
     ///
@@ -478,4 +479,21 @@ pub enum LifecycleEvent {
 
     /// The PEI program transitioned out of RUNNING.
     PeiStopped,
+
+    /// The application layer's read-on-init scan has settled — either it
+    /// ran to completion (`ReadOnInitState::Done`) or the preconditions
+    /// weren't met on this startup and the state machine stayed `Idle`.
+    ///
+    /// Fires exactly once per AL startup cycle, from
+    /// `GroupDataProvider::poll`. The guard flag resets when the app
+    /// transitions back out of the running state, so a subsequent
+    /// startup re-fires the event.
+    ///
+    /// Observers:
+    /// - The conformance IPC harness uses this to know when it can
+    ///   transition from "draining startup ROI frames" to step-driven
+    ///   mode. User code rarely needs to care — `ApplicationStarted`
+    ///   and comm-object events cover the vast majority of startup
+    ///   scenarios.
+    ReadOnInitComplete,
 }

@@ -13,13 +13,14 @@ use crate::{
     context::layer::{HasOutbox, LayerContext},
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects, LifecycleEvent},
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
         },
     },
 };
+use embassy_sync::pubsub::PubSubBehavior;
 use zweidraehte_proto::messages::{
     apdu::group_value::{GroupValueReadRequest, GroupValueWriteRequest},
     buffers::{Buffer, DynBufferManager},
@@ -618,19 +619,20 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
         self.read_on_init_step();
 
-        // If the state machine is settled (scan complete, or
-        // preconditions can't be met on this startup — e.g. factory-
-        // reset state with no app loaded), fire the conformance
-        // "read-on-init settled" signal once. The IPC link layer waits
-        // on this to know it can transition to `RoiComplete`.
-        #[cfg(feature = "conformance")]
-        {
-            let state = self.lctx.group_data.read_on_init.get();
-            let settled = matches!(state, ReadOnInitState::Done | ReadOnInitState::Idle);
-            if settled && !self.lctx.group_data.roi_settled_fired.get() {
-                self.lctx.group_data.roi_settled_fired.set(true);
-                crate::device_model::read_on_init_done_signal().signal(());
-            }
+        // Publish `LifecycleEvent::ReadOnInitComplete` once per AL
+        // startup — either the scan ran to `Done`, or preconditions
+        // weren't met on this startup (e.g. factory-reset state with
+        // no app loaded) and the state machine stayed `Idle`. The
+        // guard flag resets when the app transitions out of RUNNING,
+        // so the next startup re-fires.
+        //
+        // The conformance IPC harness subscribes to this from the
+        // DUT side; user code rarely needs to.
+        let state = self.lctx.group_data.read_on_init.get();
+        let settled = matches!(state, ReadOnInitState::Done | ReadOnInitState::Idle);
+        if settled && !self.lctx.group_data.roi_settled_fired.get() {
+            self.lctx.group_data.roi_settled_fired.set(true);
+            self.lctx.lifecycle_channel.publish_immediate(LifecycleEvent::ReadOnInitComplete);
         }
     }
 
