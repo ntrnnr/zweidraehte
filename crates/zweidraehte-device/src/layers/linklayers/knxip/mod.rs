@@ -6,28 +6,24 @@ use embassy_sync::{
 };
 
 use crate::{
-    context::{
-        ApduLengthContext, BufferManagerContext,
-        KnxIndividualAddressContext, PropertyServiceContext,
-    },
+    context::{ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext, PropertyServiceContext},
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
-    }};
-use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        builder::IndicationMessage,
-    };
+        RoutingMulticastRebindContext,
+    },
+};
+use zweidraehte_proto::messages::{buffers::Buffer, builder::IndicationMessage};
 
-pub(crate) mod connections;    // Connection-oriented state machines
-pub mod context;               // IP-specific context traits
-pub mod features;              // Compile-time feature selection
-pub(crate) mod services;      // Connectionless service handlers
+pub(crate) mod connections; // Connection-oriented state machines
+pub mod context; // IP-specific context traits
+pub mod features; // Compile-time feature selection
+pub(crate) mod services; // Connectionless service handlers
 
 mod builder;
-mod dispatch;           // Frame routing and response sending
+mod dispatch; // Frame routing and response sending
 pub(crate) mod runtime; // Event loop
-mod transport;          // UDP/TCP socket management
-pub(crate) mod types;   // Shared protocol types (ServerError, PendingResponse, etc.)
+mod transport; // UDP/TCP socket management
+pub(crate) mod types; // Shared protocol types (ServerError, PendingResponse, etc.)
 
 pub use builder::KnxNetIpBuilder;
 pub use runtime::KnxNetIp;
@@ -46,6 +42,7 @@ pub(crate) trait KnxNetIpContext:
     + IpDiagnosticsContext
     + IpAdditionalIndividualAddressContext
     + KnxIndividualAddressContext
+    + RoutingMulticastRebindContext
 {
 }
 
@@ -57,6 +54,7 @@ impl<T> KnxNetIpContext for T where
         + IpDiagnosticsContext
         + IpAdditionalIndividualAddressContext
         + KnxIndividualAddressContext
+        + RoutingMulticastRebindContext
 {
 }
 

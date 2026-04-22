@@ -227,6 +227,24 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpAdditionalI
     }
 }
 
+/// Forward [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)'s
+/// rebind channel to the KNX/IP runtime's context trait. The `IpCapableStack`
+/// + `HasRoutingMulticastRebind` bounds ensure this only applies to stacks
+/// whose extension state actually carries the channel.
+#[cfg(feature = "knxip")]
+impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::RoutingMulticastRebindContext for StackContext<'_, D>
+where
+    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::HasRoutingMulticastRebind,
+{
+    fn routing_multicast_rebind_channel(
+        &self,
+    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::net::Ipv4Addr, 2> {
+        use crate::HasRoutingMulticastRebind;
+        use crate::bcus::system_b::HasExtensionState;
+        self.inner.state.extension_state().routing_multicast_rebind_channel()
+    }
+}
+
 impl<D: StackDefinition> crate::context::MaxRetryCountContext for StackContext<'_, D>
 where
     D::State: crate::objects::interface::HasMaxRetryCount,

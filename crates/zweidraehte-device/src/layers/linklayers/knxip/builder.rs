@@ -5,13 +5,12 @@ use heapless::Vec;
 
 use zweidraehte_platform::{IpTransport, TcpListenerOptions};
 
-use crate::{
-    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase}};
+use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
 use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
-        knxip::substructs,
-    };
+    buffers::Buffer,
+    builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
+    knxip::substructs,
+};
 
 use super::runtime::KnxNetIp;
 use super::{
@@ -271,7 +270,7 @@ where
     /// 5. Returns the final `KnxNetIp` instance
     pub(crate) fn build<'res>(
         self,
-        resources: &'res mut KnxNetIpResources,
+        resources: &'res KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
         cemi_ll: crate::layers::transport::cemi::CemiTransportLayerEndpoints<'res>,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
@@ -465,6 +464,7 @@ where
             tcp_manager,
             subnet_link,
             address_filter,
+            interface_addr,
         }
     }
 }

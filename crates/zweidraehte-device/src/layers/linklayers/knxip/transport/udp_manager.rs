@@ -215,32 +215,29 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
         self.descriptors.borrow().clone()
     }
 
-    /// Rebind the routing multicast group on every socket whose
-    /// descriptor joined it (03/02/06 §4.3.5.3.5.1).
+    /// Rebind the routing multicast group on every socket bound to
+    /// `KNX_PORT` (03/02/06 §4.3.5.3.5.1).
+    ///
+    /// The manager is the source of truth for which non-System-Setup
+    /// groups are currently joined, so callers only pass the target:
+    /// we discover the previous group from our own descriptor state.
     ///
     /// For each socket bound to `KNX_PORT`:
     ///
-    /// 1. If `old != SYSTEM_SETUP_MULTICAST_ADDRESS` and the
-    ///    descriptor contains `old`, call `leave_multicast(old)`
-    ///    and drop it from the descriptor. The System Setup group
-    ///    is **never** left — Discovery, Remote Config and IP
-    ///    System Broadcast all rely on it per 03/02/06 §4.1.3.
-    /// 2. If the descriptor does not already contain `new`, call
-    ///    `join_multicast(new)` and add it to the descriptor.
+    /// 1. Find the joined group that isn't
+    ///    [`SYSTEM_SETUP_MULTICAST_ADDRESS`] — that's the current
+    ///    routing group. The System Setup group is **never** left
+    ///    (03/02/06 §4.1.3: Discovery, Remote Config and IP System
+    ///    Broadcast all rely on it).
+    /// 2. If that group is `new` already, skip — nothing to do.
+    /// 3. Otherwise `leave_multicast` the old group (if any) and
+    ///    `join_multicast` the new one, keeping the descriptor's
+    ///    group list in sync.
     ///
     /// Errors from individual socket operations are logged but do
     /// not abort the rebind — the join still proceeds even if the
     /// leave fails, and vice versa.
-    ///
-    /// No-op when `old == new` — callers that update state
-    /// unconditionally can short-circuit the rebind here. The
-    /// wrapping `MulticastController` also guards this case; both
-    /// are defensive.
-    pub fn rebind_routing_multicast(&self, old: Ipv4Addr, new: Ipv4Addr, interface: Ipv4Addr) {
-        if old == new {
-            return;
-        }
-
+    pub fn rebind_routing_multicast(&self, new: Ipv4Addr, interface: Ipv4Addr) {
         let mut descriptors = self.descriptors.borrow_mut();
 
         for (i, desc) in descriptors.iter_mut().enumerate() {
@@ -252,14 +249,24 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 continue;
             };
 
-            if old != crate::SYSTEM_SETUP_MULTICAST_ADDRESS && desc.multicast_groups().contains(&old) {
+            // The "current routing group" is whatever non-System-Setup
+            // entry is in the descriptor. At most one exists in
+            // practice: `bind_all` joins either just System Setup (for
+            // default config) or System Setup plus one routing group.
+            let current = desc.multicast_groups().iter().copied().find(|&a| a != crate::SYSTEM_SETUP_MULTICAST_ADDRESS);
+
+            if current == Some(new) {
+                continue;
+            }
+
+            if let Some(old) = current {
                 if let Err(e) = socket.leave_multicast(old, interface) {
                     warn!("KNX/IP socket {}: leave_multicast({}) failed: {:?}", i, old, e);
                 }
                 desc.remove_multicast_group(old);
             }
 
-            if !desc.multicast_groups().contains(&new) {
+            if new != crate::SYSTEM_SETUP_MULTICAST_ADDRESS && !desc.multicast_groups().contains(&new) {
                 match socket.join_multicast(new, interface) {
                     Ok(()) => {
                         let _ = desc.add_multicast_group(new);
@@ -501,8 +508,8 @@ mod rebind_tests {
     #[test]
     fn rebind_from_system_setup_only_joins_new() {
         let (mgr, log) = setup(&[SYS]);
-        mgr.rebind_routing_multicast(SYS, ALT_A, IFACE);
-        // SYSTEM_SETUP is never left, so only a join is recorded.
+        mgr.rebind_routing_multicast(ALT_A, IFACE);
+        // No prior non-default group, so only a join is recorded.
         assert_eq!(*log.borrow(), vec![Op::Join(ALT_A)]);
         assert_eq!(joined_groups(&mgr), vec![SYS, ALT_A]);
     }
@@ -510,8 +517,8 @@ mod rebind_tests {
     #[test]
     fn rebind_back_to_system_setup_only_leaves_old() {
         let (mgr, log) = setup(&[SYS, ALT_A]);
-        mgr.rebind_routing_multicast(ALT_A, SYS, IFACE);
-        // SYS is already joined so no join is emitted.
+        mgr.rebind_routing_multicast(SYS, IFACE);
+        // Target is SYS (already joined) — we just drop ALT_A.
         assert_eq!(*log.borrow(), vec![Op::Leave(ALT_A)]);
         assert_eq!(joined_groups(&mgr), vec![SYS]);
     }
@@ -519,7 +526,7 @@ mod rebind_tests {
     #[test]
     fn rebind_between_non_defaults_leaves_then_joins() {
         let (mgr, log) = setup(&[SYS, ALT_A]);
-        mgr.rebind_routing_multicast(ALT_A, ALT_B, IFACE);
+        mgr.rebind_routing_multicast(ALT_B, IFACE);
         assert_eq!(*log.borrow(), vec![Op::Leave(ALT_A), Op::Join(ALT_B)]);
         assert_eq!(joined_groups(&mgr), vec![SYS, ALT_B]);
     }
@@ -527,7 +534,7 @@ mod rebind_tests {
     #[test]
     fn rebind_to_same_address_is_noop() {
         let (mgr, log) = setup(&[SYS, ALT_A]);
-        mgr.rebind_routing_multicast(ALT_A, ALT_A, IFACE);
+        mgr.rebind_routing_multicast(ALT_A, IFACE);
         assert!(log.borrow().is_empty());
         assert_eq!(joined_groups(&mgr), vec![SYS, ALT_A]);
     }

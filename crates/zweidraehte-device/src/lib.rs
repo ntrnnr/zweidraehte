@@ -27,8 +27,8 @@ pub use definition::StackDefinition;
 mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::{
-    DEFAULT_MULTICAST_ADDR, IpConfig, IpPlatform, IpPlatformConfig, IpPlatformState, IpStackState, KNX_PORT,
-    SYSTEM_SETUP_MULTICAST_ADDRESS,
+    DEFAULT_MULTICAST_ADDR, HasRoutingMulticastRebind, IpConfig, IpPlatform, IpPlatformConfig, IpPlatformState,
+    IpStackState, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
 };
 
 mod composition;

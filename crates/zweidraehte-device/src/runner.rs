@@ -11,16 +11,8 @@ use embassy_sync::{
 use embassy_time::Timer;
 
 use crate::{
-    StackState,
-    composition::LayerStackBuilder,
-    context::StackContext,
-    definition::StackDefinition,
-    inner::Inner,
-    layers::LinkLayerBuilderBase,
-    resources::StackResources,
-    restart,
-    router::LayerStack,
-    stack_handle::Stack,
+    StackState, composition::LayerStackBuilder, context::StackContext, definition::StackDefinition, inner::Inner,
+    layers::LinkLayerBuilderBase, resources::StackResources, restart, router::LayerStack, stack_handle::Stack,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};

@@ -157,6 +157,24 @@ pub trait IpPlatformState: IpStackState {
 }
 
 // ============================================================================
+// Runtime IGMP-rebind plumbing
+// ============================================================================
+
+/// Access to a channel through which IP state mutators can request the
+/// KNX/IP link-layer runtime to rejoin a new routing multicast group.
+///
+/// Implemented by [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)
+/// on the sender side and queried by the runtime's context impl to drain
+/// on the receiver side. Living on a dedicated trait keeps the channel
+/// out of [`IpStackState`]'s otherwise platform-agnostic API.
+pub trait HasRoutingMulticastRebind {
+    /// Access the rebind channel (capacity 2, `NoopRawMutex`).
+    fn routing_multicast_rebind_channel(
+        &self,
+    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, Ipv4Addr, 2>;
+}
+
+// ============================================================================
 // Constants
 // ============================================================================
 

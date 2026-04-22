@@ -1,26 +1,25 @@
 use core::future::pending;
+use core::net::Ipv4Addr;
 
-use embassy_futures::select::{Either4, select4};
+use embassy_futures::select::{Either, Either4, select, select4};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
 
 use zweidraehte_platform::IpTransport;
 
-use crate::{
-    layers::Inbox};
+use crate::layers::Inbox;
 use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::*,
-        knxip::*,
-    };
+    buffers::Buffer,
+    builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
+    knx::*,
+    knxip::*,
+};
 
 use super::{
-    KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ServerError,
-    SubnetIndication, SubnetLink,
+    KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ServerError, SubnetIndication, SubnetLink,
     connections,
-    dispatch::{self, PendingRequest, MAX_RETRY_QUEUE_SIZE},
+    dispatch::{self, MAX_RETRY_QUEUE_SIZE, PendingRequest},
     features::{self, RoutingFeature},
     services,
     transport::{TcpEvent, TcpManager, UdpEvent, UdpManager},
@@ -69,7 +68,11 @@ pub struct KnxNetIp<
     /// The handler collection is a `CompositeHandlers` with the tunneling
     /// slot selected by `TunnelingFeature::Tunnel`.
     pub(super) connection_manager: connections::ConnectionManager<
-        connections::CompositeHandlers<'res, connections::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>,
+        connections::CompositeHandlers<
+            'res,
+            connections::WithDevMgmt,
+            <F::Tunneling as features::TunnelingFeature>::Tunnel,
+        >,
         { <F::Tunneling as features::TunnelingFeature>::CAPACITY },
         MAX_CHANNELS,
     >,
@@ -94,6 +97,13 @@ pub struct KnxNetIp<
     /// Address filter for incoming routing frames. Drops frames not
     /// addressed to this device before they reach the network layer.
     pub(super) address_filter: Option<&'res dyn super::types::AddressFilter>,
+    /// Local IPv4 address used for multicast membership operations.
+    ///
+    /// Cached at construction from the builder's `local_addr` so the
+    /// runtime can re-issue `IP_ADD_MEMBERSHIP` / `IP_DROP_MEMBERSHIP`
+    /// from the rebind path without asking the platform for an
+    /// interface lookup each time.
+    pub(super) interface_addr: Ipv4Addr,
 }
 
 impl<
@@ -107,8 +117,11 @@ impl<
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
         connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
-    connections::CompositeHandlers<'res, connections::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
-        connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    connections::CompositeHandlers<
+        'res,
+        connections::WithDevMgmt,
+        <F::Tunneling as features::TunnelingFeature>::Tunnel,
+    >: connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Run the KNX/IP link layer event loop.
     ///
@@ -230,17 +243,36 @@ where
                 cemi_response_future,
             );
 
-            let result = match next_timer {
-                Some(timer_at) => {
-                    select4(transport_future, req_rx.next(), response_channel.receive(), Timer::at(timer_at)).await
-                }
-                None => select4(transport_future, req_rx.next(), response_channel.receive(), pending::<()>()).await,
+            // Fourth arm combines the periodic timer with the
+            // `IpExtensionState` rebind channel. `IpExtensionState::set_*`
+            // pushes the new IPv4 multicast group onto this channel from
+            // the write-handler side; the runtime reacts here by calling
+            // [`UdpManager::rebind_routing_multicast`] on its live
+            // sockets (03/02/06 §4.3.5.3.5.1). Either firing continues
+            // the loop: the timer reschedules, the rebind runs the IGMP
+            // leave/join and falls back into the select.
+            let rebind_rx = self.context.routing_multicast_rebind_channel().receiver();
+            let timer_or_rebind = async {
+                let timer_future = async {
+                    match next_timer {
+                        Some(timer_at) => Timer::at(timer_at).await,
+                        None => pending::<()>().await,
+                    }
+                };
+                select(timer_future, rebind_rx.receive()).await
             };
 
+            let result = select4(transport_future, req_rx.next(), response_channel.receive(), timer_or_rebind).await;
+
             match result {
-                // Timer expired (retry queue, heartbeat, or TCP idle)
-                Either4::Fourth(()) => {
+                // Timer expired (retry queue / heartbeat / TCP idle)
+                Either4::Fourth(Either::First(())) => {
                     trace!("KNX/IP timer expired");
+                    continue;
+                }
+                // Rebind request from `IpExtensionState::set_*`
+                Either4::Fourth(Either::Second(new_addr)) => {
+                    self.apply_routing_multicast_rebind(new_addr);
                     continue;
                 }
 
@@ -372,5 +404,19 @@ where
                 }
             }
         }
+    }
+
+    /// React to a routing-multicast-address change pushed by
+    /// `IpExtensionState::set_routing_multicast_address` or
+    /// `IpExtensionState::set_domain_address` (03/02/06 §4.3.5.3.5.1).
+    ///
+    /// The UDP manager owns the list of currently-joined groups and
+    /// knows which one is the routing group, so we only forward the
+    /// target. Retargeting the routing server keeps outbound
+    /// `ROUTING_INDICATION` frames aimed at the new group.
+    fn apply_routing_multicast_rebind(&self, new: Ipv4Addr) {
+        debug!("KNX/IP: rebind routing multicast -> {}", new);
+        self.udp_manager.rebind_routing_multicast(new, self.interface_addr);
+        F::Routing::set_multicast_addr(&self.routing, new);
     }
 }

@@ -1,5 +1,8 @@
 //! Context traits for KNX/IP link layer and services.
 
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::channel::Channel;
+
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 
@@ -42,6 +45,18 @@ pub trait IpDiagnosticsContext {
 
     /// Build an `IpCurrentConfig` DIB from the platform's current state.
     fn ip_current_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig;
+}
+
+/// Exposes the routing-multicast-rebind channel that the write-handler
+/// side of the stack (`IpExtensionState::set_*`) uses to ask the KNX/IP
+/// link-layer task to rejoin the multicast group
+/// (03/02/06 §4.3.5.3.5.1).
+///
+/// Only IP stacks implement this; the runtime reaches it through
+/// [`KnxNetIpContext`](super::KnxNetIpContext).
+pub trait RoutingMulticastRebindContext {
+    /// The channel drained by the KNX/IP runtime's main select loop.
+    fn routing_multicast_rebind_channel(&self) -> &Channel<NoopRawMutex, core::net::Ipv4Addr, 2>;
 }
 
 /// Provides additional KNX individual addresses for IP tunneling use-cases.

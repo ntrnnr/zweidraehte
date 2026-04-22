@@ -20,6 +20,8 @@ pub use augment::IpAugment;
 use core::cell::{Cell, RefCell};
 use core::net::Ipv4Addr;
 
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::channel::Channel;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
@@ -27,8 +29,17 @@ use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, SystemBDeviceState};
 use crate::layers::linklayers::knxip::features::{FeatureSet, TunnelingFeature};
 use crate::objects::interface::HasDomainAddress;
-use crate::{IpConfig, IpPlatformConfig, IpStackState};
+use crate::{HasRoutingMulticastRebind, IpConfig, IpPlatformConfig, IpStackState};
 use zweidraehte_proto::address::IndividualAddress;
+
+/// Channel buffering pushed routing-multicast-group changes from
+/// `IpExtensionState::set_*` to the KNX/IP link-layer runtime.
+///
+/// Capacity 2 absorbs one queued plus one in-flight; a full channel
+/// means `try_send` drops, which is safe: the `Cell` is updated
+/// unconditionally so the authoritative state is always current, and
+/// any subsequent rebind-triggering write reasserts the target.
+pub(crate) type RoutingMulticastRebindChannel = Channel<NoopRawMutex, Ipv4Addr, 2>;
 
 // ============================================================================
 // Persisted IP Config
@@ -188,6 +199,14 @@ pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
     ttl: Cell<u8>,
     project_installation_id: Cell<u16>,
     additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
+    /// Pushes target routing-multicast group changes to the KNX/IP
+    /// link-layer runtime so it can issue the live IGMP rebind within
+    /// the 1 s deadline of 03/02/06 §4.3.5.3.5.1. Receiver is drained
+    /// inside `KnxNetIp::run`'s main select loop; if no KNX/IP link
+    /// layer is running (degenerate configuration) the channel simply
+    /// fills and subsequent `try_send`s drop — harmless, because the
+    /// `routing_multicast` Cell is the canonical state.
+    rebind_channel: RoutingMulticastRebindChannel,
 }
 
 impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
@@ -348,6 +367,7 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
             ttl: Cell::new(config.ttl),
             project_installation_id: Cell::new(config.project_installation_id),
             additional_individual_addresses: RefCell::new(additional),
+            rebind_channel: Channel::new(),
         }
     }
 
@@ -365,7 +385,11 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
             self.configured_subnet.set(Ipv4Addr::from(defaults.configured_subnet));
             self.configured_gateway.set(Ipv4Addr::from(defaults.configured_gateway));
             self.ip_assignment_method.set(defaults.ip_assignment_method);
-            self.routing_multicast.set(Ipv4Addr::from(defaults.routing_multicast));
+            let default_mcast = Ipv4Addr::from(defaults.routing_multicast);
+            self.routing_multicast.set(default_mcast);
+            // Factory reset must also rebind to the default group, via
+            // the same path writes use.
+            let _ = self.rebind_channel.try_send(default_mcast);
             self.ttl.set(defaults.ttl);
             self.project_installation_id.set(defaults.project_installation_id);
             self.additional_individual_addresses.borrow_mut().clear();
@@ -374,6 +398,12 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
 }
 
 impl<const N: usize, const CAPS: u16> crate::bcus::system_b::HasSecurityMode for IpExtensionState<N, CAPS> {}
+
+impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpExtensionState<N, CAPS> {
+    fn routing_multicast_rebind_channel(&self) -> &RoutingMulticastRebindChannel {
+        &self.rebind_channel
+    }
+}
 
 // ============================================================================
 // Extension — unified persistence + augmentation
@@ -511,6 +541,11 @@ impl<const N: usize, const CAPS: u16> IpStackState for IpExtensionState<N, CAPS>
 
     fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
         self.routing_multicast.set(addr);
+        // Notify the KNX/IP link-layer runtime so it can rejoin the
+        // multicast group in time for MaC's 1 s retry window
+        // (03/02/06 §4.3.5.3.5.1). Drop on a full channel is fine —
+        // the Cell above is the authoritative value.
+        let _ = self.rebind_channel.try_send(addr);
     }
 
     fn ttl(&self) -> u8 {
@@ -588,6 +623,11 @@ impl<const N: usize, const CAPS: u16> HasDomainAddress for IpExtensionState<N, C
 
     fn set_domain_address(&self, addr: &[u8]) {
         let octets: [u8; 4] = addr[..4].try_into().expect("domain address must be 4 bytes for IP");
-        self.routing_multicast.set(Ipv4Addr::from(octets));
+        let ip = Ipv4Addr::from(octets);
+        self.routing_multicast.set(ip);
+        // `A_DomainAddressSerialNumber_Write` is the other trigger for
+        // the 1 s rebind window; funnel it through the same channel as
+        // the PID write path so the runtime handles both identically.
+        let _ = self.rebind_channel.try_send(ip);
     }
 }
