@@ -482,10 +482,19 @@ impl<'a> DiagnosticsAugment<'a> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         let data = req.service_data;
-        // Need at least: reserved(1) + serviceID(1) + GO_idx(2) + value(1)
+        // Spec §4.8.1.3.2 splits the short-request cases:
+        //   - `data.len() < 4` (no full GO index) — malformed; no
+        //     specific RC is enumerated in Table 36, so fall through
+        //     to the catchall `FF E_ERROR`.
+        //   - `data.len() == 4` (GO index present but no value) —
+        //     Table 36 explicitly calls this out as `A3 E_GD_GO_SIZE_-
+        //     MISMATCH` ("the field Data is missing").
+        if data.len() < 4 {
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+        }
         if data.len() < 5 {
             return FunctionPropertyResult {
-                return_code: 0xA3, // Size mismatch — not enough data.
+                return_code: 0xA3, // E_GD_GO_SIZE_MISMATCH
                 data: PropertyBuf::new(&[0x00]),
             };
         }
@@ -558,9 +567,13 @@ impl<'a> DiagnosticsAugment<'a> {
         <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
     {
         let data = req.service_data;
-        // Need at least: reserved(1) + serviceID(1) + flags(1) + GA(2) + value(1)
+        // Need at least: reserved(1) + serviceID(1) + flags(1) + GA(2) + value(1).
+        // Spec §4.8.1.3.3 Table 37 allows only `F8 E_DATA_VOID` and
+        // `FF E_ERROR` as negative RCs — a malformed request that's
+        // shorter than the fixed header isn't specifically enumerated,
+        // so fall through to `FF` per §4.8.1.1.7.
         if data.len() < 6 {
-            return FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
 
         let flags = data[2];
@@ -758,8 +771,12 @@ impl<'a> DiagnosticsAugment<'a> {
         <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
     {
         let data = req.service_data;
+        // Spec §4.8.1.3.5 Figure 39: `[reserved, 0x03, flags, GA(2)]`.
+        // Table 39 lists only `F2`, `F8`, `FF` as allowed negative RCs;
+        // a malformed length maps to `FF E_ERROR` per §4.8.1.1.7 —
+        // `F2` is reserved for "command not supported" which this isn't.
         if data.len() != 5 {
-            return FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[0x03]) };
+            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
 
         let flags = data[2];
@@ -818,27 +835,40 @@ impl<'a> DiagnosticsAugment<'a> {
     // WriteServiceID 0x04: Set Source Address Filter
     // ================================================================
 
-    /// Set the source address filter for GO updates in diagnostic mode.
+    /// Set the source-address filter for GO updates in diagnostic mode.
     ///
-    /// Request: [reserved, 0x04, IA_hi, IA_lo]
-    /// Success: rc=0x00, [service_id]
+    /// Per spec §4.8.1.3.6 Figure 40 the command has no GO index — it
+    /// limits **all** incoming group communication (A_GroupValue_Read /
+    /// _Write) to a single sender IA. The filter is per-device and the
+    /// MaS clears it automatically when leaving Diagnostic Mode.
+    ///
+    /// Request: `[reserved=0x00, 0x04, IA_hi, IA_lo]` (4 bytes total).
+    /// Success: rc=0x00, `[service_id]`.
     fn handle_go_diag_set_filter(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         let data = req.service_data;
 
-        // Must be in diagnostic mode.
+        // Spec §4.8.1.3.6 Table 40: requires Diagnostic Mode; otherwise
+        // `F3h E_COMMAND_IMPOSSIBLE`. This check runs before the length
+        // check so malformed requests outside Diagnostic Mode still
+        // report the mode error (matches the conformance 6.2.22 behaviour).
         if !self.state.is_diagnostic_mode() {
             return FunctionPropertyResult {
-                return_code: 0xF3, // E_GD_NO_DIAGNOSTIC_MODE
+                return_code: 0xF3, // E_COMMAND_IMPOSSIBLE
                 data: PropertyBuf::new(&[0x04]),
             };
         }
 
-        // Need exactly: reserved(1) + serviceID(1) + GO_idx(2) + IA(2)
-        if data.len() != 6 {
+        // Spec §4.8.1.3.6 Figure 40: `[reserved, 0x04, Sender_IA(2)]`.
+        // Any other length is malformed — no Return Code fits precisely
+        // (Table 40 lists only `E_COMMAND_IMPOSSIBLE`), so fall through
+        // to the catchall `FFh E_ERROR` per §4.8.1.1.7. Conformance 6.2.23
+        // verifies `FF` alone (no service-ID echo) on both too-few and
+        // too-many-byte variants.
+        if data.len() != 4 {
             return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
         }
 
-        let ia = u16::from_be_bytes([data[4], data[5]]);
+        let ia = u16::from_be_bytes([data[2], data[3]]);
         self.state.set_diagnostic_source_filter(Some(ia));
 
         FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x04]) }
@@ -870,33 +900,44 @@ impl<'a> DiagnosticsAugment<'a> {
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x00]) };
         };
 
-        let (size_bytes, _short) = entry.object_type.size_in_bytes();
-        let priority = u8::from(entry.flags.priority());
-        let config_flags = entry.flags.to_byte();
+        // Spec §4.8.1.1.6 Figure 23 defines `GO_config` as a packed 16-bit
+        // BE word. The low octet is identical to the Group Object
+        // Descriptor high octet (`[U T I W R C Prio(2)]`), which is
+        // exactly what `ComObjectFlags::to_byte()` already encodes
+        // (Realisation Type 7, Table 87). No re-packing needed.
+        let descriptor_hi = entry.flags.to_byte();
+        drop(cot);
 
-        // Linked: spec 03/05/01 §4.8.1.1.6 — bit set iff at least one GA is
-        // linked to this GO. Derived at query time from the association table.
-        let linked: u8 = if state.ast().borrow().tsaps_for_asap(go_idx).next().is_some() { 0x01 } else { 0x00 };
+        // Linked: spec §4.8.1.1.6 NOTE 31 — set iff at least one GA is
+        // linked to this GO; calculated at query time from the
+        // association table.
+        let linked = state.ast().borrow().tsaps_for_asap(go_idx).next().is_some();
 
         // Security flags: per-GO `auth` / `conf` bits from PID_GO_SECURITY_FLAGS.
-        // `go_security_flags_for` returns `None` for out-of-range indices; a
-        // missing entry is reported as 0 (no security required), matching the
-        // default for devices without a security state configured.
-        let sec_flags: u8 = state.extension_state().go_security_flags_for(go_idx).unwrap_or(0) & 0x03;
+        // `go_security_flags_for` returns `None` for out-of-range indices;
+        // a missing entry is reported as 0 (plain) which matches the
+        // default for devices without secure group objects.
+        let sec_raw = state.extension_state().go_security_flags_for(go_idx).unwrap_or(0);
+        let auth = sec_raw & 0x01 != 0;
+        let conf = sec_raw & 0x02 != 0;
+
+        // `Size` is the Value Field Type code per Realisation Type 7
+        // Table 87 — exactly the `ComObjectType` enum's `u8` repr, not
+        // a raw byte count. Example codes: `0` = Uint1, `7` = Byte1,
+        // `9` = Byte3.
+        let size_code: u8 = u8::from(entry.object_type);
 
         let mut resp = [0u8; GoConfigResponse::LEN];
-        // DPT ID (`dpt_id`) is zeroed because the CO table does not
-        // track datapoint identifiers; the spec explicitly permits
-        // reporting 0x00000000 to signal "not available" (§4.8.1.1.6).
+        // DPT_ID stays zero — spec §4.8.1.1.6 explicitly permits
+        // reporting `00000000h` when the CO table does not track
+        // datapoint identifiers.
         let out = GoConfigResponse {
             service_id: 0x00,
             go_idx,
-            linked,
-            sec_flags,
-            config_flags,
-            priority,
-            size_bytes: size_bytes as u16,
-            dpt_id: 0x0000,
+            go_config: GoConfigResponse::pack_config(linked, conf, auth, descriptor_hi),
+            size: size_code,
+            dpt_main: 0x0000,
+            dpt_sub: 0x0000,
         }
         .write(&mut resp);
 

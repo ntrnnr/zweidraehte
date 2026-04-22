@@ -61,52 +61,72 @@ impl OperationModeResponse {
 /// Response body for `PID_GO_DIAGNOSTICS` ReadServiceID 0x00 ("Get GO
 /// configuration") success (return code 0x20 = `E_GD_CONFIG`).
 ///
-/// Per spec 03/05/01 §4.8.1.1.6, the logical structure is
-/// `[service_id, GO_number(2), GO_config(2), size(1), DPT_ID(4)]` with
-/// `GO_config` packing `Linked`, `conf`, `auth`, and the Group Object
-/// Descriptor high octet into a single 16-bit big-endian word.
+/// Per spec 03/05/01 §4.8.1.1.6 Figure 22 + Figure 23, the wire layout is
 ///
-/// This implementation diverges from the packed spec layout — it emits
-/// `linked`, `sec_flags`, `config_flags`, and `priority` as four separate
-/// bytes, followed by the size as a big-endian 16-bit field and a
-/// two-byte DPT ID. Conformance tests for 6.2.24 wildcard these bytes, so
-/// the divergence is silent; aligning to the packed layout is tracked as
-/// a separate follow-up.
+/// ```text
+/// [service_id, GO_number(2), GO_config(2), Size(1), DPT_ID(4)]
+/// ```
+///
+/// `GO_config` packs `Linked`, `conf`/`auth`, and the Group Object
+/// Descriptor high octet into a single 16-bit big-endian word:
+///
+/// ```text
+/// bit  15..11 : reserved (0)
+/// bit      10 : L (linked — 1 iff ≥1 GA is linked to this GO)
+/// bit       9 : conf
+/// bit       8 : auth
+/// bits   7..0 : GO-descriptor high octet — `[U T I W R C Prio(2)]`
+/// ```
+///
+/// `Size` is a 1-octet Value Field Type code per Realisation Type 7
+/// Table 87 (same `u8` as `ComObjectType` — e.g. `0` = Uint1, `7` = Byte1,
+/// `9` = Byte3); **not** a raw byte count.
+///
+/// `DPT_ID` is the concatenation of the Datapoint Type main number (2
+/// octets, big-endian) and sub number (2 octets, big-endian). The spec
+/// explicitly allows emitting `00 00 00 00` when the device does not
+/// track DPT identifiers for its GOs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GoConfigResponse {
     /// ReadServiceID echoed back — always 0x00 for this response.
     pub service_id: u8,
     /// Group Object number (ASAP) being queried.
     pub go_idx: u16,
-    /// Non-zero iff at least one group address is bound to this GO.
-    pub linked: u8,
-    /// `auth` / `conf` security bits for this GO (low 2 bits).
-    pub sec_flags: u8,
-    /// Group Object Descriptor high octet — `C R W I T U` flags.
-    pub config_flags: u8,
-    /// Transmission priority encoded as the `Priority` enum's numeric value.
-    pub priority: u8,
-    /// Value size in bytes (spec field "Size").
-    pub size_bytes: u16,
-    /// Datapoint Type main+sub number. Currently always zero because the
-    /// CO table does not track DPT identifiers.
-    pub dpt_id: u16,
+    /// Packed 16-bit GO_config word per Figure 23. Callers compose this
+    /// from `linked`, `conf`, `auth`, and the GO descriptor high octet
+    /// — see [`GoConfigResponse::pack_config`].
+    pub go_config: u16,
+    /// Value Field Type code (1 octet) per Realisation Type 7 Table 87
+    /// — the `ComObjectType` enum's numeric value, not a raw byte count.
+    pub size: u8,
+    /// Datapoint Type main number (2 octets, big-endian).
+    pub dpt_main: u16,
+    /// Datapoint Type sub number (2 octets, big-endian).
+    pub dpt_sub: u16,
 }
 
 impl GoConfigResponse {
     /// On-wire length of the response body, in bytes.
-    pub const LEN: usize = 11;
+    ///
+    /// Layout: `svc(1) + GO(2) + cfg(2) + size(1) + dpt(4) = 10`.
+    pub const LEN: usize = 10;
+
+    /// Pack the GO_config 16-bit word from its components (Figure 23).
+    pub const fn pack_config(linked: bool, conf: bool, auth: bool, descriptor_hi: u8) -> u16 {
+        let l = if linked { 1u16 << 10 } else { 0 };
+        let c = if conf { 1u16 << 9 } else { 0 };
+        let a = if auth { 1u16 << 8 } else { 0 };
+        l | c | a | descriptor_hi as u16
+    }
 
     /// Write the body into `buf` and return the populated prefix.
     pub fn write(self, buf: &mut [u8; Self::LEN]) -> &[u8] {
         buf[0] = self.service_id;
         buf[1..3].copy_from_slice(&self.go_idx.to_be_bytes());
-        buf[3] = self.linked;
-        buf[4] = self.sec_flags;
-        buf[5] = self.config_flags;
-        buf[6] = self.priority;
-        buf[7..9].copy_from_slice(&self.size_bytes.to_be_bytes());
-        buf[9..11].copy_from_slice(&self.dpt_id.to_be_bytes());
+        buf[3..5].copy_from_slice(&self.go_config.to_be_bytes());
+        buf[5] = self.size;
+        buf[6..8].copy_from_slice(&self.dpt_main.to_be_bytes());
+        buf[8..10].copy_from_slice(&self.dpt_sub.to_be_bytes());
         &buf[..Self::LEN]
     }
 }
@@ -182,19 +202,32 @@ mod tests {
     }
 
     #[test]
+    fn go_config_pack_spec_example() {
+        // Spec §4.8.1.1.6 Figure 23 — worked example matching the conformance
+        // reference 6.2.24 response for a GO that is linked, A+C secured,
+        // and has descriptor hi octet 0x5F (U=0 T=1 I=0 W=1 R=1 C=1 Prio=3).
+        // Expected packed word: L=1 conf=1 auth=1 | 0x5F = 0x075F.
+        assert_eq!(GoConfigResponse::pack_config(true, true, true, 0x5F), 0x075F);
+        // Plain (no security), linked, descriptor 0xDB → 0x04DB.
+        assert_eq!(GoConfigResponse::pack_config(true, false, false, 0xDB), 0x04DB);
+        // Unlinked, plain, descriptor 0x00 → 0x0000.
+        assert_eq!(GoConfigResponse::pack_config(false, false, false, 0x00), 0x0000);
+    }
+
+    #[test]
     fn go_config_response_layout() {
+        // Conformance 6.2.24 response for GO #1 (linked, A+C, descriptor 0x5F):
+        // body = svcID 00 | GO 00 01 | cfg 07 5F | size 00 | dpt 00 00 00 00.
         let resp = GoConfigResponse {
             service_id: 0x00,
-            go_idx: 0x0042,
-            linked: 0x01,
-            sec_flags: 0x03,
-            config_flags: 0xA5,
-            priority: 0x02,
-            size_bytes: 0x0004,
-            dpt_id: 0x0000,
+            go_idx: 0x0001,
+            go_config: 0x075F,
+            size: 0x00,
+            dpt_main: 0x0000,
+            dpt_sub: 0x0000,
         };
         let mut buf = [0u8; GoConfigResponse::LEN];
-        assert_eq!(resp.write(&mut buf), &[0x00, 0x00, 0x42, 0x01, 0x03, 0xA5, 0x02, 0x00, 0x04, 0x00, 0x00],);
+        assert_eq!(resp.write(&mut buf), &[0x00, 0x00, 0x01, 0x07, 0x5F, 0x00, 0x00, 0x00, 0x00, 0x00]);
     }
 
     #[test]
