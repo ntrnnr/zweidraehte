@@ -121,7 +121,7 @@ impl StackDefinition for PicoIpInterface {
         let identity = StaticIdentity::new(init.serial);
         match init.loaded_config {
             Some(config) => IpIfState::from_config(identity, config, ()),
-            None => IpIfState::new(identity, IpInterfaceComObjects::new(), (), ()),
+            None => IpIfState::new(identity, IpInterfaceComObjects::new(), ()),
         }
     }
 
@@ -275,6 +275,7 @@ async fn lifecycle_task(knx: Stack<'static, PicoIpInterface>) -> ! {
             LifecycleEvent::PeiStopped => {
                 info!("PEI STOPPED");
             }
+            _ => {}
         }
     }
 }

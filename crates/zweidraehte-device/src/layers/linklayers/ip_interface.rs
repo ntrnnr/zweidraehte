@@ -125,6 +125,10 @@ impl<M> Inbox<M> for NeverInbox {
     async fn next(&mut self) -> M {
         pending::<M>().await
     }
+
+    fn try_next(&mut self) -> Option<M> {
+        None
+    }
 }
 
 // ============================================================================

@@ -16,5 +16,5 @@ cortex-m-rt = { workspace = true }
 embedded-hal = { workspace = true }
 panic-probe = { workspace = true, features = ["print-defmt"] }
 futures = { workspace = true, features = ["async-await"] }
-embedded-io-async = { workspace = true }
+embedded-io-async = "0.7"
 static-alloc = { workspace = true }

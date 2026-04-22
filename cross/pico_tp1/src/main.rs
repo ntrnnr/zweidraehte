@@ -98,7 +98,7 @@ impl StackDefinition for PicoTp1LightSwitch {
         let identity = StaticIdentity::new(init.serial);
         match init.loaded_config {
             Some(config) => PicoTp1State::from_config(identity, config, ()),
-            None => PicoTp1State::new(identity, LightSwitchComObjects::new(), (), ()),
+            None => PicoTp1State::new(identity, LightSwitchComObjects::new(), ()),
         }
     }
 
@@ -276,6 +276,7 @@ async fn lifecycle_task(knx: Stack<'static, PicoTp1LightSwitch>) -> ! {
             LifecycleEvent::PeiStopped => {
                 info!("PEI STOPPED");
             }
+            _ => {}
         }
     }
 }

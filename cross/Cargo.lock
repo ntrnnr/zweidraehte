@@ -2003,7 +2003,7 @@ dependencies = [
  "embassy-stm32",
  "embassy-time",
  "embedded-hal 1.0.0",
- "embedded-io-async 0.6.1",
+ "embedded-io-async 0.7.0",
  "futures",
  "panic-probe",
  "static-alloc",

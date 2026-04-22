@@ -95,7 +95,7 @@ impl StackDefinition for PicoEthLightSwitch {
 
         match init.loaded_config {
             Some(config) => PicoEthState::from_config(identity, config, ()),
-            None => PicoEthState::new(identity, LightSwitchComObjects::new(), (), ()),
+            None => PicoEthState::new(identity, LightSwitchComObjects::new(), ()),
         }
     }
 
@@ -296,6 +296,7 @@ async fn lifecycle_task(knx: Stack<'static, PicoEthLightSwitch>) -> ! {
             LifecycleEvent::PeiStopped => {
                 info!("PEI STOPPED");
             }
+            _ => {}
         }
     }
 }

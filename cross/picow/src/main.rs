@@ -82,7 +82,7 @@ impl StackDefinition for PicoWLightSwitch {
         let identity = StaticIdentity::new(init.serial);
         match init.loaded_config {
             Some(config) => PicoWState::from_config(identity, config, ()),
-            None => PicoWState::new(identity, LightSwitchComObjects::new(), (), ()),
+            None => PicoWState::new(identity, LightSwitchComObjects::new(), ()),
         }
     }
 
