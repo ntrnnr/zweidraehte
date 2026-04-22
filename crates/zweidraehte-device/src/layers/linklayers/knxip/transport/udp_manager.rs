@@ -10,6 +10,7 @@
 //! borrow conflicts in the main loop where a `next_event` future coexists
 //! with `send_to` calls triggered by response draining.
 
+use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 use core::pin::Pin;
 
@@ -75,11 +76,6 @@ impl SocketDescriptor {
     /// runtime rebind (03/02/06 §4.3.5.3.5.1) to keep the descriptor
     /// in sync with the socket's actual OS-level membership after
     /// `leave_multicast`.
-    // `allow(dead_code)` until the runtime-rebind path wiring lands
-    // (see SESSION.md "Domain Address" entry). Paired with the
-    // platform trait's `leave_multicast` method which is similarly
-    // plumbed but not yet called at runtime.
-    #[allow(dead_code)]
     pub fn remove_multicast_group(&mut self, addr: Ipv4Addr) -> bool {
         let before = self.multicast_groups.len();
         self.multicast_groups.retain(|&a| a != addr);
@@ -136,7 +132,11 @@ pub enum UdpEvent {
 /// and a [`send_to()`](Self::send_to) method for outbound datagrams.
 pub struct UdpManager<T: IpTransport, const MAX_SOCKETS: usize> {
     sockets: [Option<T::UdpSocket>; MAX_SOCKETS],
-    descriptors: Vec<SocketDescriptor, MAX_SOCKETS>,
+    /// `RefCell` lets the runtime rebind (03/02/06 §4.3.5.3.5.1)
+    /// update joined-group bookkeeping through `&self`. Borrows are
+    /// brief: `next_event` never touches `descriptors`, so the
+    /// rebind path and the event loop cannot contend.
+    descriptors: RefCell<Vec<SocketDescriptor, MAX_SOCKETS>>,
     /// Local IP address for filtering out our own multicast echoes.
     local_addr: Ipv4Addr,
 }
@@ -147,7 +147,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
     /// Sockets are not yet bound; call [`bind_all()`](Self::bind_all)
     /// to create and configure them.
     pub fn new(local_addr: Ipv4Addr, descriptors: Vec<SocketDescriptor, MAX_SOCKETS>) -> Self {
-        Self { sockets: core::array::from_fn(|_| None), descriptors, local_addr }
+        Self { sockets: core::array::from_fn(|_| None), descriptors: RefCell::new(descriptors), local_addr }
     }
 
     /// Bind all sockets based on the stored descriptors.
@@ -162,7 +162,11 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
         interface_name: &'static str,
         interface_addr: Ipv4Addr,
     ) {
-        for (i, desc) in self.descriptors.iter().enumerate() {
+        // `get_mut` on `&mut RefCell<T>` gives `&mut T` with no borrow
+        // tracking — ideal for one-shot startup that doesn't race
+        // with the runtime loop yet.
+        let descriptors = self.descriptors.get_mut();
+        for (i, desc) in descriptors.iter().enumerate() {
             let port = desc.port();
 
             let options = UdpSocketOptions {
@@ -200,13 +204,73 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
 
     /// Number of socket descriptors (bound or not).
     pub fn socket_count(&self) -> usize {
-        self.descriptors.len()
+        self.descriptors.borrow().len()
     }
 
-    /// Get socket descriptors (needed for server-to-socket mapping).
+    /// Snapshot-copy the current descriptor list. Returns a
+    /// heap-free `Vec` with the same capacity; inexpensive because
+    /// `MAX_SOCKETS` is tiny (≤ 4 in practice).
     #[allow(dead_code)] // Future: not yet used
-    pub fn descriptors(&self) -> &[SocketDescriptor] {
-        &self.descriptors
+    pub fn descriptors(&self) -> Vec<SocketDescriptor, MAX_SOCKETS> {
+        self.descriptors.borrow().clone()
+    }
+
+    /// Rebind the routing multicast group on every socket whose
+    /// descriptor joined it (03/02/06 §4.3.5.3.5.1).
+    ///
+    /// For each socket bound to `KNX_PORT`:
+    ///
+    /// 1. If `old != SYSTEM_SETUP_MULTICAST_ADDRESS` and the
+    ///    descriptor contains `old`, call `leave_multicast(old)`
+    ///    and drop it from the descriptor. The System Setup group
+    ///    is **never** left — Discovery, Remote Config and IP
+    ///    System Broadcast all rely on it per 03/02/06 §4.1.3.
+    /// 2. If the descriptor does not already contain `new`, call
+    ///    `join_multicast(new)` and add it to the descriptor.
+    ///
+    /// Errors from individual socket operations are logged but do
+    /// not abort the rebind — the join still proceeds even if the
+    /// leave fails, and vice versa.
+    ///
+    /// No-op when `old == new` — callers that update state
+    /// unconditionally can short-circuit the rebind here. The
+    /// wrapping `MulticastController` also guards this case; both
+    /// are defensive.
+    pub fn rebind_routing_multicast(&self, old: Ipv4Addr, new: Ipv4Addr, interface: Ipv4Addr) {
+        if old == new {
+            return;
+        }
+
+        let mut descriptors = self.descriptors.borrow_mut();
+
+        for (i, desc) in descriptors.iter_mut().enumerate() {
+            if desc.port() != crate::KNX_PORT {
+                continue;
+            }
+
+            let Some(socket) = self.sockets[i].as_ref() else {
+                continue;
+            };
+
+            if old != crate::SYSTEM_SETUP_MULTICAST_ADDRESS && desc.multicast_groups().contains(&old) {
+                if let Err(e) = socket.leave_multicast(old, interface) {
+                    warn!("KNX/IP socket {}: leave_multicast({}) failed: {:?}", i, old, e);
+                }
+                desc.remove_multicast_group(old);
+            }
+
+            if !desc.multicast_groups().contains(&new) {
+                match socket.join_multicast(new, interface) {
+                    Ok(()) => {
+                        let _ = desc.add_multicast_group(new);
+                        info!("KNX/IP socket {}: joined multicast group {}", i, new);
+                    }
+                    Err(e) => {
+                        error!("KNX/IP socket {}: join_multicast({}) failed: {:?}", i, new, e);
+                    }
+                }
+            }
+        }
     }
 
     /// Send a datagram on a specific socket.
@@ -242,7 +306,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
     ///
     /// Pends forever if no sockets are bound.
     pub async fn next_event(&self, buffer_manager: &DynBufferManager<'static>) -> UdpEvent {
-        if self.descriptors.is_empty() {
+        if self.descriptors.borrow().is_empty() {
             // No sockets to poll — pend forever so the select in the
             // main loop naturally falls through to TCP or other arms.
             core::future::pending::<UdpEvent>().await;
@@ -285,7 +349,8 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
             };
 
             let mut socket_futures = Vec::<_, MAX_SOCKETS>::new();
-            for i in 0..self.descriptors.len() {
+            let descriptor_count = self.descriptors.borrow().len();
+            for i in 0..descriptor_count {
                 let _ = socket_futures.push(recv(i));
             }
 
@@ -317,5 +382,153 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 }
             }
         }
+    }
+}
+
+// ============================================================================
+// Unit tests for rebind_routing_multicast
+// ============================================================================
+//
+// The rebind logic must be exercised in isolation from real sockets.
+// A test-only `MockUdpSocket` records every `join_multicast` and
+// `leave_multicast` call into a shared log; the assertions then
+// verify the expected sequence across the four scenarios listed in
+// the plan (start from SYSTEM_SETUP, start from non-default, rotate
+// between two non-defaults, redundant no-op).
+
+#[cfg(test)]
+mod rebind_tests {
+    use super::*;
+    use alloc::rc::Rc;
+    use alloc::vec;
+    use alloc::vec::Vec as StdVec;
+    use core::cell::RefCell;
+    use zweidraehte_platform::{AsyncTcpListener, IpTransport, NeverTcpListener, NeverTcpStream};
+
+    extern crate alloc;
+
+    const IFACE: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10);
+    const SYS: Ipv4Addr = crate::SYSTEM_SETUP_MULTICAST_ADDRESS;
+    const ALT_A: Ipv4Addr = Ipv4Addr::new(239, 0, 0, 1);
+    const ALT_B: Ipv4Addr = Ipv4Addr::new(239, 0, 0, 2);
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Op {
+        Join(Ipv4Addr),
+        Leave(Ipv4Addr),
+    }
+
+    #[derive(Debug)]
+    struct MockUdpSocket {
+        log: Rc<RefCell<StdVec<Op>>>,
+    }
+
+    #[derive(Debug)]
+    struct MockError;
+
+    impl AsyncUdpSocket for MockUdpSocket {
+        type Error = MockError;
+        type Context = Rc<RefCell<StdVec<Op>>>;
+
+        fn bind(ctx: &Self::Context, _options: UdpSocketOptions) -> Result<Self, Self::Error> {
+            Ok(MockUdpSocket { log: Rc::clone(ctx) })
+        }
+
+        fn join_multicast(&self, group: Ipv4Addr, _interface: Ipv4Addr) -> Result<(), Self::Error> {
+            self.log.borrow_mut().push(Op::Join(group));
+            Ok(())
+        }
+
+        fn leave_multicast(&self, group: Ipv4Addr, _interface: Ipv4Addr) -> Result<(), Self::Error> {
+            self.log.borrow_mut().push(Op::Leave(group));
+            Ok(())
+        }
+
+        fn set_broadcast(&self, _broadcast: bool) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn local_endpoint(&self) -> SocketAddrV4 {
+            SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, crate::KNX_PORT)
+        }
+
+        async fn recv_from(&self, _buf: &mut [u8]) -> Result<(usize, SocketAddrV4, Option<Ipv4Addr>), Self::Error> {
+            // Never polled in these tests.
+            core::future::pending().await
+        }
+
+        async fn send_to(&self, _buf: &[u8], _addr: SocketAddrV4) -> Result<usize, Self::Error> {
+            unreachable!("send_to not used in rebind tests")
+        }
+    }
+
+    struct MockTransport;
+
+    impl IpTransport for MockTransport {
+        type UdpSocket = MockUdpSocket;
+        type TcpListener = NeverTcpListener;
+        type TcpStream = NeverTcpStream;
+    }
+
+    /// Build a `UdpManager` with a single socket on `KNX_PORT`
+    /// pre-joined to `initial_groups`, with `log` capturing future
+    /// join/leave calls. Prior calls made during `bind_all` are
+    /// drained from the log before the test resumes.
+    fn setup(initial_groups: &[Ipv4Addr]) -> (UdpManager<MockTransport, 4>, Rc<RefCell<StdVec<Op>>>) {
+        let log: Rc<RefCell<StdVec<Op>>> = Rc::new(RefCell::new(StdVec::new()));
+
+        let mut descriptors = Vec::<SocketDescriptor, 4>::new();
+        let mut desc = SocketDescriptor::new(EndpointType::new(Ipv4Addr::UNSPECIFIED, crate::KNX_PORT));
+        for g in initial_groups {
+            let _ = desc.add_multicast_group(*g);
+        }
+        let _ = descriptors.push(desc);
+
+        let mut mgr = UdpManager::<MockTransport, 4>::new(IFACE, descriptors);
+        mgr.bind_all(&log, "lo", IFACE);
+
+        // Forget joins recorded during bind_all; the tests only care
+        // about what `rebind_routing_multicast` emits.
+        log.borrow_mut().clear();
+
+        (mgr, log)
+    }
+
+    fn joined_groups(mgr: &UdpManager<MockTransport, 4>) -> StdVec<Ipv4Addr> {
+        mgr.descriptors.borrow()[0].multicast_groups().iter().copied().collect()
+    }
+
+    #[test]
+    fn rebind_from_system_setup_only_joins_new() {
+        let (mgr, log) = setup(&[SYS]);
+        mgr.rebind_routing_multicast(SYS, ALT_A, IFACE);
+        // SYSTEM_SETUP is never left, so only a join is recorded.
+        assert_eq!(*log.borrow(), vec![Op::Join(ALT_A)]);
+        assert_eq!(joined_groups(&mgr), vec![SYS, ALT_A]);
+    }
+
+    #[test]
+    fn rebind_back_to_system_setup_only_leaves_old() {
+        let (mgr, log) = setup(&[SYS, ALT_A]);
+        mgr.rebind_routing_multicast(ALT_A, SYS, IFACE);
+        // SYS is already joined so no join is emitted.
+        assert_eq!(*log.borrow(), vec![Op::Leave(ALT_A)]);
+        assert_eq!(joined_groups(&mgr), vec![SYS]);
+    }
+
+    #[test]
+    fn rebind_between_non_defaults_leaves_then_joins() {
+        let (mgr, log) = setup(&[SYS, ALT_A]);
+        mgr.rebind_routing_multicast(ALT_A, ALT_B, IFACE);
+        assert_eq!(*log.borrow(), vec![Op::Leave(ALT_A), Op::Join(ALT_B)]);
+        assert_eq!(joined_groups(&mgr), vec![SYS, ALT_B]);
+    }
+
+    #[test]
+    fn rebind_to_same_address_is_noop() {
+        let (mgr, log) = setup(&[SYS, ALT_A]);
+        mgr.rebind_routing_multicast(ALT_A, ALT_A, IFACE);
+        assert!(log.borrow().is_empty());
+        assert_eq!(joined_groups(&mgr), vec![SYS, ALT_A]);
     }
 }
