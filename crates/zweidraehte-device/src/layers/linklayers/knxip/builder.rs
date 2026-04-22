@@ -315,8 +315,10 @@ where
 
         let mut all_endpoints = Vec::<EndpointType, 8>::new();
 
-        // Discovery endpoints (always present)
-        let _ = all_endpoints.push(EndpointType::new(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+        // Discovery endpoints (always present). Spec-fixed at the
+        // System Setup multicast per 03/02/06 §2.1 / 03/08/02 §4.2
+        // — never moves with PID_ROUTING_MULTICAST_ADDRESS.
+        let _ = all_endpoints.push(EndpointType::new(crate::SYSTEM_SETUP_MULTICAST_ADDRESS, crate::KNX_PORT));
         let _ = all_endpoints.push(EndpointType::new_any(crate::KNX_PORT));
 
         // Routing endpoints (empty vec when disabled)

@@ -60,6 +60,23 @@ pub trait AsyncUdpSocket: Sized {
     /// Join a multicast group on the specified interface.
     fn join_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<(), Self::Error>;
 
+    /// Leave a multicast group on the specified interface.
+    ///
+    /// Used by the KNX/IP link layer when
+    /// `PID_ROUTING_MULTICAST_ADDRESS` (03/02/06 §4.3.5.3.5.1) is
+    /// rewritten at runtime: the old routing group is left and the
+    /// new one joined without restarting the stack.
+    ///
+    /// Platforms that cannot dynamically leave groups may implement
+    /// this as `Ok(())` — callers treat a successful return as
+    /// "stop delivering packets from this group up to the
+    /// process". A stale membership is cosmetic, not a correctness
+    /// bug for the spec behaviour (the inbound `recv_from` path
+    /// still dispatches by socket, and the routing server will
+    /// simply ignore frames that no longer match its configured
+    /// multicast address).
+    fn leave_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<(), Self::Error>;
+
     /// Enable or disable SO_BROADCAST.
     fn set_broadcast(&self, broadcast: bool) -> Result<(), Self::Error>;
 

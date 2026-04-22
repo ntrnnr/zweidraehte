@@ -57,6 +57,11 @@ impl UdpMulticastSocket {
         Ok(())
     }
 
+    pub fn leave_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<()> {
+        self.s.leave_multicast_v4(&group, &interface)?;
+        Ok(())
+    }
+
     pub fn set_broadcast(&self, broadcast: bool) -> Result<()> {
         self.s.set_broadcast(broadcast)?;
         Ok(())
@@ -99,6 +104,10 @@ impl AsyncUdpMulticastSocket {
 
     pub fn join_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<()> {
         self.watcher.get_ref().join_multicast(group, interface)
+    }
+
+    pub fn leave_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> Result<()> {
+        self.watcher.get_ref().leave_multicast(group, interface)
     }
 
     pub fn set_broadcast(&self, broadcast: bool) -> Result<()> {
@@ -210,6 +219,10 @@ impl AsyncUdpSocket for AsyncUdpMulticastSocket {
 
     fn join_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> core::result::Result<(), crate::Error> {
         self.watcher.get_ref().join_multicast(group, interface)
+    }
+
+    fn leave_multicast(&self, group: Ipv4Addr, interface: Ipv4Addr) -> core::result::Result<(), crate::Error> {
+        self.watcher.get_ref().leave_multicast(group, interface)
     }
 
     fn set_broadcast(&self, broadcast: bool) -> core::result::Result<(), crate::Error> {

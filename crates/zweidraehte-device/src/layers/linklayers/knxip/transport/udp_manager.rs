@@ -69,6 +69,23 @@ impl SocketDescriptor {
         if !self.multicast_groups.contains(&addr) { self.multicast_groups.push(addr).map_err(|_| ()) } else { Ok(()) }
     }
 
+    /// Remove a multicast group from the joined set.
+    ///
+    /// Returns `true` if the group was present and removed. Used by
+    /// runtime rebind (03/02/06 §4.3.5.3.5.1) to keep the descriptor
+    /// in sync with the socket's actual OS-level membership after
+    /// `leave_multicast`.
+    // `allow(dead_code)` until the runtime-rebind path wiring lands
+    // (see SESSION.md "Domain Address" entry). Paired with the
+    // platform trait's `leave_multicast` method which is similarly
+    // plumbed but not yet called at runtime.
+    #[allow(dead_code)]
+    pub fn remove_multicast_group(&mut self, addr: Ipv4Addr) -> bool {
+        let before = self.multicast_groups.len();
+        self.multicast_groups.retain(|&a| a != addr);
+        self.multicast_groups.len() != before
+    }
+
     /// Enable broadcast on this socket.
     pub fn enable_broadcast(&mut self) {
         self.broadcast_enabled = true;

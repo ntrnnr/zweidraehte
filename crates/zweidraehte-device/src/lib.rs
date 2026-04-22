@@ -26,7 +26,10 @@ pub use definition::StackDefinition;
 #[cfg(feature = "knxip")]
 mod ip;
 #[cfg(feature = "knxip")]
-pub use ip::{DEFAULT_MULTICAST_ADDR, IpConfig, IpPlatform, IpPlatformConfig, IpPlatformState, IpStackState, KNX_PORT};
+pub use ip::{
+    DEFAULT_MULTICAST_ADDR, IpConfig, IpPlatform, IpPlatformConfig, IpPlatformState, IpStackState, KNX_PORT,
+    SYSTEM_SETUP_MULTICAST_ADDRESS,
+};
 
 mod composition;
 pub use composition::{

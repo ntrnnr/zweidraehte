@@ -326,10 +326,16 @@ impl RoutingTimekeeper {
 /// Handles routing of KNX frames over IP multicast with congestion control.
 #[derive(Debug)]
 pub struct RoutingServer {
-    /// Multicast address for routing (typically 224.0.23.12)
-    multicast_addr: Ipv4Addr,
+    /// Outbound multicast address for routing (typically 224.0.23.12).
+    ///
+    /// Interior mutability so a write to
+    /// `PID_ROUTING_MULTICAST_ADDRESS` or an
+    /// `A_DomainAddressSerialNumber_Write` can retarget outgoing
+    /// `ROUTING_INDICATION` frames at runtime without rebuilding the
+    /// server (03/02/06 §4.3.5.3.5.1).
+    multicast_addr: core::cell::Cell<Ipv4Addr>,
 
-    /// Port for routing (typically 3671)
+    /// Port for routing (spec-fixed to 3671 per 03/02/06 §2.1).
     port: u16,
 
     /// Routing timekeeper for congestion control
@@ -343,7 +349,16 @@ impl RoutingServer {
     /// * `multicast_addr` - Multicast address for routing (typically 224.0.23.12)
     /// * `port` - Port for routing (typically 3671)
     pub fn new(multicast_addr: Ipv4Addr, port: u16) -> Self {
-        Self { multicast_addr, port, timekeeper: RoutingTimekeeper::new() }
+        Self { multicast_addr: core::cell::Cell::new(multicast_addr), port, timekeeper: RoutingTimekeeper::new() }
+    }
+
+    /// Retarget outbound routing traffic to a new multicast group.
+    ///
+    /// Called by the runtime rebind path after
+    /// `PID_ROUTING_MULTICAST_ADDRESS` changes.  The next
+    /// `ROUTING_INDICATION` send picks up the new value.
+    pub fn set_multicast_addr(&self, addr: Ipv4Addr) {
+        self.multicast_addr.set(addr);
     }
 
     /// Get the current wait time before transmission is allowed
@@ -384,7 +399,7 @@ impl RoutingServer {
         let mut output_buffer = cemi_msg.into_inner();
         RoutingIndication::wrap_cemi(&mut output_buffer);
 
-        let destination = SocketAddrV4::new(self.multicast_addr, self.port);
+        let destination = SocketAddrV4::new(self.multicast_addr.get(), self.port);
         Ok(PendingResponse {
             buffer: output_buffer,
             target: ResponseTarget::Udp { destination, socket_idx: 0 },

@@ -160,10 +160,33 @@ pub trait IpPlatformState: IpStackState {
 // Constants
 // ============================================================================
 
-/// Default KNX multicast address: 224.0.23.12
-pub const DEFAULT_MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
+/// KNX/IP System Setup multicast address: 224.0.23.12.
+///
+/// Per spec 03/02/06 §2.1 and 03/08/05 §2.3.2, this multicast group
+/// is spec-fixed for discovery (`SEARCH_REQUEST`, 03/08/02 §4.2) and
+/// IP System Broadcast frames (`ROUTING_SYSTEM_BROADCAST` = 0x0533,
+/// 03/02/06 §4.1.3). A receiver must always listen on this address
+/// regardless of how `PID_ROUTING_MULTICAST_ADDRESS` is configured —
+/// §4.1.3 explicitly mandates that `ROUTING_SYSTEM_BROADCAST` frames
+/// received on any other address are ignored, which matters because
+/// `A_DomainAddressSerialNumber_Write` (the frame that reconfigures
+/// routing) arrives on this group.
+pub const SYSTEM_SETUP_MULTICAST_ADDRESS: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 
-/// Default KNX/IP port
+/// Default initial value of `PID_ROUTING_MULTICAST_ADDRESS`.
+///
+/// Identical to [`SYSTEM_SETUP_MULTICAST_ADDRESS`] but semantically
+/// distinct: the routing multicast is user-configurable via
+/// `PID_ROUTING_MULTICAST_ADDRESS` (03/02/06 §1.5) whereas the
+/// system-setup address is fixed. Keeping them as separate aliases
+/// prevents a future repurposing of one from silently breaking the
+/// spec invariants of the other.
+pub const DEFAULT_MULTICAST_ADDR: Ipv4Addr = SYSTEM_SETUP_MULTICAST_ADDRESS;
+
+/// Fixed KNX/IP UDP port per spec 03/02/06 §2.1.
+///
+/// Not configurable — the spec explicitly mandates 3671 for every
+/// KNXnet/IP service family.
 pub const KNX_PORT: u16 = 3671;
 
 // ============================================================================

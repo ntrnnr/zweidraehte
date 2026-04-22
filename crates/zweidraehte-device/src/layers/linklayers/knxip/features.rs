@@ -152,6 +152,12 @@ pub trait RoutingFeature: 'static {
 
     /// Whether the server handles this service type on this socket.
     fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool;
+
+    /// Retarget the outbound routing multicast group. Called by the
+    /// runtime rebind path after `PID_ROUTING_MULTICAST_ADDRESS`
+    /// changes (03/02/06 §4.3.5.3.5.1). Disabled-routing impls
+    /// default to a no-op.
+    fn set_multicast_addr(_server: &Self::Server, _addr: Ipv4Addr) {}
 }
 
 /// Routing is enabled — delegates to [`RoutingServer`].
@@ -210,6 +216,10 @@ impl RoutingFeature for WithRouting {
 
     fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool {
         Self::service_types().contains(&service_type) && server_socket_indices.contains(&socket_idx)
+    }
+
+    fn set_multicast_addr(server: &Self::Server, addr: Ipv4Addr) {
+        server.set_multicast_addr(addr);
     }
 }
 
@@ -301,8 +311,10 @@ impl RemoteConfigFeature for WithRemoteConfig {
     }
 
     fn endpoints() -> Vec<EndpointType, 4> {
+        // Remote Config listens on the spec-fixed System Setup
+        // multicast — independent of PID_ROUTING_MULTICAST_ADDRESS.
         let mut eps = Vec::new();
-        let _ = eps.push(EndpointType::new(crate::DEFAULT_MULTICAST_ADDR, crate::KNX_PORT));
+        let _ = eps.push(EndpointType::new(crate::SYSTEM_SETUP_MULTICAST_ADDRESS, crate::KNX_PORT));
         eps
     }
 

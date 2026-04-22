@@ -134,6 +134,12 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
             .map_err(|_| UdpError::MulticastError)
     }
 
+    fn leave_multicast(&self, group: Ipv4Addr, _interface: Ipv4Addr) -> Result<(), Self::Error> {
+        self.stack
+            .leave_multicast_group(group)
+            .map_err(|_| UdpError::MulticastError)
+    }
+
     fn set_broadcast(&self, _broadcast: bool) -> Result<(), Self::Error> {
         // Embassy-net doesn't have a per-socket broadcast flag.
         // Broadcast sending works by default.
