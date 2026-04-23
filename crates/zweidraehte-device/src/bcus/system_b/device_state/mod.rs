@@ -37,8 +37,7 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
 use super::{
-    DeviceConfig, DiagnosticsContext, ExtensionState, HasDeviceConfig, HasDiagnosticsContext, HasSecurityMode,
-    OperationModeState,
+    DeviceConfig, ExtensionState, HasDeviceConfig, HasDiagnosticsContext, HasSecurityMode, OperationModeState,
 };
 use crate::storage::DeviceIdentity;
 

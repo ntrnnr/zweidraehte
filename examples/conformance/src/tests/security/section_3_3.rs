@@ -29,6 +29,7 @@ const WRITE_SEQ_SENDING_2: &str = "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B
 const WRITE_SEQ_SENDING_2_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3B 01 00 01 00";
 
 // Read PID_SEQUENCE_NUMBER_SENDING to verify.
+#[allow(dead_code)]
 const READ_SEQ_SENDING: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
 
 // ============================================================================
@@ -344,7 +345,7 @@ fn test_3_3_14() -> TestCase {
     TestCase::new("3.3.14 correct S-A_Sync_Req-PDU – sequence number local lower than expected by BDUT – P2P")
         .with_steps(vec![
             wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
-                comment("Send sync req with SeqNr_local=1 (lower than what BDUT expects)"),
+            comment("Send sync req with SeqNr_local=1 (lower than what BDUT expects)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
         ])
@@ -405,7 +406,7 @@ fn test_3_3_17() -> TestCase {
     TestCase::new("3.3.17 correct S-A_Sync_Req-PDU – verification of correct setting of sequence number sending")
         .with_steps(vec![
             wait(1500), // Sync rate limit: DUT ignores requests within 1s of last response.
-                comment("Write SeqNoSending=100"),
+            comment("Write SeqNoSending=100"),
             inject_secure_ac(write_seq_100, "TK1"),
             // A_PropertyExtValueWriteCon response (no error).
             // We don't need to match the exact response — just drain it.
@@ -640,9 +641,8 @@ fn test_3_3_21() -> TestCase {
 // ============================================================================
 
 fn test_3_3_0() -> TestCase {
-    TestCase::new("3.3.0 Test preparation").with_steps(vec![
-        comment("Placeholder: preparation is executed as suite-level with_preparation."),
-    ])
+    TestCase::new("3.3.0 Test preparation")
+        .with_steps(vec![comment("Placeholder: preparation is executed as suite-level with_preparation.")])
 }
 
 // ============================================================================
@@ -650,9 +650,8 @@ fn test_3_3_0() -> TestCase {
 // ============================================================================
 
 fn test_3_3_7() -> TestCase {
-    TestCase::new("3.3.7 incorrect S-A_Sync_Req-PDU - incorrect APCI – P2P").with_steps(vec![
-        comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'."),
-    ])
+    TestCase::new("3.3.7 incorrect S-A_Sync_Req-PDU - incorrect APCI – P2P")
+        .with_steps(vec![comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'.")])
 }
 
 // ============================================================================

@@ -220,6 +220,7 @@ fn test_6_1_10() -> TestCase {
 // 5. Waits for the 30s timeout to expire
 // 6. Reads state → expects auto-return to normal mode
 
+#[allow(dead_code)]
 fn test_6_1_11() -> TestCase {
     // PropertyExtValueWriteCon for PID_RUN_STATE_CONTROL (PID 6) on
     // Application Program Object. PDT_Control = 1 byte value.
@@ -360,10 +361,7 @@ fn test_6_2_1() -> TestCase {
         // Response: extended frame with valid descriptor. Use wildcards
         // for the descriptor data since the exact encoding of PDT,
         // max elements, and access levels can vary between implementations.
-        expect(
-            "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 09 00 10 42 ?? ?? ?? ?? ?? ?? ?? ?? ?? ??",
-            TIMEOUT,
-        ),
+        expect("3C 60 #BDUT_ADDR #EDI 10 01 D3 00 09 00 10 42 ?? ?? ?? ?? ?? ?? ?? ?? ?? ??", TIMEOUT),
     ])
 }
 
@@ -966,18 +964,12 @@ fn test_6_2_24() -> TestCase {
         // legacy mismatch in the harness DUT definition that is
         // orthogonal to GO Diagnostics spec compliance. Assert the
         // literal code the DUT advertises.
-        expect(
-            "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 01 04 DF 01 00 00 00 00",
-            TIMEOUT,
-        ),
+        expect("3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 01 04 DF 01 00 00 00 00", TIMEOUT),
         // GO 8 is a 3-byte Byte3 (size code 0x09) with the same flags
         // and linkage state → GO_config = 0x04DF, size = 0x09.
         comment("Get GO 8 configuration"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D5 00 09 00 10 42 00 00 00 08"),
-        expect(
-            "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 08 04 DF 09 00 00 00 00",
-            TIMEOUT,
-        ),
+        expect("3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 08 04 DF 09 00 00 00 00", TIMEOUT),
         // Return to normal mode.
         comment("Set normal mode"),
         inject("BC #EDI #BDUT_ADDR 69 01 D4 00 03 00 10 34 00 00 00"),
@@ -1129,17 +1121,14 @@ fn test_6_1_3() -> TestCase {
     // `A_FunctionPropertyExtState_Response`, return-code 0xA0, and a
     // service-result body that reports the current operation mode and
     // time-left as if the request had been well-formed.
-    TestCase::new(
-        "6.1.3 Reading normal operation mode – negative response due to invalid ReadServiceID coding",
-    )
-    .with_steps(vec![
-        comment("FctPropertyExtStateRead with only the reserved byte (one byte short)"),
-        inject("BC #EDI #BDUT_ADDR 67 01 D5 00 03 00 10 34 00"),
-        // Response: rc=0xA0, serviceID=echoed-or-zero, mode=0x00, timeLeft=0xFF.
-        expect("BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 A0 ?? 00 FF", TIMEOUT),
-
-        comment("FctPropertyExtStateRead with an extra trailing byte (one byte too long)"),
-        inject("BC #EDI #BDUT_ADDR 69 01 D5 00 03 00 10 34 00 00 00"),
-        expect("BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 A0 00 00 FF", TIMEOUT),
-    ])
+    TestCase::new("6.1.3 Reading normal operation mode – negative response due to invalid ReadServiceID coding")
+        .with_steps(vec![
+            comment("FctPropertyExtStateRead with only the reserved byte (one byte short)"),
+            inject("BC #EDI #BDUT_ADDR 67 01 D5 00 03 00 10 34 00"),
+            // Response: rc=0xA0, serviceID=echoed-or-zero, mode=0x00, timeLeft=0xFF.
+            expect("BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 A0 ?? 00 FF", TIMEOUT),
+            comment("FctPropertyExtStateRead with an extra trailing byte (one byte too long)"),
+            inject("BC #EDI #BDUT_ADDR 69 01 D5 00 03 00 10 34 00 00 00"),
+            expect("BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 A0 00 00 FF", TIMEOUT),
+        ])
 }

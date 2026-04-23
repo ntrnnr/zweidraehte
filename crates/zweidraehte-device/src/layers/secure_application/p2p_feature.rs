@@ -44,12 +44,12 @@ use zweidraehte_proto::messages::{
     knx::{KnxMessageBuffer, ServiceType},
 };
 
+use crate::HasSecureIdentity;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState};
 use crate::definition::StackDefinition;
 use crate::objects::tables::HasAssociationTable;
 use crate::prelude::HasAddressTable;
 use crate::storage::SequenceNumberStorage;
-use crate::{HasSecureIdentity, StackState};
 
 use super::{PendingSyncState, SecureApplicationLayer, SecureResult};
 
@@ -85,11 +85,8 @@ impl Default for WithP2pState {
         #[cfg(feature = "conformance")]
         let sync_rate_limit = {
             extern crate std;
-            let divisor: u64 = std::env::var("KNX_TIME_DIVISOR")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .filter(|&d| d > 0)
-                .unwrap_or(1);
+            let divisor: u64 =
+                std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
             let scaled = SYNC_RATE_LIMIT_MS / divisor;
             if divisor > 1 {
                 crate::logging::info!("S-AL P2P sync rate-limit scaled: divisor={}, window={}ms", divisor, scaled);
@@ -99,11 +96,7 @@ impl Default for WithP2pState {
         #[cfg(not(feature = "conformance"))]
         let sync_rate_limit = embassy_time::Duration::from_millis(SYNC_RATE_LIMIT_MS);
 
-        Self {
-            pending_sync: Cell::new(None),
-            last_sync_response: Cell::new(None),
-            sync_rate_limit,
-        }
+        Self { pending_sync: Cell::new(None), last_sync_response: Cell::new(None), sync_rate_limit }
     }
 }
 

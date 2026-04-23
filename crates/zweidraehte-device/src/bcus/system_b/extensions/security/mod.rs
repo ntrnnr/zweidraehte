@@ -35,11 +35,11 @@ use core::cell::{Cell, RefCell};
 
 use serde::{Deserialize, Serialize};
 
+use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::storage::SequenceNumberStorage;
-use crate::{StackDefinition, StackState};
 
 // ============================================================================
 // SecurityTable — const-generic fixed-capacity table
@@ -1079,7 +1079,7 @@ pub type SecureTp1DeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: StackDefinition,
+    D,
     SEQ,
     const P2P: usize,
 > = crate::bcus::system_b::SystemBDeviceState<
@@ -1112,7 +1112,7 @@ pub type SecureIpDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: StackDefinition,
+    D,
     SEQ,
     const P2P: usize,
     const N: usize,

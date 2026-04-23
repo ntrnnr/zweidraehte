@@ -26,7 +26,6 @@ use crate::{
         transport::TransportLayer,
     },
     objects::tables::{HasAddressTable, HasAssociationTable},
-    restart,
     router::{self, LayerStack},
     storage::{HasSequenceStorage, SequenceNumberStorage},
 };

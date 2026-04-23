@@ -10,7 +10,6 @@ pub use crate::{
     SecureDeviceBuilder, Stack, StackDefinition, StackResources, StackState, StandardDeviceLayers, StandardLayerStack,
     StandardSecureDeviceLayers, UpdateObjectError,
 };
-use zweidraehte_proto::AccessContext;
 
 // KNX/IP-specific types
 #[cfg(feature = "knxip")]

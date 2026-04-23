@@ -18,15 +18,8 @@ use crate::{
     definition::StackDefinition,
     layers::application::services::{AlService, AlServiceContext},
     memory::MemoryMap,
-    objects::{
-        comm::{ComObjects, HasCommObjects},
-        interface::{
-            FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyServiceHandler, pid,
-        },
-        tables::{
-            AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasAssociationTable,
-            HasCommunicationObjectTable,
-        },
+    objects::interface::{
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyServiceHandler,
     },
 };
 use zweidraehte_proto::messages::{
@@ -35,8 +28,8 @@ use zweidraehte_proto::messages::{
         PropertyExtValueWriteConRes, return_code,
     },
     buffers::Buffer,
-    builder::{IndicationExt, MessageBuilder},
-    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
+    builder::IndicationExt,
+    knx::{ApciCode, KnxMessageBuffer, ServiceType},
 };
 
 use crate::logging::{debug, error, warn};
@@ -726,6 +719,7 @@ fn send_function_ext_response<D: StackDefinition>(
 ///
 /// Used when the addressed property is not PDT_FUNCTION or PDT_CONTROL
 /// (spec 3.4.7.3).
+#[allow(dead_code)]
 fn send_function_ext_empty_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlServiceContext<'_, D>,

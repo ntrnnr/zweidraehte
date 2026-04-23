@@ -10,7 +10,7 @@
 
 use core::cell::{Cell, RefCell};
 
-use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, OperationModeState};
+use zweidraehte_device::bcus::system_b::DiagnosticsAugment;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     StackDefinition,
@@ -31,7 +31,6 @@ use zweidraehte_device::{
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
         HasLoadStateMachine, HasPeiApplication, LoadEvent,
     },
-    storage::StaticIdentity,
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::HasConnectionAuth;

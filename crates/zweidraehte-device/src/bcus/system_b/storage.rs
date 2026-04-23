@@ -70,8 +70,6 @@ use crate::{
 };
 use zweidraehte_proto::address::IndividualAddress;
 
-use crate::storage::DeviceIdentity;
-
 // ============================================================================
 // HasDeviceConfig — bridge between runtime state and its serializable config
 // ============================================================================

@@ -10,12 +10,11 @@ use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
 use crate::{
-    HasAuthorization, HasPersistence, LayerStackBuilder, StackState,
-    bcus::system_b::{Extension, HasDiagnosticsContext},
+    LayerStackBuilder,
+    bcus::system_b::Extension,
     config,
     context::StackContext,
     context::layer::LayerContext,
-    device_model::DeviceModelNotifier,
     ets,
     layers::{self, application::services::AlService},
     memory::MemoryMap,
@@ -26,7 +25,6 @@ use crate::{
     state::CoreDeviceState,
     storage::{DeviceIdentity, StaticIdentity},
 };
-use zweidraehte_proto::access::HasConnectionAuth;
 
 pub trait StackDefinition: Copy + 'static {
     /// Device descriptor containing all device identification and configuration.

@@ -12,7 +12,7 @@ use embassy_time::Timer;
 
 use crate::{
     StackState, composition::LayerStackBuilder, context::StackContext, definition::StackDefinition, inner::Inner,
-    layers::LinkLayerBuilderBase, resources::StackResources, restart, router::LayerStack, stack_handle::Stack,
+    layers::LinkLayerBuilderBase, resources::StackResources, router::LayerStack, stack_handle::Stack,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -314,11 +314,9 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
 
     let app_request_sender: DynamicSender<'static, _> = lctx.app_service_channel.sender().into();
 
-    let (restart_sender, restart_receiver) = create_request_response_pair::<D::Mutex, _, 1>(&lctx.restart_channel);
-
-    // Drop the sender immediately since we don't need it. The channel is purely static
+    // Discard the sender immediately since we don't need it. The channel is purely static
     // and correctly managed by `LayerContext` and `try_send_restart_request`.
-    drop(restart_sender);
+    let (_restart_sender, restart_receiver) = create_request_response_pair::<D::Mutex, _, 1>(&lctx.restart_channel);
 
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());

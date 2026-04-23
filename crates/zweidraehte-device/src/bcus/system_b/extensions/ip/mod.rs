@@ -445,7 +445,7 @@ pub type IpSystemBDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: crate::StackDefinition,
+    D,
     const N: usize = 0,
     const CAPS: u16 = 0,
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpExtensionState<N, CAPS>>;
