@@ -1895,6 +1895,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32-common"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "critical-section",
+ "defmt 1.0.1",
+ "embassy-futures",
+ "embassy-hal-internal 0.3.0",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-io-async 0.6.1",
+ "portable-atomic",
+ "postcard",
+ "serde",
+ "zweidraehte-device",
+ "zweidraehte-platform",
+]
+
+[[package]]
 name = "stm32-fmc"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1912,6 +1934,30 @@ dependencies = [
  "cortex-m",
  "cortex-m-rt",
  "defmt 0.3.100",
+]
+
+[[package]]
+name = "stm32g0_tp1_light_switch"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "devices",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-stm32",
+ "embassy-time",
+ "embedded-common",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-io-async 0.6.1",
+ "panic-probe",
+ "static_cell",
+ "stm32-common",
+ "zweidraehte-device",
+ "zweidraehte-platform",
 ]
 
 [[package]]

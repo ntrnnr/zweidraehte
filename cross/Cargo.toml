@@ -4,6 +4,8 @@ resolver = "2"
 members = [
     "embedded-common",
     "rp-common",
+    "stm32-common",
+    "stm32g0_tp1_light_switch",
     "tpuart_bridge",
     "picow",
     "pico_eth",
