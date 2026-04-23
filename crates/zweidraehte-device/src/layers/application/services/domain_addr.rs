@@ -99,7 +99,11 @@ where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
-    if ind.service_type() != ServiceType::T_Broadcast_Ind {
+    // Per spec 03/03/07 §3.3.6 the service runs on system broadcast
+    // communication mode — the AL accepts the request via
+    // `T_Data_SystemBroadcast.ind` and emits the response via
+    // `T_Data_SystemBroadcast.req`.
+    if ind.service_type() != ServiceType::T_SystemBroadcast_Ind {
         warn!("AL DomainAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
         return;
     }
@@ -126,7 +130,7 @@ where
 
     let mut msg = MessageBuilder::new_request(
         msg_buf,
-        ServiceType::T_Broadcast_Req,
+        ServiceType::T_SystemBroadcast_Req,
         ind.ctrl_field().priority(),
         DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
     )
@@ -156,12 +160,23 @@ where
 ///
 /// For KNX/IP, the domain address is the 4-byte routing multicast address
 /// (see KNX IP Communication Medium spec, section 4.3.5.3.4).
+///
+/// TODO: KNX/IP Secure adds a 21-byte DASN_Write variant (spec 03/03/07
+/// §3.3.7 Figure 32) carrying `multicast(4) + routing_security_version(1)
+/// + backbone_key(16)`. The 21-byte form is only legal inside an
+/// authenticated + encrypted `S-A_Data-PDU`, and handling it needs
+/// state slots for the Backbone Key (PID 91) and the Routing Security
+/// Version, plus Secure Application Layer integration. Out of scope
+/// for the current non-secure IP path; the handler currently reads
+/// exactly `DOMAIN_ADDRESS_LENGTH` bytes and silently ignores any
+/// trailing payload.
 fn handle_domain_address_serial_number_write<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>)
 where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
-    if ind.service_type() != ServiceType::T_Broadcast_Ind {
+    // Per spec 03/03/07 §3.3.7 the service runs on system broadcast.
+    if ind.service_type() != ServiceType::T_SystemBroadcast_Ind {
         warn!("AL DomainAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
         return;
     }
