@@ -799,6 +799,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "embedded-common"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "defmt 1.0.1",
+ "embassy-futures",
+ "embassy-time",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "zweidraehte-platform",
+ "zweidraehte-util",
+]
+
+[[package]]
 name = "embedded-hal"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1366,6 +1380,7 @@ dependencies = [
  "embassy-net-wiznet",
  "embassy-rp",
  "embassy-time",
+ "embedded-common",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-hal-bus",
@@ -1391,6 +1406,7 @@ dependencies = [
  "embassy-net-wiznet",
  "embassy-rp",
  "embassy-time",
+ "embedded-common",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "embedded-hal-bus",
@@ -1414,6 +1430,7 @@ dependencies = [
  "embassy-futures",
  "embassy-rp",
  "embassy-time",
+ "embedded-common",
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "panic-probe",
@@ -1439,6 +1456,7 @@ dependencies = [
  "embassy-net",
  "embassy-rp",
  "embassy-time",
+ "embedded-common",
  "embedded-hal 1.0.0",
  "embedded-io-async 0.6.1",
  "futures",

@@ -42,7 +42,7 @@ use zweidraehte_device::{
     prelude::*,
 };
 
-use rp_common::button::DebouncedButton;
+use embedded_common::DebouncedButton;
 use rp_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
 use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, FlashIdentityData, RpFlashStorage};
 
@@ -190,7 +190,7 @@ async fn prog_task(knx: Stack<'static, PicoIpInterface>, prog_btn_pin: Input<'st
 /// Restart handler — executes resets from ETS, persists state, and reboots.
 #[embassy_executor::task]
 async fn restart_task(knx: Stack<'static, PicoIpInterface>, storage: &'static RefCell<Storage>) -> ! {
-    use rp_common::CortexMSystem;
+    use embedded_common::CortexMSystem;
     use zweidraehte_device::restart::EraseCode;
     use zweidraehte_platform::SystemControl;
 

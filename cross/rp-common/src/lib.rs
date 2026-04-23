@@ -1,17 +1,16 @@
 #![no_std]
-#![feature(never_type)]
 
 //! Shared platform code for RP2040/RP2350 KNX devices.
 //!
-//! Provides embassy-net based networking, flash storage, system control,
-//! and a direct-register UART driver for latency-critical TPUART
-//! communication.
+//! Provides embassy-net based networking, flash storage, and a
+//! direct-register UART driver for latency-critical TPUART
+//! communication. HAL-agnostic helpers (`DebouncedButton`,
+//! `CortexMSystem`) live in `embedded-common` and are imported from
+//! there directly at every call site.
 
-pub mod button;
 mod net;
 mod network_info;
 mod storage;
-mod system;
 pub mod uart;
 
 pub use net::{EmbassyIpTransport, EmbassyUdpSocket, UdpError};
@@ -19,4 +18,3 @@ pub use network_info::{EmbassyNetworkInfo, IP_ASSIGN_DHCP, IP_ASSIGN_MANUAL, Net
 #[cfg(feature = "rp2040")]
 pub use storage::read_or_provision_identity;
 pub use storage::{FlashError, FlashIdentityData, RpFlashStorage};
-pub use system::{CortexMSystem, SystemError};

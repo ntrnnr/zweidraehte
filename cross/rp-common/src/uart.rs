@@ -243,9 +243,7 @@ pub struct DirectInterruptHandler<T: DirectUartInstance> {
     _uart: core::marker::PhantomData<T>,
 }
 
-impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interrupt>
-    for DirectInterruptHandler<T>
-{
+impl<T: DirectUartInstance> embassy_rp::interrupt::typelevel::Handler<T::Interrupt> for DirectInterruptHandler<T> {
     unsafe fn on_interrupt() {
         let r = T::regs();
         let state = T::state();
@@ -388,10 +386,7 @@ impl DirectUart {
         T::Interrupt::unpend();
         unsafe { T::Interrupt::enable() };
 
-        (
-            DirectUartTx { regs: r, state },
-            DirectUartRx { state },
-        )
+        (DirectUartTx { regs: r, state }, DirectUartRx { state })
     }
 }
 

@@ -1,0 +1,25 @@
+[package]
+name = "embedded-common"
+version = "0.1.0"
+edition = "2024"
+
+# HAL-agnostic helpers shared across all embedded KNX targets
+# (embassy-rp, embassy-stm32, etc.). No chip-specific deps live here.
+
+[dependencies]
+# Embassy async primitives
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-futures = { workspace = true }
+
+# Embedded HAL traits
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+
+# Cortex-M system reset
+cortex-m = { workspace = true }
+
+defmt = { workspace = true }
+
+# KNX platform traits (SystemControl) and shared ButtonEvent type
+zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
+zweidraehte-util = { path = "../../crates/zweidraehte-util" }

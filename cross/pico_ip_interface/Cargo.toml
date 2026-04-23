@@ -32,3 +32,5 @@ devices = { path = "../../examples/devices", default-features = false, features 
 
 # Shared RP platform code
 rp-common = { path = "../rp-common", features = ["rp2040"] }
+# HAL-agnostic helpers (DebouncedButton, CortexMSystem)
+embedded-common = { path = "../embedded-common" }

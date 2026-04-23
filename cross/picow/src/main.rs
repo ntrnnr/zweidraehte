@@ -153,7 +153,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'sta
 /// 4. Triggers a Cortex-M system reset
 #[embassy_executor::task]
 async fn restart_task(knx: Stack<'static, PicoWLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
-    use rp_common::CortexMSystem;
+    use embedded_common::CortexMSystem;
     use zweidraehte_device::restart::EraseCode;
     use zweidraehte_platform::SystemControl;
 

@@ -9,9 +9,7 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use embassy_net::udp::{self, UdpSocket};
 use embassy_net::{IpEndpoint, Stack};
 
-use zweidraehte_platform::traits::{
-    AsyncUdpSocket, IpTransport, NeverTcpListener, NeverTcpStream, UdpSocketOptions,
-};
+use zweidraehte_platform::traits::{AsyncUdpSocket, IpTransport, NeverTcpListener, NeverTcpStream, UdpSocketOptions};
 
 // ================================================================================
 // Static UDP Buffer Pool
@@ -60,12 +58,10 @@ impl BufferSlot {
     }
 }
 
-static UDP_BUFFERS: [BufferSlot; MAX_UDP_SOCKETS] =
-    [const { BufferSlot::new() }; MAX_UDP_SOCKETS];
+static UDP_BUFFERS: [BufferSlot; MAX_UDP_SOCKETS] = [const { BufferSlot::new() }; MAX_UDP_SOCKETS];
 
 /// Tracks which buffer slots are in use.
-static NEXT_SOCKET_SLOT: critical_section::Mutex<Cell<usize>> =
-    critical_section::Mutex::new(Cell::new(0));
+static NEXT_SOCKET_SLOT: critical_section::Mutex<Cell<usize>> = critical_section::Mutex::new(Cell::new(0));
 
 fn alloc_socket_slot() -> usize {
     critical_section::with(|cs| {
@@ -115,13 +111,8 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
         // Per-slot UnsafeCell means this doesn't alias other slots.
         let bufs = unsafe { &mut *UDP_BUFFERS[slot].0.get() };
 
-        let mut socket = UdpSocket::new(
-            *stack,
-            &mut bufs.rx_meta,
-            &mut bufs.rx_buf,
-            &mut bufs.tx_meta,
-            &mut bufs.tx_buf,
-        );
+        let mut socket =
+            UdpSocket::new(*stack, &mut bufs.rx_meta, &mut bufs.rx_buf, &mut bufs.tx_meta, &mut bufs.tx_buf);
 
         socket.bind(options.bind_addr.port()).map_err(|_| UdpError::BindError)?;
 
@@ -129,15 +120,11 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
     }
 
     fn join_multicast(&self, group: Ipv4Addr, _interface: Ipv4Addr) -> Result<(), Self::Error> {
-        self.stack
-            .join_multicast_group(group)
-            .map_err(|_| UdpError::MulticastError)
+        self.stack.join_multicast_group(group).map_err(|_| UdpError::MulticastError)
     }
 
     fn leave_multicast(&self, group: Ipv4Addr, _interface: Ipv4Addr) -> Result<(), Self::Error> {
-        self.stack
-            .leave_multicast_group(group)
-            .map_err(|_| UdpError::MulticastError)
+        self.stack.leave_multicast_group(group).map_err(|_| UdpError::MulticastError)
     }
 
     fn set_broadcast(&self, _broadcast: bool) -> Result<(), Self::Error> {
@@ -147,10 +134,7 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
     }
 
     fn local_endpoint(&self) -> SocketAddrV4 {
-        let ip = self.stack
-            .config_v4()
-            .map(|c| c.address.address())
-            .unwrap_or(Ipv4Addr::UNSPECIFIED);
+        let ip = self.stack.config_v4().map(|c| c.address.address()).unwrap_or(Ipv4Addr::UNSPECIFIED);
         SocketAddrV4::new(ip, self.local_port)
     }
 
@@ -182,10 +166,7 @@ impl AsyncUdpSocket for EmbassyUdpSocket {
     }
 
     async fn send_to(&self, buf: &[u8], addr: SocketAddrV4) -> Result<usize, Self::Error> {
-        let ep = IpEndpoint::new(
-            embassy_net::IpAddress::Ipv4(*addr.ip()),
-            addr.port(),
-        );
+        let ep = IpEndpoint::new(embassy_net::IpAddress::Ipv4(*addr.ip()), addr.port());
         self.socket.borrow().send_to(buf, ep).await.map_err(UdpError::SendError)?;
         Ok(buf.len())
     }

@@ -100,10 +100,7 @@ impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
         assert!(STORAGE_SIZE <= FLASH_SIZE, "STORAGE_SIZE exceeds total flash size",);
         // The identity sector occupies the second-to-last 4 KiB sector.
         // Config storage must not overlap it.
-        assert!(
-            STORAGE_SIZE <= SECTOR_SIZE,
-            "STORAGE_SIZE exceeds one sector — would overlap the identity sector",
-        );
+        assert!(STORAGE_SIZE <= SECTOR_SIZE, "STORAGE_SIZE exceeds one sector — would overlap the identity sector",);
     };
 
     /// Create a new flash storage instance.
@@ -283,9 +280,7 @@ pub fn read_or_provision_identity(
 ) -> FlashIdentityData {
     // Read just the identity record from the sector.
     let mut buf = [0u8; IDENTITY_RECORD_SIZE];
-    flash
-        .blocking_read(IDENTITY_SECTOR_OFFSET, &mut buf)
-        .expect("identity sector read");
+    flash.blocking_read(IDENTITY_SECTOR_OFFSET, &mut buf).expect("identity sector read");
 
     // If the magic matches, the identity has already been provisioned.
     if buf[0..4] == IDENTITY_MAGIC {
@@ -303,9 +298,7 @@ pub fn read_or_provision_identity(
     defmt::info!("Identity sector empty, provisioning from flash unique ID...");
 
     let mut unique_id = [0u8; 8];
-    flash
-        .blocking_unique_id(&mut unique_id)
-        .expect("flash unique ID read");
+    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID read");
 
     // XOR-fold 8 bytes into 4 for the device-specific portion.
     let device_bytes = [
@@ -315,14 +308,8 @@ pub fn read_or_provision_identity(
         unique_id[3] ^ unique_id[7],
     ];
 
-    let serial_number = [
-        manufacturer_id[0],
-        manufacturer_id[1],
-        device_bytes[0],
-        device_bytes[1],
-        device_bytes[2],
-        device_bytes[3],
-    ];
+    let serial_number =
+        [manufacturer_id[0], manufacturer_id[1], device_bytes[0], device_bytes[1], device_bytes[2], device_bytes[3]];
 
     // Write the identity record to flash.
     let mut write_buf = [0u8; IDENTITY_RECORD_SIZE];
@@ -333,15 +320,9 @@ pub fn read_or_provision_identity(
     flash
         .blocking_erase(IDENTITY_SECTOR_OFFSET, IDENTITY_SECTOR_OFFSET + SECTOR_SIZE as u32)
         .expect("identity sector erase");
-    flash
-        .blocking_write(IDENTITY_SECTOR_OFFSET, &write_buf)
-        .expect("identity sector write");
+    flash.blocking_write(IDENTITY_SECTOR_OFFSET, &write_buf).expect("identity sector write");
 
-    defmt::info!(
-        "Identity provisioned: serial={=[u8]:02x}, uid={=[u8]:02x}",
-        serial_number,
-        unique_id,
-    );
+    defmt::info!("Identity provisioned: serial={=[u8]:02x}, uid={=[u8]:02x}", serial_number, unique_id,);
 
     FlashIdentityData { serial_number, unique_id }
 }

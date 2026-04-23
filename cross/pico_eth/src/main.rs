@@ -37,7 +37,7 @@ use zweidraehte_device::{
     prelude::*,
 };
 
-use rp_common::button::DebouncedButton;
+use embedded_common::DebouncedButton;
 use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, FlashIdentityData, RpFlashStorage};
 
 // ================================================================================
@@ -206,7 +206,7 @@ async fn prog_task(knx: Stack<'static, PicoEthLightSwitch>, prog_btn_pin: Input<
 /// 4. Triggers a Cortex-M system reset
 #[embassy_executor::task]
 async fn restart_task(knx: Stack<'static, PicoEthLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
-    use rp_common::CortexMSystem;
+    use embedded_common::CortexMSystem;
     use zweidraehte_device::restart::EraseCode;
     use zweidraehte_platform::SystemControl;
 
