@@ -31,7 +31,8 @@ use zweidraehte_proto::messages::{
 
 use crate::logging::{debug, error, trace, warn};
 
-/// Operand for `NM_Read_SerialNumber_By_ProgrammingMode` (spec 03/05/02 §2.20.1.3).
+/// Operand for `NM_Read_SerialNumber_By_ProgrammingMode` (spec 03/05/02 §2.20.1.4).
+// TODO: Implement more modes (PowerReset and ExFactoryState) - spec 03/05/02 §2.20.1.5 & .6
 const OPERAND_BY_PROG_MODE: u8 = 0x01;
 
 /// AL service extension for `A_SystemNetworkParameter_Read`.
@@ -66,11 +67,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
         return;
     }
 
-    let (Some(object_type), Some(pid_val), Some(operand)) = (
-        SystemNetworkParameterRead::object_type(ind.buf()),
-        SystemNetworkParameterRead::pid(ind.buf()),
-        SystemNetworkParameterRead::operand(ind.buf()),
-    ) else {
+    let Some(read) = SystemNetworkParameterRead::parse(ind.buf()) else {
         error!("SystemNetworkParameterRead message too short: {}", ind.len());
         return;
     };
@@ -80,10 +77,10 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     // Only the serial-number-by-programming-mode procedure is supported.
     // Per spec §2.20, unsupported parameter_type/test_info combinations
     // MUST NOT trigger a response.
-    if object_type != device_ot || u16::from(pid_val) != pid::SERIAL_NUMBER || operand != OPERAND_BY_PROG_MODE {
+    if read.object_type != device_ot || read.pid != pid::SERIAL_NUMBER || read.operand != OPERAND_BY_PROG_MODE {
         trace!(
-            "AL SystemNetworkParameterRead unsupported: object_type=0x{:03X}, pid={}, operand=0x{:02X}",
-            object_type, pid_val, operand
+            "AL SystemNetworkParameterRead unsupported: object_type=0x{:04X}, pid={}, operand=0x{:X}",
+            read.object_type, read.pid, read.operand
         );
         return;
     }
@@ -101,6 +98,9 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     // immediately; the bus access layer serialises transmissions so no
     // hard collision results, but adding a delay is a conformance nicety.
 
+    // Response tail = test_result = 6-byte KNX Serial Number. The echoed
+    // operand lives in the packed PID|operand nibble and is written by
+    // `SystemNetworkParameterResponse::write`.
     let resp_len = SystemNetworkParameterResponse::msg_len(6);
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else {
         warn!("AL no buffer for SystemNetworkParameterResponse");
@@ -119,15 +119,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     .build();
 
     let serial: &[u8; 6] = ctx.state.serial_number();
-    // pid::SERIAL_NUMBER fits in 8 bits; SystemNetworkParameter wire
-    // encoding uses an 8-bit PID field (spec 03_05_02 §2.20).
-    SystemNetworkParameterResponse::write(
-        msg.buf_mut(),
-        device_ot,
-        pid::SERIAL_NUMBER as u8,
-        OPERAND_BY_PROG_MODE,
-        serial,
-    );
+    SystemNetworkParameterResponse::write(msg.buf_mut(), device_ot, pid::SERIAL_NUMBER, OPERAND_BY_PROG_MODE, serial);
 
     ctx.lctx.push_outbox(msg.into_inner());
 }

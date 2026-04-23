@@ -18,11 +18,16 @@ use embassy_time::Instant;
 use heapless::Vec;
 
 use zweidraehte_proto::messages::{
-        buffers::{Buffer, MessageBuffer},
-        knx::{CemiFormat, InternalFormat, KnxMessageBuffer, ServiceType},
-        knxip::{KNXNETIP_HEADER_SIZE, KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingLostMessage},
-    };
+    buffers::{Buffer, MessageBuffer},
+    knx::{AddressType, CemiFormat, InternalFormat, KnxMessageBuffer, ServiceType},
+    knxip::{
+        KNXNETIP_HEADER_SIZE, KNXnetIPServiceType, RoutingBusy, RoutingIndication, RoutingLostMessage,
+        RoutingSystemBroadcast,
+    },
+};
 use zweidraehte_proto::util::packets::ParseBuffer;
+
+use crate::ip::SYSTEM_SETUP_MULTICAST_ADDRESS;
 
 use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError};
 
@@ -376,11 +381,22 @@ impl RoutingServer {
     /// Note: The cEMI message code is always set to L_Data.ind regardless of
     /// the incoming service type (which is typically L_Data_Req). This is per
     /// the KNX/IP routing protocol specification.
+    ///
+    /// Dispatches between `ROUTING_INDICATION` (0x0530) and
+    /// `ROUTING_SYSTEM_BROADCAST` (0x0533) based on the message's address
+    /// type. Per spec 03/02/06 §4.1.3 and 03/08/05 §2.3.2, SB frames MUST
+    /// be sent to [`SYSTEM_SETUP_MULTICAST_ADDRESS`] regardless of
+    /// `PID_ROUTING_MULTICAST_ADDRESS`; receivers only listen for SB
+    /// traffic on that group.
     async fn create_routing_indication<'a>(
         &self,
         message: &KnxMessageBuffer<Buffer<'static>, InternalFormat>,
         context: &ServerContext<'a>,
     ) -> Result<PendingResponse, ServerError> {
+        // Decide the wrap variant before converting to cEMI — after the
+        // conversion the typed `KnxMessageBuffer` is consumed.
+        let is_system_broadcast = message.get_address_type() == AddressType::SystemBroadcast;
+
         // Allocate a buffer and copy the KNX message into it.
         // Default headroom (16 bytes) is sufficient for:
         // - cEMI expansion: 3 bytes (msg_code + add_info_len + ctrl2)
@@ -388,22 +404,25 @@ impl RoutingServer {
         let mut buffer = context.alloc_buffer().await;
         buffer.push_slice(message.buf());
 
-        // Convert to cEMI format (uses 3 bytes of headroom)
-        // Always use L_Data_Ind for routing - outgoing messages from this device
-        // are sent as indications on the KNX/IP routing multicast group
+        // Convert to cEMI format (uses 3 bytes of headroom).
+        // Always use L_Data_Ind for routing — outgoing messages from this
+        // device are sent as indications on the KNX/IP multicast group.
         let internal_msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
         let cemi_msg = internal_msg.into_cemi();
 
-        // Extract the buffer and wrap it with the KNXnet/IP header
-        // This uses 6 more bytes of headroom - no additional allocation needed
+        // Extract the buffer and wrap it with the correct KNXnet/IP header.
+        // This uses 6 more bytes of headroom — no additional allocation.
         let mut output_buffer = cemi_msg.into_inner();
-        RoutingIndication::wrap_cemi(&mut output_buffer);
+        let dest_addr = if is_system_broadcast {
+            RoutingSystemBroadcast::wrap_cemi(&mut output_buffer);
+            SYSTEM_SETUP_MULTICAST_ADDRESS
+        } else {
+            RoutingIndication::wrap_cemi(&mut output_buffer);
+            self.multicast_addr.get()
+        };
 
-        let destination = SocketAddrV4::new(self.multicast_addr.get(), self.port);
-        Ok(PendingResponse {
-            buffer: output_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: 0 },
-        })
+        let destination = SocketAddrV4::new(dest_addr, self.port);
+        Ok(PendingResponse { buffer: output_buffer, target: ResponseTarget::Udp { destination, socket_idx: 0 } })
     }
 
     /// Process a received cEMI frame from a routing message (RoutingIndication or

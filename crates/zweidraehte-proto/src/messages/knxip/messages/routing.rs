@@ -82,9 +82,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingIndication<B> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a ROUTING_INDICATION
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::RoutingIndication
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::RoutingIndication {
             return Err(ParseError::Format);
         }
 
@@ -96,15 +94,69 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingIndication<B> {
     }
 }
 
-/// Create a RoutingIndication KNXnet/IP header for the given cEMI frame length.
-fn routing_indication_header(cemi_len: usize) -> KNXnetIPHeader {
+// ============================================================================
+// ROUTING SYSTEM BROADCAST
+// ============================================================================
+
+/// KNXnet/IP ROUTING_SYSTEM_BROADCAST
+///
+/// Carries a cEMI L_Data frame whose `AddressType` is `SystemBroadcast`. The
+/// wire payload is byte-for-byte identical to `ROUTING_INDICATION`; only the
+/// KNXnet/IP service type field (`0x0533`) differs.
+///
+/// Per KNX/IP spec (`03/02/06` §4.1.3, `03/08/05` §2.3.2) ROUTING_SYSTEM_-
+/// BROADCAST frames MUST be transmitted to the well-known
+/// `SYSTEM_SETUP_MULTICAST_ADDRESS` (`224.0.23.12`) regardless of the
+/// device's configured routing multicast group — devices only listen for SB
+/// traffic on that address.
+pub struct RoutingSystemBroadcast;
+
+impl RoutingSystemBroadcast {
+    /// Wrap an existing cEMI buffer by prepending the KNXnet/IP header with
+    /// service type `ROUTING_SYSTEM_BROADCAST` (`0x0533`).
+    ///
+    /// # Panics
+    /// Panics if the buffer has insufficient headroom for
+    /// [`KNXNETIP_HEADER_SIZE`] bytes.
+    pub fn wrap_cemi<B: crate::messages::buffers::MessageBuffer>(buffer: &mut B) {
+        let header = routing_system_broadcast_header(buffer.len());
+        buffer.prepend(header.as_bytes());
+    }
+
+    /// Try to wrap an existing cEMI buffer by prepending the KNXnet/IP header.
+    ///
+    /// Returns `Err` if there is insufficient headroom.
+    pub fn try_wrap_cemi<B: crate::messages::buffers::MessageBuffer>(
+        buffer: &mut B,
+    ) -> Result<(), crate::messages::buffers::BufferError> {
+        let header = routing_system_broadcast_header(buffer.len());
+        buffer.try_prepend(header.as_bytes())
+    }
+}
+
+/// Build a KNXnet/IP header for a routing-family message (`RoutingIndication`
+/// or `RoutingSystemBroadcast`).
+///
+/// Both service types share an identical byte layout — header + cEMI frame —
+/// and differ only in the 2-byte service type field. The caller picks which.
+fn routing_header(service_type: KNXnetIPServiceType, cemi_len: usize) -> KNXnetIPHeader {
     let total_len = KNXNETIP_HEADER_SIZE + cemi_len;
     KNXnetIPHeader {
         header_size: KNXNETIP_HEADER_SIZE as u8,
         version: KNXnetIPVersion::Version10.into(),
-        service_type: U16::from(u16::from(KNXnetIPServiceType::RoutingIndication)),
+        service_type: U16::from(u16::from(service_type)),
         total_length: (total_len as u16).into(),
     }
+}
+
+/// Create a RoutingIndication KNXnet/IP header for the given cEMI frame length.
+fn routing_indication_header(cemi_len: usize) -> KNXnetIPHeader {
+    routing_header(KNXnetIPServiceType::RoutingIndication, cemi_len)
+}
+
+/// Create a RoutingSystemBroadcast KNXnet/IP header for the given cEMI frame length.
+fn routing_system_broadcast_header(cemi_len: usize) -> KNXnetIPHeader {
+    routing_header(KNXnetIPServiceType::RoutingSystemBroadcast, cemi_len)
 }
 
 /// Builder for RoutingIndication message from an existing cEMI frame.
@@ -174,12 +226,7 @@ impl<'a> RoutingIndicationFromKnx<'a> {
     /// Panics if the buffer is too small for the final packet.
     pub fn new(buffer: &'a mut [u8], knx_len: usize, message_code: CemiMessageCode) -> Self {
         let required = KNXNETIP_HEADER_SIZE + knx_len + CEMI_EXPANSION;
-        debug_assert!(
-            buffer.len() >= required,
-            "buffer too small: need {} bytes, have {}",
-            required,
-            buffer.len()
-        );
+        debug_assert!(buffer.len() >= required, "buffer too small: need {} bytes, have {}", required, buffer.len());
         Self { buffer, knx_len, message_code }
     }
 
@@ -263,9 +310,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingBusy {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a ROUTING_BUSY
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::RoutingBusy
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::RoutingBusy {
             return Err(ParseError::Format);
         }
 
@@ -364,9 +409,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingLostMessage {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
         // Verify it's a ROUTING_LOST_MESSAGE
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::RoutingLostMessage
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::RoutingLostMessage {
             return Err(ParseError::Format);
         }
 
@@ -463,6 +506,30 @@ mod tests {
         let parsed = buffer.parse::<RoutingIndication<_>>().unwrap();
 
         assert_eq!(parsed.cemi_data(), &cemi_data);
+    }
+
+    #[test]
+    fn test_routing_system_broadcast_header_service_type() {
+        // Service type 0x0533 MUST be used for ROUTING_SYSTEM_BROADCAST
+        // frames, distinct from ROUTING_INDICATION's 0x0530.
+        let cemi_len = 11;
+        let header = routing_system_broadcast_header(cemi_len);
+        let bytes = header.as_bytes();
+
+        assert_eq!(bytes[0], 0x06, "header size");
+        assert_eq!(bytes[1], 0x10, "protocol version");
+        assert_eq!(&bytes[2..4], &[0x05, 0x33], "service type = RoutingSystemBroadcast");
+        assert_eq!(&bytes[4..6], &[0x00, 0x11], "total length = 6 + 11");
+    }
+
+    #[test]
+    fn test_routing_indication_header_still_uses_0530() {
+        // Regression check after refactoring routing_indication_header to
+        // share a helper with routing_system_broadcast_header.
+        let header = routing_indication_header(11);
+        let bytes = header.as_bytes();
+        assert_eq!(&bytes[2..4], &[0x05, 0x30]);
+        assert_eq!(&bytes[4..6], &[0x00, 0x11]);
     }
 
     #[test]

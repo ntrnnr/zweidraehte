@@ -2987,8 +2987,13 @@ pub fn create_system_network_parameter_read_suite() -> TestSuite {
             comment("Precondition: Programming Mode deactivated"),
             set_programming_mode(false),
             comment("Send A_SystemNetworkParameter_Read (object_type=Device, PID=SERIAL_NUMBER, operand=0x01)"),
-            // AC = system broadcast control byte; length 5 = APCI(2) + params(3)
-            inject("AC #EDI 00 00 E5 01 C8 00 00 B0 01"),
+            // NPDU length 6 = TPDU (7) - 1. Wire layout (spec 03/05/02 §2.20 Fig 5/7):
+            //   01 C8        APCI
+            //   00 00        object_type = Device (0x0000)
+            //   00           PID[11:4]
+            //   B0           PID[3:0] in high nibble, reserved low nibble = 0
+            //   01           operand (first test_info octet)
+            inject("AC #EDI 00 00 E6 01 C8 00 00 00 B0 01"),
             expect_none(1500),
             comment("Acceptance: No response is sent while Programming Mode is off (spec §2.20.1.3)"),
         ]),
@@ -2999,13 +3004,12 @@ pub fn create_system_network_parameter_read_suite() -> TestSuite {
             comment("Precondition: Activate Programming Mode"),
             set_programming_mode(true),
             comment("Send A_SystemNetworkParameter_Read (Device Object, PID_SERIAL_NUMBER, operand=0x01)"),
-            inject("AC #EDI 00 00 E5 01 C8 00 00 B0 01"),
-            // Response length = 5 (request) + 6 (serial) = 11 = 0xB → NPDU byte 0xEB.
-            // On the TP1 wire the CTRL byte is `BC` for both normal and system
-            // broadcast — bit 4 is "always 1" in the TP1 CTRL field (spec
-            // 03/02/02 §2.2.2). The SystemBroadcast vs Broadcast distinction
-            // is conveyed via the LL service primitive, not a wire bit.
-            expect("BC #BDUT 00 00 EB 01 C9 00 00 B0 01 #BDUT_SERIAL_NUMBER", 1500),
+            inject("AC #EDI 00 00 E6 01 C8 00 00 00 B0 01"),
+            // Response TPDU = TPCI|APCI(2) + object_type(2) + PID+reserved(2)
+            // + operand(1) + serial(6) = 13 octets → NPDU length = 12 = 0xC
+            // → length byte 0xEC. TP1 CTRL byte is `BC` for system broadcast
+            // (spec 03/02/02 §2.2.2).
+            expect("BC #BDUT 00 00 EC 01 C9 00 00 00 B0 01 #BDUT_SERIAL_NUMBER", 1500),
             comment("Acceptance: BDUT responds with A_SystemNetworkParameter_Response carrying the KNX Serial Number"),
             comment("Cleanup: Deactivate Programming Mode"),
             set_programming_mode(false),
@@ -3017,8 +3021,8 @@ pub fn create_system_network_parameter_read_suite() -> TestSuite {
             comment("Precondition: Activate Programming Mode"),
             set_programming_mode(true),
             comment("Send SNP_Read with a PID we don't support (PID=0x0C=MANUFACTURER_ID)"),
-            // PID = 0x0C → octet+4 = 0xC0
-            inject("AC #EDI 00 00 E5 01 C8 00 00 C0 01"),
+            // PID = 0x0C → +4 = 0x00, +5 = 0xC0 (high nibble = PID[3:0] = 0xC).
+            inject("AC #EDI 00 00 E6 01 C8 00 00 00 C0 01"),
             expect_none(1500),
             comment("Acceptance: No response is sent for unsupported parameter_type (spec §2.20)"),
             set_programming_mode(false),
@@ -3032,7 +3036,7 @@ pub fn create_system_network_parameter_read_suite() -> TestSuite {
             comment(
                 "Send SNP_Read with the correct object_type/PID but operand=0x02 (ExFactoryState, not implemented)",
             ),
-            inject("AC #EDI 00 00 E5 01 C8 00 00 B0 02"),
+            inject("AC #EDI 00 00 E6 01 C8 00 00 00 B0 02"),
             expect_none(1500),
             comment("Acceptance: No response is sent for unsupported operand (spec §2.20)"),
             set_programming_mode(false),
