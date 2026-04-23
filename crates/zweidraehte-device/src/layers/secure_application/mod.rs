@@ -25,11 +25,16 @@ use crate::{
     storage::SequenceNumberStorage,
 };
 use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};
+use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::crypto::{ccm, scf::SecureServiceType};
 use zweidraehte_proto::messages::{
-    apdu::secure::{SecureApduMut, SecureApduRef},
+    apdu::{
+        network_parameter::NetworkParameterInfoReport,
+        secure::{SecureApduMut, SecureApduRef},
+    },
     buffers::{Buffer, MessageBuffer},
-    knx::{ApciCode, KnxMessageBuffer, ServiceType, offsets},
+    builder::MessageBuilder,
+    knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
 };
 
 use crate::logging::warn;
@@ -238,6 +243,77 @@ where
         self.check_go_security_flags(tsap, 0x00)
     }
 
+    // ========================================================================
+    // Spontaneous Security Report emission (03/05/01 §6.3.11.4)
+    // ========================================================================
+
+    /// Record a security failure and, if `PID_SECURITY_REPORT_CONTROL`
+    /// (58) is Enabled and this is the first failure since the tool
+    /// last cleared `PID_SECURITY_REPORT` (57), broadcast a spontaneous
+    /// `A_NetworkParameter_InfoReport` (APCI 0x3DB) per the management
+    /// procedure `DMP_InterfaceObjectInfoReport_RCl`.
+    ///
+    /// Subsequent failures while bit 0 is already set do **not** re-emit —
+    /// the spec ties emission to the 0→1 transition of bit 0 of PID 57.
+    /// The tool clears PID 57 via authenticated write; the next failure
+    /// then triggers a fresh report.
+    fn log_security_failure_and_maybe_report(
+        &self,
+        failure_type: SecurityFailureType,
+        source_addr: u16,
+        frame_fragment: &[u8],
+    ) {
+        let security_state = self.inner.state().extension_state();
+        let transitioned = security_state.log_security_failure(failure_type, source_addr, frame_fragment);
+        if transitioned && security_state.security_report_enabled() {
+            let report = security_state.security_report();
+            self.emit_security_report(report);
+        }
+    }
+
+    /// Build and push a `T_Data_Broadcast` carrying
+    /// `A_NetworkParameter_InfoReport` for the Security IO's
+    /// PID_SECURITY_REPORT (57).
+    ///
+    /// Payload layout (03/03/07 §3.2.8, 03/05/01 §6.3.11.4):
+    ///   object_type = 0x0011 (Security Interface Object)
+    ///   property_id = 57    (PID_SECURITY_REPORT)
+    ///   test_info   = 0x00
+    ///   test_result = `security_report` byte (DPT_Security_Report)
+    fn emit_security_report(&self, security_report: u8) {
+        // Security IO type and PID from 03/07/03 (InterfaceObjectType table)
+        // and 03/05/01 §6.3 (Security IO property table).
+        const SECURITY_IO_TYPE: u16 = 0x0011;
+        const PID_SECURITY_REPORT: u8 = 57;
+
+        let payload = [0x00u8, security_report];
+        let total_len = NetworkParameterInfoReport::msg_len(payload.len());
+
+        let Some(msg_buf) = self.inner.buffer_manager().try_alloc_with_size(total_len) else {
+            warn!("S-AL: no buffer for spontaneous security report");
+            return;
+        };
+
+        // Broadcast via T_Data_Broadcast (destination 0x0000 as group, the
+        // address-type flag in the cEMI ctrl byte distinguishes broadcast
+        // from group). Priority = urgent per the management procedure
+        // specification (03/05/01 §6.3.11.4). Urgent maps to the 2-bit
+        // priority value 10b, which this enum labels `Alarm`
+        // (03/03/02 §2.2.3: 00=system, 01=normal, 10=urgent, 11=low).
+        let msg = MessageBuilder::new_request(
+            msg_buf,
+            ServiceType::T_Broadcast_Req,
+            Priority::Alarm,
+            DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
+        )
+        .with_application(ApciCode::NetworkParameterInfoReport)
+        .with_data(|buf| {
+            NetworkParameterInfoReport::write(buf, SECURITY_IO_TYPE, PID_SECURITY_REPORT, &payload);
+        });
+
+        self.inner.lctx().push_outbox(msg.into_inner());
+    }
+
     /// Try to process an incoming message as a Secure Service APDU.
     fn try_process_secure(&self, mut msg: KnxMessageBuffer<Buffer<'static>>) -> SecureResult {
         let apci = msg.get_apci_code();
@@ -253,9 +329,8 @@ where
             if matches!(st, ServiceType::T_GroupData_Ind) {
                 if !self.check_plain_group_allowed(&msg) {
                     let src = u16::from_be_bytes(msg.get_source_addr().0);
-                    let security_state = self.inner.state().extension_state();
                     warn!("S-AL: plain group frame rejected — GO requires security");
-                    security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+                    self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
                     return SecureResult::Dropped;
                 }
             }
@@ -296,7 +371,7 @@ where
             Ok(scf) => scf,
             Err(_) => {
                 warn!("S-AL: invalid SCF 0x{:02X}", scf_byte);
-                security_state.log_security_failure(SecurityFailureType::ScfError, src, &[]);
+                self.log_security_failure_and_maybe_report(SecurityFailureType::ScfError, src, &[]);
                 return SecureResult::Dropped;
             }
         };
@@ -324,7 +399,7 @@ where
         let seq_nr = secure_ref.seq_nr();
         if seq_nr == [0u8; 6] {
             warn!("S-AL: sequence number is zero — rejected");
-            security_state.log_security_failure(SecurityFailureType::SeqNrError, src, &[]);
+            self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
             return SecureResult::Dropped;
         }
         let received_mac = secure_ref.mac();
@@ -365,7 +440,7 @@ where
         // service type is T_GroupData_Ind (actual group communication).
         if scf.tool_access && matches!(st, ServiceType::T_GroupData_Ind) {
             warn!("S-AL: tool access on group communication rejected");
-            security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+            self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
             return SecureResult::Dropped;
         }
 
@@ -373,7 +448,7 @@ where
         if !scf.tool_access && addr_type == 0 {
             if !security_state.is_in_siat(src) {
                 warn!("S-AL: sender {:#06X} not in SIAT", src);
-                security_state.log_security_failure(SecurityFailureType::RoleError, src, &[]);
+                self.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
                 return SecureResult::Dropped;
             }
         }
@@ -397,7 +472,7 @@ where
                 Some(k) => k,
                 None => {
                     warn!("S-AL: no group key for TSAP {}", tsap);
-                    security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+                    self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
                     return SecureResult::Dropped;
                 }
             }
@@ -410,7 +485,7 @@ where
                 }
                 None => {
                     warn!("S-AL: no P2P key for IA {:#06X}", src);
-                    security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+                    self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
                     return SecureResult::Dropped;
                 }
             }
@@ -422,12 +497,12 @@ where
         if scf.confidentiality {
             if ccm::verify_and_decrypt(&key, &ctx, scf_byte, secure_mut.payload_mut(), &received_mac).is_err() {
                 warn!("S-AL: MAC verification failed (A+C)");
-                security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+                self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
                 return SecureResult::Dropped;
             }
         } else if ccm::verify_mac_auth_only(&key, &ctx, scf_byte, secure_mut.payload(), &received_mac).is_err() {
             warn!("S-AL: MAC verification failed (auth-only)");
-            security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+            self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
             return SecureResult::Dropped;
         }
 
@@ -467,7 +542,12 @@ where
             } else {
                 // Replay: ignore, log SeqNr failure.
                 // The S-AL shall not block further messages from this sender.
-                security_state.log_security_failure(SecurityFailureType::SeqNrError, src, &[]);
+                // Drop the seq-storage borrow before the helper call — the
+                // helper doesn't touch seq storage today, but releasing
+                // the outer `RefCell::borrow_mut` guard here keeps the
+                // invariant that only one cell is held across the call.
+                drop(storage);
+                self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
                 return SecureResult::Dropped;
             }
         }
@@ -486,7 +566,7 @@ where
             let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
             if !self.check_go_security_flags(tsap, received_bits) {
                 warn!("S-AL: GO security flag mismatch for TSAP {} (received={:#04X})", tsap, received_bits);
-                security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+                self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
                 return SecureResult::Dropped;
             }
         }

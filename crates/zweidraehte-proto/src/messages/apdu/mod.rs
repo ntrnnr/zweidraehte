@@ -28,6 +28,7 @@
 //! - [`group_value`] — `A_GroupValue_Read`, `A_GroupValue_Write`, `A_GroupValue_Response`
 //! - [`go_diagnostics`] — `PID_OPERATION_MODE` and `PID_GO_DIAGNOSTICS` function-property bodies
 //! - [`system_network_parameter`] — `A_SystemNetworkParameter_Read/Response`
+//! - [`network_parameter`] — `A_NetworkParameter_InfoReport`
 
 pub mod auth;
 pub mod device;
@@ -35,6 +36,7 @@ pub mod function_property;
 pub mod go_diagnostics;
 pub mod group_value;
 pub mod memory;
+pub mod network_parameter;
 pub mod property;
 pub mod property_ext;
 pub mod restart;

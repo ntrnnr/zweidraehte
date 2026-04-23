@@ -697,11 +697,25 @@ pub trait HasSecurityState {
     /// Check whether a peer IA exists in the Security Individual Address Table.
     fn is_in_siat(&self, peer_ia: u16) -> bool;
 
-    /// Record a security failure in the failures log.
+    /// Record a security failure in the failures log and set bit 0 of
+    /// PID_SECURITY_REPORT (57) per 03/05/01 §6.3.11.4.
     ///
     /// `frame_fragment` should be the first bytes of the offending frame
     /// (up to 9 bytes are stored per entry for diagnostic purposes).
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]);
+    ///
+    /// Returns `true` if bit 0 of PID_SECURITY_REPORT transitioned from
+    /// 0 to 1 as a result of this call — callers use this to decide
+    /// whether to emit a spontaneous `A_NetworkParameter_InfoReport`
+    /// broadcast (only the first failure after the tool last cleared
+    /// PID 57 triggers a fresh report).
+    #[must_use]
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool;
+
+    /// Current value of PID_SECURITY_REPORT (57).
+    fn security_report(&self) -> u8;
+
+    /// Whether PID_SECURITY_REPORT_CONTROL (58) is Enabled.
+    fn security_report_enabled(&self) -> bool;
 
     /// Get the 4 × 16-bit failure counters serialized as 8 big-endian bytes.
     fn failure_counters(&self) -> [u8; 8];
@@ -743,11 +757,23 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for S
         self.is_in_siat(peer_ia)
     }
 
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool {
         self.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
         // Per spec 03/05/01 section 6.3.11.4: set b0 (Security Failure) on
         // any security failure. Only the MaC can clear it via secure write.
-        self.security_report.set(self.security_report.get() | 0x01);
+        // Signal the 0→1 transition so the caller can emit a spontaneous
+        // report on the first failure after a tool-initiated clear.
+        let prev = self.security_report.get();
+        self.security_report.set(prev | 0x01);
+        (prev & 0x01) == 0
+    }
+
+    fn security_report(&self) -> u8 {
+        self.security_report.get()
+    }
+
+    fn security_report_enabled(&self) -> bool {
+        self.security_report_enabled.get()
     }
 
     fn failure_counters(&self) -> [u8; 8] {
@@ -906,9 +932,19 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: u
         self.security.is_in_siat(peer_ia)
     }
 
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool {
         self.security.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
-        self.security.set_security_report(self.security.security_report() | 0x01);
+        let prev = self.security.security_report();
+        self.security.set_security_report(prev | 0x01);
+        (prev & 0x01) == 0
+    }
+
+    fn security_report(&self) -> u8 {
+        self.security.security_report()
+    }
+
+    fn security_report_enabled(&self) -> bool {
+        self.security.security_report_enabled()
     }
 
     fn failure_counters(&self) -> [u8; 8] {

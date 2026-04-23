@@ -215,6 +215,8 @@ create_protocol_enum!(
         PropertyDescriptionRead,    0xd8,   "A_PropertyDescription_Read";
         PropertyDescriptionResponse, 0xd9,  "A_PropertyDescription_Response";
 
+        NetworkParameterInfoReport,             0xdb,   "A_NetworkParameter_InfoReport";
+
         IndividualAddressSerialNumberRead,      0xdc,   "A_IndividualAddressSerialNumber_Read";
         IndividualAddressSerialNumberResponse,  0xdd,   "A_IndividualAddressSerialNumber_Response";
         IndividualAddressSerialNumberWrite,     0xde,   "A_IndividualAddressSerialNumber_Write";
@@ -1539,6 +1541,22 @@ mod tests {
             let msg = KnxMessageBuffer::new(*t, ServiceType::L_Data_Ind);
             assert_eq!(msg.get_tpci(), *e, "TPCI code mismatch for test frame: {:x?}", t);
         }
+    }
+
+    #[test]
+    fn test_set_get_apci_network_parameter_info_report() {
+        // NetworkParameterInfoReport is the escaped-category APCI 0x3DB
+        // (03/03/07 §3.2.8, Figure 18). Verify round-trip through
+        // set_apci_code / get_apci_code produces the expected wire
+        // bytes 0x03, 0xDB.
+        let mut buf = [0u8; 16];
+        let mut msg = KnxMessageBuffer::new(&mut buf[..], ServiceType::T_Broadcast_Req);
+
+        msg.set_apci_code(ApciCode::NetworkParameterInfoReport);
+
+        assert_eq!(msg.buf[6] & 0x03, 0x03, "escaped category low 2 bits");
+        assert_eq!(msg.buf[7], 0xDB, "escaped APCI byte");
+        assert_eq!(msg.get_apci_code(), ApciCode::NetworkParameterInfoReport);
     }
 
     #[test]

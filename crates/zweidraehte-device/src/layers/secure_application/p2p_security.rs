@@ -119,7 +119,7 @@ where
         }
         if !security_state.is_in_siat(src) {
             warn!("S-AL: sync req — sender {:#06X} not in SIAT", src);
-            security_state.log_security_failure(SecurityFailureType::RoleError, src, &[]);
+            sal.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
             return SecureResult::Dropped;
         }
     }
@@ -133,7 +133,7 @@ where
         .is_err()
     {
         warn!("S-AL: sync req MAC verification failed");
-        security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+        sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
         return SecureResult::Dropped;
     }
 
@@ -345,8 +345,7 @@ where
     .is_err()
     {
         warn!("S-AL: sync response MAC verification failed");
-        let security_state = sal.inner.state().extension_state();
-        security_state.log_security_failure(SecurityFailureType::CryptoError, src, &[]);
+        sal.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
         sal.p2p_state.pending_sync.set(None);
         return SecureResult::Dropped;
     }
@@ -489,8 +488,7 @@ where
 
     // Step 6: Encrypt challenge and compute MAC.
     let tpci_apci = u16::from_be_bytes([msg.buf()[offsets::MSG_TPCI], msg.buf()[offsets::MSG_TPCI + 1]]);
-    let ccm_ctx =
-        ccm::CcmContext { seq_nr: seq_nr_local, src: device_addr, dst, addr_type: npdu & 0x80, tpci_apci };
+    let ccm_ctx = ccm::CcmContext { seq_nr: seq_nr_local, src: device_addr, dst, addr_type: npdu & 0x80, tpci_apci };
 
     let encrypted_challenge = &mut msg.buf_mut()[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6];
     let mac = ccm::encrypt_and_mac_sync_req(&key, &ccm_ctx, scf_byte, &serial_for_frame, encrypted_challenge);
