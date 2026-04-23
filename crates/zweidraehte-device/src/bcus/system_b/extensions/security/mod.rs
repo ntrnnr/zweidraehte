@@ -727,74 +727,15 @@ pub trait HasSecurityState {
     fn clear_failure_log(&self);
 }
 
-/// Blanket impl: any `SecurityState<GRP, P2P, GO>` implements `HasSecurityState`.
-impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState for SecurityState<GRP, P2P, GO> {
-    fn security_mode_enabled(&self) -> bool {
-        self.security_mode_enabled()
-    }
-
-    fn security_load_state(&self) -> LoadState {
-        self.load_state()
-    }
-
-    fn tool_key(&self) -> [u8; 16] {
-        self.tool_key()
-    }
-
-    fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]> {
-        self.group_key_for_index(ga_index)
-    }
-
-    fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
-        self.go_security_flags_for(go_index)
-    }
-
-    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)> {
-        self.p2p_key_for_ia(peer_ia)
-    }
-
-    fn is_in_siat(&self, peer_ia: u16) -> bool {
-        self.is_in_siat(peer_ia)
-    }
-
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool {
-        self.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
-        // Per spec 03/05/01 section 6.3.11.4: set b0 (Security Failure) on
-        // any security failure. Only the MaC can clear it via secure write.
-        // Signal the 0→1 transition so the caller can emit a spontaneous
-        // report on the first failure after a tool-initiated clear.
-        let prev = self.security_report.get();
-        self.security_report.set(prev | 0x01);
-        (prev & 0x01) == 0
-    }
-
-    fn security_report(&self) -> u8 {
-        self.security_report.get()
-    }
-
-    fn security_report_enabled(&self) -> bool {
-        self.security_report_enabled.get()
-    }
-
-    fn failure_counters(&self) -> [u8; 8] {
-        self.failures_log.borrow().counters_as_bytes()
-    }
-
-    fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry> {
-        self.failures_log.borrow().get_by_index(index).copied()
-    }
-
-    fn clear_failure_log(&self) {
-        self.failures_log.borrow_mut().clear();
-    }
-}
-
 // Inherent construction / conversion methods.
 //
 // `SecurityState` is never used as a top-level `ExtensionState` — it is
-// always nested inside `SecureExtensionState`. Keeping these as inherent
-// methods (rather than an `ExtensionState` impl) avoids pulling the trait
-// machinery (including `Resources`) into a type that doesn't need it.
+// always nested inside `SecureExtensionState`, and `HasSecurityState` is
+// implemented on that wrapper directly (forwarding to the inherent
+// methods below). Keeping these as inherent methods — rather than a
+// trait `impl` on `SecurityState` itself — avoids pulling the trait
+// machinery (including `Resources`) into a type that doesn't need it,
+// and avoids maintaining two parallel `HasSecurityState` impls.
 impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P, GO> {
     pub fn from_config(config: SecurityExtensionConfig<GRP, P2P, GO>) -> Self {
         Self {
