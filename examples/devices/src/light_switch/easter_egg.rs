@@ -20,66 +20,56 @@
 //! }
 //! ```
 
-use zweidraehte_device::StackDefinition;
 use zweidraehte_device::objects::interface::{
-    AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
-    PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
+    FunctionPropertyRequest, FunctionPropertyResult, PropertyAccess, interface_object_augment,
 };
+use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 
 /// Manufacturer-specific property ID used for the easter egg.
 ///
 /// PID 255 is in the manufacturer-specific range (200-255) and unlikely
 /// to conflict with any standard property.
-const EASTER_EGG_PID: u16 = 255;
+mod pid {
+    pub const EASTER_EGG: u16 = 255;
+}
 
 /// Augment that adds a hidden function property easter egg to the Device Object.
+//
+// `#[interface_object_augment]` runs first (it's an attribute proc-macro);
+// the inner `#[derive]` line is forwarded by the macro and applied to the
+// generated unit struct. The order matters: derives placed *before* this
+// attribute would see the original AST (with the placeholder field) and
+// emit `Debug` / `Clone` / `Copy` impls referencing a field that the
+// macro then strips.
+#[interface_object_augment(target_objects = [InterfaceObjectType::Device])]
 #[derive(Debug, Clone, Copy)]
-pub struct EasterEggAugment;
-
-impl<D: StackDefinition> InterfaceObjectAugment<D> for EasterEggAugment {
-    fn property_description_read(
-        &self,
-        _ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        object_idx: u16,
-        lookup: PropertyLookup,
-    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-        if object_type != InterfaceObjectType::Device {
-            return None;
-        }
-
-        if !matches!(lookup, PropertyLookup::ByPid(EASTER_EGG_PID) | PropertyLookup::ByIndex(0)) {
-            return None;
-        }
-
-        let desc = PropertyDescriptor::from_type::<PDT_Function>(
-            EASTER_EGG_PID,
-            PropertyAccess::ReadOnly,
-            3, // read level: unrestricted
-            0, // write level: most restricted (not writable)
-        );
-        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
-    }
-
-    fn function_property_command(
-        &self,
-        _ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> Option<FunctionPropertyResult> {
-        if object_type != InterfaceObjectType::Device || req.prop_id != EASTER_EGG_PID {
-            return None;
-        }
-
-        // Responses must fit in MAX_FUNCTION_PROPERTY_RESPONSE (64 bytes).
-        Some(match req.service_data {
-            b"knock knock" => {
-                FunctionPropertyResult::success_with_data(b"Who's there? ...a lost packet. Wrong subnet.")
+pub struct EasterEggAugment {
+    // Function-property only — readable as a "Function" descriptor but the
+    // actual interaction is via `A_FunctionPropertyCommand`. Marked
+    // `intercepts` because the Device Object is base-owned.
+    #[io(
+        pid = pid::EASTER_EGG,
+        pdt = PDT_Function,
+        access = RO,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
+        rl = 3, wl = 0,
+        intercepts,
+        function_command = |_this: &Self, _ctx, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+            // Responses must fit in MAX_FUNCTION_PROPERTY_RESPONSE (64 bytes).
+            match req.service_data {
+                b"knock knock" => FunctionPropertyResult::success_with_data(
+                    b"Who's there? ...a lost packet. Wrong subnet.",
+                ),
+                b"42" => FunctionPropertyResult::success_with_data(
+                    b"Correct! But on KNX, we write it 0x2A.",
+                ),
+                b"hello" => FunctionPropertyResult::success_with_data(
+                    b"Guten Tag! I flip bits on twisted pair.",
+                ),
+                _ => FunctionPropertyResult::success_with_data(b"Try: knock knock / 42 / hello"),
             }
-            b"42" => FunctionPropertyResult::success_with_data(b"Correct! But on KNX, we write it 0x2A."),
-            b"hello" => FunctionPropertyResult::success_with_data(b"Guten Tag! I flip bits on twisted pair."),
-            _ => FunctionPropertyResult::success_with_data(b"Try: knock knock / 42 / hello"),
-        })
-    }
+        },
+    )]
+    easter_egg: (),
 }

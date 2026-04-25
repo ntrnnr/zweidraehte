@@ -82,9 +82,6 @@ fn expand(
 
     match mode {
         Mode::Object => codegen::gen_object(item, &obj_attrs, &props),
-        Mode::Augment => Err(syn::Error::new(
-            item.ident.span(),
-            "interface_object_augment codegen not yet implemented",
-        )),
+        Mode::Augment => codegen::gen_augment(item, &obj_attrs, &props),
     }
 }

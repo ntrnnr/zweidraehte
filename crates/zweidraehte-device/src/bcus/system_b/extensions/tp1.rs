@@ -21,12 +21,11 @@ use core::cell::Cell;
 
 use serde::{Deserialize, Serialize};
 
-use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
 use crate::objects::interface::{
-    AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasMaxRetryCount, InterfaceObjectAugment,
-    PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse, pid,
+    HasMaxRetryCount, PropertyError, WriteResponse, interface_object_augment, pid,
 };
+use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 
 // ============================================================================
@@ -72,8 +71,32 @@ impl ExtensionConfig for Tp1ExtensionConfig {}
 /// Bridges the serializable [`Tp1ExtensionConfig`] and the runtime
 /// representation used by the TPUART link layer (via `HasMaxRetryCount`)
 /// and the interface object augment (via `InterfaceObjectAugment`).
+//
+// `#[interface_object_augment]` adds PID_MAX_RETRY_COUNT (52) to the Device
+// Object. The augment's `get_property_descriptor` is generated automatically
+// by the macro, closing the access-policy audit gap that the previous
+// hand-written impl left open.
+#[interface_object_augment(target_objects = [InterfaceObjectType::Device])]
 pub struct Tp1ExtensionState {
     max_retry_count: Cell<u8>,
+
+    #[io(
+        pid = pid::MAX_RETRY_COUNT,
+        pdt = PDT_Generic01,
+        access = RW,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
+        rl = 3, wl = 3,
+        intercepts,
+        read = |this: &Self| [this.max_retry_count.get()],
+        write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+            if data.is_empty() {
+                return Err(PropertyError::TypeMismatch);
+            }
+            this.max_retry_count.set(data[0]);
+            Ok(WriteResponse::Echo)
+        },
+    )]
+    _max_retry_count_io: (),
 }
 
 // Plain TP1 has no Data Secure layer — every send is plaintext, so the
@@ -145,84 +168,5 @@ impl HasMaxRetryCount for Tp1ExtensionState {
     }
 }
 
-// ============================================================================
-// InterfaceObjectAugment — adds PID 52 to the Device Object
-// ============================================================================
-
-impl<D: StackDefinition> InterfaceObjectAugment<D> for Tp1ExtensionState {
-    fn property_description_read(
-        &self,
-        _ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        object_idx: u16,
-        lookup: PropertyLookup,
-    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-        if object_type != InterfaceObjectType::Device {
-            return None;
-        }
-
-        if !matches!(lookup, PropertyLookup::ByPid(pid::MAX_RETRY_COUNT) | PropertyLookup::ByIndex(0)) {
-            return None;
-        }
-
-        let desc = PropertyDescriptor::from_type::<PDT_Generic01>(
-            pid::MAX_RETRY_COUNT,
-            PropertyAccess::ReadWrite,
-            3, // read level: unrestricted
-            3, // write level: unrestricted
-        );
-        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
-    }
-
-    fn property_value_read(
-        &self,
-        _ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FullPropertyReadRequest,
-        buf: &mut [u8],
-    ) -> Option<Result<usize, PropertyError>> {
-        if object_type != InterfaceObjectType::Device || req.pid != pid::MAX_RETRY_COUNT {
-            return None;
-        }
-
-        // Element count query (start_idx=0 per KNX spec).
-        if req.start_idx == 0 {
-            if buf.len() < 2 {
-                return Some(Err(PropertyError::BufferTooSmall));
-            }
-            buf[0] = 0;
-            buf[1] = 1; // Single element
-            return Some(Ok(2));
-        }
-
-        // Non-array data property: start_idx must be 1, count must be 1.
-        if req.start_idx != 1 || req.count != 1 {
-            return Some(Err(PropertyError::InvalidStartIndex));
-        }
-
-        if buf.is_empty() {
-            return Some(Err(PropertyError::BufferTooSmall));
-        }
-
-        buf[0] = self.max_retry_count();
-        Some(Ok(1))
-    }
-
-    fn property_value_write(
-        &self,
-        _ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FullPropertyWriteRequest<'_>,
-    ) -> Option<Result<WriteResponse, PropertyError>> {
-        if object_type != InterfaceObjectType::Device || req.pid != pid::MAX_RETRY_COUNT {
-            return None;
-        }
-
-        if req.data.is_empty() {
-            return Some(Err(PropertyError::TypeMismatch));
-        }
-
-        self.set_max_retry_count(req.data[0]);
-        Some(Ok(WriteResponse::Echo))
-    }
-}
+// `InterfaceObjectAugment` impl is generated by the
+// `#[interface_object_augment(...)]` attribute above the struct.
