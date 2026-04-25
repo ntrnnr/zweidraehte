@@ -18,7 +18,8 @@ use crate::storage::SequenceNumberStorage;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
-    PDT_Generic08, PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
+    PDT_Generic08, PDT_Generic16, PDT_Generic18, PDT_Generic20, PDT_UnsignedChar, PDT_UnsignedInt,
+    PropertyDataDefinition,
 };
 use zweidraehte_proto::properties::PropertyRead;
 
@@ -94,7 +95,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
         // PID_P2P_KEY_TABLE (52): point-to-point encryption keys — PDT_GENERIC_20
         PropertyDescriptor::with_policy(
             pid::P2P_KEY_TABLE,
-            0x24, // PDT_GENERIC_20 = 0x10 + 20
+            PDT_Generic20::ID,
             0,
             PropertyAccess::ReadWrite,
             2,
@@ -135,7 +136,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
         // PID_TOOL_KEY (56): write-only 16-byte key — PDT_GENERIC_16
         PropertyDescriptor::with_policy(
             pid::TOOL_KEY,
-            0x20, // PDT_GENERIC_16
+            PDT_Generic16::ID,
             1,
             PropertyAccess::WriteOnly,
             // X/2: no read access, write at level 2
