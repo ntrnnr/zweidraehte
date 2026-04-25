@@ -76,6 +76,12 @@ use zweidraehte_proto::access::AccessPolicy;
 // must spell out `policy` explicitly — the macro has no defaults.
 #[interface_object(object_type = InterfaceObjectType::Device)]
 pub struct DeviceObject<'a, S: StackState> {
+    /// Reference to the stack-state for properties that mirror runtime fields
+    /// (programming mode, serial number, address). User-declared because
+    /// the macro no longer auto-injects a `state` field — closures simply
+    /// reach `self.state` via the `|this| this.state.…` pattern.
+    pub state: &'a S,
+
     #[io(pid = pid::DEVICE_CONTROL, pdt = DeviceControl, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub device_control: DeviceControl,
@@ -95,32 +101,29 @@ pub struct DeviceObject<'a, S: StackState> {
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub routing_count: RoutingCount,
 
-    // ----- State-backed properties (placeholder unit fields, erased) -----
+    // ----- Virtual properties (unit fields, erased; closures take `&Self`) -----
 
     // Programming mode is backed by StackState so both the application
     // layer (via property read/write) and the link layer (for discovery
     // responses) see the same value.
     #[io(pid = pid::PROGMODE, pdt = ProgrammingMode, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         backing = state,
-         read = |s: &S| [if s.is_programming_mode() { 0x01u8 } else { 0x00u8 }],
-         write = |s: &S, data: &[u8]| -> Result<(), PropertyError> {
-             s.set_programming_mode(data[0] != 0);
-             Ok(())
+         read = |this: &Self| [if this.state.is_programming_mode() { 0x01u8 } else { 0x00u8 }],
+         write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             this.state.set_programming_mode(data[0] != 0);
+             Ok(WriteResponse::Echo)
          })]
     progmode: (),
 
     #[io(pid = pid::SERIAL_NUMBER, pdt = PDT_Generic06, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         backing = state,
-         read = |s: &S| *s.serial_number())]
+         read = |this: &Self| *this.state.serial_number())]
     serial_number: (),
 
     // Manufacturer ID is derived from serial number bytes 0-1.
     #[io(pid = pid::MANUFACTURER_ID, pdt = PDT_UnsignedInt, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         backing = state,
-         read = |s: &S| { let sn = s.serial_number(); [sn[0], sn[1]] })]
+         read = |this: &Self| { let sn = this.state.serial_number(); [sn[0], sn[1]] })]
     manufacturer_id: (),
 
     // Max APDU length is read from StackState (may be constrained by link layer).
@@ -136,27 +139,41 @@ pub struct DeviceObject<'a, S: StackState> {
     // sec-off is not exploitable.
     #[io(pid = pid::MAX_APDU_LENGTH, pdt = PDT_UnsignedInt, access = RO,
          policy = AccessPolicy::OPEN, rl = 3, wl = 0,
-         backing = state,
-         read = |s: &S| s.max_apdu_length().to_be_bytes())]
+         read = |this: &Self| this.state.max_apdu_length().to_be_bytes())]
     max_apdu_length: (),
 
     #[io(pid = pid::SUBNET_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         backing = state,
-         read = |s: &S| {
-             let addr = s.individual_address();
+         read = |this: &Self| {
+             let addr = this.state.individual_address();
              [(addr.area() << 4) | addr.line()]
          })]
     subnet_address: (),
 
     #[io(pid = pid::DEVICE_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         backing = state,
-         read = |s: &S| [s.individual_address().device()])]
+         read = |this: &Self| [this.state.individual_address().device()])]
     device_address: (),
 }
 
 impl<'a, S: StackState> DeviceObject<'a, S> {
+    /// Create a fresh device object backed by the given `state`.
+    ///
+    /// The macro no longer generates `new()` because each interface object
+    /// has different non-property struct fields; constructors are written
+    /// by hand to keep the API minimal.
+    pub fn new(state: &'a S) -> Self {
+        Self {
+            state,
+            device_control: DeviceControl::default(),
+            order_info: PDT_Generic10::default(),
+            version: PDT_Version::default(),
+            hardware_type: PDT_Generic06::default(),
+            device_descriptor: PDT_UnsignedInt::default(),
+            routing_count: RoutingCount::default(),
+        }
+    }
+
     /// Create a device object from a [`DeviceDescriptor`].
     ///
     /// Populates hardware type, mask version, and other static properties
@@ -217,14 +234,76 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 /// // Create the interface object wrapping it (with allocation address 0x400)
 /// let app_obj = ApplicationProgramObject::new(&app_table, 0x400);
 /// ```
+// Access levels per Profiles spec Annex A.2.6 (mask 57B0h).
+// Base objects have no explicit access policies in the Profiles spec —
+// READ_OPEN_WRITE_TOOL (3FF/0CC) is the implicit default. The RESTRICTED
+// policy only applies to the Security IO's LOAD_STATE_CONTROL (§9.1.2.6.4).
+#[interface_object(object_type = InterfaceObjectType::ApplicationProgram)]
 pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
-    app: &'a RefCell<T>,
+    pub app: &'a RefCell<T>,
     /// Virtual address to assign during RelativeData allocation
-    alloc_address: u32,
-    program_version: PDT_Generic05,
-    pei_type: PDT_UnsignedChar,
+    pub alloc_address: u32,
     /// Notifier for DeviceModel events (RSM lifecycle transitions).
-    notifier: &'a dyn DeviceModelNotifier,
+    pub notifier: &'a dyn DeviceModelNotifier,
+
+    #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+    pub program_version: PDT_Generic05,
+    #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+    pub pei_type: PDT_UnsignedChar,
+
+    // Load- and Run-state machines are accessed through the application
+    // table behind a `RefCell`. Writes intercept LSM/RSM transitions, fan
+    // out RunEvents, and echo back the new state byte (`WriteResponse::Data`).
+    #[io(pid = pid::LOAD_STATE_CONTROL, pdt = PDT_Control, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         read = |this: &Self| this.app.borrow().read_lsm(),
+         write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             let action = this.app.borrow_mut().write_lsm(data, Some(this.alloc_address));
+             let run_action = match action {
+                 LoadAction::LoadEnd => this.app.borrow_mut().handle_run_event(RunEvent::Loaded),
+                 LoadAction::Unload  => this.app.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                 _ => None,
+             };
+             if let Some(action) = run_action {
+                 this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
+             }
+             Ok(WriteResponse::byte(this.app.borrow().read_lsm()[0]))
+         })]
+    load_state_control: (),
+
+    #[io(pid = pid::RUN_STATE_CONTROL, pdt = PDT_Control, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         read = |this: &Self| this.app.borrow().read_rsm(),
+         write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             let run_action = this.app.borrow_mut().write_rsm(data);
+             if let Some(action) = run_action {
+                 this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
+             }
+             Ok(WriteResponse::byte(this.app.borrow().read_rsm()[0]))
+         })]
+    run_state_control: (),
+
+    #[io(pid = pid::TABLE_REFERENCE, pdt = PDT_UnsignedLong, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         read = |this: &Self| this.app.borrow().table_reference().to_be_bytes())]
+    table_reference: (),
+
+    // PID_MCB_TABLE — memory-control block (8 bytes, PDT_GENERIC_08).
+    // `mcb_bytes()` returns `&[u8]`, so copy into a sized array for the
+    // closure's `[u8; 8]` return slot. Trailing bytes are zero-padded.
+    #[io(pid = pid::MCB_TABLE, pdt = PDT_Generic08, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         read = |this: &Self| -> [u8; 8] {
+             let app = this.app.borrow();
+             let src = app.mcb_bytes();
+             let mut out = [0u8; 8];
+             let n = src.len().min(8);
+             out[..n].copy_from_slice(&src[..n]);
+             out
+         })]
+    mcb_table: (),
 }
 
 impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'a, T> {
@@ -275,173 +354,6 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
     pub fn set_pei_type(&mut self, pei_type: PDT_UnsignedChar) {
         self.pei_type = pei_type;
     }
-
-    /// Get property descriptors for application program object.
-    ///
-    /// Access levels per Profiles spec Annex A.2.6 (mask 57B0h).
-    /// Base objects have no explicit access policies in the Profiles spec —
-    /// READ_OPEN_WRITE_TOOL (3FF/0CC) is the implicit default. The RESTRICTED
-    /// policy only applies to the Security IO's LOAD_STATE_CONTROL (§9.1.2.6.4).
-    fn property_descriptors() -> [PropertyDescriptor; 7] {
-        use zweidraehte_proto::access::AccessPolicy;
-        [
-            PropertyDescriptor::with_policy(
-                pid::OBJECT_TYPE,
-                PDT_UnsignedInt::ID,
-                1,
-                PropertyAccess::ReadOnly,
-                3,
-                0,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::LOAD_STATE_CONTROL,
-                PDT_Control::ID,
-                1,
-                PropertyAccess::ReadWrite,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::RUN_STATE_CONTROL,
-                PDT_Control::ID,
-                1,
-                PropertyAccess::ReadWrite,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::TABLE_REFERENCE,
-                PDT_UnsignedLong::ID,
-                1,
-                PropertyAccess::ReadOnly,
-                3,
-                0,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::PROGRAM_VERSION,
-                PDT_Generic05::ID,
-                1,
-                PropertyAccess::ReadWrite,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::PEI_TYPE,
-                PDT_UnsignedChar::ID,
-                1,
-                PropertyAccess::ReadOnly,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::MCB_TABLE,
-                PDT_Generic08::ID,
-                1,
-                PropertyAccess::ReadOnly,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-        ]
-    }
-}
-
-impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for ApplicationProgramObject<'a, T> {
-    fn object_type(&self) -> InterfaceObjectType {
-        InterfaceObjectType::ApplicationProgram
-    }
-
-    fn property_count(&self) -> u16 {
-        7
-    }
-
-    fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
-        Self::property_descriptors().get(prop_idx as usize).copied()
-    }
-
-    fn property_descriptor_by_id(&self, pid: u16) -> Option<(u16, PropertyDescriptor)> {
-        Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
-    }
-
-    fn read_property(&self, req: super::PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        match req.pid {
-            super::pid::OBJECT_TYPE => {
-                let obj_type: u16 = InterfaceObjectType::ApplicationProgram.into();
-                obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
-            }
-            super::pid::LOAD_STATE_CONTROL => self.app.borrow().read_lsm().read_property(req.start_idx, req.count, buf),
-            super::pid::RUN_STATE_CONTROL => self.app.borrow().read_rsm().read_property(req.start_idx, req.count, buf),
-            super::pid::TABLE_REFERENCE => {
-                self.app.borrow().table_reference().to_be_bytes().read_property(req.start_idx, req.count, buf)
-            }
-            super::pid::PROGRAM_VERSION => self.program_version.read_property(req.start_idx, req.count, buf),
-            super::pid::PEI_TYPE => self.pei_type.read_property(req.start_idx, req.count, buf),
-            super::pid::MCB_TABLE => {
-                // Memory Control Block - 8 bytes (PDT_GENERIC_08)
-                let app = self.app.borrow();
-                app.mcb_bytes().read_property(req.start_idx, req.count, buf)
-            }
-            _ => Err(PropertyError::InvalidPropertyId),
-        }
-    }
-
-    fn write_property(&mut self, req: super::PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
-        match req.pid {
-            super::pid::OBJECT_TYPE | super::pid::PEI_TYPE => Err(PropertyError::WriteNotAllowed),
-            super::pid::PROGRAM_VERSION => {
-                // ETS writes the program version during programming
-                if req.data.len() < 5 {
-                    return Err(PropertyError::BufferTooSmall);
-                }
-                self.program_version = PDT_Generic05::from_slice(req.data);
-                Ok(WriteResponse::Echo)
-            }
-            super::pid::LOAD_STATE_CONTROL => {
-                let action = self.app.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
-
-                let run_action = match action {
-                    LoadAction::LoadEnd => self.app.borrow_mut().handle_run_event(RunEvent::Loaded),
-                    LoadAction::Unload => self.app.borrow_mut().handle_run_event(RunEvent::Unloaded),
-                    _ => None,
-                };
-
-                if let Some(action) = run_action {
-                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
-                }
-
-                Ok(WriteResponse::byte(self.app.borrow().read_lsm()[0]))
-            }
-            super::pid::RUN_STATE_CONTROL => {
-                let run_action = self.app.borrow_mut().write_rsm(req.data);
-
-                if let Some(action) = run_action {
-                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Application, action));
-                }
-
-                Ok(WriteResponse::byte(self.app.borrow().read_rsm()[0]))
-            }
-            _ => Err(PropertyError::InvalidPropertyId),
-        }
-    }
-
-    fn property_element_count(&self, pid: u16) -> Result<u16, PropertyError> {
-        match pid {
-            super::pid::OBJECT_TYPE
-            | super::pid::LOAD_STATE_CONTROL
-            | super::pid::RUN_STATE_CONTROL
-            | super::pid::TABLE_REFERENCE
-            | super::pid::PROGRAM_VERSION
-            | super::pid::PEI_TYPE
-            | super::pid::MCB_TABLE => Ok(1),
-            _ => Err(PropertyError::InvalidPropertyId),
-        }
-    }
 }
 
 // ============================================================================
@@ -464,16 +376,57 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for Applic
 /// - LOAD_STATE_CONTROL (PID 5): Load state machine (no side effects)
 /// - RUN_STATE_CONTROL (PID 6): Run state machine (no side effects)
 /// - PROGRAM_VERSION (PID 13): Program version (always `[0; 5]` on modern devices)
+// Access levels per Profiles spec Annex A.2.7 (mask 57B0h).
+//
+// Note: PROGRAM_VERSION was previously declared `ReadWrite` in the descriptor
+// but the write handler always returned `WriteNotAllowed`. The declaration is
+// now `ReadOnly` so the descriptor matches the dispatch behaviour.
+#[interface_object(object_type = InterfaceObjectType::InterfaceProgram)]
 pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
-    pei: &'a RefCell<T>,
+    pub pei: &'a RefCell<T>,
     /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)
-    alloc_address: u32,
-    program_version: PDT_Generic05,
+    pub alloc_address: u32,
     /// Notifier for DeviceModel events. PEI RSM transitions are surfaced as
     /// [`LifecycleEvent::PeiStarted`] / [`LifecycleEvent::PeiStopped`](crate::objects::comm::LifecycleEvent)
     /// even though PEI has no required side effects on device operation —
     /// this is purely for observability of the full ETS programming cascade.
-    notifier: &'a dyn DeviceModelNotifier,
+    pub notifier: &'a dyn DeviceModelNotifier,
+
+    #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+    pub program_version: PDT_Generic05,
+
+    // LSM/RSM use the same cascade-into-run-event pattern as the application
+    // program object; differs only in the `RunTarget::Pei` discriminator and
+    // a different `RefCell` (`pei` instead of `app`).
+    #[io(pid = pid::LOAD_STATE_CONTROL, pdt = PDT_Control, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         read = |this: &Self| this.pei.borrow().read_lsm(),
+         write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             let action = this.pei.borrow_mut().write_lsm(data, Some(this.alloc_address));
+             let run_action = match action {
+                 LoadAction::LoadEnd => this.pei.borrow_mut().handle_run_event(RunEvent::Loaded),
+                 LoadAction::Unload  => this.pei.borrow_mut().handle_run_event(RunEvent::Unloaded),
+                 _ => None,
+             };
+             if let Some(action) = run_action {
+                 this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Pei, action));
+             }
+             Ok(WriteResponse::byte(this.pei.borrow().read_lsm()[0]))
+         })]
+    load_state_control: (),
+
+    #[io(pid = pid::RUN_STATE_CONTROL, pdt = PDT_Control, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         read = |this: &Self| this.pei.borrow().read_rsm(),
+         write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             let run_action = this.pei.borrow_mut().write_rsm(data);
+             if let Some(action) = run_action {
+                 this.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Pei, action));
+             }
+             Ok(WriteResponse::byte(this.pei.borrow().read_rsm()[0]))
+         })]
+    run_state_control: (),
 }
 
 impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
@@ -496,128 +449,6 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
     /// Get the program version.
     pub fn program_version(&self) -> &PDT_Generic05 {
         &self.program_version
-    }
-
-    /// Get property descriptors for PEI program object.
-    ///
-    /// Access levels per Profiles spec Annex A.2.7 (mask 57B0h).
-    /// Note: PEI_TYPE (PID 14) is omitted since it's not used for the PEI object itself.
-    fn property_descriptors() -> [PropertyDescriptor; 4] {
-        use zweidraehte_proto::access::AccessPolicy;
-        [
-            PropertyDescriptor::with_policy(
-                pid::OBJECT_TYPE,
-                PDT_UnsignedInt::ID,
-                1,
-                PropertyAccess::ReadOnly,
-                3,
-                0,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::LOAD_STATE_CONTROL,
-                PDT_Control::ID,
-                1,
-                PropertyAccess::ReadWrite,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::RUN_STATE_CONTROL,
-                PDT_Control::ID,
-                1,
-                PropertyAccess::ReadWrite,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-            PropertyDescriptor::with_policy(
-                pid::PROGRAM_VERSION,
-                PDT_Generic05::ID,
-                1,
-                PropertyAccess::ReadWrite,
-                3,
-                3,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-            ),
-        ]
-    }
-}
-
-impl<'a, T: HasLoadStateMachine + HasRunStateMachine> InterfaceObject for PeiProgramObject<'a, T> {
-    fn object_type(&self) -> InterfaceObjectType {
-        InterfaceObjectType::InterfaceProgram
-    }
-
-    fn property_count(&self) -> u16 {
-        4
-    }
-
-    fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
-        Self::property_descriptors().get(prop_idx as usize).copied()
-    }
-
-    fn property_descriptor_by_id(&self, pid: u16) -> Option<(u16, PropertyDescriptor)> {
-        Self::property_descriptors().iter().enumerate().find(|(_, d)| d.pid == pid).map(|(i, d)| (i as u16, *d))
-    }
-
-    fn read_property(&self, req: super::PropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        match req.pid {
-            super::pid::OBJECT_TYPE => {
-                let obj_type: u16 = InterfaceObjectType::InterfaceProgram.into();
-                obj_type.to_be_bytes().read_property(req.start_idx, req.count, buf)
-            }
-            super::pid::LOAD_STATE_CONTROL => self.pei.borrow().read_lsm().read_property(req.start_idx, req.count, buf),
-            super::pid::RUN_STATE_CONTROL => self.pei.borrow().read_rsm().read_property(req.start_idx, req.count, buf),
-            super::pid::PROGRAM_VERSION => self.program_version.read_property(req.start_idx, req.count, buf),
-            _ => Err(PropertyError::InvalidPropertyId),
-        }
-    }
-
-    fn write_property(&mut self, req: super::PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
-        match req.pid {
-            super::pid::OBJECT_TYPE | super::pid::PROGRAM_VERSION => Err(PropertyError::WriteNotAllowed),
-            super::pid::LOAD_STATE_CONTROL => {
-                // Cascade LSM transitions into the RSM the same way
-                // `ApplicationProgramObject` does: a `LoadEnd` drives a
-                // `Loaded` run event, `Unload` drives `Unloaded`. This is
-                // what surfaces the LSM→RSM cascade as a PEI lifecycle event.
-                let action = self.pei.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
-
-                let run_action = match action {
-                    LoadAction::LoadEnd => self.pei.borrow_mut().handle_run_event(RunEvent::Loaded),
-                    LoadAction::Unload => self.pei.borrow_mut().handle_run_event(RunEvent::Unloaded),
-                    _ => None,
-                };
-
-                if let Some(action) = run_action {
-                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Pei, action));
-                }
-
-                Ok(WriteResponse::byte(self.pei.borrow().read_lsm()[0]))
-            }
-            super::pid::RUN_STATE_CONTROL => {
-                let run_action = self.pei.borrow_mut().write_rsm(req.data);
-
-                if let Some(action) = run_action {
-                    self.notifier.notify(DeviceModelEvent::RunAction(RunTarget::Pei, action));
-                }
-
-                Ok(WriteResponse::byte(self.pei.borrow().read_rsm()[0]))
-            }
-            _ => Err(PropertyError::InvalidPropertyId),
-        }
-    }
-
-    fn property_element_count(&self, pid: u16) -> Result<u16, PropertyError> {
-        match pid {
-            super::pid::OBJECT_TYPE
-            | super::pid::LOAD_STATE_CONTROL
-            | super::pid::RUN_STATE_CONTROL
-            | super::pid::PROGRAM_VERSION => Ok(1),
-            _ => Err(PropertyError::InvalidPropertyId),
-        }
     }
 }
 
@@ -694,6 +525,17 @@ pub trait TableObjectSpec {
 /// | 7 | Table Reference | PDT_UNSIGNED_LONG | RO | Base address of allocated table memory |
 /// | 23 | Table | varies | RW* | Direct table data access |
 /// | 27 | MCB Table | PDT_GENERIC_08 | RO | Memory control block |
+//
+// This object is intentionally **not** rewritten with `#[interface_object]`.
+// It has three properties the macro DSL cannot express cleanly:
+//  - `pid::TABLE` has a PDT that varies per table type (`S::TABLE_PDT`,
+//    a const on the `TableObjectSpec` trait), not a fixed wrapper type.
+//  - `max_elements` for `pid::TABLE` is computed at lookup time from the
+//    runtime table buffer length divided by `S::ENTRY_SIZE`.
+//  - `property_element_count` for `pid::TABLE` branches on whether the
+//    table has a count prefix (`S::HAS_COUNT_PREFIX`).
+// All remaining table objects in the workspace (Security, Ip, Device, etc.)
+// fit the macro DSL — this is the one principled exception.
 pub struct TableInterfaceObject<'a, T: HasLoadStateMachine, S: TableObjectSpec> {
     table: &'a RefCell<T>,
     /// Virtual address to assign to this table during RelativeData allocation

@@ -50,12 +50,9 @@
 //! | 4 | Group Object Table Object | Communication object descriptors |
 //! | 5 | IP Parameter Object | KNXnet/IP configuration (for KNXnet/IP devices) |
 
-#[macro_use]
-mod macros;
 mod standard;
 mod traits;
 
-pub use macros::*;
 pub use standard::*;
 pub use traits::*;
 pub use zweidraehte_proto::properties::*;

@@ -179,19 +179,23 @@ where
         let obj_type = self.object_type_for(req.object_idx).ok_or(PropertyError::InvalidObjectIndex)?;
 
         // Check access before any read dispatch.
-        // On secure devices (with augment objects), enforce both legacy
-        // access levels AND Data Secure access policies. On non-secure
-        // devices, only enforce legacy access levels.
+        //
+        // `AccessPolicy` is evaluated regardless of whether the stack has
+        // a secure extension: plain (non-secure) stacks pass
+        // `security_on = false`, which makes `can_read_secure` consult the
+        // `sec_off` permission columns. The legacy default policy
+        // `READ_OPEN_WRITE_TOOL` permits unlisted plain reads, so existing
+        // tests that send `AccessContext::MIN_ACCESS` continue to pass.
+        // The previous shape silently bypassed the per-property policy
+        // entirely on non-secure devices, which made it impossible to
+        // audit a property's access policy without also enabling Data
+        // Secure (Vol 6 §6.2 / Profiles Annex A.2).
         if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
-            if self.has_secure_extension() {
-                let security_on = self.state.security_mode_enabled();
-                if !desc.can_read_secure(&req.ctx, security_on) {
-                    if req.ctx.source_addr != 0 {
-                        self.state.log_access_denied(req.ctx.source_addr);
-                    }
-                    return Err(PropertyError::AccessDenied);
+            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
+            if !desc.can_read_secure(&req.ctx, security_on) {
+                if req.ctx.source_addr != 0 {
+                    self.state.log_access_denied(req.ctx.source_addr);
                 }
-            } else if !desc.can_read(req.ctx) {
                 return Err(PropertyError::AccessDenied);
             }
         }
@@ -242,15 +246,14 @@ where
             if matches!(desc.access, PropertyAccess::ReadOnly) {
                 return Err(PropertyError::WriteNotAllowed);
             }
-            if self.has_secure_extension() {
-                let security_on = self.state.security_mode_enabled();
-                if !desc.can_write_secure(&req.ctx, security_on) {
-                    if req.ctx.source_addr != 0 {
-                        self.state.log_access_denied(req.ctx.source_addr);
-                    }
-                    return Err(PropertyError::AccessDenied);
+            // Same rationale as `property_value_read`: always evaluate the
+            // per-property `AccessPolicy`, with `security_on = false` for
+            // plain stacks.
+            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
+            if !desc.can_write_secure(&req.ctx, security_on) {
+                if req.ctx.source_addr != 0 {
+                    self.state.log_access_denied(req.ctx.source_addr);
                 }
-            } else if !desc.can_write(req.ctx) {
                 return Err(PropertyError::AccessDenied);
             }
 
@@ -322,21 +325,18 @@ where
         // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
         // while still being accessible via FunctionPropertyCommand.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-            if self.has_secure_extension() {
-                let security_on = self.state.security_mode_enabled();
-                if !desc.can_function_write_secure(&req.ctx, security_on) {
-                    if req.ctx.source_addr != 0 {
-                        self.state.log_access_denied(req.ctx.source_addr);
-                    }
-                    // Echo back the service_id (first byte of service_data) in
-                    // the error response per spec.
-                    // Echo back the service_info byte (second byte of service_data)
-                    // in the access-denied response per conformance spec.
-                    let service_info = req.service_data.get(1).copied().unwrap_or(0);
-                    return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
+            // Always evaluate the function-property write policy. See the
+            // comment on `property_value_read` for rationale; the same
+            // applies to function-property gates.
+            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
+            if !desc.can_function_write_secure(&req.ctx, security_on) {
+                if req.ctx.source_addr != 0 {
+                    self.state.log_access_denied(req.ctx.source_addr);
                 }
-            } else if !desc.can_write(req.ctx) {
-                return FunctionPropertyResult::access_denied();
+                // Echo back the service_info byte (second byte of service_data)
+                // in the access-denied response per conformance spec.
+                let service_info = req.service_data.get(1).copied().unwrap_or(0);
+                return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
             }
         }
 
@@ -395,19 +395,16 @@ where
         // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
         // while still needing policy-based access control for state reads.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-            if self.has_secure_extension() {
-                let security_on = self.state.security_mode_enabled();
-                if !desc.can_function_read_secure(&req.ctx, security_on) {
-                    if req.ctx.source_addr != 0 {
-                        self.state.log_access_denied(req.ctx.source_addr);
-                    }
-                    // Echo back the service_info byte (second byte of service_data)
-                    // in the access-denied response per conformance spec.
-                    let service_info = req.service_data.get(1).copied().unwrap_or(0);
-                    return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
+            // Always evaluate the function-property read policy.
+            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
+            if !desc.can_function_read_secure(&req.ctx, security_on) {
+                if req.ctx.source_addr != 0 {
+                    self.state.log_access_denied(req.ctx.source_addr);
                 }
-            } else if !desc.can_read(req.ctx) {
-                return FunctionPropertyResult::access_denied();
+                // Echo back the service_info byte (second byte of service_data)
+                // in the access-denied response per conformance spec.
+                let service_info = req.service_data.get(1).copied().unwrap_or(0);
+                return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
             }
         }
 

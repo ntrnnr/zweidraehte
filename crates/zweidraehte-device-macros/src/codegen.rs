@@ -17,10 +17,12 @@ use syn::ItemStruct;
 
 use crate::parse::{Access, Backing, ObjectAttrs, PropertyAttrs};
 
+/// `props` is parallel to `item.fields` — `None` entries are non-property
+/// struct fields kept verbatim, `Some(_)` entries are property metadata.
 pub(crate) fn gen_object(
     item: &ItemStruct,
     obj_attrs: &ObjectAttrs,
-    props: &[PropertyAttrs],
+    props: &[Option<PropertyAttrs>],
 ) -> syn::Result<TokenStream> {
     let object_type = obj_attrs.object_type.as_ref().ok_or_else(|| {
         syn::Error::new_spanned(
@@ -35,103 +37,41 @@ pub(crate) fn gen_object(
     // Forward `#[derive(...)]`, doc comments, etc. from the user's struct.
     let outer_attrs = item.attrs.iter().filter(|a| !a.path().is_ident("interface_object"));
 
-    // The struct that the user wrote contains both real fields (backing=field)
-    // and placeholder unit fields (backing=state). Re-emit the struct with the
-    // placeholder fields stripped, and inject `state: &'a S` if any property
-    // is state-backed.
-    let real_fields = props
-        .iter()
-        .filter(|p| matches!(p.backing, Backing::Field))
-        .map(|p| {
-            let name = &p.field_ident;
-            let ty = &p.field_ty;
-            quote! { pub #name: #ty, }
-        });
+    // Re-emit the user's struct verbatim except: virtual properties (unit-
+    // typed fields with `read`/`write` closures) are stripped because they
+    // have no runtime storage. Real fields keep their original type, vis,
+    // attributes, and visibility — they survive untouched.
+    //
+    // Field-level `#[io(...)]` attributes are stripped from the output to
+    // avoid the compiler complaining about an unknown attribute.
+    let kept_fields = item.fields.iter().zip(props.iter()).filter_map(|(field, p)| {
+        // Drop virtual properties (unit-typed placeholders) from the emitted
+        // struct. Plain struct fields (`p == None`) and field-backed
+        // properties survive — keep their attributes (doc comments etc.)
+        // but strip our own `#[io(...)]`.
+        let drop = matches!(p, Some(prop) if matches!(prop.backing, Backing::Virtual));
+        if drop {
+            None
+        } else {
+            let attrs = field.attrs.iter().filter(|a| !a.path().is_ident("io"));
+            let vis = &field.vis;
+            let name = field.ident.as_ref().unwrap();
+            let ty = &field.ty;
+            Some(quote! {
+                #( #attrs )*
+                #vis #name: #ty,
+            })
+        }
+    });
 
-    let needs_state = props.iter().any(|p| matches!(p.backing, Backing::State));
-    if needs_state {
-        // The macro doesn't synthesise the lifetime/state bound — the user
-        // already wrote them on the struct (e.g. `<'a, S: StackState>`). We
-        // just inject a `state: &'a S` field at the end. To know which
-        // lifetime and state type to use, we lift them straight out of the
-        // generics list: first lifetime + first type parameter, by convention.
-    }
-
-    // Inject `state: &'a S` field when needed. We look up the first lifetime
-    // and the first type parameter on the struct generics.
-    let state_field = if needs_state {
-        let lt = item
-            .generics
-            .lifetimes()
-            .next()
-            .ok_or_else(|| {
-                syn::Error::new_spanned(
-                    ident,
-                    "state-backed properties require a lifetime parameter on the struct",
-                )
-            })?
-            .lifetime
-            .clone();
-        let state_ty = item
-            .generics
-            .type_params()
-            .next()
-            .ok_or_else(|| {
-                syn::Error::new_spanned(
-                    ident,
-                    "state-backed properties require a type parameter on the struct \
-                     (the state type, e.g. `S: StackState`)",
-                )
-            })?
-            .ident
-            .clone();
-        Some(quote! { state: & #lt #state_ty, })
-    } else {
-        None
-    };
-
-    // ------------------------------------------------------------------
     // PROPERTY_DESCRIPTORS const slice. Always starts with OBJECT_TYPE
-    // (PID 1) at index 0; user properties follow in declaration order.
-    // ------------------------------------------------------------------
-    let descriptor_entries = props.iter().map(|p| descriptor_for(p, object_type));
+    // (PID 1) at index 0; user-declared properties follow in declaration
+    // order. Non-property struct fields (None) are skipped.
+    let property_props: Vec<&PropertyAttrs> = props.iter().filter_map(|p| p.as_ref()).collect();
+    let descriptor_entries = property_props.iter().map(|p| descriptor_for(p, object_type));
 
-    // ------------------------------------------------------------------
-    // read_property / write_property match arms
-    // ------------------------------------------------------------------
-    let read_arms = props.iter().map(|p| read_arm(p));
-    let write_arms = props.iter().map(|p| write_arm(p));
-
-    // ------------------------------------------------------------------
-    // new() constructor — only takes &'a S if state-backed
-    // ------------------------------------------------------------------
-    let constructor_args = if needs_state {
-        let lt = item.generics.lifetimes().next().unwrap().lifetime.clone();
-        let state_ty = item.generics.type_params().next().unwrap().ident.clone();
-        quote! { state: & #lt #state_ty }
-    } else {
-        quote! {}
-    };
-    let constructor_body_fields = props
-        .iter()
-        .filter(|p| matches!(p.backing, Backing::Field))
-        .map(|p| {
-            let name = &p.field_ident;
-            let ty = &p.field_ty;
-            if let Some(default) = &p.default_value {
-                quote! { #name: #default, }
-            } else {
-                // Fall back to `<T as Default>::default()` to match the legacy
-                // macro's behaviour (which uses `Default::default()` when no
-                // explicit `= default` is given).
-                quote! { #name: <#ty as ::core::default::Default>::default(), }
-            }
-        });
-    let constructor_state = if needs_state {
-        Some(quote! { state, })
-    } else {
-        None
-    };
+    let read_arms = property_props.iter().map(|p| read_arm(p));
+    let write_arms = property_props.iter().map(|p| write_arm(p));
 
     // ------------------------------------------------------------------
     // Final emission
@@ -139,8 +79,7 @@ pub(crate) fn gen_object(
     Ok(quote! {
         #( #outer_attrs )*
         #vis struct #ident #impl_generics #where_clause {
-            #( #real_fields )*
-            #state_field
+            #( #kept_fields )*
         }
 
         impl #impl_generics #ident #ty_generics #where_clause {
@@ -165,14 +104,6 @@ pub(crate) fn gen_object(
                 ),
                 #( #descriptor_entries , )*
             ];
-
-            #[allow(clippy::new_without_default)]
-            pub fn new(#constructor_args) -> Self {
-                Self {
-                    #( #constructor_body_fields )*
-                    #constructor_state
-                }
-            }
         }
 
         impl #impl_generics ::zweidraehte_device::objects::interface::InterfaceObject
@@ -333,6 +264,7 @@ fn read_arm(p: &PropertyAttrs) -> TokenStream {
             #pid => Err(::zweidraehte_device::objects::interface::PropertyError::ReadNotAllowed),
         },
         (_, Backing::Field, _) => {
+            // Field-backed: read directly from the struct field via PropertyRead.
             let name = &p.field_ident;
             quote! {
                 #pid => ::zweidraehte_device::objects::interface::PropertyRead::read_property(
@@ -340,16 +272,22 @@ fn read_arm(p: &PropertyAttrs) -> TokenStream {
                 ),
             }
         }
-        (_, Backing::State, Some(read_fn)) => quote! {
-            #pid => {
-                let __read_closure = #read_fn;
-                let data = __read_closure(self.state);
-                ::zweidraehte_device::objects::interface::PropertyRead::read_property(
-                    &data, req.start_idx, req.count, buf,
-                )
-            },
-        },
-        (_, Backing::State, None) => quote! {
+        (_, Backing::Virtual, Some(read_fn)) => {
+            // Virtual: invoke the user's `read = |this| …` closure with `&self`.
+            // The closure returns a value implementing `PropertyRead` (commonly
+            // `[u8; N]`) which is then sliced into `buf` via the standard
+            // start_idx/count protocol.
+            quote! {
+                #pid => {
+                    let __read_closure = #read_fn;
+                    let data = __read_closure(self);
+                    ::zweidraehte_device::objects::interface::PropertyRead::read_property(
+                        &data, req.start_idx, req.count, buf,
+                    )
+                },
+            }
+        }
+        (_, Backing::Virtual, None) => quote! {
             #pid => Err(::zweidraehte_device::objects::interface::PropertyError::ReadNotAllowed),
         },
     }
@@ -377,14 +315,19 @@ fn write_arm(p: &PropertyAttrs) -> TokenStream {
                 },
             }
         }
-        (_, Backing::State, Some(write_fn)) => quote! {
-            #pid => {
-                let __write_closure = #write_fn;
-                __write_closure(self.state, req.data)?;
-                Ok(::zweidraehte_device::objects::interface::WriteResponse::Echo)
-            },
-        },
-        (_, Backing::State, None) => quote! {
+        (_, Backing::Virtual, Some(write_fn)) => {
+            // The user's closure takes `&mut Self` and the request data; it
+            // must return the full `Result<WriteResponse, PropertyError>` so
+            // it can choose between `Echo` and `Data(...)` (e.g. LSM/RSM
+            // writes that echo back the new state byte).
+            quote! {
+                #pid => {
+                    let __write_closure = #write_fn;
+                    __write_closure(self, req.data)
+                },
+            }
+        }
+        (_, Backing::Virtual, None) => quote! {
             #pid => Err(::zweidraehte_device::objects::interface::PropertyError::WriteNotAllowed),
         },
     }

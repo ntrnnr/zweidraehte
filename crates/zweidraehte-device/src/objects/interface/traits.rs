@@ -978,8 +978,8 @@ where
 ///
 /// # Implementation
 ///
-/// Objects can implement this trait manually or use the `define_interface_object!`
-/// macro for common cases. Table-based objects (Address Table, Association Table, etc.)
+/// Objects can implement this trait manually or use the `#[interface_object]`
+/// attribute macro for common cases. Table-based objects (Address Table, Association Table, etc.)
 /// typically wrap existing table implementations.
 ///
 /// # Example

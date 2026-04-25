@@ -59,11 +59,17 @@ pub(crate) enum Access {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Backing {
-    /// Property value lives in the struct field itself (default).
+    /// Property value lives in the struct field itself. Reads dispatch
+    /// through `PropertyRead::read_property(&self.field, …)`; writes
+    /// through `PropertyWrite::write_property(&mut self.field, …)`.
     Field,
-    /// Property value lives behind a `state: &S` reference. The annotated
-    /// field is unit-typed (`()`) and erased from the generated struct.
-    State,
+    /// Virtual property — has no struct field. The annotated source field
+    /// is unit-typed (`()`) and erased from the generated struct. Reads
+    /// invoke the user's `read = |this| …` closure; writes invoke
+    /// `write = |this, data| …`. Closures take `&Self` / `&mut Self` so
+    /// they can reach any other struct field (e.g. `&'a RefCell<T>`,
+    /// `&'a dyn DeviceModelNotifier`, …).
+    Virtual,
 }
 
 pub(crate) struct PropertyAttrs {
@@ -89,7 +95,9 @@ pub(crate) struct PropertyAttrs {
 }
 
 impl PropertyAttrs {
-    pub fn from_field(field: &Field) -> syn::Result<Self> {
+    /// Returns `Ok(None)` for non-property struct fields (no `#[io(...)]`),
+    /// `Ok(Some(_))` for property fields, and `Err` for malformed metadata.
+    pub fn from_field(field: &Field) -> syn::Result<Option<Self>> {
         let field_ident = field
             .ident
             .clone()
@@ -102,11 +110,8 @@ impl PropertyAttrs {
             .filter(|a| a.path().is_ident("io"))
             .collect();
         if io_attrs.is_empty() {
-            return Err(syn::Error::new(
-                field_span,
-                "missing #[io(...)] attribute on field — every InterfaceObject \
-                 field must declare its property metadata",
-            ));
+            // Plain struct field — kept verbatim by codegen.
+            return Ok(None);
         }
 
         let mut pid: Option<Path> = None;
@@ -117,7 +122,6 @@ impl PropertyAttrs {
         let mut wl: Option<u8> = None;
         let mut array_max: Option<u16> = None;
         let mut computed_max: Option<Expr> = None;
-        let mut backing = Backing::Field;
         let mut read_fn: Option<Expr> = None;
         let mut write_fn: Option<Expr> = None;
         let mut default_value: Option<Expr> = None;
@@ -163,18 +167,6 @@ impl PropertyAttrs {
                     })?;
                 } else if key.is_ident("computed_max") {
                     computed_max = Some(meta.value()?.parse()?);
-                } else if key.is_ident("backing") {
-                    let ident: syn::Ident = meta.value()?.parse()?;
-                    backing = match ident.to_string().as_str() {
-                        "field" => Backing::Field,
-                        "state" => Backing::State,
-                        other => {
-                            return Err(syn::Error::new(
-                                ident.span(),
-                                format!("expected `field` or `state`; got `{other}`"),
-                            ));
-                        }
-                    };
                 } else if key.is_ident("read") {
                     read_fn = Some(meta.value()?.parse()?);
                 } else if key.is_ident("write") {
@@ -204,10 +196,26 @@ impl PropertyAttrs {
                 "`array(max = ...)` and `computed_max = ...` are mutually exclusive",
             ));
         }
-        if matches!(backing, Backing::State) && read_fn.is_none() {
+        // Determine backing from the field type and the presence of closures.
+        // A unit-typed (`()`) field signals a virtual property; the macro
+        // strips it from the generated struct and dispatches via the user's
+        // `read`/`write` closures. Anything else is a real struct field whose
+        // type implements `PropertyRead`/`PropertyWrite`.
+        let is_unit = matches!(&field.ty, syn::Type::Tuple(t) if t.elems.is_empty());
+        let backing = if is_unit { Backing::Virtual } else { Backing::Field };
+        if matches!(backing, Backing::Virtual) && read_fn.is_none() && !matches!(access, Access::Wo)
+        {
             return Err(syn::Error::new(
                 field_span,
-                "`backing = state` requires `read = |s| ...`",
+                "virtual property (unit-typed field) requires `read = |this| ...` \
+                 (or `access = WO`)",
+            ));
+        }
+        if matches!(backing, Backing::Field) && (read_fn.is_some() || write_fn.is_some()) {
+            return Err(syn::Error::new(
+                field_span,
+                "non-unit field cannot have `read`/`write` closures — \
+                 use a unit-typed (`()`) field for virtual properties",
             ));
         }
         if matches!(access, Access::Wo) && read_fn.is_some() {
@@ -223,7 +231,7 @@ impl PropertyAttrs {
             ));
         }
 
-        Ok(Self {
+        Ok(Some(Self {
             field_ident,
             field_ty: field.ty.clone(),
             field_span,
@@ -239,7 +247,7 @@ impl PropertyAttrs {
             read_fn,
             write_fn,
             default_value,
-        })
+        }))
     }
 }
 
