@@ -6,6 +6,7 @@ members = [
     "crates/zweidraehte-platform",
     "crates/zweidraehte-client",
     "crates/zweidraehte-ets",
+    "crates/zweidraehte-device-macros",
     "crates/zweidraehte-knxprod",
     "crates/zweidraehte-util",
     "examples/devices",

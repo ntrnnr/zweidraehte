@@ -38,111 +38,122 @@ use zweidraehte_proto::dpt::{
 
 use super::{
     ArrayPropertyWithPrefixRead, ArrayPropertyWithPrefixWrite, InterfaceObject, PropertyAccess, PropertyDescriptor,
-    PropertyError, PropertyRead, WriteResponse, pid,
+    PropertyError, PropertyRead, WriteResponse, interface_object, pid,
 };
+use zweidraehte_proto::access::AccessPolicy;
 
 // ============================================================================
 // Device Object (Object Type 0)
 // ============================================================================
 
-crate::define_interface_object! {
-    /// Device Object - Object Type 0
-    ///
-    /// The Device Object contains basic device information and is mandatory
-    /// for all KNX devices. It is always Object Index 0.
-    ///
-    /// This implementation holds a reference to the stack state for dynamic
-    /// properties like individual address components.
-    ///
-    /// # Properties
-    ///
-    /// | PID | Name | Type | Access |
-    /// |-----|------|------|--------|
-    /// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
-    /// | 11 | Serial Number | PDT_GENERIC_06 | RO | (state-backed)
-    /// | 12 | Manufacturer ID | PDT_UNSIGNED_INT | RO | (derived from serial number bytes 0-1)
-    /// | 14 | Device Control | DeviceControl | RW |
-    /// | 15 | Order Info | PDT_GENERIC_10 | RO |
-    /// | 25 | Version | PDT_GENERIC_02 | RO |
-    /// | 51 | Routing Count | RoutingCount | RW |
-    /// | 54 | Programming Mode | ProgrammingMode | RW |
-    /// | 56 | Max APDU Length | PDT_UNSIGNED_INT | RO | (state-backed)
-    /// | 57 | Subnet Address | PDT_UNSIGNED_CHAR | RO |
-    /// | 58 | Device Address | PDT_UNSIGNED_CHAR | RO |
-    /// | 78 | Hardware Type | PDT_GENERIC_06 | RO |
-    /// | 83 | Device Descriptor | PDT_UNSIGNED_INT | RO |
-    pub struct DeviceObject<'a, S: StackState>: InterfaceObjectType::Device
-        with state: &'a S
-    {
-        // Static properties (stored in struct) with semantic wrapper types.
-        // Access levels per Profiles spec Annex A.2.3 (mask 57B0h).
-        pid::DEVICE_CONTROL => device_control: DeviceControl, ReadWrite [3, 3],
-        pid::ORDER_INFO => order_info: PDT_Generic10, ReadOnly [3, 0],
-        pid::VERSION => version: PDT_Version, ReadOnly [3, 0],
-        pid::HARDWARE_TYPE => hardware_type: PDT_Generic06, ReadOnly [3, 0],
-        pid::DEVICE_DESCRIPTOR => device_descriptor: PDT_UnsignedInt, ReadOnly [3, 0],
-        pid::ROUTING_COUNT => routing_count: RoutingCount, ReadWrite [3, 3]
-    }
-    state {
-        // Programming mode is backed by StackState so both the application
-        // layer (via property read/write) and the link layer (for discovery
-        // responses) see the same value.
-        pid::PROGMODE => {
-            read: |s| [if s.is_programming_mode() { 0x01 } else { 0x00 }],
-            write: |s, data| {
-                s.set_programming_mode(data[0] != 0);
-                Ok(())
-            }
-        }: ProgrammingMode, ReadWrite [3, 3],
+/// Device Object - Object Type 0
+///
+/// The Device Object contains basic device information and is mandatory
+/// for all KNX devices. It is always Object Index 0.
+///
+/// This implementation holds a reference to the stack state for dynamic
+/// properties like individual address components.
+///
+/// # Properties
+///
+/// | PID | Name | Type | Access |
+/// |-----|------|------|--------|
+/// | 1 | Object Type | PDT_UNSIGNED_INT | RO |
+/// | 11 | Serial Number | PDT_GENERIC_06 | RO | (state-backed)
+/// | 12 | Manufacturer ID | PDT_UNSIGNED_INT | RO | (derived from serial number bytes 0-1)
+/// | 14 | Device Control | DeviceControl | RW |
+/// | 15 | Order Info | PDT_GENERIC_10 | RO |
+/// | 25 | Version | PDT_GENERIC_02 | RO |
+/// | 51 | Routing Count | RoutingCount | RW |
+/// | 54 | Programming Mode | ProgrammingMode | RW |
+/// | 56 | Max APDU Length | PDT_UNSIGNED_INT | RO | (state-backed)
+/// | 57 | Subnet Address | PDT_UNSIGNED_CHAR | RO |
+/// | 58 | Device Address | PDT_UNSIGNED_CHAR | RO |
+/// | 78 | Hardware Type | PDT_GENERIC_06 | RO |
+/// | 83 | Device Descriptor | PDT_UNSIGNED_INT | RO |
+//
+// Access levels per Profiles spec Annex A.2.3 (mask 57B0h). Every property
+// must spell out `policy` explicitly — the macro has no defaults.
+#[interface_object(object_type = InterfaceObjectType::Device)]
+pub struct DeviceObject<'a, S: StackState> {
+    #[io(pid = pid::DEVICE_CONTROL, pdt = DeviceControl, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+    pub device_control: DeviceControl,
+    #[io(pid = pid::ORDER_INFO, pdt = PDT_Generic10, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+    pub order_info: PDT_Generic10,
+    #[io(pid = pid::VERSION, pdt = PDT_Version, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+    pub version: PDT_Version,
+    #[io(pid = pid::HARDWARE_TYPE, pdt = PDT_Generic06, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+    pub hardware_type: PDT_Generic06,
+    #[io(pid = pid::DEVICE_DESCRIPTOR, pdt = PDT_UnsignedInt, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+    pub device_descriptor: PDT_UnsignedInt,
+    #[io(pid = pid::ROUTING_COUNT, pdt = RoutingCount, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+    pub routing_count: RoutingCount,
 
-        // Serial number is read from StackState
-        pid::SERIAL_NUMBER => {
-            read: |s| *s.serial_number(),
-            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
-        }: PDT_Generic06, ReadOnly [3, 0],
+    // ----- State-backed properties (placeholder unit fields, erased) -----
 
-        // Manufacturer ID is derived from serial number bytes 0-1
-        pid::MANUFACTURER_ID => {
-            read: |s| {
-                let sn = s.serial_number();
-                [sn[0], sn[1]]
-            },
-            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
-        }: PDT_UnsignedInt, ReadOnly [3, 0],
+    // Programming mode is backed by StackState so both the application
+    // layer (via property read/write) and the link layer (for discovery
+    // responses) see the same value.
+    #[io(pid = pid::PROGMODE, pdt = ProgrammingMode, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         backing = state,
+         read = |s: &S| [if s.is_programming_mode() { 0x01u8 } else { 0x00u8 }],
+         write = |s: &S, data: &[u8]| -> Result<(), PropertyError> {
+             s.set_programming_mode(data[0] != 0);
+             Ok(())
+         })]
+    progmode: (),
 
-        // Max APDU length is read from StackState (may be constrained by link layer).
-        //
-        // Access policy `3FF/1FF` (OPEN) rather than the default
-        // `3FF/0CC`: ETS reads this PID plaintext to negotiate APDU
-        // size even after Security Mode is enabled (see Falcon
-        // `NegotiateMaxApduLength` → `VerifySecurityMode`). Denying
-        // plain reads makes ETS default to 15 bytes which is too small
-        // for the subsequent secure sync exchange (23 bytes), aborting
-        // commissioning. The property is already `ReadOnly` at the
-        // PropertyAccess level, so the `1FF` write bit for unlisted
-        // sec-off is not exploitable.
-        pid::MAX_APDU_LENGTH => {
-            read: |s| s.max_apdu_length().to_be_bytes(),
-            write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
-        }: PDT_UnsignedInt, ReadOnly [3, 0, ::zweidraehte_proto::access::AccessPolicy::OPEN],
+    #[io(pid = pid::SERIAL_NUMBER, pdt = PDT_Generic06, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         backing = state,
+         read = |s: &S| *s.serial_number())]
+    serial_number: (),
 
-        pid::SUBNET_ADDRESS => {
-            read: |s| {
-                let addr = s.individual_address();
-                [(addr.area() << 4) | addr.line()]
-            },
-            write: |_s, _data| {
-                Err(crate::objects::interface::PropertyError::WriteNotAllowed)
-            }
-        }: PDT_UnsignedChar, ReadOnly [3, 0],
+    // Manufacturer ID is derived from serial number bytes 0-1.
+    #[io(pid = pid::MANUFACTURER_ID, pdt = PDT_UnsignedInt, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         backing = state,
+         read = |s: &S| { let sn = s.serial_number(); [sn[0], sn[1]] })]
+    manufacturer_id: (),
 
-        pid::DEVICE_ADDRESS => {
-            read: |s| [s.individual_address().device()],
-            write: |_s, _data| {
-                Err(crate::objects::interface::PropertyError::WriteNotAllowed)
-            }
-        }: PDT_UnsignedChar, ReadOnly [3, 0]
-    }
+    // Max APDU length is read from StackState (may be constrained by link layer).
+    //
+    // Access policy `3FF/1FF` (OPEN) rather than the default
+    // `3FF/0CC`: ETS reads this PID plaintext to negotiate APDU
+    // size even after Security Mode is enabled (see Falcon
+    // `NegotiateMaxApduLength` → `VerifySecurityMode`). Denying
+    // plain reads makes ETS default to 15 bytes which is too small
+    // for the subsequent secure sync exchange (23 bytes), aborting
+    // commissioning. The property is already `ReadOnly` at the
+    // PropertyAccess level, so the `1FF` write bit for unlisted
+    // sec-off is not exploitable.
+    #[io(pid = pid::MAX_APDU_LENGTH, pdt = PDT_UnsignedInt, access = RO,
+         policy = AccessPolicy::OPEN, rl = 3, wl = 0,
+         backing = state,
+         read = |s: &S| s.max_apdu_length().to_be_bytes())]
+    max_apdu_length: (),
+
+    #[io(pid = pid::SUBNET_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         backing = state,
+         read = |s: &S| {
+             let addr = s.individual_address();
+             [(addr.area() << 4) | addr.line()]
+         })]
+    subnet_address: (),
+
+    #[io(pid = pid::DEVICE_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         backing = state,
+         read = |s: &S| [s.individual_address().device()])]
+    device_address: (),
 }
 
 impl<'a, S: StackState> DeviceObject<'a, S> {

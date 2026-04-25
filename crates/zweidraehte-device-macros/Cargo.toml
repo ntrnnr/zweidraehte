@@ -1,0 +1,15 @@
+[package]
+name = "zweidraehte-device-macros"
+version = "0.1.0"
+edition = "2024"
+authors = ["Andreas Galauner <andreas@galauner.de>"]
+license = "Proprietary"
+description = "Proc-macros for KNX interface object metadata"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

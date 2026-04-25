@@ -60,6 +60,11 @@ pub use standard::*;
 pub use traits::*;
 pub use zweidraehte_proto::properties::*;
 
+// Re-export the attribute macros so users can write
+// `#[interface_object(object_type = ...)]` without depending on
+// `zweidraehte-device-macros` directly.
+pub use zweidraehte_device_macros::{interface_object, interface_object_augment};
+
 /// Property ID constants as defined in KNX specification
 pub mod pid {
     //==========================================================================

@@ -6222,10 +6222,20 @@ dependencies = [
  "static_cell",
  "test-case",
  "zerocopy",
+ "zweidraehte-device-macros",
  "zweidraehte-ets",
  "zweidraehte-platform",
  "zweidraehte-proto",
  "zweidraehte-util",
+]
+
+[[package]]
+name = "zweidraehte-device-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.116",
 ]
 
 [[package]]

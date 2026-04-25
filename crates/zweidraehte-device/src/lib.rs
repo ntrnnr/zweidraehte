@@ -10,6 +10,11 @@
 #[doc(hidden)]
 pub use paste;
 
+// Make `::zweidraehte_device::…` resolvable from within this crate so that
+// proc-macros (e.g. `#[interface_object(...)]`) can emit absolute paths
+// without caring whether they're invoked inside or outside the crate.
+extern crate self as zweidraehte_device;
+
 #[macro_use]
 extern crate zweidraehte_util;
 #[macro_use]
