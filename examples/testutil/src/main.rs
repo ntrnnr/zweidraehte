@@ -182,6 +182,10 @@ impl zweidraehte_device::objects::comm::HasCommObjects for MyState {
     }
 }
 
+// Insecure demo state — no Data Secure layer, all sends are plain.
+// Inherits the trait's `Plain` defaults verbatim.
+impl zweidraehte_device::objects::comm::HasGoSecurityView for MyState {}
+
 /// Device descriptor for test utility
 const TEST_DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
     mask_version: MaskVersion::SystemBTp1,

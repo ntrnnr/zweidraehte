@@ -23,6 +23,9 @@ pub mod actor;
 mod definition;
 pub use definition::StackDefinition;
 
+pub mod rng;
+pub use rng::{NoRng, Rng, SecureRng};
+
 #[cfg(feature = "knxip")]
 mod ip;
 #[cfg(feature = "knxip")]

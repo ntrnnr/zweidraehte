@@ -76,6 +76,10 @@ pub struct Tp1ExtensionState {
     max_retry_count: Cell<u8>,
 }
 
+// Plain TP1 has no Data Secure layer — every send is plaintext, so the
+// trait's `Plain` defaults are correct without any override.
+impl crate::objects::comm::HasGoSecurityView for Tp1ExtensionState {}
+
 impl ExtensionState for Tp1ExtensionState {
     type Config = Tp1ExtensionConfig;
     type Resources = ();

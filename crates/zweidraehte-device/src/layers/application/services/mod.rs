@@ -90,3 +90,31 @@ pub type SystemBAlServices = nest!(
     UserManufacturerInfoService,
     FunctionPropertyService,
 );
+
+/// Standard AL services for KNX Secure / KNX Data Security devices.
+///
+/// Composes [`SystemBAlServices`] with [`PropertyExtValueService`] —
+/// the latter covers all extended-APCI management services
+/// (`A_PropertyExtValue_*`, `A_PropertyExtDescription_Read`,
+/// `A_FunctionPropertyExt*`, `A_MemoryExtended_*`) that spec Vol 6
+/// Profiles §9.1.2.3 marks Mandatory for every KNX Secure / KNXnet/IP
+/// Security / KNX Data Security profile.
+///
+/// Use this as `type Services = SystemBSecureAlServices;` in any
+/// `StackDefinition` paired with
+/// [`SecureDeviceBuilder`](crate::composition::SecureDeviceBuilder).
+/// For non-Secure System B devices continue using
+/// [`SystemBAlServices`] — the extended services are not mandatory
+/// for those profiles and carry a code-size cost that
+/// memory-constrained plain devices may prefer to avoid.
+pub type SystemBSecureAlServices = nest!(
+    MemoryService,
+    UserMemoryService,
+    AuthorizationService,
+    IndividualAddressSerialNumberService,
+    SystemNetworkParameterService,
+    AdcService,
+    UserManufacturerInfoService,
+    FunctionPropertyService,
+    PropertyExtValueService,
+);

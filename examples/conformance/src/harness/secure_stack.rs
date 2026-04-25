@@ -51,10 +51,14 @@ use super::stack::{
 /// Security table sizes for const generics.
 ///
 /// `GRP` and `GO` are no longer needed — `SecureTp1DeviceState` derives
-/// them from `ADT_SIZE` and `COT_SIZE` respectively.
+/// them from `ADT_SIZE` and `COT_SIZE` respectively. `P2P` (P2P Key
+/// Table) and `SIAT` (Security Individual Address Table) are
+/// independent per 03/03/07 §5.3.
 pub mod sec_table_sizes {
-    /// Max P2P key entries.
+    /// Max P2P Key Table entries.
     pub const P2P: usize = 8;
+    /// Max SIAT entries (union of P2P + group-secure senders).
+    pub const SIAT: usize = 8;
 }
 
 /// Serial number for the secure DUT (matches XML: FE ED BA BE CA FE).
@@ -84,6 +88,7 @@ type SecureInnerState = SecureTp1DeviceState<
     IpcSecureConformanceTestStack,
     ShmSeqStorage,
     { sec_table_sizes::P2P },
+    { sec_table_sizes::SIAT },
 >;
 
 // ============================================================================
@@ -230,10 +235,26 @@ impl HasSecureIdentity for SecureConformanceState {
     fn fdsk(&self) -> Option<&[u8; 16]> {
         self.inner.fdsk()
     }
-    fn fill_random(&self, buf: &mut [u8]) {
+}
+
+// ============================================================================
+// Random byte source for KNX Data Secure (plugs into `StackDefinition::Rng`)
+// ============================================================================
+//
+// The Secure Application Layer pulls randomness through
+// `<D::Rng as Rng>::fill` rather than from the state type, so firmware
+// can provide an RNG without a state newtype. The conformance DUT runs
+// under Linux, so a libc `getrandom` call is both cheapest and strongest.
+
+pub struct GetrandomRng;
+
+impl zweidraehte_device::Rng for GetrandomRng {
+    fn fill(buf: &mut [u8]) {
         getrandom::fill(buf).expect("getrandom failed");
     }
 }
+
+impl zweidraehte_device::SecureRng for GetrandomRng {}
 
 // ============================================================================
 // HasAuthorization Forwarding
@@ -311,6 +332,28 @@ impl zweidraehte_device::objects::comm::HasCommObjects for SecureConformanceStat
 
     fn comm_objects(&self) -> &RefCell<Self::CO> {
         self.inner.comm_objects()
+    }
+}
+
+// The secure conformance harness wraps a `SystemBDeviceState` whose
+// extension state is `SecureExtensionState<...>`. Forward the policy
+// queries down to the inner state — the secure extension's overrides
+// then consult `PID_GO_SECURITY_FLAGS`, the P2P key table, etc.
+impl zweidraehte_device::objects::comm::HasGoSecurityView for SecureConformanceState {
+    fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_asap(asap)
+    }
+
+    fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_p2p(peer_ia)
+    }
+
+    fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_broadcast()
+    }
+
+    fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_tool_access()
     }
 }
 
@@ -906,8 +949,13 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type ES =
-        SecureTp1ExtensionState<ShmSeqStorage, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>;
+    type ES = SecureTp1ExtensionState<
+        ShmSeqStorage,
+        { table_sizes::ADT },
+        { sec_table_sizes::P2P },
+        { sec_table_sizes::SIAT },
+        { table_sizes::COT },
+    >;
     type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
     type StateInit = SecureConformanceStateInit;
@@ -952,6 +1000,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         zweidraehte_device::layers::application::services::PropertyExtValueService,
     );
     type LayerBuilder = SecureDeviceBuilder<zweidraehte_device::layers::secure_application::WithP2p>;
+    type Rng = GetrandomRng;
 }
 
 // ============================================================================
@@ -1167,7 +1216,13 @@ type SecureInnerDeviceConfig = DeviceConfig<
     { table_sizes::AST },
     { table_sizes::COT },
     TestParameters,
-    SecureExtensionConfig<Tp1ExtensionConfig, { table_sizes::ADT }, { sec_table_sizes::P2P }, { table_sizes::COT }>,
+    SecureExtensionConfig<
+        Tp1ExtensionConfig,
+        { table_sizes::ADT },
+        { sec_table_sizes::P2P },
+        { sec_table_sizes::SIAT },
+        { table_sizes::COT },
+    >,
 >;
 
 /// Full snapshot for the secure conformance DUT.

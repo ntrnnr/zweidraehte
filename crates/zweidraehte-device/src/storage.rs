@@ -317,12 +317,19 @@ pub trait SequenceNumberStorage {
     /// Called after every outgoing secure message.
     fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error>;
 
-    /// Load last-valid receiving sequence number for a peer (P2P, non-tool).
-    /// Returns `None` if no sequence is stored for this peer.
+    /// Load last-valid receiving sequence number for a peer, keyed by
+    /// sender IA.
+    ///
+    /// Per 03/03/07 §5.3, this covers *every* non-tool secure sender —
+    /// P2P partners and pure group-secure senders alike — not only
+    /// P2P. "Peer" here means any remote IA from which this device has
+    /// ever accepted a non-tool secure frame. Returns `None` if no
+    /// sequence is stored for this peer.
     fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error>;
 
-    /// Save last-valid receiving sequence number for a peer (P2P, non-tool).
+    /// Save last-valid receiving sequence number for a sender IA.
     /// Called after successful MAC verification of an incoming message.
+    /// Same keying as [`load_receiving_seq`](Self::load_receiving_seq).
     fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error>;
 
     /// Load the last-valid receiving sequence number for tool access.

@@ -63,10 +63,10 @@ use super::catalog::CatalogGenerator;
 use super::hardware::HardwareGenerator;
 use super::mtxml::MtxmlGenerator;
 use super::{
-    ApplicationProgramConfig, ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef,
-    GeneratorError, HardwareDef, ProductDef, SingleDeviceDef,
+    ApplicationProgramConfig, ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, GeneratorError, HardwareDef,
+    ProductDef, SingleDeviceDef,
 };
-use crate::signing::{create_knxprod, KnxSchemaVersion, MasterDataSource, SigningConfig, SigningError};
+use crate::signing::{KnxSchemaVersion, MasterDataSource, SigningConfig, SigningError, create_knxprod};
 
 // ============================================================================
 // Handle Types
@@ -126,10 +126,7 @@ impl KnxprodOutput {
         // For single-app case, keep the traditional filename for compatibility.
         // For multi-app, use the program ID as filename (matching real knxprod format).
         if self.application_programs.len() == 1 {
-            files.push((
-                "ApplicationProgram1.mtxml".to_string(),
-                self.application_programs[0].1.as_str(),
-            ));
+            files.push(("ApplicationProgram1.mtxml".to_string(), self.application_programs[0].1.as_str()));
         } else {
             for (id, content) in &self.application_programs {
                 files.push((format!("{}.mtxml", id), content.as_str()));
@@ -417,10 +414,14 @@ impl<'a> KnxprodBuilder<'a> {
 
             // Collect baggages from all app programs.
             if let Some(baggages) = app_def.baggages {
-                if let Ok(Some(bag_xml)) = BaggageGenerator::generate(self.manufacturer_id, Some(baggages), self.schema_version) {
+                if let Ok(Some(bag_xml)) =
+                    BaggageGenerator::generate(self.manufacturer_id, Some(baggages), self.schema_version)
+                {
                     all_baggages_xml = Some(bag_xml);
                 }
-                if let Ok(files) = BaggageGenerator::get_files_for_signing(self.manufacturer_id, baggages, self.schema_version) {
+                if let Ok(files) =
+                    BaggageGenerator::get_files_for_signing(self.manufacturer_id, baggages, self.schema_version)
+                {
                     all_baggage_files.extend(files);
                 }
             }
@@ -561,7 +562,7 @@ impl<'a> KnxprodBuilder<'a> {
     /// one device instance registered via [`Self::device_instance`].
     pub fn build_knxproj(&self) -> Result<Vec<u8>, BuilderError> {
         use super::project::ProjectGenerator;
-        use crate::signing::{create_knxproj, ProjectConfig};
+        use crate::signing::{ProjectConfig, create_knxproj};
 
         let project_name = self.project_name.as_deref().ok_or_else(|| {
             BuilderError::Config("project_name() must be set before calling build_knxproj()".to_string())
@@ -591,12 +592,8 @@ impl<'a> KnxprodBuilder<'a> {
         // ETS reserves Puid 1 and 2 for internal use; device Puids start at 3.
         let last_used_puid = 2 + self.device_instances.len() as u32;
 
-        let project_xml = ProjectGenerator::generate_project_xml(
-            project_id,
-            project_name,
-            last_used_puid,
-            self.schema_version,
-        )?;
+        let project_xml =
+            ProjectGenerator::generate_project_xml(project_id, project_name, last_used_puid, self.schema_version)?;
 
         let app_refs: Vec<&ApplicationProgramDef> = self.application_programs.to_vec();
         let topology_xml = ProjectGenerator::generate_topology_xml(
@@ -608,11 +605,7 @@ impl<'a> KnxprodBuilder<'a> {
             self.schema_version,
         )?;
 
-        let project_config = ProjectConfig {
-            project_id: project_id.to_string(),
-            project_xml,
-            topology_xml,
-        };
+        let project_config = ProjectConfig { project_id: project_id.to_string(), project_xml, topology_xml };
 
         let knxproj_bytes = create_knxproj(&signing_config, &project_config, resolved_master_data)?;
         Ok(knxproj_bytes)
@@ -671,6 +664,10 @@ impl<'a> KnxprodBuilder<'a> {
             bus_interfaces: app.bus_interfaces,
             additional_addresses_count: app.additional_addresses_count,
             ip_config: app.ip_config,
+            is_secure_enabled: app.is_secure_enabled,
+            max_security_individual_address_entries: app.max_security_individual_address_entries,
+            max_security_group_key_table_entries: app.max_security_group_key_table_entries,
+            max_security_p2p_key_table_entries: app.max_security_p2p_key_table_entries,
         }
     }
 
@@ -700,10 +697,7 @@ impl<'a> KnxprodBuilder<'a> {
         let hash = app.application_hash.unwrap_or("0000");
         format!(
             "M-{:04X}_A-{:04X}-{:02X}-{}",
-            app.device.manufacturer_id,
-            app.device.application_id,
-            app.device.application_version,
-            hash
+            app.device.manufacturer_id, app.device.application_id, app.device.application_version, hash
         )
     }
 

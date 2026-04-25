@@ -167,24 +167,16 @@ pub fn create_section_3_8_13_suite() -> TestSuite {
 }
 
 fn test_3_8_13_1() -> TestCase {
-    // The reference XML procedure is:
-    //   1. Factory reset → active tool key = FDSK.
-    //   2. Write new tool key using FDSK, response encrypted with new key.
-    //   3. Write yet another tool key using the previous one, response
-    //      encrypted with the newest key.
-    //   4. Repeat after security mode toggle.
+    // Per TSSJ §3.8.13.1: the WriteConRes for PID_TOOL_KEY must be
+    // authenticated and encrypted with the *newly-set* security tool
+    // key, not the key that authenticated the request. Each write
+    // below is authenticated with the current key and the response
+    // is verified with the new key.
     //
-    // Our harness pins FDSK = TK1 (see `SECURE_FDSK` in secure_stack.rs),
-    // so "FDSK after factory reset" and "TK1 in normal config" are the
-    // same 16-byte key on the wire. We exercise the spec-meaningful
-    // invariant — `PID_TOOL_KEY` write with the current tool key is
-    // accepted and subsequent management traffic authenticates with the
-    // newly-written key — by rotating through TK1 → TK2 → TK1, both
-    // with and without Security Mode enabled.
+    // We rotate TK1 → TK2 → TK1 both with Security Mode off and on.
 
-    // Write PID_TOOL_KEY = TK2 (authenticated with current key, verified
-    // against "TK1" in the response since our stack encrypts the response
-    // with the key that was active at receive time).
+    // Write PID_TOOL_KEY = TK2 (request authenticated with TK1;
+    // response expected encrypted with TK2 per TSSJ §3.8.13.1).
     const WRITE_TK2: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F";
 
@@ -196,21 +188,17 @@ fn test_3_8_13_1() -> TestCase {
 
     TestCase::new("3.8.13.1 Secure PropertyValueWrite – A+C").with_steps(vec![
         // ==== Phase A: Security Mode OFF ====
-        // Write tool key with current key (TK1 == FDSK); verify the
-        // device confirms using the same key (our S-AL does not swap
-        // keys mid-transaction).
-        comment("Sec mode OFF — write Tool Key = TK2 (auth with TK1)"),
+        comment("Sec mode OFF — write Tool Key = TK2 (auth with TK1, response with TK2)"),
         inject_secure_ac(WRITE_TK2, "TK1"),
-        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-        // Subsequent management traffic must authenticate with TK2.
+        expect_secure_ac(WRITE_TK_OK, "TK2", TIMEOUT),
+        // Subsequent management traffic authenticates with TK2.
         comment("Enable Security Mode (now auth with TK2)"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK2"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK2", TIMEOUT),
         // ==== Phase B: Security Mode ON ====
-        // Rotate back to TK1 with security mode enabled.
-        comment("Sec mode ON — write Tool Key = TK1 (auth with TK2)"),
+        comment("Sec mode ON — write Tool Key = TK1 (auth with TK2, response with TK1)"),
         inject_secure_ac(WRITE_TK1, "TK2"),
-        expect_secure_ac(WRITE_TK_OK, "TK2", TIMEOUT),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
         comment("Disable Security Mode (back to default, auth with TK1)"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
@@ -262,26 +250,21 @@ fn test_3_8_13_2() -> TestCase {
         comment("Activate Security Mode while SecIO unloaded"),
         inject_secure_ac(ENABLE_SM, "TK1"),
         expect_secure_ac(ENABLE_SM_OK, "TK1", TIMEOUT),
-        // Rotate tool key to TK2 (write authenticated with current key TK1).
-        comment("Write Tool Key = TK2 (authenticated with TK1, response with TK1)"),
+        // Rotate tool key to TK2 (write authenticated with current
+        // key TK1, response encrypted with the new key TK2 per
+        // TSSJ §3.8.13.1).
+        comment("Write Tool Key = TK2 (auth with TK1, response with TK2)"),
         inject_secure_ac(WRITE_TK2, "TK1"),
-        // The DUT processes the write before encrypting its response, so
-        // the response is already encrypted with the *new* tool key (TK2)
-        // — but only if the S-AL re-reads the tool key after the
-        // application layer commits the write. In our stack the response
-        // comes back encrypted with TK1 (the key that was active at the
-        // start of the inbound transaction). Either is spec-conformant
-        // depending on the implementation; we verify against TK1.
-        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
+        expect_secure_ac(WRITE_TK_OK, "TK2", TIMEOUT),
         // Subsequent management traffic must use the new key TK2.
         comment("Deactivate Security Mode (now authenticated with TK2)"),
         inject_secure_ac(DISABLE_SM, "TK2"),
         expect_secure_ac(DISABLE_SM_OK, "TK2", TIMEOUT),
         // Rotate the tool key back to TK1 to leave a clean state for
-        // subsequent test cases / suites.
-        comment("Restore Tool Key = TK1 (authenticated with TK2, response with TK2)"),
+        // subsequent test cases / suites. Response uses the new key (TK1).
+        comment("Restore Tool Key = TK1 (auth with TK2, response with TK1)"),
         inject_secure_ac(WRITE_TK1, "TK2"),
-        expect_secure_ac(WRITE_TK_OK, "TK2", TIMEOUT),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
         comment("Reload Security IO (LoadCompleted)"),
         inject_secure_ac(SET_LOADED, "TK1"),
         expect_secure_ac(SET_LOADED_OK, "TK1", TIMEOUT),
@@ -465,9 +448,9 @@ fn test_3_8_13_8() -> TestCase {
         comment("Sync tool seq using FDSK (the post-reset active tool key)"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
         expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Write PID_TOOL_KEY = TK1 authenticated with FDSK → ACK"),
+        comment("Write PID_TOOL_KEY = TK1 authenticated with FDSK → ACK (response encrypted with TK1)"),
         inject_secure_ac(WRITE_TK1, "FDSK"),
-        expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
+        expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
         comment("Write PID_TOOL_KEY = TK1 authenticated with TK1 → ACK"),
         inject_secure_ac(WRITE_TK1, "TK1"),
         expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),

@@ -185,6 +185,19 @@ pub struct ApplicationProgram {
     #[serde(rename = "@IPConfig", skip_serializing_if = "Option::is_none")]
     pub ip_config: Option<String>,
 
+    // KNX Data Secure attributes. Emitted only on devices that declare
+    // themselves secure-capable. The three table-size attrs bound what
+    // ETS will attempt to push to the device; they must not exceed the
+    // firmware's actual table capacities.
+    #[serde(rename = "@IsSecureEnabled", skip_serializing_if = "Option::is_none")]
+    pub is_secure_enabled: Option<bool>,
+    #[serde(rename = "@MaxSecurityIndividualAddressEntries", skip_serializing_if = "Option::is_none")]
+    pub max_security_individual_address_entries: Option<u16>,
+    #[serde(rename = "@MaxSecurityGroupKeyTableEntries", skip_serializing_if = "Option::is_none")]
+    pub max_security_group_key_table_entries: Option<u16>,
+    #[serde(rename = "@MaxSecurityP2PKeyTableEntries", skip_serializing_if = "Option::is_none")]
+    pub max_security_p2p_key_table_entries: Option<u16>,
+
     #[serde(rename = "Static")]
     pub static_section: StaticSection,
     /// Module definitions - reusable templates for parameters and communication objects.
@@ -215,6 +228,10 @@ impl Default for ApplicationProgram {
             hash: None,
             additional_addresses_count: None,
             ip_config: None,
+            is_secure_enabled: None,
+            max_security_individual_address_entries: None,
+            max_security_group_key_table_entries: None,
+            max_security_p2p_key_table_entries: None,
             static_section: StaticSection::default(),
             module_defs: None,
             dynamic: None,

@@ -352,6 +352,13 @@ where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::State: HasSecureIdentity + HasExtensionState,
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
+    // Forbid `NoRng` on secure stacks. Without this, forgetting to
+    // set `type Rng = …` would still compile (the default is
+    // `NoRng`) and the first `S-A_Sync` would panic at runtime. The
+    // `SecureRng` marker is implemented by every real RNG but not
+    // by `NoRng`, so this turns the misconfiguration into a
+    // compile-time error at secure-stack assembly.
+    D::Rng: crate::rng::SecureRng,
 {
     type Stack<'a>
         = StandardSecureDeviceLayers<'a, D, P2P>

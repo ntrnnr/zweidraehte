@@ -110,11 +110,21 @@ crate::define_interface_object! {
             write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
         }: PDT_UnsignedInt, ReadOnly [3, 0],
 
-        // Max APDU length is read from StackState (may be constrained by link layer)
+        // Max APDU length is read from StackState (may be constrained by link layer).
+        //
+        // Access policy `3FF/1FF` (OPEN) rather than the default
+        // `3FF/0CC`: ETS reads this PID plaintext to negotiate APDU
+        // size even after Security Mode is enabled (see Falcon
+        // `NegotiateMaxApduLength` → `VerifySecurityMode`). Denying
+        // plain reads makes ETS default to 15 bytes which is too small
+        // for the subsequent secure sync exchange (23 bytes), aborting
+        // commissioning. The property is already `ReadOnly` at the
+        // PropertyAccess level, so the `1FF` write bit for unlisted
+        // sec-off is not exploitable.
         pid::MAX_APDU_LENGTH => {
             read: |s| s.max_apdu_length().to_be_bytes(),
             write: |_s, _data| Err(crate::objects::interface::PropertyError::WriteNotAllowed)
-        }: PDT_UnsignedInt, ReadOnly [3, 0],
+        }: PDT_UnsignedInt, ReadOnly [3, 0, ::zweidraehte_proto::access::AccessPolicy::OPEN],
 
         pid::SUBNET_ADDRESS => {
             read: |s| {

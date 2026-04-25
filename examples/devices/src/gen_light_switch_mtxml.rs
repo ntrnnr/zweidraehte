@@ -16,15 +16,14 @@ use std::path::PathBuf;
 use const_default::ConstDefault;
 
 use devices::light_switch::{
-    DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_TP1, LightSwitchDevice, LightSwitchParams, comm_objs,
-    params::LIGHT_SWITCH_VIRTUAL_PARAMS,
-    translations::LIGHT_SWITCH_TRANSLATIONS,
+    DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_SECURE, LightSwitchDevice, LightSwitchParams,
+    comm_objs, params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
 };
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{
-    ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef,
-    KnxprodBuilder, ProductDef,
+    ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef, KnxprodBuilder,
+    ProductDef,
 };
 
 /// Hardware serial for the KNX/IP variant.
@@ -32,6 +31,9 @@ const SERIAL_NUMBER_IP: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
 
 /// Hardware serial for the TP1 variant.
 const SERIAL_NUMBER_TP1: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04];
+
+/// Hardware serial for the Data Secure TP1 variant.
+const SERIAL_NUMBER_TP1_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x05];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -72,11 +74,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus_interfaces: None,
         additional_addresses_count: None,
         ip_config: None,
+        is_secure_enabled: None,
+        max_security_individual_address_entries: None,
+        max_security_group_key_table_entries: None,
+        max_security_p2p_key_table_entries: None,
     };
 
     let app_tp1 = ApplicationProgramDef {
         name: "LightSwitch2TP",
         device: &DEVICE_DESCRIPTOR_TP1,
+        params: LightSwitchParams::ETS_PARAMS_EXT,
+        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
+        param_defaults: param_bytes,
+        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
+        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+        union_fields: Some(LightSwitchParams::ETS_UNIONS),
+        channel_name: "General",
+        absolute_segment_address: None,
+        system7_layout: None,
+        application_hash: None,
+        non_reg_relevant_data_version: None,
+        replaces_versions: None,
+        application_data_hash: None,
+        page_layout: Some(page_layout.clone()),
+        modules: None,
+        baggages: None,
+        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
+        is_secure_enabled: None,
+        max_security_individual_address_entries: None,
+        max_security_group_key_table_entries: None,
+        max_security_p2p_key_table_entries: None,
+    };
+
+    // Data Secure TP1 variant: same application logic as `app_tp1` but
+    // declared secure-capable to ETS. Table sizes match what the
+    // `stm32g0_tp1_secure_light_switch` firmware can hold — see
+    // `SIAT_SIZE` / `P2P_SIZE` in that crate's `main.rs`.
+    //
+    // Per 03/03/07 §5.3 the SIAT stores LastValidSeqNr for every
+    // non-tool secure sender — group senders included, not only P2P
+    // partners. So even this tool-access + group-only device needs
+    // `SIAT > 0`; ETS writes one SIAT slot per secure sender IA
+    // during commissioning. `P2P = 0` because we do not carry P2P
+    // key material (no secure P2P traffic with partner devices).
+    let app_tp1_secure = ApplicationProgramDef {
+        name: "LightSwitch2TPSecure",
+        device: &DEVICE_DESCRIPTOR_TP1_SECURE,
         params: LightSwitchParams::ETS_PARAMS_EXT,
         virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
         param_defaults: param_bytes,
@@ -97,13 +143,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus_interfaces: None,
         additional_addresses_count: None,
         ip_config: None,
+        is_secure_enabled: Some(true),
+        max_security_individual_address_entries: Some(32),
+        max_security_group_key_table_entries: Some(10),
+        max_security_p2p_key_table_entries: Some(0),
     };
 
-    // Build a multi-device package: two application programs, two hardware
-    // definitions (one IP, one TP1), and a single catalog section with both.
+    // Build a multi-device package: three application programs, three
+    // hardware definitions (IP, TP1, TP1-Secure), and a single catalog
+    // section with all three.
     let mut builder = KnxprodBuilder::new(LightSwitchDevice::MANUFACTURER_ID);
     let app_ip_ref = builder.application_program(&app_ip);
     let app_tp1_ref = builder.application_program(&app_tp1);
+    let app_tp1_secure_ref = builder.application_program(&app_tp1_secure);
 
     let hw_ip_ref = builder.hardware(HardwareDef {
         serial_number: SERIAL_NUMBER_IP,
@@ -135,6 +187,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         application_programs: vec![app_tp1_ref],
     });
 
+    let hw_tp1_secure_ref = builder.hardware(HardwareDef {
+        serial_number: SERIAL_NUMBER_TP1_SECURE,
+        hardware_version: 1,
+        name: "2-Button Light Switch TP1 Secure",
+        bus_current: Some(10),
+        is_ip_enabled: None,
+        products: vec![ProductDef {
+            name: "Light Switch 2-fold (TP1, Secure)",
+            order_number: "LS-0002-TP-SEC",
+            is_rail_mounted: false,
+            visible_description: None,
+        }],
+        application_programs: vec![app_tp1_secure_ref],
+    });
+
     builder.catalog(CatalogSectionDef {
         name: "Push Buttons",
         entries: vec![
@@ -149,6 +216,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 hardware: hw_tp1_ref,
                 product_order_number: "LS-0002-TP",
                 application_program: app_tp1_ref,
+            },
+            CatalogEntryDef {
+                name: "Light Switch 2-fold (TP1, Secure)",
+                hardware: hw_tp1_secure_ref,
+                product_order_number: "LS-0002-TP-SEC",
+                application_program: app_tp1_secure_ref,
             },
         ],
         subsections: vec![],
@@ -172,12 +245,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             product_order_number: "LS-0002-TP",
             application_program: app_tp1_ref,
         });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch TP1 Secure",
+            hardware: hw_tp1_secure_ref,
+            product_order_number: "LS-0002-TP-SEC",
+            application_program: app_tp1_secure_ref,
+        });
     }
 
     let out_dir: PathBuf = ["out", "LightSwitch2"].iter().collect();
-    let builder = builder
-        .output_dir(&out_dir)
-        .schema_version(KnxSchemaVersion::V20);
+    let builder = builder.output_dir(&out_dir).schema_version(KnxSchemaVersion::V20);
 
     if generate_knxproj {
         let knxproj_path = builder
@@ -185,11 +262,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .master_data(MasterDataSource::Download)
             .write_knxproj()?;
 
-        println!(
-            "Generated: {} ({} bytes)",
-            knxproj_path.display(),
-            std::fs::metadata(&knxproj_path)?.len()
-        );
+        println!("Generated: {} ({} bytes)", knxproj_path.display(), std::fs::metadata(&knxproj_path)?.len());
     } else if generate_knxprod {
         let (output, knxprod_path) = builder.master_data(MasterDataSource::Download).build_all()?;
 
@@ -198,11 +271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (filename, _) in output.xml_files() {
             println!("Generated: {}", manuf_dir.join(filename).display());
         }
-        println!(
-            "\nGenerated: {} ({} bytes)",
-            knxprod_path.display(),
-            std::fs::metadata(&knxprod_path)?.len()
-        );
+        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
     } else {
         let (output, paths) = builder.write_mtxml_with_paths()?;
 

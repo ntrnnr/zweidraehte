@@ -35,17 +35,24 @@ use super::SecurityState;
 /// all Security IO PIDs. In Phase 1, only PIDs 1 (OBJECT_TYPE),
 /// 5 (LOAD_STATE_CONTROL), and 51 (SECURITY_MODE) are functional.
 /// Remaining PIDs return `InvalidPropertyId` until Phase 2+.
-pub struct SecurityAugment<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize> {
-    state: &'a SecurityState<GRP, P2P, GO>,
+pub struct SecurityAugment<
+    'a,
+    SEQ: SequenceNumberStorage,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> {
+    state: &'a SecurityState<GRP, P2P, SIAT, GO>,
     seq_storage: &'a RefCell<SEQ>,
 }
 
-impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
-    SecurityAugment<'a, SEQ, GRP, P2P, GO>
+impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
+    SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
 {
     /// Create a new security augment backed by the given state and
     /// sequence number storage.
-    pub fn new(state: &'a SecurityState<GRP, P2P, GO>, seq_storage: &'a RefCell<SEQ>) -> Self {
+    pub fn new(state: &'a SecurityState<GRP, P2P, SIAT, GO>, seq_storage: &'a RefCell<SEQ>) -> Self {
         Self { state, seq_storage }
     }
 
@@ -209,8 +216,15 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const G
     }
 }
 
-impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
-    InterfaceObjectAugment<D> for SecurityAugment<'a, SEQ, GRP, P2P, GO>
+impl<
+    'a,
+    D: StackDefinition,
+    SEQ: SequenceNumberStorage,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> InterfaceObjectAugment<D> for SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
 {
     fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
         if object_type != InterfaceObjectType::Security {
@@ -700,8 +714,8 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, const GRP: usize, const
 // Private Helpers
 // ============================================================================
 
-impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
-    SecurityAugment<'a, SEQ, GRP, P2P, GO>
+impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
+    SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
 {
     /// Handle PID_SECURITY_MODE FunctionPropertyCommand.
     ///

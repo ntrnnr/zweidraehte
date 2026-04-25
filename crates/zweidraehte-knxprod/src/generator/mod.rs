@@ -200,6 +200,25 @@ pub struct ApplicationProgramDef<'a> {
     /// IP configuration mode. Typically `"Tool"` for tool-configured devices.
     /// Corresponds to `ApplicationProgram/@IPConfig`.
     pub ip_config: Option<&'a str>,
+    /// Marks the device as KNX Data Secure-capable. Emits
+    /// `ApplicationProgram/@IsSecureEnabled`. ETS only offers secure
+    /// configuration options when this is `Some(true)`.
+    pub is_secure_enabled: Option<bool>,
+    /// Secure Individual Address Table (SIAT) capacity — one entry per
+    /// configured P2P peer. Emits
+    /// `ApplicationProgram/@MaxSecurityIndividualAddressEntries`. Must
+    /// not exceed the firmware's actual SIAT size.
+    pub max_security_individual_address_entries: Option<u16>,
+    /// Group key table capacity — one entry per group address the
+    /// device may subscribe to. Emits
+    /// `ApplicationProgram/@MaxSecurityGroupKeyTableEntries`. Must not
+    /// exceed the firmware's actual group-key table size (typically
+    /// matches the address table size).
+    pub max_security_group_key_table_entries: Option<u16>,
+    /// Peer-to-peer key table capacity. Emits
+    /// `ApplicationProgram/@MaxSecurityP2PKeyTableEntries`. Leave as
+    /// `None` (default 0) on devices that do not support P2P traffic.
+    pub max_security_p2p_key_table_entries: Option<u16>,
 }
 
 /// Definition of a single bus interface channel.
@@ -384,6 +403,10 @@ pub(crate) struct ApplicationProgramConfig<'a> {
     pub bus_interfaces: Option<&'a [BusInterfaceDef]>,
     pub additional_addresses_count: Option<u32>,
     pub ip_config: Option<&'a str>,
+    pub is_secure_enabled: Option<bool>,
+    pub max_security_individual_address_entries: Option<u16>,
+    pub max_security_group_key_table_entries: Option<u16>,
+    pub max_security_p2p_key_table_entries: Option<u16>,
 }
 
 impl<'a> ApplicationProgramConfig<'a> {

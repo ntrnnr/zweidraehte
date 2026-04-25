@@ -13,10 +13,10 @@ use std::path::PathBuf;
 
 use const_default::ConstDefault;
 
+use testutil::devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
-use testutil::devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -50,6 +50,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus_interfaces: None,
         additional_addresses_count: None,
         ip_config: None,
+        is_secure_enabled: None,
+        max_security_individual_address_entries: None,
+        max_security_group_key_table_entries: None,
+        max_security_p2p_key_table_entries: None,
     };
 
     // Output directory: out/<device>/

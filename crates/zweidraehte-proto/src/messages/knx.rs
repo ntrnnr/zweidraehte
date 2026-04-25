@@ -655,6 +655,41 @@ impl MessageFormat for Tp1Format {}
 /// // Now we can use internal format methods
 /// let apci = internal_msg.get_apci_code();
 /// ```
+/// Required security level for an outbound message, carried out-of-band
+/// alongside the wire bytes so the Secure Application Layer can apply the
+/// correct §5.5.3.x decision tree without inspecting the buffer's contents
+/// or duplicating policy lookups.
+///
+/// Producers stamp this on each outbound buffer; the S-AL reads it during
+/// outbox drain. Insecure stacks have no S-AL and the field is ignored.
+///
+/// Spec mapping (03/05/01 §6.3.15.3 Table 108):
+///
+/// - `Plain`     → `par_auth = 0`, `par_conf = 0`
+/// - `Auth`      → `par_auth = 1`, `par_conf = 0`
+/// - `AuthConf`  → `par_auth = 1`, `par_conf = 1`
+///
+/// `Unspecified` is the default and means "S-AL applies its existing rules":
+/// for reactive responses the S-AL's `outgoing_ctx` (set on the matching
+/// secure incoming request) decides; for spontaneous output, plaintext is
+/// sent. New spontaneous surfaces should stamp explicitly rather than rely
+/// on `Unspecified` defaulting to plaintext.
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
+pub enum RequiredSecurity {
+    /// Defer to the S-AL's reactive logic (`outgoing_ctx`); spontaneous
+    /// output without an active reactive context falls through to plaintext.
+    #[default]
+    Unspecified,
+    /// Send plaintext explicitly (e.g. spontaneous broadcasts that are plain
+    /// by spec, like `A_NetworkParameter_InfoReport` security reports per
+    /// 03/05/01 §6.3.11.4).
+    Plain,
+    /// Authenticate (MAC over plaintext payload).
+    Auth,
+    /// Authenticate and encrypt.
+    AuthConf,
+}
+
 pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = InternalFormat> {
     service_type: ServiceType,
     buf: B,
@@ -669,6 +704,11 @@ pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = Internal
     /// this connection. The S-AL needs this to include the correct
     /// TPCI bits in the CCM B0 block before encrypting.
     outgoing_tl_seq: Option<u8>,
+    /// Required security level for outbound messages. Producers (AL,
+    /// S-AL spontaneous helpers) stamp this so the S-AL outbox drain
+    /// can apply the §5.5.3.x decision tree uniformly across group,
+    /// P2P, broadcast, and tool-access paths. See [`RequiredSecurity`].
+    required_security: RequiredSecurity,
     /// Marker for the message format
     _format: PhantomData<F>,
 }
@@ -736,6 +776,22 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
         self.outgoing_tl_seq = Some(seq);
     }
 
+    /// Get the required security level annotated on this message.
+    ///
+    /// Producers stamp this on outbound buffers; the Secure Application
+    /// Layer reads it during outbox drain to decide whether to encrypt.
+    pub fn required_security(&self) -> RequiredSecurity {
+        self.required_security
+    }
+
+    /// Set the required security level for this outbound message.
+    ///
+    /// Most call sites should use `MessageBuilder::with_required_security`
+    /// at construction time instead of mutating the buffer post-build.
+    pub fn set_required_security(&mut self, level: RequiredSecurity) {
+        self.required_security = level;
+    }
+
     pub fn len(&self) -> usize {
         self.buf.len()
     }
@@ -757,6 +813,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
             buf,
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
+            required_security: RequiredSecurity::Unspecified,
             _format: PhantomData,
         }
     }
@@ -771,6 +828,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
             buf,
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
+            required_security: RequiredSecurity::Unspecified,
             _format: PhantomData,
         }
     }
@@ -1161,6 +1219,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
             buf,
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
+            required_security: RequiredSecurity::Unspecified,
             _format: PhantomData,
         }
     }
@@ -1212,6 +1271,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
                 buf: self.buf,
                 access_source: self.access_source,
                 outgoing_tl_seq: self.outgoing_tl_seq,
+                required_security: self.required_security,
                 _format: PhantomData,
             };
         }
@@ -1267,6 +1327,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
             buf: self.buf,
             access_source: self.access_source,
             outgoing_tl_seq: self.outgoing_tl_seq,
+            required_security: self.required_security,
             _format: PhantomData,
         }
     }
@@ -1325,6 +1386,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
             buf: self.buf,
             access_source: self.access_source,
             outgoing_tl_seq: self.outgoing_tl_seq,
+            required_security: self.required_security,
             _format: PhantomData,
         }
     }
@@ -1358,6 +1420,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
             buf,
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
+            required_security: RequiredSecurity::Unspecified,
             _format: PhantomData,
         }
     }

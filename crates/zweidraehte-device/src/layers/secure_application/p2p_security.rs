@@ -1,14 +1,25 @@
-//! P2P-specific secure frame handling (S-A_Sync_Req / S-A_Sync_Res).
+//! S-A_Sync handling that lives behind the `P2pFeature` gate.
 //!
-//! Reachable only through [`WithP2p`](super::p2p_feature::WithP2p) —
-//! the [`NoP2p`](super::p2p_feature::NoP2p) feature never names these
-//! functions, so the monomorphiser drops them for group-only devices.
+//! The incoming-sync-request dispatch entry point
+//! ([`process_sync_request`]) is *always* reachable — ETS needs the
+//! tool-key branch to commission every Data Secure device, regardless
+//! of whether the device exposes a P2P key table. The entry point is
+//! parameterised over `P2P: P2pFeature` and branches:
 //!
-//! The S-A_Sync protocol is inherently P2P: it aligns sequence numbers
-//! between two individual peers. It accepts either the tool key (for
-//! ETS-initiated sync during commissioning) or a P2P key from the
-//! P2P Key Table (for device-to-device sync). Both branches live here
-//! because the sync-state machine is the same; only key lookup differs.
+//! - `scf.tool_access == true` → inline tool-key handler (no P2P
+//!   state touched).
+//! - `scf.tool_access == false` → delegate to
+//!   `P2P::process_sync_request_p2p`, which is stubbed out on
+//!   [`NoP2p`] and delegates to [`process_sync_request_p2p`] below on
+//!   [`WithP2p`].
+//!
+//! The other two entry points ([`process_sync_response`] and
+//! [`initiate_sync`]) are genuinely P2P-flow-only: they touch
+//! `pending_sync` state that only [`WithP2p`] carries, so they are
+//! only reachable through [`WithP2p`]'s trait impl.
+//!
+//! [`NoP2p`]: super::p2p_feature::NoP2p
+//! [`WithP2p`]: super::p2p_feature::WithP2p
 
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType};
 use crate::definition::StackDefinition;
@@ -26,21 +37,28 @@ use zweidraehte_proto::messages::{
     knx::{KnxMessageBuffer, ServiceType, offsets},
 };
 
-use crate::logging::warn;
+use crate::logging::{debug, warn};
 
-use super::p2p_feature::WithP2p;
+use super::p2p_feature::{P2pFeature, WithP2p};
 use super::{PendingSyncState, SecureApplicationLayer, SecureResult, seq_to_u64, u64_to_seq};
 
 // ========================================================================
-// S-A_Sync_Req processing (spec 03/03/07 §5.3.2)
+// Shared entry point for incoming S-A_Sync_Req (spec 03/03/07 §5.3.2)
 // ========================================================================
 
 /// Process an incoming S-A_Sync_Req and generate an S-A_Sync_Res.
 ///
-/// Implements the remote S-AL side of the sync protocol. The device
-/// responds with its sequence numbers so the requester can synchronize.
-pub(super) fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
-    sal: &SecureApplicationLayer<'a, D, SEQ, WithP2p>,
+/// Parameterised over `P2P` so every secure device reaches this path —
+/// commissioning tools always send tool-key sync_req, which needs to
+/// succeed regardless of whether the device has a P2P key table.
+///
+/// The non-tool branch delegates to `P2P::process_sync_request_p2p`,
+/// which is a no-op on [`NoP2p`] (group-only devices can't verify P2P
+/// sync requests anyway, having neither key nor SIAT entry for the
+/// sender) and routes through [`process_sync_request_p2p`] on
+/// [`WithP2p`].
+pub(super) fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>(
+    sal: &SecureApplicationLayer<'a, D, SEQ, P2P>,
     mut msg: KnxMessageBuffer<Buffer<'static>>,
     scf: SecurityControlField,
     scf_byte: u8,
@@ -51,13 +69,17 @@ where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
-    let security_state = sal.inner.state().extension_state();
+    debug!(
+        "S-AL sync_req: src={:#06X} tool={} sbc={} st={:?}",
+        src, scf.tool_access, scf.system_broadcast, incoming_service_type
+    );
 
     // Step 1: Rate limit — ignore if we responded within the
     // rate-limit window (1 s per spec; scaled for fast conformance
     // runs so tests don't burn real wall-clock between syncs).
-    if let Some(last) = sal.p2p_state.last_sync_response.get() {
-        if embassy_time::Instant::now() - last < sal.p2p_state.sync_rate_limit {
+    if let Some(last) = sal.last_sync_response.get() {
+        if embassy_time::Instant::now() - last < sal.sync_rate_limit {
+            debug!("S-AL sync_req: rate-limited (within window), dropping");
             return SecureResult::Dropped;
         }
     }
@@ -87,43 +109,169 @@ where
     if is_broadcast {
         // Broadcast/system broadcast: serial must be non-zero and match.
         if serial_number == [0u8; 6] || serial_number != *device_serial {
+            debug!(
+                "S-AL sync_req: broadcast serial mismatch (got {:?}, ours {:?}), dropping",
+                zweidraehte_util::fmt::Bytes(&serial_number),
+                zweidraehte_util::fmt::Bytes(device_serial)
+            );
             return SecureResult::Dropped;
         }
     } else {
         // P2P: serial must be all-zero or match the device's serial.
         if serial_number != [0u8; 6] && serial_number != *device_serial {
+            debug!(
+                "S-AL sync_req: p2p serial mismatch (got {:?}, ours {:?}), dropping",
+                zweidraehte_util::fmt::Bytes(&serial_number),
+                zweidraehte_util::fmt::Bytes(device_serial)
+            );
             return SecureResult::Dropped;
         }
     }
 
-    // Step 4: Key lookup.
-    let key = if scf.tool_access {
+    // Step 4: Tool vs P2P branch. P2P runs through the feature trait
+    // so `NoP2p` can elide the P2P-key/SIAT code path entirely.
+    if !scf.tool_access {
+        return P2P::process_sync_request_p2p(sal, msg, scf, scf_byte, src, incoming_service_type);
+    }
+
+    // Tool branch: key lookup (tool_key with FDSK fallback).
+    let security_state = sal.inner.state().extension_state();
+    let key = {
         let tk = security_state.tool_key();
-        if tk != [0u8; 16] { tk } else { sal.inner.state().fdsk().copied().unwrap_or([0u8; 16]) }
-    } else {
-        // Non-tool: look up P2P key for sender's IA (roles not needed for sync).
-        match security_state.p2p_key_for_ia(src) {
-            Some((k, _roles)) => k,
-            None => {
-                warn!("S-AL: sync req — no P2P key for IA {:#06X}", src);
-                return SecureResult::Dropped;
-            }
+        if tk != [0u8; 16] {
+            debug!("S-AL sync_req: using configured tool key");
+            tk
+        } else {
+            let fdsk = sal.inner.state().fdsk().copied().unwrap_or([0u8; 16]);
+            debug!("S-AL sync_req: tool key empty, falling back to FDSK (present={})", fdsk != [0u8; 16]);
+            fdsk
         }
     };
 
-    // Step 5: SIAT check (non-tool only).
-    if !scf.tool_access {
-        use crate::objects::tables::LoadState;
-        if security_state.security_load_state() != LoadState::Loaded {
-            return SecureResult::Dropped;
-        }
-        if !security_state.is_in_siat(src) {
-            warn!("S-AL: sync req — sender {:#06X} not in SIAT", src);
-            sal.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
-            return SecureResult::Dropped;
-        }
+    build_sync_response_for(
+        sal,
+        msg,
+        scf,
+        scf_byte,
+        src,
+        incoming_service_type,
+        is_broadcast,
+        addr_type,
+        serial_number,
+        seq_nr_local_received,
+        received_mac,
+        ccm_ctx,
+        key,
+    )
+}
+
+// ========================================================================
+// P2P-only branch of S-A_Sync_Req (reachable only via WithP2p)
+// ========================================================================
+
+/// Handle the non-tool branch of an incoming S-A_Sync_Req.
+///
+/// Called from [`WithP2p::process_sync_request_p2p`] only. Performs
+/// the SIAT check and P2P-key lookup that `NoP2p` devices cannot do,
+/// then hands off to [`build_sync_response_for`] to produce the
+/// encrypted response.
+pub(super) fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    sal: &SecureApplicationLayer<'a, D, SEQ, WithP2p>,
+    mut msg: KnxMessageBuffer<Buffer<'static>>,
+    scf: SecurityControlField,
+    scf_byte: u8,
+    src: u16,
+    incoming_service_type: ServiceType,
+) -> SecureResult
+where
+    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
+{
+    let security_state = sal.inner.state().extension_state();
+
+    // Re-parse the sync header (the top-level handler parsed once for
+    // the serial check, but that reference was dropped). The frame has
+    // already been validated for length there.
+    let buf = msg.buf_mut();
+    let sync_ref = SyncReqRef::parse(buf).expect("already validated length");
+    let seq_nr_local_received = sync_ref.seq_nr_local();
+    let serial_number = sync_ref.knx_serial_number();
+    let received_mac = sync_ref.mac();
+    let addr_type = sync_ref.addr_type();
+    let ccm_ctx = sync_ref.ccm_context();
+    drop(sync_ref);
+
+    let is_broadcast = addr_type != 0
+        || matches!(incoming_service_type, ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind);
+
+    // SIAT check (non-tool only).
+    use crate::objects::tables::LoadState;
+    if security_state.security_load_state() != LoadState::Loaded {
+        return SecureResult::Dropped;
+    }
+    if !security_state.is_in_siat(src) {
+        warn!("S-AL: sync req — sender {:#06X} not in SIAT", src);
+        sal.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
+        return SecureResult::Dropped;
     }
 
+    // P2P key lookup (roles not needed for sync).
+    let key = match security_state.p2p_key_for_ia(src) {
+        Some((k, _roles)) => k,
+        None => {
+            warn!("S-AL: sync req — no P2P key for IA {:#06X}", src);
+            return SecureResult::Dropped;
+        }
+    };
+
+    build_sync_response_for(
+        sal,
+        msg,
+        scf,
+        scf_byte,
+        src,
+        incoming_service_type,
+        is_broadcast,
+        addr_type,
+        serial_number,
+        seq_nr_local_received,
+        received_mac,
+        ccm_ctx,
+        key,
+    )
+}
+
+// ========================================================================
+// Shared response-build helper
+// ========================================================================
+
+/// Verify the request's MAC, compute response sequence numbers, and
+/// build the encrypted S-A_Sync_Res in-place in the request buffer.
+///
+/// Invoked by both the tool branch (in [`process_sync_request`]) and
+/// the P2P branch ([`process_sync_request_p2p`]). The only per-caller
+/// difference is key selection — everything from step 6 onward is
+/// identical.
+#[allow(clippy::too_many_arguments)]
+fn build_sync_response_for<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>(
+    sal: &SecureApplicationLayer<'a, D, SEQ, P2P>,
+    mut msg: KnxMessageBuffer<Buffer<'static>>,
+    scf: SecurityControlField,
+    scf_byte: u8,
+    src: u16,
+    incoming_service_type: ServiceType,
+    is_broadcast: bool,
+    addr_type: u8,
+    serial_number: [u8; 6],
+    seq_nr_local_received: [u8; 6],
+    received_mac: [u8; 4],
+    ccm_ctx: ccm::CcmContext,
+    key: [u8; 16],
+) -> SecureResult
+where
+    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
+{
     // Step 6: Verify and decrypt the challenge.
     let buf = msg.buf_mut();
     let mut challenge = [0u8; 6];
@@ -176,9 +324,17 @@ where
     let seq_nr_remote = if scf.tool_access { tool_seq } else { regular_seq };
     drop(storage);
 
+    debug!(
+        "S-AL sync_res: remote_seq={:?} local_seq={:?} (received={:?} stored_pre={})",
+        zweidraehte_util::fmt::Bytes(&seq_nr_remote),
+        zweidraehte_util::fmt::Bytes(&response_seq_local_bytes),
+        zweidraehte_util::fmt::Bytes(&seq_nr_local_received),
+        stored_val
+    );
+
     // Step 9: Generate random.
     let mut random = [0u8; 6];
-    sal.inner.state().fill_random(&mut random);
+    <D::Rng as crate::rng::Rng>::fill(&mut random);
 
     // Step 10: Build response — reuse the incoming buffer.
     let mut challenge_xor_random = [0u8; 6];
@@ -244,7 +400,7 @@ where
     msg.set_service_type(response_st);
 
     // Step 12: Update rate limit timestamp.
-    sal.p2p_state.last_sync_response.set(Some(embassy_time::Instant::now()));
+    sal.last_sync_response.set(Some(embassy_time::Instant::now()));
 
     SecureResult::SyncResponse(msg)
 }
@@ -269,8 +425,6 @@ where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
-    use crate::logging::debug;
-
     let pending = match sal.p2p_state.pending_sync.get() {
         Some(p) => p,
         None => {
@@ -418,8 +572,6 @@ where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
-    use crate::logging::debug;
-
     let security_state = sal.inner.state().extension_state();
 
     // Step 1: Key lookup.
@@ -444,9 +596,9 @@ where
 
     // Step 3: Generate random challenge.
     let mut challenge = [0u8; 6];
-    sal.inner.state().fill_random(&mut challenge);
+    <D::Rng as crate::rng::Rng>::fill(&mut challenge);
     let mut random = [0u8; 6];
-    sal.inner.state().fill_random(&mut random);
+    <D::Rng as crate::rng::Rng>::fill(&mut random);
 
     // Step 4: Build SCF for sync request.
     let scf = SecurityControlField {

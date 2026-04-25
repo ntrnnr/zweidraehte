@@ -144,6 +144,19 @@ pub trait StackDefinition: Copy + 'static {
     /// which requires a real mutex to prevent `BorrowMutError` panics.
     type Mutex: RawMutex + 'static = NoopRawMutex;
 
+    /// Random byte source for KNX Data Secure.
+    ///
+    /// Stateless trait implemented on a ZST; plugs into the Secure
+    /// Application Layer's `S-A_Sync` challenge/nonce generation.
+    /// The default [`NoRng`](crate::rng::NoRng) is adequate for
+    /// insecure stacks — it panics on use, but the
+    /// [`SecureDeviceBuilder`](crate::SecureDeviceBuilder)'s
+    /// `where D::Rng: SecureRng` bound rejects it at compile time for
+    /// secure compositions. Secure firmware must set this to a type
+    /// implementing both [`Rng`](crate::rng::Rng) and
+    /// [`SecureRng`](crate::rng::SecureRng).
+    type Rng: crate::rng::Rng = crate::rng::NoRng;
+
     /// Platform abstraction for querying/applying network configuration.
     ///
     /// For KNX/IP devices, implement [`NetworkInfo`](crate::IpPlatform) +

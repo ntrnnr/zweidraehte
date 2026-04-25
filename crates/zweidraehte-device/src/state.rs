@@ -5,15 +5,15 @@
 //! providing individual address, serial number, authorization, and
 //! programming mode. It has no dependency on KNX/IP.
 
-use zweidraehte_proto::access::{AccessContext, HasConnectionAuth};
-use zweidraehte_proto::address::IndividualAddress;
 use crate::bcus::system_b::HasDiagnosticsContext;
 use crate::device_model::DeviceModelNotifier;
 use crate::objects::{
-    comm::HasCommObjects,
+    comm::{HasCommObjects, HasGoSecurityView},
     interface::HasRoutingCount,
     tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
 };
+use zweidraehte_proto::access::{AccessContext, HasConnectionAuth};
+use zweidraehte_proto::address::IndividualAddress;
 
 /// Error type for read object operations with timeout
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,11 +265,15 @@ pub trait HasAuthorization {
 
 /// Secure identity for KNX Data Secure devices.
 ///
-/// Provides the Factory Default Setup Key (FDSK) and cryptographic
-/// random generation. Only the Secure Application Layer needs this
-/// trait — non-secure stacks do not require it.
+/// Provides the Factory Default Setup Key (FDSK). Only the Secure
+/// Application Layer needs this trait — non-secure stacks do not
+/// require it.
 ///
-/// All methods have defaults that indicate no secure identity.
+/// Random-byte generation for `S-A_Sync` lives on
+/// [`StackDefinition::Rng`](crate::StackDefinition::Rng), not here,
+/// so firmware can plug in an RNG without a state newtype (the
+/// orphan rule forbids non-local impls on the
+/// `SystemBDeviceState`-based state aliases used by secure stacks).
 pub trait HasSecureIdentity {
     /// Get the Factory Default Setup Key (FDSK) for KNX Data Secure.
     ///
@@ -279,15 +283,6 @@ pub trait HasSecureIdentity {
     /// Secure support.
     fn fdsk(&self) -> Option<&[u8; 16]> {
         None
-    }
-
-    /// Fill a buffer with random bytes for KNX Data Secure operations.
-    ///
-    /// Required for S-A_Sync responses (6-byte random per response).
-    /// Default panics — only secure stacks need to implement this.
-    fn fill_random(&self, buf: &mut [u8]) {
-        let _ = buf;
-        panic!("fill_random not implemented — required for secure stacks");
     }
 }
 
@@ -324,15 +319,16 @@ pub trait CoreDeviceState<CO>:
     + HasAssociationTable
     + HasCommunicationObjectTable
     + HasCommObjects<CO = CO>
+    + HasGoSecurityView
     + HasDiagnosticsContext
     + HasConnectionAuth
     + HasRoutingCount
     + DeviceModelNotifier
     + 'static
-{}
+{
+}
 
-impl<T, CO> CoreDeviceState<CO> for T
-where
+impl<T, CO> CoreDeviceState<CO> for T where
     T: StackState
         + HasAuthorization
         + HasPersistence
@@ -341,9 +337,11 @@ where
         + HasAssociationTable
         + HasCommunicationObjectTable
         + HasCommObjects<CO = CO>
+        + HasGoSecurityView
         + HasDiagnosticsContext
         + HasConnectionAuth
         + HasRoutingCount
         + DeviceModelNotifier
-        + 'static,
-{}
+        + 'static
+{
+}

@@ -438,6 +438,78 @@ pub trait HasCommObjects {
     fn comm_objects(&self) -> &RefCell<Self::CO>;
 }
 
+/// Per-destination required security policy view.
+///
+/// Producers in the Application Layer (group sends, future spontaneous
+/// P2P writes, broadcasts) consult this trait through the device state to
+/// stamp [`RequiredSecurity`] onto outbound messages. The Secure Application
+/// Layer reads the stamp at outbox drain and applies the §5.5.3.x decision
+/// tree (03/03/07) — encrypt with the appropriate key, or send plaintext.
+///
+/// All methods default to [`RequiredSecurity::Plain`]. Insecure device
+/// states satisfy the trait with an empty `impl` block:
+///
+/// ```ignore
+/// impl HasGoSecurityView for MyInsecureState {}
+/// ```
+///
+/// Secure device states override the methods to consult Security IO state
+/// (`PID_GO_SECURITY_FLAGS`, P2P key table, security mode flag) and return
+/// the spec-correct level per ASAP / peer IA / destination type. Keeping
+/// the default at `Plain` rather than `Unspecified` guarantees that an
+/// insecure-stack call site always emits plaintext deterministically — the
+/// `Unspecified` semantics (defer to S-AL `outgoing_ctx`) only make sense
+/// on stacks that have an S-AL.
+///
+/// The trait deliberately exposes no Security IO types so the plain
+/// Application Layer compiles without any `HasSecurityState` bound.
+///
+/// [`RequiredSecurity`]: zweidraehte_proto::messages::knx::RequiredSecurity
+pub trait HasGoSecurityView {
+    /// Required security for sending from this ASAP (originating GO).
+    ///
+    /// Per 03/05/01 §6.3.15.3 Table 108: the GO Server uses the GO's
+    /// configured `auth`/`conf` bits as `par_auth`/`par_conf` for
+    /// `A_GroupValue_Write.req`, `A_GroupValue_Read.req`, and
+    /// `A_GroupValue_Read.res`. NOTE 111: the response uses the GO's
+    /// own flags, *not* the flags of the initiating request — so callers
+    /// pass the *responding* ASAP for read responses.
+    fn required_security_for_asap(&self, _asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        zweidraehte_proto::messages::knx::RequiredSecurity::Plain
+    }
+
+    /// Required security for a P2P-addressed send to `peer_ia`.
+    ///
+    /// Per 03/03/07 §5.5.3.x: if the peer has an entry in the P2P Key
+    /// Table, the spec mandates Auth+Conf (the table holds a single key
+    /// without auth/conf granularity). Absent → plaintext.
+    fn required_security_for_p2p(&self, _peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        zweidraehte_proto::messages::knx::RequiredSecurity::Plain
+    }
+
+    /// Required security for a broadcast / system-broadcast send.
+    ///
+    /// Spontaneous broadcasts that the spec marks as plain (e.g.
+    /// `A_NetworkParameter_InfoReport` security reports per 03/05/01
+    /// §6.3.11.4) explicitly stamp [`RequiredSecurity::Plain`].
+    /// Reactive broadcast responses inherit through `Unspecified` and
+    /// the S-AL's reactive `outgoing_ctx`.
+    ///
+    /// [`RequiredSecurity::Plain`]: zweidraehte_proto::messages::knx::RequiredSecurity::Plain
+    fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        zweidraehte_proto::messages::knx::RequiredSecurity::Plain
+    }
+
+    /// Required security for spontaneous tool-key-encrypted send.
+    ///
+    /// Tool access uses the configured Tool Key. When security mode is
+    /// enabled the spec mandates Auth+Conf for tool-channel traffic; in
+    /// factory state the tool key is zero and traffic is plain.
+    fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        zweidraehte_proto::messages::knx::RequiredSecurity::Plain
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComObjectEvent {
     /// A communication object was updated remotely by a GroupValueWrite

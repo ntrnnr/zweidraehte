@@ -44,7 +44,9 @@
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
-use crate::messages::knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, Tpci};
+use crate::messages::knx::{
+    ApciCode, DestinationAddress, KnxMessageBuffer, Priority, RequiredSecurity, ServiceType, Tpci,
+};
 
 // ============================================================================
 // Direction Type States
@@ -191,6 +193,13 @@ pub mod state {
         pub service_type: ServiceType,
         pub priority: Priority,
         pub dest: DestinationAddress,
+        /// Required security level applied to the finalised message.
+        ///
+        /// Defaults to [`RequiredSecurity::Unspecified`]. Producers chain
+        /// `.with_required_security(level)` to stamp an explicit policy
+        /// (e.g. Auth/AuthConf for spontaneous secure GO writes, or Plain
+        /// for spontaneous broadcasts that are plaintext by spec).
+        pub required_security: RequiredSecurity,
     }
 
     /// Transport layer context for a request
@@ -263,6 +272,10 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
                 service_type,
                 priority: indication.ctrl_field().priority(),
                 dest: DestinationAddress::Individual(indication.get_source_addr()),
+                // Default for responses: stay `Unspecified` so the S-AL's
+                // reactive logic (`outgoing_ctx`) decides. Reactive-response
+                // call sites do not need to chain `.with_required_security`.
+                required_security: RequiredSecurity::Unspecified,
             },
         }
     }
@@ -295,7 +308,12 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         MessageBuilder {
             buffer,
             _direction: PhantomData,
-            state: state::NetworkRequest { service_type, priority, dest },
+            state: state::NetworkRequest {
+                service_type,
+                priority,
+                dest,
+                required_security: RequiredSecurity::Unspecified,
+            },
         }
     }
 }
@@ -337,6 +355,27 @@ fn indication_to_request_service(ind_service: ServiceType) -> ServiceType {
 // ============================================================================
 
 impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, state::NetworkRequest> {
+    /// Annotate the outbound message with a required security level.
+    ///
+    /// Stamped onto the finalised [`KnxMessageBuffer`] so the Secure
+    /// Application Layer can apply the §5.5.3.x decision tree at outbox
+    /// drain. Use [`RequiredSecurity::Auth`] / [`AuthConf`] for
+    /// spontaneous secure paths (e.g. group writes that originate from
+    /// a GO whose `PID_GO_SECURITY_FLAGS` requires security), and
+    /// [`RequiredSecurity::Plain`] for spontaneous outputs that are
+    /// plaintext by spec (e.g. `A_NetworkParameter_InfoReport` security
+    /// reports per 03/05/01 §6.3.11.4).
+    ///
+    /// Reactive-response call sites do not need to chain this; the
+    /// default [`RequiredSecurity::Unspecified`] hands control to the
+    /// S-AL's `outgoing_ctx` mechanism.
+    ///
+    /// [`AuthConf`]: RequiredSecurity::AuthConf
+    pub fn with_required_security(mut self, level: RequiredSecurity) -> Self {
+        self.state.required_security = level;
+        self
+    }
+
     /// Build a network-layer message (no transport/application layer)
     ///
     /// This is used when you only need network layer context.
@@ -345,6 +384,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         let mut msg = KnxMessageBuffer::new(self.buffer, self.state.service_type);
         msg.ctrl_field_mut().set_priority(self.state.priority);
         msg.set_dest_addr(self.state.dest);
+        msg.set_required_security(self.state.required_security);
         RequestMessage::request(msg)
     }
 
@@ -362,10 +402,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     ///     .with_transport_control(Tpci::Ack(seq_no))
     ///     .build();
     /// ```
-    pub fn with_transport_control(
-        self,
-        tpci: Tpci,
-    ) -> MessageBuilder<B, direction::Request, state::TransportRequest> {
+    pub fn with_transport_control(self, tpci: Tpci) -> MessageBuilder<B, direction::Request, state::TransportRequest> {
         MessageBuilder {
             buffer: self.buffer,
             _direction: PhantomData,
@@ -389,10 +426,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     ///     .with_application(ApciCode::DeviceDescriptorResponse)
     ///     .with_data(|data| { /* write application data */ });
     /// ```
-    pub fn with_application(
-        self,
-        apci: ApciCode,
-    ) -> MessageBuilder<B, direction::Request, state::ApplicationRequest> {
+    pub fn with_application(self, apci: ApciCode) -> MessageBuilder<B, direction::Request, state::ApplicationRequest> {
         MessageBuilder {
             buffer: self.buffer,
             _direction: PhantomData,
@@ -415,6 +449,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         msg.ctrl_field_mut().set_priority(self.state.network.priority);
         msg.set_dest_addr(self.state.network.dest);
         msg.set_tpci(self.state.tpci);
+        msg.set_required_security(self.state.network.required_security);
         RequestMessage::request(msg)
     }
 }
@@ -457,6 +492,7 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         // copy_from_slice in the writer would clobber the APCI bits.
         writer(msg.buf_mut());
         msg.set_apci_code(self.state.apci);
+        msg.set_required_security(self.state.network.required_security);
 
         RequestMessage::request(msg)
     }
@@ -487,17 +523,11 @@ pub trait IndicationExt<B: Deref<Target = [u8]> + DerefMut> {
     ///     .with_application(ApciCode::DeviceDescriptorResponse)
     ///     .build();
     /// ```
-    fn respond_with(
-        &self,
-        buffer: B,
-    ) -> MessageBuilder<B, direction::Request, state::NetworkRequest>;
+    fn respond_with(&self, buffer: B) -> MessageBuilder<B, direction::Request, state::NetworkRequest>;
 }
 
 impl<I: Deref<Target = [u8]>, B: Deref<Target = [u8]> + DerefMut> IndicationExt<B> for KnxMessageBuffer<I> {
-    fn respond_with(
-        &self,
-        buffer: B,
-    ) -> MessageBuilder<B, direction::Request, state::NetworkRequest> {
+    fn respond_with(&self, buffer: B) -> MessageBuilder<B, direction::Request, state::NetworkRequest> {
         MessageBuilder::respond_to(buffer, self)
     }
 }

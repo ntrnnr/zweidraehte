@@ -45,8 +45,8 @@ pub use zweidraehte_proto::config::*;
 // ============================================================================
 
 // Re-export ComObjectFlags and Priority for use in macros
-pub use zweidraehte_proto::messages::knx::Priority;
 pub use crate::objects::tables::ComObjectFlags;
+pub use zweidraehte_proto::messages::knx::Priority;
 
 // Re-export communication object flag constants from ComObjectFlags
 pub const UE: u8 = ComObjectFlags::UE_FLAG_MASK; // Update Enable
@@ -341,6 +341,7 @@ macro_rules! knx_stack_config {
 
         security: {
             p2p_key_capacity: $p2p_cap:expr,
+            siat_capacity: $siat_cap:expr,
             tool_key: $tool_key_hex:expr,
 
             group_keys: {
@@ -363,8 +364,22 @@ macro_rules! knx_stack_config {
 
         // Add security-specific constants and methods.
         impl $name {
-            /// Max P2P key entries (independent of table sizes).
+            /// Max P2P Key Table entries.
+            ///
+            /// Independent of `SIAT_CAPACITY`: the P2P Key Table only
+            /// carries entries for partners with whom the device has a
+            /// secure P2P link (03/05/01 §6.3.6 NOTE 98). A group-only
+            /// secure device therefore has `P2P_CAPACITY = 0`.
             pub const P2P_CAPACITY: usize = $p2p_cap;
+
+            /// Max SIAT entries.
+            ///
+            /// Per 03/03/07 §5.3 the Security Individual Address Table
+            /// stores LastValidSeqNr for every non-tool secure sender —
+            /// including senders that only write to group addresses —
+            /// so this sizes the union of P2P and group-secure senders,
+            /// not just P2P.
+            pub const SIAT_CAPACITY: usize = $siat_cap;
 
             /// Number of pre-configured group key entries.
             pub const NUM_GROUP_KEYS: usize = $crate::knx_stack_config!(@count $($gk_tsap)*);
@@ -379,6 +394,7 @@ macro_rules! knx_stack_config {
             pub fn create_security_config() -> $crate::bcus::system_b::SecurityExtensionConfig<
                 { Self::ADDR7_SIZE },
                 { Self::P2P_CAPACITY },
+                { Self::SIAT_CAPACITY },
                 { Self::CO7_SIZE },
             > {
                 use $crate::bcus::system_b::{SecurityExtensionConfig, SecurityTable};

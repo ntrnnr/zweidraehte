@@ -162,6 +162,15 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
     /// [`NoP2p`] this is `()` — zero bytes — and the feature trait
     /// methods return `Dropped`/`None` before ever touching it.
     pub(super) p2p_state: P2P::State,
+    /// Timestamp of the last outgoing S-A_Sync_Res. Used to enforce
+    /// the spec's 1 s rate-limit window, which applies to every sync
+    /// response regardless of tool-vs-P2P key usage, so it lives on
+    /// the S-AL itself rather than inside `WithP2pState`.
+    pub(super) last_sync_response: Cell<Option<embassy_time::Instant>>,
+    /// Configured rate-limit window (defaults to 1 s; scaled under the
+    /// `conformance` feature). Held here so both the tool-key and P2P
+    /// sync-request handlers read from one place.
+    pub(super) sync_rate_limit: embassy_time::Duration,
 }
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> SecureApplicationLayer<'a, D, SEQ, P2P> {
@@ -171,6 +180,8 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Secure
             seq_storage,
             outgoing_ctx: Cell::new(OutgoingSecurityCtx::default()),
             p2p_state: P2P::State::default(),
+            last_sync_response: Cell::new(None),
+            sync_rate_limit: p2p_feature::default_sync_rate_limit(),
         }
     }
 
@@ -299,12 +310,19 @@ where
         // specification (03/05/01 §6.3.11.4). Urgent maps to the 2-bit
         // priority value 10b, which this enum labels `Alarm`
         // (03/03/02 §2.2.3: 00=system, 01=normal, 10=urgent, 11=low).
+        //
+        // §6.3.11.4 mandates plaintext for the security report broadcast
+        // (the report itself is the security-error signalling channel; an
+        // unauthenticated party must be able to read it). Stamp Plain
+        // explicitly so this never accidentally rides on the reactive
+        // `outgoing_ctx` if it fires from inside an outbox-swap window.
         let msg = MessageBuilder::new_request(
             msg_buf,
             ServiceType::T_Broadcast_Req,
             Priority::Alarm,
             DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
         )
+        .with_required_security(zweidraehte_proto::messages::knx::RequiredSecurity::Plain)
         .with_application(ApciCode::NetworkParameterInfoReport)
         .with_data(|buf| {
             NetworkParameterInfoReport::write(buf, SECURITY_IO_TYPE, PID_SECURITY_REPORT, &payload);
@@ -381,7 +399,7 @@ where
         // ================================================================
 
         if scf.service == SecureServiceType::SyncRequest {
-            return P2P::process_sync_request(self, msg, scf, scf_byte, src, st);
+            return p2p_security::process_sync_request::<D, SEQ, P2P>(self, msg, scf, scf_byte, src, st);
         }
 
         if scf.service == SecureServiceType::SyncResponse {
@@ -458,7 +476,14 @@ where
             // Tool access: use configured tool key, or FDSK as fallback
             // when the device is in factory state (tool key all zeros).
             let tk = security_state.tool_key();
-            if tk != [0u8; 16] { tk } else { self.inner.state().fdsk().copied().unwrap_or([0u8; 16]) }
+            if tk != [0u8; 16] {
+                crate::logging::debug!("S-AL: decrypt using configured tool key");
+                tk
+            } else {
+                let fdsk = self.inner.state().fdsk().copied().unwrap_or([0u8; 16]);
+                crate::logging::debug!("S-AL: decrypt using FDSK fallback (tool key empty)");
+                fdsk
+            }
         } else if addr_type != 0 {
             // Group communication: look up group key by TSAP.
             //
@@ -598,7 +623,14 @@ where
     /// Handle an application service request, intercepting sync requests.
     ///
     /// `SyncRequest` is handled here by calling [`initiate_sync`]. All other
-    /// requests are forwarded to the inner [`ApplicationLayer`].
+    /// requests are forwarded to the inner [`ApplicationLayer`] inside an
+    /// outbox-swap window so any spontaneous outbound frames the inner AL
+    /// pushes (e.g. a `T_GroupData_Req` from
+    /// [`ApplicationLayer::send_group_value_request`]) flow through
+    /// [`Self::try_encrypt_outgoing`] before they hit the shared outbox.
+    /// Without the swap the spontaneous send would bypass the S-AL entirely
+    /// and go out plaintext even when the originating GO's
+    /// `PID_GO_SECURITY_FLAGS` requires Auth/AuthConf.
     pub fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>) {
         match request.get() {
             ApplicationLayerService::SyncRequest { peer_ia, tool_access, is_broadcast } => {
@@ -610,25 +642,77 @@ where
                 }
             }
             _ => {
-                self.inner.handle_app_request(request);
+                self.with_outbox_swap(|this| this.inner.handle_app_request(request));
             }
         }
     }
 
-    /// Encrypt an outgoing message if the current context requires it.
+    /// Run `f` against the inner AL with the shared outbox swapped for a
+    /// fresh one, then drain the captured frames through
+    /// [`Self::try_encrypt_outgoing`] back into the real outbox.
     ///
-    /// Takes a plaintext message from the inner AL's outbox and wraps it
-    /// in a Secure APDU if the outgoing security context is active.
-    fn try_encrypt_outgoing(
-        &self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
-        let ctx = self.outgoing_ctx.get();
-        if !ctx.active {
-            return Some(msg);
+    /// This is the single chokepoint that lets the S-AL inspect every frame
+    /// the inner AL emits, regardless of which entry point produced it
+    /// (incoming-frame `process`, user `handle_app_request`, lifecycle
+    /// `poll` / `init`). Each entry point uses this helper so a future
+    /// spontaneous-output surface added to the inner AL automatically gets
+    /// the encryption pass without a new swap site.
+    fn with_outbox_swap<F: FnOnce(&mut Self)>(&mut self, f: F) {
+        use crate::router::Outbox;
+
+        let original = {
+            let outbox_cell = &self.inner.lctx().outbox;
+            outbox_cell.replace(Outbox::new())
+        };
+
+        f(self);
+
+        let outbox_cell = &self.inner.lctx().outbox;
+        let mut inner_outbox = outbox_cell.replace(original);
+
+        // Drain main queue into the real outbox, encrypting if required.
+        while let Some(out_msg) = inner_outbox.take_next() {
+            if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
+                outbox_cell.borrow_mut().push(out_msg);
+            }
         }
 
-        // Only encrypt downward indications (to TL), not confirmations coming back up.
+        // And the deferred queue.
+        inner_outbox.flush_deferred();
+        while let Some(out_msg) = inner_outbox.take_next() {
+            if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
+                outbox_cell.borrow_mut().push_deferred(out_msg);
+            }
+        }
+    }
+
+    /// Encrypt an outgoing message if the buffer's annotation or the current
+    /// reactive context requires it.
+    ///
+    /// Precedence rule (mirrors the §5.5.3.x decision tree in
+    /// `docs/STACK_ARCHITECTURE.md` / 03/03/07):
+    ///
+    /// 1. **Buffer-stamped `Plain`** — explicit plaintext (e.g. spontaneous
+    ///    security report per §6.3.11.4, GO diagnostics direct-write 0x00).
+    ///    Return the message as-is, regardless of any active reactive
+    ///    context.
+    /// 2. **Buffer-stamped `Auth` / `AuthConf`** — spontaneous secure path.
+    ///    Derive the SCF byte and key from the message's service type and
+    ///    destination, reserve a seqnr, and encrypt.
+    /// 3. **Buffer-stamped `Unspecified`** — defer to the reactive
+    ///    `outgoing_ctx`. If active, the response inherits the request's
+    ///    key/SCF (existing behaviour). If inactive, plaintext goes out.
+    ///
+    /// Confirmations and frames the secure layer never wraps return
+    /// unchanged.
+    fn try_encrypt_outgoing(
+        &self,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+        use zweidraehte_proto::messages::knx::RequiredSecurity;
+
+        // Only ever encrypt downward indications. Confirmations come back
+        // up the stack as plaintext metadata; never touch them.
         let st = msg.service_type();
         let is_downward = matches!(
             st,
@@ -642,10 +726,36 @@ where
             return Some(msg);
         }
 
-        // ============================================================
-        // Build the secure frame
-        // ============================================================
-        //
+        match msg.required_security() {
+            RequiredSecurity::Plain => {
+                // Producer asked explicitly for plaintext — bypass even an
+                // active reactive context.
+                Some(msg)
+            }
+            RequiredSecurity::Auth | RequiredSecurity::AuthConf => self.encrypt_spontaneous(msg),
+            RequiredSecurity::Unspecified => {
+                // Reactive path: only encrypt if the inner AL is currently
+                // responding to a secure incoming request.
+                let ctx = self.outgoing_ctx.get();
+                if !ctx.active {
+                    return Some(msg);
+                }
+                self.encrypt_reactive(msg, ctx)
+            }
+        }
+    }
+
+    /// Encrypt a reactive response inheriting key/SCF from `outgoing_ctx`.
+    ///
+    /// Extracted from the original `try_encrypt_outgoing` body unchanged —
+    /// the flow that handles secure-incoming → secure-response pairs.
+    fn encrypt_reactive(
+        &self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+        ctx: OutgoingSecurityCtx,
+    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+        let st = msg.service_type();
+
         // Key selection: for group-addressed responses, look up the
         // outgoing group key by destination TSAP (which is still in
         // MSG_DEST_ADDR as a ConnectionNr). The incoming key
@@ -662,14 +772,18 @@ where
         };
 
         let Some(seq_nr) = self.next_seq_nr(tool_access) else {
-            // Sequence number overflow — the device must not send any more
-            // secure frames. Drop the outgoing message entirely.
             warn!("S-AL: sequence number overflow, dropping outgoing secure frame");
             return None;
         };
 
-        // Device's own address for the CCM B0 source — the NL hasn't
-        // filled in MSG_SOURCE_ADDR yet at this point in the outgoing path.
+        crate::logging::debug!(
+            "S-AL: encrypt response with key[0..2]={:02x}{:02x} (tool={}, scf=0x{:02x})",
+            encryption_key[0],
+            encryption_key[1],
+            tool_access,
+            ctx.scf_byte
+        );
+
         let src = u16::from_be_bytes(self.inner.state().individual_address().0);
         let adt = self.inner.state().adt().borrow();
 
@@ -684,11 +798,153 @@ where
 
         match outgoing::wrap_outgoing(&mut msg, inputs) {
             Ok(()) => Some(msg),
-            Err(outgoing::WrapError::BufferTooSmall) => Some(msg), // Fall back to plaintext (warn already logged).
+            Err(outgoing::WrapError::BufferTooSmall) => Some(msg),
             Err(outgoing::WrapError::InvalidScf) => {
-                // Shouldn't happen — ctx.scf_byte came from an incoming
-                // frame we already parsed as valid SCF. Drop defensively.
                 warn!("S-AL: SCF byte 0x{:02X} unexpectedly invalid for outgoing wrap", ctx.scf_byte);
+                None
+            }
+        }
+    }
+
+    /// Encrypt a spontaneous outbound message stamped with explicit
+    /// `Auth` / `AuthConf` security.
+    ///
+    /// Unlike the reactive path, there is no incoming SCF to inherit from:
+    /// we synthesise the SCF from the requested level and the destination
+    /// type, and select the key from the appropriate table:
+    ///
+    /// - `T_GroupData_Req` → group key by destination TSAP (still a
+    ///   ConnectionNr in `MSG_DEST_ADDR`; the TL replaces it with the GA
+    ///   later, but `wrap_outgoing` reverse-resolves the GA via the ADT
+    ///   for the CCM context).
+    /// - `T_Data_Req` / `T_DataUnack_Req` (P2P) → P2P key by destination
+    ///   IA. P2P entries imply Auth+Conf; if a caller stamps `Auth` on a
+    ///   P2P frame we honour it but the spec convention is AuthConf.
+    /// - `T_Broadcast_Req` / `T_SystemBroadcast_Req` → not supported here
+    ///   yet (no spontaneous secure broadcast surfaces today; the security
+    ///   report is `Plain`). Falls back to plaintext with a warning so we
+    ///   don't silently drop the message.
+    ///
+    /// Returns `None` only on seqnr overflow (per spec the device must
+    /// stop sending secure frames). On any other failure (no key, buffer
+    /// too small) the message is returned unchanged so the receiver — if
+    /// any — can at least see the plaintext attempt; this matches the
+    /// reactive path's `BufferTooSmall` fallback. The drop-vs-fallback
+    /// trade-off is deliberate: silently dropping a spontaneous send
+    /// would be invisible to the originating application, while sending
+    /// plaintext is visible on the bus and a captured trace immediately
+    /// surfaces the misconfiguration.
+    fn encrypt_spontaneous(
+        &self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+    ) -> Option<KnxMessageBuffer<Buffer<'static>>> {
+        use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+        use zweidraehte_proto::messages::knx::RequiredSecurity;
+
+        let st = msg.service_type();
+        let level = msg.required_security();
+        debug_assert!(matches!(level, RequiredSecurity::Auth | RequiredSecurity::AuthConf));
+
+        let security_state = self.inner.state().extension_state();
+
+        // ----------------------------------------------------------------
+        // Resolve key + tool_access from destination type
+        // ----------------------------------------------------------------
+        let (key, tool_access) = match st {
+            ServiceType::T_GroupData_Req => {
+                let buf = msg.buf();
+                let tsap = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+                match security_state.group_key_for_index(tsap) {
+                    Some(k) => (k, false),
+                    None => {
+                        warn!(
+                            "S-AL: spontaneous group send to TSAP {} requires security but no group key configured — sending plaintext",
+                            tsap
+                        );
+                        return Some(msg);
+                    }
+                }
+            }
+            ServiceType::T_Data_Req | ServiceType::T_DataUnack_Req => {
+                // For an individual-addressed P2P send the destination
+                // bytes hold the peer IA verbatim (not a TSAP — TSAP-style
+                // resolution applies only to group services).
+                let buf = msg.buf();
+                let peer_ia = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
+                match security_state.p2p_key_for_ia(peer_ia) {
+                    Some((k, _roles)) => (k, false),
+                    None => {
+                        warn!(
+                            "S-AL: spontaneous P2P send to {:#06X} requires security but no P2P key configured — sending plaintext",
+                            peer_ia
+                        );
+                        return Some(msg);
+                    }
+                }
+            }
+            ServiceType::T_Broadcast_Req | ServiceType::T_SystemBroadcast_Req => {
+                // No spontaneous secure broadcast/system-broadcast surface
+                // exists today. If one is added, it will most likely use
+                // the tool key (the only key shared with arbitrary
+                // listeners). Fall back to plaintext + warn so the
+                // omission is visible rather than silently encrypted with
+                // the wrong key.
+                warn!("S-AL: spontaneous secure broadcast (st={:?}) not yet supported — sending plaintext", st);
+                return Some(msg);
+            }
+            _ => return Some(msg),
+        };
+
+        // ----------------------------------------------------------------
+        // Synthesise SCF and reserve seqnr
+        // ----------------------------------------------------------------
+        let scf = SecurityControlField {
+            service: SecureServiceType::Data,
+            // System broadcast SCF bit is set only on T_SystemBroadcast_Req
+            // wrappings (which we currently fall back from above). The
+            // distinction maps to wire framing, not to which key we used.
+            system_broadcast: matches!(st, ServiceType::T_SystemBroadcast_Req),
+            confidentiality: matches!(level, RequiredSecurity::AuthConf),
+            tool_access,
+        };
+        let scf_byte = scf.encode();
+
+        let Some(seq_nr) = self.next_seq_nr(tool_access) else {
+            warn!("S-AL: sequence number overflow, dropping spontaneous secure frame");
+            return None;
+        };
+
+        crate::logging::debug!(
+            "S-AL: encrypt spontaneous {:?} with key[0..2]={:02x}{:02x} (tool={}, scf=0x{:02x})",
+            st,
+            key[0],
+            key[1],
+            tool_access,
+            scf_byte
+        );
+
+        let src = u16::from_be_bytes(self.inner.state().individual_address().0);
+        let adt = self.inner.state().adt().borrow();
+
+        let inputs = outgoing::WrapInputs {
+            scf_byte,
+            key,
+            src,
+            seq_nr,
+            // Spontaneous sends are not connection-oriented responses, so
+            // the TL has no pre-allocated outgoing seq for them.
+            outgoing_tl_seq: None,
+            adt: &*adt,
+        };
+
+        match outgoing::wrap_outgoing(&mut msg, inputs) {
+            Ok(()) => Some(msg),
+            Err(outgoing::WrapError::BufferTooSmall) => Some(msg),
+            Err(outgoing::WrapError::InvalidScf) => {
+                // We just constructed the SCF ourselves — getting here
+                // means a bug above. Drop defensively rather than ship a
+                // garbled frame.
+                warn!("S-AL: synthesised SCF 0x{:02X} unexpectedly invalid", scf_byte);
                 None
             }
         }
@@ -705,27 +961,40 @@ where
     fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         match self.try_process_secure(msg) {
             SecureResult::Forward(msg) => {
-                // The inner AL pushes directly to the shared outbox. We
-                // need to intercept those messages to encrypt them when the
-                // security context is active. Swap the shared outbox with
-                // a fresh one, let the inner AL push into it, then drain,
-                // encrypt, and push into the original outbox.
+                // Run the inner AL inside the swap window so its responses
+                // (and any spontaneous emissions it produces along the way)
+                // flow through `try_encrypt_outgoing`. After the inner call,
+                // mid-process tool-key rotation is detected and propagated
+                // to `outgoing_ctx` so the WriteConRes encrypts with the
+                // newly-set key (TSSJ §3.8.13.1) — this has to happen *between*
+                // `inner.process` returning and the drain starting, so it
+                // can't move into `with_outbox_swap`.
                 use crate::router::Outbox;
                 let outbox_cell = &self.inner.lctx().outbox;
                 let original = outbox_cell.replace(Outbox::new());
                 self.inner.process(msg);
+
+                {
+                    let mut ctx = self.outgoing_ctx.get();
+                    if ctx.active && (ctx.scf_byte & 0x80) != 0 {
+                        let new_tool_key = self.inner.state().extension_state().tool_key();
+                        if new_tool_key != ctx.key && new_tool_key != [0u8; 16] {
+                            crate::logging::debug!("S-AL: tool key rotated during tx — response will use new key");
+                            ctx.key = new_tool_key;
+                            self.outgoing_ctx.set(ctx);
+                        }
+                    }
+                }
+
+                let outbox_cell = &self.inner.lctx().outbox;
                 let mut inner_outbox = outbox_cell.replace(original);
 
-                // Drain the inner outbox, encrypting responses if needed.
                 while let Some(out_msg) = inner_outbox.take_next() {
                     if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
                         outbox_cell.borrow_mut().push(out_msg);
                     }
                 }
 
-                // Flush deferred messages (e.g., GO diagnostics bus telegrams)
-                // from the intercepted outbox into the real outbox's deferred
-                // queue, encrypting if needed.
                 inner_outbox.flush_deferred();
                 while let Some(out_msg) = inner_outbox.take_next() {
                     if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
@@ -733,7 +1002,6 @@ where
                     }
                 }
 
-                // Clear outgoing context after processing.
                 self.outgoing_ctx.set(OutgoingSecurityCtx::default());
             }
             SecureResult::SyncResponse(msg) => {
@@ -751,10 +1019,15 @@ where
     }
 
     fn poll(&mut self) {
-        self.inner.poll();
+        // Read-on-init reads (`A_GroupValue_Read.req`) and any other
+        // spontaneous emissions originating from the inner AL's poll loop
+        // need the same encryption pass that frame-driven sends get.
+        self.with_outbox_swap(|this| this.inner.poll());
     }
 
     fn init(&mut self) {
-        self.inner.init();
+        // The inner AL's `init()` may queue ROI reads up front. Same
+        // requirement: stamp + encrypt.
+        self.with_outbox_swap(|this| this.inner.init());
     }
 }

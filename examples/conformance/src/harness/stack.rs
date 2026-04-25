@@ -603,6 +603,7 @@ pub(crate) mod conformance_config {
         // Security configuration for Data Secure conformance tests.
         security: {
             p2p_key_capacity: 8,
+            siat_capacity: 8,
             tool_key: "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F",
 
             // Group keys: TSAP → 16-byte key.
@@ -923,6 +924,27 @@ impl zweidraehte_device::objects::comm::HasCommObjects for ConformanceState {
 
     fn comm_objects(&self) -> &RefCell<Self::CO> {
         self.inner.comm_objects()
+    }
+}
+
+// The conformance harness for the plain (non-secure) stack inherits the
+// inner `SystemBDeviceState`'s `Plain` defaults — there is no Data Secure
+// extension in this configuration.
+impl zweidraehte_device::objects::comm::HasGoSecurityView for ConformanceState {
+    fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_asap(asap)
+    }
+
+    fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_p2p(peer_ia)
+    }
+
+    fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_broadcast()
+    }
+
+    fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.inner.required_security_for_tool_access()
     }
 }
 

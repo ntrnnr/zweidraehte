@@ -11,13 +11,9 @@
 use std::env;
 use std::path::PathBuf;
 
-use devices::ip_interface::{
-    DEVICE_DESCRIPTOR, IpInterfaceDevice, IpInterfaceParams, SERIAL_NUMBER,
-};
+use devices::ip_interface::{DEVICE_DESCRIPTOR, IpInterfaceDevice, IpInterfaceParams, SERIAL_NUMBER};
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
-use zweidraehte_knxprod::{
-    ApplicationProgramDef, BusAccessType, BusInterfaceDef, KnxprodBuilder, SingleDeviceDef,
-};
+use zweidraehte_knxprod::{ApplicationProgramDef, BusAccessType, BusInterfaceDef, KnxprodBuilder, SingleDeviceDef};
 
 /// Generate bus interface definitions for the tunneling channels.
 ///
@@ -25,11 +21,7 @@ use zweidraehte_knxprod::{
 /// matching the slot in the device's additional IA table (PID 53).
 fn tunneling_bus_interfaces() -> Vec<BusInterfaceDef> {
     (1..=IpInterfaceDevice::ADDITIONAL_IA_COUNT)
-        .map(|i| BusInterfaceDef {
-            address_index: i,
-            access_type: BusAccessType::Tunneling,
-            text: None,
-        })
+        .map(|i| BusInterfaceDef { address_index: i, access_type: BusAccessType::Tunneling, text: None })
         .collect()
 }
 
@@ -70,6 +62,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         bus_interfaces: Some(&bus_interfaces),
         additional_addresses_count: Some(IpInterfaceDevice::ADDITIONAL_IA_COUNT as u32),
         ip_config: Some("Tool"),
+        is_secure_enabled: None,
+        max_security_individual_address_entries: None,
+        max_security_group_key_table_entries: None,
+        max_security_p2p_key_table_entries: None,
     };
 
     let out_dir: PathBuf = ["out", app.name].iter().collect();
@@ -98,11 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         for (filename, _) in output.xml_files() {
             println!("Generated: {}", manuf_dir.join(filename).display());
         }
-        println!(
-            "\nGenerated: {} ({} bytes)",
-            knxprod_path.display(),
-            std::fs::metadata(&knxprod_path)?.len()
-        );
+        println!("\nGenerated: {} ({} bytes)", knxprod_path.display(), std::fs::metadata(&knxprod_path)?.len());
     } else {
         let (output, paths) = builder.write_mtxml_with_paths()?;
 

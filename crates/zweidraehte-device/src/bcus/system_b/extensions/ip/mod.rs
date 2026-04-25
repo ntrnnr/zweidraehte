@@ -334,6 +334,11 @@ impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
 // ExtensionState
 // ============================================================================
 
+// Plain KNX/IP has no Data Secure layer at this level — security on IP
+// stacks is added by wrapping `IpExtensionState` in `SecureExtensionState`.
+// The bare extension's `Plain` defaults are correct.
+impl<const N: usize, const CAPS: u16> crate::objects::comm::HasGoSecurityView for IpExtensionState<N, CAPS> {}
+
 impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAPS> {
     type Config = PersistedIpConfig<N>;
     type Resources = ();

@@ -220,23 +220,23 @@ const TOOL_KEY_SYNC_CHALLENGE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 /// 1. Sync the tool sequence counter using FDSK.
 /// 2. Secure `A_PropertyExtValueWriteCon` on `PID_TOOL_KEY` with the
 ///    TK1 value, authenticated with FDSK.
-/// 3. Expect the OK response (also encrypted with FDSK since the
-///    S-AL answers before switching to the newly-written key).
+/// 3. Expect the OK response encrypted with **TK1** (the newly-set
+///    key) per TSSJ §3.8.13.1 — the WriteConRes for PID_TOOL_KEY is
+///    authenticated and encrypted with the newly-set security tool
+///    key, not the key used for the request.
 pub fn provision_tk1_via_fdsk() -> Vec<TestStep> {
     // TK1 plaintext write of PID_TOOL_KEY. The 16-byte value is the
     // canonical `00 01 02 ... 0F` TK1 blob from `variables.rs`.
-    const WRITE_TK1_FDSK: &str =
-        "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
+    const WRITE_TK1_FDSK: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
          00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
-    const WRITE_TK1_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
+    const WRITE_TK1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
     vec![
         comment("provision TK1: sync tool seq (FDSK-encrypted)"),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, TOOL_KEY_SYNC_CHALLENGE),
         expect_sync_res_tool("FDSK", TOOL_KEY_SYNC_CHALLENGE, None, None, 3000),
-        comment("provision TK1: write PID_TOOL_KEY = TK1 (auth with FDSK)"),
+        comment("provision TK1: write PID_TOOL_KEY = TK1 (auth with FDSK, response with TK1)"),
         inject_secure_ac(WRITE_TK1_FDSK, "FDSK"),
-        expect_secure_ac(WRITE_TK1_OK, "FDSK", 3000),
+        expect_secure_ac(WRITE_TK1_OK, "TK1", 3000),
     ]
 }
 

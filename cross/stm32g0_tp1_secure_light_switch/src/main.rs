@@ -1,16 +1,39 @@
 #![no_std]
 #![no_main]
+// `type Stm32G0SecureState = SecureTp1StateFor<…>` expands to const
+// expressions over `SystemBStackDefinition::{ADT,AST,COT}_SIZE`.
+// Same flag `zweidraehte-device` already requires.
+#![feature(generic_const_exprs)]
+#![allow(incomplete_features)]
 
-//! STM32G0B0RE KNX TP1 light switch.
+//! STM32G0B0RE **KNX Data Secure** TP1 light switch.
 //!
-//! A single-button variant of the MCU-agnostic `devices::light_switch`
-//! definition, wired to drive an NCN5120/TPUART over USART1. The device
-//! stack, device definition, ETS parameter surface, and restart handling
-//! are all identical to the Raspberry Pi Pico TP1 reference — this crate
-//! is the MCU-specific shell: clocks, pins, UART driver, flash storage.
+//! A secure variant of [`stm32g0_tp1_light_switch`](../stm32g0_tp1_light_switch).
+//! Uses `SecureDeviceBuilder` instead of `InsecureDeviceBuilder` and
+//! plugs [`Stm32CommonRng`] into [`StackDefinition::Rng`][sd] so the
+//! Secure Application Layer's `S-A_Sync` challenges come from a small
+//! PRNG (see `stm32_common::rng`).
 //!
-//! See `cross/pico_tp1/` for the two-button Pi Pico version of the same
-//! device.
+//! [sd]: zweidraehte_device::StackDefinition::Rng
+//!
+//! # Bring-up limitations (see `SESSION.md`)
+//!
+//! - **FDSK is compiled into the firmware** via the `ZZ_FDSK_HEX`
+//!   env var at build time. Whoever can read the flash can extract
+//!   it. Production devices need provisioning-time writes from a
+//!   secure station.
+//! - **RNG is not cryptographic**. G0B0 has no TRNG; we seed a
+//!   xoshiro from the factory UID + boot-time ticks. Session keys
+//!   derived from this are weak against an attacker who knows the
+//!   UID (which is public via management).
+//!
+//! # Sequence-number persistence
+//!
+//! Sequence numbers live on an external SPI FRAM (Infineon FM25L16B)
+//! wired to SPI2 — see [`FramSeqStorage`]. Every outbound secure
+//! frame writes the updated counter through to FRAM before the
+//! telegram goes on the bus, so cross-reboot replay protection holds
+//! even through power loss.
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicI8, Ordering};
@@ -22,7 +45,9 @@ use embassy_stm32::{
     exti::{self, ExtiInput},
     flash,
     gpio::{Level, Output, OutputType, Pull, Speed},
+    mode::Blocking,
     peripherals::{TIM14, USART1, USART3},
+    spi::{self, Spi},
     time::Hertz,
     timer::{
         Channel,
@@ -38,7 +63,10 @@ use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
 use stm32_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
-use stm32_common::{FlashIdentityData, StmFlashStorage};
+use stm32_common::{
+    FlashSecureIdentityData, Fm25l16b, FramSeqStorage, Stm32CommonRng, StmFlashStorage,
+    read_or_provision_secure_identity,
+};
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -50,20 +78,20 @@ use devices::light_switch::{
 };
 
 use zweidraehte_device::{
-    bcus::system_b::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder, prelude::*,
+    bcus::system_b::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder,
+    prelude::*, storage::HasSequenceStorage,
 };
+
+// `build.rs` renders `pub const FDSK_BYTES: [u8; 16] = [...]` from the
+// ZZ_FDSK_HEX env var. See that file for validation rules.
+include!(concat!(env!("OUT_DIR"), "/fdsk.rs"));
 
 // ================================================================================
 // Interrupt Bindings
 // ================================================================================
 
-// EXTI interrupt lines on STM32G0: EXTI line N corresponds to pin N
-// across all GPIO ports. PD2 sits on line 2 (group IRQ EXTI2_3); PC11
-// sits on line 11 (group IRQ EXTI4_15).
 bind_interrupts!(struct Irqs {
     USART1 => DirectInterruptHandler<USART1>;
-    // USART3/4/5/6 all share this vector on the G0B0. We only drive USART3
-    // directly, so the vector is unambiguously ours.
     USART3_4_5_6 => DirectInterruptHandler<USART3>;
     EXTI2_3 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI2_3>;
     EXTI4_15 => exti::InterruptHandler<embassy_stm32::interrupt::typelevel::EXTI4_15>;
@@ -73,7 +101,6 @@ bind_interrupts!(struct Irqs {
 // Flash Layout
 // ================================================================================
 
-// STM32G0B0RE — 512 KiB flash, 2 KiB erase page.
 const FLASH_SIZE: u32 = 512 * 1024;
 const FLASH_PAGE_SIZE: u32 = 2 * 1024;
 
@@ -81,22 +108,76 @@ const FLASH_PAGE_SIZE: u32 = 2 * 1024;
 // Device Definition
 // ================================================================================
 
-const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1;
+const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1_SECURE;
 
-type Stm32G0State = Tp1StateFor<Stm32G0LightSwitch>;
-type Storage = StmFlashStorage<Stm32G0State, FlashIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
+/// P2P Key Table capacity. This device does not support point-to-point
+/// secure traffic — only tool access (Management) and secure group
+/// telegrams — so the P2P Key Table is compiled to zero width.
+/// `SecureDeviceBuilder` already defaults to
+/// [`NoP2p`](zweidraehte_device::layers::secure_application::NoP2p),
+/// so the P2P sync handlers aren't stamped out either.
+const P2P_SIZE: usize = 0;
 
-pub struct Stm32G0StateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<<Stm32G0State as HasDeviceConfig>::Config>,
+/// SIAT capacity (Security Individual Address Table).
+///
+/// Per 03/03/07 §5.3 the SIAT stores the Last Valid SeqNr for every
+/// non-tool secure sender — including senders that only write to
+/// group addresses, not just P2P partners. So a group-only secure
+/// device still needs `SIAT > 0`. Sized to 32 to cover a realistic
+/// installation where up to 32 distinct KNX devices send secure group
+/// telegrams into this light switch. Also sizes the FRAM peer slots
+/// in [`FramSeqStorage`] since those persist the same seqnr values
+/// outside the power-cycle-volatile SIAT runtime state.
+const SIAT_SIZE: usize = 32;
+
+/// Concrete SPI2 handle passed to the FRAM driver. Embassy owns the
+/// peripheral through `Peri<'d, ...>`; we build from `'static`
+/// singletons so `'d = 'static`. `Master` is reached via the public
+/// `spi::mode` submodule even though it isn't re-exported at
+/// `embassy_stm32::spi` top level.
+type FramSpi = Spi<'static, Blocking, embassy_stm32::spi::mode::Master>;
+
+/// Concrete CS output for the FRAM. Built from `'static` peripherals
+/// so the `FramSeqStorage` can live inside the `'static` stack state.
+type FramCs = Output<'static>;
+
+/// Full concrete type of the persistent sequence-number store.
+type Stm32G0SeqStorage = FramSeqStorage<FramSpi, FramCs, SIAT_SIZE>;
+
+/// Runtime state alias — the vanilla secure TP1 state. The RNG that
+/// the Secure Application Layer consumes during `S-A_Sync` is plugged
+/// in via `type Rng = Stm32CommonRng;` on the stack definition below,
+/// so we don't need a newtype wrapper on the state type.
+type Stm32G0SecureState = SecureTp1StateFor<Stm32G0SecureLightSwitch, Stm32G0SeqStorage, P2P_SIZE, SIAT_SIZE>;
+
+type Storage = StmFlashStorage<Stm32G0SecureState, FlashSecureIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
+
+pub struct Stm32G0SecureStateInit {
+    pub identity: FlashSecureIdentityData,
+    pub seq_storage: Stm32G0SeqStorage,
+    pub loaded_config: Option<<Stm32G0SecureState as HasDeviceConfig>::Config>,
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct Stm32G0LightSwitch;
+pub struct Stm32G0SecureLightSwitch;
 
-impl SystemBStackDefinition for Stm32G0LightSwitch {}
+impl SystemBStackDefinition for Stm32G0SecureLightSwitch {}
 
-impl StackDefinition for Stm32G0LightSwitch {
+impl HasSequenceStorage for Stm32G0SecureLightSwitch {
+    type SeqStorage = Stm32G0SeqStorage;
+    fn create_seq_storage() -> Self::SeqStorage {
+        // Vestigial: the framework never actually calls this. The
+        // real seq-store is built in `main` from the SPI2 peripheral
+        // and threaded into the state via `StateInit` →
+        // `SecureResources`. `FramSeqStorage` owns real hardware so
+        // it cannot be fabricated out of thin air anyway — if the
+        // framework ever starts calling this, that's a bug we want
+        // to hear about loudly.
+        core::unreachable!("seq storage is threaded through StateInit, not this factory callback")
+    }
+}
+
+impl StackDefinition for Stm32G0SecureLightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
     const TL_STYLE: TlStyle = TlStyle::Style1;
@@ -104,18 +185,27 @@ impl StackDefinition for Stm32G0LightSwitch {
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
-    type ES = Tp1ExtensionState;
-    type State = Stm32G0State;
-    type StateInit = Stm32G0StateInit;
+    // TP1 extension + Data Secure wrapper.
+    type ES = SecureTp1ExtensionState<Stm32G0SeqStorage, { Self::ADT_SIZE }, P2P_SIZE, SIAT_SIZE, { Self::COT_SIZE }>;
+    // Flash-backed identity that carries the FDSK.
+    type Identity = FlashSecureIdentityData;
+    type State = Stm32G0SecureState;
+    type StateInit = Stm32G0SecureStateInit;
     type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, (&'a Tp1ExtensionState, EasterEggAugment)>;
+    // `SecAugment` extends the interface-object list with the Security
+    // Object (IOT 0x11) that ETS uses to write group keys etc. It is
+    // produced automatically by `create_system_b_objects_with_extra`
+    // from `type ES`; the "extra" slot here carries the device's own
+    // augment (`EasterEggAugment`), matching the insecure variant.
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, (SecAugment<'a>, EasterEggAugment)>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(init.serial);
-        match init.loaded_config {
-            Some(config) => Stm32G0State::from_config(identity, config, ()),
-            None => Stm32G0State::new(identity, LightSwitchComObjects::new(), ()),
+        let Stm32G0SecureStateInit { identity, seq_storage, loaded_config } = init;
+        let fdsk = *SecureDeviceIdentity::fdsk(&identity);
+        let resources = SecureResources { inner: (), seq_storage, fdsk };
+        match loaded_config {
+            Some(config) => Stm32G0SecureState::from_config(identity, config, resources),
+            None => Stm32G0SecureState::new(identity, LightSwitchComObjects::new(), resources),
         }
     }
 
@@ -136,73 +226,42 @@ impl StackDefinition for Stm32G0LightSwitch {
         )
     }
 
-    type Services = zweidraehte_device::layers::application::services::SystemBAlServices;
-    type LayerBuilder = InsecureDeviceBuilder;
+    type Services = zweidraehte_device::layers::application::services::SystemBSecureAlServices;
+    type LayerBuilder = SecureDeviceBuilder;
+    // Non-crypto PRNG (see `stm32_common::rng`) — plugs directly into
+    // the Secure Application Layer's `S-A_Sync` challenge/nonce
+    // generation, no state-type newtype needed.
+    type Rng = Stm32CommonRng;
 }
 
-// ================================================================================
-// GPIO Pinout (STM32G0B0RE)
-// ================================================================================
-//
-// KNX (NCN5120 TPUART) on USART1:
-//   PA9  = USART1_TX — connect to TPUART RXD
-//   PA10 = USART1_RX — connect to TPUART TXD
-//
-// Local I/O:
-//   PD2  = programming-mode button (active low, internal pull-up)
-//   PB8  = programming-mode LED (active high)
-//   PC11 = user button (active low, internal pull-up)
-//   PC12 = user LED (driven by application logic)
-//
-// Debug UART on PB0/PB2 uses USART3 (AF4 on both pins per the
-// STM32G0B0RE datasheet). Wired through the same `DirectUart` driver as
-// the TPUART so we are actually exercising the driver code path and not
-// just defmt-rtt. Default baud: 115_200 8N1, no parity — friendly to
-// any USB-serial bridge.
+// Security augment type alias — produced by the secure extension for
+// `Stm32G0SecureLightSwitch`. The conformance DUT uses the same
+// pattern; see `examples/conformance/src/harness/secure_stack.rs:871`.
+type SecAugment<'a> =
+    <<Stm32G0SecureLightSwitch as StackDefinition>::ES as zweidraehte_device::bcus::system_b::Extension<()>>::Augment<
+        'a,
+        Stm32G0SecureLightSwitch,
+    >;
+
+// Import the full re-exported set from system_b so the ES alias
+// arguments above resolve. (`SecureResources`, `SecureDeviceIdentity`,
+// `SecureTp1ExtensionState`, etc. all live here.)
+use zweidraehte_device::storage::SecureDeviceIdentity;
 
 // ================================================================================
 // User-LED state machine
 // ================================================================================
 //
-// PC12 drives the user LED. We use TIM14_CH1 (AF2 on PC12) as a hardware
-// PWM channel so the same pin can render either a steady on/off state or
-// a smoothly ramping brightness during local dimming, all without
-// burning CPU on software PWM.
-//
-// The LED tracks **channel 1's local view of the actuator state**:
-// `LightSwitchComObjects::btn1_status` (a DPT_Switch). That object is
-// updated optimistically when the device sends a switch telegram and is
-// overridden by status feedback from the bus, so it's the closest the
-// sensor has to "what is the lamp doing right now". In Switch and Dimmer
-// modes the value is meaningful; in Blind / Scene modes it's effectively
-// a leftover from whatever was last in that slot — fine for a demo.
-//
-// During a local long-press in Dimmer mode, `app_task` flips
-// `DIM_RAMP` to ±1 to indicate the dimming direction it just sent on
-// the bus. The LED task then ramps the PWM duty cycle in that
-// direction at a fixed rate, freezes when `DIM_RAMP` returns to 0, and
-// snaps back to the actuator's reported on/off level on the next
-// status edge. The local ramp is purely a UX hint — there is no actual
-// brightness feedback channel in this device's comm objects, so the
-// LED's brightness will diverge from the real lamp until the next
-// switch event re-syncs it.
+// PC12 drives the user LED via TIM14_CH1 (AF2). The behaviour is
+// identical to the non-secure variant — see
+// `cross/stm32g0_tp1_light_switch/src/main.rs` for the full design
+// rationale on why we read `btn1_status` for the steady on/off level
+// and use a shared `DIM_RAMP` flag during local dimming long-presses.
 
-/// Direction of an in-progress local dimming ramp:
-/// `+1` = brighter, `-1` = darker, `0` = no active ramp.
 static DIM_RAMP: AtomicI8 = AtomicI8::new(0);
 
-/// Period for the user-LED PWM. 1 kHz is well above the eye's flicker
-/// fusion threshold and keeps the timer's resolution comfortable on a
-/// 16 MHz HSI bus.
 const LED_PWM_FREQ: Hertz = Hertz(1_000);
-
-/// Tick period for the LED task's duty-cycle update loop.
 const LED_TICK: Duration = Duration::from_millis(20);
-
-/// Number of LED ticks for a full-range dim sweep (0% → 100%) during a
-/// local long-press. Roughly matches a typical KNX dimmer's full-range
-/// ramp so the LED visualisation feels in line with what the actuator
-/// is doing on the bus.
 const DIM_FULL_SWEEP_TICKS: u32 = 60;
 
 // ================================================================================
@@ -210,20 +269,10 @@ const DIM_FULL_SWEEP_TICKS: u32 = 60;
 // ================================================================================
 
 #[embassy_executor::task]
-async fn knx_task(runner: Runner<'static, Stm32G0LightSwitch>) -> ! {
+async fn knx_task(runner: Runner<'static, Stm32G0SecureLightSwitch>) -> ! {
     runner.run().await
 }
 
-/// Debug-UART driver task.
-///
-/// Exercises both halves of the `DirectUart` driver on USART3 (PB0/PB2):
-///
-/// 1. A 500 ms heartbeat line on TX — proves the TX path, pin mux,
-///    and USART3 clock gate are all working.
-/// 2. An echo loop on RX → TX — proves the RX path (ISR, ring buffer,
-///    waker) is actually delivering bytes. Each received byte is echoed
-///    back with brackets so you can distinguish locally-generated
-///    output from a mirrored connection.
 #[embassy_executor::task]
 async fn debug_task(mut dbg_tx: DirectUartTx, mut dbg_rx: DirectUartRx) -> ! {
     use embassy_futures::select::{Either, select};
@@ -231,7 +280,7 @@ async fn debug_task(mut dbg_tx: DirectUartTx, mut dbg_rx: DirectUartRx) -> ! {
     let mut counter: u32 = 0;
     let mut rx_byte = [0u8; 1];
 
-    let _ = dbg_tx.write_all(b"\r\n[stm32g0 debug uart online]\r\n").await;
+    let _ = dbg_tx.write_all(b"\r\n[stm32g0 secure debug uart online]\r\n").await;
 
     loop {
         match select(Timer::after(Duration::from_millis(500)), dbg_rx.read(&mut rx_byte)).await {
@@ -261,11 +310,8 @@ async fn debug_task(mut dbg_tx: DirectUartTx, mut dbg_rx: DirectUartRx) -> ! {
     }
 }
 
-/// Toggles programming mode on each debounced press of the prog button.
-/// The LED is driven from the main loop so it reflects remote ETS
-/// programming-mode changes too, without racing with edge detection here.
 #[embassy_executor::task]
-async fn prog_task(knx: Stack<'static, Stm32G0LightSwitch>, prog_btn_pin: ExtiInput<'static>) -> ! {
+async fn prog_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, prog_btn_pin: ExtiInput<'static>) -> ! {
     let mut btn = DebouncedButton::new(prog_btn_pin);
     let debounce = Duration::from_millis(50);
     loop {
@@ -276,11 +322,8 @@ async fn prog_task(knx: Stack<'static, Stm32G0LightSwitch>, prog_btn_pin: ExtiIn
     }
 }
 
-/// A_Restart handler. Same behaviour as pico_tp1: execute the requested
-/// reset, persist the new state, delay briefly so the A_Restart_Response
-/// can hit the wire, then trigger a Cortex-M system reset.
 #[embassy_executor::task]
-async fn restart_task(knx: Stack<'static, Stm32G0LightSwitch>, storage: &'static RefCell<Storage>) -> ! {
+async fn restart_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
     use embedded_common::CortexMSystem;
     use zweidraehte_device::restart::EraseCode;
     use zweidraehte_platform::SystemControl;
@@ -291,9 +334,7 @@ async fn restart_task(knx: Stack<'static, Stm32G0LightSwitch>, storage: &'static
         info!("Restart request: erase_code={}", request.erase_code);
 
         match request.erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => {
-                info!("Basic restart (no data reset)");
-            }
+            EraseCode::Basic | EraseCode::Confirmed => info!("Basic restart (no data reset)"),
             EraseCode::FactoryReset => {
                 info!("Factory reset — clearing all data");
                 state.factory_reset();
@@ -330,7 +371,7 @@ async fn restart_task(knx: Stack<'static, Stm32G0LightSwitch>, storage: &'static
     }
 }
 
-fn save_state(state: &Stm32G0State, storage: &RefCell<Storage>) {
+fn save_state(state: &Stm32G0SecureState, storage: &RefCell<Storage>) {
     match storage.borrow_mut().save(state) {
         Ok(()) => {
             state.clear_dirty();
@@ -343,7 +384,7 @@ fn save_state(state: &Stm32G0State, storage: &RefCell<Storage>) {
 }
 
 #[embassy_executor::task]
-async fn lifecycle_task(knx: Stack<'static, Stm32G0LightSwitch>) -> ! {
+async fn lifecycle_task(knx: Stack<'static, Stm32G0SecureLightSwitch>) -> ! {
     let mut events = knx.lifecycle_events();
     loop {
         match events.next_message_pure().await {
@@ -356,20 +397,8 @@ async fn lifecycle_task(knx: Stack<'static, Stm32G0LightSwitch>) -> ! {
     }
 }
 
-/// Application task — a single user button (PC11) driving `Btn1`.
-///
-/// The `LightSwitchComObjects` device still exposes two button slots to
-/// ETS; we simply leave `Btn2` physically unwired. Rocker-mode
-/// configurations therefore won't work, but single-function modes
-/// (switch / dimmer / blind / scene) for `Btn1` do.
-///
-/// Around each long-press in Dimmer mode we also poke `DIM_RAMP` so
-/// that `led_task` can mirror the dim direction with a smooth PWM
-/// ramp on the user LED. The direction we publish is the same one
-/// `app::handle_dimmer` will use — see the comment block on
-/// `dim_direction_for_long_press`.
 #[embassy_executor::task]
-async fn app_task(knx: Stack<'static, Stm32G0LightSwitch>, btn_pin: ExtiInput<'static>) -> ! {
+async fn app_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, btn_pin: ExtiInput<'static>) -> ! {
     let mut btn = DebouncedButton::new(btn_pin);
     let mut dim_up = true;
 
@@ -385,11 +414,6 @@ async fn app_task(knx: Stack<'static, Stm32G0LightSwitch>, btn_pin: ExtiInput<'s
 
         let event = btn.wait_for_press(debounce, Some(long_press)).await;
 
-        // Decide whether to drive the dim-ramp signal **before** delegating
-        // to the framework helper, mirroring the direction logic in
-        // `app::handle_dimmer`. We deliberately don't try to flip
-        // `dim_up` ourselves — the helper does that — so the two stay
-        // in sync across consecutive long presses.
         let dim_ramping = event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer);
         if dim_ramping {
             let up = dim_direction_for_long_press(&params, ButtonId::Btn1, dim_up);
@@ -405,13 +429,9 @@ async fn app_task(knx: Stack<'static, Stm32G0LightSwitch>, btn_pin: ExtiInput<'s
     }
 }
 
-/// Re-derive the dimming direction `app::handle_dimmer` is about to use.
-///
-/// In 1-function (rocker) mode the direction is fixed by which physical
-/// button is wired and the configured rocker polarity. In 2-function
-/// mode the helper alternates direction across consecutive long
-/// presses and stores the next value in `dim_up` — so the value we see
-/// here is the one the helper will use on the **upcoming** press.
+/// See `cross/stm32g0_tp1_light_switch/src/main.rs` for the full
+/// rationale; same logic, copied here so this binary remains
+/// self-contained.
 fn dim_direction_for_long_press(params: &LightSwitchParams, button: ButtonId, dim_up: bool) -> bool {
     match params.buttons_mode {
         ButtonsMode::OneFunction => {
@@ -425,15 +445,8 @@ fn dim_direction_for_long_press(params: &LightSwitchParams, button: ButtonId, di
     }
 }
 
-/// User-LED state-machine task.
-///
-/// Polls the local view of channel 1's status object every `LED_TICK`
-/// and drives `TIM14_CH1` (PC12) accordingly. While `DIM_RAMP` is
-/// non-zero, a long-press is in progress on Btn1 in Dimmer mode and
-/// we ramp the duty in that direction at a fixed rate; otherwise the
-/// duty snaps to 0% / 100% on each rising/falling status edge.
 #[embassy_executor::task]
-async fn led_task(knx: Stack<'static, Stm32G0LightSwitch>, mut pwm_ch: SimplePwmChannel<'static, TIM14>) -> ! {
+async fn led_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, mut pwm_ch: SimplePwmChannel<'static, TIM14>) -> ! {
     let max_duty: u32 = pwm_ch.max_duty_cycle();
     let ramp_step: u32 = (max_duty / DIM_FULL_SWEEP_TICKS).max(1);
     let mut duty: u32 = 0;
@@ -447,10 +460,6 @@ async fn led_task(knx: Stack<'static, Stm32G0LightSwitch>, mut pwm_ch: SimplePwm
         if ramp != 0 {
             duty = if ramp > 0 { duty.saturating_add(ramp_step).min(max_duty) } else { duty.saturating_sub(ramp_step) };
         } else {
-            // No ramp in progress — sync to whatever the actuator
-            // last told us. `read_status` reads the raw object
-            // buffer, so it's safe to call before / after the stack
-            // has been provisioned (it just returns false).
             let on = if knx.state().is_running() { app::read_status(&knx, Index::Btn1Status) } else { false };
             if on != last_status {
                 duty = if on { max_duty } else { 0 };
@@ -480,60 +489,68 @@ impl<P: InputPin + Wait> WaitForRelease for ReleaseWaiter<'_, P> {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // Default embassy-stm32 clocks — HSI at 16 MHz, no PLL. This is
-    // plenty for a 19200 baud UART and keeps the init minimal. If ISR
-    // jitter becomes an issue, configure PLL → 64 MHz here.
     let p = embassy_stm32::init(Config::default());
-    info!("STM32G0 TP1 light switch (NCN5120) initializing");
+    info!("STM32G0 TP1 **Data Secure** light switch initializing");
 
-    // --- Identity (from flash) ----------------------------------------------
+    // Seed the ChaCha20 CSPRNG from ADC noise on a floating PA0
+    // before the secure stack starts. `fill` panics if called before
+    // this. The pin must be physically unconnected on the board — no
+    // pull, no trace — so the ADC samples only thermal / EMI noise.
+    stm32_common::rng::seed_from_adc(p.ADC1, p.PA0);
+
+    // --- Identity (from flash, provisioned on first boot) --------------------
     let mut flash_hw = flash::Flash::new_blocking(p.FLASH);
-    let identity_data = stm32_common::read_or_provision_identity::<FLASH_SIZE, FLASH_PAGE_SIZE>(
+    let identity_data = read_or_provision_secure_identity::<FLASH_SIZE, FLASH_PAGE_SIZE>(
         &mut flash_hw,
         LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
+        FDSK_BYTES,
     );
-    info!("Serial: {=[u8]:02x}", identity_data.serial_number);
+    info!("Serial: {=[u8]:02x}  FDSK: {=[u8]:02x}", identity_data.serial_number, identity_data.fdsk);
+    // Hyphenated Base32 encoding — this is what ETS prompts for when
+    // commissioning the device. Not specified normatively in the spec
+    // (03/05/01 §6.1.3 leaves the label format open) but the de-facto
+    // encoding ETS accepts.
+    let fdsk_str = identity_data.fdsk_string();
+    info!("Device label code (paste into ETS): {=str}", core::str::from_utf8(&fdsk_str).unwrap_or("<invalid utf8>"));
 
-    // --- USART1 — NCN5120 TPUART at 19200 8E1 -------------------------------
-    //
-    // The embassy `Uart<Blocking>` handles baud, parity, pin muxing. We
-    // then hand it to `DirectUart::new`, which disables the FIFO and
-    // configures per-byte interrupts with direct register access.
+    // --- USART1 — NCN5120/E981.03 TPUART at 19200 8E1 -----------------------
     let mut uart_config = UartConfig::default();
     uart_config.baudrate = 19200;
-    // E981.03 datasheet Figure 4 ambiguously labels parity as "odd", but
-    // empirically the chip transmits with **even** parity at 19.2 kBd —
-    // consistent with the rest of the TPUART family (NCN5120, TPUART2).
-    // Odd parity causes every RX byte to fault PE.
     uart_config.parity = Parity::ParityEven;
-    let uart = Uart::new_blocking(
-        p.USART1,
-        p.PA10, // RX
-        p.PA9,  // TX
-        uart_config,
-    )
-    .expect("USART1 init");
+    let uart = Uart::new_blocking(p.USART1, p.PA10, p.PA9, uart_config).expect("USART1 init");
     let (uart_tx, uart_rx) = DirectUart::new::<USART1>(uart, Irqs);
     info!("USART1 initialized (19200 8E1, direct register access)");
 
     // --- USART3 — debug UART at 115200 8N1 on PB0/PB2 ----------------------
-    //
-    // Routed through the same `DirectUart` driver as the TPUART. If the
-    // heartbeat comes out of PB2 but TPUART traffic on PA9 is silent, the
-    // fault is in USART1 clock/pin config — not the driver.
     let mut dbg_cfg = UartConfig::default();
     dbg_cfg.baudrate = 115_200;
-    let dbg_uart = Uart::new_blocking(
-        p.USART3, p.PB0, // RX
-        p.PB2, // TX
-        dbg_cfg,
-    )
-    .expect("USART3 init");
+    let dbg_uart = Uart::new_blocking(p.USART3, p.PB0, p.PB2, dbg_cfg).expect("USART3 init");
     let (dbg_tx, dbg_rx) = DirectUart::new::<USART3>(dbg_uart, Irqs);
     info!("USART3 initialized (115200 8N1, PB2=TX, PB0=RX)");
 
+    // --- FRAM (FM25L16B) on SPI2 — persistent secure sequence numbers ------
+    //
+    // Pinout: SCK=PB13, MOSI=PB15, MISO=PB14, ~CS=PB12, ~WP=PB9.
+    //
+    // `~WP` only gates WRSR on the chip; the driver never writes the
+    // status register, so `~WP` never needs to toggle. Parking it in
+    // a `StaticCell` keeps the `Output` alive for the lifetime of the
+    // device (static storage). Dropping the value would re-configure
+    // the pin back to its reset state.
+    let mut spi_config = spi::Config::default();
+    spi_config.frequency = Hertz(4_000_000);
+    // spi::Config defaults to Mode 0 (CPOL=Low, CPHA=FirstTransition) —
+    // what the FM25L16B expects.
+    let fram_spi: FramSpi = Spi::new_blocking(p.SPI2, p.PB13, p.PB15, p.PB14, spi_config);
+    let fram_cs: FramCs = Output::new(p.PB12, Level::High, Speed::VeryHigh);
+    static FRAM_WP: StaticCell<Output<'static>> = StaticCell::new();
+    FRAM_WP.init(Output::new(p.PB9, Level::High, Speed::Low));
+    let fram_driver = Fm25l16b::new(fram_spi, fram_cs);
+    let seq_storage: Stm32G0SeqStorage = FramSeqStorage::new(fram_driver);
+    info!("FRAM seq storage online (SPI2 @ 4 MHz, 2 KiB FM25L16B)");
+
     // --- Persistent storage --------------------------------------------------
-    let mut storage = Storage::new(flash_hw, identity_data);
+    let mut storage = Storage::new(flash_hw, identity_data.clone());
     let loaded_config = match storage.load_config() {
         Ok(Some(c)) => {
             info!("Loaded device config from flash");
@@ -549,20 +566,20 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = Stm32G0StateInit { serial: *storage.identity().serial_number(), loaded_config };
+    let state_init = Stm32G0SecureStateInit { identity: identity_data, seq_storage, loaded_config };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));
 
-    // --- KNX stack -----------------------------------------------------------
+    // --- KNX secure stack ----------------------------------------------------
     let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx);
 
     static KNX_RESOURCES: StaticCell<
         StackResources<
-            Stm32G0LightSwitch,
+            Stm32G0SecureLightSwitch,
             {
                 zweidraehte_device::config::buffer_size_for_apdu(
-                    <Stm32G0LightSwitch as StackDefinition>::MAX_APDU_LENGTH,
+                    <Stm32G0SecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH,
                 )
             },
         >,
@@ -573,28 +590,25 @@ async fn main(spawner: Spawner) {
         link_layer_builder,
         state_init,
         (),
-        Stm32G0LightSwitch::memory_map(),
+        Stm32G0SecureLightSwitch::memory_map(),
     );
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
 
-    info!("KNX TP1 stack started");
+    info!("KNX Data Secure TP1 stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);
     info!(
         "  Application:  {:04x} v{:02x}",
-        LightSwitchDevice::APPLICATION_ID_TP1,
+        LightSwitchDevice::APPLICATION_ID_TP1_SECURE,
         LightSwitchDevice::APPLICATION_VERSION
     );
-    info!("  Mask version: 07B0 (System B TP1)");
+    info!("  Mask version: 07B0 (System B TP1 with Data Secure)");
 
-    // --- Application GPIO + tasks -------------------------------------------
     let user_btn_pin = ExtiInput::new(p.PC11, p.EXTI11, Pull::Up, Irqs);
     let prog_btn_pin = ExtiInput::new(p.PD2, p.EXTI2, Pull::Up, Irqs);
 
-    // User LED on PC12 driven by TIM14_CH1 (AF2). `SimplePwm::split`
-    // requires a `'static` lifetime on the channel so we can hand the
-    // channel to a task; achieve that by parking the `SimplePwm` in a
-    // `StaticCell`.
+    // User LED on PC12 driven by TIM14_CH1 (AF2). See the non-secure
+    // variant for the design rationale.
     let user_led_pin = PwmPin::new(p.PC12, OutputType::PushPull);
     static USER_LED_PWM: StaticCell<SimplePwm<'static, TIM14>> = StaticCell::new();
     let user_led_pwm = USER_LED_PWM.init(SimplePwm::new(
@@ -615,12 +629,6 @@ async fn main(spawner: Spawner) {
     spawner.spawn(debug_task(dbg_tx, dbg_rx)).expect("debug_task spawnable once");
     spawner.spawn(led_task(knx_stack, user_led_ch)).expect("led_task spawnable once");
 
-    // --- Main loop: prog LED -------------------------------------------------
-    //
-    // Prog LED on PB8 mirrors `is_programming_mode()` continuously so
-    // remote ETS prog-mode changes are reflected without racing the
-    // button edge detection in prog_task. The user LED on PC12 is now
-    // driven by `led_task` via TIM14_CH1.
     let mut prog_led = Output::new(p.PB8, Level::Low, Speed::Low);
 
     loop {

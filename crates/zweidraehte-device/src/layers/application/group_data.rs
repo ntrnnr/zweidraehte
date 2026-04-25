@@ -15,7 +15,7 @@ use crate::{
     objects::{
         comm::{
             ComObjectBusHook, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects,
-            LifecycleEvent,
+            HasGoSecurityView, LifecycleEvent,
         },
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
@@ -349,12 +349,20 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 return;
             };
 
+            // Per 03/05/01 §6.3.15.3 NOTE 111: an `A_GroupValue_Read.res`
+            // uses the *responding* GO's configured security flags — it
+            // does **not** inherit from the initiating read's frame. Stamp
+            // with the response ASAP's policy; the S-AL applies it during
+            // outbox drain.
+            let response_security = self.state.required_security_for_asap(asap);
+
             let msg = MessageBuilder::new_request(
                 msg_buf,
                 ServiceType::T_GroupData_Req,
                 request_priority,
                 DestinationAddress::ConnectionNr(response_tsap),
             )
+            .with_required_security(response_security)
             .with_application(ApciCode::GroupValueResponse)
             .with_data(|buf| {
                 buf[msg_offset..msg_offset + object_size]
@@ -493,12 +501,20 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 return true;
             };
 
+            // Spontaneous group send originating from a local application
+            // event (button press, periodic update, etc.). Per 03/05/01
+            // §6.3.15.3 Table 108, the originating GO's `auth`/`conf` bits
+            // become this primitive's `par_auth` / `par_conf`. The S-AL
+            // reads the stamp at outbox drain to encrypt or send plain.
+            let send_security = self.state.required_security_for_asap(asap);
+
             let builder = MessageBuilder::new_request(
                 msg_buf,
                 ServiceType::T_GroupData_Req,
                 cot_info.flags.priority(),
                 DestinationAddress::ConnectionNr(tsap),
-            );
+            )
+            .with_required_security(send_security);
 
             let msg = if read {
                 builder.with_application(ApciCode::GroupValueRead).build()
@@ -767,12 +783,18 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
             return;
         };
 
+        // GO diagnostics direct-write 0x00 is unambiguously "send
+        // plaintext", and a secure variant exists on the dedicated
+        // `SecureGroupValueAddressedSender` trait. Stamping `Plain`
+        // explicitly prevents this primitive from accidentally inheriting
+        // a reactive `outgoing_ctx` if it ever runs inside a swap window.
         let msg = MessageBuilder::new_request(
             msg_buf,
             ServiceType::T_GroupData_Req,
             priority,
             DestinationAddress::ConnectionNr(tsap),
         )
+        .with_required_security(zweidraehte_proto::messages::knx::RequiredSecurity::Plain)
         .with_application(ApciCode::GroupValueWrite)
         .with_data(|buf| match encoding {
             GroupValueEncoding::Short => {
@@ -798,12 +820,14 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
             return;
         };
 
+        // Same rationale as `send_group_write_tsap`: explicit plain.
         let msg = MessageBuilder::new_request(
             msg_buf,
             ServiceType::T_GroupData_Req,
             priority,
             DestinationAddress::ConnectionNr(tsap),
         )
+        .with_required_security(zweidraehte_proto::messages::knx::RequiredSecurity::Plain)
         .with_application(ApciCode::GroupValueRead)
         .build();
 

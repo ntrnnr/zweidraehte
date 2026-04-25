@@ -2,39 +2,37 @@
 //!
 //! Mirrors the `RoutingFeature` / `TunnelingFeature` pattern used by
 //! the KNX/IP link layer: two marker types implement the same trait —
-//! [`WithP2p`] delegates to the real S-A_Sync handlers, [`NoP2p`]
+//! [`WithP2p`] delegates to the real P2P-specific handlers, [`NoP2p`]
 //! exposes zero-sized state and trivial no-op bodies that LLVM elides
 //! entirely.
 //!
-//! # Why not a marker trait?
+//! # Scope
 //!
-//! An earlier iteration used a `HasP2pSecure` marker trait bound on the
-//! S-AL impl blocks. That works but forces callers to propagate the
-//! bound through every layer of the composition surface (builders,
-//! `HasAppRequest` impls, stack aliases). Method resolution also
-//! silently falls back to trait methods when the inherent method's
-//! bounds don't match — introducing a real runtime bug we hit in the
-//! form of infinite recursion in `HasAppRequest::handle_app_request`.
+//! The feature gates *only* the genuinely P2P-flow-specific pieces of
+//! Data Secure:
 //!
-//! The type-state feature approach here keeps the S-AL's method surface
-//! identical in both configurations; only the *bodies* differ, and they
-//! dispatch through the feature trait unconditionally. The S-AL's
-//! `Layer::process` never needs to care whether P2P is on — it just
-//! asks the feature. LLVM collapses the `NoP2p` bodies at
-//! monomorphisation.
+//! - `process_sync_request_p2p` — the non-tool branch of an incoming
+//!   S-A_Sync_Req, which needs the P2P key table and the SIAT.
+//! - `process_sync_response` — matches an incoming S-A_Sync_Res
+//!   against `pending_sync` state set by a prior DUT-initiated sync.
+//! - `initiate_sync` — allocates the pending-sync slot and emits an
+//!   outgoing S-A_Sync_Req.
+//!
+//! Everything else (incoming tool-key S-A_Sync_Req, which ETS uses for
+//! commissioning every secure device) lives directly on
+//! [`SecureApplicationLayer`] and works regardless of the selected
+//! feature. That path needs only the sync rate-limit state and the
+//! tool-receiving sequence slot — both always available.
 //!
 //! # Binary & RAM size impact
 //!
 //! When [`NoP2p`] is selected:
-//! - [`P2pFeature::State`] is `()` — the S-AL's per-instance P2P storage
-//!   (pending sync tracker, last-sync-response timestamp) is zero bytes.
-//! - All three dispatch methods have bodies that return
+//! - [`P2pFeature::State`] is `()` — no `pending_sync` slot.
+//! - Both remaining dispatch methods have bodies that return
 //!   `SecureResult::Dropped` / `None` immediately. After inlining the
 //!   calls become no-ops.
-//! - The real sync handlers in [`super::p2p_security`] are only
-//!   monomorphised when `WithP2p` is used, so the P2P key-lookup and
-//!   CCM sync-request/response code is never stamped out for group-only
-//!   devices.
+//! - The P2P-specific sync handlers in [`super::p2p_security`] are
+//!   only monomorphised when `WithP2p` is used.
 
 use core::cell::Cell;
 
@@ -54,49 +52,52 @@ use crate::storage::SequenceNumberStorage;
 use super::{PendingSyncState, SecureApplicationLayer, SecureResult};
 
 // ============================================================================
+// Shared sync-rate-limit configuration
+// ============================================================================
+
+/// Spec-mandated rate-limit window between outgoing S-A_Sync_Res frames.
+pub(super) const SYNC_RATE_LIMIT_MS: u64 = 1_000;
+
+/// Compute the rate-limit duration for new S-AL instances.
+///
+/// Under the conformance harness we compress protocol-level wall-clock
+/// delays by `KNX_TIME_DIVISOR` so fast-mode test runs stay fast; the
+/// sync rate-limit window is one of those delays. In production builds
+/// the divisor path doesn't exist and the window stays at the spec's
+/// 1 s.
+pub(super) fn default_sync_rate_limit() -> embassy_time::Duration {
+    #[cfg(feature = "conformance")]
+    {
+        extern crate std;
+        let divisor: u64 =
+            std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
+        let scaled = SYNC_RATE_LIMIT_MS / divisor;
+        if divisor > 1 {
+            crate::logging::info!("S-AL sync rate-limit scaled: divisor={}, window={}ms", divisor, scaled);
+        }
+        embassy_time::Duration::from_millis(scaled)
+    }
+    #[cfg(not(feature = "conformance"))]
+    {
+        embassy_time::Duration::from_millis(SYNC_RATE_LIMIT_MS)
+    }
+}
+
+// ============================================================================
 // Per-feature state
 // ============================================================================
 
 /// State held by the S-AL on behalf of an enabled P2P feature.
 ///
-/// Carries the two `Cell`s that track spec-mandated timing: the
-/// 6-second pending-sync deadline for DUT-initiated sync requests and
-/// the 1-second rate limit on outgoing sync responses.
+/// Tracks the pending DUT-initiated sync — the 6-second deadline against
+/// which an incoming S-A_Sync_Res is matched.
 pub struct WithP2pState {
     pub(super) pending_sync: Cell<Option<PendingSyncState>>,
-    pub(super) last_sync_response: Cell<Option<embassy_time::Instant>>,
-    /// Rate-limit window for outgoing S-A_Sync_Res. Defaults to 1 s
-    /// per KNX spec. With the `conformance` feature and
-    /// `KNX_TIME_DIVISOR > 1`, scaled down so fast-mode tests don't
-    /// have to burn real wall-clock between back-to-back syncs.
-    pub(super) sync_rate_limit: embassy_time::Duration,
 }
-
-/// Spec-mandated rate-limit window between outgoing S-A_Sync_Res frames.
-pub(super) const SYNC_RATE_LIMIT_MS: u64 = 1_000;
 
 impl Default for WithP2pState {
     fn default() -> Self {
-        // Under the conformance harness we compress protocol-level
-        // wall-clock delays by `KNX_TIME_DIVISOR` so fast-mode test
-        // runs stay fast; the sync rate-limit window is one of those
-        // delays. In production builds the divisor path doesn't
-        // exist and the window stays at the spec's 1 s.
-        #[cfg(feature = "conformance")]
-        let sync_rate_limit = {
-            extern crate std;
-            let divisor: u64 =
-                std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
-            let scaled = SYNC_RATE_LIMIT_MS / divisor;
-            if divisor > 1 {
-                crate::logging::info!("S-AL P2P sync rate-limit scaled: divisor={}, window={}ms", divisor, scaled);
-            }
-            embassy_time::Duration::from_millis(scaled)
-        };
-        #[cfg(not(feature = "conformance"))]
-        let sync_rate_limit = embassy_time::Duration::from_millis(SYNC_RATE_LIMIT_MS);
-
-        Self { pending_sync: Cell::new(None), last_sync_response: Cell::new(None), sync_rate_limit }
+        Self { pending_sync: Cell::new(None) }
     }
 }
 
@@ -117,11 +118,14 @@ pub trait P2pFeature: 'static {
     /// Per-instance state that lives on the S-AL.
     type State: Default;
 
-    /// Dispatch an incoming S-A_Sync_Req, generating an S-A_Sync_Res.
+    /// Handle the non-tool branch of an incoming S-A_Sync_Req.
     ///
-    /// For [`NoP2p`], this silently drops the frame — the DUT advertises
-    /// no P2P capability, so peers have no grounds to send sync requests.
-    fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    /// Called from the shared sync-request handler on
+    /// [`SecureApplicationLayer`] when the SCF's tool-access flag is
+    /// clear. Needs the P2P key table and SIAT, so it is gated behind
+    /// the feature: [`NoP2p`] drops, [`WithP2p`] delegates to
+    /// [`super::p2p_security::process_sync_request_p2p`].
+    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         msg: KnxMessageBuffer<Buffer<'static>>,
         scf: SecurityControlField,
@@ -167,14 +171,18 @@ pub trait P2pFeature: 'static {
 // NoP2p — disabled variant
 // ============================================================================
 
-/// P2P disabled. Zero state, stub methods.
+/// P2P disabled. Zero state, stub methods for the P2P-only dispatches.
+///
+/// Note: incoming tool-key S-A_Sync_Req is handled directly on
+/// [`SecureApplicationLayer`] and works on `NoP2p` devices — ETS still
+/// needs to commission them.
 pub struct NoP2p;
 
 impl P2pFeature for NoP2p {
     const ENABLED: bool = false;
     type State = ();
 
-    fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
         _sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         _msg: KnxMessageBuffer<Buffer<'static>>,
         _scf: SecurityControlField,
@@ -228,7 +236,7 @@ impl P2pFeature for WithP2p {
     const ENABLED: bool = true;
     type State = WithP2pState;
 
-    fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         msg: KnxMessageBuffer<Buffer<'static>>,
         scf: SecurityControlField,
@@ -240,7 +248,7 @@ impl P2pFeature for WithP2p {
         D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
-        super::p2p_security::process_sync_request(sal, msg, scf, scf_byte, src, incoming_service_type)
+        super::p2p_security::process_sync_request_p2p(sal, msg, scf, scf_byte, src, incoming_service_type)
     }
 
     fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(

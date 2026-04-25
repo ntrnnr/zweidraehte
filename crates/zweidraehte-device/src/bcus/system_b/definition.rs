@@ -108,9 +108,16 @@ where
     Proto,
 >;
 
-/// Secure TP1 System B state for `D` with sequence-number storage `SEQ`
-/// and P2P table capacity `P2P`. Sizes drawn from `D::DEVICE`.
-pub type SecureTp1StateFor<D, SEQ, const P2P: usize>
+/// Secure TP1 System B state for `D` with sequence-number storage `SEQ`,
+/// P2P Key Table capacity `P2P`, and SIAT capacity `SIAT`.
+///
+/// `P2P` and `SIAT` are independent per 03/03/07 §5.3: the SIAT holds
+/// LastValidSeqNr for every non-tool secure sender — P2P partners *and*
+/// pure group-secure senders — while the P2P Key Table only holds
+/// entries for devices we have a secure P2P link with. A group-only
+/// secure device typically has `P2P = 0` and `SIAT > 0`. Table sizes
+/// ADT / AST / COT are drawn from `D::DEVICE`.
+pub type SecureTp1StateFor<D, SEQ, const P2P: usize, const SIAT: usize>
 where
     D: SystemBStackDefinition,
 = super::extensions::SecureTp1DeviceState<
@@ -120,4 +127,5 @@ where
     D,
     SEQ,
     P2P,
+    SIAT,
 >;

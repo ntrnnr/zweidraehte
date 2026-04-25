@@ -17,7 +17,7 @@ use crate::{
     HasAuthorization, HasPersistence, HasSecureIdentity, StackDefinition, StackState,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
-        comm::{ComObjects, HasCommObjects},
+        comm::{ComObjects, HasCommObjects, HasGoSecurityView},
         interface::{HasDomainAddress, HasMaxRetryCount, HasRoutingCount},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
@@ -799,6 +799,39 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn comm_objects(&self) -> &RefCell<Self::CO> {
         &self.comm_objs
+    }
+}
+
+// Per-destination security policy is provided by the extension state.
+// Plain (non-secure) extensions inherit the trait's default `Plain` body;
+// `SecureExtensionState` overrides each method to consult Security IO state
+// (`PID_GO_SECURITY_FLAGS`, P2P key table, security mode flag).
+//
+// Delegating here keeps the security policy lookup a property of the
+// extension stack rather than the device-state shell, mirroring how
+// `HasMaxRetryCount` / `HasDomainAddress` already delegate.
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: StackDefinition,
+    ES: ExtensionState + HasGoSecurityView,
+> HasGoSecurityView for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
+{
+    fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.extension_state.required_security_for_asap(asap)
+    }
+
+    fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.extension_state.required_security_for_p2p(peer_ia)
+    }
+
+    fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.extension_state.required_security_for_broadcast()
+    }
+
+    fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+        self.extension_state.required_security_for_tool_access()
     }
 }
 

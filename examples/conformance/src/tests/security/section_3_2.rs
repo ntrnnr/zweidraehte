@@ -18,9 +18,9 @@
 //! Skipped test cases:
 //! - 3.2.1 — Introduction only (no telegrams).
 
-use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestCase, TestSuite};
 
 // ============================================================================
 // Group Address Constants
@@ -70,14 +70,10 @@ const GV_READ_666: &str = "BC #EDI 36 06 E1 00 00";
 // A_PropertyExtValueWriteCon to Security IO (IOT=0x0011, instance=0x0010):
 // PID 5 = LOAD_STATE_CONTROL, count=1, start=1, value = 10-byte load record.
 // LoadEvent 0x01 = StartLoading, 0x02 = LoadCompleted.
-const LOAD_START_LOADING: &str =
-    "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
-const LOAD_START_LOADING_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
-const LOAD_COMPLETED: &str =
-    "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
-const LOAD_COMPLETED_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+const LOAD_START_LOADING: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
+const LOAD_START_LOADING_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+const LOAD_COMPLETED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
+const LOAD_COMPLETED_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
 
 // Write GO security flags (PID 0x3D, count=4, start=1):
 // 4 GO flag bytes: GO_SEC_0=0x01(A), GO_SEC_1=0x03(A+C), GO_SEC_2=0x00(plain), GO_SEC_3=0x02(C-only)
@@ -106,18 +102,15 @@ const LOAD_COMPLETED_OK: &str =
 // We write count=4, start=11 (covers indices 10-13 → COs 11-14):
 // Data: 00 01 03 02
 // APDU: 01 CE + 00 11 + 00 10 + 3D + 04 + 00 0B + 00 01 03 02 = 14 bytes → len = 0x0D
-const WRITE_GO_FLAGS: &str =
-    "30 60 #EDI #BDUT_ADDR 0D 01 CE 00 11 00 10 3D 04 00 0B 00 01 03 02";
-const WRITE_GO_FLAGS_OK: &str =
-    "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 04 00 0B 00";
+const WRITE_GO_FLAGS: &str = "30 60 #EDI #BDUT_ADDR 0D 01 CE 00 11 00 10 3D 04 00 0B 00 01 03 02";
+const WRITE_GO_FLAGS_OK: &str = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 04 00 0B 00";
 
 // Restore group key entry at index 1 (TSAP 2 → GK1) — previous suites
 // (e.g. 3.8.10) may overwrite this entry with test data.
 // APDU: 01 CE + 00 11 + 00 10 + 35 + 01 + 00 01 + 18 data bytes = 28 bytes → len = 0x1B
 const RESTORE_GRP_KEY_ENTRY_1: &str =
     "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F";
-const RESTORE_GRP_KEY_ENTRY_1_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
+const RESTORE_GRP_KEY_ENTRY_1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
 
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
@@ -128,22 +121,16 @@ const TIMEOUT: u32 = 3000;
 
 // Write SIAT entry 2: IA=#EDI (0xAFFE), last_valid_seq=1.
 // PID 0x36 (PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE), count=1, start=2.
-const SIAT_EDI_SEQ1: &str =
-    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #EDI 00 00 00 00 00 01";
-const SIAT_EDI_SEQ1_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
+const SIAT_EDI_SEQ1: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #EDI 00 00 00 00 00 01";
+const SIAT_EDI_SEQ1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
 
 // Write SIAT entry 1: IA=#ALT_SRC_ADDR (0xAFFD), last_valid_seq=3.
-const SIAT_ALT_SEQ3: &str =
-    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #ALT_SRC_ADDR 00 00 00 00 00 03";
-const SIAT_ALT_SEQ3_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+const SIAT_ALT_SEQ3: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #ALT_SRC_ADDR 00 00 00 00 00 03";
+const SIAT_ALT_SEQ3_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
 
 // Clear SIAT: write count=0, start=0.
-const CLEAR_SIAT: &str =
-    "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
-const CLEAR_SIAT_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
+const CLEAR_SIAT: &str = "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
+const CLEAR_SIAT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
 
 // ============================================================================
 // Suite Constructor
@@ -152,49 +139,53 @@ const CLEAR_SIAT_OK: &str =
 pub fn create_section_3_2_suite() -> TestSuite {
     let variables = create_security_variables();
 
-    TestSuite::new("3.2 S-A_Data PDU with Group Key", variables)
-        .secure()
-        .with_cases(vec![
-            // Setup: load Security IO and write GO flags.
-            test_3_2_setup(),
-
-            // Placeholder (introduction — documentation-only, 0 telegrams in XML).
-            test_3_2_1(),
-
-            // ================================================================
-            // Positive tests: auth-only (GO_SEC_0, GK1/GK2)
-            // ================================================================
-            test_3_2_2(),
-            test_3_2_4(),
-
-            // ================================================================
-            // Positive tests: auth+conf (GO_SEC_1, GK3/GK4)
-            // ================================================================
-            test_3_2_8(),
-            test_3_2_10(),
-
-            // ================================================================
-            // Negative tests: auth-only
-            // ================================================================
-            test_3_2_3(),
-            test_3_2_5(),
-            test_3_2_6(),
-            test_3_2_7(),
-
-            // ================================================================
-            // Negative tests: auth+conf
-            // ================================================================
-            test_3_2_9(),
-            test_3_2_11(),
-            test_3_2_12(),
-            test_3_2_13(),
-            test_3_2_14(),
-            test_3_2_15(),
-            test_3_2_16(),
-            test_3_2_17(),
-            test_3_2_18(),
-            test_3_2_19(),
-        ])
+    TestSuite::new("3.2 S-A_Data PDU with Group Key", variables).secure().with_cases(vec![
+        // Setup: load Security IO and write GO flags.
+        test_3_2_setup(),
+        // Placeholder (introduction — documentation-only, 0 telegrams in XML).
+        test_3_2_1(),
+        // ================================================================
+        // Positive tests: auth-only (GO_SEC_0, GK1/GK2)
+        // ================================================================
+        test_3_2_2(),
+        test_3_2_4(),
+        // ================================================================
+        // Positive tests: auth+conf (GO_SEC_1, GK3/GK4)
+        // ================================================================
+        test_3_2_8(),
+        test_3_2_10(),
+        // ================================================================
+        // Negative tests: auth-only
+        // ================================================================
+        test_3_2_3(),
+        test_3_2_5(),
+        test_3_2_6(),
+        test_3_2_7(),
+        // ================================================================
+        // Negative tests: auth+conf
+        // ================================================================
+        test_3_2_9(),
+        test_3_2_11(),
+        test_3_2_12(),
+        test_3_2_13(),
+        test_3_2_14(),
+        test_3_2_15(),
+        test_3_2_16(),
+        test_3_2_17(),
+        test_3_2_18(),
+        test_3_2_19(),
+        // ================================================================
+        // Spontaneous transmit-side tests (transmit half of §6.3.15.3
+        // Table 108). Not in the official conformance XML — added by us
+        // to lock down the AL/S-AL layering rework that introduced the
+        // `RequiredSecurity` annotation. They follow the receive tests
+        // because they consume the DUT's sending sequence counters and
+        // shouldn't perturb prior tests' replay-protection assumptions.
+        // ================================================================
+        test_3_2_tx_1_auth_only(),
+        test_3_2_tx_2_auth_conf(),
+        test_3_2_tx_3_plain(),
+    ])
 }
 
 // ============================================================================
@@ -206,17 +197,14 @@ fn test_3_2_setup() -> TestCase {
         comment("Security IO: transition to Loading so we can write GO flags"),
         inject_secure_ac(LOAD_START_LOADING, "TK1"),
         expect_secure_ac(LOAD_START_LOADING_OK, "TK1", TIMEOUT),
-
         // Restore group key entry 1 (TSAP 2 → GK1) in case a previous suite
         // (e.g. 3.8.10) overwrote it with test data.
         comment("Restore group key entry 1 (TSAP 2 → GK1)"),
         inject_secure_ac(RESTORE_GRP_KEY_ENTRY_1, "TK1"),
         expect_secure_ac(RESTORE_GRP_KEY_ENTRY_1_OK, "TK1", TIMEOUT),
-
         comment("Write GO security flags: GO_SEC_2=plain, GO_SEC_0=A, GO_SEC_1=A+C, GO_SEC_3=C"),
         inject_secure_ac(WRITE_GO_FLAGS, "TK1"),
         expect_secure_ac(WRITE_GO_FLAGS_OK, "TK1", TIMEOUT),
-
         comment("Transition to Loaded — security tables are now active"),
         inject_secure_ac(LOAD_COMPLETED, "TK1"),
         expect_secure_ac(LOAD_COMPLETED_OK, "TK1", TIMEOUT),
@@ -416,11 +404,7 @@ fn test_3_2_12() -> TestCase {
 fn test_3_2_14() -> TestCase {
     TestCase::new("3.2.14 wrong ciphertext (A+C) → reject").with_steps(vec![
         comment("A+C to 3/3/3 with corrupted ciphertext → reject"),
-        inject_secure_invalid(
-            GV_READ_333,
-            SecureParams::group_auth_conf("GK3"),
-            InvalidSecurityParam::InvalidCipher,
-        ),
+        inject_secure_invalid(GV_READ_333, SecureParams::group_auth_conf("GK3"), InvalidSecurityParam::InvalidCipher),
         expect_none(TIMEOUT),
     ])
 }
@@ -533,11 +517,88 @@ fn test_3_2_13() -> TestCase {
 }
 
 // ============================================================================
+// 3.2.tx-* — Spontaneous outbound secure transmission tests
+// ============================================================================
+//
+// These tests cover the **transmit** side of `PID_GO_SECURITY_FLAGS` /
+// 03/05/01 §6.3.15.3 Table 108: when the local application initiates a
+// `A_GroupValue_Write.req` (or read), the GO's flag bits become this
+// primitive's `par_auth` / `par_conf`. The S-AL must encrypt the frame
+// before it leaves the bus.
+//
+// They are not in the official KNX conformance XML (the spec only
+// scripts the receive side) — this is our own coverage for the
+// transmit-side fix in the AL/S-AL layering rework. Without these, a
+// regression that drops the buffer's `RequiredSecurity` annotation or
+// reverts the outbox-swap around `handle_app_request` would slip past
+// the upstream conformance tests.
+//
+// Setup phase (test_3_2_setup) writes:
+//   GO_SEC_2 (CO 11, GA 5/5/5)        flag=0x00 plain
+//   GO_SEC_0 (CO 12, GA 2/2/2 send)   flag=0x01 auth-only
+//   GO_SEC_1 (CO 13, GA 4/4/4 send)   flag=0x03 auth+conf
+//   GO_SEC_3 (CO 14, GA 6/6/6)        flag=0x02 c-only (reserved/undefined)
+//
+// We trigger writes from the local app (ASAP 12, 13, 11) and assert the
+// outbound encryption matches each GO's flag bits.
+
+// Plaintext template for a spontaneous GroupValue_Write to GA 2/2/2 from
+// the DUT carrying value 0 (the default for `go_sec_0`). Short APCI form
+// (1-bit DPT_Switch fits in the low 6 bits of the second APCI byte):
+// APCI = 0x00 0x80 (GroupValueWrite | value=0).
+const GV_WRITE_222_VAL0: &str = "BC #BDUT_ADDR 12 02 E1 00 80";
+
+// Same as above but for GA 4/4/4 (GO_SEC_1's send TSAP).
+const GV_WRITE_444_VAL0: &str = "BC #BDUT_ADDR 24 04 E1 00 80";
+
+// Plaintext outbound to GA 5/5/5 (GO_SEC_2, plain).
+const GV_WRITE_555_VAL0: &str = "BC #BDUT_ADDR 2D 05 E1 00 80";
+
+// 3.2.tx.1 — GO_SEC_0 (auth-only) spontaneous write must be encrypted A.
+//
+// `trigger_write(12)` makes the DUT push an A_GroupValue_Write.req for
+// ASAP 12 (GO_SEC_0). With `PID_GO_SECURITY_FLAGS[11] = 0x01` the AL
+// stamps `RequiredSecurity::Auth`; the S-AL encrypts auth-only with the
+// GO's send-side group key (GK2 on 2/2/2).
+fn test_3_2_tx_1_auth_only() -> TestCase {
+    TestCase::new("3.2.tx.1 spontaneous GO_SEC_0 (auth-only) → A-secured tx").with_steps(vec![
+        comment("DUT-initiated GroupValue_Write on ASAP 12 (GO_SEC_0)"),
+        comment("PID_GO_SECURITY_FLAGS=0x01 → must be encrypted auth-only with GK2"),
+        trigger_write(12),
+        expect_group_ao(GV_WRITE_222_VAL0, "GK2", TIMEOUT),
+    ])
+}
+
+// 3.2.tx.2 — GO_SEC_1 (auth+conf) spontaneous write must be encrypted A+C.
+fn test_3_2_tx_2_auth_conf() -> TestCase {
+    TestCase::new("3.2.tx.2 spontaneous GO_SEC_1 (auth+conf) → A+C-secured tx").with_steps(vec![
+        comment("DUT-initiated GroupValue_Write on ASAP 13 (GO_SEC_1)"),
+        comment("PID_GO_SECURITY_FLAGS=0x03 → must be encrypted A+C with GK4"),
+        trigger_write(13),
+        expect_group_ac(GV_WRITE_444_VAL0, "GK4", TIMEOUT),
+    ])
+}
+
+// 3.2.tx.3 — GO_SEC_2 (plain) spontaneous write must remain plaintext.
+//
+// Guards against an over-eager S-AL accidentally encrypting a GO whose
+// flags are 0x00 — the receiver would reject the frame as "secure to
+// plain-only GO" (cf. test 3.2.18) and the bus would silently lose the
+// update.
+fn test_3_2_tx_3_plain() -> TestCase {
+    TestCase::new("3.2.tx.3 spontaneous GO_SEC_2 (plain) → plain tx").with_steps(vec![
+        comment("DUT-initiated GroupValue_Write on ASAP 11 (GO_SEC_2)"),
+        comment("PID_GO_SECURITY_FLAGS=0x00 → must be sent in plaintext"),
+        trigger_write(11),
+        expect(GV_WRITE_555_VAL0, TIMEOUT),
+    ])
+}
+
+// ============================================================================
 // 3.2.1 — placeholder (introduction / setup assumptions, 0 telegrams in XML)
 // ============================================================================
 
 fn test_3_2_1() -> TestCase {
-    TestCase::new("3.2.1 Introduction").with_steps(vec![
-        comment("Placeholder: documents GO/key/GA assumptions for the 3.2 suite."),
-    ])
+    TestCase::new("3.2.1 Introduction")
+        .with_steps(vec![comment("Placeholder: documents GO/key/GA assumptions for the 3.2 suite.")])
 }

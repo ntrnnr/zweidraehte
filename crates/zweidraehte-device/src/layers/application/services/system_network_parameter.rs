@@ -61,11 +61,22 @@ impl<D: StackDefinition> AlService<D> for SystemNetworkParameterService {
 }
 
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
-    // The service is only defined on system broadcast per spec 03/05/02 §2.20.
-    if ind.service_type() != ServiceType::T_SystemBroadcast_Ind {
-        warn!("AL SystemNetworkParameterRead with unexpected service type: {:?}", ind.service_type());
-        return;
-    }
+    // Per spec 03/05/02 §2.20.1.2, this service is defined *only* on
+    // system broadcast. In practice some tools (ETS among them) send
+    // `A_SystemNetworkParameter_Read` over plain `T_Broadcast_Ind` on
+    // TP1 — the frames look identical on the wire save for one control
+    // bit and real devices have historically accepted both. We mirror
+    // that behaviour: accept either transport and echo the response
+    // back on the same one so the tool sees it on the channel it used.
+    let request_service = ind.service_type();
+    let response_service = match request_service {
+        ServiceType::T_SystemBroadcast_Ind => ServiceType::T_SystemBroadcast_Req,
+        ServiceType::T_Broadcast_Ind => ServiceType::T_Broadcast_Req,
+        other => {
+            warn!("AL SystemNetworkParameterRead with unexpected service type: {:?}", other);
+            return;
+        }
+    };
 
     let Some(read) = SystemNetworkParameterRead::parse(ind.buf()) else {
         error!("SystemNetworkParameterRead message too short: {}", ind.len());
@@ -107,11 +118,14 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
         return;
     };
 
-    // System broadcast is addressed to the null group address; preserve
-    // the request's priority per spec 03/05/02 §2.20.1.2.
+    // Addressed to the null group address; preserve the request's
+    // priority per spec 03/05/02 §2.20.1.2. The request transport —
+    // T_SystemBroadcast_Ind or (non-compliant but tolerated)
+    // T_Broadcast_Ind — is mirrored into `response_service` above so
+    // the answer goes back on the same channel.
     let mut msg = MessageBuilder::new_request(
         msg_buf,
-        ServiceType::T_SystemBroadcast_Req,
+        response_service,
         ind.ctrl_field().priority(),
         DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
     )

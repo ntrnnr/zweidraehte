@@ -187,6 +187,9 @@ pub trait HasSecurityMode {
 
 impl HasSecurityMode for () {}
 
+// The empty extension state has no security policy — every send is plain.
+impl crate::objects::comm::HasGoSecurityView for () {}
+
 impl ExtensionState for () {
     type Config = ();
     type Resources = ();
