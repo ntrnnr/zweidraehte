@@ -826,15 +826,16 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         };
 
-        // IndividualAddressResponse: broadcast to 0x0000, address conveyed in source field
-        let msg = MessageBuilder::new_request(
-            msg_buf,
-            ServiceType::T_Broadcast_Req,
-            ind.ctrl_field().priority(),
-            DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
-        )
-        .with_application(ApciCode::IndividualAddressResponse)
-        .build();
+        // IndividualAddressResponse: broadcast to 0x0000, address conveyed
+        // in the source field. Build via `respond_to` so the indication's
+        // security stamps (level, tool-access flag, TL seq) are inherited
+        // automatically, then override service type and destination to
+        // get the broadcast framing the spec mandates.
+        let msg = MessageBuilder::respond_to(msg_buf, ind)
+            .with_service_type(ServiceType::T_Broadcast_Req)
+            .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
+            .with_application(ApciCode::IndividualAddressResponse)
+            .build();
 
         debug!("AL sending IndividualAddressResponse");
         self.lctx.push_outbox(msg.into_inner());

@@ -457,9 +457,9 @@ pub trait HasCommObjects {
 /// (`PID_GO_SECURITY_FLAGS`, P2P key table, security mode flag) and return
 /// the spec-correct level per ASAP / peer IA / destination type. Keeping
 /// the default at `Plain` rather than `Unspecified` guarantees that an
-/// insecure-stack call site always emits plaintext deterministically — the
-/// `Unspecified` semantics (defer to S-AL `outgoing_ctx`) only make sense
-/// on stacks that have an S-AL.
+/// insecure-stack call site always emits plaintext deterministically;
+/// `Unspecified` only carries meaning on secure stacks where it lets the
+/// reactive `respond_to` propagation inherit the indication's stamp.
 ///
 /// The trait deliberately exposes no Security IO types so the plain
 /// Application Layer compiles without any `HasSecurityState` bound.
@@ -492,8 +492,11 @@ pub trait HasGoSecurityView {
     /// Spontaneous broadcasts that the spec marks as plain (e.g.
     /// `A_NetworkParameter_InfoReport` security reports per 03/05/01
     /// §6.3.11.4) explicitly stamp [`RequiredSecurity::Plain`].
-    /// Reactive broadcast responses inherit through `Unspecified` and
-    /// the S-AL's reactive `outgoing_ctx`.
+    /// Reactive broadcast responses (e.g. `IndividualAddressResponse`
+    /// to a secure `IndividualAddressRead`) propagate the indication's
+    /// stamp via `MessageBuilder::respond_to` or by chaining
+    /// `.with_required_security(ind.required_security())` when the
+    /// destination is broadcast (which precludes `respond_to`).
     ///
     /// [`RequiredSecurity::Plain`]: zweidraehte_proto::messages::knx::RequiredSecurity::Plain
     fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {

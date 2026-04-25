@@ -35,13 +35,19 @@
 mod augment;
 
 pub use augment::SecurityAugment;
+use zweidraehte_proto::messages::knx::RequiredSecurity;
 
 use core::cell::{Cell, RefCell};
 
 use serde::{Deserialize, Serialize};
 
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
+#[cfg(feature = "knxip")]
+use crate::bcus::system_b::IpExtensionState;
+use crate::bcus::system_b::{
+    Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState, Tp1ExtensionState,
+};
+use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount};
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
@@ -1014,15 +1020,14 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT:
 // Both sides consult `PID_GO_SECURITY_FLAGS` (0-based) for groups; both
 // must agree on the bit-to-level mapping below.
 impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
-    crate::objects::comm::HasGoSecurityView for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+    HasGoSecurityView for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
 {
-    fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        use zweidraehte_proto::messages::knx::RequiredSecurity;
-
+    fn required_security_for_asap(&self, asap: u16) -> RequiredSecurity {
         // ASAPs are 1-based at the wire/property layer; the GO flags table is
         // indexed 0-based. An ASAP of 0 (which never appears in a real frame)
         // saturates harmlessly.
         let go_index = asap.saturating_sub(1);
+
         // Absent entries → no security required for this GO. Spec §6.3.15
         // permits divergent flags across ASAPs sharing a GA — by indexing
         // off the originating ASAP we get the correct level for *this*
@@ -1030,6 +1035,7 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT:
         let Some(flag) = self.security.go_security_flags_for(go_index) else {
             return RequiredSecurity::Plain;
         };
+
         // Bits are: b0 = auth, b1 = conf (03/05/01 §6.3.15.3). The
         // (auth=0, conf=1) combination is reserved/undefined — degrade to
         // plaintext rather than silently mismatching the receiver, mirroring
@@ -1042,9 +1048,7 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT:
         }
     }
 
-    fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        use zweidraehte_proto::messages::knx::RequiredSecurity;
-
+    fn required_security_for_p2p(&self, peer_ia: u16) -> RequiredSecurity {
         // Per 03/03/07 §5.5.3.4: P2P sends to a peer with a key entry are
         // mandatory Auth+Conf — the table holds a single key without any
         // auth-only granularity. No entry → plaintext.
@@ -1054,18 +1058,17 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT:
         }
     }
 
-    fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
+    fn required_security_for_broadcast(&self) -> RequiredSecurity {
         // Spontaneous broadcasts that the spec marks as Plain (notably the
         // `A_NetworkParameter_InfoReport` security report per §6.3.11.4)
         // call the spontaneous helper directly with `RequiredSecurity::Plain`.
-        // For the trait default we keep `Plain`; reactive broadcast responses
-        // flow through `Unspecified` → `outgoing_ctx`.
-        zweidraehte_proto::messages::knx::RequiredSecurity::Plain
+        // Reactive broadcast responses (e.g. `IndividualAddressResponse`)
+        // inherit their stamp from the indication via the call site
+        // chaining `.with_required_security(ind.required_security())`.
+        RequiredSecurity::Plain
     }
 
-    fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        use zweidraehte_proto::messages::knx::RequiredSecurity;
-
+    fn required_security_for_tool_access(&self) -> RequiredSecurity {
         // Spontaneous tool-channel sends are Auth+Conf only when the device
         // has been commissioned (security mode set, tool key non-zero). In
         // factory state the tool channel is plain.
@@ -1251,7 +1254,7 @@ where
 
 /// TP1 extension state with Data Secure support.
 pub type SecureTp1ExtensionState<SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> =
-    SecureExtensionState<super::tp1::Tp1ExtensionState, SEQ, GRP, P2P, SIAT, GO>;
+    SecureExtensionState<Tp1ExtensionState, SEQ, GRP, P2P, SIAT, GO>;
 
 /// TP1 device state with Data Secure support.
 ///
@@ -1272,13 +1275,7 @@ pub type SecureTp1DeviceState<
     SEQ,
     const P2P: usize,
     const SIAT: usize,
-> = crate::bcus::system_b::SystemBDeviceState<
-    ADT_SIZE,
-    AST_SIZE,
-    COT_SIZE,
-    D,
-    SecureTp1ExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>,
->;
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, SecureTp1ExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.
@@ -1290,7 +1287,7 @@ pub type SecureIpExtensionState<
     const P2P: usize,
     const SIAT: usize,
     const GO: usize,
-> = SecureExtensionState<super::ip::IpExtensionState<N, CAPS>, SEQ, GRP, P2P, SIAT, GO>;
+> = SecureExtensionState<IpExtensionState<N, CAPS>, SEQ, GRP, P2P, SIAT, GO>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP device state with Data Secure support.
@@ -1310,7 +1307,7 @@ pub type SecureIpDeviceState<
     const SIAT: usize,
     const N: usize,
     const CAPS: u16,
-> = crate::bcus::system_b::SystemBDeviceState<
+> = SystemBDeviceState<
     ADT_SIZE,
     AST_SIZE,
     COT_SIZE,

@@ -669,15 +669,20 @@ impl MessageFormat for Tp1Format {}
 /// - `Auth`      → `par_auth = 1`, `par_conf = 0`
 /// - `AuthConf`  → `par_auth = 1`, `par_conf = 1`
 ///
-/// `Unspecified` is the default and means "S-AL applies its existing rules":
-/// for reactive responses the S-AL's `outgoing_ctx` (set on the matching
-/// secure incoming request) decides; for spontaneous output, plaintext is
-/// sent. New spontaneous surfaces should stamp explicitly rather than rely
-/// on `Unspecified` defaulting to plaintext.
+/// `Unspecified` is the implicit default. The Secure Application Layer
+/// stamps incoming secure indications with the matching `Auth`/`AuthConf`
+/// level; `MessageBuilder::respond_to` propagates that stamp onto the
+/// response buffer; `try_encrypt_outgoing` reads it at outbox drain.
+/// Plain incoming flows leave the indication at `Unspecified`, the
+/// response inherits `Unspecified`, and the drain emits plaintext —
+/// no side-channel context required. Insecure stacks never set this
+/// to anything other than `Unspecified` and the field is effectively
+/// inert.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Default)]
 pub enum RequiredSecurity {
-    /// Defer to the S-AL's reactive logic (`outgoing_ctx`); spontaneous
-    /// output without an active reactive context falls through to plaintext.
+    /// Default: emit plaintext. Reactive responses to plain incoming
+    /// frames inherit this via `respond_to`; non-secure devices use
+    /// it for everything.
     #[default]
     Unspecified,
     /// Send plaintext explicitly (e.g. spontaneous broadcasts that are plain
@@ -709,6 +714,15 @@ pub struct KnxMessageBuffer<B: Deref<Target = [u8]>, F: MessageFormat = Internal
     /// can apply the §5.5.3.x decision tree uniformly across group,
     /// P2P, broadcast, and tool-access paths. See [`RequiredSecurity`].
     required_security: RequiredSecurity,
+    /// Whether the outbound frame must use the tool key (SCF bit 7).
+    ///
+    /// Orthogonal to [`required_security`] — that field selects auth
+    /// vs. auth+conf, this flag selects which key table to consult.
+    /// On reactive responses to tool-access requests, the S-AL stamps
+    /// this on the indication and `MessageBuilder::respond_to`
+    /// propagates it to the response, so drain-time encryption picks
+    /// the live tool key. Default `false` for non-secure paths.
+    tool_access_required: bool,
     /// Marker for the message format
     _format: PhantomData<F>,
 }
@@ -792,6 +806,19 @@ impl<B: Deref<Target = [u8]>, F: MessageFormat> KnxMessageBuffer<B, F> {
         self.required_security = level;
     }
 
+    /// Whether this message must be encrypted with the tool key.
+    pub fn tool_access_required(&self) -> bool {
+        self.tool_access_required
+    }
+
+    /// Set the tool-access flag for this outbound message.
+    ///
+    /// Most call sites should use `MessageBuilder::with_tool_access`
+    /// at construction time instead of mutating the buffer post-build.
+    pub fn set_tool_access_required(&mut self, tool_access: bool) {
+        self.tool_access_required = tool_access;
+    }
+
     pub fn len(&self) -> usize {
         self.buf.len()
     }
@@ -814,6 +841,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
             required_security: RequiredSecurity::Unspecified,
+            tool_access_required: false,
             _format: PhantomData,
         }
     }
@@ -829,6 +857,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
             required_security: RequiredSecurity::Unspecified,
+            tool_access_required: false,
             _format: PhantomData,
         }
     }
@@ -1220,6 +1249,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, CemiFormat> {
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
             required_security: RequiredSecurity::Unspecified,
+            tool_access_required: false,
             _format: PhantomData,
         }
     }
@@ -1272,6 +1302,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
                 access_source: self.access_source,
                 outgoing_tl_seq: self.outgoing_tl_seq,
                 required_security: self.required_security,
+                tool_access_required: self.tool_access_required,
                 _format: PhantomData,
             };
         }
@@ -1328,6 +1359,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, CemiFormat> {
             access_source: self.access_source,
             outgoing_tl_seq: self.outgoing_tl_seq,
             required_security: self.required_security,
+            tool_access_required: self.tool_access_required,
             _format: PhantomData,
         }
     }
@@ -1387,6 +1419,7 @@ impl<B: MessageBuffer> KnxMessageBuffer<B, InternalFormat> {
             access_source: self.access_source,
             outgoing_tl_seq: self.outgoing_tl_seq,
             required_security: self.required_security,
+            tool_access_required: self.tool_access_required,
             _format: PhantomData,
         }
     }
@@ -1421,6 +1454,7 @@ impl<B: Deref<Target = [u8]>> KnxMessageBuffer<B, Tp1Format> {
             access_source: AccessSource::Default,
             outgoing_tl_seq: None,
             required_security: RequiredSecurity::Unspecified,
+            tool_access_required: false,
             _format: PhantomData,
         }
     }

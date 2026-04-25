@@ -128,14 +128,11 @@ where
         return;
     };
 
-    let mut msg = MessageBuilder::new_request(
-        msg_buf,
-        ServiceType::T_SystemBroadcast_Req,
-        ind.ctrl_field().priority(),
-        DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
-    )
-    .with_application(ApciCode::DomainAddressSerialNumberResponse)
-    .build();
+    let mut msg = MessageBuilder::respond_to(msg_buf, ind)
+        .with_service_type(ServiceType::T_SystemBroadcast_Req)
+        .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
+        .with_application(ApciCode::DomainAddressSerialNumberResponse)
+        .build();
 
     let serial: &[u8; 6] = ctx.state.serial_number();
     DomainAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);

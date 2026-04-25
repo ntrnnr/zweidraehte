@@ -85,14 +85,14 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
         return;
     };
 
-    let mut msg = MessageBuilder::new_request(
-        msg_buf,
-        ServiceType::T_Broadcast_Req,
-        ind.ctrl_field().priority(),
-        DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
-    )
-    .with_application(ApciCode::IndividualAddressSerialNumberResponse)
-    .build();
+    // Reactive broadcast: `respond_to` carries the indication's security
+    // stamps; `with_destination`/`with_service_type` override the
+    // framing without losing them.
+    let mut msg = MessageBuilder::respond_to(msg_buf, ind)
+        .with_service_type(ServiceType::T_Broadcast_Req)
+        .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
+        .with_application(ApciCode::IndividualAddressSerialNumberResponse)
+        .build();
 
     let serial: &[u8; 6] = ctx.state.serial_number();
     IndividualAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);

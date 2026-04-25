@@ -11,8 +11,10 @@
 //! caller is `PID_GO_DIAGNOSTICS` WriteServiceID `0x01` / `0x03`
 //! (sections 6.2.7 / 6.2.15 in the KNX Data Security conformance
 //! suite); the normal S-AL "respond to incoming secure request" path
-//! does not apply because `outgoing_ctx.active` is `false` when the
-//! command was plaintext.
+//! does not apply because the originating command was plaintext, so
+//! the reactive stamp-propagation through `respond_to` would copy
+//! `Unspecified` — and the spec mandates explicit Auth/AuthConf for
+//! these GO-diagnostics replies regardless.
 
 use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
 use zweidraehte_proto::messages::{

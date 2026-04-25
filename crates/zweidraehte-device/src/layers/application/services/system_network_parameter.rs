@@ -123,14 +123,11 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     // T_SystemBroadcast_Ind or (non-compliant but tolerated)
     // T_Broadcast_Ind — is mirrored into `response_service` above so
     // the answer goes back on the same channel.
-    let mut msg = MessageBuilder::new_request(
-        msg_buf,
-        response_service,
-        ind.ctrl_field().priority(),
-        DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])),
-    )
-    .with_application(ApciCode::SystemNetworkParameterResponse)
-    .build();
+    let mut msg = MessageBuilder::respond_to(msg_buf, ind)
+        .with_service_type(response_service)
+        .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
+        .with_application(ApciCode::SystemNetworkParameterResponse)
+        .build();
 
     let serial: &[u8; 6] = ctx.state.serial_number();
     SystemNetworkParameterResponse::write(msg.buf_mut(), device_ot, pid::SERIAL_NUMBER, OPERAND_BY_PROG_MODE, serial);

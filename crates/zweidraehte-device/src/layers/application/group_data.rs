@@ -786,8 +786,10 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
         // GO diagnostics direct-write 0x00 is unambiguously "send
         // plaintext", and a secure variant exists on the dedicated
         // `SecureGroupValueAddressedSender` trait. Stamping `Plain`
-        // explicitly prevents this primitive from accidentally inheriting
-        // a reactive `outgoing_ctx` if it ever runs inside a swap window.
+        // explicitly is required because this primitive may be invoked
+        // from inside an outbox-swap window where the buffer would
+        // otherwise default to `Unspecified` and be left as-is —
+        // explicit `Plain` documents the intent.
         let msg = MessageBuilder::new_request(
             msg_buf,
             ServiceType::T_GroupData_Req,

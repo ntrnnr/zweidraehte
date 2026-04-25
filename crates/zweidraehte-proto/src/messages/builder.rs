@@ -200,6 +200,17 @@ pub mod state {
         /// (e.g. Auth/AuthConf for spontaneous secure GO writes, or Plain
         /// for spontaneous broadcasts that are plaintext by spec).
         pub required_security: RequiredSecurity,
+        /// Whether the finalised message must be encrypted with the tool
+        /// key. Orthogonal to `required_security` — selects the key,
+        /// not the algorithm. Inherited from indications by `respond_to`
+        /// so reactive responses to tool-access requests carry it
+        /// automatically.
+        pub tool_access_required: bool,
+        /// TL outgoing sequence number. Carried so `respond_to` can
+        /// propagate the indication's TL seqnr onto the response, where
+        /// the S-AL's CCM B0 construction uses it. `None` for new
+        /// (non-reactive) requests.
+        pub outgoing_tl_seq: Option<u8>,
     }
 
     /// Transport layer context for a request
@@ -272,10 +283,15 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
                 service_type,
                 priority: indication.ctrl_field().priority(),
                 dest: DestinationAddress::Individual(indication.get_source_addr()),
-                // Default for responses: stay `Unspecified` so the S-AL's
-                // reactive logic (`outgoing_ctx`) decides. Reactive-response
-                // call sites do not need to chain `.with_required_security`.
-                required_security: RequiredSecurity::Unspecified,
+                // Inherit the security context from the indication so
+                // reactive responses encrypt with the same parameters
+                // the request used. The S-AL stamps these on incoming
+                // secure indications during `try_process_secure`; for
+                // plain incoming frames they stay at the defaults
+                // (`Unspecified` + `false`) and the response goes plain.
+                required_security: indication.required_security(),
+                tool_access_required: indication.tool_access_required(),
+                outgoing_tl_seq: indication.outgoing_tl_seq(),
             },
         }
     }
@@ -313,6 +329,8 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
                 priority,
                 dest,
                 required_security: RequiredSecurity::Unspecified,
+                tool_access_required: false,
+                outgoing_tl_seq: None,
             },
         }
     }
@@ -366,13 +384,62 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
     /// plaintext by spec (e.g. `A_NetworkParameter_InfoReport` security
     /// reports per 03/05/01 §6.3.11.4).
     ///
-    /// Reactive-response call sites do not need to chain this; the
-    /// default [`RequiredSecurity::Unspecified`] hands control to the
-    /// S-AL's `outgoing_ctx` mechanism.
+    /// Reactive-response call sites built via [`MessageBuilder::respond_to`]
+    /// inherit their stamp from the indication automatically and do not
+    /// need to chain this — even when the framing differs from a normal
+    /// `1.x.y → src` reply. Override the service type and destination
+    /// via [`Self::with_service_type`] / [`Self::with_destination`]
+    /// while keeping the inherited security context.
+    ///
+    /// Spontaneous (non-reactive) sites stamp explicitly:
+    /// [`RequiredSecurity::Auth`] / [`AuthConf`] for paths that must
+    /// encrypt (e.g. group writes from a GO whose
+    /// `PID_GO_SECURITY_FLAGS` requires security), or
+    /// [`RequiredSecurity::Plain`] for outputs the spec mandates as
+    /// plain (e.g. `A_NetworkParameter_InfoReport` security reports
+    /// per 03/05/01 §6.3.11.4).
     ///
     /// [`AuthConf`]: RequiredSecurity::AuthConf
     pub fn with_required_security(mut self, level: RequiredSecurity) -> Self {
         self.state.required_security = level;
+        self
+    }
+
+    /// Stamp the tool-access requirement on the finalised message.
+    ///
+    /// Selects whether the S-AL drain path encrypts with the tool key
+    /// (`true`) or with a destination-derived key (`false`). Reactive
+    /// responses inherit this from the indication via `respond_to`;
+    /// spontaneous tool-access sends chain `.with_tool_access(true)`.
+    pub fn with_tool_access(mut self, tool_access: bool) -> Self {
+        self.state.tool_access_required = tool_access;
+        self
+    }
+
+    /// Override the service type carried by the finalised message.
+    ///
+    /// `respond_to` derives the service type from the indication
+    /// (e.g. `T_Data_Ind` → `T_Data_Req`). For reactive responses
+    /// whose framing differs — broadcast `IndividualAddressResponse`
+    /// answering a `T_Broadcast_Ind` via `T_Broadcast_Req`,
+    /// system-broadcast serial reads, etc. — chain this to override
+    /// while still inheriting the security context
+    /// (`required_security`, `tool_access_required`, `outgoing_tl_seq`).
+    /// A bare `new_request` call would lose those stamps and risk
+    /// emitting plaintext when a secure response was expected.
+    pub fn with_service_type(mut self, service_type: ServiceType) -> Self {
+        self.state.service_type = service_type;
+        self
+    }
+
+    /// Override the destination address.
+    ///
+    /// Same rationale as [`Self::with_service_type`]: lets a reactive
+    /// response retarget (e.g. broadcast back to `0x0000` rather than
+    /// to the requester's IA) without losing the inherited security
+    /// stamps from the indication.
+    pub fn with_destination(mut self, dest: DestinationAddress) -> Self {
+        self.state.dest = dest;
         self
     }
 
@@ -385,6 +452,10 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         msg.ctrl_field_mut().set_priority(self.state.priority);
         msg.set_dest_addr(self.state.dest);
         msg.set_required_security(self.state.required_security);
+        msg.set_tool_access_required(self.state.tool_access_required);
+        if let Some(seq) = self.state.outgoing_tl_seq {
+            msg.set_outgoing_tl_seq(seq);
+        }
         RequestMessage::request(msg)
     }
 
@@ -450,6 +521,10 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         msg.set_dest_addr(self.state.network.dest);
         msg.set_tpci(self.state.tpci);
         msg.set_required_security(self.state.network.required_security);
+        msg.set_tool_access_required(self.state.network.tool_access_required);
+        if let Some(seq) = self.state.network.outgoing_tl_seq {
+            msg.set_outgoing_tl_seq(seq);
+        }
         RequestMessage::request(msg)
     }
 }
@@ -493,6 +568,10 @@ impl<B: Deref<Target = [u8]> + DerefMut> MessageBuilder<B, direction::Request, s
         writer(msg.buf_mut());
         msg.set_apci_code(self.state.apci);
         msg.set_required_security(self.state.network.required_security);
+        msg.set_tool_access_required(self.state.network.tool_access_required);
+        if let Some(seq) = self.state.network.outgoing_tl_seq {
+            msg.set_outgoing_tl_seq(seq);
+        }
 
         RequestMessage::request(msg)
     }
