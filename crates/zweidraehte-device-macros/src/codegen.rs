@@ -407,32 +407,71 @@ pub(crate) fn gen_augment(
     // parameter as the augment trait impl uses) on the augment struct;
     // there's no default stub to fall back on.
     let has_manual = property_props.iter().any(|p| p.manual);
+    // Fallbacks are *only* dispatched when the request's `object_type`
+    // matches one of this augment's effective targets. Without this
+    // guard, a `manual` PID like `LOAD_STATE_CONTROL` would steal writes
+    // destined for unrelated objects (e.g. an Association Table's LSM
+    // would be silently shadowed by SecurityAugment's LSM cascade
+    // because both expose PID 5 LOAD_STATE_CONTROL).
+    let target_matches: TokenStream = {
+        let preds = effective_targets.iter().map(|t| quote! { object_type == #t });
+        quote! { #( #preds )||* }
+    };
     let descriptor_fallback = if has_manual {
         quote! {
-            // Fallback to user-supplied dynamic descriptor lookup (e.g.
-            // for runtime-conditional or const-generic-sized array PIDs).
-            self.handle_extra_pid_descriptor(object_type, prop_id)
+            if #target_matches {
+                // Fallback to user-supplied dynamic descriptor lookup
+                // (e.g. for runtime-conditional or const-generic-sized
+                // array PIDs).
+                self.handle_extra_pid_descriptor(object_type, prop_id)
+            } else {
+                None
+            }
         }
     } else {
         quote! { None }
     };
     let read_fallback = if has_manual {
-        quote! { self.handle_extra_pid_read(ctx, object_type, req, buf) }
+        quote! {
+            if #target_matches {
+                self.handle_extra_pid_read(ctx, object_type, req, buf)
+            } else {
+                None
+            }
+        }
     } else {
         quote! { None }
     };
     let write_fallback = if has_manual {
-        quote! { self.handle_extra_pid_write(ctx, object_type, req) }
+        quote! {
+            if #target_matches {
+                self.handle_extra_pid_write(ctx, object_type, req)
+            } else {
+                None
+            }
+        }
     } else {
         quote! { None }
     };
     let fn_cmd_fallback = if has_manual {
-        quote! { self.handle_extra_pid_function_command(ctx, object_type, req) }
+        quote! {
+            if #target_matches {
+                self.handle_extra_pid_function_command(ctx, object_type, req)
+            } else {
+                None
+            }
+        }
     } else {
         quote! { None }
     };
     let fn_state_fallback = if has_manual {
-        quote! { self.handle_extra_pid_function_state_read(ctx, object_type, req) }
+        quote! {
+            if #target_matches {
+                self.handle_extra_pid_function_state_read(ctx, object_type, req)
+            } else {
+                None
+            }
+        }
     } else {
         quote! { None }
     };

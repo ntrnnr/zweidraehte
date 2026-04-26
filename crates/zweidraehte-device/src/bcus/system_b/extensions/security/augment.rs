@@ -55,7 +55,14 @@ pub struct SecurityAugment<
     state: &'a SecurityState<GRP, P2P, SIAT, GO>,
     seq_storage: &'a RefCell<SEQ>,
 
-    // ---- Declarative PIDs (closures handle dispatch) -------------------
+    // PIDs are listed in spec-prescribed order (Profiles §9.1.2.6.4):
+    // OBJECT_TYPE(1), LOAD_STATE_CONTROL(5), SECURITY_MODE(51), key tables
+    // (52/53/54), SECURITY_FAILURES_LOG(55), TOOL_KEY(56), report (57/58),
+    // SEQUENCE_NUMBER_SENDING(59), GO_SECURITY_FLAGS(61),
+    // TEST_FAILURE_COUNTERS(203 — mfr-specific). The macro emits
+    // `DESCRIPTORS` and the index-scan path in declaration order, so
+    // index-based property-description reads return the spec-defined
+    // prop_idx values.
 
     // PID 1 OBJECT_TYPE — fixed `InterfaceObjectType::Security` (0x0011) read.
     #[io(
@@ -70,67 +77,6 @@ pub struct SecurityAugment<
         },
     )]
     _object_type_io: (),
-
-    // PID 56 TOOL_KEY — write-only 16-byte key.
-    #[io(
-        pid = pid::TOOL_KEY,
-        pdt = PDT_Generic16,
-        access = WO,
-        policy = AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
-        rl = 0, wl = 2,
-        write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-            if data.len() < 16 {
-                return Err(PropertyError::BufferTooSmall);
-            }
-            let mut key = [0u8; 16];
-            key.copy_from_slice(&data[..16]);
-            this.state.set_tool_key(key);
-            Ok(WriteResponse::Echo)
-        },
-    )]
-    _tool_key_io: (),
-
-    // PID 57 SECURITY_REPORT — single-byte report flags
-    // (DPT_Security_Report 21.1002, b0 = Security Failure).
-    #[io(
-        pid = pid::SECURITY_REPORT,
-        pdt = PDT_Generic01,
-        access = RW,
-        policy = AccessPolicy::new(0x1FF, 0x0CC),
-        rl = 3, wl = 2,
-        read = |this: &Self| -> [u8; 1] { [this.state.security_report()] },
-        write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-            if data.is_empty() {
-                return Err(PropertyError::BufferTooSmall);
-            }
-            this.state.set_security_report(data[0]);
-            Ok(WriteResponse::Echo)
-        },
-    )]
-    _security_report_io: (),
-
-    // PID 58 SECURITY_REPORT_CONTROL — DPT_Enable 1.003 (single bit, 1
-    // byte on the wire).
-    #[io(
-        pid = pid::SECURITY_REPORT_CONTROL,
-        pdt = PDT_BinaryInformation,
-        access = RW,
-        policy = AccessPolicy::TOOL_ONLY, // 00C/00C
-        rl = 2, wl = 2,
-        read = |this: &Self| -> [u8; 1] {
-            [if this.state.security_report_enabled() { 0x01 } else { 0x00 }]
-        },
-        write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-            if data.is_empty() {
-                return Err(PropertyError::BufferTooSmall);
-            }
-            this.state.set_security_report_enabled(data[0] != 0);
-            Ok(WriteResponse::Echo)
-        },
-    )]
-    _security_report_control_io: (),
-
-    // ---- `manual` PIDs — descriptor only, dispatch in handle_extra_pid* ----
 
     // PID 5 LOAD_STATE_CONTROL — write triggers state-machine + seq seeding.
     #[io(
@@ -204,6 +150,65 @@ pub struct SecurityAugment<
         manual,
     )]
     _security_failures_log_io: (),
+
+    // PID 56 TOOL_KEY — write-only 16-byte key.
+    #[io(
+        pid = pid::TOOL_KEY,
+        pdt = PDT_Generic16,
+        access = WO,
+        policy = AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
+        rl = 0, wl = 2,
+        write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+            if data.len() < 16 {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            let mut key = [0u8; 16];
+            key.copy_from_slice(&data[..16]);
+            this.state.set_tool_key(key);
+            Ok(WriteResponse::Echo)
+        },
+    )]
+    _tool_key_io: (),
+
+    // PID 57 SECURITY_REPORT — single-byte report flags
+    // (DPT_Security_Report 21.1002, b0 = Security Failure).
+    #[io(
+        pid = pid::SECURITY_REPORT,
+        pdt = PDT_Generic01,
+        access = RW,
+        policy = AccessPolicy::new(0x1FF, 0x0CC),
+        rl = 3, wl = 2,
+        read = |this: &Self| -> [u8; 1] { [this.state.security_report()] },
+        write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+            if data.is_empty() {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            this.state.set_security_report(data[0]);
+            Ok(WriteResponse::Echo)
+        },
+    )]
+    _security_report_io: (),
+
+    // PID 58 SECURITY_REPORT_CONTROL — DPT_Enable 1.003 (single bit, 1
+    // byte on the wire).
+    #[io(
+        pid = pid::SECURITY_REPORT_CONTROL,
+        pdt = PDT_BinaryInformation,
+        access = RW,
+        policy = AccessPolicy::TOOL_ONLY, // 00C/00C
+        rl = 2, wl = 2,
+        read = |this: &Self| -> [u8; 1] {
+            [if this.state.security_report_enabled() { 0x01 } else { 0x00 }]
+        },
+        write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+            if data.is_empty() {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            this.state.set_security_report_enabled(data[0] != 0);
+            Ok(WriteResponse::Echo)
+        },
+    )]
+    _security_report_control_io: (),
 
     // PID 59 SEQUENCE_NUMBER_SENDING — 6-byte tool counter behind seq_storage RefCell.
     #[io(
