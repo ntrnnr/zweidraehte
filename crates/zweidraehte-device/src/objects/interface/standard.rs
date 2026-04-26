@@ -414,12 +414,13 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
 /// - OBJECT_TYPE (PID 1): Reports InterfaceObjectType::InterfaceProgram (5)
 /// - LOAD_STATE_CONTROL (PID 5): Load state machine (no side effects)
 /// - RUN_STATE_CONTROL (PID 6): Run state machine (no side effects)
-/// - PROGRAM_VERSION (PID 13): Program version (always `[0; 5]` on modern devices)
-// Access levels per Profiles spec Annex A.2.7 (mask 57B0h).
-//
-// Note: PROGRAM_VERSION was previously declared `ReadWrite` in the descriptor
-// but the write handler always returned `WriteNotAllowed`. The declaration is
-// now `ReadOnly` so the descriptor matches the dispatch behaviour.
+/// - TABLE_REFERENCE (PID 7): Allocated PEI table base address
+/// - PROGRAM_VERSION (PID 13): Program version (typically `[0; 5]` on modern devices)
+/// - PEI_TYPE (PID 16): PEI type required by the program (typically 0)
+// Access levels per Profiles spec Annex A.2.7. The Interface Program
+// Object is only listed for masks 07B0h and 17B0h; on 57B0h (System B
+// IP) it is absent from the spec entirely. The access levels here
+// match those two masks.
 #[interface_object(object_type = InterfaceObjectType::InterfaceProgram)]
 pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     pub pei: &'a RefCell<T>,
@@ -431,9 +432,28 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     /// this is purely for observability of the full ETS programming cascade.
     pub notifier: &'a dyn DeviceModelNotifier,
 
-    #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+    // Spec Annex A.2.7 lists PROGRAM_VERSION as `3/3` (mandatory RW)
+    // for both 07B0h and 17B0h. ETS writes the program version during
+    // programming, so the field has to accept writes even though the
+    // PEI program itself has no runtime side effects.
+    #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub program_version: PDT_Generic05,
+
+    // Spec Annex A.2.7 lists PEI_TYPE as `3/(3)` — mandatory, with the
+    // write level optional. We follow the Application Program Object
+    // and expose it as RW so ETS can stamp the required PEI type.
+    #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+    pub pei_type: PDT_UnsignedChar,
+
+    // PID_TABLE_REFERENCE — base address of the PEI table allocation,
+    // updated by the LSM during RelativeData allocation and cleared on
+    // unload. Spec Annex A.2.7 lists it as `3/x` (mandatory RO).
+    #[io(pid = pid::TABLE_REFERENCE, pdt = PDT_UnsignedLong, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         read = |this: &Self| this.pei.borrow().table_reference().to_be_bytes())]
+    table_reference: (),
 
     // LSM/RSM use the same cascade-into-run-event pattern as the application
     // program object; differs only in the `RunTarget::Pei` discriminator and
@@ -482,7 +502,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
         program_version: PDT_Generic05,
         notifier: &'a dyn DeviceModelNotifier,
     ) -> Self {
-        Self { pei, alloc_address, program_version, notifier }
+        Self { pei, alloc_address, program_version, pei_type: PDT_UnsignedChar::default(), notifier }
     }
 
     /// Get the program version.
