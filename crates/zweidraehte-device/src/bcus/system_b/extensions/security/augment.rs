@@ -40,7 +40,8 @@ use super::SecurityState;
 // state-machine cascades, array tables, and function-property frames
 // live in the `handle_extra_pid_*` methods further down.
 #[interface_object_augment(
-    target_objects = [InterfaceObjectType::Security],
+    // `additional_objects` adds the Security IO to the device's IO list
+    // and (implicitly) makes it the dispatch target for every PID below.
     additional_objects = [InterfaceObjectType::Security],
 )]
 pub struct SecurityAugment<
@@ -261,6 +262,16 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
 impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
     SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
 {
+    /// All Security PIDs are statically known — no runtime-conditional
+    /// descriptors. Always falls through to the macro's static lookup.
+    pub fn handle_extra_pid_descriptor(
+        &self,
+        _object_type: InterfaceObjectType,
+        _prop_id: u16,
+    ) -> Option<zweidraehte_proto::properties::PropertyDescriptor> {
+        None
+    }
+
     pub fn handle_extra_pid_read<D: StackDefinition>(
         &self,
         _ctx: &AugmentContext<'_, D>,

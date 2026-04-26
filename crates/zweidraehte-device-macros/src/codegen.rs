@@ -231,11 +231,22 @@ pub(crate) fn gen_augment(
     obj_attrs: &ObjectAttrs,
     props: &[Option<PropertyAttrs>],
 ) -> syn::Result<TokenStream> {
-    if obj_attrs.target_objects.is_empty() {
+    // For an additive augment, `additional_objects = [X]` implies the
+    // augment also dispatches PIDs to those types — entries from
+    // `additional_objects` are auto-included in the effective
+    // `target_objects` list (deduped). The user only needs to list extra
+    // intercepted base objects explicitly.
+    let mut effective_targets: Vec<syn::Path> = obj_attrs.target_objects.clone();
+    for add in &obj_attrs.additional_objects {
+        if !effective_targets.iter().any(|t| paths_equal(t, add)) {
+            effective_targets.push(add.clone());
+        }
+    }
+    if effective_targets.is_empty() {
         return Err(syn::Error::new_spanned(
             &item.ident,
             "`#[interface_object_augment]` requires `target_objects = [InterfaceObjectType::X, ...]` \
-             with at least one entry",
+             or `additional_objects = [...]` with at least one entry",
         ));
     }
 
@@ -313,8 +324,8 @@ pub(crate) fn gen_augment(
     // `target = ...` attribute is required per field.
     // ----------------------------------------------------------------------
     let property_props: Vec<&PropertyAttrs> = props.iter().filter_map(|p| p.as_ref()).collect();
-    let multi_target = obj_attrs.target_objects.len() > 1;
-    let default_target = obj_attrs.target_objects[0].clone();
+    let multi_target = effective_targets.len() > 1;
+    let default_target = effective_targets[0].clone();
     for p in &property_props {
         if multi_target && p.target.is_none() {
             return Err(syn::Error::new(
@@ -349,28 +360,28 @@ pub(crate) fn gen_augment(
     let pid_field_function: syn::Ident = syn::parse_quote!(prop_id);
     let read_arms_per_target = build_per_target_arms(
         &property_props,
-        &obj_attrs.target_objects,
+        &effective_targets,
         &pid_target,
         &pid_field_value,
         |p| augment_read_arm(p),
     );
     let write_arms_per_target = build_per_target_arms(
         &property_props,
-        &obj_attrs.target_objects,
+        &effective_targets,
         &pid_target,
         &pid_field_value,
         |p| augment_write_arm(p),
     );
     let fn_cmd_arms_per_target = build_per_target_arms(
         &property_props,
-        &obj_attrs.target_objects,
+        &effective_targets,
         &pid_target,
         &pid_field_function,
         |p| augment_function_command_arm(p),
     );
     let fn_state_arms_per_target = build_per_target_arms(
         &property_props,
-        &obj_attrs.target_objects,
+        &effective_targets,
         &pid_target,
         &pid_field_function,
         |p| augment_function_state_arm(p),
@@ -396,6 +407,15 @@ pub(crate) fn gen_augment(
     // parameter as the augment trait impl uses) on the augment struct;
     // there's no default stub to fall back on.
     let has_manual = property_props.iter().any(|p| p.manual);
+    let descriptor_fallback = if has_manual {
+        quote! {
+            // Fallback to user-supplied dynamic descriptor lookup (e.g.
+            // for runtime-conditional or const-generic-sized array PIDs).
+            self.handle_extra_pid_descriptor(object_type, prop_id)
+        }
+    } else {
+        quote! { None }
+    };
     let read_fallback = if has_manual {
         quote! { self.handle_extra_pid_read(ctx, object_type, req, buf) }
     } else {
@@ -446,10 +466,14 @@ pub(crate) fn gen_augment(
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 prop_id: u16,
             ) -> ::core::option::Option<::zweidraehte_proto::properties::PropertyDescriptor> {
-                Self::DESCRIPTORS
+                if let Some(d) = Self::DESCRIPTORS
                     .iter()
                     .find(|(t, d)| *t == object_type && d.pid == prop_id)
                     .map(|(_, d)| *d)
+                {
+                    return Some(d);
+                }
+                #descriptor_fallback
             }
 
             fn property_description_read(

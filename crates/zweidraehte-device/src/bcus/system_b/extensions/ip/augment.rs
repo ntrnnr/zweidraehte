@@ -15,15 +15,14 @@ use zerocopy::FromBytes;
 use crate::{
     IpPlatform, IpPlatformState, IpStackState, StackDefinition, StackState,
     objects::interface::{
-        AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, InterfaceObjectAugment, Ipv4Property,
-        PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup,
-        StatePropertyValue, WriteResponse, pid,
+        AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, Ipv4Property, PropertyAccess,
+        PropertyDescriptor, PropertyError, StatePropertyValue, WriteResponse, interface_object_augment, pid,
     },
 };
+use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt,
-    PropertyDataDefinition,
 };
 
 use super::IpExtensionState;
@@ -50,11 +49,92 @@ use super::IpExtensionState;
 /// ```rust,ignore
 /// let augment = IpAugment::new(state.extension_state(), platform);
 /// ```
+// Macro: declare every base PID's descriptor metadata (closes the
+// access-policy audit gap that the previous hand-written impl left
+// open by not implementing `get_property_descriptor`). All PIDs are
+// `manual` because the actual dispatch routes through
+// `read_ip_property` / `write_ip_property` helpers that need
+// `ctx.state` for `KNX_INDIVIDUAL_ADDRESS` and runtime conditionals
+// for the tunnelling-only PIDs.
+//
+// `target_objects` and `additional_objects` both list `IPParameter`:
+// the augment owns the IP Parameter Object (it adds it to the device's
+// IO list) AND its PID dispatch targets that same object. The
+// tunnelling-conditional descriptors (PID 53, 79) cannot be encoded as
+// const data because their `max_elements` comes from the const-generic
+// `N`; they are looked up via `handle_extra_pid_descriptor` instead.
+#[interface_object_augment(
+    additional_objects = [InterfaceObjectType::IPParameter],
+    where_bounds(__AugmentD::State: StackState),
+)]
 pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0, const CAPS: u16 = 0> {
     /// Persisted IP configuration (from extension state).
     pub config: &'a IpExtensionState<N, CAPS>,
     /// Platform for querying current network values.
     pub platform: &'a P,
+
+    // ---- Base IP Parameter Object PIDs (descriptor only; dispatch in handle_extra_pid_*) ----
+
+    #[io(pid = pid::OBJECT_TYPE, pdt = PDT_UnsignedInt, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _object_type_io: (),
+    #[io(pid = pid::PROJECT_INSTALLATION_ID, pdt = PDT_UnsignedInt, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _project_installation_id_io: (),
+    #[io(pid = pid::KNX_INDIVIDUAL_ADDRESS, pdt = PDT_UnsignedInt, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _knx_individual_address_io: (),
+    #[io(pid = pid::CURRENT_IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _current_ip_assignment_method_io: (),
+    #[io(pid = pid::IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _ip_assignment_method_io: (),
+    #[io(pid = pid::IP_CAPABILITIES, pdt = PDT_Bitset8, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _ip_capabilities_io: (),
+    #[io(pid = pid::CURRENT_IP_ADDRESS, pdt = Ipv4Property, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _current_ip_address_io: (),
+    #[io(pid = pid::CURRENT_SUBNET_MASK, pdt = Ipv4Property, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _current_subnet_mask_io: (),
+    #[io(pid = pid::CURRENT_DEFAULT_GATEWAY, pdt = Ipv4Property, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _current_default_gateway_io: (),
+    #[io(pid = pid::IP_ADDRESS, pdt = Ipv4Property, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _ip_address_io: (),
+    #[io(pid = pid::SUBNET_MASK, pdt = Ipv4Property, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _subnet_mask_io: (),
+    #[io(pid = pid::DEFAULT_GATEWAY, pdt = Ipv4Property, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _default_gateway_io: (),
+    #[io(pid = pid::MAC_ADDRESS, pdt = PDT_Generic06, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _mac_address_io: (),
+    #[io(pid = pid::SYSTEM_SETUP_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _system_setup_multicast_address_io: (),
+    #[io(pid = pid::ROUTING_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _routing_multicast_address_io: (),
+    #[io(pid = pid::TTL, pdt = PDT_UnsignedChar, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, manual)]
+    _ttl_io: (),
+    #[io(pid = pid::KNXNETIP_DEVICE_CAPABILITIES, pdt = PDT_Bitset16, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0, manual)]
+    _knxnetip_device_capabilities_io: (),
+    // PID_FRIENDLY_NAME — array property (max 30 bytes).
+    #[io(pid = pid::FRIENDLY_NAME, pdt = PDT_UnsignedChar, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         array(max = 30), manual)]
+    _friendly_name_io: (),
+    // Tunnelling-conditional PIDs (53, 79). The descriptor for these is
+    // built at lookup time in `handle_extra_pid_descriptor` because the
+    // `max_elements` value comes from the const-generic `N`. They are
+    // *not* listed in the macro's static descriptor table.
 }
 
 impl<'a, P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'a, P, N, CAPS> {
@@ -202,43 +282,6 @@ const SYSTEM_SETUP_MULTICAST: Ipv4Addr = Ipv4Addr::new(224, 0, 23, 12);
 const KNXNETIP_CAP_TUNNELING_BIT: u16 = 1 << 1;
 
 // ============================================================================
-// Property Table
-// ============================================================================
-
-// Helper to build a simple non-array property descriptor.
-const fn simple_desc(pid: u16, pdt_id: u8, access: PropertyAccess) -> PropertyDescriptor {
-    let (read_level, write_level) = match access {
-        PropertyAccess::ReadOnly | PropertyAccess::WriteOnly => (3, 0),
-        PropertyAccess::ReadWrite => (3, 3),
-    };
-    PropertyDescriptor::new(pid, pdt_id, 1, access, read_level, write_level)
-}
-
-/// All base IP Parameter Object properties (not tunneling-conditional).
-///
-/// Listed in index-scan order.
-static BASE_PROPS: &[PropertyDescriptor] = &[
-    simple_desc(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::PROJECT_INSTALLATION_ID, PDT_UnsignedInt::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::KNX_INDIVIDUAL_ADDRESS, PDT_UnsignedInt::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::CURRENT_IP_ASSIGNMENT_METHOD, PDT_UnsignedChar::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::IP_ASSIGNMENT_METHOD, PDT_UnsignedChar::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::IP_CAPABILITIES, PDT_Bitset8::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::CURRENT_IP_ADDRESS, Ipv4Property::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::CURRENT_SUBNET_MASK, Ipv4Property::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::CURRENT_DEFAULT_GATEWAY, Ipv4Property::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::IP_ADDRESS, Ipv4Property::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::SUBNET_MASK, Ipv4Property::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::DEFAULT_GATEWAY, Ipv4Property::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::MAC_ADDRESS, PDT_Generic06::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::SYSTEM_SETUP_MULTICAST_ADDRESS, Ipv4Property::ID, PropertyAccess::ReadOnly),
-    simple_desc(pid::ROUTING_MULTICAST_ADDRESS, Ipv4Property::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::TTL, PDT_UnsignedChar::ID, PropertyAccess::ReadWrite),
-    simple_desc(pid::KNXNETIP_DEVICE_CAPABILITIES, PDT_Bitset16::ID, PropertyAccess::ReadOnly),
-    PropertyDescriptor::array::<PDT_UnsignedChar>(pid::FRIENDLY_NAME, 30, PropertyAccess::ReadWrite, 3, 3),
-];
-
-// ============================================================================
 // Helper functions
 // ============================================================================
 
@@ -248,77 +291,36 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
         (self.knxnetip_device_capabilities() & KNXNETIP_CAP_TUNNELING_BIT) != 0
     }
 
-    /// Total property count for index scanning.
-    #[allow(dead_code)] // TODO: useful for property count queries
-    fn ip_property_count(&self) -> u8 {
-        let base = BASE_PROPS.len() as u8;
-        if self.tunneling_enabled() {
-            base + 2 // PID 53 + PID 79
-        } else {
-            base
+    /// Look up tunnelling-conditional descriptors at runtime — the macro's
+    /// static `Self::DESCRIPTORS` table covers the 18 base PIDs; the two
+    /// tunnelling-only PIDs (53, 79) need const-generic `N` for their
+    /// `max_elements`, so they're built fresh on each lookup here.
+    pub fn handle_extra_pid_descriptor(
+        &self,
+        object_type: InterfaceObjectType,
+        prop_id: u16,
+    ) -> Option<PropertyDescriptor> {
+        if object_type != InterfaceObjectType::IPParameter || !self.tunneling_enabled() {
+            return None;
         }
-    }
-
-    /// Look up a property descriptor by PID.
-    fn ip_descriptor_by_pid(&self, prop_id: u16) -> Option<PropertyDescriptor> {
-        if self.tunneling_enabled() {
-            let max_addrs = N as u16;
-            match prop_id {
-                pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => {
-                    return Some(PropertyDescriptor::array::<PDT_UnsignedInt>(
-                        prop_id,
-                        max_addrs,
-                        PropertyAccess::ReadWrite,
-                        3,
-                        3,
-                    ));
-                }
-                pid::TUNNELLING_ADDRESSES => {
-                    return Some(PropertyDescriptor::array::<PDT_UnsignedChar>(
-                        prop_id,
-                        max_addrs,
-                        PropertyAccess::ReadOnly,
-                        3,
-                        3,
-                    ));
-                }
-                _ => {}
-            }
+        let max_addrs = N as u16;
+        match prop_id {
+            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Some(PropertyDescriptor::array::<PDT_UnsignedInt>(
+                prop_id,
+                max_addrs,
+                PropertyAccess::ReadWrite,
+                3,
+                3,
+            )),
+            pid::TUNNELLING_ADDRESSES => Some(PropertyDescriptor::array::<PDT_UnsignedChar>(
+                prop_id,
+                max_addrs,
+                PropertyAccess::ReadOnly,
+                3,
+                3,
+            )),
+            _ => None,
         }
-
-        BASE_PROPS.iter().find(|d| d.pid == prop_id).copied()
-    }
-
-    /// Look up a property descriptor by augment-local 0-based index.
-    fn ip_descriptor_by_index(&self, idx: u16) -> Option<PropertyDescriptor> {
-        let base_len = BASE_PROPS.len() as u16;
-        if idx < base_len {
-            return Some(BASE_PROPS[idx as usize]);
-        }
-
-        if self.tunneling_enabled() {
-            let tunneling_idx = idx - base_len;
-            let max_addrs = N as u16;
-            return match tunneling_idx {
-                0 => Some(PropertyDescriptor::array::<PDT_UnsignedInt>(
-                    pid::ADDITIONAL_INDIVIDUAL_ADDRESSES,
-                    max_addrs,
-                    PropertyAccess::ReadWrite,
-                    3,
-                    3,
-                )),
-                1 => Some(PropertyDescriptor::array::<PDT_UnsignedChar>(
-                    pid::TUNNELLING_ADDRESSES,
-                    max_addrs,
-                    PropertyAccess::ReadOnly,
-                    3,
-                    3,
-                )),
-                _ => None,
-            };
-        }
-
-        None
     }
 
     // ========================================================================
@@ -623,67 +625,44 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
 }
 
 // ============================================================================
-// InterfaceObjectAugment — provides IP Parameter Object (Type 11)
+// Manual fallback thunks invoked by the macro-generated dispatch.
 // ============================================================================
 
-impl<D: StackDefinition, P: IpPlatform, const N: usize, const CAPS: u16> InterfaceObjectAugment<D>
-    for IpAugment<'_, P, N, CAPS>
-{
-    fn additional_object_count(&self) -> u16 {
-        1 // IP Parameter Object
-    }
-
-    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
-        match index {
-            0 => Some(InterfaceObjectType::IPParameter),
-            _ => None,
-        }
-    }
-
-    fn property_description_read(
-        &self,
-        _ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        object_idx: u16,
-        lookup: PropertyLookup,
-    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-        if object_type != InterfaceObjectType::IPParameter {
-            return None;
-        }
-
-        let desc = match lookup {
-            PropertyLookup::ByPid(prop_id) => self.ip_descriptor_by_pid(prop_id)?,
-            PropertyLookup::ByIndex(idx) => self.ip_descriptor_by_index(idx)?,
-        };
-        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &desc)))
-    }
-
-    // Access checks are centralized in dispatch.rs (lines 183-196 for reads,
-    // 233-246 for writes) using get_descriptor() which queries this augment's
-    // get_property_descriptor(). No per-augment access check needed here.
-
-    fn property_value_read(
+impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
+    pub fn handle_extra_pid_read<D: StackDefinition>(
         &self,
         ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
+        _object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
     ) -> Option<Result<usize, PropertyError>> {
-        if object_type != InterfaceObjectType::IPParameter {
-            return None;
-        }
         self.read_ip_property(ctx.state, req, buf)
     }
 
-    fn property_value_write(
+    pub fn handle_extra_pid_write<D: StackDefinition>(
         &self,
         ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
+        _object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
-        if object_type != InterfaceObjectType::IPParameter {
-            return None;
-        }
         self.write_ip_property(ctx.state, req)
+    }
+
+    pub fn handle_extra_pid_function_command<D: StackDefinition>(
+        &self,
+        _ctx: &AugmentContext<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &crate::objects::interface::FunctionPropertyRequest<'_>,
+    ) -> Option<crate::objects::interface::FunctionPropertyResult> {
+        None
+    }
+
+    pub fn handle_extra_pid_function_state_read<D: StackDefinition>(
+        &self,
+        _ctx: &AugmentContext<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &crate::objects::interface::FunctionPropertyRequest<'_>,
+    ) -> Option<crate::objects::interface::FunctionPropertyResult> {
+        None
     }
 }
