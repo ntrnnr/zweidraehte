@@ -253,6 +253,23 @@ pub(crate) fn gen_augment(
     augment_generics.params.push(syn::parse_quote! {
         __AugmentD: ::zweidraehte_device::StackDefinition
     });
+    // If the user supplied `where_bounds(...)`, splice them into the
+    // generics' where clause so they survive `split_for_impl`.
+    if let Some(extra) = &obj_attrs.extra_where {
+        // `make_where_clause` returns the existing or a fresh empty
+        // `Where` so we can extend it.
+        let where_clause = augment_generics.make_where_clause();
+        let parsed: syn::WhereClause = if where_clause.predicates.is_empty() {
+            syn::parse_quote! { where #extra }
+        } else {
+            // Append: prefix with a comma so the existing predicates and
+            // the extras compose into a single comma-separated list.
+            syn::parse_quote! { where #extra, }
+        };
+        for pred in parsed.predicates {
+            where_clause.predicates.push(pred);
+        }
+    }
     let (augment_impl_generics, _, augment_where_clause) = augment_generics.split_for_impl();
 
     // ----------------------------------------------------------------------

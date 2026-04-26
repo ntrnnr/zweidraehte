@@ -34,6 +34,15 @@ pub(crate) struct ObjectAttrs {
     /// Set on `#[interface_object_augment]` only. Drives
     /// `additional_object_count` / `additional_object_type_at`.
     pub additional_objects: Vec<Path>,
+
+    /// Set on `#[interface_object_augment]` only. Extra `where`-clause
+    /// predicates appended to the generated `impl InterfaceObjectAugment<D>`.
+    /// Use to express bounds on the augment's `D::State`, e.g. on the
+    /// state having `HasApplication`, `HasSecurityState`, etc.
+    ///
+    /// Syntax: `where_bounds(__AugmentD::State: HasApplication + ...)`.
+    /// Multiple predicates are comma-separated.
+    pub extra_where: Option<TokenStream>,
 }
 
 impl ObjectAttrs {
@@ -44,6 +53,7 @@ impl ObjectAttrs {
         let mut object_type: Option<Path> = None;
         let mut target_objects: Vec<Path> = Vec::new();
         let mut additional_objects: Vec<Path> = Vec::new();
+        let mut extra_where: Option<TokenStream> = None;
 
         let parser = syn::meta::parser(|meta| {
             if meta.path.is_ident("object_type") {
@@ -55,10 +65,18 @@ impl ObjectAttrs {
             } else if meta.path.is_ident("additional_objects") {
                 additional_objects = parse_path_list(&meta)?;
                 Ok(())
+            } else if meta.path.is_ident("where_bounds") {
+                // Parenthesised raw token group — the macro emits these
+                // verbatim into the augment impl's `where` clause.
+                let content;
+                syn::parenthesized!(content in meta.input);
+                extra_where = Some(content.parse::<TokenStream>()?);
+                Ok(())
             } else {
                 Err(meta.error(
                     "unknown attribute — expected `object_type`, \
-                     `target_objects = [...]`, or `additional_objects = [...]`",
+                     `target_objects = [...]`, `additional_objects = [...]`, \
+                     or `where_bounds(...)`",
                 ))
             }
         });
@@ -68,6 +86,7 @@ impl ObjectAttrs {
             object_type,
             target_objects,
             additional_objects,
+            extra_where,
         })
     }
 }

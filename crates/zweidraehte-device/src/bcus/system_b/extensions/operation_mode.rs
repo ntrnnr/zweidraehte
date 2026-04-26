@@ -28,8 +28,7 @@ use crate::layers::application::capabilities::{
 };
 use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
-    AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, InterfaceObjectAugment, PropertyAccess,
-    PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, pid,
+    AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf, interface_object_augment, pid,
 };
 use crate::objects::tables::{
     AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasAssociationTable,
@@ -198,20 +197,6 @@ impl DiagnosticsContext for OperationModeState {
 // Augment
 // ============================================================================
 
-/// Property descriptor for PID_OPERATION_MODE.
-///
-/// Access policy 15F/00C means: plain read always allowed (15F),
-/// write requires A+C in security mode (00C). Access level 3/3.
-const OPERATION_MODE_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_policy(
-    pid::OPERATION_MODE,
-    PDT_Function::ID,
-    1,
-    PropertyAccess::ReadWrite,
-    3,
-    3,
-    AccessPolicy::new(0x15F, 0x00C),
-);
-
 /// Interface object augment for diagnostics: PID_OPERATION_MODE (PID 52)
 /// on the Application Program Object and PID_GO_DIAGNOSTICS (PID 66) on
 // ============================================================================
@@ -251,8 +236,72 @@ fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> Fun
 /// diagnostic that maps onto a normal CO send, through the
 /// [`GroupValueSender`] capability. The augment itself holds only
 /// its own operation-mode state.
+// Both PIDs use PDT_FUNCTION and dispatch via FunctionPropertyCommand /
+// FunctionPropertyStateRead. The macro generates the descriptor table,
+// `get_property_descriptor`, `property_description_read`, and the
+// per-target object-type guards; the hand-written closures below carry
+// the imperative service-frame parsing logic.
+//
+// The `where_bounds(...)` argument adds the bounds on `D::State` that
+// the function-property handlers need (state lookups for application,
+// communication objects, security state, etc.).
+#[interface_object_augment(
+    target_objects = [
+        InterfaceObjectType::ApplicationProgram,
+        InterfaceObjectType::GroupObjectTable,
+    ],
+    where_bounds(
+        __AugmentD::State: StackState
+            + HasApplication
+            + HasCommunicationObjectTable
+            + HasCommObjects
+            + HasAddressTable
+            + HasAssociationTable
+            + HasExtensionState,
+        <__AugmentD::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+    ),
+)]
 pub struct DiagnosticsAugment<'a> {
     state: &'a OperationModeState,
+
+    // PID_OPERATION_MODE (52) on the ApplicationProgram object.
+    // Access policy 15F/00C: plain read always allowed; write requires
+    // A+C in security mode. Access level 3/3.
+    #[io(
+        pid = pid::OPERATION_MODE,
+        pdt = PDT_Function,
+        access = RW,
+        policy = AccessPolicy::new(0x15F, 0x00C),
+        rl = 3, wl = 3,
+        intercepts,
+        target = InterfaceObjectType::ApplicationProgram,
+        function_command = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+            this.handle_command(ctx.state, req)
+        },
+        function_state_read = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+            this.handle_state_read(ctx.state, req)
+        },
+    )]
+    _operation_mode_io: (),
+
+    // PID_GO_DIAGNOSTICS (66) on the GroupObjectTable object.
+    // Same access policy as PID_OPERATION_MODE.
+    #[io(
+        pid = pid::GO_DIAGNOSTICS,
+        pdt = PDT_Function,
+        access = RW,
+        policy = AccessPolicy::new(0x15F, 0x00C),
+        rl = 3, wl = 3,
+        intercepts,
+        target = InterfaceObjectType::GroupObjectTable,
+        function_command = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+            this.handle_go_diag_command(ctx, req)
+        },
+        function_state_read = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+            this.handle_go_diag_state_read(ctx.state, req)
+        },
+    )]
+    _go_diagnostics_io: (),
 }
 
 impl<'a> DiagnosticsAugment<'a> {
@@ -978,100 +1027,5 @@ impl<'a> DiagnosticsAugment<'a> {
     }
 }
 
-/// Property descriptor for PID_GO_DIAGNOSTICS.
-///
-/// Same access policy as PID_OPERATION_MODE: 15F/00C.
-const GO_DIAGNOSTICS_DESCRIPTOR: PropertyDescriptor = PropertyDescriptor::with_policy(
-    pid::GO_DIAGNOSTICS,
-    PDT_Function::ID,
-    1,
-    PropertyAccess::ReadWrite,
-    3,
-    3,
-    AccessPolicy::new(0x15F, 0x00C),
-);
-
-impl<'a, D> InterfaceObjectAugment<D> for DiagnosticsAugment<'a>
-where
-    D: StackDefinition,
-    D::State: StackState
-        + HasApplication
-        + HasCommunicationObjectTable
-        + HasCommObjects
-        + HasAddressTable
-        + HasAssociationTable
-        + HasExtensionState,
-    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
-{
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
-        if object_type == InterfaceObjectType::ApplicationProgram && prop_id == pid::OPERATION_MODE {
-            Some(OPERATION_MODE_DESCRIPTOR)
-        } else if object_type == InterfaceObjectType::GroupObjectTable && prop_id == pid::GO_DIAGNOSTICS {
-            Some(GO_DIAGNOSTICS_DESCRIPTOR)
-        } else {
-            None
-        }
-    }
-
-    fn property_description_read(
-        &self,
-        _ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        object_idx: u16,
-        lookup: PropertyLookup,
-    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-        if object_type == InterfaceObjectType::ApplicationProgram {
-            match lookup {
-                PropertyLookup::ByPid(p) if p == pid::OPERATION_MODE => {
-                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &OPERATION_MODE_DESCRIPTOR)))
-                }
-                PropertyLookup::ByIndex(0) => {
-                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &OPERATION_MODE_DESCRIPTOR)))
-                }
-                _ => None,
-            }
-        } else if object_type == InterfaceObjectType::GroupObjectTable {
-            match lookup {
-                PropertyLookup::ByPid(p) if p == pid::GO_DIAGNOSTICS => {
-                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &GO_DIAGNOSTICS_DESCRIPTOR)))
-                }
-                PropertyLookup::ByIndex(0) => {
-                    Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &GO_DIAGNOSTICS_DESCRIPTOR)))
-                }
-                _ => None,
-            }
-        } else {
-            None
-        }
-    }
-
-    fn function_property_command(
-        &self,
-        ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> Option<FunctionPropertyResult> {
-        if object_type == InterfaceObjectType::ApplicationProgram && req.prop_id == pid::OPERATION_MODE {
-            Some(self.handle_command(ctx.state, req))
-        } else if object_type == InterfaceObjectType::GroupObjectTable && req.prop_id == pid::GO_DIAGNOSTICS {
-            Some(self.handle_go_diag_command(ctx, req))
-        } else {
-            None
-        }
-    }
-
-    fn function_property_state_read(
-        &self,
-        ctx: &AugmentContext<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> Option<FunctionPropertyResult> {
-        if object_type == InterfaceObjectType::ApplicationProgram && req.prop_id == pid::OPERATION_MODE {
-            Some(self.handle_state_read(ctx.state, req))
-        } else if object_type == InterfaceObjectType::GroupObjectTable && req.prop_id == pid::GO_DIAGNOSTICS {
-            Some(self.handle_go_diag_state_read(ctx.state, req))
-        } else {
-            None
-        }
-    }
-}
+// `InterfaceObjectAugment` impl is generated by the
+// `#[interface_object_augment(...)]` attribute on the struct above.
