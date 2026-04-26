@@ -387,57 +387,34 @@ pub(crate) fn gen_augment(
             quote! { #i => Some(#t), }
         });
 
-    // We always emit the four `handle_extra_pid*` defaults; the user
-    // shadows the ones they actually need in a sibling impl block.
-    let extra_pid_defaults = quote! {
-        // Default no-op fallbacks. Override by defining the same method
-        // name in a separate `impl` block on the augment struct. The
-        // duplicate-definition error if you misname them is intentional —
-        // the macro forces the convention.
-        #[doc(hidden)]
-        #[allow(unused_variables)]
-        #vis fn handle_extra_pid_read<__D: ::zweidraehte_device::StackDefinition>(
-            &self,
-            ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __D>,
-            object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-            req: &::zweidraehte_device::objects::interface::FullPropertyReadRequest,
-            buf: &mut [u8],
-        ) -> ::core::option::Option<::core::result::Result<usize, ::zweidraehte_device::objects::interface::PropertyError>> {
-            None
-        }
-        #[doc(hidden)]
-        #[allow(unused_variables)]
-        #vis fn handle_extra_pid_write<__D: ::zweidraehte_device::StackDefinition>(
-            &self,
-            ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __D>,
-            object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-            req: &::zweidraehte_device::objects::interface::FullPropertyWriteRequest<'_>,
-        ) -> ::core::option::Option<::core::result::Result<
-            ::zweidraehte_device::objects::interface::WriteResponse,
-            ::zweidraehte_device::objects::interface::PropertyError,
-        >> {
-            None
-        }
-        #[doc(hidden)]
-        #[allow(unused_variables)]
-        #vis fn handle_extra_pid_function_command<__D: ::zweidraehte_device::StackDefinition>(
-            &self,
-            ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __D>,
-            object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-            req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
-        ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
-            None
-        }
-        #[doc(hidden)]
-        #[allow(unused_variables)]
-        #vis fn handle_extra_pid_function_state_read<__D: ::zweidraehte_device::StackDefinition>(
-            &self,
-            ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __D>,
-            object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-            req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
-        ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
-            None
-        }
+    // Whether any property field is `manual` — drives whether the macro
+    // calls back into a user-defined `handle_extra_pid_*` method or just
+    // returns `None` directly.
+    //
+    // When `has_manual` is true the user **must** supply matching
+    // `handle_extra_pid_*` impls (with the same `__AugmentD` type
+    // parameter as the augment trait impl uses) on the augment struct;
+    // there's no default stub to fall back on.
+    let has_manual = property_props.iter().any(|p| p.manual);
+    let read_fallback = if has_manual {
+        quote! { self.handle_extra_pid_read(ctx, object_type, req, buf) }
+    } else {
+        quote! { None }
+    };
+    let write_fallback = if has_manual {
+        quote! { self.handle_extra_pid_write(ctx, object_type, req) }
+    } else {
+        quote! { None }
+    };
+    let fn_cmd_fallback = if has_manual {
+        quote! { self.handle_extra_pid_function_command(ctx, object_type, req) }
+    } else {
+        quote! { None }
+    };
+    let fn_state_fallback = if has_manual {
+        quote! { self.handle_extra_pid_function_state_read(ctx, object_type, req) }
+    } else {
+        quote! { None }
     };
 
     Ok(quote! {
@@ -459,7 +436,6 @@ pub(crate) fn gen_augment(
                 #( #descriptor_entries , )*
             ];
 
-            #extra_pid_defaults
         }
 
         impl #augment_impl_generics ::zweidraehte_device::objects::interface::InterfaceObjectAugment<__AugmentD>
@@ -516,7 +492,7 @@ pub(crate) fn gen_augment(
                 ::zweidraehte_device::objects::interface::PropertyError,
             >> {
                 #( #read_arms_per_target )*
-                self.handle_extra_pid_read(ctx, object_type, req, buf)
+                #read_fallback
             }
 
             fn property_value_write(
@@ -529,7 +505,7 @@ pub(crate) fn gen_augment(
                 ::zweidraehte_device::objects::interface::PropertyError,
             >> {
                 #( #write_arms_per_target )*
-                self.handle_extra_pid_write(ctx, object_type, req)
+                #write_fallback
             }
 
             fn function_property_command(
@@ -539,7 +515,7 @@ pub(crate) fn gen_augment(
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
                 #( #fn_cmd_arms_per_target )*
-                self.handle_extra_pid_function_command(ctx, object_type, req)
+                #fn_cmd_fallback
             }
 
             fn function_property_state_read(
@@ -549,7 +525,7 @@ pub(crate) fn gen_augment(
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
                 #( #fn_state_arms_per_target )*
-                self.handle_extra_pid_function_state_read(ctx, object_type, req)
+                #fn_state_fallback
             }
 
             fn additional_object_count(&self) -> u16 {
