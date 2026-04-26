@@ -72,8 +72,24 @@ use zweidraehte_proto::access::AccessPolicy;
 /// | 78 | Hardware Type | PDT_GENERIC_06 | RW |
 /// | 83 | Device Descriptor | PDT_UNSIGNED_INT | RO |
 //
-// Access levels per Profiles spec Annex A.2.3 (mask 57B0h). Every property
-// must spell out `policy` explicitly — the macro has no defaults.
+// Access levels per Profiles spec Annex A.2.3, covering System B masks
+// 07B0h / 17B0h / 57B0h. Where the three masks disagree we take the union
+// (most permissive) so the same struct can back any System B device.
+// Notable choices:
+//  - PID 14 PID_DEVICE_CONTROL: RW with `wl=3`. Spec lists `3/3` for
+//    07B0h/17B0h and `3/x` (RO) for 57B0h, but ETS writes the verify-mode
+//    bit during commissioning even on 57B0h, so the property must stay
+//    writable in practice.
+//  - PID 78 PID_HARDWARE_TYPE: RW with `wl=1` (matches 07B0h/17B0h
+//    `(3/1)`). 57B0h spec is `(3/3)`, but the stricter `wl=1` is a safe
+//    common denominator since any caller with wl=3 satisfies wl=1.
+//  - PID 56 PID_MAX_APDU_LENGTH: see the per-field note for the OPEN
+//    policy override.
+//  - PID 71 PID_IO_LIST: not declared here; served by the System B
+//    container (`SystemBObjects`) because the list spans every object
+//    in the container, not just the Device Object.
+// Every property must spell out `policy` explicitly — the macro has no
+// defaults.
 #[interface_object(object_type = InterfaceObjectType::Device)]
 pub struct DeviceObject<'a, S: StackState> {
     /// Reference to the stack-state for properties that mirror runtime fields
