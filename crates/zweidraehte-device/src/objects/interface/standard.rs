@@ -584,6 +584,7 @@ pub trait TableObjectSpec {
 /// | 7 | Table Reference | PDT_UNSIGNED_LONG | RO | Base address of allocated table memory |
 /// | 23 | Table | varies | RW* | Direct table data access |
 /// | 27 | MCB Table | PDT_GENERIC_08 | RO | Memory control block |
+/// | 28 | Error Code | PDT_UNSIGNED_CHAR | RO | DPT_ErrorClass_System; mirrors LSM Err |
 //
 // This object is intentionally **not** rewritten with `#[interface_object]`.
 // It has three properties the macro DSL cannot express cleanly:
@@ -615,10 +616,25 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
 
     /// Get property descriptors for table objects.
     ///
-    /// Access levels per Profiles spec Annex A.2.4/A.2.5 (mask 57B0h).
-    /// LOAD_STATE_CONTROL write level is 1 for System B table objects.
-    /// TABLE and TABLE_REFERENCE are writable during loading only.
-    fn property_descriptors() -> [PropertyDescriptor; 5] {
+    /// Access levels per Profiles spec Annex A.2.4 / A.2.5 / A.2.8,
+    /// covering System B masks 07B0h / 17B0h / 57B0h.
+    ///
+    /// Notable choices:
+    ///  - PID 5 PID_LOAD_STATE_CONTROL: declared with `wl=1` rather
+    ///    than the spec's recommended `wl=3`. For 07B0h/17B0h the
+    ///    spec lists `3/(3)` — the parenthesised write level is a
+    ///    *recommendation* (Profiles legend Table 3), so a stricter
+    ///    `wl=1` is permitted. For 57B0h the spec mandates `3/3`,
+    ///    which we are intentionally hardening; the conformance suite
+    ///    (test L-2.6 "Test without access rights") relies on this
+    ///    stricter level to verify that an unauthorised connection
+    ///    cannot drive the load state machine.
+    ///  - PID 28 PID_ERROR_CODE: only marked mandatory on 57B0h; we
+    ///    expose it everywhere because the underlying `last_error_code`
+    ///    state already exists on `HasLoadStateMachine`.
+    /// TABLE and TABLE_REFERENCE are writable during loading only; the
+    /// LSM enforces that internally.
+    fn property_descriptors() -> [PropertyDescriptor; 6] {
         use zweidraehte_proto::access::AccessPolicy;
         [
             PropertyDescriptor::with_policy(
@@ -663,7 +679,16 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 1,
                 PropertyAccess::ReadOnly,
                 3,
+                0,
+                AccessPolicy::READ_OPEN_WRITE_TOOL,
+            ),
+            PropertyDescriptor::with_policy(
+                pid::ERROR_CODE,
+                PDT_UnsignedChar::ID,
+                1,
+                PropertyAccess::ReadOnly,
                 3,
+                0,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
         ]
@@ -676,7 +701,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
     }
 
     fn property_count(&self) -> u16 {
-        5 // Fixed number of properties for all table objects
+        6 // Fixed number of properties for all table objects
     }
 
     fn property_descriptor_by_index(&self, prop_idx: u16) -> Option<PropertyDescriptor> {
@@ -729,15 +754,22 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
                 // The MCB is populated during load (RelativeData segment) and CRC calculated on LoadEnd
                 self.table.borrow().mcb_bytes().read_property(req.start_idx, req.count, buf)
             }
+            super::pid::ERROR_CODE => {
+                // DPT_ErrorClass_System (20.011), 1 byte. Mirrors the LSM
+                // Err state via `last_error_code()`; reads `0` whenever the
+                // LSM is not in `Err`.
+                [self.table.borrow().last_error_code()].read_property(req.start_idx, req.count, buf)
+            }
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }
 
     fn write_property(&mut self, req: super::PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         match req.pid {
-            super::pid::OBJECT_TYPE | super::pid::TABLE_REFERENCE | super::pid::MCB_TABLE => {
-                Err(PropertyError::WriteNotAllowed)
-            }
+            super::pid::OBJECT_TYPE
+            | super::pid::TABLE_REFERENCE
+            | super::pid::MCB_TABLE
+            | super::pid::ERROR_CODE => Err(PropertyError::WriteNotAllowed),
             super::pid::LOAD_STATE_CONTROL => {
                 // Write the load event to the state machine, providing the allocation address
                 self.table.borrow_mut().write_lsm(req.data, Some(self.alloc_address));
@@ -776,6 +808,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
                 }
             }
             super::pid::MCB_TABLE => Ok(1),
+            super::pid::ERROR_CODE => Ok(1),
             _ => Err(PropertyError::InvalidPropertyId),
         }
     }
@@ -929,7 +962,7 @@ mod tests {
         let addr_table = RefCell::new(AddrTab7::<10>::new());
         let obj = AddressTableObject::new(&addr_table, 0x100);
 
-        assert_eq!(obj.property_count(), 5);
+        assert_eq!(obj.property_count(), 6);
 
         // Check each property descriptor
         let desc = obj.property_descriptor_by_id(pid::OBJECT_TYPE).unwrap();
