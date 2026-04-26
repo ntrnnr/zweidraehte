@@ -69,7 +69,7 @@ use zweidraehte_proto::access::AccessPolicy;
 /// | 56 | Max APDU Length | PDT_UNSIGNED_INT | RO | (state-backed)
 /// | 57 | Subnet Address | PDT_UNSIGNED_CHAR | RO |
 /// | 58 | Device Address | PDT_UNSIGNED_CHAR | RO |
-/// | 78 | Hardware Type | PDT_GENERIC_06 | RO |
+/// | 78 | Hardware Type | PDT_GENERIC_06 | RW |
 /// | 83 | Device Descriptor | PDT_UNSIGNED_INT | RO |
 //
 // Access levels per Profiles spec Annex A.2.3 (mask 57B0h). Every property
@@ -85,18 +85,23 @@ pub struct DeviceObject<'a, S: StackState> {
     #[io(pid = pid::DEVICE_CONTROL, pdt = DeviceControl, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub device_control: DeviceControl,
+
     #[io(pid = pid::ORDER_INFO, pdt = PDT_Generic10, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
     pub order_info: PDT_Generic10,
+
     #[io(pid = pid::VERSION, pdt = PDT_Version, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
     pub version: PDT_Version,
-    #[io(pid = pid::HARDWARE_TYPE, pdt = PDT_Generic06, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+
+    #[io(pid = pid::HARDWARE_TYPE, pdt = PDT_Generic06, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 1)]
     pub hardware_type: PDT_Generic06,
+
     #[io(pid = pid::DEVICE_DESCRIPTOR, pdt = PDT_UnsignedInt, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
     pub device_descriptor: PDT_UnsignedInt,
+
     #[io(pid = pid::ROUTING_COUNT, pdt = RoutingCount, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub routing_count: RoutingCount,
