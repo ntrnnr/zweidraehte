@@ -127,6 +127,34 @@ pub trait HasLoadStateMachine: TableMemory {
     /// This is NOT a real memory pointer - it's a virtual address assigned by the
     /// device's memory manager during allocation.
     fn table_reference(&self) -> u32;
+
+    /// Last load error code, surfaced via PID_ERROR_CODE (PID 28).
+    ///
+    /// Encoded as DPT_ErrorClass_System (20.011); see [`LoadError`] for the
+    /// values used by this stack. Returns `0` (no error) when the state
+    /// machine is not in `LoadState::Err`. Per Resources spec 4.2.28, the
+    /// code is reset to 0 once the state machine transitions out of `Err`.
+    fn last_error_code(&self) -> u8;
+}
+
+/// Subset of `DPT_ErrorClass_System` (DPT 20.011) used to report load
+/// state machine failures via `PID_ERROR_CODE`.
+///
+/// The full DPT defines codes 0–18; this enum only names the ones the
+/// LSM can actually produce. Other codes remain valid `u8` values for
+/// callers that need to surface a specific failure outside this list.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[repr(u8)]
+pub enum LoadError {
+    /// No fault — load state machine is not in `Err`.
+    None = 0,
+    /// Memory allocation request exceeded the configured table capacity.
+    /// Maps to "maximal table length exceeded" in DPT 20.011.
+    MaxTableLengthExceeded = 13,
+    /// `AdditionalLoadControls` carried an unknown segment type, or some
+    /// other malformed load command. Maps to "undefined load command
+    /// received" in DPT 20.011.
+    UndefinedLoadCommand = 14,
 }
 
 pub trait AddressTable: HasLoadStateMachine {
@@ -784,6 +812,11 @@ pub struct Table<T: TableMemory> {
     pub(super) mcb_table: PDT_Generic08,
     /// Base address of allocated memory, set during RelativeData allocation, cleared on unload
     pub(super) table_reference: u32,
+    /// Last load error code (DPT_ErrorClass_System). Mirrors the LSM Err
+    /// state — set when entering `LoadState::Err` and cleared on every
+    /// transition out of it (per Resources spec 4.2.28).
+    #[serde(default)]
+    pub(super) last_error_code: u8,
 }
 
 impl<T: TableMemory> ConstDefault for Table<T> {
@@ -803,6 +836,7 @@ impl<T: TableMemory> Table<T> {
             state: LoadState::Unloaded,
             mcb_table: PDT_Generic08::with_value([0; 8]),
             table_reference: 0,
+            last_error_code: 0,
         }
     }
 
@@ -928,10 +962,17 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
                                 self.table_reference = addr;
                             }
                         } else {
+                            // Allocation request larger than the table buffer.
                             new_state = LoadState::Err;
+                            self.last_error_code = LoadError::MaxTableLengthExceeded as u8;
                         }
                     }
-                    _ => new_state = LoadState::Err,
+                    // Unknown segment type (or missing segment byte) — the load
+                    // command is malformed.
+                    _ => {
+                        new_state = LoadState::Err;
+                        self.last_error_code = LoadError::UndefinedLoadCommand as u8;
+                    }
                 }
             }
             LoadAction::LoadEnd => {
@@ -948,6 +989,13 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
             LoadAction::None => {}
         }
 
+        // Per Resources spec 4.2.28, PID_ERROR_CODE is reset to 0 once the
+        // load state machine leaves the Err state. Apply the clear before
+        // commit so any new error set in this same call (e.g., a fresh
+        // Alloc failure right after Unload) is preserved.
+        if self.state == LoadState::Err && new_state != LoadState::Err {
+            self.last_error_code = LoadError::None as u8;
+        }
         self.state = new_state;
         action
     }
@@ -966,6 +1014,12 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
 
     fn table_reference(&self) -> u32 {
         self.table_reference
+    }
+
+    fn last_error_code(&self) -> u8 {
+        // Mirror the LSM Err state. The field is set on entry to Err and
+        // cleared on every transition out, so a stale code never leaks.
+        if self.state == LoadState::Err { self.last_error_code } else { 0 }
     }
 }
 
@@ -1180,7 +1234,7 @@ impl<T: HasLoadStateMachine + TableMemory> TableMemory for RunnableApplication<T
 }
 
 // Pure delegation — no LSM→RSM cascade. The cascade is orchestrated by
-// the ApplicationProgramObject (mirroring conformance's HandleApplLoadStateMachine).
+// the ApplicationProgramObject.
 impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
     fn write_lsm(&mut self, buf: &[u8], alloc_address: Option<u32>) -> LoadAction {
         self.table.write_lsm(buf, alloc_address)
@@ -1200,6 +1254,10 @@ impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
 
     fn table_reference(&self) -> u32 {
         self.table.table_reference()
+    }
+
+    fn last_error_code(&self) -> u8 {
+        self.table.last_error_code()
     }
 }
 

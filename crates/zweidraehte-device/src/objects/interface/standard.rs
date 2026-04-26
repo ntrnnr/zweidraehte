@@ -235,8 +235,9 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 /// | 1 | Object Type | PDT_UNSIGNED_INT | RO | Object type identifier (3) |
 /// | 5 | Load State Control | PDT_CONTROL | RW | Load state machine |
 /// | 6 | Run State Control | PDT_CONTROL | RW | Run state machine |
-/// | 13 | Program Version | PDT_GENERIC_05 | RO | Application program version |
-/// | 16 | PEI Type | PDT_UNSIGNED_CHAR | RO | PEI type (0 for none) |
+/// | 13 | Program Version | PDT_GENERIC_05 | RW | Application program version |
+/// | 16 | PEI Type | PDT_UNSIGNED_CHAR | RW | Required PEI type for the program |
+/// | 28 | Error Code | PDT_UNSIGNED_CHAR | RO | DPT_ErrorClass_System; mirrors LSM Err |
 ///
 /// # Type Parameters
 ///
@@ -255,7 +256,12 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 /// // Create the interface object wrapping it (with allocation address 0x400)
 /// let app_obj = ApplicationProgramObject::new(&app_table, 0x400);
 /// ```
-// Access levels per Profiles spec Annex A.2.6 (mask 57B0h).
+// Access levels per Profiles spec Annex A.2.6, covering System B masks
+// 07B0h / 17B0h / 57B0h. The three masks agree on every property here
+// except PID 27 PID_MCB_TABLE and PID 28 PID_ERROR_CODE, where 57B0h
+// promotes them from optional to mandatory; we keep them mandatory in
+// either case since the underlying state already exists.
+//
 // Base objects have no explicit access policies in the Profiles spec —
 // READ_OPEN_WRITE_TOOL (3FF/0CC) is the implicit default. The RESTRICTED
 // policy only applies to the Security IO's LOAD_STATE_CONTROL (§9.1.2.6.4).
@@ -270,7 +276,11 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub program_version: PDT_Generic05,
-    #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RO,
+    // PEI_TYPE on the Application Program Object is the PEI type *required*
+    // by the program (distinct from the device-wide PEI_TYPE on the Device
+    // Object). Spec Annex A.2.6 lists it as `3/3` (mandatory RW) for all
+    // System B masks — ETS writes it during programming.
+    #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub pei_type: PDT_UnsignedChar,
 
@@ -325,6 +335,14 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
              out
          })]
     mcb_table: (),
+
+    // PID_ERROR_CODE — last LSM failure encoded as DPT_ErrorClass_System
+    // (20.011). Reads `0` (no fault) whenever the LSM is not in `Err`,
+    // see `HasLoadStateMachine::last_error_code`.
+    #[io(pid = pid::ERROR_CODE, pdt = PDT_UnsignedChar, access = RO,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         read = |this: &Self| [this.app.borrow().last_error_code()])]
+    error_code: (),
 }
 
 impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'a, T> {
