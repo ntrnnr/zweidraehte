@@ -265,13 +265,14 @@ pub struct DiagnosticsAugment<'a> {
     state: &'a OperationModeState,
 
     // PID_OPERATION_MODE (52) on the ApplicationProgram object.
-    // Access policy 15F/00C: plain read always allowed; write requires
-    // A+C in security mode. Access level 3/3.
+    // Access policy `3FF/00C` per AN193 v04 §"Object Type 3" — plain
+    // mode is fully open; with Security Mode on, only Tool A+C may
+    // read or write. Access level 3/3.
     #[io(
         pid = pid::OPERATION_MODE,
         pdt = PDT_Function,
         access = RW,
-        policy = AccessPolicy::new(0x15F, 0x00C),
+        policy = AccessPolicy::new(0x3FF, 0x00C),
         rl = 3, wl = 3,
         intercepts,
         target = InterfaceObjectType::ApplicationProgram,
@@ -285,12 +286,16 @@ pub struct DiagnosticsAugment<'a> {
     _operation_mode_io: (),
 
     // PID_GO_DIAGNOSTICS (66) on the GroupObjectTable object.
-    // Same access policy as PID_OPERATION_MODE.
+    // Access policy `3FF/0CC` per AN193 v04 §"Object Type 9" — the
+    // standard `READ_OPEN_WRITE_TOOL` baseline (read open, write
+    // restricted to Tool in Security Mode). Note this is *more*
+    // permissive than PID_OPERATION_MODE: roles may still trigger GO
+    // diagnostics with A or A+C in Security Mode.
     #[io(
         pid = pid::GO_DIAGNOSTICS,
         pdt = PDT_Function,
         access = RW,
-        policy = AccessPolicy::new(0x15F, 0x00C),
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
         rl = 3, wl = 3,
         intercepts,
         target = InterfaceObjectType::GroupObjectTable,
