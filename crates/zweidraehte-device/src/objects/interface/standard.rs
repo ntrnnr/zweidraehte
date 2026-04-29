@@ -163,16 +163,26 @@ pub struct DeviceObject<'a, S: StackState> {
          read = |this: &Self| this.state.max_apdu_length().to_be_bytes())]
     max_apdu_length: (),
 
+    // PID_SUBNET_ADDR — AN193 §"Object Type 0" lists `3FF/00C`
+    // (`OPEN_OFF_TOOL_ON`): in Security Mode only the Tool may read,
+    // since the subnet address ties the device to a specific line.
+    // The property is RO at the dispatch layer regardless, so the
+    // policy's write bits don't matter; what differs from the
+    // workspace default `3FF/0CC` is that role-authenticated clients
+    // are denied even read access in Security Mode.
     #[io(pid = pid::SUBNET_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = 3, wl = 0,
          read = |this: &Self| {
              let addr = this.state.individual_address();
              [(addr.area() << 4) | addr.line()]
          })]
     subnet_address: (),
 
+    // PID_DEVICE_ADDR — same `3FF/00C` policy as PID_SUBNET_ADDR per
+    // AN193; together they form the device's individual address and
+    // share the same security profile.
     #[io(pid = pid::DEVICE_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = 3, wl = 0,
          read = |this: &Self| [this.state.individual_address().device()])]
     device_address: (),
 }
