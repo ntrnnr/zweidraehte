@@ -305,19 +305,27 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
         }
         let max_addrs = N as u16;
         match prop_id {
+            // PID 53 PID_ADDITIONAL_INDIVIDUAL_ADDRESSES — AN193
+            // §"Object Type 11" lists `3FF/0CC` (READ_OPEN_WRITE_TOOL).
             pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => Some(PropertyDescriptor::array::<PDT_UnsignedInt>(
                 prop_id,
                 max_addrs,
                 PropertyAccess::ReadWrite,
                 3,
                 3,
+                AccessPolicy::READ_OPEN_WRITE_TOOL,
             )),
+            // PID 79 PID_TUNNELLING_ADDRESSES — AN193 §"Object Type 11"
+            // lists `15F/04C` (RESTRICTED): the tunnelling-client list
+            // is security-sensitive, so plain unlisted reads are
+            // forbidden once Security Mode is on.
             pid::TUNNELLING_ADDRESSES => Some(PropertyDescriptor::array::<PDT_UnsignedChar>(
                 prop_id,
                 max_addrs,
                 PropertyAccess::ReadOnly,
                 3,
                 3,
+                AccessPolicy::RESTRICTED,
             )),
             _ => None,
         }

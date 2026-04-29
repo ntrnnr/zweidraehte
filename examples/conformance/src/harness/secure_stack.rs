@@ -793,8 +793,14 @@ const CERT_PID51_POLICY: AccessPolicy = AccessPolicy::new(0x3FF, 0x0FF);
 /// Return a property descriptor for the Certification Object's properties.
 fn certification_descriptor(pid: u16) -> Option<PropertyDescriptor> {
     match pid {
-        1 => Some(PropertyDescriptor::from_type::<PDT_UnsignedChar>(1, PropertyAccess::ReadOnly, 3, 0)),
-        ROLES_PID => Some(PropertyDescriptor::with_policy(
+        1 => Some(PropertyDescriptor::from_type::<PDT_UnsignedChar>(
+            1,
+            PropertyAccess::ReadOnly,
+            3,
+            0,
+            AccessPolicy::READ_OPEN_WRITE_TOOL,
+        )),
+        ROLES_PID => Some(PropertyDescriptor::new(
             ROLES_PID,
             PDT_UnsignedChar::ID,
             1,

@@ -244,13 +244,19 @@ where
     }
 
     /// Property descriptor for PID_IO_LIST.
+    ///
+    /// PID_IO_LIST policy per AN193 §"Object Type 0" — `3FF/0CC`
+    /// (READ_OPEN_WRITE_TOOL). The property is read-only at the
+    /// dispatch layer regardless of the policy's write bits.
     fn io_list_descriptor(&self) -> PropertyDescriptor {
+        use zweidraehte_proto::access::AccessPolicy;
         PropertyDescriptor::array::<PDT_UnsignedInt>(
             pid::IO_LIST,
             self.io_list_len(),
             PropertyAccess::ReadOnly,
             3, // read_level: anyone can read
             0, // write_level: irrelevant (read-only)
+            AccessPolicy::READ_OPEN_WRITE_TOOL,
         )
     }
 

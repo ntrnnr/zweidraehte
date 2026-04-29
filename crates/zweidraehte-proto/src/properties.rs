@@ -122,35 +122,21 @@ pub struct PropertyDescriptor {
 }
 
 impl PropertyDescriptor {
-    /// Create a new property descriptor with specified access levels and policy.
+    /// Create a new property descriptor.
     ///
     /// Access levels range from 0-3, where:
     /// - 0 = most restricted (requires full access/authorization)
     /// - 3 = unrestricted (anyone can access)
     ///
-    /// A caller with level N can access a property if their level <= the property's level.
-    /// The access policy provides additional KNX Data Secure access control.
+    /// A caller with level N can access a property if their level <= the
+    /// property's level. The access policy provides additional KNX Data
+    /// Secure access control and **must be supplied explicitly**: there
+    /// is no default. Picking a default would silently grant
+    /// `READ_OPEN_WRITE_TOOL` to security-sensitive properties whose
+    /// spec policy is stricter (AN193 e.g. `15F/04C` for
+    /// `PID_TUNNELLING_ADDRESSES`), so callers are required to consult
+    /// AN193 / the relevant Profile spec and pick the correct one.
     pub const fn new(
-        pid: u16,
-        pdt_id: u8,
-        max_elements: u16,
-        access: PropertyAccess,
-        read_level: u8,
-        write_level: u8,
-    ) -> Self {
-        Self {
-            pid,
-            pdt_id,
-            max_elements,
-            access,
-            write_level: write_level & 0x0F,
-            read_level: read_level & 0x0F,
-            policy: AccessPolicy::READ_OPEN_WRITE_TOOL,
-        }
-    }
-
-    /// Create a new property descriptor with explicit access policy.
-    pub const fn with_policy(
         pid: u16,
         pdt_id: u8,
         max_elements: u16,
@@ -170,25 +156,32 @@ impl PropertyDescriptor {
         }
     }
 
-    /// Create a property descriptor for a type implementing PropertyDataDefinition
+    /// Create a property descriptor for a type implementing
+    /// [`PropertyDataDefinition`]. The PDT id is taken from `T::ID`;
+    /// the policy still has to be supplied — see [`new`](Self::new).
     pub const fn from_type<T: PropertyDataDefinition>(
         pid: u16,
         access: PropertyAccess,
         read_level: u8,
         write_level: u8,
+        policy: AccessPolicy,
     ) -> Self {
-        Self::new(pid, T::ID, 1, access, read_level, write_level)
+        Self::new(pid, T::ID, 1, access, read_level, write_level, policy)
     }
 
-    /// Create a property descriptor for an array property
+    /// Create a property descriptor for an array property of the typed
+    /// PDT `T`. Convenience over [`new`](Self::new) for runtime-built
+    /// descriptors whose `max_elements` value isn't known at compile
+    /// time (for example, when it comes from a const generic).
     pub const fn array<T: PropertyDataDefinition>(
         pid: u16,
         max_elements: u16,
         access: PropertyAccess,
         read_level: u8,
         write_level: u8,
+        policy: AccessPolicy,
     ) -> Self {
-        Self::new(pid, T::ID, max_elements, access, read_level, write_level)
+        Self::new(pid, T::ID, max_elements, access, read_level, write_level, policy)
     }
 
     /// Check if reading is allowed under the given access context.

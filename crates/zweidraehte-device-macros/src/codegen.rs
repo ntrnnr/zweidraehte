@@ -95,7 +95,7 @@ pub(crate) fn gen_object(
                 // OBJECT_TYPE (PID 1) — always first, ReadOnly, level 3/0,
                 // policy READ_OPEN_WRITE_TOOL. This is mandated by KNX spec
                 // for every interface object.
-                ::zweidraehte_proto::properties::PropertyDescriptor::with_policy(
+                ::zweidraehte_proto::properties::PropertyDescriptor::new(
                     ::zweidraehte_device::objects::interface::pid::OBJECT_TYPE,
                     <::zweidraehte_proto::dpt::PDT_UnsignedInt
                         as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
@@ -851,7 +851,7 @@ fn descriptor_for(
     };
 
     quote! {
-        ::zweidraehte_proto::properties::PropertyDescriptor::with_policy(
+        ::zweidraehte_proto::properties::PropertyDescriptor::new(
             #pid,
             #pdt_id,
             #max_elements,

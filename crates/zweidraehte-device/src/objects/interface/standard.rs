@@ -637,7 +637,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
     fn property_descriptors() -> [PropertyDescriptor; 6] {
         use zweidraehte_proto::access::AccessPolicy;
         [
-            PropertyDescriptor::with_policy(
+            PropertyDescriptor::new(
                 pid::OBJECT_TYPE,
                 PDT_UnsignedInt::ID,
                 1,
@@ -646,7 +646,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 0,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::with_policy(
+            PropertyDescriptor::new(
                 pid::LOAD_STATE_CONTROL,
                 PDT_Control::ID,
                 1,
@@ -655,7 +655,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 1,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::with_policy(
+            PropertyDescriptor::new(
                 pid::TABLE_REFERENCE,
                 PDT_UnsignedLong::ID,
                 1,
@@ -664,7 +664,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 0,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::with_policy(
+            PropertyDescriptor::new(
                 pid::TABLE,
                 S::TABLE_PDT,
                 0,
@@ -673,7 +673,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 3,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ), // max_elements set dynamically
-            PropertyDescriptor::with_policy(
+            PropertyDescriptor::new(
                 pid::MCB_TABLE,
                 PDT_Generic08::ID,
                 1,
@@ -682,7 +682,7 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
                 0,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::with_policy(
+            PropertyDescriptor::new(
                 pid::ERROR_CODE,
                 PDT_UnsignedChar::ID,
                 1,
