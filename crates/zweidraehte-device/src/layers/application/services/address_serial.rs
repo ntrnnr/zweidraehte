@@ -62,6 +62,9 @@ impl<D: StackDefinition> AlService<D> for IndividualAddressSerialNumberService {
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+crate::apci_handler_via_alservice!(IndividualAddressSerialNumberService);
+
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());

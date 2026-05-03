@@ -71,6 +71,11 @@ impl<D: StackDefinition> AlService<D> for MemoryService {
     }
 }
 
+// Phase C bridge: ApciHandler shim forwarding to the legacy
+// AlService body. Phase E folds the legacy impl into a direct
+// ApciHandler impl and deletes AlService.
+crate::apci_handler_via_alservice!(MemoryService);
+
 // ============================================================================
 // Handlers
 // ============================================================================

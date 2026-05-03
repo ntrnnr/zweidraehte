@@ -109,6 +109,9 @@ where
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+crate::apci_handler_via_alservice!(PropertyExtValueService);
+
 // ============================================================================
 // Handlers
 // ============================================================================

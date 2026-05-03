@@ -63,6 +63,9 @@ impl<D: StackDefinition> AlService<D> for FunctionPropertyService {
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+crate::apci_handler_via_alservice!(FunctionPropertyService);
+
 /// Shared implementation for command and state-read. Both share the same
 /// wire format and response format and differ only in which trait method
 /// is invoked on the interface objects.

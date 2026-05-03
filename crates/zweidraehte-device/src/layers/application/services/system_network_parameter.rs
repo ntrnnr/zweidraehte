@@ -60,6 +60,9 @@ impl<D: StackDefinition> AlService<D> for SystemNetworkParameterService {
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+crate::apci_handler_via_alservice!(SystemNetworkParameterService);
+
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     // Per spec 03/05/02 §2.20.1.2, this service is defined *only* on
     // system broadcast. In practice some tools (ETS among them) send

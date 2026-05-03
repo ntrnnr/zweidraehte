@@ -51,6 +51,9 @@ impl<D: StackDefinition> AlService<D> for UserManufacturerInfoService {
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+crate::apci_handler_via_alservice!(UserManufacturerInfoService);
+
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     let Some(info) = D::USER_MANUFACTURER_INFO else {
         debug!("AL UserManufacturerInfo_Read: not supported (no USER_MANUFACTURER_INFO configured)");

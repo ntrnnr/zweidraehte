@@ -155,3 +155,25 @@ where
     crate::layers::transport::cemi::CemiTransportLayer<'static, D, 1, 0>: Layer<D>,
 {
 }
+
+/// Compile-time assertion that every AL service has a Phase C
+/// `ApciHandler<D>` shim. The bounds match the macro's: the AL
+/// itself requires `HasCommObjects` so the conversion always
+/// works in practice.
+fn _assert_al_services_implement_apci_handler<D>()
+where
+    D: StackDefinition,
+    D::State: crate::objects::comm::HasCommObjects<CO = D::CO>,
+    D::State: crate::objects::interface::HasDomainAddress,
+    crate::layers::application::services::adc::AdcService: ApciHandler<D>,
+    crate::layers::application::services::address_serial::IndividualAddressSerialNumberService: ApciHandler<D>,
+    crate::layers::application::services::authorization::AuthorizationService: ApciHandler<D>,
+    crate::layers::application::services::domain_addr::DomainAddressService: ApciHandler<D>,
+    crate::layers::application::services::function_property::FunctionPropertyService: ApciHandler<D>,
+    crate::layers::application::services::manufacturer::UserManufacturerInfoService: ApciHandler<D>,
+    crate::layers::application::services::memory::MemoryService: ApciHandler<D>,
+    crate::layers::application::services::property_ext::PropertyExtValueService: ApciHandler<D>,
+    crate::layers::application::services::system_network_parameter::SystemNetworkParameterService: ApciHandler<D>,
+    crate::layers::application::services::user_memory::UserMemoryService: ApciHandler<D>,
+{
+}

@@ -66,6 +66,9 @@ impl<D: StackDefinition> AlService<D> for AuthorizationService {
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+crate::apci_handler_via_alservice!(AuthorizationService);
+
 // ============================================================================
 // Handlers
 // ============================================================================

@@ -83,6 +83,11 @@ where
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+// Carries the same `HasDomainAddress` bound the AlService impl
+// declares.
+crate::apci_handler_via_alservice!(DomainAddressService, where D::State: HasDomainAddress);
+
 // ============================================================================
 // Handlers
 // ============================================================================

@@ -107,6 +107,83 @@ impl<'a, D: StackDefinition> AlServiceContext<'a, D> {
     pub fn response_fits(&self, msg_len: usize) -> bool {
         msg_len <= self.effective_apdu_budget()
     }
+
+    /// Build a legacy `AlServiceContext` from a new
+    /// [`ServiceCtx`](crate::service::ServiceCtx).
+    ///
+    /// Phase C bridge: the new
+    /// [`ApciHandler<D>`](crate::service::ApciHandler) impls on every
+    /// AL service forward to their existing `AlService::try_handle`
+    /// bodies through this conversion. The two contexts share every
+    /// reference verbatim; the only datum the legacy ctx pulls extra
+    /// is `comm_objects`, which lives on `D::State` and the AL
+    /// already requires `HasCommObjects` to dispatch APCIs in the
+    /// first place.
+    pub fn from_service_ctx(ctx: &crate::service::ServiceCtx<'a, D>) -> Self
+    where
+        D::State: crate::objects::comm::HasCommObjects<CO = D::CO>,
+    {
+        use crate::objects::comm::HasCommObjects;
+        Self {
+            state: ctx.state,
+            lctx: ctx.lctx,
+            interface_objects: ctx.interface_objects,
+            memory_map: ctx.memory_map,
+            comm_objects: ctx.state.comm_objects(),
+            access_ctx: ctx.access,
+        }
+    }
+}
+
+/// Generate an [`ApciHandler<D>`](crate::service::ApciHandler) impl
+/// that forwards to a service's existing
+/// [`AlService<D>`](AlService) body.
+///
+/// Phase C bridge: every AL service uses this to gain a parallel
+/// `ApciHandler` impl with zero behaviour change. The shim builds
+/// a transient [`AlServiceContext`] from the new
+/// [`ServiceCtx`](crate::service::ServiceCtx) and dispatches through
+/// the legacy `try_handle`. Phase E deletes `AlService` and folds
+/// each service's body into a direct `ApciHandler` impl.
+///
+/// # Forms
+///
+/// - `apci_handler_via_alservice!(MyService);` — no extra bounds
+///   beyond what `AlService<D>` already requires plus the
+///   `HasCommObjects` bound the conversion needs.
+/// - `apci_handler_via_alservice!(MyService, where D::State: SomeTrait);`
+///   — adds device-state bounds the service's `AlService` impl
+///   demanded.
+#[macro_export]
+macro_rules! apci_handler_via_alservice {
+    ($svc:ty) => {
+        $crate::apci_handler_via_alservice!($svc, where);
+    };
+    ($svc:ty, where $($extra_bound:tt)*) => {
+        impl<D: $crate::StackDefinition> $crate::service::ApciHandler<D> for $svc
+        where
+            D::State: $crate::objects::comm::HasCommObjects<CO = D::CO>,
+            $($extra_bound)*
+        {
+            #[inline]
+            fn try_handle_apci(
+                &self,
+                apci: ::zweidraehte_proto::messages::knx::ApciCode,
+                msg: &::zweidraehte_proto::messages::knx::KnxMessageBuffer<
+                    ::zweidraehte_proto::messages::buffers::Buffer<'static>,
+                >,
+                ctx: &$crate::service::ServiceCtx<'_, D>,
+            ) -> bool {
+                let legacy_ctx = $crate::layers::application::services::AlServiceContext::from_service_ctx(ctx);
+                <Self as $crate::layers::application::services::AlService<D>>::try_handle(
+                    self,
+                    apci,
+                    msg,
+                    &legacy_ctx,
+                )
+            }
+        }
+    };
 }
 
 // ============================================================================
@@ -181,3 +258,4 @@ where
         self.0.try_handle(apci, msg, ctx) || self.1.try_handle(apci, msg, ctx)
     }
 }
+

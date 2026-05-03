@@ -50,6 +50,9 @@ impl<D: StackDefinition> AlService<D> for AdcService {
     }
 }
 
+// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+crate::apci_handler_via_alservice!(AdcService);
+
 fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
     let Some(req) = AdcRead::parse(ind.buf()) else {
         error!("ADC_Read message too short: {}", ind.len());
