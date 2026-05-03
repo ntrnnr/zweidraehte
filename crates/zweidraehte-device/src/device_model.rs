@@ -153,7 +153,7 @@ pub trait DeviceModel {
     /// Drain and handle [`DeviceModelEvent`]s from the DM channel.
     ///
     /// Called by the composition layer after each dispatch cycle via
-    /// [`LayerStack::drain_events`](crate::router::LayerStack::drain_events).
+    /// [`LayerRegistry::drain_events`](crate::service::LayerRegistry::drain_events).
     fn drain_dm_events(&mut self);
 
     /// Handle a lifecycle action produced by a run state transition.

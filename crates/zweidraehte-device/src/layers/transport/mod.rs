@@ -43,7 +43,6 @@ use crate::{
     context::StackContext,
     context::layer::HasOutbox,
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
-    router::Layer,
 };
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
@@ -230,7 +229,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     }
 }
 
-impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer
+impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
     for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 {
     const HANDLES: &'static [ServiceType] = &[
@@ -256,7 +255,11 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
         ServiceType::T_Data_Req,
     ];
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
+    fn process(
+        &mut self,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+        _ctx: &crate::service::ServiceCtx<'_, D>,
+    ) {
         match msg.service_type() {
             // =================================================================
             // Indications from Network Layer (upward)
@@ -300,48 +303,9 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
         self.connections.next_timeout_deadline()
     }
 
-    fn poll(&mut self) {
+    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
         self.check_timeouts();
     }
-}
-
-// ============================================================================
-// service::Layer<D> impl — the new trait surface, alongside the
-// legacy `router::Layer` impl above.
-//
-// During the migration to the new trait surface, `TransportLayer`
-// keeps its captured `state: &'a D::State` /
-// `lctx: &'a LayerContext<D>` fields and continues to work under
-// the legacy `router::Layer` trait. The new `service::Layer` impl
-// ignores the per-call `ctx` parameter and delegates to the same
-// methods — behaviour is byte-identical. Once every consumer has
-// moved to the new trait, the captured fields drop and every call
-// site reads from `ctx` instead.
-// ============================================================================
-
-impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
-    for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
-{
-    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
-
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        // Delegate to the legacy `router::Layer::process` impl. The
-        // captured `self.state` / `self.lctx` fields are still in
-        // place and carry the same references the new `ctx` would
-        // expose, so using them is functionally identical.
-        <Self as Layer>::process(self, msg)
-    }
-
-    fn next_deadline(&self) -> Option<Instant> {
-        <Self as Layer>::next_deadline(self)
-    }
-
-    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::poll(self)
-    }
-
-    // `init` keeps the trait default (no-op). The legacy `Layer::init`
-    // is also a default no-op for TL today.
 }
 
 // ============================================================================

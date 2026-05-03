@@ -12,7 +12,7 @@ use embassy_time::Timer;
 
 use crate::{
     StackState, composition::LayerStackBuilder, context::StackContext, definition::StackDefinition, inner::Inner,
-    layers::LinkLayerBuilderBase, resources::StackResources, router::LayerStack, stack_handle::Stack,
+    layers::LinkLayerBuilderBase, resources::StackResources, service::LayerRegistry, stack_handle::Stack,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -86,16 +86,28 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
         let mut layers = B::<D>::build(&stack_context, &layer_channels);
 
+        // Build a fresh `ServiceCtx` per call into the registry. The
+        // ctx carries `state`, `lctx`, and a default `AccessContext`
+        // for lifecycle / dispatch sites that aren't bound to an
+        // incoming request.
+        let make_ctx = || {
+            crate::service::ServiceCtx::new(
+                &self.stack.inner.state,
+                self.stack.inner.layer_context,
+                ::zweidraehte_proto::access::AccessContext::default(),
+            )
+        };
+
         // Initialize all layers (e.g., AL starts read-on-init cycle if
         // the application is already running).
-        layers.init();
+        layers.init_layers(&make_ctx());
 
         // Do one poll pass straight after init so the layers get a
         // chance to evaluate their startup state — the AL uses this
         // to either begin read-on-init or settle on "nothing to do"
         // without waiting for the first timer deadline (which may
         // never arrive on a DUT with no application loaded).
-        layers.poll();
+        layers.poll_layers(&make_ctx());
 
         // ================================================================
         // Link layer task
@@ -135,7 +147,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
             let outbox = &lctx.outbox;
 
             loop {
-                let layer_deadline = layers.next_deadline();
+                let layer_deadline = layers.next_layer_deadline();
                 if layer_deadline.is_some() {
                     debug!("Router: layer_deadline is Some, will poll on timer");
                 }
@@ -164,11 +176,11 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     }
                     embassy_futures::select::Either3::Third(third) => match third {
                         Either::First(input) => {
-                            layers.handle_service_input(input);
+                            layers.handle_service_input(input, &make_ctx());
                         }
                         Either::Second(_) => {
                             debug!("Router: timer expired, polling layers");
-                            layers.poll();
+                            layers.poll_layers(&make_ctx());
                         }
                     },
                 }
@@ -193,7 +205,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                         ll_req.send(RequestMessage::request(msg)).await;
                         embassy_futures::yield_now().await;
                     } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
-                        layers.dispatch(layer_idx, msg);
+                        layers.dispatch_wire(layer_idx, msg, &make_ctx());
                     } else {
                         warn!("Router: no layer for {:?}, dropping", st);
                     }
@@ -212,7 +224,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                         ll_req.send(RequestMessage::request(msg)).await;
                         embassy_futures::yield_now().await;
                     } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
-                        layers.dispatch(layer_idx, msg);
+                        layers.dispatch_wire(layer_idx, msg, &make_ctx());
                     } else {
                         warn!("Router: no layer for {:?}, dropping", st);
                     }
@@ -220,7 +232,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
                 // Handle side-effect events emitted during this dispatch cycle
                 // (e.g., run state machine transitions).
-                layers.drain_events();
+                layers.drain_events(&make_ctx());
             }
         };
 

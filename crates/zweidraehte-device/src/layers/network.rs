@@ -3,7 +3,6 @@ use heapless::Deque;
 use crate::context::StackContext;
 use crate::context::layer::HasOutbox;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
-use crate::router::Layer;
 use crate::{StackDefinition, StackState};
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::*;
@@ -41,7 +40,7 @@ impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
     }
 }
 
-impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
+impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from LL (upward)
         ServiceType::L_Data_Ind,
@@ -54,7 +53,11 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
         ServiceType::N_SystemBroadcast_Req,
     ];
 
-    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
+    fn process(
+        &mut self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+        _ctx: &crate::service::ServiceCtx<'_, D>,
+    ) {
         match msg.service_type() {
             // =================================================================
             // Indications from link layer (upward: L_Data_Ind → N_*_Ind)
@@ -176,24 +179,3 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
     }
 }
 
-// ============================================================================
-// service::Layer<D> impl — the new trait surface, alongside the
-// legacy `router::Layer` impl above.
-//
-// During the migration to the new trait surface, `NetworkLayer`
-// keeps its captured `state` / `lctx` references and the new impl
-// forwards to the legacy one. Behaviour is byte-identical. Once
-// every consumer has moved to the new trait, the captured fields
-// and the legacy `router::Layer` impl drop in favour of per-call
-// `ServiceCtx` access.
-// ============================================================================
-
-impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
-    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
-
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::process(self, msg)
-    }
-
-    // NL has no timer; default `next_deadline` / `poll` / `init` apply.
-}

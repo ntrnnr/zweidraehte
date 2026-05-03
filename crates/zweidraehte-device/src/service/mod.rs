@@ -17,14 +17,6 @@
 //! state, IO objects, memory map, layer-context (outbox / buffer
 //! manager / channels), and the request's [`AccessContext`].
 //!
-//! # Coexistence with the legacy `Layer` trait
-//!
-//! Wire-message handlers (NL/TL/AL/SecureAL) currently implement
-//! both this module's [`Layer`] trait and the older
-//! [`router::Layer`](crate::router::Layer) trait so the runner can
-//! pick either dispatch path. Once the runner switches to the new
-//! [`LayerRegistry`]-driven dispatch, the old `router::Layer` trait
-//! and its `LayerStack` machinery delete.
 
 mod apci_tuple;
 mod ctx;

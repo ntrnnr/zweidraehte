@@ -30,7 +30,7 @@
 
 use embassy_sync::channel::DynamicSender;
 
-use crate::{StackDefinition, context::layer::HasOutbox, router::Layer};
+use crate::{StackDefinition, context::layer::HasOutbox};
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
@@ -275,13 +275,30 @@ const CEMI_PSEUDO_ADDR: IndividualAddress = IndividualAddress::new(0, 0, 0);
 // Layer impl — delegates to inner TransportLayer with interception
 // ============================================================================
 
-impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer
+impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
     for CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 {
     // Register for exactly the same ServiceTypes as the inner TransportLayer.
-    const HANDLES: &'static [ServiceType] = TransportLayer::<'_, D, MAX_INCOMING, MAX_OUTGOING>::HANDLES;
+    const HANDLES: &'static [ServiceType] =
+        <TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING> as crate::service::Layer<D>>::HANDLES;
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
+    fn init(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+        crate::service::Layer::<D>::init(&mut self.inner, ctx);
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        crate::service::Layer::<D>::next_deadline(&self.inner)
+    }
+
+    fn poll(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+        crate::service::Layer::<D>::poll(&mut self.inner, ctx);
+    }
+
+    fn process(
+        &mut self,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+        ctx: &crate::service::ServiceCtx<'_, D>,
+    ) {
         // When cEMI TL is active, intercept connection-oriented requests
         // from AL and route them to the cEMI response channel instead of
         // the bus. Everything else always delegates to the inner TL.
@@ -295,50 +312,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
             }
         }
 
-        self.inner.process(msg);
-    }
-
-    fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        self.inner.next_deadline()
-    }
-
-    fn poll(&mut self) {
-        self.inner.poll();
-    }
-
-    fn init(&mut self) {
-        self.inner.init();
-    }
-}
-
-// ============================================================================
-// service::Layer<D> impl — the new trait surface, alongside the
-// legacy `router::Layer` impl above.
-//
-// Forwards to the legacy `router::Layer` impl. The interception
-// logic for connection-oriented AL requests still goes through that
-// path, so behaviour is byte-identical.
-// ============================================================================
-
-impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
-    for CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
-{
-    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
-
-    fn init(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::init(self)
-    }
-
-    fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        <Self as Layer>::next_deadline(self)
-    }
-
-    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::poll(self)
-    }
-
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::process(self, msg)
+        crate::service::Layer::<D>::process(&mut self.inner, msg, ctx);
     }
 }
 
@@ -384,10 +358,10 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
 /// Owned channel pair for cEMI Transport Layer communication.
 ///
-/// Allocated by [`Runner::run()`](crate::Runner::run) as a stack-local when
-/// the [`LayerStack`](crate::router::LayerStack) requires it. Both the
-/// router task (layer side) and the LL task (link-layer side) borrow from
-/// this structure.
+/// Allocated by [`Runner::run()`](crate::Runner::run) as a stack-local
+/// when the [`LayerStackBuilder`](crate::LayerStackBuilder) requires it.
+/// Both the router task (layer side) and the LL task (link-layer side)
+/// borrow from this structure.
 pub struct CemiTransportLayerChannelPair {
     /// DevMgmt handler → CemiTransportLayer (capacity 2: one Frame + one
     /// Activate/Deactivate can be pending simultaneously).

@@ -67,6 +67,43 @@ pub trait LayerRegistry<D: StackDefinition> {
     /// Earliest deadline across every `#[service(handler)]` field, or
     /// `None` if none of them have a pending timer.
     fn next_layer_deadline(&self) -> Option<Instant>;
+
+    // -------------------------------------------------------------
+    // Service inputs and side-effect events
+    //
+    // The router runs `select` over LL ind/conf, layer timers, and
+    // [`recv_service_input`](Self::recv_service_input). The default
+    // is a never-resolving future, fine for stacks with no
+    // user-side actor channels.
+    //
+    // `drain_events` is invoked after every dispatch cycle so
+    // stack-level coordination state (DeviceModel transitions,
+    // run-state-machine ticks) can fire side effects.
+    // -------------------------------------------------------------
+
+    /// Event type returned by [`recv_service_input`](Self::recv_service_input).
+    /// Defaults to the never type for stacks with no service inputs.
+    type ServiceInput = !;
+
+    /// Wait for a service input event (e.g. an actor request from
+    /// user code, or a cEMI event from an IP runtime task).
+    ///
+    /// Default: pends forever.
+    fn recv_service_input(&self) -> impl core::future::Future<Output = Self::ServiceInput> + '_ {
+        core::future::pending()
+    }
+
+    /// Process a service input that [`recv_service_input`](Self::recv_service_input) resolved with.
+    ///
+    /// Default `match input {}` — works against the never type.
+    fn handle_service_input(&mut self, _input: Self::ServiceInput, _ctx: &ServiceCtx<'_, D>) {}
+
+    /// Drain stack-level coordination events emitted during the
+    /// dispatch cycle (e.g. DeviceModel transitions). Called after
+    /// the outbox drain completes.
+    ///
+    /// Default no-op.
+    fn drain_events(&mut self, _ctx: &ServiceCtx<'_, D>) {}
 }
 
 // =============================================================================

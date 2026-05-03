@@ -21,7 +21,6 @@ use crate::{
     layers::application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
-    router::Layer,
     storage::SequenceNumberStorage,
 };
 use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};
@@ -890,87 +889,63 @@ where
     }
 }
 
-impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Layer for SecureApplicationLayer<'_, D, SEQ, P2P>
-where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
-    <D::State as HasExtensionState>::ES: HasSecurityState,
-{
-    const HANDLES: &'static [ServiceType] = ApplicationLayer::<D>::HANDLES;
-
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
-        match self.try_process_secure(msg) {
-            SecureResult::Forward(msg) => {
-                // Run the inner AL inside the same outbox-swap window the
-                // spontaneous-output sites (`handle_app_request`, `poll`,
-                // `init`) use. The indication has been stamped with its
-                // incoming security context (level + tool-access flag);
-                // `MessageBuilder::respond_to` propagates these onto each
-                // response buffer, and `try_encrypt_outgoing` reads them
-                // at drain time. Tool-key rotation falls out for free:
-                // the encrypt path reads `tool_key()` after `set_tool_key`
-                // has returned, so the WriteConRes for PID_TOOL_KEY
-                // encrypts with the newly-set key (TSSJ §3.8.13.1).
-                self.with_outbox_swap(|this| this.inner.process(msg));
-            }
-            SecureResult::SyncResponse(msg) => {
-                // Sync response is already fully encrypted — push directly.
-                self.inner.lctx().push_outbox(msg);
-            }
-            SecureResult::Dropped => {
-                // Verification failed — silently drop.
-            }
-        }
-    }
-
-    fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        self.inner.next_deadline()
-    }
-
-    fn poll(&mut self) {
-        // Read-on-init reads (`A_GroupValue_Read.req`) and any other
-        // spontaneous emissions originating from the inner AL's poll loop
-        // need the same encryption pass that frame-driven sends get.
-        self.with_outbox_swap(|this| this.inner.poll());
-    }
-
-    fn init(&mut self) {
-        // The inner AL's `init()` may queue ROI reads up front. Same
-        // requirement: stamp + encrypt.
-        self.with_outbox_swap(|this| this.inner.init());
-    }
-}
-
-// ============================================================================
-// service::Layer<D> impl — the new trait surface, alongside the
-// legacy `router::Layer` impl above.
-//
-// Every method forwards to the legacy impl, which already handles
-// the stamp+encrypt / decrypt-on-ingress logic. A subsequent
-// reshape will give SecureAL an `Ext: ApciHandler<D>` type
-// parameter that flows through the inner AL after decryption.
-// ============================================================================
-
 impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> crate::service::Layer<D>
     for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
-    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
+    const HANDLES: &'static [ServiceType] =
+        <ApplicationLayer<'_, D> as crate::service::Layer<D>>::HANDLES;
 
-    fn init(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::init(self)
+    fn init(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+        // The inner AL's `init()` may queue ROI reads up front. The
+        // same requirement applies: stamp + encrypt.
+        self.with_outbox_swap(|this| crate::service::Layer::<D>::init(&mut this.inner, ctx));
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        <Self as Layer>::next_deadline(self)
+        crate::service::Layer::<D>::next_deadline(&self.inner)
     }
 
-    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::poll(self)
+    fn poll(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+        // Read-on-init reads (`A_GroupValue_Read.req`) and any other
+        // spontaneous emissions originating from the inner AL's poll
+        // loop need the same encryption pass that frame-driven sends
+        // get.
+        self.with_outbox_swap(|this| crate::service::Layer::<D>::poll(&mut this.inner, ctx));
     }
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::process(self, msg)
+    fn process(
+        &mut self,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+        ctx: &crate::service::ServiceCtx<'_, D>,
+    ) {
+        match self.try_process_secure(msg) {
+            SecureResult::Forward(msg) => {
+                // Run the inner AL inside the same outbox-swap window
+                // the spontaneous-output sites (`init`, `poll`,
+                // `handle_app_request`) use. The indication has been
+                // stamped with its incoming security context (level +
+                // tool-access flag); `MessageBuilder::respond_to`
+                // propagates these onto each response buffer, and
+                // `try_encrypt_outgoing` reads them at drain time.
+                // Tool-key rotation falls out for free: the encrypt
+                // path reads `tool_key()` after `set_tool_key` has
+                // returned, so the WriteConRes for PID_TOOL_KEY
+                // encrypts with the newly-set key (TSSJ §3.8.13.1).
+                self.with_outbox_swap(|this| {
+                    crate::service::Layer::<D>::process(&mut this.inner, msg, ctx)
+                });
+            }
+            SecureResult::SyncResponse(msg) => {
+                // Sync response is already fully encrypted — push
+                // directly.
+                self.inner.lctx().push_outbox(msg);
+            }
+            SecureResult::Dropped => {
+                // Verification failed — silently drop.
+            }
+        }
     }
 }

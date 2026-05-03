@@ -26,7 +26,7 @@ use crate::{
         transport::TransportLayer,
     },
     objects::tables::{HasAddressTable, HasAssociationTable},
-    router::{self, LayerStack},
+    router,
     storage::{HasSequenceStorage, SequenceNumberStorage},
 };
 
@@ -51,7 +51,7 @@ use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 /// - [`InsecureIpDeviceBuilder`] — `(NL, CemiTL<TL>, AL)` stack with cEMI channels
 pub trait LayerStackBuilder<D: StackDefinition>: Sized {
     /// Composed layer stack produced by [`build`](Self::build).
-    type Stack<'a>: router::LayerStack
+    type Stack<'a>: crate::service::LayerRegistry<D>
     where
         D: 'a;
 
@@ -211,8 +211,10 @@ pub enum StandardServiceInput {
 ///
 /// Generic over the application layer slot (`AL`), supporting both
 /// [`ApplicationLayer`] and [`SecureApplicationLayer`].
-pub struct StandardLayerStack<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> {
-    layers: (NetworkLayer<'a, D>, TransportLayer<'a, D>, AL),
+pub struct StandardLayerStack<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest> {
+    nl: NetworkLayer<'a, D>,
+    tl: TransportLayer<'a, D>,
+    al: AL,
     device_model: device_model::SystemBDeviceModel<'a, D>,
     app_rx: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
 }
@@ -236,9 +238,9 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
         // generics here once `generic_const_exprs` no longer overflows for trait
         // consts forwarded through where-clauses.
-        let network_layer = NetworkLayer::new(ctx);
-        let transport_layer = TransportLayer::new(ctx);
-        let application_layer = ApplicationLayer::new(ctx);
+        let nl = NetworkLayer::new(ctx);
+        let tl = TransportLayer::new(ctx);
+        let al = ApplicationLayer::new(ctx);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state(),
@@ -246,11 +248,7 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
             ctx.interface_objects(),
         );
 
-        Self {
-            layers: (network_layer, transport_layer, application_layer),
-            device_model,
-            app_rx: ctx.layer_context().app_service_channel.receiver().into(),
-        }
+        Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
 }
 
@@ -262,12 +260,12 @@ where
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
-        let network_layer = NetworkLayer::new(ctx);
-        let transport_layer = TransportLayer::new(ctx);
+        let nl = NetworkLayer::new(ctx);
+        let tl = TransportLayer::new(ctx);
         let application_layer = ApplicationLayer::new(ctx);
 
         let seq_storage = ctx.state().extension_state().seq_storage();
-        let secure_al = SecureApplicationLayer::new(application_layer, seq_storage);
+        let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state(),
@@ -275,35 +273,77 @@ where
             ctx.interface_objects(),
         );
 
-        Self {
-            layers: (network_layer, transport_layer, secure_al),
-            device_model,
-            app_rx: ctx.layer_context().app_service_channel.receiver().into(),
-        }
+        Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
 }
 
-impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack for StandardLayerStack<'a, D, AL> {
+impl<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest>
+    crate::service::LayerRegistry<D> for StandardLayerStack<'a, D, AL>
+{
     const DISPATCH_TABLE: router::DispatchTable = {
-        type Layers<'a, D, AL> = (NetworkLayer<'a, D>, TransportLayer<'a, D>, AL);
-        <Layers<'_, D, AL> as LayerStack>::DISPATCH_TABLE
+        let mut table = router::DispatchTable::empty();
+        let mut i = 0;
+        while i < <NetworkLayer<'a, D> as crate::service::Layer<D>>::HANDLES.len() {
+            let st: u8 = <NetworkLayer<'a, D> as crate::service::Layer<D>>::HANDLES[i].into();
+            table.register(st, 0);
+            i += 1;
+        }
+        let mut i = 0;
+        while i < <TransportLayer<'a, D> as crate::service::Layer<D>>::HANDLES.len() {
+            let st: u8 = <TransportLayer<'a, D> as crate::service::Layer<D>>::HANDLES[i].into();
+            table.register(st, 1);
+            i += 1;
+        }
+        let mut i = 0;
+        while i < <AL as crate::service::Layer<D>>::HANDLES.len() {
+            let st: u8 = <AL as crate::service::Layer<D>>::HANDLES[i].into();
+            table.register(st, 2);
+            i += 1;
+        }
+        table
     };
 
-    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>) {
-        self.layers.dispatch(layer_idx, msg);
+    fn dispatch_wire(
+        &mut self,
+        idx: u8,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+        ctx: &crate::service::ServiceCtx<'_, D>,
+    ) {
+        match idx {
+            0 => crate::service::Layer::<D>::process(&mut self.nl, msg, ctx),
+            1 => crate::service::Layer::<D>::process(&mut self.tl, msg, ctx),
+            2 => crate::service::Layer::<D>::process(&mut self.al, msg, ctx),
+            _ => unreachable!("dispatch_wire called with idx={} not in DISPATCH_TABLE", idx),
+        }
     }
 
-    fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        self.layers.next_deadline()
-    }
-
-    fn poll(&mut self) {
-        self.layers.poll();
-    }
-
-    fn init(&mut self) {
+    fn init_layers(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
         self.device_model.init();
-        self.layers.init();
+        crate::service::Layer::<D>::init(&mut self.nl, ctx);
+        crate::service::Layer::<D>::init(&mut self.tl, ctx);
+        crate::service::Layer::<D>::init(&mut self.al, ctx);
+    }
+
+    fn poll_layers(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+        crate::service::Layer::<D>::poll(&mut self.nl, ctx);
+        crate::service::Layer::<D>::poll(&mut self.tl, ctx);
+        crate::service::Layer::<D>::poll(&mut self.al, ctx);
+    }
+
+    fn next_layer_deadline(&self) -> Option<embassy_time::Instant> {
+        let mut earliest: Option<embassy_time::Instant> = None;
+        let merge = |earliest: &mut Option<embassy_time::Instant>, d: Option<embassy_time::Instant>| {
+            if let Some(d) = d {
+                *earliest = Some(match *earliest {
+                    Some(e) if e < d => e,
+                    _ => d,
+                });
+            }
+        };
+        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.nl));
+        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.tl));
+        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.al));
+        earliest
     }
 
     type ServiceInput = StandardServiceInput;
@@ -312,15 +352,15 @@ impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack for S
         async { StandardServiceInput::AppRequest(self.app_rx.receive().await) }
     }
 
-    fn handle_service_input(&mut self, input: Self::ServiceInput) {
+    fn handle_service_input(&mut self, input: Self::ServiceInput, _ctx: &crate::service::ServiceCtx<'_, D>) {
         match input {
             StandardServiceInput::AppRequest(req) => {
-                self.layers.2.handle_app_request(&req);
+                self.al.handle_app_request(&req);
             }
         }
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
         self.device_model.drain_dm_events();
     }
 }
@@ -397,8 +437,10 @@ pub enum IpServiceInput {
 }
 
 #[cfg(feature = "knxip")]
-pub struct IpLayerStack<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> {
-    layers: (NetworkLayer<'a, D>, CemiTransportLayer<'a, D>, AL),
+pub struct IpLayerStack<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest> {
+    nl: NetworkLayer<'a, D>,
+    tl: CemiTransportLayer<'a, D>,
+    al: AL,
     device_model: device_model::SystemBDeviceModel<'a, D>,
     app_rx: DynamicReceiver<'a, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     cemi_rx: DynamicReceiver<'a, CemiEvent>,
@@ -413,13 +455,13 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
         ctx: &'a StackContext<'a, D>,
         channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
     ) -> Self {
-        let network_layer = NetworkLayer::new(ctx);
+        let nl = NetworkLayer::new(ctx);
         let transport_layer = TransportLayer::new(ctx);
 
         let cemi_response_sender = channels.response.sender().into();
-        let cemi_transport_layer = CemiTransportLayer::new(transport_layer, cemi_response_sender);
+        let tl = CemiTransportLayer::new(transport_layer, cemi_response_sender);
 
-        let application_layer = ApplicationLayer::new(ctx);
+        let al = ApplicationLayer::new(ctx);
 
         let device_model = device_model::SystemBDeviceModel::new(
             ctx.state(),
@@ -430,7 +472,9 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
         let cemi_event_receiver = channels.event.receiver().into();
 
         Self {
-            layers: (network_layer, cemi_transport_layer, application_layer),
+            nl,
+            tl,
+            al,
             device_model,
             app_rx: ctx.layer_context().app_service_channel.receiver().into(),
             cemi_rx: cemi_event_receiver,
@@ -439,27 +483,73 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
 }
 
 #[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack for IpLayerStack<'a, D, AL> {
+impl<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest> crate::service::LayerRegistry<D>
+    for IpLayerStack<'a, D, AL>
+{
     const DISPATCH_TABLE: router::DispatchTable = {
-        type Layers<'a, D, AL> = (NetworkLayer<'a, D>, CemiTransportLayer<'a, D>, AL);
-        <Layers<'_, D, AL> as LayerStack>::DISPATCH_TABLE
+        let mut table = router::DispatchTable::empty();
+        let mut i = 0;
+        while i < <NetworkLayer<'a, D> as crate::service::Layer<D>>::HANDLES.len() {
+            let st: u8 = <NetworkLayer<'a, D> as crate::service::Layer<D>>::HANDLES[i].into();
+            table.register(st, 0);
+            i += 1;
+        }
+        let mut i = 0;
+        while i < <CemiTransportLayer<'a, D> as crate::service::Layer<D>>::HANDLES.len() {
+            let st: u8 = <CemiTransportLayer<'a, D> as crate::service::Layer<D>>::HANDLES[i].into();
+            table.register(st, 1);
+            i += 1;
+        }
+        let mut i = 0;
+        while i < <AL as crate::service::Layer<D>>::HANDLES.len() {
+            let st: u8 = <AL as crate::service::Layer<D>>::HANDLES[i].into();
+            table.register(st, 2);
+            i += 1;
+        }
+        table
     };
 
-    fn dispatch(&mut self, layer_idx: u8, msg: KnxMessageBuffer<Buffer<'static>>) {
-        self.layers.dispatch(layer_idx, msg);
+    fn dispatch_wire(
+        &mut self,
+        idx: u8,
+        msg: KnxMessageBuffer<Buffer<'static>>,
+        ctx: &crate::service::ServiceCtx<'_, D>,
+    ) {
+        match idx {
+            0 => crate::service::Layer::<D>::process(&mut self.nl, msg, ctx),
+            1 => crate::service::Layer::<D>::process(&mut self.tl, msg, ctx),
+            2 => crate::service::Layer::<D>::process(&mut self.al, msg, ctx),
+            _ => unreachable!("dispatch_wire called with idx={} not in DISPATCH_TABLE", idx),
+        }
     }
 
-    fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        self.layers.next_deadline()
-    }
-
-    fn poll(&mut self) {
-        self.layers.poll();
-    }
-
-    fn init(&mut self) {
+    fn init_layers(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
         self.device_model.init();
-        self.layers.init();
+        crate::service::Layer::<D>::init(&mut self.nl, ctx);
+        crate::service::Layer::<D>::init(&mut self.tl, ctx);
+        crate::service::Layer::<D>::init(&mut self.al, ctx);
+    }
+
+    fn poll_layers(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+        crate::service::Layer::<D>::poll(&mut self.nl, ctx);
+        crate::service::Layer::<D>::poll(&mut self.tl, ctx);
+        crate::service::Layer::<D>::poll(&mut self.al, ctx);
+    }
+
+    fn next_layer_deadline(&self) -> Option<embassy_time::Instant> {
+        let mut earliest: Option<embassy_time::Instant> = None;
+        let merge = |earliest: &mut Option<embassy_time::Instant>, d: Option<embassy_time::Instant>| {
+            if let Some(d) = d {
+                *earliest = Some(match *earliest {
+                    Some(e) if e < d => e,
+                    _ => d,
+                });
+            }
+        };
+        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.nl));
+        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.tl));
+        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.al));
+        earliest
     }
 
     type ServiceInput = IpServiceInput;
@@ -475,18 +565,18 @@ impl<'a, D: StackDefinition, AL: router::Layer + HasAppRequest> LayerStack for I
         }
     }
 
-    fn handle_service_input(&mut self, input: Self::ServiceInput) {
+    fn handle_service_input(&mut self, input: Self::ServiceInput, _ctx: &crate::service::ServiceCtx<'_, D>) {
         match input {
             IpServiceInput::AppRequest(req) => {
-                self.layers.2.handle_app_request(&req);
+                self.al.handle_app_request(&req);
             }
             IpServiceInput::CemiEvent(evt) => {
-                self.layers.1.handle_cemi_event(evt);
+                self.tl.handle_cemi_event(evt);
             }
         }
     }
 
-    fn drain_events(&mut self) {
+    fn drain_events(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
         self.device_model.drain_dm_events();
     }
 }

@@ -28,7 +28,6 @@ use crate::{
     context::layer::HasOutbox,
     objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
     restart::{EraseCode, RestartError, RestartRequest},
-    router::Layer,
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
@@ -169,7 +168,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // Layer Trait Implementation
 // ============================================================================
 
-impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
+impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from TL (upward — group communication)
         ServiceType::T_GroupData_Ind,
@@ -187,7 +186,11 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
         ServiceType::T_DataUnack_Con,
     ];
 
-    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
+    fn process(
+        &mut self,
+        mut msg: KnxMessageBuffer<Buffer<'static>>,
+        _ctx: &crate::service::ServiceCtx<'_, D>,
+    ) {
         match msg.service_type() {
             // =================================================================
             // Confirmations from TL — complete pending group sends
@@ -273,39 +276,9 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
         self.group_data.next_deadline()
     }
 
-    fn poll(&mut self) {
+    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
         self.group_data.poll();
     }
-}
-
-// ============================================================================
-// service::Layer<D> impl — the new trait surface, alongside the
-// legacy `router::Layer` impl above.
-//
-// `ApplicationLayer<'a, D>` keeps its captured fields and dispatches
-// APCIs through the new `ApciHandler` chain in `D::Services`. The
-// new `service::Layer` impl forwards to the legacy `router::Layer`
-// impl so wire dispatch under either trait routes the same code.
-// Once every consumer has moved to the new trait, the legacy
-// `router::Layer` impl drops.
-// ============================================================================
-
-impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
-    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
-
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::process(self, msg)
-    }
-
-    fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        <Self as Layer>::next_deadline(self)
-    }
-
-    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
-        <Self as Layer>::poll(self)
-    }
-
-    // No `init` override — the legacy AL has no `init` either.
 }
 
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
