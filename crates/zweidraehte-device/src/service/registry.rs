@@ -203,3 +203,81 @@ pub trait AugmentRegistry<D: StackDefinition> {
     /// field, or `None` if none have a pending timer.
     fn next_augment_deadline(&self) -> Option<Instant>;
 }
+
+// =============================================================================
+// AugmentRegistry for () — the empty-augments default
+// =============================================================================
+
+/// Empty augment chain — every hook is `None`, contributes 0 IO objects,
+/// has no deadline. Used as the default for [`StackDefinition::Augments`]
+/// so devices without augments don't have to write any boilerplate.
+impl<D: StackDefinition> AugmentRegistry<D> for () {
+    fn get_property_descriptor(
+        &self,
+        _object_type: InterfaceObjectType,
+        _prop_id: u16,
+    ) -> Option<PropertyDescriptor> {
+        None
+    }
+
+    fn property_description_read(
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        _object_type: InterfaceObjectType,
+        _object_idx: u16,
+        _lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        None
+    }
+
+    fn property_value_read(
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &FullPropertyReadRequest,
+        _buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        None
+    }
+
+    fn property_value_write(
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        None
+    }
+
+    fn function_property_command(
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        None
+    }
+
+    fn function_property_state_read(
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        None
+    }
+
+    fn additional_object_count(&self) -> u16 {
+        0
+    }
+
+    fn additional_object_type_at(&self, _index: u16) -> Option<InterfaceObjectType> {
+        None
+    }
+
+    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+
+    fn next_augment_deadline(&self) -> Option<Instant> {
+        None
+    }
+}

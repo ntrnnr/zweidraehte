@@ -21,7 +21,7 @@ use crate::{
         comm::ComObjects,
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
-    service::ApciHandler,
+    service::{ApciHandler, AugmentRegistry},
     state::CoreDeviceState,
     storage::{DeviceIdentity, StaticIdentity},
 };
@@ -295,6 +295,44 @@ pub trait StackDefinition: Copy + 'static {
     /// Use [`DomainAddressService`](crate::layers::application::services::domain_addr::DomainAddressService)
     /// for KNX/IP devices that need `A_DomainAddressSerialNumber_*` services.
     type AlExtensions: ApciHandler<Self> + Default = ();
+
+    /// Device-wide augment chain.
+    ///
+    /// Adds extra interface objects beyond the System B base set
+    /// (Security IO 0x11, KNXnet/IP Parameter 0x0B, etc.) and
+    /// intercepts property dispatch on base interface objects.
+    /// The IO container borrows `&Self::Augments<'a>` and routes
+    /// hooks through the [`AugmentRegistry<Self>`] surface.
+    ///
+    /// Default `()` is the empty chain — no extra objects, no hooks.
+    /// Devices that need augments derive a struct of `#[service(augment)]`
+    /// fields with [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry).
+    type Augments<'a>: AugmentRegistry<Self> = ()
+    where
+        Self::State: 'a,
+        Self::Platform: 'a;
+
+    /// Build the device-wide augment chain.
+    ///
+    /// Called by the runner before [`create_interface_objects`](Self::create_interface_objects)
+    /// so the IO container can borrow `&Self::Augments<'a>` for the
+    /// lifetime of the stack.
+    ///
+    /// Default returns `()` — the empty chain. Devices with augments
+    /// override to construct their `#[derive(ServiceRegistry)]` struct.
+    #[allow(unused_variables)]
+    fn create_augments<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        layer_ctx: &'a LayerContext<Self>,
+    ) -> Self::Augments<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+        Self::Augments<'a>: Default,
+    {
+        Default::default()
+    }
 
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.
