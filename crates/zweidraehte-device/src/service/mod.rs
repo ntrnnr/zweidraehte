@@ -36,3 +36,11 @@ mod traits;
 pub use ctx::ServiceCtx;
 pub use registry::{AugmentRegistry, LayerRegistry};
 pub use traits::{ApciHandler, Augment, Layer};
+
+/// Derive [`LayerRegistry<D>`] and [`AugmentRegistry<D>`] for a
+/// device's services struct from `#[service(handler | augment)]`
+/// field annotations. See the macro documentation for usage.
+pub use zweidraehte_device_macros::ServiceRegistry;
+
+#[cfg(test)]
+mod derive_smoke;

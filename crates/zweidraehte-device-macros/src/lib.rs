@@ -18,10 +18,11 @@
 //! unit-typed placeholders for state-backed properties.
 
 use proc_macro::TokenStream;
-use syn::{ItemStruct, parse_macro_input};
+use syn::{DeriveInput, ItemStruct, parse_macro_input};
 
 mod codegen;
 mod parse;
+mod service_registry;
 
 use parse::{ObjectAttrs, PropertyAttrs};
 
@@ -46,6 +47,58 @@ pub fn interface_object_augment(attr: TokenStream, item: TokenStream) -> TokenSt
         Err(err) => return err.to_compile_error().into(),
     };
     match expand(&item, obj_attrs, Mode::Augment) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive [`LayerRegistry<D>`](::zweidraehte_device::service::LayerRegistry) and
+/// [`AugmentRegistry<D>`](::zweidraehte_device::service::AugmentRegistry) for a
+/// device's services struct.
+///
+/// # Field annotations
+///
+/// Each field of the struct must carry exactly one `#[service(...)]`
+/// annotation describing its role:
+///
+/// - `#[service(handler)]` — the field implements
+///   [`Layer<D>`](::zweidraehte_device::service::Layer). It contributes its
+///   `Layer::HANDLES` to the const dispatch table and participates in
+///   `init_layers` / `poll_layers` / `next_layer_deadline`.
+///
+/// - `#[service(augment)]` — the field implements
+///   [`Augment<D>`](::zweidraehte_device::service::Augment). It joins the
+///   property-hook chain, contributes to `additional_object_count` /
+///   `additional_object_type_at`, and participates in `poll_augments` /
+///   `next_augment_deadline`.
+///
+/// Field annotations are checked at compile time; an un-annotated
+/// field or one with an unknown annotation produces a clear compile
+/// error.
+///
+/// # Generics
+///
+/// The macro emits impls generic over `<D: ::zweidraehte_device::StackDefinition>`,
+/// so a single services struct can be reused across multiple
+/// `StackDefinition` types provided every field is also generic
+/// (or already covers the concrete `D`).
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[derive(ServiceRegistry)]
+/// pub struct MyDeviceServices {
+///     #[service(handler)] pub nl:   NetworkLayer,
+///     #[service(handler)] pub tl:   TransportLayer,
+///     #[service(handler)] pub al:   ApplicationLayer<(Memory, Authorization)>,
+///     #[service(augment)] pub sec:  StdSecurity,
+///     #[service(augment)] pub diag: StdDiagnostics,
+/// }
+/// ```
+#[proc_macro_derive(ServiceRegistry, attributes(service))]
+pub fn derive_service_registry(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match service_registry::derive(&input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }
