@@ -137,6 +137,15 @@ pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0, const CAPS: u16 = 0>
     // *not* listed in the macro's static descriptor table.
 }
 
+// Augment shim forwarding to the legacy InterfaceObjectAugment body.
+// The shim keeps both trait impls live during the migration so
+// existing callers and new `AugmentRegistry`-driven dispatch route
+// through the same code.
+crate::augment_via_interface_object_augment!(
+    ['a, P: IpPlatform, const N: usize, const CAPS: u16],
+    IpAugment<'a, P, N, CAPS>,
+);
+
 impl<'a, P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'a, P, N, CAPS> {
     /// Create a new `IpAugment` combining config and platform references.
     ///

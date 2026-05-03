@@ -704,6 +704,18 @@ impl<'a, D: StackDefinition> AugmentContext<'a, D> {
     pub fn secure_group_value_sender(&self) -> SecureGroupDataProvider<'a, D> {
         SecureGroupDataProvider::new(self.state, self.lctx)
     }
+
+    /// Build a legacy [`AugmentContext`] from a new
+    /// [`ServiceCtx`](crate::service::ServiceCtx).
+    ///
+    /// The new [`Augment<D>`](crate::service::Augment) impls on
+    /// every system-B augment forward to their existing
+    /// `InterfaceObjectAugment` bodies through this conversion.
+    /// `ServiceCtx` is a strict superset of `AugmentContext`'s
+    /// fields, so the move is a few field reads.
+    pub fn from_service_ctx(ctx: &crate::service::ServiceCtx<'a, D>) -> Self {
+        Self { state: ctx.state, lctx: ctx.lctx, access_ctx: ctx.access }
+    }
 }
 
 // ============================================================================

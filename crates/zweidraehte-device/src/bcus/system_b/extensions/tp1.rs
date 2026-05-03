@@ -99,6 +99,12 @@ pub struct Tp1ExtensionState {
     _max_retry_count_io: (),
 }
 
+// Augment shim forwarding to the legacy InterfaceObjectAugment body.
+// The shim keeps both trait impls live during the migration so
+// existing callers and new `AugmentRegistry`-driven dispatch route
+// through the same code.
+crate::augment_via_interface_object_augment!([], Tp1ExtensionState);
+
 // Plain TP1 has no Data Secure layer — every send is plaintext, so the
 // trait's `Plain` defaults are correct without any override.
 impl crate::objects::comm::HasGoSecurityView for Tp1ExtensionState {}

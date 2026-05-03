@@ -309,6 +309,29 @@ pub struct DiagnosticsAugment<'a> {
     _go_diagnostics_io: (),
 }
 
+// Augment shim forwarding to the legacy InterfaceObjectAugment body.
+// The shim keeps both trait impls live during the migration so
+// existing callers and new `AugmentRegistry`-driven dispatch route
+// through the same code.
+//
+// DiagnosticsAugment's `InterfaceObjectAugment` impl carries
+// `where_bounds(...)` from its macro, so the equivalent `D::State`
+// bounds need to ride along on the new `Augment` impl.
+crate::augment_via_interface_object_augment!(
+    ['a],
+    DiagnosticsAugment<'a>,
+    where
+        D::State: crate::StackState
+            + crate::objects::tables::HasApplication
+            + crate::objects::tables::HasCommunicationObjectTable
+            + crate::objects::comm::HasCommObjects
+            + crate::objects::tables::HasAddressTable
+            + crate::objects::tables::HasAssociationTable
+            + crate::bcus::system_b::HasExtensionState,
+        <D::State as crate::bcus::system_b::HasExtensionState>::ES:
+            crate::bcus::system_b::HasSecurityState + crate::bcus::system_b::HasSeqStorage,
+);
+
 impl<'a> DiagnosticsAugment<'a> {
     pub fn new(state: &'a OperationModeState) -> Self {
         Self { state }

@@ -80,9 +80,10 @@ impl<D: StackDefinition> Augment<D> for ShimAugment {
 }
 
 // -----------------------------------------------------------------
-// Shim ApciHandler used inside the AL's `Ext` chain. We don't
-// actually have an `ApplicationLayer<Ext>` yet (Phase B), so this
-// only exists to confirm the trait compiles for a stateless impl.
+// Shim ApciHandler used inside the AL's `Ext` chain. The
+// `ApplicationLayer<Ext>` parameterisation lands in a follow-up
+// reshape; this exists meanwhile to confirm the trait compiles for
+// a stateless impl.
 // -----------------------------------------------------------------
 
 struct ShimApciHandler;
@@ -156,10 +157,10 @@ where
 {
 }
 
-/// Compile-time assertion that every AL service has a Phase C
-/// `ApciHandler<D>` shim. The bounds match the macro's: the AL
-/// itself requires `HasCommObjects` so the conversion always
-/// works in practice.
+/// Compile-time assertion that every AL service satisfies the new
+/// `ApciHandler<D>` trait via its bridge shim. The bounds match the
+/// macro's: the AL itself requires `HasCommObjects` so the
+/// conversion always works in practice.
 fn _assert_al_services_implement_apci_handler<D>()
 where
     D: StackDefinition,
@@ -175,5 +176,28 @@ where
     crate::layers::application::services::property_ext::PropertyExtValueService: ApciHandler<D>,
     crate::layers::application::services::system_network_parameter::SystemNetworkParameterService: ApciHandler<D>,
     crate::layers::application::services::user_memory::UserMemoryService: ApciHandler<D>,
+{
+}
+
+/// Compile-time assertion that every system-B augment satisfies the
+/// new `Augment<D>` trait via its bridge shim. The bounds mirror
+/// each augment's own `where_bounds(...)` plus the standard
+/// `D: StackDefinition` from the trait.
+fn _assert_augments_implement_augment<'a, D, SEQ>()
+where
+    D: StackDefinition,
+    SEQ: crate::storage::SequenceNumberStorage + 'a,
+    crate::bcus::system_b::Tp1ExtensionState: Augment<D>,
+    crate::bcus::system_b::SecurityAugment<'a, SEQ, 8, 8, 16, 16>: Augment<D>,
+{
+}
+
+#[cfg(feature = "knxip")]
+fn _assert_ip_augment_implements_augment<'a, D, P>()
+where
+    D: StackDefinition,
+    P: crate::IpPlatform + 'a,
+    D::State: crate::StackState,
+    crate::bcus::system_b::IpAugment<'a, P, 0, 0>: Augment<D>,
 {
 }

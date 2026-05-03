@@ -247,6 +247,15 @@ pub struct SecurityAugment<
     _test_failure_counters_io: (),
 }
 
+// Augment shim forwarding to the legacy InterfaceObjectAugment body.
+// The shim keeps both trait impls live during the migration so
+// existing callers and new `AugmentRegistry`-driven dispatch route
+// through the same code.
+crate::augment_via_interface_object_augment!(
+    ['a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize],
+    SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>,
+);
+
 impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
     SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
 {
