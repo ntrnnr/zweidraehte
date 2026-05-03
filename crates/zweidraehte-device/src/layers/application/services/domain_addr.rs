@@ -83,7 +83,10 @@ where
     }
 }
 
-// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+// ApciHandler shim forwarding to the legacy AlService body. The
+// shim keeps both trait impls live during the migration so existing
+// callers and new `LayerRegistry`-driven dispatch route through the
+// same code.
 // Carries the same `HasDomainAddress` bound the AlService impl
 // declares.
 crate::apci_handler_via_alservice!(DomainAddressService, where D::State: HasDomainAddress);

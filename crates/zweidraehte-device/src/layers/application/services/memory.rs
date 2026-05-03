@@ -71,9 +71,10 @@ impl<D: StackDefinition> AlService<D> for MemoryService {
     }
 }
 
-// Phase C bridge: ApciHandler shim forwarding to the legacy
-// AlService body. Phase E folds the legacy impl into a direct
-// ApciHandler impl and deletes AlService.
+// ApciHandler shim forwarding to the legacy AlService body. The
+// shim keeps both trait impls live during the migration so existing
+// callers and new `LayerRegistry`-driven dispatch route through the
+// same code.
 crate::apci_handler_via_alservice!(MemoryService);
 
 // ============================================================================

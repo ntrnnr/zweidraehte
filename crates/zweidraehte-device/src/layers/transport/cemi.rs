@@ -312,9 +312,10 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
 }
 
 // ============================================================================
-// service::Layer<D> impl — the new trait surface.
+// service::Layer<D> impl — the new trait surface, alongside the
+// legacy `router::Layer` impl above.
 //
-// Forwards to the legacy `router::Layer` impl above. The interception
+// Forwards to the legacy `router::Layer` impl. The interception
 // logic for connection-oriented AL requests still goes through that
 // path, so behaviour is byte-identical.
 // ============================================================================

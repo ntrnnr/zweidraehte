@@ -285,18 +285,19 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
 }
 
 // ============================================================================
-// service::Layer<D> impl — the new trait surface.
+// service::Layer<D> impl — the new trait surface, alongside the
+// legacy `router::Layer` impl above.
 //
-// Phase B coexistence: the existing `ApplicationLayer<'a, D>` keeps
-// its captured fields and continues to dispatch APCIs through the
-// legacy `AlService`-tuple `D::Services` exactly as before. The new
-// impl forwards to the legacy `router::Layer` impl above so wire
-// dispatch under either trait routes the same code.
+// `ApplicationLayer<'a, D>` keeps its captured fields and continues
+// to dispatch APCIs through the legacy `AlService`-tuple
+// `D::Services` exactly as before. The new impl forwards to the
+// legacy `router::Layer` impl so wire dispatch under either trait
+// routes the same code.
 //
-// Phase E will reshape the AL into `ApplicationLayer<Ext>` taking
-// an `Ext: ApciHandler<D>` type parameter and deleting the
+// A subsequent reshape will move the AL to `ApplicationLayer<Ext>`
+// taking an `Ext: ApciHandler<D>` type parameter and deleting the
 // `D::Services` AlService surface. Until then, this shim keeps the
-// AL visible to a new `LayerRegistry` that's wired into the runner.
+// AL visible to a `LayerRegistry`-driven runner.
 // ============================================================================
 
 impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {

@@ -941,14 +941,13 @@ where
 }
 
 // ============================================================================
-// service::Layer<D> impl — the new trait surface.
+// service::Layer<D> impl — the new trait surface, alongside the
+// legacy `router::Layer` impl above.
 //
-// Phase B coexistence shim. Every method forwards to the legacy
-// `router::Layer` impl above, which already handles the
-// stamp+encrypt / decrypt-on-ingress logic. Phase E will reshape
-// SecureAL into `SecureApplicationLayer<Ext>` taking an `Ext:
-// ApciHandler<D>` parameter that flows through the inner AL after
-// decryption.
+// Every method forwards to the legacy impl, which already handles
+// the stamp+encrypt / decrypt-on-ingress logic. A subsequent
+// reshape will give SecureAL an `Ext: ApciHandler<D>` type
+// parameter that flows through the inner AL after decryption.
 // ============================================================================
 
 impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> crate::service::Layer<D>

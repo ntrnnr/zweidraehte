@@ -62,7 +62,10 @@ impl<D: StackDefinition> AlService<D> for IndividualAddressSerialNumberService {
     }
 }
 
-// Phase C: ApciHandler shim forwarding to the legacy AlService body.
+// ApciHandler shim forwarding to the legacy AlService body. The
+// shim keeps both trait impls live during the migration so existing
+// callers and new `LayerRegistry`-driven dispatch route through the
+// same code.
 crate::apci_handler_via_alservice!(IndividualAddressSerialNumberService);
 
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {

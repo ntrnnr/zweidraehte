@@ -111,7 +111,7 @@ impl<'a, D: StackDefinition> AlServiceContext<'a, D> {
     /// Build a legacy `AlServiceContext` from a new
     /// [`ServiceCtx`](crate::service::ServiceCtx).
     ///
-    /// Phase C bridge: the new
+    /// The new
     /// [`ApciHandler<D>`](crate::service::ApciHandler) impls on every
     /// AL service forward to their existing `AlService::try_handle`
     /// bodies through this conversion. The two contexts share every
@@ -139,12 +139,14 @@ impl<'a, D: StackDefinition> AlServiceContext<'a, D> {
 /// that forwards to a service's existing
 /// [`AlService<D>`](AlService) body.
 ///
-/// Phase C bridge: every AL service uses this to gain a parallel
-/// `ApciHandler` impl with zero behaviour change. The shim builds
-/// a transient [`AlServiceContext`] from the new
+/// During the migration to the new trait surface, every AL service
+/// uses this to gain a parallel `ApciHandler` impl with zero
+/// behaviour change. The shim builds a transient
+/// [`AlServiceContext`] from the new
 /// [`ServiceCtx`](crate::service::ServiceCtx) and dispatches through
-/// the legacy `try_handle`. Phase E deletes `AlService` and folds
-/// each service's body into a direct `ApciHandler` impl.
+/// the legacy `try_handle`. Once every consumer has moved to the
+/// new trait, `AlService` deletes and each service's body folds
+/// into a direct `ApciHandler` impl.
 ///
 /// # Forms
 ///

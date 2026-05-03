@@ -306,16 +306,17 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
 }
 
 // ============================================================================
-// service::Layer<D> impl — the new trait surface.
+// service::Layer<D> impl — the new trait surface, alongside the
+// legacy `router::Layer` impl above.
 //
-// During Phase B coexistence, `TransportLayer` keeps its captured
-// `state: &'a D::State` / `lctx: &'a LayerContext<D>` fields and
-// continues to work under today's `router::Layer` trait. The new
-// `service::Layer` impl ignores the per-call `ctx` parameter and
-// delegates to the same methods — behaviour is byte-identical.
-//
-// Phase E will remove the captured fields and switch every call
-// site to read from `ctx` instead.
+// During the migration to the new trait surface, `TransportLayer`
+// keeps its captured `state: &'a D::State` /
+// `lctx: &'a LayerContext<D>` fields and continues to work under
+// the legacy `router::Layer` trait. The new `service::Layer` impl
+// ignores the per-call `ctx` parameter and delegates to the same
+// methods — behaviour is byte-identical. Once every consumer has
+// moved to the new trait, the captured fields drop and every call
+// site reads from `ctx` instead.
 // ============================================================================
 
 impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
@@ -327,8 +328,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> c
         // Delegate to the legacy `router::Layer::process` impl. The
         // captured `self.state` / `self.lctx` fields are still in
         // place and carry the same references the new `ctx` would
-        // expose; using them is functionally identical until the
-        // captured fields go away in Phase E.
+        // expose, so using them is functionally identical.
         <Self as Layer>::process(self, msg)
     }
 

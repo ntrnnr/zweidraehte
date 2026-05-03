@@ -177,12 +177,15 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
 }
 
 // ============================================================================
-// service::Layer<D> impl — the new trait surface.
+// service::Layer<D> impl — the new trait surface, alongside the
+// legacy `router::Layer` impl above.
 //
-// During Phase B coexistence, `NetworkLayer` keeps its captured
-// `state` / `lctx` references and the new impl forwards to the
-// legacy one. Behaviour is byte-identical until Phase E removes
-// the captured fields.
+// During the migration to the new trait surface, `NetworkLayer`
+// keeps its captured `state` / `lctx` references and the new impl
+// forwards to the legacy one. Behaviour is byte-identical. Once
+// every consumer has moved to the new trait, the captured fields
+// and the legacy `router::Layer` impl drop in favour of per-call
+// `ServiceCtx` access.
 // ============================================================================
 
 impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
