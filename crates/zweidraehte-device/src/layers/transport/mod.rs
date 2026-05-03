@@ -306,6 +306,45 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
 }
 
 // ============================================================================
+// service::Layer<D> impl — the new trait surface.
+//
+// During Phase B coexistence, `TransportLayer` keeps its captured
+// `state: &'a D::State` / `lctx: &'a LayerContext<D>` fields and
+// continues to work under today's `router::Layer` trait. The new
+// `service::Layer` impl ignores the per-call `ctx` parameter and
+// delegates to the same methods — behaviour is byte-identical.
+//
+// Phase E will remove the captured fields and switch every call
+// site to read from `ctx` instead.
+// ============================================================================
+
+impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
+    for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
+{
+    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
+
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        // Delegate to the legacy `router::Layer::process` impl. The
+        // captured `self.state` / `self.lctx` fields are still in
+        // place and carry the same references the new `ctx` would
+        // expose; using them is functionally identical until the
+        // captured fields go away in Phase E.
+        <Self as Layer>::process(self, msg)
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        <Self as Layer>::next_deadline(self)
+    }
+
+    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::poll(self)
+    }
+
+    // `init` keeps the trait default (no-op). The legacy `Layer::init`
+    // is also a default no-op for TL today.
+}
+
+// ============================================================================
 // Indication Handling (from Network Layer)
 // ============================================================================
 

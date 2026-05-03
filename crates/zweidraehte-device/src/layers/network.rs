@@ -175,3 +175,22 @@ impl<D: StackDefinition> Layer for NetworkLayer<'_, D> {
         }
     }
 }
+
+// ============================================================================
+// service::Layer<D> impl — the new trait surface.
+//
+// During Phase B coexistence, `NetworkLayer` keeps its captured
+// `state` / `lctx` references and the new impl forwards to the
+// legacy one. Behaviour is byte-identical until Phase E removes
+// the captured fields.
+// ============================================================================
+
+impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
+    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
+
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::process(self, msg)
+    }
+
+    // NL has no timer; default `next_deadline` / `poll` / `init` apply.
+}

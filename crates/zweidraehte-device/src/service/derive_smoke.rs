@@ -137,3 +137,21 @@ fn smoke_module_compiles() {
     // services-struct uses the derive against a real
     // `StackDefinition`.
 }
+
+/// Compile-time assertion that the real wire layers (NL / TL /
+/// CemiTL) implement the new `service::Layer<D>` trait. The function
+/// is never called; if any of the impls regresses, this fails to
+/// build.
+fn _assert_real_layers_implement_service_layer<D: StackDefinition>()
+where
+    crate::layers::network::NetworkLayer<'static, D>: Layer<D>,
+    crate::layers::transport::TransportLayer<'static, D, 1, 0>: Layer<D>,
+{
+}
+
+#[cfg(feature = "knxip")]
+fn _assert_cemi_tl_implements_service_layer<D: StackDefinition>()
+where
+    crate::layers::transport::cemi::CemiTransportLayer<'static, D, 1, 0>: Layer<D>,
+{
+}

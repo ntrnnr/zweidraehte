@@ -312,6 +312,36 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
 }
 
 // ============================================================================
+// service::Layer<D> impl — the new trait surface.
+//
+// Forwards to the legacy `router::Layer` impl above. The interception
+// logic for connection-oriented AL requests still goes through that
+// path, so behaviour is byte-identical.
+// ============================================================================
+
+impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
+    for CemiTransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
+{
+    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
+
+    fn init(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::init(self)
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        <Self as Layer>::next_deadline(self)
+    }
+
+    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::poll(self)
+    }
+
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::process(self, msg)
+    }
+}
+
+// ============================================================================
 // Response interception
 // ============================================================================
 
