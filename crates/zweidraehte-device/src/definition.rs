@@ -271,8 +271,9 @@ pub trait StackDefinition: Copy + 'static {
     /// * `state` - Reference to the unified device state (contains both runtime state and tables)
     /// * `platform` - Reference to the platform abstraction (for IP property dispatch)
     /// * `layer_ctx` - Shared runtime infrastructure (outbox, buffer manager, channels).
-    ///   Augments that need to build and send telegrams (e.g., GO diagnostics) can
-    ///   capture references from this context.
+    /// * `augments` - The device-wide augment chain. The container borrows this for the
+    ///   lifetime of the stack and routes property hooks through
+    ///   [`AugmentRegistry`](crate::service::AugmentRegistry).
     ///
     /// # Returns
     /// The container holding all interface objects for this device.
@@ -280,9 +281,11 @@ pub trait StackDefinition: Copy + 'static {
         state: &'a Self::State,
         platform: &'a Self::Platform,
         layer_ctx: &'a LayerContext<Self>,
+        augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
     where
-        Self::State: 'a;
+        Self::State: 'a,
+        Self::Platform: 'a;
 
     /// Application Layer APCI extension set.
     ///
@@ -318,9 +321,11 @@ pub trait StackDefinition: Copy + 'static {
     /// so the IO container can borrow `&Self::Augments<'a>` for the
     /// lifetime of the stack.
     ///
-    /// Default returns `()` — the empty chain. Devices with augments
-    /// override to construct their `#[derive(ServiceRegistry)]` struct.
-    #[allow(unused_variables)]
+    /// Devices without augments return `()`:
+    ///
+    /// ```rust,ignore
+    /// fn create_augments<'a>(_: &'a Self::State, _: &'a Self::Platform, _: &'a LayerContext<Self>) {}
+    /// ```
     fn create_augments<'a>(
         state: &'a Self::State,
         platform: &'a Self::Platform,
@@ -328,11 +333,7 @@ pub trait StackDefinition: Copy + 'static {
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
-        Self::Platform: 'a,
-        Self::Augments<'a>: Default,
-    {
-        Default::default()
-    }
+        Self::Platform: 'a;
 
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.

@@ -96,9 +96,11 @@ impl StackDefinition for PicoWLightSwitch {
         state: &'a Self::State,
         platform: &'a Self::Platform,
         layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+        _augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
+        Self::Platform: 'a,
     {
         create_system_b_objects_with_extra::<Self, _>(
             state,
@@ -108,6 +110,18 @@ impl StackDefinition for PicoWLightSwitch {
             EasterEggAugment,
         )
     }
+
+    fn create_augments<'a>(
+        _state: &'a Self::State,
+        _platform: &'a Self::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+    ) -> Self::Augments<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+    {
+    }
+
 
     type AlExtensions = (
         zweidraehte_device::layers::application::services::SystemBAlServices,

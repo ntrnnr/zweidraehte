@@ -316,8 +316,14 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     let inner = Inner { state, platform, memory_map, layer_context: layer_ctx_static };
     let inner: &'static Inner<D> = resources.inner.write(inner);
 
+    // Build the device-wide augment chain. Borrowed by the IO container
+    // for the lifetime of the stack — must outlive interface_objects.
+    let augments = D::create_augments(&inner.state, &inner.platform, inner.layer_context);
+    let augments: &'static D::Augments<'static> = resources.augments.write(augments);
+
     // Build interface objects with reference to the state stored in Inner.
-    let interface_objects = D::create_interface_objects(&inner.state, &inner.platform, inner.layer_context);
+    let interface_objects =
+        D::create_interface_objects(&inner.state, &inner.platform, inner.layer_context, augments);
     let interface_objects: &'static D::InterfaceObjects<'static> = resources.interface_objects.write(interface_objects);
 
     // Channels live on LayerContext. Create sender/receiver

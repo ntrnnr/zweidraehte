@@ -223,11 +223,25 @@ impl StackDefinition for MyKnxStack {
         _state: &'a Self::State,
         _platform: &'a Self::Platform,
         _layer_ctx: &'a LayerContext<Self>,
+        _augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
+        Self::Platform: 'a,
     {
     }
+
+    fn create_augments<'a>(
+        _state: &'a Self::State,
+        _platform: &'a Self::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+    ) -> Self::Augments<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+    {
+    }
+
 
     type LayerBuilder = InsecureDeviceBuilder;
 }

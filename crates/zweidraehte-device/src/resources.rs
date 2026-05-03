@@ -50,6 +50,7 @@ pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUF
     pub(crate) buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
     pub(crate) layer_context: MaybeUninit<LayerContext<D>>,
     pub(crate) link_layer_resources: MaybeUninit<<D::LLB as LinkLayerBuilderBase>::Resources>,
+    pub(crate) augments: MaybeUninit<D::Augments<'static>>,
     pub(crate) interface_objects: MaybeUninit<D::InterfaceObjects<'static>>,
 }
 
@@ -67,6 +68,7 @@ impl<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize> StackResour
             buffer_manager: MaybeUninit::uninit(),
             layer_context: MaybeUninit::uninit(),
             link_layer_resources: MaybeUninit::uninit(),
+            augments: MaybeUninit::uninit(),
             interface_objects: MaybeUninit::uninit(),
         }
     }
