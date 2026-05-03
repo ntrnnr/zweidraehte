@@ -17,7 +17,7 @@ use zweidraehte_device::{
     bcus::system_b::{
         DefaultSystemBInterfaceObjects, DeviceConfig, HasDeviceConfig, HasExtensionState, HasSecurityMode,
         SecureExtensionConfig, SecureResources, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
-        create_system_b_objects_with_extra,
+        create_system_b_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
@@ -912,6 +912,8 @@ impl<D: StackDefinition> zweidraehte_device::service::Augment<D> for Certificati
     }
 }
 
+zweidraehte_device::forward_augment_registry!(CertificationObjectAugment);
+
 // ============================================================================
 // Stack Definition
 // ============================================================================
@@ -967,40 +969,36 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type StateInit = SecureConformanceStateInit;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-        'a,
-        Self,
-        (SecAugment<'a>, (CertificationObjectAugment, DiagnosticsAugment<'a>)),
-    >;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
+    type Augments<'a> = (SecAugment<'a>, (CertificationObjectAugment, DiagnosticsAugment<'a>));
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
-        platform: &'a Self::Platform,
+        _platform: &'a Self::Platform,
         layer_ctx: &'a LayerContext<Self>,
-        _augments: &'a Self::Augments<'a>,
+        augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        create_system_b_objects_with_extra::<Self, _>(
-            state,
-            layer_ctx,
-            platform,
-            &CONFORMANCE_MEMORY_LAYOUT,
-            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode)),
-        )
+        create_system_b_objects::<Self, _>(state, layer_ctx, &CONFORMANCE_MEMORY_LAYOUT, augments)
     }
 
     fn create_augments<'a>(
-        _state: &'a Self::State,
-        _platform: &'a Self::Platform,
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
         _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
+        use zweidraehte_device::bcus::system_b::{Extension, HasExtensionState};
+        (
+            state.extension_state().create_augment::<Self>(platform),
+            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode)),
+        )
     }
 
 

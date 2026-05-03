@@ -1318,34 +1318,38 @@ impl StackDefinition for IpcConformanceTestStack {
     }
 
     type InterfaceObjects<'a> = zweidraehte_device::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
+    type Augments<'a> =
+        <Self::ES as zweidraehte_device::bcus::system_b::Extension<Self::Platform>>::Augment<'a, Self>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
-        platform: &'a Self::Platform,
+        _platform: &'a Self::Platform,
         layer_ctx: &'a LayerContext<Self>,
-        _augments: &'a Self::Augments<'a>,
+        augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        zweidraehte_device::bcus::system_b::create_system_b_objects_from_extension::<Self>(
+        zweidraehte_device::bcus::system_b::create_system_b_objects::<Self, _>(
             state,
             layer_ctx,
-            platform,
             &CONFORMANCE_MEMORY_LAYOUT,
+            augments,
         )
     }
 
     fn create_augments<'a>(
-        _state: &'a Self::State,
-        _platform: &'a Self::Platform,
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
         _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
+        use zweidraehte_device::bcus::system_b::{Extension, HasExtensionState};
+        state.extension_state().create_augment::<Self>(platform)
     }
 
 

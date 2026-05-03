@@ -14,8 +14,8 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition,
-    create_system_b_objects_from_extension,
+    Extension, HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+    SystemBStackDefinition, create_system_b_objects,
 };
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
@@ -3254,29 +3254,31 @@ impl StackDefinition for MdtStack {
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
+    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
-        platform: &'a Self::Platform,
+        _platform: &'a Self::Platform,
         layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        _augments: &'a Self::Augments<'a>,
+        augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        create_system_b_objects_from_extension::<Self>(state, layer_ctx, platform, &Self::memory_layout())
+        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
     }
 
     fn create_augments<'a>(
-        _state: &'a Self::State,
-        _platform: &'a Self::Platform,
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
         _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
+        state.extension_state().create_augment::<Self>(platform)
     }
 
 

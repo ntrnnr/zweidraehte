@@ -197,7 +197,8 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     // produced automatically by `create_system_b_objects_with_extra`
     // from `type ES`; the "extra" slot here carries the device's own
     // augment (`EasterEggAugment`), matching the insecure variant.
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, (SecAugment<'a>, EasterEggAugment)>;
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
+    type Augments<'a> = (SecAugment<'a>, EasterEggAugment);
 
     fn create_state(init: Self::StateInit) -> Self::State {
         let Stm32G0SecureStateInit { identity, seq_storage, loaded_config } = init;
@@ -211,32 +212,27 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
-        platform: &'a Self::Platform,
+        _platform: &'a Self::Platform,
         layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        _augments: &'a Self::Augments<'a>,
+        augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        create_system_b_objects_with_extra::<Self, _>(
-            state,
-            layer_ctx,
-            platform,
-            &Self::memory_layout(),
-            EasterEggAugment,
-        )
+        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
     }
 
     fn create_augments<'a>(
-        _state: &'a Self::State,
-        _platform: &'a Self::Platform,
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
         _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
+        (state.extension_state().create_augment::<Self>(platform), EasterEggAugment)
     }
 
 

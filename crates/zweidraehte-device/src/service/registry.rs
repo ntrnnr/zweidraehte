@@ -461,3 +461,127 @@ impl<D: StackDefinition, A: AugmentRegistry<D>> AugmentRegistry<D> for &A {
         (**self).next_augment_deadline()
     }
 }
+
+// =============================================================================
+// forward_augment_registry! — forward AugmentRegistry to a type's Augment impl
+// =============================================================================
+
+/// Generate an `AugmentRegistry<D>` impl for a concrete augment type
+/// by forwarding every method to its existing [`Augment<D>`](crate::service::Augment)
+/// impl.
+///
+/// Why this exists: a blanket `impl<A: Augment<D>> AugmentRegistry<D>
+/// for A` would conflict with the macro-derived `AugmentRegistry<D>`
+/// impls per Rust's coherence rules. Concrete-type impls are
+/// unambiguous, so we generate them per augment via this macro.
+///
+/// # Usage
+///
+/// ```rust,ignore
+/// pub struct MyAugment { /* … */ }
+///
+/// impl<D: StackDefinition> Augment<D> for MyAugment { /* … */ }
+///
+/// // Generates: impl<D: StackDefinition> AugmentRegistry<D> for MyAugment { … }
+/// zweidraehte_device::service::forward_augment_registry!(MyAugment);
+/// ```
+///
+/// For augments with their own generics:
+///
+/// ```rust,ignore
+/// zweidraehte_device::service::forward_augment_registry!(
+///     <'a, P: IpPlatform, const N: usize, const C: u16>
+///     IpAugment<'a, P, N, C>
+/// );
+/// ```
+///
+/// The forwarding impl mirrors the explicit `for ()` impl shape:
+/// every hook delegates straight to the matching `Augment<D>` method,
+/// `poll_augments` calls `Augment::poll`, and `next_augment_deadline`
+/// calls `Augment::next_deadline`.
+#[macro_export]
+macro_rules! forward_augment_registry {
+    // Generic form, bracketed parameter list to avoid macro_rules ambiguity
+    (
+        [$($g:tt)*] $ty:ty $(where [$($bounds:tt)*])?
+    ) => {
+        impl<D: $crate::StackDefinition, $($g)*> $crate::service::AugmentRegistry<D> for $ty
+        $(where $($bounds)*)?
+        {
+            fn get_property_descriptor(
+                &self,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                prop_id: u16,
+            ) -> ::core::option::Option<$crate::objects::interface::PropertyDescriptor> {
+                $crate::service::Augment::<D>::get_property_descriptor(self, object_type, prop_id)
+            }
+            fn property_description_read(
+                &self,
+                ctx: &$crate::service::ServiceCtx<'_, D>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_idx: u16,
+                lookup: $crate::objects::interface::PropertyLookup,
+            ) -> ::core::option::Option<::core::result::Result<
+                $crate::objects::interface::PropertyDescriptionResponse,
+                $crate::objects::interface::PropertyError,
+            >> {
+                $crate::service::Augment::<D>::property_description_read(self, ctx, object_type, object_idx, lookup)
+            }
+            fn property_value_read(
+                &self,
+                ctx: &$crate::service::ServiceCtx<'_, D>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &$crate::objects::interface::FullPropertyReadRequest,
+                buf: &mut [u8],
+            ) -> ::core::option::Option<::core::result::Result<usize, $crate::objects::interface::PropertyError>> {
+                $crate::service::Augment::<D>::property_value_read(self, ctx, object_type, req, buf)
+            }
+            fn property_value_write(
+                &self,
+                ctx: &$crate::service::ServiceCtx<'_, D>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &$crate::objects::interface::FullPropertyWriteRequest<'_>,
+            ) -> ::core::option::Option<::core::result::Result<
+                $crate::objects::interface::WriteResponse,
+                $crate::objects::interface::PropertyError,
+            >> {
+                $crate::service::Augment::<D>::property_value_write(self, ctx, object_type, req)
+            }
+            fn function_property_command(
+                &self,
+                ctx: &$crate::service::ServiceCtx<'_, D>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &$crate::objects::interface::FunctionPropertyRequest<'_>,
+            ) -> ::core::option::Option<$crate::objects::interface::FunctionPropertyResult> {
+                $crate::service::Augment::<D>::function_property_command(self, ctx, object_type, req)
+            }
+            fn function_property_state_read(
+                &self,
+                ctx: &$crate::service::ServiceCtx<'_, D>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &$crate::objects::interface::FunctionPropertyRequest<'_>,
+            ) -> ::core::option::Option<$crate::objects::interface::FunctionPropertyResult> {
+                $crate::service::Augment::<D>::function_property_state_read(self, ctx, object_type, req)
+            }
+            fn additional_object_count(&self) -> u16 {
+                $crate::service::Augment::<D>::additional_object_count(self)
+            }
+            fn additional_object_type_at(
+                &self,
+                index: u16,
+            ) -> ::core::option::Option<::zweidraehte_proto::dpt::InterfaceObjectType> {
+                $crate::service::Augment::<D>::additional_object_type_at(self, index)
+            }
+            fn poll_augments(&mut self, ctx: &$crate::service::ServiceCtx<'_, D>) {
+                $crate::service::Augment::<D>::poll(self, ctx);
+            }
+            fn next_augment_deadline(&self) -> ::core::option::Option<::embassy_time::Instant> {
+                $crate::service::Augment::<D>::next_deadline(self)
+            }
+        }
+    };
+    // Simple form: no generics, no bounds
+    ($ty:ty) => {
+        $crate::forward_augment_registry!([] $ty);
+    };
+}

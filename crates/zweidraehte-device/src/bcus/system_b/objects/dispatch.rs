@@ -14,7 +14,7 @@ use crate::{
         PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
-    service::{Augment, ServiceCtx},
+    service::{AugmentRegistry, ServiceCtx},
 };
 use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
@@ -26,8 +26,8 @@ use crate::objects::interface::HasRoutingCount;
 // PropertyServiceHandler — property dispatch across base + augment objects
 // ============================================================================
 
-impl<'a, D, ADT, AST, COT, APP, PEI, A: Augment<D>> PropertyServiceHandler
-    for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>
+impl<'a, D, ADT, AST, COT, APP, PEI, Aug: AugmentRegistry<D>> PropertyServiceHandler
+    for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug>
 where
     D: StackDefinition,
     D::State: StackState + HasPersistence + DeviceModelNotifier,
@@ -67,7 +67,7 @@ where
 
             // Augment first (can intercept/add PIDs on base objects,
             // and is the sole handler for augment-provided objects).
-            if let Some(result) = self.augment.property_description_read(
+            if let Some(result) = self.augments.property_description_read(
                 &ServiceCtx::new(self.state, self.lctx, AccessContext::default()),
                 obj_type,
                 object_idx,
@@ -89,7 +89,7 @@ where
         // For augment-provided objects, all properties come from the augment.
         // There is no base object to scan first.
         if self.is_augment_object(object_idx) {
-            if let Some(result) = self.augment.property_description_read(
+            if let Some(result) = self.augments.property_description_read(
                 &ServiceCtx::new(self.state, self.lctx, AccessContext::default()),
                 obj_type,
                 object_idx,
@@ -135,7 +135,7 @@ where
 
             // Offset for augment: skip both base properties and IO_LIST.
             let augment_idx = prop_idx.saturating_sub(base_count + 1);
-            if let Some(result) = self.augment.property_description_read(
+            if let Some(result) = self.augments.property_description_read(
                 &ServiceCtx::new(self.state, self.lctx, AccessContext::default()),
                 obj_type,
                 object_idx,
@@ -154,7 +154,7 @@ where
         // using a 0-based index offset from the base property count.
         let base_count = self.base_property_count(object_idx);
         let augment_idx = prop_idx.saturating_sub(base_count);
-        if let Some(result) = self.augment.property_description_read(
+        if let Some(result) = self.augments.property_description_read(
             &ServiceCtx::new(self.state, self.lctx, AccessContext::default()),
             obj_type,
             object_idx,
@@ -196,7 +196,7 @@ where
 
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
-        if let Some(result) = self.augment.property_value_read(
+        if let Some(result) = self.augments.property_value_read(
             &ServiceCtx::new(self.state, self.lctx, req.ctx),
             obj_type,
             req,
@@ -266,7 +266,7 @@ where
 
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
-        if let Some(result) = self.augment.property_value_write(
+        if let Some(result) = self.augments.property_value_write(
             &ServiceCtx::new(self.state, self.lctx, req.ctx),
             obj_type,
             req,
@@ -335,7 +335,7 @@ where
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.function_property_command(
+            if let Some(result) = self.augments.function_property_command(
                 &ServiceCtx::new(self.state, self.lctx, req.ctx),
                 obj_type,
                 req,
@@ -403,7 +403,7 @@ where
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augment.function_property_state_read(
+            if let Some(result) = self.augments.function_property_state_read(
                 &ServiceCtx::new(self.state, self.lctx, req.ctx),
                 obj_type,
                 req,
@@ -443,8 +443,8 @@ where
 // HasDeviceObject — typed access to Device Object properties
 // ============================================================================
 
-impl<'a, D, ADT, AST, COT, APP, PEI, A: Augment<D>> HasDeviceObject
-    for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>
+impl<'a, D, ADT, AST, COT, APP, PEI, Aug: AugmentRegistry<D>> HasDeviceObject
+    for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug>
 where
     D: StackDefinition,
     D::State: StackState + DeviceModelNotifier + HasRoutingCount,

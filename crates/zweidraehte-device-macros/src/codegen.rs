@@ -605,6 +605,89 @@ pub(crate) fn gen_augment(
                 }
             }
         }
+
+        // Forward AugmentRegistry<D> to this type's Augment<D> impl.
+        // A blanket `impl<A: Augment<D>> AugmentRegistry<D> for A` is
+        // forbidden by coherence (clashes with the macro-derived
+        // AugmentRegistry impls on services structs), so we emit the
+        // forwarding impl here per concrete augment type.
+        impl #augment_impl_generics ::zweidraehte_device::service::AugmentRegistry<__AugmentD>
+            for #ident #ty_generics #augment_where_clause
+        {
+            fn get_property_descriptor(
+                &self,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                prop_id: u16,
+            ) -> ::core::option::Option<::zweidraehte_proto::properties::PropertyDescriptor> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::get_property_descriptor(self, object_type, prop_id)
+            }
+            fn property_description_read(
+                &self,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_idx: u16,
+                lookup: ::zweidraehte_device::objects::interface::PropertyLookup,
+            ) -> ::core::option::Option<::core::result::Result<
+                ::zweidraehte_device::objects::interface::PropertyDescriptionResponse,
+                ::zweidraehte_device::objects::interface::PropertyError,
+            >> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::property_description_read(self, ctx, object_type, object_idx, lookup)
+            }
+            fn property_value_read(
+                &self,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &::zweidraehte_device::objects::interface::FullPropertyReadRequest,
+                buf: &mut [u8],
+            ) -> ::core::option::Option<::core::result::Result<
+                usize,
+                ::zweidraehte_device::objects::interface::PropertyError,
+            >> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::property_value_read(self, ctx, object_type, req, buf)
+            }
+            fn property_value_write(
+                &self,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &::zweidraehte_device::objects::interface::FullPropertyWriteRequest<'_>,
+            ) -> ::core::option::Option<::core::result::Result<
+                ::zweidraehte_device::objects::interface::WriteResponse,
+                ::zweidraehte_device::objects::interface::PropertyError,
+            >> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::property_value_write(self, ctx, object_type, req)
+            }
+            fn function_property_command(
+                &self,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
+            ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::function_property_command(self, ctx, object_type, req)
+            }
+            fn function_property_state_read(
+                &self,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
+            ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::function_property_state_read(self, ctx, object_type, req)
+            }
+            fn additional_object_count(&self) -> u16 {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::additional_object_count(self)
+            }
+            fn additional_object_type_at(
+                &self,
+                index: u16,
+            ) -> ::core::option::Option<::zweidraehte_proto::dpt::InterfaceObjectType> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::additional_object_type_at(self, index)
+            }
+            fn poll_augments(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>) {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::poll(self, ctx);
+            }
+            fn next_augment_deadline(&self) -> ::core::option::Option<::embassy_time::Instant> {
+                ::zweidraehte_device::service::Augment::<__AugmentD>::next_deadline(self)
+            }
+        }
     })
 }
 
