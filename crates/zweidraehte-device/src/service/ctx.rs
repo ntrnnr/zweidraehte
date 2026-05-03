@@ -2,8 +2,7 @@
 //!
 //! Carries references to state, layer infrastructure, interface
 //! objects, memory map, and the access context derived from the
-//! incoming request. Replaces the separate `AlServiceContext` and
-//! `AugmentContext` of the legacy design with one bundle.
+//! incoming request. One bundle covers every service trait.
 
 use core::cell::RefCell;
 
@@ -71,9 +70,8 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
     }
 
     // -----------------------------------------------------------------
-    // Convenience accessors mirroring legacy `AlServiceContext` /
-    // `AugmentContext`. Keep this surface small — direct field access
-    // through the public fields is the canonical path.
+    // Convenience accessors. Keep this surface small — direct field
+    // access through the public fields is the canonical path.
     // -----------------------------------------------------------------
 
     /// Shared outbox; push wire messages here from inside `process`.
@@ -92,10 +90,7 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
     /// accounting for the secure envelope when the request arrived
     /// secured.
     ///
-    /// Mirrors the legacy
-    /// `AlServiceContext::effective_apdu_budget` /
-    /// `AugmentContext::effective_apdu_budget`. Returns
-    /// `state.max_apdu_length()` (already clamped to
+    /// Returns `state.max_apdu_length()` (already clamped to
     /// `D::MAX_APDU_LENGTH` and to any lower link-layer ceiling),
     /// reduced by the secure-envelope overhead when `access.security`
     /// is not `Plain`.

@@ -59,6 +59,10 @@ impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E);
 impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E, 5: F);
 impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E, 5: F, 6: G);
 impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E, 5: F, 6: G, 7: H);
+impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E, 5: F, 6: G, 7: H, 8: I);
+impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J);
+impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K);
+impl_apci_handler_tuple!(0: A, 1: B, 2: C, 3: D0, 4: E, 5: F, 6: G, 7: H, 8: I, 9: J, 10: K, 11: L);
 
 #[cfg(test)]
 mod tests {

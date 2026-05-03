@@ -626,11 +626,11 @@ impl<'a, D: StackDefinition> AugmentContext<'a, D> {
     /// Maximum on-wire APDU bytes available for an outgoing response to
     /// the current request.
     ///
-    /// Mirrors [`AlServiceContext::effective_apdu_budget`](crate::layers::application::services::AlServiceContext::effective_apdu_budget):
-    /// returns `state.max_apdu_length()` (already clamped to
+    /// Returns `state.max_apdu_length()` (already clamped to
     /// `D::MAX_APDU_LENGTH` and to any lower LL ceiling), reduced by
     /// `apdu::secure::OVERHEAD` when the current request arrived over
-    /// KNX Data Secure.
+    /// KNX Data Secure. Mirrored on
+    /// [`ServiceCtx::effective_apdu_budget`](crate::service::ServiceCtx::effective_apdu_budget).
     pub fn effective_apdu_budget(&self) -> usize
     where
         D::State: crate::StackState,
@@ -645,7 +645,7 @@ impl<'a, D: StackDefinition> AugmentContext<'a, D> {
 
     /// Largest payload the current request may place in its response
     /// given the service's fixed header length. See
-    /// [`AlServiceContext::response_payload_cap`](crate::layers::application::services::AlServiceContext::response_payload_cap).
+    /// [`ServiceCtx::response_payload_cap`](crate::service::ServiceCtx::response_payload_cap).
     pub fn response_payload_cap(&self, header_len: usize) -> usize
     where
         D::State: crate::StackState,
@@ -655,7 +655,7 @@ impl<'a, D: StackDefinition> AugmentContext<'a, D> {
 
     /// Whether a response of total `msg_len` fits within the effective
     /// APDU budget. See
-    /// [`AlServiceContext::response_fits`](crate::layers::application::services::AlServiceContext::response_fits).
+    /// [`ServiceCtx::response_fits`](crate::service::ServiceCtx::response_fits).
     pub fn response_fits(&self, msg_len: usize) -> bool
     where
         D::State: crate::StackState,

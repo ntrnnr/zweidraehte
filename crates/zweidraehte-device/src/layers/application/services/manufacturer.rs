@@ -13,7 +13,7 @@
 use crate::{
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
 };
 use zweidraehte_proto::messages::{
     buffers::Buffer,
@@ -30,12 +30,12 @@ use crate::logging::{debug, warn};
 #[derive(Default)]
 pub struct UserManufacturerInfoService;
 
-impl<D: StackDefinition> AlService<D> for UserManufacturerInfoService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for UserManufacturerInfoService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::UserManufacturerInfoRead => {
@@ -51,13 +51,8 @@ impl<D: StackDefinition> AlService<D> for UserManufacturerInfoService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(UserManufacturerInfoService);
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     let Some(info) = D::USER_MANUFACTURER_INFO else {
         debug!("AL UserManufacturerInfo_Read: not supported (no USER_MANUFACTURER_INFO configured)");
         return;

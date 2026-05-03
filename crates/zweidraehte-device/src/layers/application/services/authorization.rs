@@ -14,7 +14,7 @@ use crate::{
     HasAuthorization, StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
@@ -41,12 +41,12 @@ use crate::logging::{debug, error, warn};
 #[derive(Default)]
 pub struct AuthorizationService;
 
-impl<D: StackDefinition> AlService<D> for AuthorizationService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for AuthorizationService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::AuthorizeRequest => {
@@ -66,11 +66,6 @@ impl<D: StackDefinition> AlService<D> for AuthorizationService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(AuthorizationService);
 
 // ============================================================================
 // Handlers
@@ -79,7 +74,7 @@ crate::apci_handler_via_alservice!(AuthorizationService);
 /// Handle `A_Authorize_Request.ind`
 fn handle_authorize_request<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
 ) {
     let Some(req) = AuthorizeRequest::parse(ind.buf()) else {
         error!("Authorize_Request message too short: {}", ind.len());
@@ -116,12 +111,12 @@ fn handle_authorize_request<D: StackDefinition>(
 }
 
 /// Handle `A_Key_Write.ind`
-fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     // Access policy 3FF/0CC: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
     use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.state.security_mode_enabled();
-    if !AccessPolicy::READ_OPEN_WRITE_TOOL.can_write(&ctx.access_ctx, security_on) {
+    if !AccessPolicy::READ_OPEN_WRITE_TOOL.can_write(&ctx.access, security_on) {
         debug!("AL Key_Write denied by access policy");
         return;
     }
@@ -134,10 +129,10 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
         "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
         req.level,
         zweidraehte_util::fmt::Bytes(&req.key),
-        ctx.access_ctx
+        ctx.access
     );
 
-    let result_level = ctx.state.key_write(req.level, &req.key, ctx.access_ctx);
+    let result_level = ctx.state.key_write(req.level, &req.key, ctx.access);
     debug!("AL Key_Write: result={}", result_level);
 
     if ind.service_type() != ServiceType::T_Data_Ind {

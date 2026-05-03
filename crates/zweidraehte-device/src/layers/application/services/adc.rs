@@ -12,7 +12,7 @@
 use crate::{
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
 };
 use zweidraehte_proto::messages::{
     apdu::device::{AdcRead, AdcResponse},
@@ -29,12 +29,12 @@ use crate::logging::{debug, error, warn};
 #[derive(Default)]
 pub struct AdcService;
 
-impl<D: StackDefinition> AlService<D> for AdcService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for AdcService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::AdcRead => {
@@ -50,13 +50,8 @@ impl<D: StackDefinition> AlService<D> for AdcService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(AdcService);
 
-fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     let Some(req) = AdcRead::parse(ind.buf()) else {
         error!("ADC_Read message too short: {}", ind.len());
         return;

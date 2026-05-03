@@ -26,10 +26,7 @@ use crate::{
     actor::Request,
     context::StackContext,
     context::layer::HasOutbox,
-    objects::{
-        comm::HasCommObjects,
-        interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
-    },
+    objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
     restart::{EraseCode, RestartError, RestartRequest},
     router::Layer,
 };
@@ -144,7 +141,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
     /// Effective APDU budget for an outgoing response, accounting for
     /// the secure envelope when the request arrived secured. See
-    /// [`AlServiceContext::effective_apdu_budget`](crate::layers::application::services::AlServiceContext::effective_apdu_budget).
+    /// [`ServiceCtx::effective_apdu_budget`](crate::service::ServiceCtx::effective_apdu_budget).
     fn effective_apdu_budget(&self, access_ctx: AccessContext) -> usize {
         use zweidraehte_proto::access::SecurityMode;
         zweidraehte_proto::config::max_outgoing_msg_len(
@@ -257,16 +254,15 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                         self.handle_restart(&msg);
                     }
                     _ => {
-                        use crate::layers::application::services::{AlService as _, AlServiceContext};
-                        let ctx = AlServiceContext {
-                            state: self.state,
-                            lctx: self.lctx,
-                            interface_objects: self.interface_objects,
-                            memory_map: self.memory_map,
-                            comm_objects: self.state.comm_objects(),
+                        use crate::service::{ApciHandler as _, ServiceCtx};
+                        let ctx = ServiceCtx::new(
+                            self.state,
+                            self.lctx,
+                            self.interface_objects,
+                            self.memory_map,
                             access_ctx,
-                        };
-                        if !self.services.try_handle(apci, &msg, &ctx) {
+                        );
+                        if !self.services.try_handle_apci(apci, &msg, &ctx) {
                             warn!("Unhandled APCI code: {:?}", msg.get_apci_code());
                         }
                     }
@@ -288,16 +284,12 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
 // service::Layer<D> impl — the new trait surface, alongside the
 // legacy `router::Layer` impl above.
 //
-// `ApplicationLayer<'a, D>` keeps its captured fields and continues
-// to dispatch APCIs through the legacy `AlService`-tuple
-// `D::Services` exactly as before. The new impl forwards to the
-// legacy `router::Layer` impl so wire dispatch under either trait
-// routes the same code.
-//
-// A subsequent reshape will move the AL to `ApplicationLayer<Ext>`
-// taking an `Ext: ApciHandler<D>` type parameter and deleting the
-// `D::Services` AlService surface. Until then, this shim keeps the
-// AL visible to a `LayerRegistry`-driven runner.
+// `ApplicationLayer<'a, D>` keeps its captured fields and dispatches
+// APCIs through the new `ApciHandler` chain in `D::Services`. The
+// new `service::Layer` impl forwards to the legacy `router::Layer`
+// impl so wire dispatch under either trait routes the same code.
+// Once every consumer has moved to the new trait, the legacy
+// `router::Layer` impl drops.
 // ============================================================================
 
 impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {

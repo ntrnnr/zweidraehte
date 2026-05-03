@@ -17,7 +17,7 @@ use crate::{
     StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
     objects::interface::pid,
 };
 use zweidraehte_proto::address::GroupAddress;
@@ -39,12 +39,12 @@ const OPERAND_BY_PROG_MODE: u8 = 0x01;
 #[derive(Default)]
 pub struct SystemNetworkParameterService;
 
-impl<D: StackDefinition> AlService<D> for SystemNetworkParameterService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for SystemNetworkParameterService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::SystemNetworkParameterRead => {
@@ -60,13 +60,8 @@ impl<D: StackDefinition> AlService<D> for SystemNetworkParameterService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(SystemNetworkParameterService);
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     // Per spec 03/05/02 §2.20.1.2, this service is defined *only* on
     // system broadcast. In practice some tools (ETS among them) send
     // `A_SystemNetworkParameter_Read` over plain `T_Broadcast_Ind` on

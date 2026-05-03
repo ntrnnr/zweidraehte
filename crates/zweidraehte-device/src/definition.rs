@@ -15,13 +15,13 @@ use crate::{
     config,
     context::StackContext,
     context::layer::LayerContext,
-    ets,
-    layers::{self, application::services::AlService},
+    ets, layers,
     memory::MemoryMap,
     objects::{
         comm::ComObjects,
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
+    service::ApciHandler,
     state::CoreDeviceState,
     storage::{DeviceIdentity, StaticIdentity},
 };
@@ -292,7 +292,7 @@ pub trait StackDefinition: Copy + 'static {
     ///
     /// Use [`DomainAddressService`](crate::layers::application::services::domain_addr::DomainAddressService)
     /// for KNX/IP devices that need `A_DomainAddressSerialNumber_*` services.
-    type Services: AlService<Self> + Default = ();
+    type Services: ApciHandler<Self> + Default = ();
 
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.

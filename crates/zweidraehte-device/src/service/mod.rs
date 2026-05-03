@@ -1,16 +1,13 @@
 //! Unified service abstractions: [`Layer`], [`ApciHandler`], [`Augment`].
 //!
-//! Three focused traits replace the legacy
-//! [`router::Layer`](crate::router::Layer) +
-//! [`AlService`](crate::layers::application::services::AlService) +
-//! [`InterfaceObjectAugment`](crate::objects::interface::InterfaceObjectAugment)
-//! triad. Each trait owns one responsibility:
+//! Three focused traits — each one owns a single responsibility:
 //!
 //! - [`Layer`] — wire-message handlers (NL / TL / AL / SecureAL). Holds
 //!   `&mut self` for plain-field state, plus its own lifecycle methods
 //!   (`init` / `poll` / `next_deadline`).
-//! - [`ApciHandler`] — APCI fall-through extensions consumed inside the
-//!   AL's `Ext` parameter. `&self`, no lifecycle.
+//! - [`ApciHandler`] — APCI fall-through extensions composed into the
+//!   AL via [`StackDefinition::Services`](crate::StackDefinition::Services).
+//!   `&self`, no lifecycle.
 //! - [`Augment`] — interface-object property hooks plus optional
 //!   IO-list contribution. `&self` for hooks, opt-in `&mut self`
 //!   lifecycle for augments with temporal behaviour (Security rekey
@@ -20,13 +17,14 @@
 //! state, IO objects, memory map, layer-context (outbox / buffer
 //! manager / channels), and the request's [`AccessContext`].
 //!
-//! # Coexistence with the legacy traits
+//! # Coexistence with the legacy `Layer` trait
 //!
-//! This module currently lives alongside the legacy `router::Layer` /
-//! `AlService` / `InterfaceObjectAugment`. Migration happens layer by
-//! layer; the legacy traits delete once every consumer is on the new
-//! ones. Until then, you can refer to the new traits as
-//! `crate::service::{Layer, ApciHandler, Augment}` to disambiguate.
+//! Wire-message handlers (NL/TL/AL/SecureAL) currently implement
+//! both this module's [`Layer`] trait and the older
+//! [`router::Layer`](crate::router::Layer) trait so the runner can
+//! pick either dispatch path. Once the runner switches to the new
+//! [`LayerRegistry`]-driven dispatch, the old `router::Layer` trait
+//! and its `LayerStack` machinery delete.
 
 mod apci_tuple;
 mod ctx;

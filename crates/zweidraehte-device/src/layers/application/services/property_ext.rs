@@ -16,7 +16,7 @@
 use crate::{
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
     memory::MemoryMap,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyServiceHandler,
@@ -48,15 +48,15 @@ use crate::logging::{debug, error, warn};
 #[derive(Default)]
 pub struct PropertyExtValueService;
 
-impl<D> AlService<D> for PropertyExtValueService
+impl<D> ApciHandler<D> for PropertyExtValueService
 where
     D: StackDefinition,
 {
-    fn try_handle(
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::PropertyExtValueRead => {
@@ -109,11 +109,6 @@ where
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(PropertyExtValueService);
 
 // ============================================================================
 // Handlers
@@ -123,7 +118,7 @@ crate::apci_handler_via_alservice!(PropertyExtValueService);
 ///
 /// Resolves `(IOT, instance)` → flat object index, reads the property,
 /// and responds with `A_PropertyExtValue_Response`.
-fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtValueRead unexpected service type: {:?}", ind.service_type());
         return;
@@ -189,7 +184,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         pid: hdr.prop_id,
         start_idx: hdr.start_idx,
         count: hdr.count as u16,
-        ctx: ctx.access_ctx,
+        ctx: ctx.access,
     };
     let result = ctx.interface_objects.property_value_read(&req, &mut data_buf[..payload_cap]);
 
@@ -238,7 +233,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
 /// a return code.
 fn handle_ext_value_write_con<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtValueWriteCon unexpected service type: {:?}", ind.service_type());
@@ -326,7 +321,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         count: hdr.count as u16,
         start_idx: hdr.start_idx,
         data,
-        ctx: ctx.access_ctx,
+        ctx: ctx.access,
     };
     let result = ctx.interface_objects.property_value_write(&req);
 
@@ -376,7 +371,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
 /// If the object/property doesn't exist, the request is ignored per spec.
 fn handle_ext_value_write_uncon<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtValueWriteUnCon unexpected service type: {:?}", ind.service_type());
@@ -446,7 +441,7 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
         count: hdr.count as u16,
         start_idx: hdr.start_idx,
         data,
-        ctx: ctx.access_ctx,
+        ctx: ctx.access,
     };
     if let Err(e) = ctx.interface_objects.property_value_write(&req) {
         debug!("AL PropertyExtValueWriteUnCon write failed (ignored): {:?}", e);
@@ -460,7 +455,7 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(
 /// Send an error `A_PropertyExtValue_Response` with the given return code.
 fn send_ext_read_error<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
@@ -486,7 +481,7 @@ fn send_ext_read_error<D: StackDefinition>(
 /// Send an error `A_PropertyExtValue_WriteConRes` with the given return code.
 fn send_ext_write_con_error<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
@@ -550,7 +545,7 @@ fn pdt_element_size(pdt: u8) -> usize {
 /// `A_FunctionPropertyExtState_Response`.
 fn handle_function_property_ext_command<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL FunctionPropertyExtCommand unexpected service type: {:?}", ind.service_type());
@@ -593,7 +588,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
         Ok(_) => {} // PDT_FUNCTION or PDT_CONTROL — proceed.
     }
 
-    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access_ctx };
+    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access };
     let result = ctx.interface_objects.function_property_command(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
@@ -628,7 +623,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
 /// Same pattern as Command but delegates to `function_property_state_read`.
 fn handle_function_property_ext_state_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL FunctionPropertyExtStateRead unexpected service type: {:?}", ind.service_type());
@@ -668,7 +663,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
         Ok(_) => {}
     }
 
-    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access_ctx };
+    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access };
     let result = ctx.interface_objects.function_property_state_read(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
@@ -705,7 +700,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
 /// Send a `FunctionPropertyExtState_Response` with return_code and optional data.
 fn send_function_ext_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
     hdr: &FunctionPropertyExtHeader,
     rc: u8,
     data: &[u8],
@@ -728,7 +723,7 @@ fn send_function_ext_response<D: StackDefinition>(
 #[allow(dead_code)]
 fn send_function_ext_empty_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
     hdr: &FunctionPropertyExtHeader,
 ) {
     let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(FunctionPropertyExtResponse::EMPTY_MSG_LEN) else {
@@ -761,7 +756,7 @@ fn send_function_ext_empty_response<D: StackDefinition>(
 /// Error: all descriptor bytes zero.
 fn handle_ext_description_read<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
 ) {
     use zweidraehte_proto::messages::apdu::property_ext::{
         PropertyExtDescriptionHeader, PropertyExtDescriptionResponse,
@@ -801,7 +796,7 @@ fn handle_ext_description_read<D: StackDefinition>(
             pid: desc_resp.prop_id,
             start_idx: 0,
             count: 1,
-            ctx: ctx.access_ctx,
+            ctx: ctx.access,
         };
         let mut dummy = [0u8; 4];
         match ctx.interface_objects.property_value_read(&test_req, &mut dummy) {
@@ -840,7 +835,7 @@ fn handle_ext_description_read<D: StackDefinition>(
 ///
 /// Wire format: APCI(2) + count(1) + address(3) + data(count)
 /// Response:    APCI(2) + return_code(1) + address(3)
-fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     use zweidraehte_proto::messages::knx::offsets;
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
@@ -883,7 +878,7 @@ fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
 
     // Use lower 16 bits of address for our memory map.
     let addr16 = (address & 0xFFFF) as u16;
-    let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access_ctx);
+    let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access);
 
     let rc = match result {
         Ok(_) => 0x00,                                           // E_SUCCESS
@@ -899,7 +894,7 @@ fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
 ///
 /// Wire format: APCI(2) + count(1) + address(3)
 /// Response:    APCI(2) + return_code(1) + address(3) + data(count)
-fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     use zweidraehte_proto::messages::knx::offsets;
 
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
@@ -949,7 +944,7 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
     let result = if read_len == 0 {
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.state, addr16, &mut data_buf[..read_len], ctx.access_ctx)
+        ctx.memory_map.read(ctx.state, addr16, &mut data_buf[..read_len], ctx.access)
     };
 
     match result {
@@ -988,7 +983,7 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 
 fn send_memory_ext_write_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
     return_code: u8,
     addr_hi: u8,
     addr_mid: u8,

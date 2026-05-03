@@ -14,7 +14,7 @@ use crate::{
     HasPersistence,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
     memory::MemoryMap,
     objects::interface::HasDeviceObject,
 };
@@ -40,12 +40,12 @@ use crate::logging::{debug, error, warn};
 #[derive(Default)]
 pub struct UserMemoryService;
 
-impl<D: StackDefinition> AlService<D> for UserMemoryService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for UserMemoryService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::UserMemoryRead => {
@@ -65,18 +65,13 @@ impl<D: StackDefinition> AlService<D> for UserMemoryService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(UserMemoryService);
 
 // ============================================================================
 // Handlers
 // ============================================================================
 
 /// Handle `A_UserMemory_Read.ind`
-fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Read rejected: connection-oriented only");
         return;
@@ -102,7 +97,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
         // fit any payload. Both collapse to a count=0 response.
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.state, acc.address_low, &mut data[..max_read], ctx.access_ctx)
+        ctx.memory_map.read(ctx.state, acc.address_low, &mut data[..max_read], ctx.access)
     };
 
     let response_count = match result {
@@ -127,7 +122,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
 /// Handle `A_UserMemory_Write.ind`
 fn handle_user_memory_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Write rejected: connection-oriented only");
@@ -154,7 +149,7 @@ fn handle_user_memory_write<D: StackDefinition>(
     let response_count = if length_inconsistent {
         0
     } else {
-        match ctx.memory_map.write(ctx.state, acc.address_low, acc.data, ctx.access_ctx) {
+        match ctx.memory_map.write(ctx.state, acc.address_low, acc.data, ctx.access) {
             Ok(bytes_written) => {
                 debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, acc.full_address());
                 ctx.state.mark_dirty();

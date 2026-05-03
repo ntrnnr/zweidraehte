@@ -14,7 +14,7 @@ use crate::{
     StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
 };
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::{
@@ -37,12 +37,12 @@ use crate::logging::{debug, error, trace, warn};
 #[derive(Default)]
 pub struct IndividualAddressSerialNumberService;
 
-impl<D: StackDefinition> AlService<D> for IndividualAddressSerialNumberService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for IndividualAddressSerialNumberService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::IndividualAddressSerialNumberRead => {
@@ -62,13 +62,8 @@ impl<D: StackDefinition> AlService<D> for IndividualAddressSerialNumberService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(IndividualAddressSerialNumberService);
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
         return;
@@ -106,7 +101,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     ctx.lctx.push_outbox(msg.into_inner());
 }
 
-fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
         return;
@@ -127,7 +122,7 @@ fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx
     // Access policy 3FF/00C.
     use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.state.security_mode_enabled();
-    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access_ctx, security_on) {
+    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access, security_on) {
         debug!("AL IndividualAddressSerialNumberWrite denied by access policy");
         return;
     }

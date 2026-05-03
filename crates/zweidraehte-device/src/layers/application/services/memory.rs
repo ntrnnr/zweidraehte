@@ -14,9 +14,9 @@ use crate::{
     HasPersistence,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
     memory::MemoryMap,
     objects::interface::HasDeviceObject,
+    service::{ApciHandler, ServiceCtx},
 };
 use zweidraehte_proto::messages::{
     apdu::memory::{MemoryAccess, MemoryBitWrite, MemoryResponse},
@@ -41,12 +41,12 @@ use crate::logging::{debug, error, warn};
 #[derive(Default)]
 pub struct MemoryService;
 
-impl<D: StackDefinition> AlService<D> for MemoryService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for MemoryService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::MemoryRead => {
@@ -71,12 +71,6 @@ impl<D: StackDefinition> AlService<D> for MemoryService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(MemoryService);
-
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -84,7 +78,7 @@ crate::apci_handler_via_alservice!(MemoryService);
 /// Handle `A_Memory_Read.ind`
 ///
 /// Reads up to 63 bytes from device memory at the specified 16-bit address.
-fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Read rejected: connection-oriented only");
         return;
@@ -107,7 +101,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
     let result = if request_count == 0 {
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.state, acc.address, &mut data[..request_count], ctx.access_ctx)
+        ctx.memory_map.read(ctx.state, acc.address, &mut data[..request_count], ctx.access)
     };
 
     let response_count = match result {
@@ -133,7 +127,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
 ///
 /// Writes to device memory at the specified 16-bit address. If the Verify
 /// flag is set in DEVICE_CONTROL (PID 14), a Memory_Response is sent back.
-fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Write rejected: connection-oriented only");
         return;
@@ -159,7 +153,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     let response_count = if length_inconsistent {
         0
     } else {
-        match ctx.memory_map.write(ctx.state, acc.address, acc.data, ctx.access_ctx) {
+        match ctx.memory_map.write(ctx.state, acc.address, acc.data, ctx.access) {
             Ok(bytes_written) => {
                 debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, acc.address);
                 ctx.state.mark_dirty();
@@ -204,7 +198,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
 /// Formula: `new_value = (old_value AND and_mask) XOR xor_mask`
 ///
 /// Legal length: count must be 1-5 bytes.
-fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>) {
+fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL MemoryBit_Write rejected: connection-oriented only");
         return;
@@ -248,7 +242,7 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
     // Read current memory values.
     let mut current_data = [0u8; 5];
     let read_result =
-        ctx.memory_map.read(ctx.state, mbw.address, &mut current_data[..mbw.count as usize], ctx.access_ctx);
+        ctx.memory_map.read(ctx.state, mbw.address, &mut current_data[..mbw.count as usize], ctx.access);
 
     match read_result {
         Ok(_) => {
@@ -258,7 +252,7 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
                 new_data[i] = (current_data[i] & mbw.and_masks[i]) ^ mbw.xor_masks[i];
             }
 
-            match ctx.memory_map.write(ctx.state, mbw.address, &new_data[..mbw.count as usize], ctx.access_ctx) {
+            match ctx.memory_map.write(ctx.state, mbw.address, &new_data[..mbw.count as usize], ctx.access) {
                 Ok(_) => {
                     debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", mbw.count, mbw.address);
                     send_memorybit_response::<D>(ind, ctx, mbw.address, mbw.count, &new_data[..mbw.count as usize]);
@@ -282,7 +276,7 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 /// Only sends a response if Verify flag is enabled in DEVICE_CONTROL.
 fn send_memorybit_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
     address: u16,
     count: u8,
     data: &[u8],

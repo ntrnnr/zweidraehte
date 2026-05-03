@@ -14,7 +14,7 @@ use crate::{
     StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
     objects::interface::HasDomainAddress,
 };
 use zweidraehte_proto::address::GroupAddress;
@@ -45,16 +45,16 @@ use crate::logging::{debug, error, trace, warn};
 #[derive(Default)]
 pub struct DomainAddressService;
 
-impl<D> AlService<D> for DomainAddressService
+impl<D> ApciHandler<D> for DomainAddressService
 where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
-    fn try_handle(
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::DomainAddressSerialNumberRead => {
@@ -83,13 +83,6 @@ where
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-// Carries the same `HasDomainAddress` bound the AlService impl
-// declares.
-crate::apci_handler_via_alservice!(DomainAddressService, where D::State: HasDomainAddress);
 
 // ============================================================================
 // Handlers
@@ -102,7 +95,7 @@ crate::apci_handler_via_alservice!(DomainAddressService, where D::State: HasDoma
 ///
 /// Wire format (incoming): APCI(2) + serial(6)
 /// Wire format (response): APCI(2) + serial(6) + domain_address(N)
-fn handle_domain_address_serial_number_read<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>)
+fn handle_domain_address_serial_number_read<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>)
 where
     D: StackDefinition,
     D::State: HasDomainAddress,
@@ -175,7 +168,7 @@ where
 /// for the current non-secure IP path; the handler currently reads
 /// exactly `DOMAIN_ADDRESS_LENGTH` bytes and silently ignores any
 /// trailing payload.
-fn handle_domain_address_serial_number_write<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlServiceContext<'_, D>)
+fn handle_domain_address_serial_number_write<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>)
 where
     D: StackDefinition,
     D::State: HasDomainAddress,
@@ -202,7 +195,7 @@ where
     // when security mode is on, only Tool A+C can write.
     use zweidraehte_proto::access::AccessPolicy;
     let security_on = ctx.state.security_mode_enabled();
-    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access_ctx, security_on) {
+    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access, security_on) {
         debug!("AL DomainAddressSerialNumberWrite denied by access policy");
         return;
     }

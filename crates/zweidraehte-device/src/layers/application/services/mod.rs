@@ -3,7 +3,8 @@
 //! Each service handles a group of APCI codes that can be composed into
 //! a device's [`Services`](crate::StackDefinition::Services) tuple. The
 //! AL dispatches unrecognized APCIs (those not handled by built-in
-//! handlers) through the services tuple.
+//! handlers) through the services tuple via
+//! [`ApciHandler`](crate::service::ApciHandler).
 //!
 //! # Available Services
 //!
@@ -30,7 +31,6 @@ pub mod function_property;
 pub mod manufacturer;
 pub mod memory;
 pub mod property_ext;
-pub mod service;
 pub mod system_network_parameter;
 pub mod user_memory;
 
@@ -42,37 +42,25 @@ pub use function_property::FunctionPropertyService;
 pub use manufacturer::UserManufacturerInfoService;
 pub use memory::MemoryService;
 pub use property_ext::PropertyExtValueService;
-pub use service::{AlService, AlServiceContext};
 pub use system_network_parameter::SystemNetworkParameterService;
 pub use user_memory::UserMemoryService;
-
-/// Right-associate a flat list of types into a nested pair structure:
-/// `nest!(A, B, C, D)` expands to `(A, (B, (C, D)))`.
-///
-/// Intended for composing tuple-fold traits like [`AlService`] whose
-/// blanket impl for `(A, B)` drives left-to-right dispatch. The base
-/// case requires at least two elements — a single-element composition
-/// has no meaning in this pattern, so `nest!(A)` is intentionally a
-/// compile error rather than silently expanding to a bare `A`.
-#[macro_export]
-macro_rules! nest {
-    ($a:ty, $b:ty $(,)?) => { ($a, $b) };
-    ($a:ty, $($rest:ty),+ $(,)?) => { ($a, $crate::nest!($($rest),+)) };
-}
 
 /// Standard AL services for System B devices.
 ///
 /// Composes the services commonly used by System B devices (mask
 /// 07B0h/27B0h): memory access, user memory, authorization, serial
 /// number addressing, ADC, user-manufacturer info, and function
-/// properties. Use this as `type Services = SystemBAlServices;` for the
-/// pre-modularization behaviour.
+/// properties. Use this as `type Services = SystemBAlServices;` for
+/// the standard System B behaviour.
 ///
 /// For devices that also need domain address or extended property
-/// services, compose further:
+/// services, extend the tuple directly:
 ///
 /// ```rust,ignore
-/// type Services = (SystemBAlServices, DomainAddressService);
+/// type Services = (
+///     MemoryService, UserMemoryService, /* … standard set */ ,
+///     DomainAddressService,
+/// );
 /// ```
 ///
 /// Per the KNX spec profile matrix (06 Profiles §4.2), only a subset
@@ -80,7 +68,7 @@ macro_rules! nest {
 /// `AdcService` in particular is legacy BCU1/BCU2 and harmless on
 /// System B, but devices that target the smallest possible footprint
 /// can drop it by spelling out a smaller tuple.
-pub type SystemBAlServices = nest!(
+pub type SystemBAlServices = (
     MemoryService,
     UserMemoryService,
     AuthorizationService,
@@ -107,7 +95,7 @@ pub type SystemBAlServices = nest!(
 /// [`SystemBAlServices`] — the extended services are not mandatory
 /// for those profiles and carry a code-size cost that
 /// memory-constrained plain devices may prefer to avoid.
-pub type SystemBSecureAlServices = nest!(
+pub type SystemBSecureAlServices = (
     MemoryService,
     UserMemoryService,
     AuthorizationService,

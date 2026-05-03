@@ -18,7 +18,7 @@
 use crate::{
     context::layer::HasOutbox,
     definition::StackDefinition,
-    layers::application::services::{AlService, AlServiceContext},
+    service::{ApciHandler, ServiceCtx},
     objects::interface::{FunctionPropertyRequest, PropertyServiceHandler},
 };
 use zweidraehte_proto::messages::{
@@ -38,12 +38,12 @@ use crate::logging::{debug, error, warn};
 #[derive(Default)]
 pub struct FunctionPropertyService;
 
-impl<D: StackDefinition> AlService<D> for FunctionPropertyService {
-    fn try_handle(
+impl<D: StackDefinition> ApciHandler<D> for FunctionPropertyService {
+    fn try_handle_apci(
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlServiceContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::FunctionPropertyCommand => {
@@ -63,18 +63,13 @@ impl<D: StackDefinition> AlService<D> for FunctionPropertyService {
     }
 }
 
-// ApciHandler shim forwarding to the legacy AlService body. The
-// shim keeps both trait impls live during the migration so existing
-// callers and new `LayerRegistry`-driven dispatch route through the
-// same code.
-crate::apci_handler_via_alservice!(FunctionPropertyService);
 
 /// Shared implementation for command and state-read. Both share the same
 /// wire format and response format and differ only in which trait method
 /// is invoked on the interface objects.
 fn handle<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlServiceContext<'_, D>,
+    ctx: &ServiceCtx<'_, D>,
     is_command: bool,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
@@ -95,14 +90,14 @@ fn handle<D: StackDefinition>(
         hdr.object_idx,
         hdr.prop_id,
         service_data.len(),
-        ctx.access_ctx,
+        ctx.access,
     );
 
     let req = FunctionPropertyRequest {
         object_idx: hdr.object_idx as u16,
         prop_id: hdr.prop_id,
         service_data,
-        ctx: ctx.access_ctx,
+        ctx: ctx.access,
     };
 
     let result = if is_command {
