@@ -12,7 +12,7 @@
 use crate::{
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
     apdu::device::{AdcRead, AdcResponse},
@@ -34,7 +34,7 @@ impl<D: StackDefinition> ApciHandler<D> for AdcService {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::AdcRead => {
@@ -51,7 +51,7 @@ impl<D: StackDefinition> ApciHandler<D> for AdcService {
 }
 
 
-fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     let Some(req) = AdcRead::parse(ind.buf()) else {
         error!("ADC_Read message too short: {}", ind.len());
         return;

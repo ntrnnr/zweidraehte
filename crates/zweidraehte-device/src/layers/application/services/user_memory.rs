@@ -14,7 +14,7 @@ use crate::{
     HasPersistence,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
     memory::MemoryMap,
     objects::interface::HasDeviceObject,
 };
@@ -45,7 +45,7 @@ impl<D: StackDefinition> ApciHandler<D> for UserMemoryService {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::UserMemoryRead => {
@@ -71,7 +71,7 @@ impl<D: StackDefinition> ApciHandler<D> for UserMemoryService {
 // ============================================================================
 
 /// Handle `A_UserMemory_Read.ind`
-fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Read rejected: connection-oriented only");
         return;
@@ -122,7 +122,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
 /// Handle `A_UserMemory_Write.ind`
 fn handle_user_memory_write<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &ServiceCtx<'_, D>,
+    ctx: &AlCtx<'_, D>,
 ) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Write rejected: connection-oriented only");

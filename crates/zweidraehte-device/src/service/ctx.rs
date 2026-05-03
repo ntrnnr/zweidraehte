@@ -1,10 +1,26 @@
-//! [`ServiceCtx`] — the shared per-call context for all service traits.
+//! [`ServiceCtx`] and [`AlCtx`] — the per-call contexts handed to the
+//! service traits.
 //!
-//! Carries references to state, layer infrastructure, interface
-//! objects, memory map, and the access context derived from the
-//! incoming request. One bundle covers every service trait.
+//! - [`ServiceCtx`] is the lean, augment-friendly bundle: state,
+//!   layer context, access context. Anyone that can borrow these
+//!   three references can build one. Carries the convenience
+//!   accessors (`outbox`, `buffer_manager`, capability senders, APDU
+//!   budget helpers).
+//! - [`AlCtx`] wraps a `ServiceCtx` and adds the AL-only handles —
+//!   the interface-objects container and the memory map — that
+//!   AL services need to dispatch property / memory operations.
+//!   `AlCtx` derefs to `ServiceCtx`, so any helper that works on the
+//!   lean ctx works on the rich one too.
+//!
+//! The split exists because the IO container — which is *itself*
+//! the interface-objects container — needs to call augments without
+//! self-referencing into a `ServiceCtx`. Augments take the lean ctx
+//! so the IO container can manufacture one trivially. AL services
+//! continue to receive the rich ctx so they can dispatch property
+//! and memory ops without extra plumbing.
 
 use core::cell::RefCell;
+use core::ops::Deref;
 
 use zweidraehte_proto::access::{AccessContext, SecurityMode};
 use zweidraehte_proto::config::max_outgoing_msg_len;
@@ -17,13 +33,14 @@ use crate::layers::application::group_data::GroupDataProvider;
 use crate::layers::secure_application::SecureGroupDataProvider;
 use crate::router::Outbox;
 
-/// Per-call context handed to every service trait method.
+/// Lean per-call context handed to augments and any handler that
+/// only needs state / layer-context / access.
 ///
-/// Field access is `pub` so services can reach the underlying handles
-/// directly — the convenience accessors below mirror the most
-/// frequently used capability shortcuts (outbox, buffer manager,
-/// group-value senders) without forcing services to chase trait
-/// re-exports.
+/// Field access is `pub` so handlers can reach the underlying
+/// references directly. The convenience accessors below mirror the
+/// most frequently used capability shortcuts (outbox, buffer
+/// manager, capability senders) without forcing handlers to chase
+/// trait re-exports.
 ///
 /// # Lifetime
 ///
@@ -38,35 +55,18 @@ pub struct ServiceCtx<'a, D: StackDefinition> {
     /// shared group-data bookkeeping.
     pub lctx: &'a LayerContext<D>,
 
-    /// Interface objects container — used by the AL's built-in
-    /// property dispatch and by `Augment` impls that read/write
-    /// existing IOs.
-    pub interface_objects: &'a D::InterfaceObjects<'static>,
-
-    /// Memory map for `A_Memory_Read` / `A_Memory_Write`.
-    pub memory_map: &'a D::Mem,
-
     /// Access context of the request that triggered this dispatch.
     /// Carries the caller's authorization level and whether the
-    /// request arrived via KNX Data Secure. Lifecycle ticks pass
-    /// `AccessContext::default()`.
+    /// request arrived via KNX Data Secure. Lifecycle ticks (`init` /
+    /// `poll`) pass `AccessContext::default()`.
     pub access: AccessContext,
 }
 
 impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
-    /// Construct a `ServiceCtx`. Most call sites build this from
-    /// `Inner` + `D::InterfaceObjects` + the resolved `AccessContext`
-    /// for the in-flight message; lifecycle ticks (`init` / `poll`)
-    /// pass `AccessContext::default()`.
+    /// Construct a lean `ServiceCtx`.
     #[inline]
-    pub fn new(
-        state: &'a D::State,
-        lctx: &'a LayerContext<D>,
-        interface_objects: &'a D::InterfaceObjects<'static>,
-        memory_map: &'a D::Mem,
-        access: AccessContext,
-    ) -> Self {
-        Self { state, lctx, interface_objects, memory_map, access }
+    pub fn new(state: &'a D::State, lctx: &'a LayerContext<D>, access: AccessContext) -> Self {
+        Self { state, lctx, access }
     }
 
     // -----------------------------------------------------------------
@@ -137,5 +137,66 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
     #[inline]
     pub fn secure_group_value_sender(&self) -> SecureGroupDataProvider<'a, D> {
         SecureGroupDataProvider::new(self.state, self.lctx)
+    }
+}
+
+/// Rich AL-side context — extends [`ServiceCtx`] with the
+/// interface-objects container and the memory map that AL services
+/// dispatch property / memory operations through.
+///
+/// Derefs to the inner [`ServiceCtx`] so any helper that works on
+/// the lean ctx works on the rich one too:
+///
+/// ```rust,ignore
+/// fn handle(ctx: &AlCtx<'_, D>) {
+///     // Works because of Deref → ServiceCtx:
+///     let _ = ctx.state;
+///     let _ = ctx.outbox();
+///
+///     // Rich-only fields:
+///     let _ = ctx.interface_objects;
+///     let _ = ctx.memory_map;
+/// }
+/// ```
+pub struct AlCtx<'a, D: StackDefinition> {
+    base: ServiceCtx<'a, D>,
+
+    /// Interface objects container — the AL's built-in property
+    /// dispatch and AN163 extended property services route through
+    /// this.
+    pub interface_objects: &'a D::InterfaceObjects<'static>,
+
+    /// Memory map for `A_Memory_Read` / `A_Memory_Write` and
+    /// `A_MemoryExtended_*` services.
+    pub memory_map: &'a D::Mem,
+}
+
+impl<'a, D: StackDefinition> AlCtx<'a, D> {
+    /// Build an `AlCtx` from a lean `ServiceCtx` and the AL-only
+    /// references the AL has at hand.
+    #[inline]
+    pub fn new(
+        base: ServiceCtx<'a, D>,
+        interface_objects: &'a D::InterfaceObjects<'static>,
+        memory_map: &'a D::Mem,
+    ) -> Self {
+        Self { base, interface_objects, memory_map }
+    }
+
+    /// Borrow the inner [`ServiceCtx`] explicitly. Equivalent to
+    /// `&**ctx` but more readable at call sites that pass the lean
+    /// ctx along to augment-side hooks.
+    #[inline]
+    pub fn service_ctx(&self) -> &ServiceCtx<'a, D> {
+        &self.base
+    }
+}
+
+impl<'a, D: StackDefinition> Deref for AlCtx<'a, D> {
+    type Target = ServiceCtx<'a, D>;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.base
     }
 }

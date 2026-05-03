@@ -28,15 +28,16 @@ use crate::layers::application::capabilities::{
 };
 use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
-    AugmentContext, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf, interface_object_augment, pid,
+    FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf, interface_object_augment, pid,
 };
+use crate::service::ServiceCtx;
 use crate::objects::tables::{
     AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasAssociationTable,
     HasCommunicationObjectTable, HasRunStateMachine,
 };
-use crate::{StackDefinition, StackState};
+use crate::StackState;
 use zweidraehte_proto::access::AccessPolicy;
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function, PropertyDataDefinition};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_proto::messages::apdu::go_diagnostics::{
     GoConfigResponse, GoStatusValueResponse, OperationModeResponse,
 };
@@ -231,7 +232,7 @@ fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> Fun
 /// This augment does NOT add additional objects — it extends existing
 /// objects with function properties for diagnostic mode and GO control.
 ///
-/// Telegram emission is done through the shared [`AugmentContext`]
+/// Telegram emission is done through the shared [`ServiceCtx`]
 /// (outbox + buffer manager accessors) or, for the `transmit`
 /// diagnostic that maps onto a normal CO send, through the
 /// [`GroupValueSender`] capability. The augment itself holds only
@@ -276,10 +277,10 @@ pub struct DiagnosticsAugment<'a> {
         rl = 3, wl = 3,
         intercepts,
         target = InterfaceObjectType::ApplicationProgram,
-        function_command = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+        function_command = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
             this.handle_command(ctx.state, req)
         },
-        function_state_read = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+        function_state_read = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
             this.handle_state_read(ctx.state, req)
         },
     )]
@@ -299,38 +300,16 @@ pub struct DiagnosticsAugment<'a> {
         rl = 3, wl = 3,
         intercepts,
         target = InterfaceObjectType::GroupObjectTable,
-        function_command = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+        function_command = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
             this.handle_go_diag_command(ctx, req)
         },
-        function_state_read = |this: &Self, ctx: &AugmentContext<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
+        function_state_read = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
             this.handle_go_diag_state_read(ctx.state, req)
         },
     )]
     _go_diagnostics_io: (),
 }
 
-// Augment shim forwarding to the legacy InterfaceObjectAugment body.
-// The shim keeps both trait impls live during the migration so
-// existing callers and new `AugmentRegistry`-driven dispatch route
-// through the same code.
-//
-// DiagnosticsAugment's `InterfaceObjectAugment` impl carries
-// `where_bounds(...)` from its macro, so the equivalent `D::State`
-// bounds need to ride along on the new `Augment` impl.
-crate::augment_via_interface_object_augment!(
-    ['a],
-    DiagnosticsAugment<'a>,
-    where
-        D::State: crate::StackState
-            + crate::objects::tables::HasApplication
-            + crate::objects::tables::HasCommunicationObjectTable
-            + crate::objects::comm::HasCommObjects
-            + crate::objects::tables::HasAddressTable
-            + crate::objects::tables::HasAssociationTable
-            + crate::bcus::system_b::HasExtensionState,
-        <D::State as crate::bcus::system_b::HasExtensionState>::ES:
-            crate::bcus::system_b::HasSecurityState + crate::bcus::system_b::HasSeqStorage,
-);
 
 impl<'a> DiagnosticsAugment<'a> {
     pub fn new(state: &'a OperationModeState) -> Self {
@@ -469,7 +448,7 @@ impl<'a> DiagnosticsAugment<'a> {
     /// Handle FunctionPropertyExtCommand for PID_GO_DIAGNOSTICS.
     fn handle_go_diag_command<D: crate::StackDefinition>(
         &self,
-        ctx: &AugmentContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
@@ -636,7 +615,7 @@ impl<'a> DiagnosticsAugment<'a> {
     /// outbox before returning the response.
     fn handle_go_diag_direct_write<D: crate::StackDefinition>(
         &self,
-        ctx: &AugmentContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
@@ -760,7 +739,7 @@ impl<'a> DiagnosticsAugment<'a> {
     /// GO's current value and configured priority.
     fn handle_go_diag_transmit<D: crate::StackDefinition>(
         &self,
-        ctx: &AugmentContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
@@ -840,7 +819,7 @@ impl<'a> DiagnosticsAugment<'a> {
     /// outbox before returning the response.
     fn handle_go_diag_direct_read<D: crate::StackDefinition>(
         &self,
-        ctx: &AugmentContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where

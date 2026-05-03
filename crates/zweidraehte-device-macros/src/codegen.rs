@@ -497,7 +497,7 @@ pub(crate) fn gen_augment(
 
         }
 
-        impl #augment_impl_generics ::zweidraehte_device::objects::interface::InterfaceObjectAugment<__AugmentD>
+        impl #augment_impl_generics ::zweidraehte_device::service::Augment<__AugmentD>
             for #ident #ty_generics #augment_where_clause
         {
             fn get_property_descriptor(
@@ -517,7 +517,7 @@ pub(crate) fn gen_augment(
 
             fn property_description_read(
                 &self,
-                _ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __AugmentD>,
+                _ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 object_idx: u16,
                 lookup: ::zweidraehte_device::objects::interface::PropertyLookup,
@@ -546,7 +546,7 @@ pub(crate) fn gen_augment(
 
             fn property_value_read(
                 &self,
-                ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FullPropertyReadRequest,
                 buf: &mut [u8],
@@ -560,7 +560,7 @@ pub(crate) fn gen_augment(
 
             fn property_value_write(
                 &self,
-                ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FullPropertyWriteRequest<'_>,
             ) -> ::core::option::Option<::core::result::Result<
@@ -573,7 +573,7 @@ pub(crate) fn gen_augment(
 
             fn function_property_command(
                 &self,
-                ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
@@ -583,7 +583,7 @@ pub(crate) fn gen_augment(
 
             fn function_property_state_read(
                 &self,
-                ctx: &::zweidraehte_device::objects::interface::AugmentContext<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {

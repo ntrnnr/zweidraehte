@@ -9,9 +9,10 @@ use core::cell::RefCell;
 use super::SecurityTable;
 use crate::StackDefinition;
 use crate::objects::interface::{
-    AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-    PropertyBuf, PropertyError, WriteResponse, interface_object_augment, pid,
+    FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf,
+    PropertyError, WriteResponse, interface_object_augment, pid,
 };
+use crate::service::ServiceCtx;
 use crate::objects::tables::LoadState;
 use crate::storage::SequenceNumberStorage;
 use zweidraehte_proto::access::AccessPolicy;
@@ -247,14 +248,6 @@ pub struct SecurityAugment<
     _test_failure_counters_io: (),
 }
 
-// Augment shim forwarding to the legacy InterfaceObjectAugment body.
-// The shim keeps both trait impls live during the migration so
-// existing callers and new `AugmentRegistry`-driven dispatch route
-// through the same code.
-crate::augment_via_interface_object_augment!(
-    ['a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize],
-    SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>,
-);
 
 impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
     SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
@@ -288,7 +281,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
 
     pub fn handle_extra_pid_read<D: StackDefinition>(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
@@ -411,7 +404,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
 
     pub fn handle_extra_pid_write<D: StackDefinition>(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
@@ -514,7 +507,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
 
     pub fn handle_extra_pid_function_command<D: StackDefinition>(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
@@ -547,7 +540,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
 
     pub fn handle_extra_pid_function_state_read<D: StackDefinition>(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {

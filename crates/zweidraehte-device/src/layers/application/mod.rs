@@ -254,13 +254,11 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
                         self.handle_restart(&msg);
                     }
                     _ => {
-                        use crate::service::{ApciHandler as _, ServiceCtx};
-                        let ctx = ServiceCtx::new(
-                            self.state,
-                            self.lctx,
+                        use crate::service::{AlCtx, ApciHandler as _, ServiceCtx};
+                        let ctx = AlCtx::new(
+                            ServiceCtx::new(self.state, self.lctx, access_ctx),
                             self.interface_objects,
                             self.memory_map,
-                            access_ctx,
                         );
                         if !self.services.try_handle_apci(apci, &msg, &ctx) {
                             warn!("Unhandled APCI code: {:?}", msg.get_apci_code());

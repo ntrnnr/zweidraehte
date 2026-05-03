@@ -14,7 +14,7 @@ use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 use crate::StackDefinition;
-use crate::service::{ApciHandler, Augment, AugmentRegistry, Layer, LayerRegistry, ServiceCtx, ServiceRegistry};
+use crate::service::{AlCtx, ApciHandler, Augment, AugmentRegistry, Layer, LayerRegistry, ServiceCtx, ServiceRegistry};
 
 // -----------------------------------------------------------------
 // Shim Layer that handles a single, otherwise-unused ServiceType so
@@ -93,7 +93,7 @@ impl<D: StackDefinition> ApciHandler<D> for ShimApciHandler {
         &self,
         _apci: zweidraehte_proto::messages::knx::ApciCode,
         _msg: &KnxMessageBuffer<Buffer<'static>>,
-        _ctx: &ServiceCtx<'_, D>,
+        _ctx: &AlCtx<'_, D>,
     ) -> bool {
         false
     }

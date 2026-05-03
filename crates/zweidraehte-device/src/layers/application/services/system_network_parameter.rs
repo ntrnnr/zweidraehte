@@ -17,7 +17,7 @@ use crate::{
     StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
     objects::interface::pid,
 };
 use zweidraehte_proto::address::GroupAddress;
@@ -44,7 +44,7 @@ impl<D: StackDefinition> ApciHandler<D> for SystemNetworkParameterService {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::SystemNetworkParameterRead => {
@@ -61,7 +61,7 @@ impl<D: StackDefinition> ApciHandler<D> for SystemNetworkParameterService {
 }
 
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     // Per spec 03/05/02 §2.20.1.2, this service is defined *only* on
     // system broadcast. In practice some tools (ETS among them) send
     // `A_SystemNetworkParameter_Read` over plain `T_Broadcast_Ind` on

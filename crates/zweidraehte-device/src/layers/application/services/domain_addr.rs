@@ -14,7 +14,7 @@ use crate::{
     StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
     objects::interface::HasDomainAddress,
 };
 use zweidraehte_proto::address::GroupAddress;
@@ -54,7 +54,7 @@ where
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::DomainAddressSerialNumberRead => {
@@ -95,7 +95,7 @@ where
 ///
 /// Wire format (incoming): APCI(2) + serial(6)
 /// Wire format (response): APCI(2) + serial(6) + domain_address(N)
-fn handle_domain_address_serial_number_read<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>)
+fn handle_domain_address_serial_number_read<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>)
 where
     D: StackDefinition,
     D::State: HasDomainAddress,
@@ -168,7 +168,7 @@ where
 /// for the current non-secure IP path; the handler currently reads
 /// exactly `DOMAIN_ADDRESS_LENGTH` bytes and silently ignores any
 /// trailing payload.
-fn handle_domain_address_serial_number_write<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>)
+fn handle_domain_address_serial_number_write<D>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>)
 where
     D: StackDefinition,
     D::State: HasDomainAddress,

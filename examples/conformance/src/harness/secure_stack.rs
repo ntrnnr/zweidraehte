@@ -23,7 +23,7 @@ use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     memory::MemoryMap,
     objects::interface::{
-        AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, InterfaceObjectAugment,
+        FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount,
         PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, PropertyRead,
         WriteResponse,
     },
@@ -813,7 +813,7 @@ fn certification_descriptor(pid: u16) -> Option<PropertyDescriptor> {
     }
 }
 
-impl<D: StackDefinition> InterfaceObjectAugment<D> for CertificationObjectAugment {
+impl<D: StackDefinition> zweidraehte_device::service::Augment<D> for CertificationObjectAugment {
     fn additional_object_count(&self) -> u16 {
         1
     }
@@ -831,7 +831,7 @@ impl<D: StackDefinition> InterfaceObjectAugment<D> for CertificationObjectAugmen
 
     fn property_description_read(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
         object_type: InterfaceObjectType,
         object_idx: u16,
         lookup: PropertyLookup,
@@ -859,7 +859,7 @@ impl<D: StackDefinition> InterfaceObjectAugment<D> for CertificationObjectAugmen
 
     fn property_value_read(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
@@ -887,7 +887,7 @@ impl<D: StackDefinition> InterfaceObjectAugment<D> for CertificationObjectAugmen
 
     fn property_value_write(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
         object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {

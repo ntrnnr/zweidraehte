@@ -13,7 +13,7 @@
 use crate::{
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
     buffers::Buffer,
@@ -35,7 +35,7 @@ impl<D: StackDefinition> ApciHandler<D> for UserManufacturerInfoService {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::UserManufacturerInfoRead => {
@@ -52,7 +52,7 @@ impl<D: StackDefinition> ApciHandler<D> for UserManufacturerInfoService {
 }
 
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     let Some(info) = D::USER_MANUFACTURER_INFO else {
         debug!("AL UserManufacturerInfo_Read: not supported (no USER_MANUFACTURER_INFO configured)");
         return;

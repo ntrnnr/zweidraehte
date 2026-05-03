@@ -16,7 +16,7 @@ use crate::{
     definition::StackDefinition,
     memory::MemoryMap,
     objects::interface::HasDeviceObject,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
     apdu::memory::{MemoryAccess, MemoryBitWrite, MemoryResponse},
@@ -46,7 +46,7 @@ impl<D: StackDefinition> ApciHandler<D> for MemoryService {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::MemoryRead => {
@@ -78,7 +78,7 @@ impl<D: StackDefinition> ApciHandler<D> for MemoryService {
 /// Handle `A_Memory_Read.ind`
 ///
 /// Reads up to 63 bytes from device memory at the specified 16-bit address.
-fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Read rejected: connection-oriented only");
         return;
@@ -127,7 +127,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
 ///
 /// Writes to device memory at the specified 16-bit address. If the Verify
 /// flag is set in DEVICE_CONTROL (PID 14), a Memory_Response is sent back.
-fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL Memory_Write rejected: connection-oriented only");
         return;
@@ -198,7 +198,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
 /// Formula: `new_value = (old_value AND and_mask) XOR xor_mask`
 ///
 /// Legal length: count must be 1-5 bytes.
-fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL MemoryBit_Write rejected: connection-oriented only");
         return;
@@ -276,7 +276,7 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 /// Only sends a response if Verify flag is enabled in DEVICE_CONTROL.
 fn send_memorybit_response<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &ServiceCtx<'_, D>,
+    ctx: &AlCtx<'_, D>,
     address: u16,
     count: u8,
     data: &[u8],

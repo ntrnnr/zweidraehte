@@ -15,9 +15,10 @@ use zerocopy::FromBytes;
 use crate::{
     IpPlatform, IpPlatformState, IpStackState, StackDefinition, StackState,
     objects::interface::{
-        AugmentContext, FullPropertyReadRequest, FullPropertyWriteRequest, Ipv4Property, PropertyAccess,
-        PropertyDescriptor, PropertyError, StatePropertyValue, WriteResponse, interface_object_augment, pid,
+        FullPropertyReadRequest, FullPropertyWriteRequest, Ipv4Property, PropertyAccess, PropertyDescriptor,
+        PropertyError, StatePropertyValue, WriteResponse, interface_object_augment, pid,
     },
+    service::ServiceCtx,
 };
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::address::IndividualAddress;
@@ -137,14 +138,6 @@ pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0, const CAPS: u16 = 0>
     // *not* listed in the macro's static descriptor table.
 }
 
-// Augment shim forwarding to the legacy InterfaceObjectAugment body.
-// The shim keeps both trait impls live during the migration so
-// existing callers and new `AugmentRegistry`-driven dispatch route
-// through the same code.
-crate::augment_via_interface_object_augment!(
-    ['a, P: IpPlatform, const N: usize, const CAPS: u16],
-    IpAugment<'a, P, N, CAPS>,
-);
 
 impl<'a, P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'a, P, N, CAPS> {
     /// Create a new `IpAugment` combining config and platform references.
@@ -648,7 +641,7 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
 impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
     pub fn handle_extra_pid_read<D: StackDefinition>(
         &self,
-        ctx: &AugmentContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
@@ -658,7 +651,7 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
 
     pub fn handle_extra_pid_write<D: StackDefinition>(
         &self,
-        ctx: &AugmentContext<'_, D>,
+        ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
@@ -667,7 +660,7 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
 
     pub fn handle_extra_pid_function_command<D: StackDefinition>(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         _req: &crate::objects::interface::FunctionPropertyRequest<'_>,
     ) -> Option<crate::objects::interface::FunctionPropertyResult> {
@@ -676,7 +669,7 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
 
     pub fn handle_extra_pid_function_state_read<D: StackDefinition>(
         &self,
-        _ctx: &AugmentContext<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         _req: &crate::objects::interface::FunctionPropertyRequest<'_>,
     ) -> Option<crate::objects::interface::FunctionPropertyResult> {

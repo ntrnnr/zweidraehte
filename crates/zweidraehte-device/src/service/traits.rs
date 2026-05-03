@@ -15,7 +15,7 @@ use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
     PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, WriteResponse,
 };
-use crate::service::ctx::ServiceCtx;
+use crate::service::ctx::{AlCtx, ServiceCtx};
 
 // =============================================================================
 // Layer — wire-message handler with full lifecycle.
@@ -72,9 +72,11 @@ pub trait Layer<D: StackDefinition> {
 /// PropertyExtValue, DomainAddress, …) — services that handle APCI
 /// codes the AL does not handle inline.
 ///
-/// `&self` because the AL fans into its `Ext` chain mid-`process()`,
-/// re-entrantly. Services that need state use interior mutability
-/// (`Cell` / `RefCell`).
+/// Receives an [`AlCtx`] (the rich AL-side context: state, layer
+/// context, access plus the interface-objects container and memory
+/// map). `&self` because the AL fans into its `Ext` chain
+/// mid-`process()`, re-entrantly. Services that need state use
+/// interior mutability (`Cell` / `RefCell`).
 ///
 /// # Composition
 ///
@@ -82,7 +84,7 @@ pub trait Layer<D: StackDefinition> {
 /// either a single `ApciHandler` impl, the empty handler `()`, or a
 /// tuple `(A, B, C, …)` of `ApciHandler`s. The tuple impl tries each
 /// member left-to-right; the first to return `true` claims the APCI.
-/// Tuple arities `()` and 1..=8 are provided.
+/// Tuple arities `()` and 1..=12 are provided.
 pub trait ApciHandler<D: StackDefinition> {
     /// Try to handle an APCI indication. Returns `true` if claimed
     /// (even if the response was suppressed), `false` to allow the
@@ -91,7 +93,7 @@ pub trait ApciHandler<D: StackDefinition> {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool;
 }
 
@@ -218,4 +220,194 @@ pub trait Augment<D: StackDefinition> {
     /// Called when [`next_deadline`](Self::next_deadline) has elapsed.
     /// `ctx.access` is `AccessContext::default()`.
     fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+}
+
+// =============================================================================
+// Augment composition impls — `()`, `&A`, and `(Head, Tail)`.
+// =============================================================================
+
+/// The empty augment — contributes nothing, intercepts nothing.
+impl<D: StackDefinition> Augment<D> for () {}
+
+/// Shared-reference delegation. Lets a stack store `&'a SomeAugment`
+/// in its services struct and have the augment trait dispatched
+/// through that reference; the augment's own state lives behind the
+/// reference (e.g. `&'a SecurityState` from the device's extension
+/// state).
+impl<D: StackDefinition, A: Augment<D>> Augment<D> for &A {
+    fn additional_object_count(&self) -> u16 {
+        (**self).additional_object_count()
+    }
+
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        (**self).additional_object_type_at(index)
+    }
+
+    fn get_property_descriptor(
+        &self,
+        object_type: InterfaceObjectType,
+        prop_id: u16,
+    ) -> Option<PropertyDescriptor> {
+        (**self).get_property_descriptor(object_type, prop_id)
+    }
+
+    fn property_description_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        (**self).property_description_read(ctx, object_type, object_idx, lookup)
+    }
+
+    fn property_value_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        (**self).property_value_read(ctx, object_type, req, buf)
+    }
+
+    fn property_value_write(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        (**self).property_value_write(ctx, object_type, req)
+    }
+
+    fn function_property_command(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        (**self).function_property_command(ctx, object_type, req)
+    }
+
+    fn function_property_state_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        (**self).function_property_state_read(ctx, object_type, req)
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        (**self).next_deadline()
+    }
+
+    // `poll` is intentionally not delegated through `&A` — `&A` is a
+    // shared reference, so a `&mut self` delegation isn't possible.
+    // Augments that need lifecycle ticks should be stored by-value (or
+    // through an interior-mutability wrapper) so the runtime can call
+    // `poll` directly.
+}
+
+/// Right-nested pair composition: `(Head, Tail)` runs `Head` first
+/// and falls through to `Tail` when `Head` returns `None`.
+impl<D, Head, Tail> Augment<D> for (Head, Tail)
+where
+    D: StackDefinition,
+    Head: Augment<D>,
+    Tail: Augment<D>,
+{
+    fn additional_object_count(&self) -> u16 {
+        self.0.additional_object_count() + self.1.additional_object_count()
+    }
+
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        let head_count = self.0.additional_object_count();
+        if index < head_count {
+            self.0.additional_object_type_at(index)
+        } else {
+            self.1.additional_object_type_at(index - head_count)
+        }
+    }
+
+    fn get_property_descriptor(
+        &self,
+        object_type: InterfaceObjectType,
+        prop_id: u16,
+    ) -> Option<PropertyDescriptor> {
+        self.0
+            .get_property_descriptor(object_type, prop_id)
+            .or_else(|| self.1.get_property_descriptor(object_type, prop_id))
+    }
+
+    fn property_description_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        self.0
+            .property_description_read(ctx, object_type, object_idx, lookup)
+            .or_else(|| self.1.property_description_read(ctx, object_type, object_idx, lookup))
+    }
+
+    fn property_value_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        // `or_else` would borrow `buf` twice, so go explicit.
+        if let r @ Some(_) = self.0.property_value_read(ctx, object_type, req, buf) {
+            return r;
+        }
+        self.1.property_value_read(ctx, object_type, req, buf)
+    }
+
+    fn property_value_write(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        self.0
+            .property_value_write(ctx, object_type, req)
+            .or_else(|| self.1.property_value_write(ctx, object_type, req))
+    }
+
+    fn function_property_command(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.0
+            .function_property_command(ctx, object_type, req)
+            .or_else(|| self.1.function_property_command(ctx, object_type, req))
+    }
+
+    fn function_property_state_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.0
+            .function_property_state_read(ctx, object_type, req)
+            .or_else(|| self.1.function_property_state_read(ctx, object_type, req))
+    }
+
+    fn next_deadline(&self) -> Option<Instant> {
+        match (self.0.next_deadline(), self.1.next_deadline()) {
+            (Some(a), Some(b)) => Some(if a < b { a } else { b }),
+            (a, b) => a.or(b),
+        }
+    }
+
+    fn poll(&mut self, ctx: &ServiceCtx<'_, D>) {
+        self.0.poll(ctx);
+        self.1.poll(ctx);
+    }
 }

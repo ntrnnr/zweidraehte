@@ -18,7 +18,7 @@
 use crate::{
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
     objects::interface::{FunctionPropertyRequest, PropertyServiceHandler},
 };
 use zweidraehte_proto::messages::{
@@ -43,7 +43,7 @@ impl<D: StackDefinition> ApciHandler<D> for FunctionPropertyService {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::FunctionPropertyCommand => {
@@ -69,7 +69,7 @@ impl<D: StackDefinition> ApciHandler<D> for FunctionPropertyService {
 /// is invoked on the interface objects.
 fn handle<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &ServiceCtx<'_, D>,
+    ctx: &AlCtx<'_, D>,
     is_command: bool,
 ) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {

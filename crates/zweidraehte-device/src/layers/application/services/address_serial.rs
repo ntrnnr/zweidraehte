@@ -14,7 +14,7 @@ use crate::{
     StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::{
@@ -42,7 +42,7 @@ impl<D: StackDefinition> ApciHandler<D> for IndividualAddressSerialNumberService
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::IndividualAddressSerialNumberRead => {
@@ -63,7 +63,7 @@ impl<D: StackDefinition> ApciHandler<D> for IndividualAddressSerialNumberService
 }
 
 
-fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
         return;
@@ -101,7 +101,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     ctx.lctx.push_outbox(msg.into_inner());
 }
 
-fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {
         warn!("AL IndividualAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
         return;

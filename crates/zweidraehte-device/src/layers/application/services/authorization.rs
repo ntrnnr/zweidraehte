@@ -14,7 +14,7 @@ use crate::{
     HasAuthorization, StackState,
     context::layer::HasOutbox,
     definition::StackDefinition,
-    service::{ApciHandler, ServiceCtx},
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::AccessSource;
@@ -46,7 +46,7 @@ impl<D: StackDefinition> ApciHandler<D> for AuthorizationService {
         &self,
         apci: ApciCode,
         msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &ServiceCtx<'_, D>,
+        ctx: &AlCtx<'_, D>,
     ) -> bool {
         match apci {
             ApciCode::AuthorizeRequest => {
@@ -74,7 +74,7 @@ impl<D: StackDefinition> ApciHandler<D> for AuthorizationService {
 /// Handle `A_Authorize_Request.ind`
 fn handle_authorize_request<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &ServiceCtx<'_, D>,
+    ctx: &AlCtx<'_, D>,
 ) {
     let Some(req) = AuthorizeRequest::parse(ind.buf()) else {
         error!("Authorize_Request message too short: {}", ind.len());
@@ -111,7 +111,7 @@ fn handle_authorize_request<D: StackDefinition>(
 }
 
 /// Handle `A_Key_Write.ind`
-fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     // Access policy 3FF/0CC: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
     use zweidraehte_proto::access::AccessPolicy;

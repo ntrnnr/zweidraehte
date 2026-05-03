@@ -65,7 +65,7 @@ use crate::{
         asso6::AssoTab6Impl,
         co7::CoTab7Impl,
     },
-    prelude::InterfaceObjectAugment,
+    service::Augment,
     restart::EraseCode,
 };
 use zweidraehte_proto::address::IndividualAddress;
@@ -234,7 +234,7 @@ pub trait Extension<Platform = ()>: ExtensionState {
     /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
     /// For IP: `IpAugment<'a, P, N>` (wraps extension + platform).
     /// For `()`: `()` (no augmentation).
-    type Augment<'a, D: StackDefinition>: InterfaceObjectAugment<D>
+    type Augment<'a, D: StackDefinition>: Augment<D>
     where
         Self: 'a,
         Platform: 'a;

@@ -35,8 +35,7 @@ use crate::{
     device_model::DeviceModelNotifier,
     objects::interface::{
         AddressTableObject, ApplicationProgramObject, AssociationTableObject, DeviceObject, GroupObjectTableObject,
-        InterfaceObject, InterfaceObjectAugment, PeiProgramObject, PropertyAccess, PropertyDescriptor, PropertyError,
-        pid,
+        InterfaceObject, PeiProgramObject, PropertyAccess, PropertyDescriptor, PropertyError, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
 };
@@ -92,8 +91,8 @@ static BASE_IO_TYPES: [InterfaceObjectType; 6] = [
 /// - `COT`: Communication object table type
 /// - `APP`: Application type (implementing both HasLoadStateMachine and HasRunStateMachine)
 /// - `PEI`: PEI application type (implementing both HasLoadStateMachine and HasRunStateMachine)
-/// - `A`:   Optional augment chain implementing [`InterfaceObjectAugment<D>`]
-pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<D> = ()>
+/// - `A`:   Optional augment chain implementing [`crate::service::Augment<D>`]
+pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A: crate::service::Augment<D> = ()>
 where
     D: StackDefinition,
     ADT: HasLoadStateMachine,
@@ -158,7 +157,7 @@ where
     }
 }
 
-impl<'a, D, ADT, AST, COT, APP, PEI, A: InterfaceObjectAugment<D>> SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>
+impl<'a, D, ADT, AST, COT, APP, PEI, A: crate::service::Augment<D>> SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, A>
 where
     D: StackDefinition,
     D::State: StackState + DeviceModelNotifier,
@@ -428,7 +427,7 @@ where
     <D::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
     <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
-    A: InterfaceObjectAugment<D>,
+    A: crate::service::Augment<D>,
 {
     SystemBObjects::with_augment(
         state,
@@ -514,7 +513,7 @@ where
     <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
     D::ES: Extension<D::Platform>,
-    <D::ES as Extension<D::Platform>>::Augment<'a, D>: InterfaceObjectAugment<D>,
+    <D::ES as Extension<D::Platform>>::Augment<'a, D>: crate::service::Augment<D>,
 {
     let augment = state.extension_state().create_augment::<D>(platform);
     create_system_b_objects::<D, _>(state, lctx, layout, augment)
@@ -561,8 +560,8 @@ where
     <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
     D::ES: Extension<D::Platform>,
-    <D::ES as Extension<D::Platform>>::Augment<'a, D>: InterfaceObjectAugment<D>,
-    A: InterfaceObjectAugment<D>,
+    <D::ES as Extension<D::Platform>>::Augment<'a, D>: crate::service::Augment<D>,
+    A: crate::service::Augment<D>,
 {
     let augment = state.extension_state().create_augment::<D>(platform);
     create_system_b_objects::<D, _>(state, lctx, layout, (augment, extra))

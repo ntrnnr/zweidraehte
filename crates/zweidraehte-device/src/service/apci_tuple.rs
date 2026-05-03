@@ -1,4 +1,4 @@
-//! Tuple impls of [`ApciHandler`] for arities 0..=8.
+//! Tuple impls of [`ApciHandler`] for arities 0..=12.
 //!
 //! Used as the `Ext` parameter on
 //! [`ApplicationLayer<Ext>`](crate::service::Layer) and the secure AL.
@@ -9,7 +9,7 @@ use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer};
 
 use crate::definition::StackDefinition;
-use crate::service::{ApciHandler, ServiceCtx};
+use crate::service::{AlCtx, ApciHandler};
 
 /// Empty extension set — handles nothing, returns `false` always.
 impl<D: StackDefinition> ApciHandler<D> for () {
@@ -18,7 +18,7 @@ impl<D: StackDefinition> ApciHandler<D> for () {
         &self,
         _apci: ApciCode,
         _msg: &KnxMessageBuffer<Buffer<'static>>,
-        _ctx: &ServiceCtx<'_, D>,
+        _ctx: &AlCtx<'_, D>,
     ) -> bool {
         false
     }
@@ -38,7 +38,7 @@ macro_rules! impl_apci_handler_tuple {
                 &self,
                 apci: ApciCode,
                 msg: &KnxMessageBuffer<Buffer<'static>>,
-                ctx: &ServiceCtx<'_, D>,
+                ctx: &AlCtx<'_, D>,
             ) -> bool {
                 $(
                     if self.$idx.try_handle_apci(apci, msg, ctx) {
