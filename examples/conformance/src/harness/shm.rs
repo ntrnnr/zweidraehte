@@ -36,7 +36,12 @@ const SHM_HEADER_SIZE: usize = 6;
 /// Generous for postcard-serialized state (typically ~2-4 KiB).
 pub const SHM_SIZE: usize = 64 * 1024;
 
-/// RAII wrapper around a `memfd_create`-backed shared memory region.
+/// RAII wrapper around an anonymous, mmap-backed shared memory region.
+///
+/// On Linux this is backed by `O_TMPFILE` (or a temp file that's been
+/// unlinked); on macOS it's backed by an unlinked temp file in
+/// `TMPDIR`. Either way the file has no path on disk — the fd is the
+/// only handle, and dropping it releases the storage.
 ///
 /// The region stores postcard-serialized device state:
 ///
@@ -57,17 +62,19 @@ pub struct SharedMemory {
 unsafe impl Send for SharedMemory {}
 
 impl SharedMemory {
-    /// Create a new anonymous shared memory region via `memfd_create`.
+    /// Create a new anonymous shared memory region.
     pub fn create() -> io::Result<Self> {
-        use nix::sys::memfd;
         use nix::sys::mman;
+        use std::os::fd::OwnedFd;
 
         let size = SHM_SIZE;
 
-        let fd =
-            memfd::memfd_create(c"conformance_state", memfd::MemFdCreateFlag::MFD_CLOEXEC).map_err(io::Error::other)?;
-
-        nix::unistd::ftruncate(&fd, size as i64).map_err(io::Error::other)?;
+        // tempfile::tempfile() is anonymous and cross-platform: Linux
+        // uses O_TMPFILE when available, macOS creates+unlinks under
+        // TMPDIR. Either way we get an OwnedFd with no on-disk name.
+        let file = tempfile::tempfile()?;
+        file.set_len(size as u64)?;
+        let fd: OwnedFd = file.into();
 
         let ptr = unsafe {
             mman::mmap(

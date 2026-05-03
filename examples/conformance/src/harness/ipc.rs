@@ -89,7 +89,11 @@ const MAX_DRAIN_ITERS: usize = 128;
 // executor used by the DUT binaries.
 
 struct BarrierState {
-    pending_exit: Signal<CriticalSectionRawMutex, ()>,
+    /// Carries the [`ExitReason`] from the lifecycle handler to
+    /// [`IpcLinkLayer::emit_step_complete`], which writes
+    /// `DutMessage::Exiting` immediately after `StepComplete` so both
+    /// land back-to-back in the socket buffer.
+    pending_exit: Signal<CriticalSectionRawMutex, ExitReason>,
     step_settled: Signal<CriticalSectionRawMutex, ()>,
 }
 
@@ -125,18 +129,34 @@ fn roi_done_signal() -> &'static Signal<CriticalSectionRawMutex, ()> {
     &ROI_DONE
 }
 
-/// Lifecycle handlers call this first. Once signalled, the
-/// IpcLinkLayer will emit its pending `StepComplete` immediately
-/// (cutting any drain quiet-window short) and then signal
-/// `step_settled`.
-pub fn mark_pending_exit() {
-    BARRIER.pending_exit.signal(());
+/// Lifecycle handlers call this first, passing the reason the DUT is
+/// exiting. Once signalled, the IpcLinkLayer will emit its pending
+/// `StepComplete` immediately (cutting any drain quiet-window short),
+/// then write `DutMessage::Exiting { reason }` back-to-back, then
+/// signal `step_settled`.
+///
+/// Coupling the `Exiting` write into the same async task as
+/// `StepComplete` removes a cross-task scheduling gap that was wide
+/// enough on macOS (kqueue + smaller default unix-socket buffers) for
+/// the runner to read `StepComplete`, time out its 2 ms follow-up
+/// poll for `Exiting`, and then hit `EPIPE` on the next inject because
+/// the lifecycle hadn't transitioned to `Dead`.
+pub fn mark_pending_exit(reason: ExitReason) {
+    BARRIER.pending_exit.signal(reason);
 }
 
 /// Non-blocking probe used inside the drain loop to decide whether to
-/// shortcut the quiet-window wait.
+/// shortcut the quiet-window wait. Does **not** consume the value —
+/// `emit_step_complete` calls [`pending_exit_take`] later.
 fn pending_exit_raised() -> bool {
     BARRIER.pending_exit.signaled()
+}
+
+/// Consume the pending-exit reason if one was set. Called by
+/// `emit_step_complete` after the `StepComplete` write so it can append
+/// `DutMessage::Exiting` from the same task.
+fn pending_exit_take() -> Option<ExitReason> {
+    BARRIER.pending_exit.try_take()
 }
 
 /// Reset the barrier — called from within `emit_step_complete` just
@@ -505,9 +525,21 @@ impl<'a> IpcLinkLayer<'a> {
         if let Err(e) = write_msg_async(&self.socket, &DutMessage::StepComplete { seq, frames }).await {
             log::error!("IPC LL: failed to write StepComplete(seq={}): {}", seq, e);
         }
-        // Release the barrier — any lifecycle handler awaiting the
-        // `step_settled` signal may now proceed to write `Exiting`
-        // + shutdown the socket.
+        // If a lifecycle handler raised `pending_exit` before this
+        // step completed (restart / power-cycle / master-reset), write
+        // `Exiting` from the same task immediately after
+        // `StepComplete`. Both messages then sit contiguously in the
+        // socket send buffer with no scheduling gap between them —
+        // the runner's `read_until_step_complete` post-StepComplete
+        // poll always finds `Exiting` waiting.
+        if let Some(reason) = pending_exit_take() {
+            if let Err(e) = write_msg_async(&self.socket, &DutMessage::Exiting { reason }).await {
+                log::error!("IPC LL: failed to write Exiting: {}", e);
+            }
+        }
+        // Release the barrier — `emit_exiting_and_shutdown` now only
+        // needs to half-close the socket; the `Exiting` frame is
+        // already on the wire.
         BARRIER.step_settled.signal(());
     }
 }
@@ -516,61 +548,32 @@ impl<'a> IpcLinkLayer<'a> {
 // Lifecycle helpers for the command handler task
 // ============================================================================
 
-/// Write `DutMessage::Exiting` on the primary socket (via a dup'd
-/// blocking handle) and then half-close the write side. Called by the
-/// restart / power-cycle / master-reset handlers immediately before
-/// `process::exit`.
+/// Announce the pending exit, wait for the IpcLinkLayer to flush
+/// `StepComplete` + `Exiting`, then half-close the write side of the
+/// socket. Called by the restart / power-cycle / master-reset handlers
+/// immediately before `process::exit`.
 ///
-/// This uses a blocking write on a dup'd fd rather than the async link
-/// layer's handle so the message is guaranteed to hit the socket before
-/// the process exits — the async LL task may not be scheduled again
-/// between our `Exiting` and the exit syscall.
+/// The actual `DutMessage::Exiting` write is performed by
+/// [`IpcLinkLayer::emit_step_complete`] from the same async task that
+/// just wrote `StepComplete`, so both frames sit contiguously in the
+/// socket buffer. This removes the cross-task scheduling gap that
+/// previously caused `EPIPE` on macOS when the runner read
+/// `StepComplete` before the lifecycle handler had been re-scheduled
+/// to write `Exiting`.
 pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
     use embassy_time::{Duration, Timer};
 
-    // Announce the pending exit so `IpcLinkLayer::drain_step` cuts
-    // its quiet window short and emits `StepComplete` immediately.
-    mark_pending_exit();
+    // Hand the exit reason off to the IpcLinkLayer, which will append
+    // `Exiting` to the socket immediately after `StepComplete`. Also
+    // cuts `IpcLinkLayer::drain_step`'s quiet window short.
+    mark_pending_exit(reason);
 
-    // Wait until the IpcLinkLayer has flushed its pending
-    // `StepComplete`. Capped at ~50 ms against a hang if the async LL
-    // task crashed earlier — we'd rather exit slightly early than
-    // deadlock the DUT.
+    // Wait until the IpcLinkLayer has flushed both frames. Capped at
+    // ~50 ms against a hang if the async LL task crashed earlier —
+    // we'd rather exit slightly early than deadlock the DUT.
     let _ = select(BARRIER.step_settled.wait(), Timer::after(Duration::from_millis(50))).await;
 
-    let fd = PRIMARY_SOCKET_FD.load(Ordering::Relaxed);
-    if fd < 0 {
-        log::error!("emit_exiting_and_shutdown: primary socket fd not registered");
-        return;
-    }
-
-    // Dup so we get a blocking handle without disturbing the async
-    // link layer's view of the fd. Both ends share the same kernel
-    // send buffer, so `shutdown(SHUT_WR)` below still drains any
-    // bytes queued by the async LL task.
-    let dup_fd = match nix::unistd::dup(fd) {
-        Ok(fd) => fd,
-        Err(e) => {
-            log::error!("emit_exiting_and_shutdown: dup failed: {}", e);
-            return;
-        }
-    };
-
-    // SAFETY: `dup` just returned a fresh fd that we own; wrapping it
-    // in `UnixStream::from_raw_fd` transfers ownership — the stream
-    // closes the fd on drop.
-    let mut stream = unsafe { UnixStream::from_raw_fd(dup_fd) };
-    // Non-blocking mode is a file-description-level flag shared across
-    // dups on Linux. Force blocking for this final write so `write_all`
-    // doesn't WouldBlock while the async LL might still be draining.
-    let _ = stream.set_nonblocking(false);
-
-    if let Err(e) = super::framing::write_msg_blocking(&mut stream, &DutMessage::Exiting { reason }) {
-        log::error!("emit_exiting_and_shutdown: write failed: {}", e);
-    }
-
     shutdown_ipc_socket();
-    // `stream` closes the dup'd fd here.
 }
 
 // ============================================================================
