@@ -6,7 +6,7 @@
 //!
 //! # Usage
 //!
-//! Set `type Services = DomainAddressService;` in your
+//! Set `type AlExtensions = DomainAddressService;` in your
 //! [`StackDefinition`] impl. The device's `State` type must implement
 //! [`HasDomainAddress`].
 

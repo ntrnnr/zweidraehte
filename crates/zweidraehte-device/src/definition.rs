@@ -284,15 +284,17 @@ pub trait StackDefinition: Copy + 'static {
     where
         Self::State: 'a;
 
-    /// Application layer services.
+    /// Application Layer APCI extension set.
     ///
-    /// Allows devices to handle APCI codes that are not part of the core
-    /// AL dispatch. The default `()` handles nothing (zero overhead).
-    /// Services compose via tuples: `type Services = (A, B);`.
+    /// Threaded through [`ApplicationLayer`](crate::layers::application::ApplicationLayer)
+    /// and [`SecureApplicationLayer`](crate::layers::secure_application::SecureApplicationLayer)
+    /// as the `Ext` parameter. The AL handles its built-in APCIs inline and
+    /// falls through to this set for anything else. Default `()` handles
+    /// nothing (zero overhead). Compose via tuples: `type AlExtensions = (A, B);`.
     ///
     /// Use [`DomainAddressService`](crate::layers::application::services::domain_addr::DomainAddressService)
     /// for KNX/IP devices that need `A_DomainAddressSerialNumber_*` services.
-    type Services: ApciHandler<Self> + Default = ();
+    type AlExtensions: ApciHandler<Self> + Default = ();
 
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.

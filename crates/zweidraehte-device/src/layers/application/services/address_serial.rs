@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type Services = IndividualAddressSerialNumberService;
+//! type AlExtensions = IndividualAddressSerialNumberService;
 //! ```
 
 use crate::{

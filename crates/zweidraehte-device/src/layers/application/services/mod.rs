@@ -50,14 +50,14 @@ pub use user_memory::UserMemoryService;
 /// Composes the services commonly used by System B devices (mask
 /// 07B0h/27B0h): memory access, user memory, authorization, serial
 /// number addressing, ADC, user-manufacturer info, and function
-/// properties. Use this as `type Services = SystemBAlServices;` for
+/// properties. Use this as `type AlExtensions = SystemBAlServices;` for
 /// the standard System B behaviour.
 ///
 /// For devices that also need domain address or extended property
 /// services, extend the tuple directly:
 ///
 /// ```rust,ignore
-/// type Services = (
+/// type AlExtensions = (
 ///     MemoryService, UserMemoryService, /* … standard set */ ,
 ///     DomainAddressService,
 /// );
@@ -88,7 +88,7 @@ pub type SystemBAlServices = (
 /// Profiles §9.1.2.3 marks Mandatory for every KNX Secure / KNXnet/IP
 /// Security / KNX Data Security profile.
 ///
-/// Use this as `type Services = SystemBSecureAlServices;` in any
+/// Use this as `type AlExtensions = SystemBSecureAlServices;` in any
 /// `StackDefinition` paired with
 /// [`SecureDeviceBuilder`](crate::composition::SecureDeviceBuilder).
 /// For non-Secure System B devices continue using

@@ -119,7 +119,7 @@ impl StackDefinition for PicoTp1LightSwitch {
         )
     }
 
-    type Services = zweidraehte_device::layers::application::services::SystemBAlServices;
+    type AlExtensions = zweidraehte_device::layers::application::services::SystemBAlServices;
     type LayerBuilder = InsecureDeviceBuilder;
 }
 

@@ -226,7 +226,7 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
         )
     }
 
-    type Services = zweidraehte_device::layers::application::services::SystemBSecureAlServices;
+    type AlExtensions = zweidraehte_device::layers::application::services::SystemBSecureAlServices;
     type LayerBuilder = SecureDeviceBuilder;
     // Non-crypto PRNG (see `stm32_common::rng`) — plugs directly into
     // the Secure Application Layer's `S-A_Sync` challenge/nonce

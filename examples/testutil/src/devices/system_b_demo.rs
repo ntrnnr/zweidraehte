@@ -598,7 +598,7 @@ impl StackDefinition for DemoStack {
         create_system_b_objects_from_extension::<Self>(state, layer_ctx, platform, &Self::memory_layout())
     }
 
-    type Services = (
+    type AlExtensions = (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
     );

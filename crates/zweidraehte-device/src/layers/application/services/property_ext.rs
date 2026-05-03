@@ -6,11 +6,11 @@
 //!
 //! # Usage
 //!
-//! Set `type Services = PropertyExtValueService;` in your
+//! Set `type AlExtensions = PropertyExtValueService;` in your
 //! [`StackDefinition`] impl, or compose with other extensions:
 //!
 //! ```rust,ignore
-//! type Services = (PropertyExtValueService, DomainAddressService);
+//! type AlExtensions = (PropertyExtValueService, DomainAddressService);
 //! ```
 
 use crate::{

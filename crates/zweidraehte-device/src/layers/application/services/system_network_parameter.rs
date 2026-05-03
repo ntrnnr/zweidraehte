@@ -10,7 +10,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type Services = (SystemBAlServices, SystemNetworkParameterService);
+//! type AlExtensions = (SystemBAlServices, SystemNetworkParameterService);
 //! ```
 
 use crate::{

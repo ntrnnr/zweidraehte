@@ -99,8 +99,8 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// construction and shared by all group-data methods.
     group_data: group_data::GroupDataProvider<'a, D>,
 
-    /// Optional service extension for profile-specific APCI handlers.
-    services: D::Services,
+    /// Optional APCI extension set for profile-specific handlers.
+    extensions: D::AlExtensions,
 }
 
 // ============================================================================
@@ -116,7 +116,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             interface_objects: ctx.interface_objects(),
             memory_map: ctx.memory_map(),
             group_data: group_data::GroupDataProvider::new(ctx.state(), ctx.layer_context()),
-            services: Default::default(),
+            extensions: Default::default(),
         }
     }
 
@@ -263,7 +263,7 @@ impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
                             self.interface_objects,
                             self.memory_map,
                         );
-                        if !self.services.try_handle_apci(apci, &msg, &ctx) {
+                        if !self.extensions.try_handle_apci(apci, &msg, &ctx) {
                             warn!("Unhandled APCI code: {:?}", msg.get_apci_code());
                         }
                     }

@@ -12,7 +12,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type Services = (MemoryService, FunctionPropertyService);
+//! type AlExtensions = (MemoryService, FunctionPropertyService);
 //! ```
 
 use crate::{

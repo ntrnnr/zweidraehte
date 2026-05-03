@@ -1335,7 +1335,7 @@ impl StackDefinition for IpcConformanceTestStack {
         )
     }
 
-    type Services = zweidraehte_device::layers::application::services::SystemBAlServices;
+    type AlExtensions = zweidraehte_device::layers::application::services::SystemBAlServices;
     type LayerBuilder = InsecureDeviceBuilder;
 }
 

@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type Services = UserManufacturerInfoService;
+//! type AlExtensions = UserManufacturerInfoService;
 //! ```
 
 use crate::{

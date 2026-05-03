@@ -7,7 +7,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! type Services = MemoryService;
+//! type AlExtensions = MemoryService;
 //! ```
 
 use crate::{

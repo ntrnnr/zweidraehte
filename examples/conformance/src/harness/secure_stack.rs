@@ -1001,7 +1001,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         }
     }
 
-    type Services = (
+    type AlExtensions = (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::PropertyExtValueService,
     );

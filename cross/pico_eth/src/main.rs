@@ -122,7 +122,7 @@ impl StackDefinition for PicoEthLightSwitch {
         )
     }
 
-    type Services = (
+    type AlExtensions = (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
     );
