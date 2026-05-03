@@ -73,4 +73,5 @@ pub mod objects;
 pub mod prelude;
 pub mod restart;
 pub mod router;
+pub mod service;
 pub mod storage;
