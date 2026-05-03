@@ -939,3 +939,39 @@ where
         self.with_outbox_swap(|this| this.inner.init());
     }
 }
+
+// ============================================================================
+// service::Layer<D> impl — the new trait surface.
+//
+// Phase B coexistence shim. Every method forwards to the legacy
+// `router::Layer` impl above, which already handles the
+// stamp+encrypt / decrypt-on-ingress logic. Phase E will reshape
+// SecureAL into `SecureApplicationLayer<Ext>` taking an `Ext:
+// ApciHandler<D>` parameter that flows through the inner AL after
+// decryption.
+// ============================================================================
+
+impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> crate::service::Layer<D>
+    for SecureApplicationLayer<'_, D, SEQ, P2P>
+where
+    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
+{
+    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
+
+    fn init(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::init(self)
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        <Self as Layer>::next_deadline(self)
+    }
+
+    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::poll(self)
+    }
+
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::process(self, msg)
+    }
+}

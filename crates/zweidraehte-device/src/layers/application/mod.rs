@@ -284,6 +284,39 @@ impl<D: StackDefinition> Layer for ApplicationLayer<'_, D> {
     }
 }
 
+// ============================================================================
+// service::Layer<D> impl — the new trait surface.
+//
+// Phase B coexistence: the existing `ApplicationLayer<'a, D>` keeps
+// its captured fields and continues to dispatch APCIs through the
+// legacy `AlService`-tuple `D::Services` exactly as before. The new
+// impl forwards to the legacy `router::Layer` impl above so wire
+// dispatch under either trait routes the same code.
+//
+// Phase E will reshape the AL into `ApplicationLayer<Ext>` taking
+// an `Ext: ApciHandler<D>` type parameter and deleting the
+// `D::Services` AlService surface. Until then, this shim keeps the
+// AL visible to a new `LayerRegistry` that's wired into the runner.
+// ============================================================================
+
+impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
+    const HANDLES: &'static [ServiceType] = <Self as Layer>::HANDLES;
+
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::process(self, msg)
+    }
+
+    fn next_deadline(&self) -> Option<embassy_time::Instant> {
+        <Self as Layer>::next_deadline(self)
+    }
+
+    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as Layer>::poll(self)
+    }
+
+    // No `init` override — the legacy AL has no `init` either.
+}
+
 impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// Handle a confirmation from the transport layer.
     ///
