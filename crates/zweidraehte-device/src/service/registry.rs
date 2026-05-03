@@ -205,12 +205,24 @@ pub trait AugmentRegistry<D: StackDefinition> {
 }
 
 // =============================================================================
-// AugmentRegistry for () — the empty-augments default
+// AugmentRegistry impls for the legacy Augment<D> chain shapes
 // =============================================================================
+//
+// The IO container's `augments: &'a Aug` field accepts anything
+// satisfying `AugmentRegistry<D>`. To preserve compatibility with
+// the existing right-nested `(Head, Tail)` tuple chain that today's
+// devices use, the unit `()`, the tuple form, and shared-ref `&A`
+// each get an explicit `AugmentRegistry<D>` impl that forwards to
+// their `Augment<D>` impl one-to-one.
+//
+// We intentionally do NOT use a blanket `impl<A: Augment<D>>
+// AugmentRegistry<D> for A` because that would conflict with the
+// macro-derived impls per Rust's coherence rules ("downstream crates
+// may implement Augment for SmokeServices").
 
-/// Empty augment chain — every hook is `None`, contributes 0 IO objects,
-/// has no deadline. Used as the default for [`StackDefinition::Augments`]
-/// so devices without augments don't have to write any boilerplate.
+/// Empty augment chain — no IO objects, no hooks, no deadline.
+/// Default for [`StackDefinition::Augments`] on devices without
+/// augments.
 impl<D: StackDefinition> AugmentRegistry<D> for () {
     fn get_property_descriptor(
         &self,
@@ -219,7 +231,6 @@ impl<D: StackDefinition> AugmentRegistry<D> for () {
     ) -> Option<PropertyDescriptor> {
         None
     }
-
     fn property_description_read(
         &self,
         _ctx: &ServiceCtx<'_, D>,
@@ -229,7 +240,6 @@ impl<D: StackDefinition> AugmentRegistry<D> for () {
     ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
         None
     }
-
     fn property_value_read(
         &self,
         _ctx: &ServiceCtx<'_, D>,
@@ -239,7 +249,6 @@ impl<D: StackDefinition> AugmentRegistry<D> for () {
     ) -> Option<Result<usize, PropertyError>> {
         None
     }
-
     fn property_value_write(
         &self,
         _ctx: &ServiceCtx<'_, D>,
@@ -248,7 +257,6 @@ impl<D: StackDefinition> AugmentRegistry<D> for () {
     ) -> Option<Result<WriteResponse, PropertyError>> {
         None
     }
-
     fn function_property_command(
         &self,
         _ctx: &ServiceCtx<'_, D>,
@@ -257,7 +265,6 @@ impl<D: StackDefinition> AugmentRegistry<D> for () {
     ) -> Option<FunctionPropertyResult> {
         None
     }
-
     fn function_property_state_read(
         &self,
         _ctx: &ServiceCtx<'_, D>,
@@ -266,18 +273,191 @@ impl<D: StackDefinition> AugmentRegistry<D> for () {
     ) -> Option<FunctionPropertyResult> {
         None
     }
-
     fn additional_object_count(&self) -> u16 {
         0
     }
-
     fn additional_object_type_at(&self, _index: u16) -> Option<InterfaceObjectType> {
         None
     }
-
     fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {}
-
     fn next_augment_deadline(&self) -> Option<Instant> {
         None
+    }
+}
+
+/// Right-nested tuple chain: walks `Head` first, then `Tail`. Mirrors
+/// the legacy `Augment<D>` tuple impl in `traits.rs` so devices keep
+/// using their existing augment expressions like
+/// `(IpAugment, EasterEggAugment)`.
+impl<D, Head, Tail> AugmentRegistry<D> for (Head, Tail)
+where
+    D: StackDefinition,
+    Head: AugmentRegistry<D>,
+    Tail: AugmentRegistry<D>,
+{
+    fn get_property_descriptor(
+        &self,
+        object_type: InterfaceObjectType,
+        prop_id: u16,
+    ) -> Option<PropertyDescriptor> {
+        self.0
+            .get_property_descriptor(object_type, prop_id)
+            .or_else(|| self.1.get_property_descriptor(object_type, prop_id))
+    }
+
+    fn property_description_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        self.0
+            .property_description_read(ctx, object_type, object_idx, lookup)
+            .or_else(|| self.1.property_description_read(ctx, object_type, object_idx, lookup))
+    }
+
+    fn property_value_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        if let r @ Some(_) = self.0.property_value_read(ctx, object_type, req, buf) {
+            return r;
+        }
+        self.1.property_value_read(ctx, object_type, req, buf)
+    }
+
+    fn property_value_write(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        self.0
+            .property_value_write(ctx, object_type, req)
+            .or_else(|| self.1.property_value_write(ctx, object_type, req))
+    }
+
+    fn function_property_command(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.0
+            .function_property_command(ctx, object_type, req)
+            .or_else(|| self.1.function_property_command(ctx, object_type, req))
+    }
+
+    fn function_property_state_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.0
+            .function_property_state_read(ctx, object_type, req)
+            .or_else(|| self.1.function_property_state_read(ctx, object_type, req))
+    }
+
+    fn additional_object_count(&self) -> u16 {
+        self.0.additional_object_count() + self.1.additional_object_count()
+    }
+
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        let head_count = self.0.additional_object_count();
+        if index < head_count {
+            return self.0.additional_object_type_at(index);
+        }
+        self.1.additional_object_type_at(index - head_count)
+    }
+
+    fn poll_augments(&mut self, ctx: &ServiceCtx<'_, D>) {
+        self.0.poll_augments(ctx);
+        self.1.poll_augments(ctx);
+    }
+
+    fn next_augment_deadline(&self) -> Option<Instant> {
+        match (self.0.next_augment_deadline(), self.1.next_augment_deadline()) {
+            (None, None) => None,
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (Some(a), Some(b)) => Some(if a < b { a } else { b }),
+        }
+    }
+}
+
+/// Shared-ref forwarding. Hooks are `&self`; only `poll_augments`
+/// needs special handling because it's `&mut self` on the trait but
+/// can't be on a shared reference. Implemented by ignoring the poll
+/// call — devices using `&A` cannot drive their augment's lifecycle
+/// through that reference, which is consistent with how the IO
+/// container holds `&'a D::Augments<'a>`: lifecycle ticks happen
+/// through the runner's `&mut augments_owner`, not through the IO
+/// container's shared borrow.
+impl<D: StackDefinition, A: AugmentRegistry<D>> AugmentRegistry<D> for &A {
+    fn get_property_descriptor(
+        &self,
+        object_type: InterfaceObjectType,
+        prop_id: u16,
+    ) -> Option<PropertyDescriptor> {
+        (**self).get_property_descriptor(object_type, prop_id)
+    }
+    fn property_description_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        (**self).property_description_read(ctx, object_type, object_idx, lookup)
+    }
+    fn property_value_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        (**self).property_value_read(ctx, object_type, req, buf)
+    }
+    fn property_value_write(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        (**self).property_value_write(ctx, object_type, req)
+    }
+    fn function_property_command(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        (**self).function_property_command(ctx, object_type, req)
+    }
+    fn function_property_state_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        (**self).function_property_state_read(ctx, object_type, req)
+    }
+    fn additional_object_count(&self) -> u16 {
+        (**self).additional_object_count()
+    }
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        (**self).additional_object_type_at(index)
+    }
+    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {
+        // No-op: a shared ref cannot drive `&mut self` lifecycle. The
+        // owner runs `poll_augments` on the augment chain directly.
+    }
+    fn next_augment_deadline(&self) -> Option<Instant> {
+        (**self).next_augment_deadline()
     }
 }
