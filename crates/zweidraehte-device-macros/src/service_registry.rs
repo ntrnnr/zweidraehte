@@ -242,6 +242,15 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
+    // Whether the struct has any field role that participates in the
+    // router's dispatch surface. Augment-only structs (no handler /
+    // lifecycle / channel) get `Augment<D>` but no `LayerRegistry<D>`
+    // — the latter would be vestigial: empty dispatch table, no-op
+    // init / poll / next_deadline, an `unreachable!()`-bodied
+    // `dispatch_wire`. Gating on this also drops the empty
+    // `service_input_enum` for those structs.
+    let has_dispatch_fields = !handlers.is_empty() || !lifecycles.is_empty() || !channels.is_empty();
+
     // `#[service(flatten)]` only forwards into the inner struct's
     // `Augment<D>` impl. The const dispatch table is keyed
     // on a single outer field index per `Layer`, which can't route
@@ -535,54 +544,58 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     };
 
-    let layer_registry_impl = quote! {
-        #service_input_enum
+    let layer_registry_impl = if has_dispatch_fields {
+        quote! {
+            #service_input_enum
 
-        impl<#(#struct_lifetimes),* #pre_d_separator #injected_d #injected_d_separator #(#struct_non_lifetime_params),*>
-            ::zweidraehte_device::service::LayerRegistry<D> for #struct_name #ty_generics
-        where
-            D: ::zweidraehte_device::StackDefinition,
-            #user_where_predicates
-        {
-            const DISPATCH_TABLE: ::zweidraehte_device::router::DispatchTable = #dispatch_table_body;
+            impl<#(#struct_lifetimes),* #pre_d_separator #injected_d #injected_d_separator #(#struct_non_lifetime_params),*>
+                ::zweidraehte_device::service::LayerRegistry<D> for #struct_name #ty_generics
+            where
+                D: ::zweidraehte_device::StackDefinition,
+                #user_where_predicates
+            {
+                const DISPATCH_TABLE: ::zweidraehte_device::router::DispatchTable = #dispatch_table_body;
 
-            fn dispatch_wire(
-                &mut self,
-                idx: u8,
-                msg: ::zweidraehte_device::__macro_support::messages::knx::KnxMessageBuffer<
-                    ::zweidraehte_device::__macro_support::messages::buffers::Buffer<'static>,
-                >,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
-            ) {
-                match idx {
-                    #( #dispatch_arms )*
-                    _ => ::core::unreachable!(
-                        "dispatch_wire called with idx={} not registered in DISPATCH_TABLE",
-                        idx,
-                    ),
+                fn dispatch_wire(
+                    &mut self,
+                    idx: u8,
+                    msg: ::zweidraehte_device::__macro_support::messages::knx::KnxMessageBuffer<
+                        ::zweidraehte_device::__macro_support::messages::buffers::Buffer<'static>,
+                    >,
+                    ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
+                ) {
+                    match idx {
+                        #( #dispatch_arms )*
+                        _ => ::core::unreachable!(
+                            "dispatch_wire called with idx={} not registered in DISPATCH_TABLE",
+                            idx,
+                        ),
+                    }
                 }
+
+                fn init_layers(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
+                    #( #lifecycle_init_calls )*
+                    #( #init_layer_calls )*
+                }
+
+                fn poll_layers(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
+                    #( #poll_layer_calls )*
+                }
+
+                fn next_layer_deadline(&self) -> ::core::option::Option<::embassy_time::Instant> {
+                    let mut earliest: ::core::option::Option<::embassy_time::Instant> =
+                        ::core::option::Option::None;
+                    #( #next_layer_deadline_merges )*
+                    earliest
+                }
+
+                #drain_events_override
+
+                #service_input_impl_items
             }
-
-            fn init_layers(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
-                #( #lifecycle_init_calls )*
-                #( #init_layer_calls )*
-            }
-
-            fn poll_layers(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
-                #( #poll_layer_calls )*
-            }
-
-            fn next_layer_deadline(&self) -> ::core::option::Option<::embassy_time::Instant> {
-                let mut earliest: ::core::option::Option<::embassy_time::Instant> =
-                    ::core::option::Option::None;
-                #( #next_layer_deadline_merges )*
-                earliest
-            }
-
-            #drain_events_override
-
-            #service_input_impl_items
         }
+    } else {
+        quote! {}
     };
 
     // -----------------------------------------------------------------
