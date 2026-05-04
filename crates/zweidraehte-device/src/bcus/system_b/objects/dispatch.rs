@@ -185,8 +185,7 @@ where
         // audit a property's access policy without also enabling Data
         // Secure (Vol 6 §6.2 / Profiles Annex A.2).
         if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
-            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
-            if !desc.can_read_secure(&req.ctx, security_on) {
+            if !desc.can_read_secure(&req.ctx, self.enforce_secure_access_policy()) {
                 if req.ctx.source_addr != 0 {
                     self.state.log_access_denied(req.ctx.source_addr);
                 }
@@ -241,10 +240,9 @@ where
                 return Err(PropertyError::WriteNotAllowed);
             }
             // Same rationale as `property_value_read`: always evaluate the
-            // per-property `AccessPolicy`, with `security_on = false` for
-            // plain stacks.
-            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
-            if !desc.can_write_secure(&req.ctx, security_on) {
+            // per-property `AccessPolicy`, with the policy evaluated against
+            // "Security Mode Off" columns on plain stacks.
+            if !desc.can_write_secure(&req.ctx, self.enforce_secure_access_policy()) {
                 if req.ctx.source_addr != 0 {
                     self.state.log_access_denied(req.ctx.source_addr);
                 }
@@ -322,8 +320,7 @@ where
             // Always evaluate the function-property write policy. See the
             // comment on `property_value_read` for rationale; the same
             // applies to function-property gates.
-            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
-            if !desc.can_function_write_secure(&req.ctx, security_on) {
+            if !desc.can_function_write_secure(&req.ctx, self.enforce_secure_access_policy()) {
                 if req.ctx.source_addr != 0 {
                     self.state.log_access_denied(req.ctx.source_addr);
                 }
@@ -390,8 +387,7 @@ where
         // while still needing policy-based access control for state reads.
         if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
             // Always evaluate the function-property read policy.
-            let security_on = self.has_secure_extension() && self.state.security_mode_enabled();
-            if !desc.can_function_read_secure(&req.ctx, security_on) {
+            if !desc.can_function_read_secure(&req.ctx, self.enforce_secure_access_policy()) {
                 if req.ctx.source_addr != 0 {
                     self.state.log_access_denied(req.ctx.source_addr);
                 }

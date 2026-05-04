@@ -325,13 +325,19 @@ where
         object_idx >= Self::BASE_OBJECT_COUNT && object_idx < self.total_object_count()
     }
 
-    /// Whether the device has a secure extension (augment provides objects).
+    /// Whether per-property `AccessPolicy` bitfields apply with their
+    /// "Security Mode On" columns rather than the legacy "Security Mode Off"
+    /// fallback.
     ///
-    /// When true, property access checks enforce full Data Secure access
-    /// policies (per-property `AccessPolicy` bitfields). When false, only
-    /// legacy access levels are checked.
-    fn has_secure_extension(&self) -> bool {
-        self.augments.additional_object_type_at(0).is_some()
+    /// True only when the device's state actually reports Data Secure as
+    /// enabled (Security IO `security_mode_enabled`). The previous version
+    /// of this predicate also checked whether any augment contributes an
+    /// additional object — that was a structural proxy that misfires the
+    /// moment a non-security augment adds objects of its own. Routing
+    /// through `state.security_mode_enabled()` directly fixes that and is
+    /// semantically what every caller already wanted.
+    fn enforce_secure_access_policy(&self) -> bool {
+        self.state.security_mode_enabled()
     }
 }
 
