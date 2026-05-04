@@ -597,8 +597,6 @@ where
     // Step 3: Generate random challenge.
     let mut challenge = [0u8; 6];
     <D::Rng as crate::rng::Rng>::fill(&mut challenge);
-    let mut random = [0u8; 6];
-    <D::Rng as crate::rng::Rng>::fill(&mut random);
 
     // Step 4: Build SCF for sync request.
     let scf = SecurityControlField {
@@ -652,7 +650,6 @@ where
         peer_ia,
         tool_access,
         challenge,
-        random,
         key,
         deadline: embassy_time::Instant::now() + embassy_time::Duration::from_secs(6),
         is_broadcast,
