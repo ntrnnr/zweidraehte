@@ -12,8 +12,8 @@ use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf,
     PropertyError, WriteResponse, interface_object_augment, pid,
 };
-use crate::service::ServiceCtx;
 use crate::objects::tables::LoadState;
+use crate::service::ServiceCtx;
 use crate::storage::SequenceNumberStorage;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
@@ -248,7 +248,6 @@ pub struct SecurityAugment<
     _test_failure_counters_io: (),
 }
 
-
 impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
     SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
 {
@@ -300,46 +299,12 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                 [val].read_property(req.start_idx, req.count, buf)
             }
             // PID 52 P2P_KEY_TABLE — array (20 bytes/entry).
-            pid::P2P_KEY_TABLE => {
-                let table = self.state.p2p_keys().borrow();
-                if req.start_idx == 0 {
-                    if buf.len() < 2 {
-                        return Some(Err(PropertyError::BufferTooSmall));
-                    }
-                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
-                    Ok(2)
-                } else {
-                    let start = (req.start_idx - 1) as u16;
-                    table.read_entries(start, req.count as u16, buf)
-                }
-            }
+            pid::P2P_KEY_TABLE => read_table_with_count_probe(&self.state.p2p_keys().borrow(), req, buf),
             // PID 53 GROUP_KEY_TABLE — array (18 bytes/entry).
-            pid::GROUP_KEY_TABLE => {
-                let table = self.state.grp_keys().borrow();
-                if req.start_idx == 0 {
-                    if buf.len() < 2 {
-                        return Some(Err(PropertyError::BufferTooSmall));
-                    }
-                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
-                    Ok(2)
-                } else {
-                    let start = (req.start_idx - 1) as u16;
-                    table.read_entries(start, req.count as u16, buf)
-                }
-            }
+            pid::GROUP_KEY_TABLE => read_table_with_count_probe(&self.state.grp_keys().borrow(), req, buf),
             // PID 54 SECURITY_INDIVIDUAL_ADDRESS_TABLE — array (8 bytes/entry).
             pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
-                let table = self.state.siat().borrow();
-                if req.start_idx == 0 {
-                    if buf.len() < 2 {
-                        return Some(Err(PropertyError::BufferTooSmall));
-                    }
-                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
-                    Ok(2)
-                } else {
-                    let start = (req.start_idx - 1) as u16;
-                    table.read_entries(start, req.count as u16, buf)
-                }
+                read_table_with_count_probe(&self.state.siat().borrow(), req, buf)
             }
             // PID 55 SECURITY_FAILURES_LOG — read-only at the value level;
             // accessed via FunctionPropertyStateRead.
@@ -362,19 +327,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                 }
             }
             // PID 61 GO_SECURITY_FLAGS — array (1 byte/entry).
-            pid::GO_SECURITY_FLAGS => {
-                let table = self.state.go_flags().borrow();
-                if req.start_idx == 0 {
-                    if buf.len() < 2 {
-                        return Some(Err(PropertyError::BufferTooSmall));
-                    }
-                    buf[..2].copy_from_slice(&table.count().to_be_bytes());
-                    Ok(2)
-                } else {
-                    let start = (req.start_idx - 1) as u16;
-                    table.read_entries(start, req.count as u16, buf)
-                }
-            }
+            pid::GO_SECURITY_FLAGS => read_table_with_count_probe(&self.state.go_flags().borrow(), req, buf),
             // PID 203 TEST_FAILURE_COUNTERS — manufacturer-specific direct
             // view of the four 16-bit failure counters.
             pid::TEST_FAILURE_COUNTERS => {
@@ -675,6 +628,27 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
         let mode = if self.state.security_mode_enabled() { 0x01u8 } else { 0x00u8 };
         // Response echoes the ReadServiceID (0x00) followed by the mode byte.
         FunctionPropertyResult::success_with_data(&[0x00, mode])
+    }
+}
+
+/// Read from a `SecurityTable` using the standard array-property protocol:
+/// `start_idx == 0` returns the current entry count as a 2-byte big-endian
+/// value (the "count probe"); `start_idx >= 1` reads `count` entries
+/// starting at the 0-based offset `start_idx - 1`.
+fn read_table_with_count_probe<const N: usize, const ES: usize>(
+    table: &SecurityTable<N, ES>,
+    req: &FullPropertyReadRequest,
+    buf: &mut [u8],
+) -> Result<usize, PropertyError> {
+    if req.start_idx == 0 {
+        if buf.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        buf[..2].copy_from_slice(&table.count().to_be_bytes());
+        Ok(2)
+    } else {
+        let start = (req.start_idx - 1) as u16;
+        table.read_entries(start, req.count as u16, buf)
     }
 }
 
