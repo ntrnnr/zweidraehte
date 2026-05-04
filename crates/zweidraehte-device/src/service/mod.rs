@@ -29,7 +29,7 @@ mod registry;
 mod traits;
 
 pub use ctx::{AlCtx, ServiceCtx};
-pub use registry::LayerRegistry;
+pub use registry::{LayerRegistry, LifecycleHook};
 pub use traits::{ApciHandler, Augment, Layer};
 
 /// Derive [`LayerRegistry<D>`] and [`Augment<D>`] for a

@@ -102,3 +102,26 @@ pub trait LayerRegistry<D: StackDefinition> {
     /// Default no-op.
     fn drain_events(&mut self, _ctx: &ServiceCtx<'_, D>) {}
 }
+
+// =============================================================================
+// LifecycleHook
+// =============================================================================
+
+/// Stack-level lifecycle hook for fields that aren't `Layer<D>` or
+/// `Augment<D>` but still need an init pass and per-cycle drain.
+///
+/// Used by `#[service(lifecycle)]` fields on a `#[derive(ServiceRegistry)]`
+/// stack. The macro emits one `LifecycleHook::init(&mut self.field, ctx)`
+/// call per lifecycle field at the top of `init_layers`, and one
+/// `LifecycleHook::drain_events(&mut self.field, ctx)` per field inside
+/// the generated `drain_events` override.
+///
+/// Implementors that don't need the context can ignore the parameter
+/// (e.g. `SystemBDeviceModel` does).
+pub trait LifecycleHook<D: StackDefinition> {
+    /// Run once before the router loop starts.
+    fn init(&mut self, ctx: &ServiceCtx<'_, D>);
+
+    /// Run after each dispatch cycle (after the outbox drain).
+    fn drain_events(&mut self, ctx: &ServiceCtx<'_, D>);
+}

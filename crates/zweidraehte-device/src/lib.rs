@@ -73,6 +73,7 @@ pub(crate) mod logging;
 /// public API and may change without notice.
 #[doc(hidden)]
 pub mod __macro_support {
+    pub use ::embassy_futures;
     pub use ::zweidraehte_proto::{access, dpt, messages, properties};
 }
 

@@ -220,6 +220,23 @@ impl<D: StackDefinition> DeviceModel for SystemBDeviceModel<'_, D> {
     }
 }
 
+/// `LifecycleHook` adapter that lets `#[service(lifecycle)]` fields on
+/// derived `LayerRegistry` impls drive the device model. The macro
+/// emits `LifecycleHook::init(&mut self.device_model, ctx)` and
+/// `LifecycleHook::drain_events(...)`; both forward to the existing
+/// inherent `DeviceModel` methods. The `_ctx` parameter is unused —
+/// the device model only touches state it already holds, but the
+/// trait carries it for future hooks that need it.
+impl<D: StackDefinition> crate::service::LifecycleHook<D> for SystemBDeviceModel<'_, D> {
+    fn init(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as DeviceModel>::init(self);
+    }
+
+    fn drain_events(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+        <Self as DeviceModel>::drain_dm_events(self);
+    }
+}
+
 impl<D: StackDefinition> SystemBDeviceModel<'_, D> {
     fn on_action_for(&mut self, target: RunTarget, action: RunAction) {
         match (target, action) {

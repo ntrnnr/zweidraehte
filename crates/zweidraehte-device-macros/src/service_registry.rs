@@ -23,7 +23,7 @@ use quote::quote;
 use syn::{Data, DeriveInput, Fields};
 
 /// Per-field role parsed from the `#[service(...)]` attribute.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone)]
 enum ServiceFieldRole {
     Handler,
     Augment,
@@ -43,6 +43,21 @@ enum ServiceFieldRole {
     /// stacks list their handler fields directly on the outer
     /// struct.
     Flatten,
+    /// `#[service(lifecycle)]` — non-`Layer` field that implements
+    /// [`LifecycleHook<D>`](::zweidraehte_device::service::LifecycleHook).
+    /// The macro emits `LifecycleHook::init` calls before the handler
+    /// inits in `init_layers`, and `LifecycleHook::drain_events` calls
+    /// inside a generated `drain_events` override.
+    Lifecycle,
+    /// `#[service(channel(dispatch = |this, payload| body))]` — async
+    /// input field whose `.receive()` future feeds
+    /// `recv_service_input`. The macro generates a hidden
+    /// `ServiceInput` enum (one variant per channel), wires
+    /// `embassy_futures::select::select{N}` over the receive futures,
+    /// and runs the user's dispatch closure in `handle_service_input`.
+    Channel {
+        dispatch: syn::ExprClosure,
+    },
 }
 
 /// Parsed field with its role and identifier. The field's type is
@@ -65,7 +80,17 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // Rust requires lifetime parameters to come before type and const
     // parameters in `impl<...>` lists. So we partition the struct's
     // own generics: lifetimes first, then `D`, then everything else.
+    //
+    // If the struct already declares its own `D` parameter (e.g.
+    // because field types directly reference `D`), don't inject a
+    // second one — emit the struct's generics verbatim and rely on
+    // the user's bound (or the where-clause we always add for
+    // `D: StackDefinition`).
     let (_, ty_generics, where_clause) = input.generics.split_for_impl();
+    let struct_has_own_d = input.generics.params.iter().any(|p| match p {
+        syn::GenericParam::Type(t) => t.ident == "D",
+        _ => false,
+    });
     let struct_lifetimes: Vec<_> =
         input.generics.params.iter().filter(|p| matches!(p, syn::GenericParam::Lifetime(_))).collect();
     let struct_non_lifetime_params: Vec<_> =
@@ -79,6 +104,40 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         quote! {}
     } else {
         quote! { , }
+    };
+    // Empty when the struct already provides `D`, otherwise injects
+    // `D` between the struct's lifetimes and its non-lifetime params.
+    let injected_d = if struct_has_own_d {
+        quote! {}
+    } else {
+        quote! { D }
+    };
+    // The injected-`D` separator only matters when we're actually
+    // injecting; otherwise it falls out via the empty `injected_d`.
+    let injected_d_separator = if struct_has_own_d {
+        quote! {}
+    } else {
+        // Need a separator after `D` only if there are non-lifetime
+        // params following; before `D` only if there are lifetimes.
+        struct_non_lifetime_separator.clone()
+    };
+    let pre_d_separator = if struct_has_own_d {
+        // Stitch lifetimes and non-lifetimes directly.
+        struct_non_lifetime_separator.clone()
+    } else {
+        struct_lifetime_separator.clone()
+    };
+    // The struct's where-clause predicates (without the `where`
+    // keyword), so we can splice them after our own `D: StackDefinition`
+    // bound. `split_for_impl` returns `Option<&WhereClause>`, which
+    // includes the `where` keyword when used directly — that breaks
+    // the emitted impl when the struct already has its own where.
+    let user_where_predicates = match &input.generics.where_clause {
+        Some(wc) => {
+            let preds = wc.predicates.iter();
+            quote! { #( #preds, )* }
+        }
+        None => quote! {},
     };
 
     let fields = match &input.data {
@@ -122,8 +181,27 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     ServiceFieldRole::Augment
                 } else if meta.path.is_ident("flatten") {
                     ServiceFieldRole::Flatten
+                } else if meta.path.is_ident("lifecycle") {
+                    ServiceFieldRole::Lifecycle
+                } else if meta.path.is_ident("channel") {
+                    // `channel(dispatch = |stack, payload| body)`.
+                    // The inner content is parsed as `dispatch = <closure>`.
+                    let mut dispatch: Option<syn::ExprClosure> = None;
+                    meta.parse_nested_meta(|inner| {
+                        if inner.path.is_ident("dispatch") {
+                            dispatch = Some(inner.value()?.parse()?);
+                            Ok(())
+                        } else {
+                            Err(inner.error("expected `dispatch = |stack, payload| body`"))
+                        }
+                    })?;
+                    let dispatch = dispatch.ok_or_else(|| {
+                        meta.error("`#[service(channel(...))]` requires `dispatch = |stack, payload| body`")
+                    })?;
+                    ServiceFieldRole::Channel { dispatch }
                 } else {
-                    return Err(meta.error("expected `handler`, `augment`, or `flatten`"));
+                    return Err(meta
+                        .error("expected `handler`, `augment`, `flatten`, `lifecycle`, or `channel(dispatch = ...)`"));
                 };
 
                 if role.is_some() {
@@ -138,7 +216,8 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             syn::Error::new_spanned(
                 field,
                 "every field of a `#[derive(ServiceRegistry)]` struct must carry one of \
-                 `#[service(handler)]`, `#[service(augment)]`, or `#[service(flatten)]`",
+                 `#[service(handler)]`, `#[service(augment)]`, `#[service(flatten)]`, \
+                 `#[service(lifecycle)]`, or `#[service(channel(dispatch = ...))]`",
             )
         })?;
 
@@ -146,11 +225,22 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
 
     let handlers: Vec<&ServiceField<'_>> =
-        service_fields.iter().filter(|f| f.role == ServiceFieldRole::Handler).collect();
+        service_fields.iter().filter(|f| matches!(f.role, ServiceFieldRole::Handler)).collect();
     let augments: Vec<&ServiceField<'_>> =
-        service_fields.iter().filter(|f| f.role == ServiceFieldRole::Augment).collect();
+        service_fields.iter().filter(|f| matches!(f.role, ServiceFieldRole::Augment)).collect();
     let flattens: Vec<&ServiceField<'_>> =
-        service_fields.iter().filter(|f| f.role == ServiceFieldRole::Flatten).collect();
+        service_fields.iter().filter(|f| matches!(f.role, ServiceFieldRole::Flatten)).collect();
+    let lifecycles: Vec<&ServiceField<'_>> =
+        service_fields.iter().filter(|f| matches!(f.role, ServiceFieldRole::Lifecycle)).collect();
+    // For channels, keep the dispatch closure paired with the field —
+    // the codegen below pairs each enum variant with its dispatch.
+    let channels: Vec<(&ServiceField<'_>, &syn::ExprClosure)> = service_fields
+        .iter()
+        .filter_map(|f| match &f.role {
+            ServiceFieldRole::Channel { dispatch } => Some((f, dispatch)),
+            _ => None,
+        })
+        .collect();
 
     // `#[service(flatten)]` only forwards into the inner struct's
     // `Augment<D>` impl. The const dispatch table is keyed
@@ -214,6 +304,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
 
+    // Lifecycle inits run *before* handler inits so the device model
+    // can establish initial run-state-machine state before the layers
+    // start polling.
+    let lifecycle_init_calls = lifecycles.iter().map(|l| {
+        let ident = l.ident;
+        quote! { ::zweidraehte_device::service::LifecycleHook::<D>::init(&mut self.#ident, ctx); }
+    });
     let init_layer_calls = handlers.iter().map(|h| {
         let ident = h.ident;
         quote! { ::zweidraehte_device::service::Layer::<D>::init(&mut self.#ident, ctx); }
@@ -236,12 +333,216 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
 
+    // -----------------------------------------------------------------
+    // drain_events override — only emitted when there's at least one
+    // lifecycle field. Otherwise fall through to the trait default
+    // (no-op).
+    // -----------------------------------------------------------------
+    let drain_events_override = if lifecycles.is_empty() {
+        quote! {}
+    } else {
+        let drain_calls = lifecycles.iter().map(|l| {
+            let ident = l.ident;
+            quote! {
+                ::zweidraehte_device::service::LifecycleHook::<D>::drain_events(&mut self.#ident, ctx);
+            }
+        });
+        quote! {
+            fn drain_events(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
+                #( #drain_calls )*
+            }
+        }
+    };
+
+    // -----------------------------------------------------------------
+    // ServiceInput machinery — only emitted when there's at least one
+    // channel field. With zero channels the trait defaults
+    // (`type ServiceInput = !`, `recv_service_input` pends forever)
+    // apply.
+    // -----------------------------------------------------------------
+    if channels.len() > 6 {
+        return Err(syn::Error::new_spanned(
+            input,
+            "`#[derive(ServiceRegistry)]` supports up to 6 `#[service(channel)]` fields \
+             (the limit of `embassy_futures::select`); add a custom `LayerRegistry` impl \
+             for stacks needing more",
+        ));
+    }
+
+    // Hidden enum used as `LayerRegistry::ServiceInput`. One variant per
+    // channel field, payload type extracted from the field's last
+    // generic argument (e.g. `DynamicReceiver<'a, T>` → `T`).
+    let service_input_variants: Vec<TokenStream2> = channels
+        .iter()
+        .map(|(field, _)| {
+            let variant = pascal_case_ident(field.ident);
+            let payload = last_generic_argument(field.ty)?;
+            Ok(quote! { #variant(#payload) })
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
+
+    let service_input_enum_ident =
+        syn::Ident::new(&format!("__{}ServiceInput", struct_name), proc_macro2::Span::call_site());
+
+    // The hidden enum carries the same generics as the parent struct,
+    // since channel payload types may reference them (e.g. `Request<'a, ...>`).
+    // A hidden `__Phantom` variant consumes any parent generic that
+    // none of the channel payloads happen to reference, preventing
+    // E0392 ("unused lifetime parameter") on enums whose payloads
+    // don't transitively use every parent generic.
+    let phantom_variant = if input.generics.params.is_empty() {
+        quote! {}
+    } else {
+        let phantom_ty = input.generics.params.iter().map(|p| match p {
+            syn::GenericParam::Lifetime(l) => {
+                let lt = &l.lifetime;
+                quote! { &#lt () }
+            }
+            syn::GenericParam::Type(t) => {
+                let id = &t.ident;
+                quote! { #id }
+            }
+            syn::GenericParam::Const(_) => quote! { () },
+        });
+        quote! {
+            #[doc(hidden)]
+            __Phantom(::core::convert::Infallible, ::core::marker::PhantomData<( #( #phantom_ty ),* )>),
+        }
+    };
+
+    // Inherit the parent struct's visibility on the hidden enum so the
+    // enum can carry payload types of the same visibility as the
+    // parent's fields without rustc warning about private interfaces.
+    let struct_vis = &input.vis;
+    let service_input_enum = if channels.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            #[doc(hidden)]
+            #[allow(non_camel_case_types)]
+            #struct_vis enum #service_input_enum_ident #ty_generics #where_clause {
+                #( #service_input_variants, )*
+                #phantom_variant
+            }
+        }
+    };
+
+    // recv_service_input body. Branches on channel count.
+    let recv_service_input_body = match channels.len() {
+        0 => quote! {},
+        1 => {
+            let (field, _) = &channels[0];
+            let ident = field.ident;
+            let variant = pascal_case_ident(field.ident);
+            quote! {
+                async move {
+                    #service_input_enum_ident::#variant(self.#ident.receive().await)
+                }
+            }
+        }
+        n => {
+            let select_name = if n == 2 { "select".to_string() } else { format!("select{n}") };
+            let either_name = if n == 2 { "Either".to_string() } else { format!("Either{n}") };
+            let select_fn = syn::Ident::new(&select_name, proc_macro2::Span::call_site());
+            let either_ty = syn::Ident::new(&either_name, proc_macro2::Span::call_site());
+            let receive_calls: Vec<_> = channels
+                .iter()
+                .map(|(f, _)| {
+                    let ident = f.ident;
+                    quote! { self.#ident.receive() }
+                })
+                .collect();
+            let either_arms: Vec<_> = channels
+                .iter()
+                .enumerate()
+                .map(|(i, (f, _))| {
+                    let arm = either_arm_name(n, i);
+                    let variant = pascal_case_ident(f.ident);
+                    quote! {
+                        #either_ty::#arm(payload) =>
+                            #service_input_enum_ident::#variant(payload),
+                    }
+                })
+                .collect();
+            quote! {
+                async move {
+                    use ::zweidraehte_device::__macro_support::embassy_futures::select::{#select_fn, #either_ty};
+                    match #select_fn(#( #receive_calls ),*).await {
+                        #( #either_arms )*
+                    }
+                }
+            }
+        }
+    };
+
+    // handle_service_input body — match on the variant, run the
+    // user-supplied dispatch closure with `(self, payload)`.
+    let handle_service_input_arms: Vec<TokenStream2> = channels
+        .iter()
+        .map(|(field, dispatch)| {
+            let variant = pascal_case_ident(field.ident);
+            let payload_ty = last_generic_argument(field.ty)?;
+            // Pin the closure to `fn(&mut Self, Payload)` via a typed
+            // local. This gives the closure body a known type for its
+            // first parameter (`&mut Self`), so users don't have to
+            // annotate `stack:` in their dispatch attribute. The
+            // closure can't capture (it's a `fn`), but the dispatch
+            // closure is by design a small forwarder — it doesn't need
+            // captures.
+            Ok::<_, syn::Error>(quote! {
+                #service_input_enum_ident::#variant(payload) => {
+                    let __dispatch: fn(&mut Self, #payload_ty) = #dispatch;
+                    __dispatch(self, payload)
+                }
+            })
+        })
+        .collect::<syn::Result<Vec<_>>>()?;
+
+    // When the parent struct has generics, the hidden enum carries a
+    // `__Phantom` variant that's uninhabited (`Infallible`); the match
+    // arm pattern `__Phantom(never, _)` is wired through so rustc can
+    // see exhaustiveness and the runtime never actually constructs it.
+    let phantom_match_arm = if input.generics.params.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            #service_input_enum_ident::__Phantom(never, _) => match never {},
+        }
+    };
+
+    let service_input_impl_items = if channels.is_empty() {
+        quote! {}
+    } else {
+        quote! {
+            type ServiceInput = #service_input_enum_ident #ty_generics;
+
+            fn recv_service_input(&self)
+                -> impl ::core::future::Future<Output = Self::ServiceInput> + '_
+            {
+                #recv_service_input_body
+            }
+
+            fn handle_service_input(
+                &mut self,
+                input: Self::ServiceInput,
+                _ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
+            ) {
+                match input {
+                    #( #handle_service_input_arms )*
+                    #phantom_match_arm
+                }
+            }
+        }
+    };
+
     let layer_registry_impl = quote! {
-        impl<#(#struct_lifetimes),* #struct_lifetime_separator D #struct_non_lifetime_separator #(#struct_non_lifetime_params),*>
+        #service_input_enum
+
+        impl<#(#struct_lifetimes),* #pre_d_separator #injected_d #injected_d_separator #(#struct_non_lifetime_params),*>
             ::zweidraehte_device::service::LayerRegistry<D> for #struct_name #ty_generics
         where
             D: ::zweidraehte_device::StackDefinition,
-            #where_clause
+            #user_where_predicates
         {
             const DISPATCH_TABLE: ::zweidraehte_device::router::DispatchTable = #dispatch_table_body;
 
@@ -263,6 +564,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
 
             fn init_layers(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
+                #( #lifecycle_init_calls )*
                 #( #init_layer_calls )*
             }
 
@@ -276,6 +578,10 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #( #next_layer_deadline_merges )*
                 earliest
             }
+
+            #drain_events_override
+
+            #service_input_impl_items
         }
     };
 
@@ -443,13 +749,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     });
 
     let augment_registry_impl = quote! {
-        impl<#(#struct_lifetimes),* #struct_lifetime_separator D #struct_non_lifetime_separator #(#struct_non_lifetime_params),*>
+        impl<#(#struct_lifetimes),* #pre_d_separator #injected_d #injected_d_separator #(#struct_non_lifetime_params),*>
             ::zweidraehte_device::service::Augment<D> for #struct_name #ty_generics
         where
             D: ::zweidraehte_device::StackDefinition,
             #( #augment_field_bounds, )*
             #( #flatten_field_bounds, )*
-            #where_clause
+            #user_where_predicates
         {
             fn get_property_descriptor(
                 &self,
@@ -545,4 +851,91 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         #layer_registry_impl
         #augment_registry_impl
     })
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/// `app_rx` → `AppRx`. Field-ident → enum-variant pascal case, splitting
+/// on underscores.
+fn pascal_case_ident(field: &syn::Ident) -> syn::Ident {
+    let s = field.to_string();
+    let mut out = String::with_capacity(s.len());
+    let mut upper_next = true;
+    for c in s.chars() {
+        if c == '_' {
+            upper_next = true;
+        } else if upper_next {
+            out.extend(c.to_uppercase());
+            upper_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    syn::Ident::new(&out, field.span())
+}
+
+/// Pull the last generic-argument type out of a path-typed field.
+/// e.g. `DynamicReceiver<'a, Foo>` → `Foo`. Returns an error if the
+/// field type isn't a path with at least one type-position generic
+/// argument.
+fn last_generic_argument(ty: &syn::Type) -> syn::Result<&syn::Type> {
+    let path = match ty {
+        syn::Type::Path(p) => p,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "`#[service(channel)]` field must have a path-typed type with a generic payload \
+                 (e.g. `DynamicReceiver<'a, Payload>`)",
+            ));
+        }
+    };
+    let last = path
+        .path
+        .segments
+        .last()
+        .ok_or_else(|| syn::Error::new_spanned(ty, "`#[service(channel)]` field type has no path segments"))?;
+    let args = match &last.arguments {
+        syn::PathArguments::AngleBracketed(a) => a,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                ty,
+                "`#[service(channel)]` field type must carry a generic payload \
+                 (e.g. `DynamicReceiver<'a, Payload>`)",
+            ));
+        }
+    };
+    args.args
+        .iter()
+        .rev()
+        .find_map(|a| match a {
+            syn::GenericArgument::Type(t) => Some(t),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            syn::Error::new_spanned(
+                ty,
+                "`#[service(channel)]` field type must include at least one type-position \
+                 generic argument (the payload)",
+            )
+        })
+}
+
+/// Map a 0-based channel index to the corresponding `EitherN::*` arm
+/// name. `select` returns `Either::First`/`Second`; `select3..6` use
+/// `First`/`Second`/`Third`/`Fourth`/`Fifth`/`Sixth`.
+fn either_arm_name(channel_count: usize, idx: usize) -> syn::Ident {
+    let name = match (channel_count, idx) {
+        (2, 0) => "First",
+        (2, 1) => "Second",
+        (3, 0) | (4, 0) | (5, 0) | (6, 0) => "First",
+        (3, 1) | (4, 1) | (5, 1) | (6, 1) => "Second",
+        (3, 2) | (4, 2) | (5, 2) | (6, 2) => "Third",
+        (4, 3) | (5, 3) | (6, 3) => "Fourth",
+        (5, 4) | (6, 4) => "Fifth",
+        (6, 5) => "Sixth",
+        _ => unreachable!("either_arm_name called with invalid count/idx pair"),
+    };
+    syn::Ident::new(name, proc_macro2::Span::call_site())
 }

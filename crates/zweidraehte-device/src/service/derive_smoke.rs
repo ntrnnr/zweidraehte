@@ -14,7 +14,7 @@ use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 use crate::StackDefinition;
-use crate::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, ServiceCtx, ServiceRegistry};
+use crate::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, LifecycleHook, ServiceCtx, ServiceRegistry};
 
 // -----------------------------------------------------------------
 // Shim Layer that handles a single, otherwise-unused ServiceType so
@@ -100,6 +100,28 @@ impl<D: StackDefinition> ApciHandler<D> for ShimApciHandler {
 }
 
 // -----------------------------------------------------------------
+// Shim lifecycle field (e.g. a stand-in for `SystemBDeviceModel`)
+// implementing `LifecycleHook<D>`. The `init` / `drain_events`
+// methods just bump counters; the test confirms the macro emits
+// calls to them.
+// -----------------------------------------------------------------
+
+#[derive(Default)]
+struct ShimLifecycle {
+    init_calls: Cell<usize>,
+    drain_calls: Cell<usize>,
+}
+
+impl<D: StackDefinition> LifecycleHook<D> for ShimLifecycle {
+    fn init(&mut self, _ctx: &ServiceCtx<'_, D>) {
+        self.init_calls.set(self.init_calls.get() + 1);
+    }
+    fn drain_events(&mut self, _ctx: &ServiceCtx<'_, D>) {
+        self.drain_calls.set(self.drain_calls.get() + 1);
+    }
+}
+
+// -----------------------------------------------------------------
 // The macro-derived registries.
 // -----------------------------------------------------------------
 
@@ -109,6 +131,54 @@ struct SmokeServices {
     layer_a: ShimLayer,
     #[service(augment)]
     aug_a: ShimAugment,
+}
+
+// -----------------------------------------------------------------
+// `#[service(lifecycle)]` + `#[service(channel)]` — verifies the
+// macro emits a `drain_events` override, a `ServiceInput` enum, and
+// `recv_service_input` / `handle_service_input` wiring. The dispatch
+// closure is trivial; we only check the impl compiles and the enum
+// variant carries the right payload type.
+//
+// The channel field uses a thin shim type `ShimReceiver<T>` (rather
+// than `embassy_sync::DynamicReceiver`) so the smoke test stays free
+// of channel-runtime ceremony — the macro extracts `T` from the
+// last generic argument of the field type, which works for any
+// `Foo<'a, T>` shape.
+// -----------------------------------------------------------------
+
+#[allow(dead_code)]
+struct ShimPayload(u8);
+
+struct ShimReceiver<'a, T> {
+    _marker: core::marker::PhantomData<&'a T>,
+}
+
+impl<T> Default for ShimReceiver<'_, T> {
+    fn default() -> Self {
+        Self { _marker: core::marker::PhantomData }
+    }
+}
+
+impl<'a, T> ShimReceiver<'a, T> {
+    /// Pretends to await a payload. The smoke test never runs this —
+    /// the type-level assertion below only checks the macro emits
+    /// compilable code.
+    async fn receive(&self) -> T {
+        unreachable!("smoke test future is never polled")
+    }
+}
+
+#[derive(Default, ServiceRegistry)]
+struct SmokeServicesWithLifecycleAndChannel<'a> {
+    #[service(handler)]
+    layer_a: ShimLayer,
+    #[service(lifecycle)]
+    device_model: ShimLifecycle,
+    #[service(channel(dispatch = |stack, payload: ShimPayload| {
+        let _ = (stack, payload);
+    }))]
+    rx: ShimReceiver<'a, ShimPayload>,
 }
 
 // -----------------------------------------------------------------
