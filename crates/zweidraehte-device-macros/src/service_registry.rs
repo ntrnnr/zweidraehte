@@ -45,13 +45,25 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // emitted impl, on top of whatever generics the struct already
     // carries. `split_for_impl()` returns the struct's own generics,
     // and we splice `D` into the impl-side parameter list separately.
+    //
+    // Rust requires lifetime parameters to come before type and const
+    // parameters in `impl<...>` lists. So we partition the struct's
+    // own generics: lifetimes first, then `D`, then everything else.
     let (_, ty_generics, where_clause) = input.generics.split_for_impl();
-    let struct_generic_params = &input.generics.params;
-    let struct_generic_params_separator = if input.generics.params.is_empty() {
-        quote! {}
-    } else {
-        quote! { , }
-    };
+    let struct_lifetimes: Vec<_> = input
+        .generics
+        .params
+        .iter()
+        .filter(|p| matches!(p, syn::GenericParam::Lifetime(_)))
+        .collect();
+    let struct_non_lifetime_params: Vec<_> = input
+        .generics
+        .params
+        .iter()
+        .filter(|p| !matches!(p, syn::GenericParam::Lifetime(_)))
+        .collect();
+    let struct_lifetime_separator = if struct_lifetimes.is_empty() { quote! {} } else { quote! { , } };
+    let struct_non_lifetime_separator = if struct_non_lifetime_params.is_empty() { quote! {} } else { quote! { , } };
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -190,7 +202,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     });
 
     let layer_registry_impl = quote! {
-        impl<D #struct_generic_params_separator #struct_generic_params>
+        impl<#(#struct_lifetimes),* #struct_lifetime_separator D #struct_non_lifetime_separator #(#struct_non_lifetime_params),*>
             ::zweidraehte_device::service::LayerRegistry<D> for #struct_name #ty_generics
         where
             D: ::zweidraehte_device::StackDefinition,
@@ -201,14 +213,14 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn dispatch_wire(
                 &mut self,
                 idx: u8,
-                msg: ::zweidraehte_proto::messages::knx::KnxMessageBuffer<
-                    ::zweidraehte_proto::messages::buffers::Buffer<'static>,
+                msg: ::zweidraehte_device::__macro_support::messages::knx::KnxMessageBuffer<
+                    ::zweidraehte_device::__macro_support::messages::buffers::Buffer<'static>,
                 >,
                 ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
             ) {
                 match idx {
                     #( #dispatch_arms )*
-                    _ => unreachable!(
+                    _ => ::core::unreachable!(
                         "dispatch_wire called with idx={} not registered in DISPATCH_TABLE",
                         idx,
                     ),
@@ -358,7 +370,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     });
 
     let augment_registry_impl = quote! {
-        impl<D #struct_generic_params_separator #struct_generic_params>
+        impl<#(#struct_lifetimes),* #struct_lifetime_separator D #struct_non_lifetime_separator #(#struct_non_lifetime_params),*>
             ::zweidraehte_device::service::AugmentRegistry<D> for #struct_name #ty_generics
         where
             D: ::zweidraehte_device::StackDefinition,
@@ -366,7 +378,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         {
             fn get_property_descriptor(
                 &self,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
                 prop_id: u16,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::PropertyDescriptor> {
                 #prop_chain_get_descriptor
@@ -375,7 +387,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn property_description_read(
                 &self,
                 ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
                 object_idx: u16,
                 lookup: ::zweidraehte_device::objects::interface::PropertyLookup,
             ) -> ::core::option::Option<::core::result::Result<
@@ -388,7 +400,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn property_value_read(
                 &self,
                 ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FullPropertyReadRequest,
                 buf: &mut [u8],
             ) -> ::core::option::Option<::core::result::Result<
@@ -401,7 +413,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn property_value_write(
                 &self,
                 ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FullPropertyWriteRequest<'_>,
             ) -> ::core::option::Option<::core::result::Result<
                 ::zweidraehte_device::objects::interface::WriteResponse,
@@ -413,7 +425,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn function_property_command(
                 &self,
                 ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
                 #prop_chain_func_command
@@ -422,7 +434,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn function_property_state_read(
                 &self,
                 ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+                object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
                 #prop_chain_func_state_read
@@ -435,7 +447,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             fn additional_object_type_at(
                 &self,
                 index: u16,
-            ) -> ::core::option::Option<::zweidraehte_proto::dpt::InterfaceObjectType> {
+            ) -> ::core::option::Option<::zweidraehte_device::__macro_support::dpt::InterfaceObjectType> {
                 let mut index = index;
                 #( #io_at_arms )*
                 ::core::option::Option::None

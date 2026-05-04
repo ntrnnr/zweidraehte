@@ -94,6 +94,19 @@ pub struct Stm32G0StateInit {
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0LightSwitch;
 
+/// Augment chain for this device: the TP1 medium augment (which is
+/// just a borrow of the extension state) plus the demo Easter Egg
+/// augment. Derives `AugmentRegistry<D>` from the
+/// `#[service(augment)]` field annotations — the runtime then routes
+/// every property hook through this struct's chain.
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+pub struct Stm32G0LightSwitchAugments<'a> {
+    #[service(augment)]
+    pub tp1: &'a Tp1ExtensionState,
+    #[service(augment)]
+    pub easter: EasterEggAugment,
+}
+
 impl SystemBStackDefinition for Stm32G0LightSwitch {}
 
 impl StackDefinition for Stm32G0LightSwitch {
@@ -109,7 +122,7 @@ impl StackDefinition for Stm32G0LightSwitch {
     type StateInit = Stm32G0StateInit;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
-    type Augments<'a> = (<Self::ES as Extension<Self::Platform>>::Augment<'a, Self>, EasterEggAugment);
+    type Augments<'a> = Stm32G0LightSwitchAugments<'a>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
@@ -142,7 +155,10 @@ impl StackDefinition for Stm32G0LightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        (state.extension_state().create_augment::<Self>(platform), EasterEggAugment)
+        Stm32G0LightSwitchAugments {
+            tp1: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        }
     }
 
 

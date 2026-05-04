@@ -1,2 +1,8 @@
 target/
 out/
+
+# IDE / tool config that shouldn't ride along
+/.claude/
+
+# Captured logs
+*.log

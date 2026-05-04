@@ -60,6 +60,22 @@ pub use stack_handle::Stack;
 
 pub(crate) mod logging;
 
+/// Macro-support re-exports for `#[derive(...)]` users.
+///
+/// Proc macros emitted by this crate's sibling
+/// `zweidraehte-device-macros` need to reach types from
+/// `zweidraehte-proto` (e.g. `KnxMessageBuffer`, `InterfaceObjectType`).
+/// Downstream binaries don't always have `zweidraehte-proto` as a
+/// direct dependency, so the macros route through this module
+/// instead.
+///
+/// Don't depend on the contents directly — they are not part of the
+/// public API and may change without notice.
+#[doc(hidden)]
+pub mod __macro_support {
+    pub use ::zweidraehte_proto::{access, dpt, messages, properties};
+}
+
 // Device-specific modules
 pub mod access_policy;
 pub mod bcus;
