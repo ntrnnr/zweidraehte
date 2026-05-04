@@ -213,9 +213,10 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     type Mem = SystemBMemoryMap;
     // `SecAugment` extends the interface-object list with the Security
     // Object (IOT 0x11) that ETS uses to write group keys etc. It is
-    // produced automatically by `create_system_b_objects_with_extra`
-    // from `type ES`; the "extra" slot here carries the device's own
-    // augment (`EasterEggAugment`), matching the insecure variant.
+    // produced by `state.extension_state().create_augment::<Self>(platform)`
+    // (see `create_augments` below) and bundled with `EasterEggAugment`
+    // into `Stm32G0SecureAugments` so the property hook chain reaches
+    // both via the macro-derived `AugmentRegistry<D>` impl.
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
     type Augments<'a> = Stm32G0SecureAugments<'a>;
 

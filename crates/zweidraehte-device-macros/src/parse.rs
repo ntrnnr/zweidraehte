@@ -127,6 +127,13 @@ pub(crate) enum Backing {
     Virtual,
 }
 
+// `field_ty` and the `default_value` / `intercepts` fields below are
+// parsed but not currently consumed by codegen — they're documented
+// future-proofing hatches that user annotations populate today (see
+// `tp1.rs`, `operation_mode.rs`). Suppress the dead-code lint at the
+// struct level rather than at each field, since the fields are part
+// of a coherent forward-compat surface.
+#[allow(dead_code)]
 pub(crate) struct PropertyAttrs {
     pub field_ident: syn::Ident,
     pub field_ty: syn::Type,
@@ -152,11 +159,11 @@ pub(crate) struct PropertyAttrs {
 
     // Augment-only fields (None / unused on InterfaceObject impls) -------
     /// Closure invoked from `property_value_read`; signature
-    /// `|this: &Self, ctx: &AugmentContext<'_, D>| -> impl PropertyRead`.
+    /// `|this: &Self, ctx: &ServiceCtx<'_, D>| -> impl PropertyRead`.
     /// Mutually exclusive with `read_fn`.
     pub read_with_ctx: Option<Expr>,
     /// Closure invoked from `property_value_write`; signature
-    /// `|this: &mut Self, ctx: &AugmentContext<'_, D>, data: &[u8]| -> Result<WriteResponse, PropertyError>`.
+    /// `|this: &mut Self, ctx: &ServiceCtx<'_, D>, data: &[u8]| -> Result<WriteResponse, PropertyError>`.
     /// Mutually exclusive with `write_fn`.
     pub write_with_ctx: Option<Expr>,
     /// Closure invoked from `function_property_command`.

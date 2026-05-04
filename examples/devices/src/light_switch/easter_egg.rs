@@ -1,27 +1,39 @@
 //! Easter egg function property for the light switch.
 //!
-//! An [`InterfaceObjectAugment`] that intercepts function property commands
-//! on the Device Object at a manufacturer-specific property ID.
-//! Send certain ASCII phrases, get witty replies.
+//! An [`Augment<D>`](zweidraehte_device::service::Augment) that
+//! intercepts function property commands on the Device Object at a
+//! manufacturer-specific property ID. Send certain ASCII phrases, get
+//! witty replies.
 //!
 //! # Wiring
 //!
-//! Pass `EasterEggAugment` as the extra augment via
-//! [`create_system_b_objects_with_extra`](zweidraehte_device::bcus::system_b::create_system_b_objects_with_extra):
+//! Add `EasterEggAugment` as a `#[service(augment)]` field on the
+//! device's [`#[derive(ServiceRegistry)]`](zweidraehte_device::service::ServiceRegistry)
+//! augment-bundle struct, alongside the medium extension's augment.
 //!
 //! ```rust,ignore
 //! use devices::light_switch::easter_egg::EasterEggAugment;
-//! use zweidraehte_device::bcus::system_b::*;
 //!
-//! fn create_interface_objects<'a>(...) -> Self::InterfaceObjects<'a> {
-//!     create_system_b_objects_with_extra::<Self, _>(
-//!         state, platform, &Self::memory_layout(), EasterEggAugment,
-//!     )
+//! #[derive(zweidraehte_device::service::ServiceRegistry)]
+//! pub struct MyDeviceAugments<'a> {
+//!     #[service(augment)] tp1:    &'a Tp1ExtensionState,
+//!     #[service(augment)] easter: EasterEggAugment,
+//! }
+//!
+//! impl StackDefinition for MyDevice {
+//!     type Augments<'a> = MyDeviceAugments<'a>;
+//!
+//!     fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> {
+//!         MyDeviceAugments {
+//!             tp1:    state.extension_state().create_augment::<Self>(platform),
+//!             easter: EasterEggAugment,
+//!         }
+//!     }
 //! }
 //! ```
 
 use zweidraehte_device::objects::interface::{
-    FunctionPropertyRequest, FunctionPropertyResult, PropertyAccess, interface_object_augment,
+    FunctionPropertyRequest, FunctionPropertyResult, interface_object_augment,
 };
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};

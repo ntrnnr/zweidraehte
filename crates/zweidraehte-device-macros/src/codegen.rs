@@ -856,7 +856,7 @@ fn augment_write_arm(p: &PropertyAttrs) -> Option<TokenStream> {
         // interior mutability (e.g. `Cell<T>`). Generate via
         // `PropertyWrite` regardless and let the borrow checker enforce
         // it at use site.
-        let name = &p.field_ident;
+        let _name = &p.field_ident;
         Some(quote! {
             #pid => {
                 // Augments take `&self`; field-backed writes thus require
