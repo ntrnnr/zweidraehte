@@ -639,29 +639,4 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> IpAugment<'_, P, N, CAPS> {
     ) -> Option<Result<WriteResponse, PropertyError>> {
         self.write_ip_property(req)
     }
-
-    // The next two thunks exist only because the macro's `has_manual`
-    // gate is coarse-grained: any `manual` PID forces the macro to emit
-    // calls to all four `handle_extra_pid_*` methods on the augment.
-    // IpAugment has no function-property PIDs, so both stubs return
-    // `None`. Tracked in SESSION.md ("Coarse `has_manual` gate forces
-    // dead function-property thunks").
-
-    pub fn handle_extra_pid_function_command<D: StackDefinition>(
-        &self,
-        _ctx: &ServiceCtx<'_, D>,
-        _object_type: InterfaceObjectType,
-        _req: &crate::objects::interface::FunctionPropertyRequest<'_>,
-    ) -> Option<crate::objects::interface::FunctionPropertyResult> {
-        None
-    }
-
-    pub fn handle_extra_pid_function_state_read<D: StackDefinition>(
-        &self,
-        _ctx: &ServiceCtx<'_, D>,
-        _object_type: InterfaceObjectType,
-        _req: &crate::objects::interface::FunctionPropertyRequest<'_>,
-    ) -> Option<crate::objects::interface::FunctionPropertyResult> {
-        None
-    }
 }

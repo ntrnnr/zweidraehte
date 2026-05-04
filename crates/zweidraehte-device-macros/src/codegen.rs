@@ -409,15 +409,27 @@ pub(crate) fn gen_augment(
         quote! { #i => Some(#t), }
     });
 
-    // Whether any property field is `manual` — drives whether the macro
-    // calls back into a user-defined `handle_extra_pid_*` method or just
-    // returns `None` directly.
+    // Per-hook fallback gating. The macro emits a call into a user-defined
+    // `handle_extra_pid_*` method only when at least one `manual` PID
+    // actually needs that hook. PIDs are partitioned by PDT: function-
+    // property PIDs (`pdt = PDT_Function`) flow exclusively through
+    // `FunctionPropertyCommand` / `FunctionPropertyStateRead`; all other
+    // manual PIDs flow through value read/write.
     //
-    // When `has_manual` is true the user **must** supply matching
-    // `handle_extra_pid_*` impls (with the same `D` type
-    // parameter as the augment trait impl uses) on the augment struct;
-    // there's no default stub to fall back on.
-    let has_manual = property_props.iter().any(|p| p.manual);
+    // The descriptor hook is the one exception — it's enabled whenever any
+    // PID is `manual`, since dynamic descriptor lookup is universally
+    // applicable (e.g. const-generic array sizing, runtime-conditional
+    // PIDs).
+    //
+    // When a flag is true the user **must** supply the matching
+    // `handle_extra_pid_*` impl on the augment struct.
+    let manual_descriptor = property_props.iter().any(|p| p.manual);
+    let manual_read = property_props.iter().any(|p| p.manual && !is_function_pdt(p) && !matches!(p.access, Access::Wo));
+    let manual_write =
+        property_props.iter().any(|p| p.manual && !is_function_pdt(p) && !matches!(p.access, Access::Ro));
+    let manual_fn_cmd =
+        property_props.iter().any(|p| p.manual && is_function_pdt(p) && !matches!(p.access, Access::Ro));
+    let manual_fn_state = property_props.iter().any(|p| p.manual && is_function_pdt(p));
     // Fallbacks are *only* dispatched when the request's `object_type`
     // matches one of this augment's effective targets. Without this
     // guard, a `manual` PID like `LOAD_STATE_CONTROL` would steal writes
@@ -428,64 +440,31 @@ pub(crate) fn gen_augment(
         let preds = effective_targets.iter().map(|t| quote! { object_type == #t });
         quote! { #( #preds )||* }
     };
-    let descriptor_fallback = if has_manual {
-        quote! {
-            if #target_matches {
-                // Fallback to user-supplied dynamic descriptor lookup
-                // (e.g. for runtime-conditional or const-generic-sized
-                // array PIDs).
-                self.handle_extra_pid_descriptor(object_type, prop_id)
-            } else {
-                None
+    let gated_call = |enabled: bool, call: TokenStream| -> TokenStream {
+        if enabled {
+            quote! {
+                if #target_matches {
+                    #call
+                } else {
+                    None
+                }
             }
+        } else {
+            quote! { None }
         }
-    } else {
-        quote! { None }
     };
-    let read_fallback = if has_manual {
-        quote! {
-            if #target_matches {
-                self.handle_extra_pid_read(ctx, object_type, req, buf)
-            } else {
-                None
-            }
-        }
-    } else {
-        quote! { None }
-    };
-    let write_fallback = if has_manual {
-        quote! {
-            if #target_matches {
-                self.handle_extra_pid_write(ctx, object_type, req)
-            } else {
-                None
-            }
-        }
-    } else {
-        quote! { None }
-    };
-    let fn_cmd_fallback = if has_manual {
-        quote! {
-            if #target_matches {
-                self.handle_extra_pid_function_command(ctx, object_type, req)
-            } else {
-                None
-            }
-        }
-    } else {
-        quote! { None }
-    };
-    let fn_state_fallback = if has_manual {
-        quote! {
-            if #target_matches {
-                self.handle_extra_pid_function_state_read(ctx, object_type, req)
-            } else {
-                None
-            }
-        }
-    } else {
-        quote! { None }
-    };
+    let descriptor_fallback = gated_call(
+        manual_descriptor,
+        // User-supplied dynamic descriptor lookup (e.g. for runtime-
+        // conditional or const-generic-sized array PIDs).
+        quote! { self.handle_extra_pid_descriptor(object_type, prop_id) },
+    );
+    let read_fallback = gated_call(manual_read, quote! { self.handle_extra_pid_read(ctx, object_type, req, buf) });
+    let write_fallback = gated_call(manual_write, quote! { self.handle_extra_pid_write(ctx, object_type, req) });
+    let fn_cmd_fallback =
+        gated_call(manual_fn_cmd, quote! { self.handle_extra_pid_function_command(ctx, object_type, req) });
+    let fn_state_fallback =
+        gated_call(manual_fn_state, quote! { self.handle_extra_pid_function_state_read(ctx, object_type, req) });
 
     Ok(quote! {
         #( #outer_attrs )*
@@ -674,6 +653,18 @@ where
             }
         })
         .collect()
+}
+
+/// True when the property's PDT is `PDT_Function` (matched by the path's
+/// last segment). Function-property PIDs flow through
+/// `FunctionPropertyCommand` / `FunctionPropertyStateRead` rather than
+/// value reads/writes; we use this to gate which `handle_extra_pid_*`
+/// hooks the macro calls into. PIDs declared via `pdt_raw = ...` always
+/// answer `false` and land in the value-side bucket — no in-tree augment
+/// uses `pdt_raw` for a function PID, and the parser's mutual-exclusivity
+/// rule keeps `pdt`/`pdt_raw` from coexisting.
+fn is_function_pdt(p: &PropertyAttrs) -> bool {
+    p.pdt.as_ref().and_then(|path| path.segments.last()).is_some_and(|seg| seg.ident == "PDT_Function")
 }
 
 fn exprs_equal(a: &syn::Expr, b: &syn::Expr) -> bool {
