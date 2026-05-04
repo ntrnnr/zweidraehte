@@ -44,7 +44,7 @@ pub(crate) struct ObjectAttrs {
     /// express bounds on the augment's `D::State`, e.g. on the state
     /// having `HasApplication`, `HasSecurityState`, etc.
     ///
-    /// Syntax: `where_bounds(__AugmentD::State: HasApplication + ...)`.
+    /// Syntax: `where_bounds(D::State: HasApplication + ...)`.
     /// Multiple predicates are comma-separated.
     pub extra_where: Option<TokenStream>,
 }
@@ -86,12 +86,7 @@ impl ObjectAttrs {
         });
         syn::parse::Parser::parse2(parser, args)?;
 
-        Ok(Self {
-            object_type,
-            target_objects,
-            additional_objects,
-            extra_where,
-        })
+        Ok(Self { object_type, target_objects, additional_objects, extra_where })
     }
 }
 
@@ -196,17 +191,10 @@ impl PropertyAttrs {
     /// Returns `Ok(None)` for non-property struct fields (no `#[io(...)]`),
     /// `Ok(Some(_))` for property fields, and `Err` for malformed metadata.
     pub fn from_field(field: &Field) -> syn::Result<Option<Self>> {
-        let field_ident = field
-            .ident
-            .clone()
-            .ok_or_else(|| syn::Error::new(field.span(), "expected named field"))?;
+        let field_ident = field.ident.clone().ok_or_else(|| syn::Error::new(field.span(), "expected named field"))?;
         let field_span = field.span();
 
-        let io_attrs: Vec<_> = field
-            .attrs
-            .iter()
-            .filter(|a| a.path().is_ident("io"))
-            .collect();
+        let io_attrs: Vec<_> = field.attrs.iter().filter(|a| a.path().is_ident("io")).collect();
         if io_attrs.is_empty() {
             // Plain struct field — kept verbatim by codegen.
             return Ok(None);
@@ -319,10 +307,7 @@ impl PropertyAttrs {
             ));
         }
         if pdt.is_some() && pdt_raw.is_some() {
-            return Err(syn::Error::new(
-                field_span,
-                "`pdt` and `pdt_raw` are mutually exclusive",
-            ));
+            return Err(syn::Error::new(field_span, "`pdt` and `pdt_raw` are mutually exclusive"));
         }
 
         // Cross-field consistency:
@@ -367,32 +352,20 @@ impl PropertyAttrs {
             ));
         }
         if matches!(access, Access::Wo) && read_fn.is_some() {
-            return Err(syn::Error::new(
-                field_span,
-                "WriteOnly property cannot have a `read` closure",
-            ));
+            return Err(syn::Error::new(field_span, "WriteOnly property cannot have a `read` closure"));
         }
         if matches!(access, Access::Ro) && write_fn.is_some() {
-            return Err(syn::Error::new(
-                field_span,
-                "ReadOnly property cannot have a `write` closure",
-            ));
+            return Err(syn::Error::new(field_span, "ReadOnly property cannot have a `write` closure"));
         }
 
         // `read` / `read_with_ctx` and `write` / `write_with_ctx` are
         // mutually exclusive: a property has at most one read closure
         // (with or without `ctx`) and at most one write closure.
         if read_fn.is_some() && read_with_ctx.is_some() {
-            return Err(syn::Error::new(
-                field_span,
-                "`read` and `read_with_ctx` are mutually exclusive",
-            ));
+            return Err(syn::Error::new(field_span, "`read` and `read_with_ctx` are mutually exclusive"));
         }
         if write_fn.is_some() && write_with_ctx.is_some() {
-            return Err(syn::Error::new(
-                field_span,
-                "`write` and `write_with_ctx` are mutually exclusive",
-            ));
+            return Err(syn::Error::new(field_span, "`write` and `write_with_ctx` are mutually exclusive"));
         }
 
         Ok(Some(Self {

@@ -71,7 +71,7 @@ use super::IpExtensionState;
 // PIDs targeting that same object.
 #[interface_object_augment(
     additional_objects = [InterfaceObjectType::IPParameter],
-    where_bounds(__AugmentD::State: StackState),
+    where_bounds(D::State: StackState),
 )]
 pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0, const CAPS: u16 = 0> {
     /// Persisted IP configuration (from extension state).
@@ -102,10 +102,10 @@ pub struct IpAugment<'a, P: IpPlatform, const N: usize = 0, const CAPS: u16 = 0>
     // so it needs `ctx.state` access on both sides.
     #[io(pid = pid::KNX_INDIVIDUAL_ADDRESS, pdt = PDT_UnsignedInt, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read_with_ctx = |_this: &Self, ctx: &ServiceCtx<'_, __AugmentD>| -> [u8; 2] {
+         read_with_ctx = |_this: &Self, ctx: &ServiceCtx<'_, D>| -> [u8; 2] {
              ctx.state.individual_address().0
          },
-         write_with_ctx = |_this: &Self, ctx: &ServiceCtx<'_, __AugmentD>, req: &FullPropertyWriteRequest<'_>|
+         write_with_ctx = |_this: &Self, ctx: &ServiceCtx<'_, D>, req: &FullPropertyWriteRequest<'_>|
              -> Result<WriteResponse, PropertyError>
          {
              if req.data.len() < 2 {

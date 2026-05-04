@@ -267,12 +267,12 @@ pub(crate) fn gen_augment(
         .iter()
         .filter(|a| !a.path().is_ident("interface_object") && !a.path().is_ident("interface_object_augment"));
 
-    // For the augment trait impl we need to add a `__AugmentD: StackDefinition`
+    // For the augment trait impl we need to add a `D: StackDefinition`
     // parameter on top of the user's existing generics. Construct a fresh
-    // `Generics` clone with `__AugmentD` appended so we can split it cleanly.
+    // `Generics` clone with `D` appended so we can split it cleanly.
     let mut augment_generics = item.generics.clone();
     augment_generics.params.push(syn::parse_quote! {
-        __AugmentD: ::zweidraehte_device::StackDefinition
+        D: ::zweidraehte_device::StackDefinition
     });
     // If the user supplied `where_bounds(...)`, splice them into the
     // generics' where clause so they survive `split_for_impl`.
@@ -292,6 +292,54 @@ pub(crate) fn gen_augment(
         }
     }
     let (augment_impl_generics, _, augment_where_clause) = augment_generics.split_for_impl();
+
+    // For the `forward_augment_registry!` invocation we split the
+    // user's struct generics into `[<lifetimes> ; <rest>]` — the macro
+    // injects `D: StackDefinition` between the two halves so the impl
+    // header lands as `<lifetimes, D, types/consts>`, which is the only
+    // ordering Rust accepts. Defaults must be stripped on the
+    // type/const side because `impl<...>` headers don't allow them
+    // (the same restriction `split_for_impl` enforces on the struct's
+    // own `impl_generics`).
+    let forward_extra_generics = {
+        let strip_default = |p: &syn::GenericParam| -> syn::GenericParam {
+            let mut p = p.clone();
+            match &mut p {
+                syn::GenericParam::Type(t) => {
+                    t.eq_token = None;
+                    t.default = None;
+                }
+                syn::GenericParam::Const(c) => {
+                    c.eq_token = None;
+                    c.default = None;
+                }
+                syn::GenericParam::Lifetime(_) => {}
+            }
+            p
+        };
+        let (lifetimes, others): (Vec<_>, Vec<_>) =
+            item.generics.params.iter().partition(|p| matches!(p, syn::GenericParam::Lifetime(_)));
+        let lifetimes: Vec<syn::GenericParam> = lifetimes.into_iter().map(strip_default).collect();
+        let others: Vec<syn::GenericParam> = others.into_iter().map(strip_default).collect();
+        if others.is_empty() {
+            quote! { #(#lifetimes),* }
+        } else {
+            quote! { #(#lifetimes),* ; #(#others),* }
+        }
+    };
+    let forward_where_arg = {
+        let mut all_preds: Vec<syn::WherePredicate> =
+            item.generics.where_clause.as_ref().map(|wc| wc.predicates.iter().cloned().collect()).unwrap_or_default();
+        if let Some(extra) = &obj_attrs.extra_where {
+            let parsed: syn::WhereClause = syn::parse_quote! { where #extra };
+            all_preds.extend(parsed.predicates);
+        }
+        if all_preds.is_empty() {
+            quote! {}
+        } else {
+            quote! { where [ #(#all_preds),* ] }
+        }
+    };
 
     // ----------------------------------------------------------------------
     // Re-emit the struct verbatim. Augments rarely use unit-typed virtual
@@ -416,7 +464,7 @@ pub(crate) fn gen_augment(
     // returns `None` directly.
     //
     // When `has_manual` is true the user **must** supply matching
-    // `handle_extra_pid_*` impls (with the same `__AugmentD` type
+    // `handle_extra_pid_*` impls (with the same `D` type
     // parameter as the augment trait impl uses) on the augment struct;
     // there's no default stub to fall back on.
     let has_manual = property_props.iter().any(|p| p.manual);
@@ -510,7 +558,7 @@ pub(crate) fn gen_augment(
 
         }
 
-        impl #augment_impl_generics ::zweidraehte_device::service::Augment<__AugmentD>
+        impl #augment_impl_generics ::zweidraehte_device::service::Augment<D>
             for #ident #ty_generics #augment_where_clause
         {
             fn get_property_descriptor(
@@ -530,7 +578,7 @@ pub(crate) fn gen_augment(
 
             fn property_description_read(
                 &self,
-                _ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                _ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 object_idx: u16,
                 lookup: ::zweidraehte_device::objects::interface::PropertyLookup,
@@ -559,7 +607,7 @@ pub(crate) fn gen_augment(
 
             fn property_value_read(
                 &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FullPropertyReadRequest,
                 buf: &mut [u8],
@@ -573,7 +621,7 @@ pub(crate) fn gen_augment(
 
             fn property_value_write(
                 &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FullPropertyWriteRequest<'_>,
             ) -> ::core::option::Option<::core::result::Result<
@@ -586,7 +634,7 @@ pub(crate) fn gen_augment(
 
             fn function_property_command(
                 &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
@@ -596,7 +644,7 @@ pub(crate) fn gen_augment(
 
             fn function_property_state_read(
                 &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
+                ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
             ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
@@ -622,85 +670,14 @@ pub(crate) fn gen_augment(
         // Forward AugmentRegistry<D> to this type's Augment<D> impl.
         // A blanket `impl<A: Augment<D>> AugmentRegistry<D> for A` is
         // forbidden by coherence (clashes with the macro-derived
-        // AugmentRegistry impls on services structs), so we emit the
-        // forwarding impl here per concrete augment type.
-        impl #augment_impl_generics ::zweidraehte_device::service::AugmentRegistry<__AugmentD>
-            for #ident #ty_generics #augment_where_clause
-        {
-            fn get_property_descriptor(
-                &self,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-                prop_id: u16,
-            ) -> ::core::option::Option<::zweidraehte_proto::properties::PropertyDescriptor> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::get_property_descriptor(self, object_type, prop_id)
-            }
-            fn property_description_read(
-                &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-                object_idx: u16,
-                lookup: ::zweidraehte_device::objects::interface::PropertyLookup,
-            ) -> ::core::option::Option<::core::result::Result<
-                ::zweidraehte_device::objects::interface::PropertyDescriptionResponse,
-                ::zweidraehte_device::objects::interface::PropertyError,
-            >> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::property_description_read(self, ctx, object_type, object_idx, lookup)
-            }
-            fn property_value_read(
-                &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-                req: &::zweidraehte_device::objects::interface::FullPropertyReadRequest,
-                buf: &mut [u8],
-            ) -> ::core::option::Option<::core::result::Result<
-                usize,
-                ::zweidraehte_device::objects::interface::PropertyError,
-            >> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::property_value_read(self, ctx, object_type, req, buf)
-            }
-            fn property_value_write(
-                &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-                req: &::zweidraehte_device::objects::interface::FullPropertyWriteRequest<'_>,
-            ) -> ::core::option::Option<::core::result::Result<
-                ::zweidraehte_device::objects::interface::WriteResponse,
-                ::zweidraehte_device::objects::interface::PropertyError,
-            >> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::property_value_write(self, ctx, object_type, req)
-            }
-            fn function_property_command(
-                &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-                req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
-            ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::function_property_command(self, ctx, object_type, req)
-            }
-            fn function_property_state_read(
-                &self,
-                ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>,
-                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
-                req: &::zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
-            ) -> ::core::option::Option<::zweidraehte_device::objects::interface::FunctionPropertyResult> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::function_property_state_read(self, ctx, object_type, req)
-            }
-            fn additional_object_count(&self) -> u16 {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::additional_object_count(self)
-            }
-            fn additional_object_type_at(
-                &self,
-                index: u16,
-            ) -> ::core::option::Option<::zweidraehte_proto::dpt::InterfaceObjectType> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::additional_object_type_at(self, index)
-            }
-            fn poll_augments(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, __AugmentD>) {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::poll(self, ctx);
-            }
-            fn next_augment_deadline(&self) -> ::core::option::Option<::embassy_time::Instant> {
-                ::zweidraehte_device::service::Augment::<__AugmentD>::next_deadline(self)
-            }
-        }
+        // AugmentRegistry impls on service structs), so we emit a
+        // per-type forwarding impl. Funnel through the canonical
+        // `forward_augment_registry!` macro in `zweidraehte-device` so
+        // the forwarding shape lives in one place — adding a method to
+        // `AugmentRegistry<D>` only needs an update there.
+        ::zweidraehte_device::forward_augment_registry!(
+            [#forward_extra_generics] #ident #ty_generics #forward_where_arg
+        );
     })
 }
 

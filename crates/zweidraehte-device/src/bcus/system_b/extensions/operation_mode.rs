@@ -22,6 +22,7 @@ use core::cell::Cell;
 
 use embassy_time::Instant;
 
+use crate::StackState;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
 use crate::layers::application::capabilities::{
     GroupValueAddressedSender, GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender,
@@ -30,12 +31,11 @@ use crate::objects::comm::{ComObjects, HasCommObjects};
 use crate::objects::interface::{
     FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf, interface_object_augment, pid,
 };
-use crate::service::ServiceCtx;
 use crate::objects::tables::{
     AddressTable, AssociationTable, CommunicationObjectTable, HasAddressTable, HasApplication, HasAssociationTable,
     HasCommunicationObjectTable, HasRunStateMachine,
 };
-use crate::StackState;
+use crate::service::ServiceCtx;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_proto::messages::apdu::go_diagnostics::{
@@ -252,14 +252,14 @@ fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> Fun
         InterfaceObjectType::GroupObjectTable,
     ],
     where_bounds(
-        __AugmentD::State: StackState
+        D::State: StackState
             + HasApplication
             + HasCommunicationObjectTable
             + HasCommObjects
             + HasAddressTable
             + HasAssociationTable
             + HasExtensionState,
-        <__AugmentD::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
     ),
 )]
 pub struct DiagnosticsAugment<'a> {
@@ -309,7 +309,6 @@ pub struct DiagnosticsAugment<'a> {
     )]
     _go_diagnostics_io: (),
 }
-
 
 impl<'a> DiagnosticsAugment<'a> {
     pub fn new(state: &'a OperationModeState) -> Self {

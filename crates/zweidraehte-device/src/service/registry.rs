@@ -138,11 +138,7 @@ pub trait AugmentRegistry<D: StackDefinition> {
     // Property-hook chain
     // -------------------------------------------------------------
 
-    fn get_property_descriptor(
-        &self,
-        object_type: InterfaceObjectType,
-        prop_id: u16,
-    ) -> Option<PropertyDescriptor>;
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor>;
 
     fn property_description_read(
         &self,
@@ -224,11 +220,7 @@ pub trait AugmentRegistry<D: StackDefinition> {
 /// Default for [`StackDefinition::Augments`] on devices without
 /// augments.
 impl<D: StackDefinition> AugmentRegistry<D> for () {
-    fn get_property_descriptor(
-        &self,
-        _object_type: InterfaceObjectType,
-        _prop_id: u16,
-    ) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, _object_type: InterfaceObjectType, _prop_id: u16) -> Option<PropertyDescriptor> {
         None
     }
     fn property_description_read(
@@ -294,11 +286,7 @@ impl<D: StackDefinition> AugmentRegistry<D> for () {
 /// through the runner's `&mut augments_owner`, not through the IO
 /// container's shared borrow.
 impl<D: StackDefinition, A: AugmentRegistry<D>> AugmentRegistry<D> for &A {
-    fn get_property_descriptor(
-        &self,
-        object_type: InterfaceObjectType,
-        prop_id: u16,
-    ) -> Option<PropertyDescriptor> {
+    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
         (**self).get_property_descriptor(object_type, prop_id)
     }
     fn property_description_read(
@@ -397,11 +385,23 @@ impl<D: StackDefinition, A: AugmentRegistry<D>> AugmentRegistry<D> for &A {
 /// calls `Augment::next_deadline`.
 #[macro_export]
 macro_rules! forward_augment_registry {
-    // Generic form, bracketed parameter list to avoid macro_rules ambiguity
+    // Generic form. The macro auto-injects `D: StackDefinition`
+    // immediately after the caller's lifetime parameters and before any
+    // type or const parameters — that's the only position the Rust
+    // compiler accepts (lifetimes must lead an impl's generic list).
+    // The caller never spells `D` themselves; it's the same name
+    // everywhere `Augment<D>` and `AugmentRegistry<D>` are used.
+    //
+    // The `#[interface_object_augment]` proc-macro builds the
+    // `[lifetimes ; rest]` token streams from the user's struct generics
+    // (defaults stripped — they're not allowed in impl headers); the
+    // simple (`($ty:ty)`) arm below dispatches to the empty form for
+    // hand-written augments with no extra generics.
     (
-        [$($g:tt)*] $ty:ty $(where [$($bounds:tt)*])?
+        [$($lts:lifetime),* $(,)? $(; $($rest:tt)*)?] $ty:ty $(where [$($bounds:tt)*])?
     ) => {
-        impl<D: $crate::StackDefinition, $($g)*> $crate::service::AugmentRegistry<D> for $ty
+        impl<$($lts,)* D: $crate::StackDefinition $(, $($rest)*)?>
+            $crate::service::AugmentRegistry<D> for $ty
         $(where $($bounds)*)?
         {
             fn get_property_descriptor(
@@ -476,7 +476,8 @@ macro_rules! forward_augment_registry {
             }
         }
     };
-    // Simple form: no generics, no bounds
+    // Simple form: no generics, no bounds. The bracketed form's
+    // auto-inject still supplies `D: StackDefinition`.
     ($ty:ty) => {
         $crate::forward_augment_registry!([] $ty);
     };
