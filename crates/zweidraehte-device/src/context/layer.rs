@@ -109,12 +109,6 @@ impl<D: StackDefinition> crate::context::RestartPublisherContext for LayerContex
     }
 }
 
-impl<D: StackDefinition> crate::context::OutboxContext for LayerContext<D> {
-    fn outbox(&self) -> &core::cell::RefCell<crate::router::Outbox> {
-        &self.outbox
-    }
-}
-
 impl<D: StackDefinition> crate::context::BufferManagerContext for LayerContext<D> {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.buffer_manager

@@ -577,9 +577,8 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// timeout: callers with a timing budget should wrap this in
     /// `embassy_futures::select` against a `Timer`.
     pub async fn await_outbox_drained(&self) {
-        use crate::context::OutboxContext;
         loop {
-            if self.inner.layer_context.outbox().borrow().is_fully_empty() {
+            if self.inner.layer_context.outbox.borrow().is_fully_empty() {
                 return;
             }
             embassy_futures::yield_now().await;

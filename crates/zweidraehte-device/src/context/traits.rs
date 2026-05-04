@@ -94,9 +94,3 @@ pub trait RestartPublisherContext {
     /// Try sending a restart request. Returns true if sent successfully.
     fn try_send_restart_request(&self, request: crate::restart::RestartRequest) -> bool;
 }
-
-/// Provides access to the inter-layer message outbox.
-pub trait OutboxContext {
-    /// Get a reference to the shared outbox.
-    fn outbox(&self) -> &core::cell::RefCell<crate::router::Outbox>;
-}
