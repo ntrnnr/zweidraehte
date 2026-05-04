@@ -42,17 +42,21 @@ pub enum UpdateObjectError {
 /// # Example
 ///
 /// ```rust,ignore
-/// use core::cell::RefCell;
+/// use core::cell::{Cell, RefCell};
 /// use zweidraehte_device::{StackState, address::IndividualAddress};
 ///
 /// pub struct MyDeviceState {
 ///     individual_address: RefCell<IndividualAddress>,
+///     programming_mode: Cell<bool>,
+///     max_apdu_length: Cell<u16>,
 /// }
 ///
 /// impl Default for MyDeviceState {
 ///     fn default() -> Self {
 ///         Self {
 ///             individual_address: RefCell::new(IndividualAddress::new(1, 0, 1)),
+///             programming_mode: Cell::new(false),
+///             max_apdu_length: Cell::new(254),
 ///         }
 ///     }
 /// }
@@ -61,14 +65,16 @@ pub enum UpdateObjectError {
 ///     fn individual_address(&self) -> IndividualAddress {
 ///         *self.individual_address.borrow()
 ///     }
-///
 ///     fn set_individual_address(&self, addr: IndividualAddress) {
 ///         *self.individual_address.borrow_mut() = addr;
 ///     }
-///
 ///     fn serial_number(&self) -> &[u8; 6] {
 ///         &[0x00, 0xFA, 0x00, 0x00, 0x00, 0x00]
 ///     }
+///     fn max_apdu_length(&self) -> u16 { self.max_apdu_length.get() }
+///     fn set_max_apdu_length(&self, length: u16) { self.max_apdu_length.set(length); }
+///     fn is_programming_mode(&self) -> bool { self.programming_mode.get() }
+///     fn set_programming_mode(&self, enabled: bool) { self.programming_mode.set(enabled); }
 /// }
 /// ```
 pub trait StackState {
@@ -122,11 +128,12 @@ pub trait StackState {
     /// The value should not exceed [`StackDefinition::MAX_APDU_LENGTH`](crate::StackDefinition::MAX_APDU_LENGTH) which
     /// determines the compile-time buffer allocation.
     ///
-    /// Default implementation does nothing (for state implementations that
-    /// don't support runtime APDU length changes).
-    fn set_max_apdu_length(&self, _length: u16) {
-        // Default: no-op for implementations that don't support this
-    }
+    /// Implementations must persist the value into whatever backs
+    /// [`max_apdu_length`](Self::max_apdu_length). State types that report a
+    /// fixed compile-time `max_apdu_length` (e.g. test harnesses with no
+    /// hardware-detection step) should provide an explicit empty body and
+    /// document why the setter is intentionally inert.
+    fn set_max_apdu_length(&self, length: u16);
 
     // =========================================================================
     // Programming Mode
@@ -138,15 +145,19 @@ pub trait StackState {
     /// restarts and is not persisted. When set, the device responds to
     /// `A_IndividualAddress_Read` and accepts `A_IndividualAddress_Write`.
     ///
-    /// Default implementation returns `false`.
-    fn is_programming_mode(&self) -> bool {
-        false
-    }
+    /// Implementations must back this with a real flag (typically a
+    /// `Cell<bool>` field). Defaulting to `false` would make the device
+    /// silently un-addressable by ETS — every `A_IndividualAddress_Read`,
+    /// `SystemNetworkParameterRead`, and PID 54 (PROGMODE) read would
+    /// return the wrong answer.
+    fn is_programming_mode(&self) -> bool;
 
     /// Set the programming mode flag.
     ///
-    /// Default implementation does nothing.
-    fn set_programming_mode(&self, _enabled: bool) {}
+    /// Paired with [`is_programming_mode`](Self::is_programming_mode); both
+    /// must be backed by the same storage. A no-op setter would cause PID
+    /// 54 writes and the programming button to silently fail.
+    fn set_programming_mode(&self, enabled: bool);
 
     // =========================================================================
     // Persistence
@@ -300,9 +311,12 @@ pub trait HasSecureIdentity {
 pub trait HasPersistence {
     /// Mark the device state as dirty (needing persistence).
     ///
-    /// Default implementation does nothing (for state implementations
-    /// without persistence).
-    fn mark_dirty(&self) {}
+    /// Called from every successful property write and `A_Memory_Write`.
+    /// Implementations must record the dirty state somewhere a save loop
+    /// can observe (typically a `Cell<bool>` field). State types that
+    /// genuinely don't persist (e.g. ephemeral test fixtures) should
+    /// provide an explicit empty body and document why.
+    fn mark_dirty(&self);
 }
 
 // ============================================================================

@@ -62,6 +62,9 @@ pub struct MyKnxStackStoredData {
 pub struct MyState {
     // Runtime state
     individual_address: core::cell::Cell<IndividualAddress>,
+    programming_mode: core::cell::Cell<bool>,
+    max_apdu_length: core::cell::Cell<u16>,
+    dirty: core::cell::Cell<bool>,
     // Tables
     pub adt: RefCell<AddrTab7<30>>,
     pub ast: RefCell<AssoTab6<15>>,
@@ -80,6 +83,9 @@ impl MyState {
     pub fn new(adt: AddrTab7<30>, ast: AssoTab6<15>, cot: CoTab7<30>) -> Self {
         Self {
             individual_address: core::cell::Cell::new(IndividualAddress::new(1, 0, 1)),
+            programming_mode: core::cell::Cell::new(false),
+            max_apdu_length: core::cell::Cell::new(zweidraehte_device::config::MAX_APDU_LENGTH_EXTENDED),
+            dirty: core::cell::Cell::new(false),
             adt: RefCell::new(adt),
             ast: RefCell::new(ast),
             cot: RefCell::new(cot),
@@ -112,10 +118,30 @@ impl StackState for MyState {
     fn serial_number(&self) -> &[u8; 6] {
         &[0x00, 0xFA, 0x00, 0x00, 0x00, 0x01]
     }
+
+    fn max_apdu_length(&self) -> u16 {
+        self.max_apdu_length.get()
+    }
+
+    fn set_max_apdu_length(&self, length: u16) {
+        self.max_apdu_length.set(length);
+    }
+
+    fn is_programming_mode(&self) -> bool {
+        self.programming_mode.get()
+    }
+
+    fn set_programming_mode(&self, enabled: bool) {
+        self.programming_mode.set(enabled);
+    }
 }
 
 impl HasAuthorization for MyState {}
-impl HasPersistence for MyState {}
+impl HasPersistence for MyState {
+    fn mark_dirty(&self) {
+        self.dirty.set(true);
+    }
+}
 
 impl HasAddressTable for MyState {
     type ADT = AddrTab7<30>;
@@ -241,7 +267,6 @@ impl StackDefinition for MyKnxStack {
         Self::Platform: 'a,
     {
     }
-
 
     type LayerBuilder = InsecureDeviceBuilder;
 }

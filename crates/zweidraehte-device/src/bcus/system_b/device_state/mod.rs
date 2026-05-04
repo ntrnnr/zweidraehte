@@ -15,6 +15,7 @@ use const_default::ConstDefault;
 
 use crate::{
     HasAuthorization, HasPersistence, HasSecureIdentity, StackDefinition, StackState,
+    config::MAX_APDU_LENGTH_EXTENDED,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
         comm::{ComObjects, HasCommObjects, HasGoSecurityView},
@@ -132,6 +133,14 @@ pub struct SystemBDeviceState<
 
     /// Programming mode flag (volatile — does not survive restarts).
     programming_mode: Cell<bool>,
+
+    /// Runtime maximum APDU length, set by the link layer after hardware
+    /// capability detection (TP-UART chip detection, USB descriptor
+    /// parsing). Read by PID 56 (MAX_APDU_LENGTH) on the Device Object.
+    /// Initialised to [`MAX_APDU_LENGTH_EXTENDED`] (254); the link layer
+    /// clamps it down to the bus-specific maximum (e.g. 14 for TP1
+    /// without Extended Frame Format) on first detection.
+    max_apdu_length: Cell<u16>,
 
     // ========================================================================
     // ETS-Loaded Tables
@@ -269,6 +278,7 @@ impl<
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
             programming_mode: Cell::new(false),
+            max_apdu_length: Cell::new(MAX_APDU_LENGTH_EXTENDED),
             adt: RefCell::new(Table::new()),
             ast: RefCell::new(Table::new()),
             cot: RefCell::new(Table::new()),
@@ -512,6 +522,7 @@ impl<
             auth_keys: RefCell::new(auth_keys),
             routing_count: Cell::new(routing_count),
             programming_mode: Cell::new(false),
+            max_apdu_length: Cell::new(MAX_APDU_LENGTH_EXTENDED),
             adt: RefCell::new(address_table),
             ast: RefCell::new(association_table),
             cot: RefCell::new(group_object_table),
@@ -630,6 +641,14 @@ impl<
 
     fn set_programming_mode(&self, enabled: bool) {
         self.programming_mode.set(enabled);
+    }
+
+    fn max_apdu_length(&self) -> u16 {
+        self.max_apdu_length.get()
+    }
+
+    fn set_max_apdu_length(&self, length: u16) {
+        self.max_apdu_length.set(length);
     }
 
     fn security_mode_enabled(&self) -> bool {

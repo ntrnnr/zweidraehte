@@ -831,6 +831,13 @@ impl StackState for ConformanceState {
         device_info::MAX_APDU_LENGTH
     }
 
+    fn set_max_apdu_length(&self, _length: u16) {
+        // The conformance harness reports a fixed compile-time
+        // `MAX_APDU_LENGTH` and the IPC link layer has no
+        // hardware-detection step that would call this setter.
+        // Intentionally inert.
+    }
+
     fn is_programming_mode(&self) -> bool {
         self.inner.is_programming_mode()
     }
@@ -1318,8 +1325,7 @@ impl StackDefinition for IpcConformanceTestStack {
     }
 
     type InterfaceObjects<'a> = zweidraehte_device::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> =
-        <Self::ES as zweidraehte_device::bcus::system_b::Extension<Self::Platform>>::Augment<'a, Self>;
+    type Augments<'a> = <Self::ES as zweidraehte_device::bcus::system_b::Extension<Self::Platform>>::Augment<'a, Self>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -1351,7 +1357,6 @@ impl StackDefinition for IpcConformanceTestStack {
         use zweidraehte_device::bcus::system_b::{Extension, HasExtensionState};
         state.extension_state().create_augment::<Self>(platform)
     }
-
 
     type AlExtensions = zweidraehte_device::layers::application::services::SystemBAlServices;
     type LayerBuilder = InsecureDeviceBuilder;

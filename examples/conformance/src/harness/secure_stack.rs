@@ -194,6 +194,12 @@ impl StackState for SecureConformanceState {
     fn max_apdu_length(&self) -> u16 {
         device_info::MAX_APDU_LENGTH
     }
+    fn set_max_apdu_length(&self, _length: u16) {
+        // The conformance harness reports a fixed compile-time
+        // `MAX_APDU_LENGTH` and the IPC link layer has no
+        // hardware-detection step that would call this setter.
+        // Intentionally inert.
+    }
     fn is_programming_mode(&self) -> bool {
         self.inner.is_programming_mode()
     }
