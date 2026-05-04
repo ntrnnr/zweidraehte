@@ -67,6 +67,16 @@ type Storage = RpFlashStorage<PicoEthState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoEthLightSwitch;
 
+/// Augment chain: IP medium augment (KNXnet/IP Parameter object) plus
+/// the Easter Egg demo augment.
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+struct PicoEthAugments<'a> {
+    #[service(augment)]
+    ip: IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>,
+    #[service(augment)]
+    easter: EasterEggAugment,
+}
+
 /// Init envelope: identity + optional loaded device config.
 pub struct PicoEthStateInit {
     pub serial: [u8; 6],
@@ -100,7 +110,7 @@ impl StackDefinition for PicoEthLightSwitch {
     }
 
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
-    type Augments<'a> = (IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>, EasterEggAugment);
+    type Augments<'a> = PicoEthAugments<'a>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -124,7 +134,10 @@ impl StackDefinition for PicoEthLightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        (state.extension_state().create_augment::<Self>(platform), EasterEggAugment)
+        PicoEthAugments {
+            ip: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        }
     }
 
 

@@ -24,8 +24,8 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, HasDeviceConfig, IpAugmentFor, IpExtension, IpStateFor, SystemBMemoryMap,
-        SystemBStackDefinition, create_system_b_objects,
+        DefaultSystemBInterfaceObjects, Extension, HasDeviceConfig, IpAugmentFor, IpExtension, IpStateFor,
+        SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -55,6 +55,16 @@ type Storage = RpFlashStorage<PicoWState, rp_common::FlashIdentityData>;
 
 #[derive(Debug, Clone, Copy)]
 struct PicoWLightSwitch;
+
+/// Augment chain: KNXnet/IP medium augment plus the demo Easter Egg
+/// augment.
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+struct PicoWAugments<'a> {
+    #[service(augment)]
+    ip: IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>,
+    #[service(augment)]
+    easter: EasterEggAugment,
+}
 
 /// Init envelope: identity + optional loaded device config.
 pub struct PicoWStateInit {
@@ -87,7 +97,7 @@ impl StackDefinition for PicoWLightSwitch {
     }
 
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
-    type Augments<'a> = (IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>, EasterEggAugment);
+    type Augments<'a> = PicoWAugments<'a>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -111,7 +121,10 @@ impl StackDefinition for PicoWLightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        (state.extension_state().create_augment::<Self>(platform), EasterEggAugment)
+        PicoWAugments {
+            ip: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        }
     }
 
 

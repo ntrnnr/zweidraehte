@@ -161,6 +161,25 @@ pub struct Stm32G0SecureStateInit {
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0SecureLightSwitch;
 
+// Security augment type alias — produced by the secure extension for
+// `Stm32G0SecureLightSwitch`. The conformance DUT uses the same
+// pattern; see `examples/conformance/src/harness/secure_stack.rs:871`.
+type SecAugment<'a> =
+    <<Stm32G0SecureLightSwitch as StackDefinition>::ES as zweidraehte_device::bcus::system_b::Extension<()>>::Augment<
+        'a,
+        Stm32G0SecureLightSwitch,
+    >;
+
+/// Augment chain: KNX Data Secure augment (drives Security IO 0x11)
+/// plus the demo Easter Egg augment.
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+pub struct Stm32G0SecureAugments<'a> {
+    #[service(augment)]
+    pub sec: SecAugment<'a>,
+    #[service(augment)]
+    pub easter: EasterEggAugment,
+}
+
 impl SystemBStackDefinition for Stm32G0SecureLightSwitch {}
 
 impl HasSequenceStorage for Stm32G0SecureLightSwitch {
@@ -198,7 +217,7 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     // from `type ES`; the "extra" slot here carries the device's own
     // augment (`EasterEggAugment`), matching the insecure variant.
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
-    type Augments<'a> = (SecAugment<'a>, EasterEggAugment);
+    type Augments<'a> = Stm32G0SecureAugments<'a>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         let Stm32G0SecureStateInit { identity, seq_storage, loaded_config } = init;
@@ -232,7 +251,10 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        (state.extension_state().create_augment::<Self>(platform), EasterEggAugment)
+        Stm32G0SecureAugments {
+            sec: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        }
     }
 
 
@@ -243,15 +265,6 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     // generation, no state-type newtype needed.
     type Rng = Stm32CommonRng;
 }
-
-// Security augment type alias — produced by the secure extension for
-// `Stm32G0SecureLightSwitch`. The conformance DUT uses the same
-// pattern; see `examples/conformance/src/harness/secure_stack.rs:871`.
-type SecAugment<'a> =
-    <<Stm32G0SecureLightSwitch as StackDefinition>::ES as zweidraehte_device::bcus::system_b::Extension<()>>::Augment<
-        'a,
-        Stm32G0SecureLightSwitch,
-    >;
 
 // Import the full re-exported set from system_b so the ES alias
 // arguments above resolve. (`SecureResources`, `SecureDeviceIdentity`,

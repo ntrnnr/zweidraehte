@@ -70,6 +70,17 @@ pub struct PicoTp1StateInit {
 #[derive(Debug, Clone, Copy)]
 struct PicoTp1LightSwitch;
 
+/// Augment chain: TP1 medium augment (just borrows the extension
+/// state) + the demo Easter Egg augment. Derives `AugmentRegistry<D>`
+/// from the field annotations.
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+struct PicoTp1Augments<'a> {
+    #[service(augment)]
+    tp1: &'a Tp1ExtensionState,
+    #[service(augment)]
+    easter: EasterEggAugment,
+}
+
 impl SystemBStackDefinition for PicoTp1LightSwitch {}
 
 impl StackDefinition for PicoTp1LightSwitch {
@@ -92,7 +103,7 @@ impl StackDefinition for PicoTp1LightSwitch {
     type StateInit = PicoTp1StateInit;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
-    type Augments<'a> = (<Self::ES as Extension<Self::Platform>>::Augment<'a, Self>, EasterEggAugment);
+    type Augments<'a> = PicoTp1Augments<'a>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         use zweidraehte_device::storage::StaticIdentity;
@@ -125,7 +136,10 @@ impl StackDefinition for PicoTp1LightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        (state.extension_state().create_augment::<Self>(platform), EasterEggAugment)
+        PicoTp1Augments {
+            tp1: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        }
     }
 
 

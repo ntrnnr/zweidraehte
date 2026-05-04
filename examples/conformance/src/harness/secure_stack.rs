@@ -924,6 +924,32 @@ type SecAugment<'a> = <
     zweidraehte_device::bcus::system_b::Extension<()>
 >::Augment<'a, IpcSecureConformanceTestStack>;
 
+/// Conformance-only "extras" beyond the security augment: the
+/// certification object the spec validation suite checks, plus a
+/// diagnostics augment that mirrors a real device's PID 56 surface.
+/// Bundled into a small registry struct so it can be `flatten`-ed
+/// into the outer device augment chain below.
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+pub struct ConformanceExtras<'a> {
+    #[service(augment)]
+    pub cert: CertificationObjectAugment,
+    #[service(augment)]
+    pub diag: DiagnosticsAugment<'a>,
+}
+
+/// Outer device augment chain: the secure-extension augment, plus the
+/// flattened conformance extras. `#[service(flatten)]` inlines the
+/// extras' two augments into this struct's `AugmentRegistry<D>`
+/// chain so they participate in the property hooks, IO list
+/// aggregation, and lifecycle as if they were declared directly here.
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+pub struct SecureConformanceAugments<'a> {
+    #[service(augment)]
+    pub sec: SecAugment<'a>,
+    #[service(flatten)]
+    pub extras: ConformanceExtras<'a>,
+}
+
 /// Configuration for constructing a [`SecureConformanceState`].
 ///
 /// Passed to [`IpcSecureConformanceTestStack::create_state`] to produce the full state.
@@ -970,7 +996,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type Mem = ConformanceMemoryMap;
 
     type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
-    type Augments<'a> = (SecAugment<'a>, (CertificationObjectAugment, DiagnosticsAugment<'a>));
+    type Augments<'a> = SecureConformanceAugments<'a>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
@@ -995,10 +1021,13 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         Self::Platform: 'a,
     {
         use zweidraehte_device::bcus::system_b::{Extension, HasExtensionState};
-        (
-            state.extension_state().create_augment::<Self>(platform),
-            (CertificationObjectAugment::new(), DiagnosticsAugment::new(&state.inner.operation_mode)),
-        )
+        SecureConformanceAugments {
+            sec: state.extension_state().create_augment::<Self>(platform),
+            extras: ConformanceExtras {
+                cert: CertificationObjectAugment::new(),
+                diag: DiagnosticsAugment::new(&state.inner.operation_mode),
+            },
+        }
     }
 
 

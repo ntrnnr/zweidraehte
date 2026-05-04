@@ -483,11 +483,30 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
 
+    // For each `#[service(augment)]` field, the impl requires the
+    // field's type to satisfy `Augment<D>`. Same idea for
+    // `#[service(flatten)]` fields, which need `AugmentRegistry<D>`.
+    // These are explicit `where` bounds in the emitted impl so any
+    // additional state-trait bounds on the field type (e.g. a
+    // `DiagnosticsAugment` requiring `D::State: HasExtensionState`)
+    // get inferred from the field's own trait impl, without the
+    // user having to spell them out on the outer struct.
+    let augment_field_bounds = augments.iter().map(|a| {
+        let ty = a.ty;
+        quote! { #ty: ::zweidraehte_device::service::Augment<D> }
+    });
+    let flatten_field_bounds = flattens.iter().map(|f| {
+        let ty = f.ty;
+        quote! { #ty: ::zweidraehte_device::service::AugmentRegistry<D> }
+    });
+
     let augment_registry_impl = quote! {
         impl<#(#struct_lifetimes),* #struct_lifetime_separator D #struct_non_lifetime_separator #(#struct_non_lifetime_params),*>
             ::zweidraehte_device::service::AugmentRegistry<D> for #struct_name #ty_generics
         where
             D: ::zweidraehte_device::StackDefinition,
+            #( #augment_field_bounds, )*
+            #( #flatten_field_bounds, )*
             #where_clause
         {
             fn get_property_descriptor(
