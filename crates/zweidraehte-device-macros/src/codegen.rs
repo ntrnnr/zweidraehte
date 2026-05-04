@@ -843,10 +843,13 @@ fn augment_write_arm(p: &PropertyAttrs) -> Option<TokenStream> {
 
     let pid = &p.pid;
     if let Some(write_with_ctx) = &p.write_with_ctx {
+        // Pass the full write request, not just `req.data`, so closures
+        // can inspect `start_idx` / `count` for array-index writes and
+        // see any future request fields without another macro change.
         Some(quote! {
             #pid => {
                 let __c = #write_with_ctx;
-                return Some(__c(self, ctx, req.data));
+                return Some(__c(self, ctx, req));
             }
         })
     } else if let Some(write_fn) = &p.write_fn {
