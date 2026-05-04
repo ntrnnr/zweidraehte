@@ -25,19 +25,17 @@ pub(crate) fn gen_object(
     props: &[Option<PropertyAttrs>],
 ) -> syn::Result<TokenStream> {
     let object_type = obj_attrs.object_type.as_ref().ok_or_else(|| {
-        syn::Error::new_spanned(
-            &item.ident,
-            "missing `object_type = ...` argument on #[interface_object(...)]",
-        )
+        syn::Error::new_spanned(&item.ident, "missing `object_type = ...` argument on #[interface_object(...)]")
     })?;
 
     let ident = &item.ident;
     let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
     let vis = &item.vis;
     // Forward `#[derive(...)]`, doc comments, etc. from the user's struct.
-    let outer_attrs = item.attrs.iter().filter(|a| {
-        !a.path().is_ident("interface_object") && !a.path().is_ident("interface_object_augment")
-    });
+    let outer_attrs = item
+        .attrs
+        .iter()
+        .filter(|a| !a.path().is_ident("interface_object") && !a.path().is_ident("interface_object_augment"));
 
     // Re-emit the user's struct verbatim except: virtual properties (unit-
     // typed fields with `read`/`write` closures) are stripped because they
@@ -264,9 +262,10 @@ pub(crate) fn gen_augment(
     let ident = &item.ident;
     let (impl_generics, ty_generics, where_clause) = item.generics.split_for_impl();
     let vis = &item.vis;
-    let outer_attrs = item.attrs.iter().filter(|a| {
-        !a.path().is_ident("interface_object") && !a.path().is_ident("interface_object_augment")
-    });
+    let outer_attrs = item
+        .attrs
+        .iter()
+        .filter(|a| !a.path().is_ident("interface_object") && !a.path().is_ident("interface_object_augment"));
 
     // For the augment trait impl we need to add a `__AugmentD: StackDefinition`
     // parameter on top of the user's existing generics. Construct a fresh
@@ -345,10 +344,27 @@ pub(crate) fn gen_augment(
                  `target = InterfaceObjectType::...` to disambiguate",
             ));
         }
+        // Field-backed augment writes are not implemented: augments are
+        // dispatched through `&self`, so a write would need interior
+        // mutability on the field plus a non-`&mut self` write trait.
+        // Reject up front rather than emit a runtime `WriteNotAllowed`,
+        // which used to compile silently and only fail at request time.
+        if !p.manual
+            && !matches!(p.access, Access::Ro)
+            && matches!(p.backing, Backing::Field)
+            && p.write_fn.is_none()
+            && p.write_with_ctx.is_none()
+        {
+            return Err(syn::Error::new(
+                p.field_span,
+                "field-backed property write is not implemented; \
+                 supply `write = |this, data| { ... }` (typically with a `Cell` or `RefCell` field) \
+                 or mark the property `access = RO`",
+            ));
+        }
     }
-    let pid_target = |p: &PropertyAttrs| -> syn::Expr {
-        p.target.as_ref().cloned().unwrap_or_else(|| default_target.clone())
-    };
+    let pid_target =
+        |p: &PropertyAttrs| -> syn::Expr { p.target.as_ref().cloned().unwrap_or_else(|| default_target.clone()) };
 
     // ----------------------------------------------------------------------
     // Descriptor table — single flat const slice across all targets. The
@@ -371,45 +387,29 @@ pub(crate) fn gen_augment(
     // For each target, collect (pid, dispatch_token_stream) for arms.
     let pid_field_value: syn::Ident = syn::parse_quote!(pid);
     let pid_field_function: syn::Ident = syn::parse_quote!(prop_id);
-    let read_arms_per_target = build_per_target_arms(
-        &property_props,
-        &effective_targets,
-        &pid_target,
-        &pid_field_value,
-        |p| augment_read_arm(p),
-    );
-    let write_arms_per_target = build_per_target_arms(
-        &property_props,
-        &effective_targets,
-        &pid_target,
-        &pid_field_value,
-        |p| augment_write_arm(p),
-    );
-    let fn_cmd_arms_per_target = build_per_target_arms(
-        &property_props,
-        &effective_targets,
-        &pid_target,
-        &pid_field_function,
-        |p| augment_function_command_arm(p),
-    );
-    let fn_state_arms_per_target = build_per_target_arms(
-        &property_props,
-        &effective_targets,
-        &pid_target,
-        &pid_field_function,
-        |p| augment_function_state_arm(p),
-    );
+    let read_arms_per_target =
+        build_per_target_arms(&property_props, &effective_targets, &pid_target, &pid_field_value, |p| {
+            augment_read_arm(p)
+        });
+    let write_arms_per_target =
+        build_per_target_arms(&property_props, &effective_targets, &pid_target, &pid_field_value, |p| {
+            augment_write_arm(p)
+        });
+    let fn_cmd_arms_per_target =
+        build_per_target_arms(&property_props, &effective_targets, &pid_target, &pid_field_function, |p| {
+            augment_function_command_arm(p)
+        });
+    let fn_state_arms_per_target =
+        build_per_target_arms(&property_props, &effective_targets, &pid_target, &pid_field_function, |p| {
+            augment_function_state_arm(p)
+        });
 
     // additional_objects → count + type_at
     let additional_count = obj_attrs.additional_objects.len() as u16;
-    let additional_type_arms = obj_attrs
-        .additional_objects
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let i = i as u16;
-            quote! { #i => Some(#t), }
-        });
+    let additional_type_arms = obj_attrs.additional_objects.iter().enumerate().map(|(i, t)| {
+        let i = i as u16;
+        quote! { #i => Some(#t), }
+    });
 
     // Whether any property field is `manual` — drives whether the macro
     // calls back into a user-defined `handle_extra_pid_*` method or just
@@ -856,25 +856,10 @@ fn augment_write_arm(p: &PropertyAttrs) -> Option<TokenStream> {
                 return Some(__c(self, req.data));
             }
         })
-    } else if matches!(p.backing, Backing::Field) {
-        // Field-backed augment writes — augments take `&self`, not
-        // `&mut self`, so this requires the field type to support
-        // interior mutability (e.g. `Cell<T>`). Generate via
-        // `PropertyWrite` regardless and let the borrow checker enforce
-        // it at use site.
-        let _name = &p.field_ident;
-        Some(quote! {
-            #pid => {
-                // Augments take `&self`; field-backed writes thus require
-                // interior mutability on the field's type. The standard
-                // PropertyWrite trait doesn't fit (`&mut self` receiver),
-                // so a field-backed write on an augment is currently
-                // unsupported — use a `write` closure with a `Cell` /
-                // `RefCell` field instead.
-                return Some(Err(::zweidraehte_device::objects::interface::PropertyError::WriteNotAllowed));
-            }
-        })
     } else {
+        // Field-backed writes are rejected up front in `gen_augment`
+        // (see the validation pass before arm generation), so a
+        // writable field-backed property never reaches this branch.
         None
     }
 }
@@ -905,10 +890,7 @@ fn augment_function_state_arm(p: &PropertyAttrs) -> Option<TokenStream> {
 // Per-property descriptor entry
 // ---------------------------------------------------------------------------
 
-fn descriptor_for(
-    p: &PropertyAttrs,
-    _object_type: &syn::Expr,
-) -> TokenStream {
+fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr) -> TokenStream {
     let pid = &p.pid;
     let policy = &p.policy;
     // PDT is either a named type (`pdt = PDT_Foo`, takes `::ID`) or a raw
