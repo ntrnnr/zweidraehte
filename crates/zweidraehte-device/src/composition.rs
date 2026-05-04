@@ -13,6 +13,7 @@ use crate::HasSecureIdentity;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{CemiEvent, CemiTransportLayer};
+use crate::service::Layer;
 use crate::{
     actor::Request,
     context::StackContext,
@@ -32,6 +33,13 @@ use crate::{
 
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::KnxMessageBuffer;
+
+/// Smallest `Some(Instant)` across `deadlines`, or `None` if all entries
+/// are `None`. Used by the `LayerRegistry::next_layer_deadline` impls of
+/// the bundled layer stacks to pick the earliest layer-driven wake-up.
+fn min_deadline<I: IntoIterator<Item = Option<embassy_time::Instant>>>(deadlines: I) -> Option<embassy_time::Instant> {
+    deadlines.into_iter().flatten().min()
+}
 
 // ============================================================================
 // Layer stack builders
@@ -277,8 +285,8 @@ where
     }
 }
 
-impl<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest>
-    crate::service::LayerRegistry<D> for StandardLayerStack<'a, D, AL>
+impl<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest> crate::service::LayerRegistry<D>
+    for StandardLayerStack<'a, D, AL>
 {
     const DISPATCH_TABLE: router::DispatchTable = {
         let mut table = router::DispatchTable::empty();
@@ -331,19 +339,11 @@ impl<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest>
     }
 
     fn next_layer_deadline(&self) -> Option<embassy_time::Instant> {
-        let mut earliest: Option<embassy_time::Instant> = None;
-        let merge = |earliest: &mut Option<embassy_time::Instant>, d: Option<embassy_time::Instant>| {
-            if let Some(d) = d {
-                *earliest = Some(match *earliest {
-                    Some(e) if e < d => e,
-                    _ => d,
-                });
-            }
-        };
-        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.nl));
-        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.tl));
-        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.al));
-        earliest
+        min_deadline([
+            Layer::<D>::next_deadline(&self.nl),
+            Layer::<D>::next_deadline(&self.tl),
+            Layer::<D>::next_deadline(&self.al),
+        ])
     }
 
     type ServiceInput = StandardServiceInput;
@@ -537,19 +537,11 @@ impl<'a, D: StackDefinition, AL: crate::service::Layer<D> + HasAppRequest> crate
     }
 
     fn next_layer_deadline(&self) -> Option<embassy_time::Instant> {
-        let mut earliest: Option<embassy_time::Instant> = None;
-        let merge = |earliest: &mut Option<embassy_time::Instant>, d: Option<embassy_time::Instant>| {
-            if let Some(d) = d {
-                *earliest = Some(match *earliest {
-                    Some(e) if e < d => e,
-                    _ => d,
-                });
-            }
-        };
-        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.nl));
-        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.tl));
-        merge(&mut earliest, crate::service::Layer::<D>::next_deadline(&self.al));
-        earliest
+        min_deadline([
+            Layer::<D>::next_deadline(&self.nl),
+            Layer::<D>::next_deadline(&self.tl),
+            Layer::<D>::next_deadline(&self.al),
+        ])
     }
 
     type ServiceInput = IpServiceInput;
