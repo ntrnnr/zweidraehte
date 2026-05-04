@@ -24,8 +24,8 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, Extension, HasDeviceConfig, IpAugmentFor, IpExtension, IpStateFor,
-        SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects,
+        Extension, HasDeviceConfig, IpAugmentFor, IpExtension, IpStateFor, SystemBInterfaceObjectsFor,
+        SystemBMemoryMap, SystemBStackDefinition,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -96,12 +96,12 @@ impl StackDefinition for PicoWLightSwitch {
         }
     }
 
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
+    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = PicoWAugments<'a>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
-        _platform: &'a Self::Platform,
+        platform: &'a Self::Platform,
         layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
         augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
@@ -109,7 +109,7 @@ impl StackDefinition for PicoWLightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
+        Self::default_interface_objects(state, platform, layer_ctx, augments)
     }
 
     fn create_augments<'a>(
@@ -121,12 +121,8 @@ impl StackDefinition for PicoWLightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        PicoWAugments {
-            ip: state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
-        }
+        PicoWAugments { ip: state.extension_state().create_augment::<Self>(platform), easter: EasterEggAugment }
     }
-
 
     type AlExtensions = (
         zweidraehte_device::layers::application::services::SystemBAlServices,

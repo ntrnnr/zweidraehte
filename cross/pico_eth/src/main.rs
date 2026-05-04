@@ -109,12 +109,12 @@ impl StackDefinition for PicoEthLightSwitch {
         }
     }
 
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
+    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = PicoEthAugments<'a>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
-        _platform: &'a Self::Platform,
+        platform: &'a Self::Platform,
         layer_ctx: &'a LayerContext<Self>,
         augments: &'a Self::Augments<'a>,
     ) -> Self::InterfaceObjects<'a>
@@ -122,7 +122,7 @@ impl StackDefinition for PicoEthLightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
+        Self::default_interface_objects(state, platform, layer_ctx, augments)
     }
 
     fn create_augments<'a>(
@@ -134,12 +134,8 @@ impl StackDefinition for PicoEthLightSwitch {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        PicoEthAugments {
-            ip: state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
-        }
+        PicoEthAugments { ip: state.extension_state().create_augment::<Self>(platform), easter: EasterEggAugment }
     }
-
 
     type AlExtensions = (
         zweidraehte_device::layers::application::services::SystemBAlServices,

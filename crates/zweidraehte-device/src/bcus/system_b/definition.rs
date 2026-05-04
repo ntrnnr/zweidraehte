@@ -5,8 +5,15 @@
 //! devices using [`SystemBMemoryMap`].
 
 use crate::StackDefinition;
+use crate::context::layer::LayerContext;
+use crate::objects::tables::{
+    HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
+    HasPeiApplication, HasRunStateMachine,
+};
+use crate::service::AugmentRegistry;
 
 use super::memory_map::{MemoryLayout, SystemBMemoryMap};
+use super::objects::{DefaultSystemBInterfaceObjects, create_system_b_objects};
 
 /// Supertrait for System B devices that use [`SystemBMemoryMap`].
 ///
@@ -59,6 +66,55 @@ pub trait SystemBStackDefinition: StackDefinition<Mem = SystemBMemoryMap> {
     /// Pass to [`zweidraehte_device::new()`](crate::new).
     fn memory_map() -> SystemBMemoryMap {
         SystemBMemoryMap::new(Self::memory_layout())
+    }
+
+    /// Build the standard System B interface-object container from
+    /// [`DEVICE`](StackDefinition::DEVICE), [`memory_layout()`](Self::memory_layout),
+    /// and the augment chain.
+    ///
+    /// Use as the body of
+    /// [`StackDefinition::create_interface_objects`](crate::StackDefinition::create_interface_objects)
+    /// when `Self::InterfaceObjects<'a>` is the standard
+    /// [`SystemBInterfaceObjectsFor<'a, Self>`](super::SystemBInterfaceObjectsFor).
+    /// Each device's `create_interface_objects` body collapses to:
+    ///
+    /// ```rust,ignore
+    /// fn create_interface_objects<'a>(state, platform, layer_ctx, augments)
+    ///     -> Self::InterfaceObjects<'a>
+    /// where Self::State: 'a, Self::Platform: 'a
+    /// {
+    ///     Self::default_interface_objects(state, platform, layer_ctx, augments)
+    /// }
+    /// ```
+    ///
+    /// `Rust trait method defaults can't be inherited from a supertrait
+    /// (i.e. `SystemBStackDefinition` can't provide the body for
+    /// `StackDefinition::create_interface_objects` directly), so devices
+    /// still write the trait-method shell. The body is one canonical
+    /// call, with all the bounds and helper logic centralised here.
+    ///
+    /// `Into<Self::InterfaceObjects<'a>>` lets devices that pin
+    /// `InterfaceObjects` to a wrapper type still use this helper if
+    /// they provide a `From` impl for the wrapper.
+    fn default_interface_objects<'a>(
+        state: &'a Self::State,
+        _platform: &'a Self::Platform,
+        layer_ctx: &'a LayerContext<Self>,
+        augments: &'a Self::Augments<'a>,
+    ) -> Self::InterfaceObjects<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+        Self::State: HasPeiApplication,
+        <Self::State as HasAddressTable>::ADT: HasLoadStateMachine,
+        <Self::State as HasAssociationTable>::AST: HasLoadStateMachine,
+        <Self::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
+        <Self::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
+        <Self::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
+        Self::Augments<'a>: AugmentRegistry<Self>,
+        DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>: Into<Self::InterfaceObjects<'a>>,
+    {
+        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments).into()
     }
 }
 

@@ -15,16 +15,15 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     StackDefinition,
     bcus::system_b::{
-        DefaultSystemBInterfaceObjects, DeviceConfig, HasDeviceConfig, HasExtensionState, HasSecurityMode,
-        SecureExtensionConfig, SecureResources, SecureTp1DeviceState, SecureTp1ExtensionState, Tp1ExtensionConfig,
+        DeviceConfig, HasDeviceConfig, HasExtensionState, HasSecurityMode, SecureExtensionConfig, SecureResources,
+        SecureTp1DeviceState, SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig,
         create_system_b_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     memory::MemoryMap,
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount,
-        PropertyError, PropertyRead, WriteResponse,
+        FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, PropertyError, PropertyRead, WriteResponse,
     },
     objects::tables::{
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
@@ -984,7 +983,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type StateInit = SecureConformanceStateInit;
     type Mem = ConformanceMemoryMap;
 
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
+    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = SecureConformanceAugments<'a>;
 
     fn create_interface_objects<'a>(
@@ -1018,7 +1017,6 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             },
         }
     }
-
 
     fn create_state(init: Self::StateInit) -> Self::State {
         match init {
