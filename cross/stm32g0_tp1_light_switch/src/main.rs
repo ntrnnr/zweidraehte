@@ -96,7 +96,7 @@ pub struct Stm32G0LightSwitch;
 
 /// Augment chain for this device: the TP1 medium augment (which is
 /// just a borrow of the extension state) plus the demo Easter Egg
-/// augment. Derives `AugmentRegistry<D>` from the
+/// augment. Derives `Augment<D>` from the
 /// `#[service(augment)]` field annotations — the runtime then routes
 /// every property hook through this struct's chain.
 #[derive(zweidraehte_device::service::ServiceRegistry)]

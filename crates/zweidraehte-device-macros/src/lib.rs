@@ -7,9 +7,9 @@
 //!   when needed, and emits a `const PROPERTY_DESCRIPTORS` plus a full
 //!   `InterfaceObject` impl.
 //! - `#[interface_object_augment(augment_for = ...)]` — same DSL for
-//!   `Augment<D>` impls (and the matching `AugmentRegistry<D>` forwarding
-//!   impl, so the augment can be a `#[service(augment)]` field on a
-//!   services struct without further work).
+//!   `Augment<D>` impls, so the augment can be a
+//!   `#[service(augment)]` field on a services struct without further
+//!   work.
 //!
 //! Every audit-relevant attribute (`pid`, `pdt`, `access`, `policy`) is
 //! mandatory at parse time — missing fields raise a `syn::Error` pointing
@@ -55,7 +55,7 @@ pub fn interface_object_augment(attr: TokenStream, item: TokenStream) -> TokenSt
 }
 
 /// Derive [`LayerRegistry<D>`](::zweidraehte_device::service::LayerRegistry) and
-/// [`AugmentRegistry<D>`](::zweidraehte_device::service::AugmentRegistry) for a
+/// [`Augment<D>`](::zweidraehte_device::service::Augment) for a
 /// device's services struct.
 ///
 /// # Field annotations
@@ -69,10 +69,10 @@ pub fn interface_object_augment(attr: TokenStream, item: TokenStream) -> TokenSt
 ///   `init_layers` / `poll_layers` / `next_layer_deadline`.
 ///
 /// - `#[service(augment)]` — the field implements
-///   [`Augment<D>`](::zweidraehte_device::service::Augment). It joins the
-///   property-hook chain, contributes to `additional_object_count` /
-///   `additional_object_type_at`, and participates in `poll_augments` /
-///   `next_augment_deadline`.
+///   [`Augment<D>`](::zweidraehte_device::service::Augment).
+///   It joins the property-hook chain, contributes to
+///   `additional_object_count` / `additional_object_type_at`, and
+///   participates in `poll_augments` / `next_augment_deadline`.
 ///
 /// Field annotations are checked at compile time; an un-annotated
 /// field or one with an unknown annotation produces a clear compile
@@ -112,18 +112,11 @@ enum Mode {
     Augment,
 }
 
-fn expand(
-    item: &ItemStruct,
-    obj_attrs: ObjectAttrs,
-    mode: Mode,
-) -> syn::Result<proc_macro2::TokenStream> {
+fn expand(item: &ItemStruct, obj_attrs: ObjectAttrs, mode: Mode) -> syn::Result<proc_macro2::TokenStream> {
     let fields = match &item.fields {
         syn::Fields::Named(f) => &f.named,
         _ => {
-            return Err(syn::Error::new(
-                item.ident.span(),
-                "#[interface_object] requires a struct with named fields",
-            ));
+            return Err(syn::Error::new(item.ident.span(), "#[interface_object] requires a struct with named fields"));
         }
     };
 

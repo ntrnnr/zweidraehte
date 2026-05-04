@@ -91,10 +91,10 @@ static BASE_IO_TYPES: [InterfaceObjectType; 6] = [
 /// - `COT`: Communication object table type
 /// - `APP`: Application type (implementing both HasLoadStateMachine and HasRunStateMachine)
 /// - `PEI`: PEI application type (implementing both HasLoadStateMachine and HasRunStateMachine)
-/// - `Aug`: Borrowed augment registry implementing [`crate::service::AugmentRegistry<D>`].
+/// - `Aug`: Borrowed augment registry implementing [`crate::service::Augment<D>`].
 ///   The container holds `&'a Aug`; the runner owns the chain itself
 ///   and ticks lifecycles through the owner reference.
-pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug: crate::service::AugmentRegistry<D> = ()>
+pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug: crate::service::Augment<D> = ()>
 where
     D: StackDefinition,
     ADT: HasLoadStateMachine,
@@ -123,7 +123,7 @@ where
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
     PEI: HasLoadStateMachine + HasRunStateMachine,
-    Aug: crate::service::AugmentRegistry<D>,
+    Aug: crate::service::Augment<D>,
 {
     /// Number of base interface objects (Device, ADT, AST, GOT, APP, PEI).
     pub const BASE_OBJECT_COUNT: u16 = 6;
@@ -407,7 +407,7 @@ pub type DefaultSystemBInterfaceObjects<'a, D, A = ()> = SystemBObjects<
 ///
 /// The IO list (PID_IO_LIST) will contain the 6 base System B object
 /// types plus any additional objects the augment registry contributes
-/// via [`AugmentRegistry::additional_object_count`](crate::service::AugmentRegistry::additional_object_count).
+/// via [`Augment::additional_object_count`](crate::service::Augment::additional_object_count).
 pub fn create_system_b_objects<'a, D, Aug>(
     state: &'a D::State,
     lctx: &'a LayerContext<D>,
@@ -429,7 +429,7 @@ where
     <D::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
     <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
-    Aug: crate::service::AugmentRegistry<D>,
+    Aug: crate::service::Augment<D>,
 {
     SystemBObjects::new(
         state,

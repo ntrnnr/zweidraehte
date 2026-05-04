@@ -10,7 +10,7 @@ use crate::objects::tables::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
     HasPeiApplication, HasRunStateMachine,
 };
-use crate::service::AugmentRegistry;
+use crate::service::Augment;
 
 use super::memory_map::{MemoryLayout, SystemBMemoryMap};
 use super::objects::{DefaultSystemBInterfaceObjects, create_system_b_objects};
@@ -111,7 +111,7 @@ pub trait SystemBStackDefinition: StackDefinition<Mem = SystemBMemoryMap> {
         <Self::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
         <Self::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
         <Self::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
-        Self::Augments<'a>: AugmentRegistry<Self>,
+        Self::Augments<'a>: Augment<Self>,
         DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>: Into<Self::InterfaceObjects<'a>>,
     {
         create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments).into()

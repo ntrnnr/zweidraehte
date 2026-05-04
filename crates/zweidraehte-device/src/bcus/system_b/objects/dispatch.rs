@@ -14,7 +14,7 @@ use crate::{
         PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
-    service::{AugmentRegistry, ServiceCtx},
+    service::{Augment, ServiceCtx},
 };
 use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
@@ -26,7 +26,7 @@ use crate::objects::interface::HasRoutingCount;
 // PropertyServiceHandler — property dispatch across base + augment objects
 // ============================================================================
 
-impl<'a, D, ADT, AST, COT, APP, PEI, Aug: AugmentRegistry<D>> PropertyServiceHandler
+impl<'a, D, ADT, AST, COT, APP, PEI, Aug: Augment<D>> PropertyServiceHandler
     for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug>
 where
     D: StackDefinition,
@@ -417,7 +417,7 @@ where
 // HasDeviceObject — typed access to Device Object properties
 // ============================================================================
 
-impl<'a, D, ADT, AST, COT, APP, PEI, Aug: AugmentRegistry<D>> HasDeviceObject
+impl<'a, D, ADT, AST, COT, APP, PEI, Aug: Augment<D>> HasDeviceObject
     for SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug>
 where
     D: StackDefinition,

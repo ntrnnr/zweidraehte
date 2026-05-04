@@ -328,15 +328,14 @@ impl<D: StackDefinition> Augment<D> for EasterEggAugment {
 For descriptor-table-driven augments (the common case where the
 augment exposes a fixed list of PIDs), use the
 `#[interface_object_augment]` attribute macro — it auto-generates
-the `Augment<D>` impl plus the matching `AugmentRegistry<D>`
-forwarding impl from a small DSL.
+the `Augment<D>` impl from a small DSL.
 
 ### The Augment chain — `D::Augments<'a>`
 
 Each device's complete augment set lives behind the
 `D::Augments<'a>` GAT on `StackDefinition`. The IO container
 borrows `&'a D::Augments<'a>` and routes every property hook
-through the `AugmentRegistry<D>` trait. There are three idiomatic
+through the `Augment<D>` trait. There are three idiomatic
 ways to spell `D::Augments<'a>`:
 
 #### 1. Bare projection (no extras)
@@ -354,7 +353,7 @@ fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> {
 #### 2. `#[derive(ServiceRegistry)]` struct
 
 When the device adds extra augments alongside the medium's, give
-each one a name and let the macro build the `AugmentRegistry<D>`
+each one a name and let the macro build the `Augment<D>`
 impl:
 
 ```rust
@@ -374,7 +373,7 @@ fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> {
 }
 ```
 
-The macro emits `AugmentRegistry<D>` walking the fields
+The macro emits `Augment<D>` walking the fields
 left-to-right: hooks chain via `or_else()` (first `Some` claims),
 IO list counts sum, lifecycle delegates to each augment.
 
@@ -397,7 +396,7 @@ pub struct SecureConformanceAugments<'a> {
 }
 ```
 
-The outer `AugmentRegistry<D>` impl walks `sec` first, then
+The outer `Augment<D>` impl walks `sec` first, then
 delegates the rest of the chain into `extras`. `flatten` is
 **augment-only** — it cannot be combined with `#[service(handler)]`
 on the same struct because the const dispatch table can't route
@@ -407,7 +406,7 @@ compile-time error if you try.
 #### Composing legacy tuple shapes
 
 The `()`, `(Head, Tail)`, and `&A` shapes also implement
-`AugmentRegistry<D>` directly (see
+`Augment<D>` directly (see
 `crates/zweidraehte-device/src/service/registry.rs`), so legacy
 tuple augment chains and the `<D::ES as Extension<…>>::Augment<'a,
 D>` projection types all work without per-device migration to the
@@ -661,7 +660,7 @@ impl StackDefinition for MyDevice {
 }
 ```
 
-The macro emits the `AugmentRegistry<D>` impl for the struct, which
+The macro emits the `Augment<D>` impl for the struct, which
 the IO container calls into for property dispatch and IO list
 contributions. See the "Augments" section above for the full story
 including `#[service(flatten)]` for nested composition.
@@ -834,8 +833,7 @@ impl<D: StackDefinition> Augment<D> for MyExtension {
 
 For augments that just expose a fixed list of PIDs, the
 `#[interface_object_augment]` attribute macro saves the boilerplate.
-It generates the `Augment<D>` impl plus the matching
-`AugmentRegistry<D>` forwarding impl from a small DSL.
+It generates the `Augment<D>` impl from a small DSL.
 
 ### 3. Implement Extension
 

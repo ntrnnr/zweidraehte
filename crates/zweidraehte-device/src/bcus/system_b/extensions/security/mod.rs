@@ -21,7 +21,7 @@
 //! ```
 //!
 //! `SecureAugmentBundle` is a `#[derive(ServiceRegistry)]` struct, so
-//! it implements [`AugmentRegistry<D>`](crate::service::AugmentRegistry)
+//! it implements [`Augment<D>`](crate::service::Augment)
 //! directly via the macro-emitted forwarding chain. Devices that don't
 //! compose any extra augments can spell `type Augments<'a> = <Self::ES
 //! as Extension<Self::Platform>>::Augment<'a, Self>` and let the runner
@@ -1235,7 +1235,7 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT:
 /// medium augment (TP1 retry-count borrow, IP Parameter Object, …)
 /// plus the [`SecurityAugment`] driving Security IO 0x11.
 ///
-/// The macro-derived [`AugmentRegistry<D>`](crate::service::AugmentRegistry)
+/// The macro-derived [`Augment<D>`](crate::service::Augment)
 /// impl walks the two fields in declaration order: the inner medium
 /// augment first, then security. Devices use the chain transparently
 /// — they don't need to construct this struct themselves; the

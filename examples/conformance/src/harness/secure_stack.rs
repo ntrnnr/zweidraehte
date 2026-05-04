@@ -927,7 +927,7 @@ pub struct ConformanceExtras<'a> {
 
 /// Outer device augment chain: the secure-extension augment, plus the
 /// flattened conformance extras. `#[service(flatten)]` inlines the
-/// extras' two augments into this struct's `AugmentRegistry<D>`
+/// extras' two augments into this struct's `Augment<D>`
 /// chain so they participate in the property hooks, IO list
 /// aggregation, and lifecycle as if they were declared directly here.
 #[derive(zweidraehte_device::service::ServiceRegistry)]

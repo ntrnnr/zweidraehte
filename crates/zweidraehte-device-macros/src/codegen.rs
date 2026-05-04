@@ -216,17 +216,15 @@ pub(crate) fn gen_object(
 //    `(&self, ctx: &ServiceCtx<'_, D>, ...)`.
 //  - Every method returns `Option<...>` so the container can fall
 //    through to the next augment in the chain (named-field
-//    `#[derive(ServiceRegistry)]` struct, or legacy `(Head, Tail)`
-//    tuple).
+//    `#[derive(ServiceRegistry)]` struct).
 //  - One augment can touch multiple object types (`DiagnosticsAugment`
 //    targets both `ApplicationProgram` and `GroupObjectTable`), so the
 //    macro accepts `target_objects = [...]` and per-field `target = ...`.
 //  - Augments may *add* whole new objects (`additional_objects = [...]`)
 //    on top of the base IO list.
-//  - The macro emits both the `Augment<D>` impl AND the matching
-//    `AugmentRegistry<D>` forwarding impl, so the augment can be used
-//    as an `#[service(augment)]` field in a services struct without
-//    further work.
+//  - The macro emits one `Augment<D>` impl per augment so it
+//    can be used directly as an `#[service(augment)]` field in a
+//    services struct without further work.
 //
 // The codegen mirrors these shapes. For each property field, the macro
 // emits a descriptor entry (always) and a dispatch arm in the appropriate
@@ -292,54 +290,6 @@ pub(crate) fn gen_augment(
         }
     }
     let (augment_impl_generics, _, augment_where_clause) = augment_generics.split_for_impl();
-
-    // For the `forward_augment_registry!` invocation we split the
-    // user's struct generics into `[<lifetimes> ; <rest>]` — the macro
-    // injects `D: StackDefinition` between the two halves so the impl
-    // header lands as `<lifetimes, D, types/consts>`, which is the only
-    // ordering Rust accepts. Defaults must be stripped on the
-    // type/const side because `impl<...>` headers don't allow them
-    // (the same restriction `split_for_impl` enforces on the struct's
-    // own `impl_generics`).
-    let forward_extra_generics = {
-        let strip_default = |p: &syn::GenericParam| -> syn::GenericParam {
-            let mut p = p.clone();
-            match &mut p {
-                syn::GenericParam::Type(t) => {
-                    t.eq_token = None;
-                    t.default = None;
-                }
-                syn::GenericParam::Const(c) => {
-                    c.eq_token = None;
-                    c.default = None;
-                }
-                syn::GenericParam::Lifetime(_) => {}
-            }
-            p
-        };
-        let (lifetimes, others): (Vec<_>, Vec<_>) =
-            item.generics.params.iter().partition(|p| matches!(p, syn::GenericParam::Lifetime(_)));
-        let lifetimes: Vec<syn::GenericParam> = lifetimes.into_iter().map(strip_default).collect();
-        let others: Vec<syn::GenericParam> = others.into_iter().map(strip_default).collect();
-        if others.is_empty() {
-            quote! { #(#lifetimes),* }
-        } else {
-            quote! { #(#lifetimes),* ; #(#others),* }
-        }
-    };
-    let forward_where_arg = {
-        let mut all_preds: Vec<syn::WherePredicate> =
-            item.generics.where_clause.as_ref().map(|wc| wc.predicates.iter().cloned().collect()).unwrap_or_default();
-        if let Some(extra) = &obj_attrs.extra_where {
-            let parsed: syn::WhereClause = syn::parse_quote! { where #extra };
-            all_preds.extend(parsed.predicates);
-        }
-        if all_preds.is_empty() {
-            quote! {}
-        } else {
-            quote! { where [ #(#all_preds),* ] }
-        }
-    };
 
     // ----------------------------------------------------------------------
     // Re-emit the struct verbatim. Augments rarely use unit-typed virtual
@@ -666,18 +616,6 @@ pub(crate) fn gen_augment(
                 }
             }
         }
-
-        // Forward AugmentRegistry<D> to this type's Augment<D> impl.
-        // A blanket `impl<A: Augment<D>> AugmentRegistry<D> for A` is
-        // forbidden by coherence (clashes with the macro-derived
-        // AugmentRegistry impls on service structs), so we emit a
-        // per-type forwarding impl. Funnel through the canonical
-        // `forward_augment_registry!` macro in `zweidraehte-device` so
-        // the forwarding shape lives in one place — adding a method to
-        // `AugmentRegistry<D>` only needs an update there.
-        ::zweidraehte_device::forward_augment_registry!(
-            [#forward_extra_generics] #ident #ty_generics #forward_where_arg
-        );
     })
 }
 

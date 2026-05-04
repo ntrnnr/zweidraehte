@@ -2,7 +2,7 @@
 //! `Layer` / `Augment` impls.
 //!
 //! These tests don't exercise wire dispatch — they only verify the
-//! macro emits compilable `LayerRegistry` / `AugmentRegistry` impls
+//! macro emits compilable `LayerRegistry` / `Augment` impls
 //! against the new trait surface. End-to-end behaviour is covered
 //! by the conformance suite once the real layers migrate.
 
@@ -14,7 +14,7 @@ use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 use crate::StackDefinition;
-use crate::service::{AlCtx, ApciHandler, Augment, AugmentRegistry, Layer, LayerRegistry, ServiceCtx, ServiceRegistry};
+use crate::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, ServiceCtx, ServiceRegistry};
 
 // -----------------------------------------------------------------
 // Shim Layer that handles a single, otherwise-unused ServiceType so
@@ -24,8 +24,8 @@ use crate::service::{AlCtx, ApciHandler, Augment, AugmentRegistry, Layer, LayerR
 #[derive(Default)]
 struct ShimLayer {
     process_calls: Cell<usize>,
-    init_called:   Cell<bool>,
-    poll_called:   Cell<bool>,
+    init_called: Cell<bool>,
+    poll_called: Cell<bool>,
 }
 
 impl<D: StackDefinition> Layer<D> for ShimLayer {
@@ -58,6 +58,10 @@ struct ShimAugment {
     poll_called: Cell<bool>,
 }
 
+// Hand-written augment without `#[interface_object_augment]`. With
+// the single-trait surface, this is simply an `Augment<D>`
+// impl that overrides only the methods this shim cares about — the
+// rest are covered by the trait's defaults.
 impl<D: StackDefinition> Augment<D> for ShimAugment {
     fn additional_object_count(&self) -> u16 {
         1
@@ -70,21 +74,10 @@ impl<D: StackDefinition> Augment<D> for ShimAugment {
         }
     }
 
-    fn next_deadline(&self) -> Option<Instant> {
-        None
-    }
-
-    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {
+    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {
         self.poll_called.set(true);
     }
 }
-
-// `#[derive(ServiceRegistry)]` requires every `#[service(augment)]`
-// field to satisfy `AugmentRegistry<D>`. For hand-written `Augment<D>`
-// impls (no `#[interface_object_augment]` macro), use
-// `forward_augment_registry!` to generate the matching forwarding
-// `AugmentRegistry<D>` impl.
-crate::forward_augment_registry!(ShimAugment);
 
 // -----------------------------------------------------------------
 // Shim ApciHandler used inside the AL's `Ext` chain. The
@@ -120,7 +113,7 @@ struct SmokeServices {
 
 // -----------------------------------------------------------------
 // `#[service(flatten)]` — verifies the macro emits an
-// AugmentRegistry impl that delegates each method into a nested
+// Augment impl that delegates each method into a nested
 // `#[derive(ServiceRegistry)]` struct.
 //
 // The base struct has no handler fields, since flatten is incompatible
@@ -158,18 +151,18 @@ struct SmokeFlattenedAugments {
 /// declares are checked at definition time.
 fn _assert_registry_bounds<D: StackDefinition>()
 where
-    SmokeServices: LayerRegistry<D> + AugmentRegistry<D>,
+    SmokeServices: LayerRegistry<D> + Augment<D>,
 {
 }
 
 /// Type-level assertion that `#[service(flatten)]` produces a valid
-/// `AugmentRegistry<D>` impl: the outer struct (`SmokeFlattenedAugments`)
+/// `Augment<D>` impl: the outer struct (`SmokeFlattenedAugments`)
 /// must satisfy the bound regardless of the inner struct's identity,
 /// confirming the macro emits the cross-trait forwarding correctly.
 fn _assert_flatten_bounds<D: StackDefinition>()
 where
-    SmokeBaseAugments: AugmentRegistry<D>,
-    SmokeFlattenedAugments: AugmentRegistry<D>,
+    SmokeBaseAugments: Augment<D>,
+    SmokeFlattenedAugments: Augment<D>,
 {
 }
 
@@ -222,9 +215,9 @@ where
 }
 
 /// Compile-time assertion that every system-B augment satisfies the
-/// new `Augment<D>` trait via its bridge shim. The bounds mirror
-/// each augment's own `where_bounds(...)` plus the standard
-/// `D: StackDefinition` from the trait.
+/// `Augment<D>` trait. The bounds mirror each augment's own
+/// `where_bounds(...)` plus the standard `D: StackDefinition` from
+/// the trait.
 fn _assert_augments_implement_augment<'a, D, SEQ>()
 where
     D: StackDefinition,

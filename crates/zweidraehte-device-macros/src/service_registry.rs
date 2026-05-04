@@ -1,5 +1,5 @@
 //! `#[derive(ServiceRegistry)]` — emits `LayerRegistry<D>` and
-//! `AugmentRegistry<D>` impls on a device's services struct.
+//! `Augment<D>` impls on a device's services struct.
 //!
 //! The derive walks the struct's named fields and partitions them by
 //! `#[service(...)]` attribute:
@@ -9,8 +9,8 @@
 //!   to the const dispatch table and the layer-side lifecycle
 //!   aggregation.
 //! - `#[service(augment)]` — field implements
-//!   [`Augment<D>`](::zweidraehte_device::service::Augment). Joins
-//!   the property-hook chain, IO-list contribution sum, and
+//!   [`Augment<D>`](::zweidraehte_device::service::Augment).
+//!   Joins the property-hook chain, IO-list contribution sum, and
 //!   augment-side lifecycle aggregation.
 //!
 //! Both impls are generic over `D: ::zweidraehte_device::StackDefinition`,
@@ -28,10 +28,10 @@ enum ServiceFieldRole {
     Handler,
     Augment,
     /// `#[service(flatten)]` — the field is itself a struct that
-    /// implements `AugmentRegistry<D>` (typically another
+    /// implements `Augment<D>` (typically another
     /// `#[derive(ServiceRegistry)]` struct or a pre-bundled augment
     /// bundle). The outer registry's augment chain delegates each
-    /// method through to this field's `AugmentRegistry` impl, so the
+    /// method through to this field's `Augment` impl, so the
     /// inner struct's augments participate in the property hook
     /// chain, IO list aggregation, and lifecycle as if they were
     /// declared directly on the outer struct.
@@ -66,20 +66,20 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // parameters in `impl<...>` lists. So we partition the struct's
     // own generics: lifetimes first, then `D`, then everything else.
     let (_, ty_generics, where_clause) = input.generics.split_for_impl();
-    let struct_lifetimes: Vec<_> = input
-        .generics
-        .params
-        .iter()
-        .filter(|p| matches!(p, syn::GenericParam::Lifetime(_)))
-        .collect();
-    let struct_non_lifetime_params: Vec<_> = input
-        .generics
-        .params
-        .iter()
-        .filter(|p| !matches!(p, syn::GenericParam::Lifetime(_)))
-        .collect();
-    let struct_lifetime_separator = if struct_lifetimes.is_empty() { quote! {} } else { quote! { , } };
-    let struct_non_lifetime_separator = if struct_non_lifetime_params.is_empty() { quote! {} } else { quote! { , } };
+    let struct_lifetimes: Vec<_> =
+        input.generics.params.iter().filter(|p| matches!(p, syn::GenericParam::Lifetime(_))).collect();
+    let struct_non_lifetime_params: Vec<_> =
+        input.generics.params.iter().filter(|p| !matches!(p, syn::GenericParam::Lifetime(_))).collect();
+    let struct_lifetime_separator = if struct_lifetimes.is_empty() {
+        quote! {}
+    } else {
+        quote! { , }
+    };
+    let struct_non_lifetime_separator = if struct_non_lifetime_params.is_empty() {
+        quote! {}
+    } else {
+        quote! { , }
+    };
 
     let fields = match &input.data {
         Data::Struct(data) => match &data.fields {
@@ -153,7 +153,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         service_fields.iter().filter(|f| f.role == ServiceFieldRole::Flatten).collect();
 
     // `#[service(flatten)]` only forwards into the inner struct's
-    // `AugmentRegistry<D>` impl. The const dispatch table is keyed
+    // `Augment<D>` impl. The const dispatch table is keyed
     // on a single outer field index per `Layer`, which can't route
     // through a flattened sub-table without a 2D mapping. Reject
     // mixing handlers and flattens here so the failure is a clear
@@ -280,7 +280,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     // -----------------------------------------------------------------
-    // AugmentRegistry impl — property-hook chain, IO list aggregation,
+    // Augment impl — property-hook chain, IO list aggregation,
     // and augment-side lifecycle for every #[service(augment)] field.
     // -----------------------------------------------------------------
 
@@ -292,11 +292,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // (`#[service(augment)]` then `#[service(flatten)]`); the first
     // to return `Some` claims the request.
     //
-    // Both annotations dispatch through `AugmentRegistry<D>`. The
-    // single-augment case uses the per-type forwarding impl that
-    // `#[interface_object_augment]` emits (or the explicit `()` /
-    // `&A` / `(Head, Tail)` blanket impls); the nested-bundle case
-    // uses the macro-derived `AugmentRegistry<D>` impl on the inner
+    // Both annotations dispatch through `Augment<D>`. The
+    // single-augment case uses the impl that
+    // `#[interface_object_augment]` emits on the augment type (or
+    // the explicit `()` / `&A` impls); the nested-bundle case uses
+    // the macro-derived `Augment<D>` impl on the inner
     // services struct. The two annotations differ only in semantic
     // intent — `augment` says "this field IS a single augment",
     // `flatten` says "this field has nested augments" — but both
@@ -305,15 +305,14 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // The `&mut [u8]` borrow on `property_value_read` rules out the
     // closure-based `.or_else()` chain; that path uses explicit
     // if-let arms instead.
-    let all_aug_idents: Vec<&syn::Ident> =
-        augment_idents.iter().chain(flatten_idents.iter()).copied().collect();
+    let all_aug_idents: Vec<&syn::Ident> = augment_idents.iter().chain(flatten_idents.iter()).copied().collect();
 
     let prop_chain_get_descriptor = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
         let calls = all_aug_idents.iter().map(|id| {
             quote! {
-                .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::get_property_descriptor(
+                .or_else(|| ::zweidraehte_device::service::Augment::<D>::get_property_descriptor(
                     &self.#id, object_type, prop_id))
             }
         });
@@ -325,7 +324,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     } else {
         let calls = all_aug_idents.iter().map(|id| {
             quote! {
-                .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::property_description_read(
+                .or_else(|| ::zweidraehte_device::service::Augment::<D>::property_description_read(
                     &self.#id, ctx, object_type, object_idx, lookup))
             }
         });
@@ -338,7 +337,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let arms = all_aug_idents.iter().map(|id| {
             quote! {
                 if let r @ ::core::option::Option::Some(_) =
-                    ::zweidraehte_device::service::AugmentRegistry::<D>::property_value_read(
+                    ::zweidraehte_device::service::Augment::<D>::property_value_read(
                         &self.#id, ctx, object_type, req, buf,
                     )
                 {
@@ -357,7 +356,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     } else {
         let calls = all_aug_idents.iter().map(|id| {
             quote! {
-                .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::property_value_write(
+                .or_else(|| ::zweidraehte_device::service::Augment::<D>::property_value_write(
                     &self.#id, ctx, object_type, req))
             }
         });
@@ -369,7 +368,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     } else {
         let calls = all_aug_idents.iter().map(|id| {
             quote! {
-                .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::function_property_command(
+                .or_else(|| ::zweidraehte_device::service::Augment::<D>::function_property_command(
                     &self.#id, ctx, object_type, req))
             }
         });
@@ -381,7 +380,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     } else {
         let calls = all_aug_idents.iter().map(|id| {
             quote! {
-                .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::function_property_state_read(
+                .or_else(|| ::zweidraehte_device::service::Augment::<D>::function_property_state_read(
                     &self.#id, ctx, object_type, req))
             }
         });
@@ -389,37 +388,36 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     // IO list contribution: sum + walk-by-index. All fields
-    // dispatch through `AugmentRegistry::additional_object_count` /
+    // dispatch through `Augment::additional_object_count` /
     // `additional_object_type_at`. Order matches the hook chain
     // above so the index space stays consistent.
     let io_count_terms = all_aug_idents.iter().map(|id| {
-        quote! { ::zweidraehte_device::service::AugmentRegistry::<D>::additional_object_count(&self.#id) }
+        quote! { ::zweidraehte_device::service::Augment::<D>::additional_object_count(&self.#id) }
     });
     let io_count_body = quote! { 0u16 #( + #io_count_terms )* };
 
     let io_at_arms = all_aug_idents.iter().map(|id| {
         quote! {
-            let n = ::zweidraehte_device::service::AugmentRegistry::<D>::additional_object_count(&self.#id);
+            let n = ::zweidraehte_device::service::Augment::<D>::additional_object_count(&self.#id);
             if index < n {
-                return ::zweidraehte_device::service::AugmentRegistry::<D>::additional_object_type_at(&self.#id, index);
+                return ::zweidraehte_device::service::Augment::<D>::additional_object_type_at(&self.#id, index);
             }
             index -= n;
         }
     });
 
     // Augment-side lifecycle. Both annotations call
-    // `AugmentRegistry::poll_augments` / `next_augment_deadline`;
-    // the per-type forwarding impl emitted by
-    // `#[interface_object_augment]` translates these into the
-    // augment's own `Augment::poll` / `next_deadline` for the
-    // single-augment case.
+    // `Augment::poll_augments` / `next_augment_deadline` —
+    // single-augment fields get those directly from the
+    // `#[interface_object_augment]` codegen, nested-bundle fields
+    // get them from the recursive `#[derive(ServiceRegistry)]` impl.
     let poll_calls = all_aug_idents.iter().map(|id| {
-        quote! { ::zweidraehte_device::service::AugmentRegistry::<D>::poll_augments(&mut self.#id, ctx); }
+        quote! { ::zweidraehte_device::service::Augment::<D>::poll_augments(&mut self.#id, ctx); }
     });
 
     let next_deadline_merges = all_aug_idents.iter().map(|id| {
         quote! {
-            if let Some(d) = ::zweidraehte_device::service::AugmentRegistry::<D>::next_augment_deadline(&self.#id) {
+            if let Some(d) = ::zweidraehte_device::service::Augment::<D>::next_augment_deadline(&self.#id) {
                 earliest = Some(match earliest {
                     Some(e) if e < d => e,
                     _ => d,
@@ -429,7 +427,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     });
 
     // Every `#[service(augment)]` and `#[service(flatten)]` field
-    // type must satisfy `AugmentRegistry<D>`. This is one explicit
+    // type must satisfy `Augment<D>`. This is one explicit
     // `where` bound per field in the emitted impl so any additional
     // state-trait bounds on the field type (e.g. a
     // `DiagnosticsAugment` requiring `D::State: HasExtensionState`)
@@ -437,16 +435,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // user having to spell them out on the outer struct.
     let augment_field_bounds = augments.iter().map(|a| {
         let ty = a.ty;
-        quote! { #ty: ::zweidraehte_device::service::AugmentRegistry<D> }
+        quote! { #ty: ::zweidraehte_device::service::Augment<D> }
     });
     let flatten_field_bounds = flattens.iter().map(|f| {
         let ty = f.ty;
-        quote! { #ty: ::zweidraehte_device::service::AugmentRegistry<D> }
+        quote! { #ty: ::zweidraehte_device::service::Augment<D> }
     });
 
     let augment_registry_impl = quote! {
         impl<#(#struct_lifetimes),* #struct_lifetime_separator D #struct_non_lifetime_separator #(#struct_non_lifetime_params),*>
-            ::zweidraehte_device::service::AugmentRegistry<D> for #struct_name #ty_generics
+            ::zweidraehte_device::service::Augment<D> for #struct_name #ty_generics
         where
             D: ::zweidraehte_device::StackDefinition,
             #( #augment_field_bounds, )*

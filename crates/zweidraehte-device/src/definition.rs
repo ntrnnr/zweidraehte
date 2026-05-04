@@ -21,7 +21,7 @@ use crate::{
         comm::ComObjects,
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
-    service::{ApciHandler, AugmentRegistry},
+    service::{ApciHandler, Augment},
     state::CoreDeviceState,
     storage::{DeviceIdentity, StaticIdentity},
 };
@@ -273,7 +273,7 @@ pub trait StackDefinition: Copy + 'static {
     /// * `layer_ctx` - Shared runtime infrastructure (outbox, buffer manager, channels).
     /// * `augments` - The device-wide augment chain. The container borrows this for the
     ///   lifetime of the stack and routes property hooks through
-    ///   [`AugmentRegistry`](crate::service::AugmentRegistry).
+    ///   [`Augment`](crate::service::Augment).
     ///
     /// # Returns
     /// The container holding all interface objects for this device.
@@ -305,12 +305,13 @@ pub trait StackDefinition: Copy + 'static {
     /// (Security IO 0x11, KNXnet/IP Parameter 0x0B, etc.) and
     /// intercepts property dispatch on base interface objects.
     /// The IO container borrows `&Self::Augments<'a>` and routes
-    /// hooks through the [`AugmentRegistry<Self>`] surface.
+    /// hooks through the [`Augment<Self>`] surface.
     ///
     /// Default `()` is the empty chain — no extra objects, no hooks.
     /// Devices that need augments derive a struct of `#[service(augment)]`
     /// fields with [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry).
-    type Augments<'a>: AugmentRegistry<Self> = ()
+    type Augments<'a>: Augment<Self>
+        = ()
     where
         Self::State: 'a,
         Self::Platform: 'a;

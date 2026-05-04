@@ -1,7 +1,7 @@
 //! Easter egg function property for the light switch.
 //!
-//! An [`Augment<D>`](zweidraehte_device::service::Augment) that
-//! intercepts function property commands on the Device Object at a
+//! An [`Augment<D>`](zweidraehte_device::service::Augment)
+//! that intercepts function property commands on the Device Object at a
 //! manufacturer-specific property ID. Send certain ASCII phrases, get
 //! witty replies.
 //!

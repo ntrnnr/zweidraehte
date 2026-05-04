@@ -71,7 +71,7 @@ pub struct PicoTp1StateInit {
 struct PicoTp1LightSwitch;
 
 /// Augment chain: TP1 medium augment (just borrows the extension
-/// state) + the demo Easter Egg augment. Derives `AugmentRegistry<D>`
+/// state) + the demo Easter Egg augment. Derives `Augment<D>`
 /// from the field annotations.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 struct PicoTp1Augments<'a> {

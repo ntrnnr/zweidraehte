@@ -216,7 +216,7 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     // produced by `state.extension_state().create_augment::<Self>(platform)`
     // (see `create_augments` below) and bundled with `EasterEggAugment`
     // into `Stm32G0SecureAugments` so the property hook chain reaches
-    // both via the macro-derived `AugmentRegistry<D>` impl.
+    // both via the macro-derived `Augment<D>` impl.
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = Stm32G0SecureAugments<'a>;
 

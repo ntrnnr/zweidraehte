@@ -212,9 +212,9 @@ impl ExtensionState for () {
 /// object augmentation to the device stack.
 ///
 /// Unifies [`ExtensionState`] (persistence) with
-/// [`Augment<D>`](crate::service::Augment) (property handling) into a
-/// single concept. Each extension knows how to create its own augment
-/// given a reference to the platform.
+/// [`Augment<D>`](crate::service::Augment) (property
+/// handling) into a single concept. Each extension knows how to create
+/// its own augment given a reference to the platform.
 ///
 /// # Type Parameter
 ///
@@ -232,16 +232,13 @@ impl ExtensionState for () {
 pub trait Extension<Platform = ()>: ExtensionState {
     /// The augment type this extension creates.
     ///
-    /// Bound is [`AugmentRegistry<D>`](crate::service::AugmentRegistry)
-    /// — the registry surface the IO container dispatches through.
-    /// Concrete `Augment<D>` impls automatically satisfy this via
-    /// the per-type forwarding impl emitted by
-    /// `#[interface_object_augment]` (or by the
-    /// [`forward_augment_registry!`](crate::forward_augment_registry)
-    /// macro for hand-written augments). Composed bundles satisfy it
-    /// via the macro-derived [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry)
-    /// impl, plus the `()` and `&A` blanket impls in
-    /// `service::registry`.
+    /// Bound is [`Augment<D>`](crate::service::Augment)
+    /// — the trait surface the IO container dispatches through.
+    /// Leaf augments satisfy it via `#[interface_object_augment]`
+    /// codegen; composed bundles satisfy it via
+    /// [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry);
+    /// the `()` and `&A` impls in `service::registry` cover the
+    /// trivial cases.
     ///
     /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
     /// For IP: `IpAugment<'a, P, N, CAPS>` (wraps extension + platform).
@@ -249,7 +246,7 @@ pub trait Extension<Platform = ()>: ExtensionState {
     ///   (a `#[derive(ServiceRegistry)]` struct holding the inner
     ///   augment plus `SecurityAugment`).
     /// For `()`: `()` (no augmentation).
-    type Augment<'a, D: StackDefinition>: crate::service::AugmentRegistry<D>
+    type Augment<'a, D: StackDefinition>: crate::service::Augment<D>
     where
         Self: 'a,
         Platform: 'a;

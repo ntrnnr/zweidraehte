@@ -168,7 +168,7 @@ pub struct PropertyWriteRequest<'a> {
 
 /// Full property read request including object routing and access control.
 ///
-/// Used at the [`PropertyServiceHandler`] and [`Augment<D>`] level
+/// Used at the [`PropertyServiceHandler`] and `Augment<D>` level
 /// where the caller specifies which object to address and under what access
 /// context.
 #[derive(Debug, Clone, Copy)]
@@ -202,7 +202,7 @@ impl FullPropertyReadRequest {
 
 /// Full property write request including object routing and access control.
 ///
-/// Used at the [`PropertyServiceHandler`] and [`Augment<D>`] level.
+/// Used at the [`PropertyServiceHandler`] and `Augment<D>` level.
 #[derive(Debug, Clone, Copy)]
 pub struct FullPropertyWriteRequest<'a> {
     /// Object index (0-based).
@@ -246,7 +246,7 @@ pub const MAX_FUNCTION_PROPERTY_RESPONSE: usize = 64;
 
 /// Request for `A_FunctionPropertyCommand` or `A_FunctionPropertyState_Read`.
 ///
-/// Used at the [`PropertyServiceHandler`] and [`Augment<D>`] level.
+/// Used at the [`PropertyServiceHandler`] and `Augment<D>` level.
 /// The `service_data` is opaque and function-specific — the handler decides
 /// what it means.
 #[derive(Debug, Clone, Copy)]
@@ -580,7 +580,6 @@ pub enum PropertyLookup {
     /// Look up by augment-local 0-based index (during property scanning).
     ByIndex(u16),
 }
-
 
 // ============================================================================
 // Interface Object
