@@ -209,15 +209,22 @@ pub(crate) fn gen_object(
 //
 // Augments are different beasts from `InterfaceObject` impls:
 //
-//  - The trait is `InterfaceObjectAugment<D: StackDefinition>` and every
-//    dispatch method takes `(&self, ctx: &AugmentContext<'_, D>, ...)`.
-//  - Every method returns `Option<...>` so the container can fall through
-//    to the next augment in a `(Head, Tail)` tuple chain.
+//  - The trait is `Augment<D: StackDefinition>` (in
+//    `zweidraehte_device::service`) and every dispatch method takes
+//    `(&self, ctx: &ServiceCtx<'_, D>, ...)`.
+//  - Every method returns `Option<...>` so the container can fall
+//    through to the next augment in the chain (named-field
+//    `#[derive(ServiceRegistry)]` struct, or legacy `(Head, Tail)`
+//    tuple).
 //  - One augment can touch multiple object types (`DiagnosticsAugment`
 //    targets both `ApplicationProgram` and `GroupObjectTable`), so the
 //    macro accepts `target_objects = [...]` and per-field `target = ...`.
 //  - Augments may *add* whole new objects (`additional_objects = [...]`)
 //    on top of the base IO list.
+//  - The macro emits both the `Augment<D>` impl AND the matching
+//    `AugmentRegistry<D>` forwarding impl, so the augment can be used
+//    as an `#[service(augment)]` field in a services struct without
+//    further work.
 //
 // The codegen mirrors these shapes. For each property field, the macro
 // emits a descriptor entry (always) and a dispatch arm in the appropriate

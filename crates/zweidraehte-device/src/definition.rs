@@ -182,7 +182,7 @@ pub trait StackDefinition: Copy + 'static {
     /// object augmentation.
     ///
     /// The `Extension<Platform>` trait unifies what were previously
-    /// separate `ExtensionState` and `InterfaceObjectAugment` concerns.
+    /// separate `ExtensionState` and `Augment<D>` concerns.
     /// Each extension knows how to create its own augment given a
     /// reference to the platform.
     ///

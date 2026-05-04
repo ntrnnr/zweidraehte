@@ -36,8 +36,10 @@
 //!
 //! For state that must survive power cycles and also contributes interface
 //! object properties. Implement [`ExtensionState`] for persistence and
-//! [`Extension`] for augmentation. The augment is created automatically
-//! by [`create_system_b_objects_from_extension`](super::objects::create_system_b_objects_from_extension).
+//! [`Extension`] for augmentation. The augment is built by
+//! [`StackDefinition::create_augments`](crate::StackDefinition::create_augments)
+//! via `state.extension_state().create_augment::<Self>(platform)`,
+//! and passed into the IO container by the runner.
 //!
 //! Examples: TP1 retry count, KNX/IP config, Security Interface Object.
 //!
@@ -46,10 +48,10 @@
 //! For state that does NOT survive power cycles and therefore does not
 //! need [`ExtensionConfig`] / [`ExtensionState`] plumbing. Store the
 //! state as a field on your state type (either a custom wrapper or
-//! `SystemBDeviceState`), create the augment manually in
-//! [`StackDefinition::create_interface_objects`](crate::StackDefinition::create_interface_objects),
-//! and pass it via [`create_system_b_objects_with_extra`](super::objects::create_system_b_objects_with_extra).
-//! Access the state from layers via a `Has*` context trait.
+//! `SystemBDeviceState`) and add the augment as a `#[service(augment)]`
+//! field on the device's [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry)
+//! augment-bundle struct. Access the state from layers via a `Has*`
+//! context trait.
 //!
 //! Examples: `OperationModeState` (diagnostic mode), `CertificationObjectAugment`.
 
@@ -211,9 +213,9 @@ impl ExtensionState for () {
 /// object augmentation to the device stack.
 ///
 /// Unifies [`ExtensionState`] (persistence) with
-/// [`InterfaceObjectAugment`](crate::objects::interface::InterfaceObjectAugment)
-/// (property handling) into a single concept. Each extension knows how
-/// to create its own augment given a reference to the platform.
+/// [`Augment<D>`](crate::service::Augment) (property handling) into a
+/// single concept. Each extension knows how to create its own augment
+/// given a reference to the platform.
 ///
 /// # Type Parameter
 ///

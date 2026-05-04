@@ -7,7 +7,9 @@
 //!   when needed, and emits a `const PROPERTY_DESCRIPTORS` plus a full
 //!   `InterfaceObject` impl.
 //! - `#[interface_object_augment(augment_for = ...)]` — same DSL for
-//!   `InterfaceObjectAugment` impls.
+//!   `Augment<D>` impls (and the matching `AugmentRegistry<D>` forwarding
+//!   impl, so the augment can be a `#[service(augment)]` field on a
+//!   services struct without further work).
 //!
 //! Every audit-relevant attribute (`pid`, `pdt`, `access`, `policy`) is
 //! mandatory at parse time — missing fields raise a `syn::Error` pointing

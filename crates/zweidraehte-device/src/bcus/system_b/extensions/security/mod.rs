@@ -17,10 +17,12 @@
 //!   (Tp1Augment, SecurityAugment)       (tuple augment composition)
 //! ```
 //!
-//! The existing [`create_system_b_objects_with_extra`] function handles
-//! the tuple augment composition automatically.
-//!
-//! [`create_system_b_objects_with_extra`]: crate::bcus::system_b::objects::create_system_b_objects_with_extra
+//! The tuple `(Inner::Augment, SecurityAugment)` implements
+//! [`AugmentRegistry<D>`](crate::service::AugmentRegistry) directly via
+//! the `(Head, Tail)` blanket impl, so devices that don't compose any
+//! extra augments can spell `type Augments<'a> = <Self::ES as
+//! Extension<Self::Platform>>::Augment<'a, Self>` and let the runner
+//! call `state.extension_state().create_augment::<Self>(platform)`.
 //!
 //! # Const Generics
 //!

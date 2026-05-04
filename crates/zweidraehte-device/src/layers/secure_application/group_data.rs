@@ -42,7 +42,7 @@ use super::outgoing;
 /// group-addressed sends.
 ///
 /// Transient — built on demand via
-/// [`AugmentContext::secure_group_value_sender`](crate::objects::interface::AugmentContext::secure_group_value_sender).
+/// [`ServiceCtx::secure_group_value_sender`](crate::service::ServiceCtx::secure_group_value_sender).
 /// Holds no persistent state of its own; every call is a pure function
 /// over `state` + `lctx` + CCM primitives.
 pub struct SecureGroupDataProvider<'a, D: StackDefinition> {

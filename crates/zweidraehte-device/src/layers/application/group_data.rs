@@ -116,7 +116,7 @@ impl Default for GroupDataState {
 /// transient two-field view built on demand — callers can construct one per
 /// call without losing state between calls. The application layer builds one
 /// for its built-in handlers, and interface object augments can build one via
-/// [`AugmentContext::group_value_sender`](crate::objects::interface::AugmentContext::group_value_sender)
+/// [`ServiceCtx::group_value_sender`](crate::service::ServiceCtx::group_value_sender)
 /// to request group sends through the same logic.
 pub struct GroupDataProvider<'a, D: StackDefinition> {
     state: &'a D::State,

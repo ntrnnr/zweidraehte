@@ -123,7 +123,7 @@ pub trait LayerRegistry<D: StackDefinition> {
 /// Each property-hook method walks the augment fields left-to-right;
 /// the first to return `Some` claims the request. Mirrors the
 /// existing `(Head, Tail)` chain shape of
-/// [`InterfaceObjectAugment`](crate::objects::interface::InterfaceObjectAugment),
+/// [`Augment<D>`](crate::service::Augment),
 /// flattened across named fields.
 ///
 /// # IO list aggregation

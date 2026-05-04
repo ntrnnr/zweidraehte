@@ -1,11 +1,11 @@
-//! `IpAugment` and its `InterfaceObjectAugment` implementation.
+//! `IpAugment` and its `Augment<D>` implementation.
 //!
 //! [`IpAugment`] combines an [`IpExtensionState`] reference (persisted config)
 //! with a platform reference (current network state). It provides:
 //!
 //! - [`IpStackState`] — delegates config methods to the inner extension state
 //! - [`IpPlatformState`] — delegates current values to the platform
-//! - [`InterfaceObjectAugment`] — the IP Parameter Object (Type 11) with all
+//! - [`Augment<D>`] — the IP Parameter Object (Type 11) with all
 //!   IP PIDs including tunneling
 
 use core::net::Ipv4Addr;
@@ -35,7 +35,7 @@ use super::IpExtensionState;
 /// Combines an [`IpExtensionState`] reference (persisted config) with a
 /// platform reference (current network values) for property dispatch.
 ///
-/// Implements [`InterfaceObjectAugment`] to provide the IP Parameter
+/// Implements [`Augment<D>`] to provide the IP Parameter
 /// Object (Type 11) with all IP PIDs including tunneling.
 ///
 /// PID 68 (`KNXNETIP_DEVICE_CAPABILITIES`) is read from the extension

@@ -180,8 +180,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         // loop that registers all of its `HANDLES` entries. The
         // `.into()` call works inside a const context thanks to the
         // device crate's `feature(const_trait_impl) +
-        // feature(const_convert)`, matching today's
-        // `impl_layer_stack!` macro.
+        // feature(const_convert)`.
         let registrations = handlers.iter().enumerate().map(|(idx, h)| {
             let ty = h.ty;
             let idx_u8 = idx as u8;

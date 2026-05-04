@@ -55,7 +55,7 @@ use crate::objects::tables::{
 /// The 6 base interface object types present in every System B device.
 ///
 /// Additional object types (e.g., IPParameter for KNX/IP) are contributed
-/// by augments via [`InterfaceObjectAugment::additional_object_count`].
+/// by augments via [`Augment::additional_object_count`].
 static BASE_IO_TYPES: [InterfaceObjectType; 6] = [
     InterfaceObjectType::Device,
     InterfaceObjectType::AddressTable,

@@ -121,23 +121,24 @@ need explicit control over the const generics.
 
 ## Extensions
 
-An extension contributes both **persistent state** and **interface object
-augmentation** to the device. The `Extension<Platform>` trait unifies
-what were previously separate `ExtensionState` and
-`InterfaceObjectAugment` concerns.
+An extension contributes both **persistent state** and **interface
+object augmentation** to the device. The `Extension<Platform>` trait
+combines an `ExtensionState` (the persisted/runtime state) with a
+recipe for producing the `Augment<D>` impl that exposes that state
+on the wire.
 
 ### The Extension Trait
 
 ```rust
 pub trait Extension<Platform = ()>: ExtensionState {
     /// The augment type this extension creates.
-    type Augment<'a, S: StackState>: InterfaceObjectAugment<S>
+    type Augment<'a, D: StackDefinition>: Augment<D>
     where Self: 'a, Platform: 'a;
 
     /// Create the augment from this extension state and the platform.
-    fn create_augment<'a, S: StackState>(
+    fn create_augment<'a, D: StackDefinition>(
         &'a self, platform: &'a Platform,
-    ) -> Self::Augment<'a, S>
+    ) -> Self::Augment<'a, D>
     where Platform: 'a;
 }
 ```
@@ -254,59 +255,61 @@ Augments extend the device's interface objects. They can do two things:
 2. **Provide entirely new interface objects** — e.g., provide the IP
    Parameter Object (Type 11) at index 6
 
-### The InterfaceObjectAugment Trait
+### The Augment trait
 
 ```rust
-pub trait InterfaceObjectAugment<S: StackState> {
-    /// Intercept property description requests.
-    /// Return `Some(result)` to handle, `None` to delegate.
-    fn property_description_read(...) -> Option<Result<..., PropertyError>> { None }
+//! crates/zweidraehte-device/src/service/traits.rs
 
-    /// Intercept property read requests.
-    fn property_value_read(...) -> Option<Result<usize, PropertyError>> { None }
-
-    /// Intercept property write requests.
-    fn property_value_write(...) -> Option<Result<WriteResponse, PropertyError>> { None }
-
-    /// Intercept function property commands.
-    fn function_property_command(...) -> Option<FunctionPropertyResult> { None }
-
-    /// Intercept function property state reads.
-    fn function_property_state_read(...) -> Option<FunctionPropertyResult> { None }
-
-    /// Number of additional interface objects this augment provides.
+pub trait Augment<D: StackDefinition> {
     fn additional_object_count(&self) -> u16 { 0 }
-
-    /// Object type for an augment-provided interface object (0-based index).
-    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> { None }
+    fn additional_object_type_at(&self, _index: u16) -> Option<InterfaceObjectType> { None }
+    fn get_property_descriptor(&self, _ot: InterfaceObjectType, _pid: u16) -> Option<PropertyDescriptor> { None }
+    fn property_description_read(&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
+    fn property_value_read   (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
+    fn property_value_write  (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
+    fn function_property_command   (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
+    fn function_property_state_read(&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
+    fn next_deadline(&self) -> Option<Instant> { None }
+    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {}
 }
 ```
 
-All methods return `Option` — returning `None` delegates to the next
-augment in the chain or the base object.
+All hook methods return `Option<…>` — returning `None` delegates to
+the next augment in the chain or the base object. `next_deadline` /
+`poll` are opt-in lifecycle hooks for augments with temporal
+behaviour (Diagnostics auto-revert, Security rekey timers).
 
 ### How Augments Relate to Extensions
 
 For built-in mediums, the `Extension` trait handles augment creation
-automatically. You typically don't construct augments manually:
+automatically. You don't construct medium-specific augments manually:
 
-- **TP1**: `Tp1ExtensionState` IS its own augment (implements
-  `InterfaceObjectAugment` directly)
-- **IP**: `IpExtensionState` creates `IpAugment` via
-  `Extension::create_augment`, combining itself with the platform
+- **TP1**: `Tp1ExtensionState` IS its own augment, accessed by
+  reference. `create_augment` returns `&self`. The augment chain
+  ends up holding `&'a Tp1ExtensionState` so writes to property
+  storage (e.g. PID 52 retry count) reach the same `Cell<u8>` the
+  device state owns.
+- **IP**: `IpExtensionState` produces an `IpAugment<'a, P, N, CAPS>`
+  wrapper that bundles state + platform.
 
-### Stateless Augments (Extra Augments)
+For ergonomics, devices spell their `D::Augments<'a>` either as a
+direct projection or as a `#[derive(ServiceRegistry)]` struct
+(see "The Augment chain — `D::Augments<'a>`" below).
 
-Stateless augments don't need persistent state. They compose with the
-extension's augment via `create_system_b_objects_with_extra`:
+### Stateless extra augments
+
+Stateless augments (no persistent state, no resources) just
+implement `Augment<D>`:
 
 ```rust
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EasterEggAugment;
 
-impl<S: StackState> InterfaceObjectAugment<S> for EasterEggAugment {
+impl<D: StackDefinition> Augment<D> for EasterEggAugment {
     fn function_property_command(
-        &self, _state: &S, object_type: InterfaceObjectType,
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
         if object_type != InterfaceObjectType::Device || req.prop_id != 255 {
@@ -322,16 +325,93 @@ impl<S: StackState> InterfaceObjectAugment<S> for EasterEggAugment {
 }
 ```
 
-### Composing Multiple Augments
+For descriptor-table-driven augments (the common case where the
+augment exposes a fixed list of PIDs), use the
+`#[interface_object_augment]` attribute macro — it auto-generates
+the `Augment<D>` impl plus the matching `AugmentRegistry<D>`
+forwarding impl from a small DSL.
 
-Augments compose via tuples. The `(Head, Tail)` impl chains both:
+### The Augment chain — `D::Augments<'a>`
 
-- Property methods: try head first, then tail (via `or_else`)
-- Additional objects: head's objects come first, then tail's
-- The blanket `InterfaceObjectAugment for &A` impl enables references
+Each device's complete augment set lives behind the
+`D::Augments<'a>` GAT on `StackDefinition`. The IO container
+borrows `&'a D::Augments<'a>` and routes every property hook
+through the `AugmentRegistry<D>` trait. There are three idiomatic
+ways to spell `D::Augments<'a>`:
 
-When using `create_system_b_objects_with_extra`, the extension's augment
-and the extra augment are composed into a tuple automatically.
+#### 1. Bare projection (no extras)
+
+When the device only has the medium extension's augment:
+
+```rust
+type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
+
+fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> {
+    state.extension_state().create_augment::<Self>(platform)
+}
+```
+
+#### 2. `#[derive(ServiceRegistry)]` struct
+
+When the device adds extra augments alongside the medium's, give
+each one a name and let the macro build the `AugmentRegistry<D>`
+impl:
+
+```rust
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+pub struct PicoTp1Augments<'a> {
+    #[service(augment)] tp1:    &'a Tp1ExtensionState,
+    #[service(augment)] easter: EasterEggAugment,
+}
+
+type Augments<'a> = PicoTp1Augments<'a>;
+
+fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> {
+    PicoTp1Augments {
+        tp1:    state.extension_state().create_augment::<Self>(platform),
+        easter: EasterEggAugment,
+    }
+}
+```
+
+The macro emits `AugmentRegistry<D>` walking the fields
+left-to-right: hooks chain via `or_else()` (first `Some` claims),
+IO list counts sum, lifecycle delegates to each augment.
+
+#### 3. `#[service(flatten)]` for nested composition
+
+Useful when one chain wants to inherit another wholesale — for
+example, sharing a "conformance extras" bundle across stacks:
+
+```rust
+#[derive(ServiceRegistry)]
+pub struct ConformanceExtras<'a> {
+    #[service(augment)] cert: CertificationObjectAugment,
+    #[service(augment)] diag: DiagnosticsAugment<'a>,
+}
+
+#[derive(ServiceRegistry)]
+pub struct SecureConformanceAugments<'a> {
+    #[service(augment)] sec:    SecAugment<'a>,
+    #[service(flatten)] extras: ConformanceExtras<'a>,
+}
+```
+
+The outer `AugmentRegistry<D>` impl walks `sec` first, then
+delegates the rest of the chain into `extras`. `flatten` is
+**augment-only** — it cannot be combined with `#[service(handler)]`
+on the same struct because the const dispatch table can't route
+through a flattened sub-table. The macro emits a clear
+compile-time error if you try.
+
+#### Composing legacy tuple shapes
+
+The `()`, `(Head, Tail)`, and `&A` shapes also implement
+`AugmentRegistry<D>` directly (see
+`crates/zweidraehte-device/src/service/registry.rs`), so legacy
+tuple augment chains and the `<D::ES as Extension<…>>::Augment<'a,
+D>` projection types all work without per-device migration to the
+derive. Mix and match as suits the device.
 
 ## Persistence
 
@@ -506,15 +586,35 @@ impl StackDefinition for MyDevice {
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
+    // No extras: D::Augments is just the medium extension's augment.
+    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
+
     fn create_interface_objects<'a>(
-        state: &'a Self::State, platform: &'a Self::Platform,
-    ) -> Self::InterfaceObjects<'a> where Self::State: 'a {
-        create_system_b_objects_from_extension::<Self>(
-            state, platform, &Self::memory_layout(),
-        )
+        state: &'a Self::State,
+        _platform: &'a Self::Platform,
+        layer_ctx: &'a LayerContext<Self>,
+        augments: &'a Self::Augments<'a>,
+    ) -> Self::InterfaceObjects<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+    {
+        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
     }
 
-    type AlExtension = DomainAddressExtension;
+    fn create_augments<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        _layer_ctx: &'a LayerContext<Self>,
+    ) -> Self::Augments<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+    {
+        state.extension_state().create_augment::<Self>(platform)
+    }
+
+    type AlExtensions = (SystemBAlServices, DomainAddressService);
     type LayerBuilder = InsecureIpDeviceBuilder;
 }
 ```
@@ -524,56 +624,47 @@ this is the single source of truth for the device's IP feature set.
 
 **TP1 device:**
 
-```rust
-impl StackDefinition for MyDevice {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = MyParams;
-    type CO = MyComObjects;
-    type LLB = TpUartLinkLayerBuilder<MyUartTx, MyUartRx>;
-    type ES = Tp1ExtensionState;
-    type State = MyState;
-    type Mem = SystemBMemoryMap;
-
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State, platform: &'a Self::Platform,
-    ) -> Self::InterfaceObjects<'a> where Self::State: 'a {
-        create_system_b_objects_from_extension::<Self>(
-            state, platform, &Self::memory_layout(),
-        )
-    }
-
-    type LayerBuilder = InsecureDeviceBuilder;
-}
-```
-
-Note that `create_interface_objects` is identical for both mediums.
-The `Extension` trait handles the differences internally.
+The same shape, with `type ES = Tp1ExtensionState`. `create_augments`
+and `create_interface_objects` are byte-for-byte identical to the
+KNX/IP example — the `Extension` trait abstracts the medium.
 
 **With extra augments (e.g., EasterEggAugment):**
 
-When extra augments are needed beyond what the extension provides,
-use `create_system_b_objects_with_extra`. The `InterfaceObjects` type
-must spell out the augment tuple — use `IpAugmentFor<'a, P, F>` to
-derive `N` and `CAPS` from the feature set (same as `IpExtension<F>`
-does for the extension state):
+When the device chains extra augments alongside the medium extension,
+spell `D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct so
+each augment has a name:
 
 ```rust
-type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<
-    'a, MyState, (IpAugmentFor<'a, MyPlatform, KnxIpDeviceUdp>, EasterEggAugment),
->;
+#[derive(zweidraehte_device::service::ServiceRegistry)]
+pub struct MyDeviceAugments<'a> {
+    #[service(augment)] ip:     IpAugmentFor<'a, MyPlatform, KnxIpDeviceUdp>,
+    #[service(augment)] easter: EasterEggAugment,
+}
 
-fn create_interface_objects<'a>(
-    state: &'a Self::State, platform: &'a Self::Platform,
-) -> Self::InterfaceObjects<'a> where Self::State: 'a {
-    create_system_b_objects_with_extra::<Self, _>(
-        state, platform, &Self::memory_layout(), EasterEggAugment,
-    )
+impl StackDefinition for MyDevice {
+    // …
+    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
+    type Augments<'a> = MyDeviceAugments<'a>;
+
+    fn create_interface_objects<'a>(
+        state, _platform, layer_ctx, augments,
+    ) -> Self::InterfaceObjects<'a> where … {
+        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
+    }
+
+    fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> where … {
+        MyDeviceAugments {
+            ip:     state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        }
+    }
 }
 ```
+
+The macro emits the `AugmentRegistry<D>` impl for the struct, which
+the IO container calls into for property dispatch and IO list
+contributions. See the "Augments" section above for the full story
+including `#[service(flatten)]` for nested composition.
 
 ### Step 5: Startup
 
@@ -703,12 +794,19 @@ impl ExtensionState for MyExtension {
 }
 ```
 
-### 2. Implement InterfaceObjectAugment
+### 2. Implement Augment
+
+`Augment<D>` is generic over the *device*, not the state. The
+extension reaches into its own fields directly via `&self`:
 
 ```rust
-impl<S: StackState> InterfaceObjectAugment<S> for MyExtension {
-    fn property_value_read(&self, _state: &S, object_type: InterfaceObjectType,
-        req: &FullPropertyReadRequest, buf: &mut [u8],
+impl<D: StackDefinition> Augment<D> for MyExtension {
+    fn property_value_read(
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
     ) -> Option<Result<usize, PropertyError>> {
         if object_type != InterfaceObjectType::Device || req.pid != MY_PID {
             return None;
@@ -718,7 +816,10 @@ impl<S: StackState> InterfaceObjectAugment<S> for MyExtension {
         Some(Ok(4))
     }
 
-    fn property_value_write(&self, _state: &S, object_type: InterfaceObjectType,
+    fn property_value_write(
+        &self,
+        _ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         if object_type != InterfaceObjectType::Device || req.pid != MY_PID {
@@ -731,25 +832,29 @@ impl<S: StackState> InterfaceObjectAugment<S> for MyExtension {
 }
 ```
 
+For augments that just expose a fixed list of PIDs, the
+`#[interface_object_augment]` attribute macro saves the boilerplate.
+It generates the `Augment<D>` impl plus the matching
+`AugmentRegistry<D>` forwarding impl from a small DSL.
+
 ### 3. Implement Extension
 
-Since this extension needs no platform, use `Extension<()>`:
+Since this extension needs no platform, use `Extension<()>`. The
+extension state IS its own augment, accessed by reference:
 
 ```rust
 impl Extension<()> for MyExtension {
-    type Augment<'a, S: StackState> = &'a MyExtension where Self: 'a;
+    type Augment<'a, D: StackDefinition> = &'a MyExtension where Self: 'a;
 
-    fn create_augment<'a, S: StackState>(
+    fn create_augment<'a, D: StackDefinition>(
         &'a self, _platform: &'a (),
-    ) -> Self::Augment<'a, S> where (): 'a {
+    ) -> Self::Augment<'a, D> where (): 'a {
         self
     }
 }
 ```
 
 ### 4. Wire it into the device
-
-Use `MyExtension` as the extension state:
 
 ```rust
 type MyState = SystemBDeviceState<ADT, AST, COT, Params, MyExtension>;
@@ -759,21 +864,41 @@ impl StackDefinition for MyDevice {
     type State = MyState;
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
+    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
 
     fn create_interface_objects<'a>(
-        state: &'a Self::State, platform: &'a Self::Platform,
-    ) -> Self::InterfaceObjects<'a> where Self::State: 'a {
-        create_system_b_objects_from_extension::<Self>(
-            state, platform, &Self::memory_layout(),
-        )
+        state: &'a Self::State,
+        _platform: &'a Self::Platform,
+        layer_ctx: &'a LayerContext<Self>,
+        augments: &'a Self::Augments<'a>,
+    ) -> Self::InterfaceObjects<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+    {
+        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
+    }
+
+    fn create_augments<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        _layer_ctx: &'a LayerContext<Self>,
+    ) -> Self::Augments<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+    {
+        state.extension_state().create_augment::<Self>(platform)
     }
     // ...
 }
 ```
 
-The counter is automatically persisted and restored across power cycles
-because `ExtensionState::to_config()`/`from_config()` captures it.
+The counter is automatically persisted and restored across power
+cycles because `ExtensionState::to_config()` / `from_config()`
+captures it.
 
-If you also need IP support, create a combined extension state struct
-that holds both IP fields and your custom state, then implement
-`Extension<P>` on it.
+To compose this extension's augment with one or more extra augments
+(e.g. `EasterEggAugment`), wrap them in a
+`#[derive(ServiceRegistry)]` struct as shown in the "Augments"
+section earlier.

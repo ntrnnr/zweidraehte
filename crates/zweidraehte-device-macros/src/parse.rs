@@ -36,9 +36,9 @@ pub(crate) struct ObjectAttrs {
     pub additional_objects: Vec<Path>,
 
     /// Set on `#[interface_object_augment]` only. Extra `where`-clause
-    /// predicates appended to the generated `impl InterfaceObjectAugment<D>`.
-    /// Use to express bounds on the augment's `D::State`, e.g. on the
-    /// state having `HasApplication`, `HasSecurityState`, etc.
+    /// predicates appended to the generated `impl Augment<D>`. Use to
+    /// express bounds on the augment's `D::State`, e.g. on the state
+    /// having `HasApplication`, `HasSecurityState`, etc.
     ///
     /// Syntax: `where_bounds(__AugmentD::State: HasApplication + ...)`.
     /// Multiple predicates are comma-separated.
