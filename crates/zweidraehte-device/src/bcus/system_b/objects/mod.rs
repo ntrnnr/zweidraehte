@@ -339,6 +339,41 @@ where
     fn enforce_secure_access_policy(&self) -> bool {
         self.state.security_mode_enabled()
     }
+
+    /// Run the per-property access policy for `(object_idx, pid)` against
+    /// the caller's `AccessContext`, calling `policy` to evaluate the
+    /// matrix (`can_read_secure`, `can_write_secure`,
+    /// `can_function_read_secure`, `can_function_write_secure`).
+    ///
+    /// Returns `true` if access is allowed (or no descriptor is registered
+    /// for the property — unknown properties fall through to the
+    /// per-object handlers, which decide whether they exist). Returns
+    /// `false` after logging an access-denied event when the policy
+    /// rejects the access.
+    fn check_access<F>(
+        &self,
+        object_idx: u16,
+        pid: u16,
+        ctx: &zweidraehte_proto::access::AccessContext,
+        policy: F,
+    ) -> bool
+    where
+        F: FnOnce(&PropertyDescriptor, &zweidraehte_proto::access::AccessContext, bool) -> bool,
+    {
+        let Some(desc) = self.get_descriptor(object_idx, pid) else {
+            return true;
+        };
+
+        if policy(&desc, ctx, self.enforce_secure_access_policy()) {
+            return true;
+        }
+
+        if ctx.source_addr != 0 {
+            self.state.log_access_denied(ctx.source_addr);
+        }
+
+        false
+    }
 }
 
 // PropertyServiceHandler and HasDeviceObject impls are in `dispatch.rs`.

@@ -10,8 +10,8 @@ use crate::{
     device_model::DeviceModelNotifier,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-        HasDeviceObject, InterfaceObject, PropertyAccess, PropertyBuf, PropertyDescriptionResponse, PropertyError,
-        PropertyServiceHandler, WriteResponse, pid,
+        HasDeviceObject, InterfaceObject, PropertyAccess, PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor,
+        PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},
     service::{AugmentRegistry, ServiceCtx},
@@ -184,23 +184,15 @@ where
         // entirely on non-secure devices, which made it impossible to
         // audit a property's access policy without also enabling Data
         // Secure (Vol 6 §6.2 / Profiles Annex A.2).
-        if let Some(desc) = self.get_descriptor(req.object_idx, req.pid) {
-            if !desc.can_read_secure(&req.ctx, self.enforce_secure_access_policy()) {
-                if req.ctx.source_addr != 0 {
-                    self.state.log_access_denied(req.ctx.source_addr);
-                }
-                return Err(PropertyError::AccessDenied);
-            }
+        if !self.check_access(req.object_idx, req.pid, &req.ctx, PropertyDescriptor::can_read_secure) {
+            return Err(PropertyError::AccessDenied);
         }
 
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
-        if let Some(result) = self.augments.property_value_read(
-            &ServiceCtx::new(self.state, self.lctx, req.ctx),
-            obj_type,
-            req,
-            buf,
-        ) {
+        if let Some(result) =
+            self.augments.property_value_read(&ServiceCtx::new(self.state, self.lctx, req.ctx), obj_type, req, buf)
+        {
             return result;
         }
 
@@ -264,11 +256,9 @@ where
 
         // Augment first (can intercept specific PIDs on base objects,
         // and is the sole handler for augment-provided objects).
-        if let Some(result) = self.augments.property_value_write(
-            &ServiceCtx::new(self.state, self.lctx, req.ctx),
-            obj_type,
-            req,
-        ) {
+        if let Some(result) =
+            self.augments.property_value_write(&ServiceCtx::new(self.state, self.lctx, req.ctx), obj_type, req)
+        {
             if result.is_ok() {
                 self.state.mark_dirty();
             }
@@ -316,27 +306,21 @@ where
         // We use can_function_write_secure (not can_write_secure) because
         // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
         // while still being accessible via FunctionPropertyCommand.
-        if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-            // Always evaluate the function-property write policy. See the
-            // comment on `property_value_read` for rationale; the same
-            // applies to function-property gates.
-            if !desc.can_function_write_secure(&req.ctx, self.enforce_secure_access_policy()) {
-                if req.ctx.source_addr != 0 {
-                    self.state.log_access_denied(req.ctx.source_addr);
-                }
-                // Echo back the service_info byte (second byte of service_data)
-                // in the access-denied response per conformance spec.
-                let service_info = req.service_data.get(1).copied().unwrap_or(0);
-                return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
-            }
+        //
+        // Always evaluate the function-property write policy. See the
+        // comment on `property_value_read` for rationale; the same
+        // applies to function-property gates.
+        if !self.check_access(req.object_idx, req.prop_id, &req.ctx, PropertyDescriptor::can_function_write_secure) {
+            // Echo back the service_info byte (second byte of service_data)
+            // in the access-denied response per conformance spec.
+            let service_info = req.service_data.get(1).copied().unwrap_or(0);
+            return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
-            if let Some(result) = self.augments.function_property_command(
-                &ServiceCtx::new(self.state, self.lctx, req.ctx),
-                obj_type,
-                req,
-            ) {
+            if let Some(result) =
+                self.augments.function_property_command(&ServiceCtx::new(self.state, self.lctx, req.ctx), obj_type, req)
+            {
                 return result;
             }
         }
@@ -385,17 +369,11 @@ where
         // We use can_function_read_secure (not can_read_secure) because
         // PDT_FUNCTION properties may be marked ReadOnly in the descriptor
         // while still needing policy-based access control for state reads.
-        if let Some(desc) = self.get_descriptor(req.object_idx, req.prop_id) {
-            // Always evaluate the function-property read policy.
-            if !desc.can_function_read_secure(&req.ctx, self.enforce_secure_access_policy()) {
-                if req.ctx.source_addr != 0 {
-                    self.state.log_access_denied(req.ctx.source_addr);
-                }
-                // Echo back the service_info byte (second byte of service_data)
-                // in the access-denied response per conformance spec.
-                let service_info = req.service_data.get(1).copied().unwrap_or(0);
-                return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
-            }
+        if !self.check_access(req.object_idx, req.prop_id, &req.ctx, PropertyDescriptor::can_function_read_secure) {
+            // Echo back the service_info byte (second byte of service_data)
+            // in the access-denied response per conformance spec.
+            let service_info = req.service_data.get(1).copied().unwrap_or(0);
+            return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
