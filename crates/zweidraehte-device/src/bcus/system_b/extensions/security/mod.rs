@@ -14,14 +14,17 @@
 //!   └── security: SecurityState<64, 8, 32> (security tables + mode)
 //!
 //! Extension::create_augment() produces:
-//!   (Tp1Augment, SecurityAugment)       (tuple augment composition)
+//!   SecureAugmentBundle {
+//!       inner:    Inner::Augment<'a, D>,    (e.g. &Tp1ExtensionState)
+//!       security: SecurityAugment<'a, …>,
+//!   }
 //! ```
 //!
-//! The tuple `(Inner::Augment, SecurityAugment)` implements
-//! [`AugmentRegistry<D>`](crate::service::AugmentRegistry) directly via
-//! the `(Head, Tail)` blanket impl, so devices that don't compose any
-//! extra augments can spell `type Augments<'a> = <Self::ES as
-//! Extension<Self::Platform>>::Augment<'a, Self>` and let the runner
+//! `SecureAugmentBundle` is a `#[derive(ServiceRegistry)]` struct, so
+//! it implements [`AugmentRegistry<D>`](crate::service::AugmentRegistry)
+//! directly via the macro-emitted forwarding chain. Devices that don't
+//! compose any extra augments can spell `type Augments<'a> = <Self::ES
+//! as Extension<Self::Platform>>::Augment<'a, Self>` and let the runner
 //! call `state.extension_state().create_augment::<Self>(platform)`.
 //!
 //! # Const Generics
@@ -1225,7 +1228,37 @@ impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT:
 }
 
 // ============================================================================
-// Extension trait — produces (inner_augment, SecurityAugment) tuple
+// Augment bundle — composes the inner medium augment with `SecurityAugment`
+// ============================================================================
+
+/// The augment chain that a Data-Secure stack exposes: the inner
+/// medium augment (TP1 retry-count borrow, IP Parameter Object, …)
+/// plus the [`SecurityAugment`] driving Security IO 0x11.
+///
+/// The macro-derived [`AugmentRegistry<D>`](crate::service::AugmentRegistry)
+/// impl walks the two fields in declaration order: the inner medium
+/// augment first, then security. Devices use the chain transparently
+/// — they don't need to construct this struct themselves; the
+/// [`Extension::create_augment`] impl below builds it from a
+/// `SecureExtensionState` instance.
+#[derive(crate::service::ServiceRegistry)]
+pub struct SecureAugmentBundle<
+    'a,
+    InnerAugment,
+    SEQ: SequenceNumberStorage,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> {
+    #[service(augment)]
+    pub inner: InnerAugment,
+    #[service(augment)]
+    pub security: SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>,
+}
+
+// ============================================================================
+// Extension trait — produces SecureAugmentBundle
 // ============================================================================
 
 impl<Inner, Platform, SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> Extension<Platform>
@@ -1235,7 +1268,7 @@ where
     SEQ: SequenceNumberStorage,
 {
     type Augment<'a, D: StackDefinition>
-        = (Inner::Augment<'a, D>, SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>)
+        = SecureAugmentBundle<'a, Inner::Augment<'a, D>, SEQ, GRP, P2P, SIAT, GO>
     where
         Self: 'a,
         Platform: 'a;
@@ -1244,9 +1277,10 @@ where
     where
         Platform: 'a,
     {
-        let inner_augment = self.inner.create_augment::<D>(platform);
-        let security_augment = SecurityAugment::new(&self.security, &self.seq_storage);
-        (inner_augment, security_augment)
+        SecureAugmentBundle {
+            inner: self.inner.create_augment::<D>(platform),
+            security: SecurityAugment::new(&self.security, &self.seq_storage),
+        }
     }
 }
 

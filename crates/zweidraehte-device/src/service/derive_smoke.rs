@@ -79,6 +79,13 @@ impl<D: StackDefinition> Augment<D> for ShimAugment {
     }
 }
 
+// `#[derive(ServiceRegistry)]` requires every `#[service(augment)]`
+// field to satisfy `AugmentRegistry<D>`. For hand-written `Augment<D>`
+// impls (no `#[interface_object_augment]` macro), use
+// `forward_augment_registry!` to generate the matching forwarding
+// `AugmentRegistry<D>` impl.
+crate::forward_augment_registry!(ShimAugment);
+
 // -----------------------------------------------------------------
 // Shim ApciHandler used inside the AL's `Ext` chain. The
 // `ApplicationLayer<Ext>` parameterisation lands in a follow-up

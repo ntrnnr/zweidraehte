@@ -290,65 +290,52 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     // Property-hook chains. Each method walks fields left-to-right
     // (`#[service(augment)]` then `#[service(flatten)]`); the first
-    // to return `Some` claims the request. Augment-marked fields
-    // forward through the `Augment<D>` trait; flatten-marked fields
-    // forward through the `AugmentRegistry<D>` trait so a nested
-    // services struct's chain participates in full.
+    // to return `Some` claims the request.
+    //
+    // Both annotations dispatch through `AugmentRegistry<D>`. The
+    // single-augment case uses the per-type forwarding impl that
+    // `#[interface_object_augment]` emits (or the explicit `()` /
+    // `&A` / `(Head, Tail)` blanket impls); the nested-bundle case
+    // uses the macro-derived `AugmentRegistry<D>` impl on the inner
+    // services struct. The two annotations differ only in semantic
+    // intent — `augment` says "this field IS a single augment",
+    // `flatten` says "this field has nested augments" — but both
+    // call sites are identical.
     //
     // The `&mut [u8]` borrow on `property_value_read` rules out the
     // closure-based `.or_else()` chain; that path uses explicit
     // if-let arms instead.
+    let all_aug_idents: Vec<&syn::Ident> =
+        augment_idents.iter().chain(flatten_idents.iter()).copied().collect();
+
     let prop_chain_get_descriptor = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
-        let aug_calls = augment_idents.iter().map(|id| {
-            quote! {
-                .or_else(|| ::zweidraehte_device::service::Augment::<D>::get_property_descriptor(
-                    &self.#id, object_type, prop_id))
-            }
-        });
-        let flat_calls = flatten_idents.iter().map(|id| {
+        let calls = all_aug_idents.iter().map(|id| {
             quote! {
                 .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::get_property_descriptor(
                     &self.#id, object_type, prop_id))
             }
         });
-        quote! { ::core::option::Option::None #( #aug_calls )* #( #flat_calls )* }
+        quote! { ::core::option::Option::None #( #calls )* }
     };
 
     let prop_chain_description_read = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
-        let aug_calls = augment_idents.iter().map(|id| {
-            quote! {
-                .or_else(|| ::zweidraehte_device::service::Augment::<D>::property_description_read(
-                    &self.#id, ctx, object_type, object_idx, lookup))
-            }
-        });
-        let flat_calls = flatten_idents.iter().map(|id| {
+        let calls = all_aug_idents.iter().map(|id| {
             quote! {
                 .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::property_description_read(
                     &self.#id, ctx, object_type, object_idx, lookup))
             }
         });
-        quote! { ::core::option::Option::None #( #aug_calls )* #( #flat_calls )* }
+        quote! { ::core::option::Option::None #( #calls )* }
     };
 
     let prop_chain_value_read = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
-        let aug_arms = augment_idents.iter().map(|id| {
-            quote! {
-                if let r @ ::core::option::Option::Some(_) =
-                    ::zweidraehte_device::service::Augment::<D>::property_value_read(
-                        &self.#id, ctx, object_type, req, buf,
-                    )
-                {
-                    return r;
-                }
-            }
-        });
-        let flat_arms = flatten_idents.iter().map(|id| {
+        let arms = all_aug_idents.iter().map(|id| {
             quote! {
                 if let r @ ::core::option::Option::Some(_) =
                     ::zweidraehte_device::service::AugmentRegistry::<D>::property_value_read(
@@ -360,8 +347,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             }
         });
         quote! {
-            #( #aug_arms )*
-            #( #flat_arms )*
+            #( #arms )*
             ::core::option::Option::None
         }
     };
@@ -369,79 +355,49 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let prop_chain_value_write = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
-        let aug_calls = augment_idents.iter().map(|id| {
-            quote! {
-                .or_else(|| ::zweidraehte_device::service::Augment::<D>::property_value_write(
-                    &self.#id, ctx, object_type, req))
-            }
-        });
-        let flat_calls = flatten_idents.iter().map(|id| {
+        let calls = all_aug_idents.iter().map(|id| {
             quote! {
                 .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::property_value_write(
                     &self.#id, ctx, object_type, req))
             }
         });
-        quote! { ::core::option::Option::None #( #aug_calls )* #( #flat_calls )* }
+        quote! { ::core::option::Option::None #( #calls )* }
     };
 
     let prop_chain_func_command = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
-        let aug_calls = augment_idents.iter().map(|id| {
-            quote! {
-                .or_else(|| ::zweidraehte_device::service::Augment::<D>::function_property_command(
-                    &self.#id, ctx, object_type, req))
-            }
-        });
-        let flat_calls = flatten_idents.iter().map(|id| {
+        let calls = all_aug_idents.iter().map(|id| {
             quote! {
                 .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::function_property_command(
                     &self.#id, ctx, object_type, req))
             }
         });
-        quote! { ::core::option::Option::None #( #aug_calls )* #( #flat_calls )* }
+        quote! { ::core::option::Option::None #( #calls )* }
     };
 
     let prop_chain_func_state_read = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
-        let aug_calls = augment_idents.iter().map(|id| {
-            quote! {
-                .or_else(|| ::zweidraehte_device::service::Augment::<D>::function_property_state_read(
-                    &self.#id, ctx, object_type, req))
-            }
-        });
-        let flat_calls = flatten_idents.iter().map(|id| {
+        let calls = all_aug_idents.iter().map(|id| {
             quote! {
                 .or_else(|| ::zweidraehte_device::service::AugmentRegistry::<D>::function_property_state_read(
                     &self.#id, ctx, object_type, req))
             }
         });
-        quote! { ::core::option::Option::None #( #aug_calls )* #( #flat_calls )* }
+        quote! { ::core::option::Option::None #( #calls )* }
     };
 
-    // IO list contribution: sum + walk-by-index. Augment fields go
-    // first (Augment::additional_object_count), then flatten fields
-    // (AugmentRegistry::additional_object_count) — same order as the
-    // hook chain so the index space stays consistent.
-    let aug_io_count_terms = augment_idents.iter().map(|id| {
-        quote! { ::zweidraehte_device::service::Augment::<D>::additional_object_count(&self.#id) }
-    });
-    let flat_io_count_terms = flatten_idents.iter().map(|id| {
+    // IO list contribution: sum + walk-by-index. All fields
+    // dispatch through `AugmentRegistry::additional_object_count` /
+    // `additional_object_type_at`. Order matches the hook chain
+    // above so the index space stays consistent.
+    let io_count_terms = all_aug_idents.iter().map(|id| {
         quote! { ::zweidraehte_device::service::AugmentRegistry::<D>::additional_object_count(&self.#id) }
     });
-    let io_count_body = quote! { 0u16 #( + #aug_io_count_terms )* #( + #flat_io_count_terms )* };
+    let io_count_body = quote! { 0u16 #( + #io_count_terms )* };
 
-    let aug_io_at_arms = augment_idents.iter().map(|id| {
-        quote! {
-            let n = ::zweidraehte_device::service::Augment::<D>::additional_object_count(&self.#id);
-            if index < n {
-                return ::zweidraehte_device::service::Augment::<D>::additional_object_type_at(&self.#id, index);
-            }
-            index -= n;
-        }
-    });
-    let flat_io_at_arms = flatten_idents.iter().map(|id| {
+    let io_at_arms = all_aug_idents.iter().map(|id| {
         quote! {
             let n = ::zweidraehte_device::service::AugmentRegistry::<D>::additional_object_count(&self.#id);
             if index < n {
@@ -451,27 +407,17 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
 
-    // Augment-side lifecycle. Augments use Augment::poll (&mut self),
-    // flattens use AugmentRegistry::poll_augments (&mut self) which
-    // delegates further into its own fields.
-    let poll_augment_calls = augment_idents.iter().map(|id| {
-        quote! { ::zweidraehte_device::service::Augment::<D>::poll(&mut self.#id, ctx); }
-    });
-    let poll_flatten_calls = flatten_idents.iter().map(|id| {
+    // Augment-side lifecycle. Both annotations call
+    // `AugmentRegistry::poll_augments` / `next_augment_deadline`;
+    // the per-type forwarding impl emitted by
+    // `#[interface_object_augment]` translates these into the
+    // augment's own `Augment::poll` / `next_deadline` for the
+    // single-augment case.
+    let poll_calls = all_aug_idents.iter().map(|id| {
         quote! { ::zweidraehte_device::service::AugmentRegistry::<D>::poll_augments(&mut self.#id, ctx); }
     });
 
-    let next_augment_deadline_merges = augment_idents.iter().map(|id| {
-        quote! {
-            if let Some(d) = ::zweidraehte_device::service::Augment::<D>::next_deadline(&self.#id) {
-                earliest = Some(match earliest {
-                    Some(e) if e < d => e,
-                    _ => d,
-                });
-            }
-        }
-    });
-    let next_flatten_deadline_merges = flatten_idents.iter().map(|id| {
+    let next_deadline_merges = all_aug_idents.iter().map(|id| {
         quote! {
             if let Some(d) = ::zweidraehte_device::service::AugmentRegistry::<D>::next_augment_deadline(&self.#id) {
                 earliest = Some(match earliest {
@@ -482,17 +428,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
 
-    // For each `#[service(augment)]` field, the impl requires the
-    // field's type to satisfy `Augment<D>`. Same idea for
-    // `#[service(flatten)]` fields, which need `AugmentRegistry<D>`.
-    // These are explicit `where` bounds in the emitted impl so any
-    // additional state-trait bounds on the field type (e.g. a
+    // Every `#[service(augment)]` and `#[service(flatten)]` field
+    // type must satisfy `AugmentRegistry<D>`. This is one explicit
+    // `where` bound per field in the emitted impl so any additional
+    // state-trait bounds on the field type (e.g. a
     // `DiagnosticsAugment` requiring `D::State: HasExtensionState`)
     // get inferred from the field's own trait impl, without the
     // user having to spell them out on the outer struct.
     let augment_field_bounds = augments.iter().map(|a| {
         let ty = a.ty;
-        quote! { #ty: ::zweidraehte_device::service::Augment<D> }
+        quote! { #ty: ::zweidraehte_device::service::AugmentRegistry<D> }
     });
     let flatten_field_bounds = flattens.iter().map(|f| {
         let ty = f.ty;
@@ -581,21 +526,18 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 index: u16,
             ) -> ::core::option::Option<::zweidraehte_device::__macro_support::dpt::InterfaceObjectType> {
                 let mut index = index;
-                #( #aug_io_at_arms )*
-                #( #flat_io_at_arms )*
+                #( #io_at_arms )*
                 ::core::option::Option::None
             }
 
             fn poll_augments(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
-                #( #poll_augment_calls )*
-                #( #poll_flatten_calls )*
+                #( #poll_calls )*
             }
 
             fn next_augment_deadline(&self) -> ::core::option::Option<::embassy_time::Instant> {
                 let mut earliest: ::core::option::Option<::embassy_time::Instant> =
                     ::core::option::Option::None;
-                #( #next_augment_deadline_merges )*
-                #( #next_flatten_deadline_merges )*
+                #( #next_deadline_merges )*
                 earliest
             }
         }

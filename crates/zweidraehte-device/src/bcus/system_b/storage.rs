@@ -67,7 +67,6 @@ use crate::{
         asso6::AssoTab6Impl,
         co7::CoTab7Impl,
     },
-    service::Augment,
     restart::EraseCode,
 };
 use zweidraehte_proto::address::IndividualAddress;
@@ -233,10 +232,24 @@ impl ExtensionState for () {
 pub trait Extension<Platform = ()>: ExtensionState {
     /// The augment type this extension creates.
     ///
+    /// Bound is [`AugmentRegistry<D>`](crate::service::AugmentRegistry)
+    /// — the registry surface the IO container dispatches through.
+    /// Concrete `Augment<D>` impls automatically satisfy this via
+    /// the per-type forwarding impl emitted by
+    /// `#[interface_object_augment]` (or by the
+    /// [`forward_augment_registry!`](crate::forward_augment_registry)
+    /// macro for hand-written augments). Composed bundles satisfy it
+    /// via the macro-derived [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry)
+    /// impl, plus the `()` and `&A` blanket impls in
+    /// `service::registry`.
+    ///
     /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
-    /// For IP: `IpAugment<'a, P, N>` (wraps extension + platform).
+    /// For IP: `IpAugment<'a, P, N, CAPS>` (wraps extension + platform).
+    /// For `Secure(Inner)`: `SecureAugmentBundle<'a, Inner::Augment, …>`
+    ///   (a `#[derive(ServiceRegistry)]` struct holding the inner
+    ///   augment plus `SecurityAugment`).
     /// For `()`: `()` (no augmentation).
-    type Augment<'a, D: StackDefinition>: Augment<D>
+    type Augment<'a, D: StackDefinition>: crate::service::AugmentRegistry<D>
     where
         Self: 'a,
         Platform: 'a;
