@@ -112,6 +112,30 @@ struct SmokeServices {
 }
 
 // -----------------------------------------------------------------
+// `#[service(flatten)]` — verifies the macro emits an
+// AugmentRegistry impl that delegates each method into a nested
+// `#[derive(ServiceRegistry)]` struct.
+//
+// The base struct has no handler fields, since flatten is incompatible
+// with handler dispatch (the const dispatch table can't route into a
+// flattened sub-table).
+// -----------------------------------------------------------------
+
+#[derive(Default, ServiceRegistry)]
+struct SmokeBaseAugments {
+    #[service(augment)]
+    aug: ShimAugment,
+}
+
+#[derive(Default, ServiceRegistry)]
+struct SmokeFlattenedAugments {
+    #[service(flatten)]
+    base: SmokeBaseAugments,
+    #[service(augment)]
+    extra: ShimAugment,
+}
+
+// -----------------------------------------------------------------
 // Tests verify the const dispatch table contains the registered
 // ServiceType, the augment IO sum is correct, and the registry
 // types are object-safe-shaped for the runtime to call.
@@ -128,6 +152,17 @@ struct SmokeServices {
 fn _assert_registry_bounds<D: StackDefinition>()
 where
     SmokeServices: LayerRegistry<D> + AugmentRegistry<D>,
+{
+}
+
+/// Type-level assertion that `#[service(flatten)]` produces a valid
+/// `AugmentRegistry<D>` impl: the outer struct (`SmokeFlattenedAugments`)
+/// must satisfy the bound regardless of the inner struct's identity,
+/// confirming the macro emits the cross-trait forwarding correctly.
+fn _assert_flatten_bounds<D: StackDefinition>()
+where
+    SmokeBaseAugments: AugmentRegistry<D>,
+    SmokeFlattenedAugments: AugmentRegistry<D>,
 {
 }
 
