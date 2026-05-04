@@ -24,8 +24,7 @@ use zweidraehte_device::{
     memory::MemoryMap,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount,
-        PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor, PropertyError, PropertyLookup, PropertyRead,
-        WriteResponse,
+        PropertyError, PropertyRead, WriteResponse,
     },
     objects::tables::{
         Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
@@ -36,7 +35,7 @@ use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_UnsignedChar, PropertyDataDefinition};
+use zweidraehte_proto::dpt::InterfaceObjectType;
 
 use super::stack::{
     CONFORMANCE_DD2, CONFORMANCE_MEMORY_LAYOUT, CONFORMANCE_USER_MANUFACTURER_INFO, ConformanceMemoryMap,
@@ -675,13 +674,25 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
 const CERTIFICATION_OBJECT_TYPE: InterfaceObjectType = InterfaceObjectType::Other(0xC351);
 
 /// Property ID used for role-based access testing.
-const ROLES_PID: u16 = 51; // 0x33
+mod cert_pid {
+    pub const ROLES: u16 = 51; // 0x33
+}
+
+/// Access policy for the Certification Object's PID 51.
+///
+/// `sec_off = 0x3FF`: all access types when security mode is off.
+/// `sec_on = 0x0FF`: RoleX/A R+W, RoleX/A+C R+W, Tool/A+C R+W, Tool/A R+W,
+/// Unlisted denied. The per-role R vs W granularity is enforced by the
+/// augment's custom `can_read`/`can_write` checks (run before macro
+/// dispatch via the `read_with_ctx` / `write_with_ctx` closures cannot
+/// see `req.ctx`, so the bespoke logic lives in `handle_extra_pid_*`).
+const CERT_PID51_POLICY: AccessPolicy = AccessPolicy::new(0x3FF, 0x0FF);
 
 /// Augment that adds a Certification Object (IOT 0xC351) for Section 3.6
 /// role-based access control conformance tests.
 ///
-/// The object has a single read/write UINT8 property (PID 51) whose access
-/// is governed by per-role permissions:
+/// The object has a single read/write UINT8 property (PID 51) whose
+/// access is governed by per-role permissions:
 ///
 /// | Role | Required Security | Read | Write |
 /// |------|-------------------|------|-------|
@@ -693,7 +704,39 @@ const ROLES_PID: u16 = 51; // 0x33
 /// | 5    | A+C               | no   | yes   |
 /// | none | —                 | no   | no    |
 /// | Tool | A or A+C          | yes  | yes   |
+///
+/// PID 1 (OBJECT_TYPE) is auto-emitted by the macro from the
+/// `additional_objects` entry. PID 51 is marked `manual` because the
+/// per-request access check needs `req.ctx`, which the macro's standard
+/// `read = |this| ...` closure form doesn't expose. The bespoke logic
+/// lives in `handle_extra_pid_read` / `handle_extra_pid_write` below.
+#[zweidraehte_device::objects::interface::interface_object_augment(
+    additional_objects = [CERTIFICATION_OBJECT_TYPE],
+)]
 pub struct CertificationObjectAugment {
+    // PID 1 OBJECT_TYPE — fixed `0xC351` read.
+    #[io(
+        pid = zweidraehte_device::objects::interface::pid::OBJECT_TYPE,
+        pdt = zweidraehte_proto::dpt::PDT_UnsignedInt,
+        access = RO,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
+        rl = 3, wl = 0,
+        read = |_this: &Self| -> [u8; 2] { 0xC351u16.to_be_bytes() },
+    )]
+    _object_type_io: (),
+
+    // PID 51 ROLES — role-based access; bespoke logic in
+    // `handle_extra_pid_*` below.
+    #[io(
+        pid = cert_pid::ROLES,
+        pdt = zweidraehte_proto::dpt::PDT_UnsignedChar,
+        access = RW,
+        policy = CERT_PID51_POLICY,
+        rl = 3, wl = 3,
+        manual,
+    )]
+    _roles_io: (),
+
     /// The stored value for PID 51 (single byte).
     value: Cell<u8>,
 }
@@ -782,122 +825,52 @@ impl CertificationObjectAugment {
     }
 }
 
-/// Access policy for the Certification Object's PID 51.
-///
-/// `sec_off = 0x3FF`: all access types when security mode is off.
-/// `sec_on = 0x0FF`: RoleX/A R+W, RoleX/A+C R+W, Tool/A+C R+W, Tool/A R+W,
-/// Unlisted denied. The per-role R vs W granularity is enforced by the
-/// augment's custom `can_read`/`can_write` checks.
-const CERT_PID51_POLICY: AccessPolicy = AccessPolicy::new(0x3FF, 0x0FF);
+// ============================================================================
+// Manual fallback methods for PID 51 (role-based access checks).
+//
+// PIDs marked `manual` in the struct attributes route here. Unhandled
+// PIDs return `None` so the augment chain falls through.
+// ============================================================================
 
-/// Return a property descriptor for the Certification Object's properties.
-fn certification_descriptor(pid: u16) -> Option<PropertyDescriptor> {
-    match pid {
-        1 => Some(PropertyDescriptor::from_type::<PDT_UnsignedChar>(
-            1,
-            PropertyAccess::ReadOnly,
-            3,
-            0,
-            AccessPolicy::READ_OPEN_WRITE_TOOL,
-        )),
-        ROLES_PID => Some(PropertyDescriptor::new(
-            ROLES_PID,
-            PDT_UnsignedChar::ID,
-            1,
-            PropertyAccess::ReadWrite,
-            3,
-            3,
-            CERT_PID51_POLICY,
-        )),
-        _ => None,
-    }
-}
-
-impl<D: StackDefinition> zweidraehte_device::service::Augment<D> for CertificationObjectAugment {
-    fn additional_object_count(&self) -> u16 {
-        1
+impl CertificationObjectAugment {
+    /// All Certification PIDs are statically known — no runtime-conditional
+    /// descriptors. Returns `None` to fall through to the macro's static
+    /// descriptor table.
+    pub fn handle_extra_pid_descriptor(
+        &self,
+        _object_type: InterfaceObjectType,
+        _prop_id: u16,
+    ) -> Option<zweidraehte_proto::properties::PropertyDescriptor> {
+        None
     }
 
-    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
-        if index == 0 { Some(CERTIFICATION_OBJECT_TYPE) } else { None }
-    }
-
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
-        if object_type != CERTIFICATION_OBJECT_TYPE {
-            return None;
-        }
-        certification_descriptor(prop_id)
-    }
-
-    fn property_description_read(
+    pub fn handle_extra_pid_read<D: StackDefinition>(
         &self,
         _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        object_idx: u16,
-        lookup: PropertyLookup,
-    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-        if object_type != CERTIFICATION_OBJECT_TYPE {
-            return None;
-        }
-
-        let (pid, prop_index) = match lookup {
-            PropertyLookup::ByPid(pid) => match pid {
-                1 => (1u16, 0u16),
-                ROLES_PID => (ROLES_PID, 1u16),
-                _ => return Some(Err(PropertyError::InvalidPropertyId)),
-            },
-            PropertyLookup::ByIndex(idx) => match idx {
-                0 => (1u16, 0u16),
-                1 => (ROLES_PID, 1u16),
-                _ => return Some(Err(PropertyError::InvalidPropertyId)),
-            },
-        };
-
-        let desc = certification_descriptor(pid)?;
-        Some(Ok(PropertyDescriptionResponse::from_descriptor(object_idx, prop_index, &desc)))
-    }
-
-    fn property_value_read(
-        &self,
-        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
+        _object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
     ) -> Option<Result<usize, PropertyError>> {
-        if object_type != CERTIFICATION_OBJECT_TYPE {
-            return None;
-        }
-
         match req.pid {
-            1 => {
-                // PID_OBJECT_TYPE — return 0xC351 as 2 bytes.
-                let bytes = 0xC351u16.to_be_bytes();
-                Some(bytes.read_property(req.start_idx, req.count, buf))
-            }
-            ROLES_PID => {
+            cert_pid::ROLES => {
                 if !Self::can_read(&req.ctx) {
                     return Some(Err(PropertyError::AccessDenied));
                 }
                 let val = [self.value.get()];
                 Some(val.read_property(req.start_idx, req.count, buf))
             }
-            _ => Some(Err(PropertyError::InvalidPropertyId)),
+            _ => None,
         }
     }
 
-    fn property_value_write(
+    pub fn handle_extra_pid_write<D: StackDefinition>(
         &self,
         _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
+        _object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
-        if object_type != CERTIFICATION_OBJECT_TYPE {
-            return None;
-        }
-
         match req.pid {
-            1 => Some(Err(PropertyError::WriteNotAllowed)),
-            ROLES_PID => {
+            cert_pid::ROLES => {
                 if !Self::can_write(&req.ctx) {
                     return Some(Err(PropertyError::AccessDenied));
                 }
@@ -907,12 +880,28 @@ impl<D: StackDefinition> zweidraehte_device::service::Augment<D> for Certificati
                 self.value.set(req.data[0]);
                 Some(Ok(WriteResponse::Echo))
             }
-            _ => Some(Err(PropertyError::InvalidPropertyId)),
+            _ => None,
         }
     }
-}
 
-zweidraehte_device::forward_augment_registry!(CertificationObjectAugment);
+    pub fn handle_extra_pid_function_command<D: StackDefinition>(
+        &self,
+        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
+    ) -> Option<zweidraehte_device::objects::interface::FunctionPropertyResult> {
+        None
+    }
+
+    pub fn handle_extra_pid_function_state_read<D: StackDefinition>(
+        &self,
+        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
+        _object_type: InterfaceObjectType,
+        _req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
+    ) -> Option<zweidraehte_device::objects::interface::FunctionPropertyResult> {
+        None
+    }
+}
 
 // ============================================================================
 // Stack Definition

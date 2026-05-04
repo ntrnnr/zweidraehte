@@ -28,12 +28,16 @@ pub(crate) struct ObjectAttrs {
     pub object_type: Option<Path>,
 
     /// Set on `#[interface_object_augment]` only. Empty for an
-    /// `InterfaceObject` derive.
-    pub target_objects: Vec<Path>,
+    /// `InterfaceObject` derive. Accepts any expression evaluating to
+    /// an `InterfaceObjectType` (e.g.
+    /// `InterfaceObjectType::Security` or
+    /// `InterfaceObjectType::Other(0xC351)`).
+    pub target_objects: Vec<Expr>,
 
     /// Set on `#[interface_object_augment]` only. Drives
     /// `additional_object_count` / `additional_object_type_at`.
-    pub additional_objects: Vec<Path>,
+    /// Accepts any expression evaluating to an `InterfaceObjectType`.
+    pub additional_objects: Vec<Expr>,
 
     /// Set on `#[interface_object_augment]` only. Extra `where`-clause
     /// predicates appended to the generated `impl Augment<D>`. Use to
@@ -51,8 +55,8 @@ impl ObjectAttrs {
     /// invocation.
     pub fn from_attribute_args(args: TokenStream) -> syn::Result<Self> {
         let mut object_type: Option<Path> = None;
-        let mut target_objects: Vec<Path> = Vec::new();
-        let mut additional_objects: Vec<Path> = Vec::new();
+        let mut target_objects: Vec<Expr> = Vec::new();
+        let mut additional_objects: Vec<Expr> = Vec::new();
         let mut extra_where: Option<TokenStream> = None;
 
         let parser = syn::meta::parser(|meta| {
@@ -60,10 +64,10 @@ impl ObjectAttrs {
                 object_type = Some(meta.value()?.parse()?);
                 Ok(())
             } else if meta.path.is_ident("target_objects") {
-                target_objects = parse_path_list(&meta)?;
+                target_objects = parse_expr_list(&meta)?;
                 Ok(())
             } else if meta.path.is_ident("additional_objects") {
-                additional_objects = parse_path_list(&meta)?;
+                additional_objects = parse_expr_list(&meta)?;
                 Ok(())
             } else if meta.path.is_ident("where_bounds") {
                 // Parenthesised raw token group — the macro emits these
@@ -91,13 +95,13 @@ impl ObjectAttrs {
     }
 }
 
-/// Parse a bracketed list of paths: `[Foo::Bar, Baz::Qux]`.
-fn parse_path_list(meta: &syn::meta::ParseNestedMeta) -> syn::Result<Vec<Path>> {
+/// Parse a bracketed list of expressions: `[Foo::Bar, Baz::Qux(0xC351)]`.
+fn parse_expr_list(meta: &syn::meta::ParseNestedMeta) -> syn::Result<Vec<Expr>> {
     let value = meta.value()?;
     let content;
     syn::bracketed!(content in value);
-    let punctuated: syn::punctuated::Punctuated<Path, syn::Token![,]> =
-        content.parse_terminated(Path::parse, syn::Token![,])?;
+    let punctuated: syn::punctuated::Punctuated<Expr, syn::Token![,]> =
+        content.parse_terminated(Expr::parse, syn::Token![,])?;
     Ok(punctuated.into_iter().collect())
 }
 
@@ -183,8 +187,9 @@ pub(crate) struct PropertyAttrs {
     pub intercepts: bool,
     /// Selects which target object this PID belongs to, when the augment
     /// declares multiple `target_objects`. Defaults to the single declared
-    /// target when there's only one.
-    pub target: Option<Path>,
+    /// target when there's only one. Accepts any expression evaluating
+    /// to an `InterfaceObjectType`.
+    pub target: Option<Expr>,
 }
 
 impl PropertyAttrs {
@@ -225,7 +230,7 @@ impl PropertyAttrs {
         let mut pdt_raw: Option<u8> = None;
         let mut manual: bool = false;
         let mut intercepts: bool = false;
-        let mut target: Option<Path> = None;
+        let mut target: Option<Expr> = None;
 
         for attr in io_attrs {
             attr.parse_nested_meta(|meta| {

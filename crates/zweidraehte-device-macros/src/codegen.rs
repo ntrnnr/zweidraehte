@@ -70,7 +70,11 @@ pub(crate) fn gen_object(
     // (PID 1) at index 0; user-declared properties follow in declaration
     // order. Non-property struct fields (None) are skipped.
     let property_props: Vec<&PropertyAttrs> = props.iter().filter_map(|p| p.as_ref()).collect();
-    let descriptor_entries = property_props.iter().map(|p| descriptor_for(p, object_type));
+    // Lift the path-typed `object_type` to an expression so the shared
+    // `descriptor_for` helper (also used by the augment path, which
+    // passes an `Expr`) can take a uniform parameter.
+    let object_type_expr: syn::Expr = syn::parse_quote!(#object_type);
+    let descriptor_entries = property_props.iter().map(|p| descriptor_for(p, &object_type_expr));
 
     let read_arms = property_props.iter().map(|p| read_arm(p));
     let write_arms = property_props.iter().map(|p| write_arm(p));
@@ -243,9 +247,9 @@ pub(crate) fn gen_augment(
     // `additional_objects` are auto-included in the effective
     // `target_objects` list (deduped). The user only needs to list extra
     // intercepted base objects explicitly.
-    let mut effective_targets: Vec<syn::Path> = obj_attrs.target_objects.clone();
+    let mut effective_targets: Vec<syn::Expr> = obj_attrs.target_objects.clone();
     for add in &obj_attrs.additional_objects {
-        if !effective_targets.iter().any(|t| paths_equal(t, add)) {
+        if !effective_targets.iter().any(|t| exprs_equal(t, add)) {
             effective_targets.push(add.clone());
         }
     }
@@ -342,7 +346,9 @@ pub(crate) fn gen_augment(
             ));
         }
     }
-    let pid_target = |p: &PropertyAttrs| p.target.as_ref().cloned().unwrap_or_else(|| default_target.clone());
+    let pid_target = |p: &PropertyAttrs| -> syn::Expr {
+        p.target.as_ref().cloned().unwrap_or_else(|| default_target.clone())
+    };
 
     // ----------------------------------------------------------------------
     // Descriptor table — single flat const slice across all targets. The
@@ -720,8 +726,8 @@ pub(crate) fn gen_augment(
 /// `prop_id` for function-property requests).
 fn build_per_target_arms<F>(
     props: &[&PropertyAttrs],
-    targets: &[syn::Path],
-    pid_target: &dyn Fn(&PropertyAttrs) -> syn::Path,
+    targets: &[syn::Expr],
+    pid_target: &dyn Fn(&PropertyAttrs) -> syn::Expr,
     pid_field: &syn::Ident,
     arm_for: F,
 ) -> Vec<TokenStream>
@@ -735,7 +741,7 @@ where
                 .iter()
                 .filter(|p| {
                     let pt = pid_target(p);
-                    paths_equal(&pt, target)
+                    exprs_equal(&pt, target)
                 })
                 .filter_map(|p| arm_for(p))
                 .collect();
@@ -755,7 +761,7 @@ where
         .collect()
 }
 
-fn paths_equal(a: &syn::Path, b: &syn::Path) -> bool {
+fn exprs_equal(a: &syn::Expr, b: &syn::Expr) -> bool {
     // Compare by token stream — not robust against `Foo::Bar` vs `crate::x::Foo::Bar`
     // but the user is expected to be consistent within a single
     // `#[interface_object_augment(...)]` invocation.
@@ -901,7 +907,7 @@ fn augment_function_state_arm(p: &PropertyAttrs) -> Option<TokenStream> {
 
 fn descriptor_for(
     p: &PropertyAttrs,
-    _object_type: &syn::Path,
+    _object_type: &syn::Expr,
 ) -> TokenStream {
     let pid = &p.pid;
     let policy = &p.policy;
