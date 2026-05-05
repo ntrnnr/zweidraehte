@@ -218,8 +218,9 @@ pub trait StackDefinition: Copy + 'static {
     /// devices, set this to a type that implements
     /// [`SecureDeviceIdentity`](crate::storage::SecureDeviceIdentity)
     /// — e.g. [`StaticSecureIdentity`](crate::storage::StaticSecureIdentity)
-    /// — so the `HasSecureIdentity` impl on the device state picks up
-    /// the FDSK accessor.
+    /// — and the secure layer reaches the FDSK via
+    /// [`StackState::identity`](crate::StackState::identity) bounded on
+    /// `SecureDeviceIdentity` at the call site.
     type Identity: DeviceIdentity = StaticIdentity;
 
     /// Constructor-args envelope passed to [`create_state`](Self::create_state).

@@ -12,6 +12,7 @@ use crate::objects::{
     interface::HasRoutingCount,
     tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable},
 };
+use crate::storage::DeviceIdentity;
 use zweidraehte_proto::access::{AccessContext, HasConnectionAuth};
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -78,6 +79,13 @@ pub enum UpdateObjectError {
 /// }
 /// ```
 pub trait StackState {
+    /// Factory-programmed identity (serial number, optional FDSK).
+    ///
+    /// Bounded by [`DeviceIdentity`]; secure stacks additionally bound this on
+    /// [`SecureDeviceIdentity`](crate::storage::SecureDeviceIdentity) at the
+    /// call site to reach the FDSK without an `Option`.
+    type Identity: DeviceIdentity;
+
     /// Get the device's individual address.
     ///
     /// This is the unique address assigned to this device on the KNX bus.
@@ -90,11 +98,20 @@ pub trait StackState {
     /// `A_IndividualAddress_Write` when in programming mode.
     fn set_individual_address(&self, addr: IndividualAddress);
 
+    /// Borrow the device identity.
+    ///
+    /// Identity is the authoritative source for serial number and (for
+    /// Data Secure devices) the FDSK. The default
+    /// [`serial_number`](Self::serial_number) implementation delegates here.
+    fn identity(&self) -> &Self::Identity;
+
     /// Get the device serial number (6 bytes).
     ///
-    /// The serial number consists of 2 bytes manufacturer ID followed by
-    /// 4 bytes device-specific identifier. Used for `A_IndividualAddressSerialNumber_Read/Write`.
-    fn serial_number(&self) -> &[u8; 6];
+    /// Defaults to `self.identity().serial_number()`. Override only if
+    /// the state holds a serial number outside its identity (rare).
+    fn serial_number(&self) -> &[u8; 6] {
+        self.identity().serial_number()
+    }
 
     /// Get the runtime maximum APDU length.
     ///
@@ -267,33 +284,6 @@ pub trait HasAuthorization {
     /// Default implementation: always returns 0xFF (not supported).
     fn key_write(&self, _level: u8, _key: &[u8; 4], _ctx: AccessContext) -> u8 {
         0xFF // Not supported by default
-    }
-}
-
-// ============================================================================
-// HasSecureIdentity — Factory key and random for KNX Data Secure
-// ============================================================================
-
-/// Secure identity for KNX Data Secure devices.
-///
-/// Provides the Factory Default Setup Key (FDSK). Only the Secure
-/// Application Layer needs this trait — non-secure stacks do not
-/// require it.
-///
-/// Random-byte generation for `S-A_Sync` lives on
-/// [`StackDefinition::Rng`](crate::StackDefinition::Rng), not here,
-/// so firmware can plug in an RNG without a state newtype (the
-/// orphan rule forbids non-local impls on the
-/// `SystemBDeviceState`-based state aliases used by secure stacks).
-pub trait HasSecureIdentity {
-    /// Get the Factory Default Setup Key (FDSK) for KNX Data Secure.
-    ///
-    /// The FDSK is a 16-byte key programmed at the factory and printed on
-    /// the device label. It is used as the initial tool key for the first
-    /// ETS commissioning session. Returns `None` for devices without Data
-    /// Secure support.
-    fn fdsk(&self) -> Option<&[u8; 16]> {
-        None
     }
 }
 

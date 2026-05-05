@@ -42,11 +42,12 @@ use zweidraehte_proto::messages::{
     knx::{KnxMessageBuffer, ServiceType},
 };
 
-use crate::HasSecureIdentity;
+use crate::StackState;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState};
 use crate::definition::StackDefinition;
 use crate::objects::tables::HasAssociationTable;
 use crate::prelude::HasAddressTable;
+use crate::storage::SecureDeviceIdentity;
 use crate::storage::SequenceNumberStorage;
 
 use super::{PendingSyncState, SecureApplicationLayer, SecureResult};
@@ -134,7 +135,8 @@ pub trait P2pFeature: 'static {
         incoming_service_type: ServiceType,
     ) -> SecureResult
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
         Self: Sized;
 
@@ -148,7 +150,8 @@ pub trait P2pFeature: 'static {
         src: u16,
     ) -> SecureResult
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
         Self: Sized;
 
@@ -162,7 +165,8 @@ pub trait P2pFeature: 'static {
         is_broadcast: bool,
     ) -> Option<KnxMessageBuffer<Buffer<'static>>>
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
         Self: Sized;
 }
@@ -191,7 +195,8 @@ impl P2pFeature for NoP2p {
         _incoming_service_type: ServiceType,
     ) -> SecureResult
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
         SecureResult::Dropped
@@ -205,7 +210,8 @@ impl P2pFeature for NoP2p {
         _src: u16,
     ) -> SecureResult
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
         SecureResult::Dropped
@@ -218,7 +224,8 @@ impl P2pFeature for NoP2p {
         _is_broadcast: bool,
     ) -> Option<KnxMessageBuffer<Buffer<'static>>>
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
         None
@@ -245,7 +252,8 @@ impl P2pFeature for WithP2p {
         incoming_service_type: ServiceType,
     ) -> SecureResult
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
         super::p2p_security::process_sync_request_p2p(sal, msg, scf, scf_byte, src, incoming_service_type)
@@ -259,7 +267,8 @@ impl P2pFeature for WithP2p {
         src: u16,
     ) -> SecureResult
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
         super::p2p_security::process_sync_response(sal, msg, scf, scf_byte, src)
@@ -272,7 +281,8 @@ impl P2pFeature for WithP2p {
         is_broadcast: bool,
     ) -> Option<KnxMessageBuffer<Buffer<'static>>>
     where
-        D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+        D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+        <D::State as StackState>::Identity: SecureDeviceIdentity,
         <D::State as HasExtensionState>::ES: HasSecurityState,
     {
         super::p2p_security::initiate_sync(sal, peer_ia, tool_access, is_broadcast)

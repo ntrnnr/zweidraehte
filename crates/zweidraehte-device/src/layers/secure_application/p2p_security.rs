@@ -25,8 +25,8 @@ use crate::bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailure
 use crate::definition::StackDefinition;
 use crate::objects::tables::HasAssociationTable;
 use crate::prelude::HasAddressTable;
-use crate::storage::SequenceNumberStorage;
-use crate::{HasSecureIdentity, StackState};
+use crate::storage::{SecureDeviceIdentity, SequenceNumberStorage};
+use crate::StackState;
 use zweidraehte_proto::crypto::{
     ccm,
     scf::{SecureServiceType, SecurityControlField},
@@ -66,7 +66,8 @@ pub(super) fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberSt
     incoming_service_type: ServiceType,
 ) -> SecureResult
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     debug!(
@@ -142,7 +143,9 @@ where
             debug!("S-AL sync_req: using configured tool key");
             tk
         } else {
-            let fdsk = sal.inner.state().fdsk().copied().unwrap_or([0u8; 16]);
+            let fdsk = *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(
+                sal.inner.state().identity(),
+            );
             debug!("S-AL sync_req: tool key empty, falling back to FDSK (present={})", fdsk != [0u8; 16]);
             fdsk
         }
@@ -184,7 +187,8 @@ pub(super) fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumb
     incoming_service_type: ServiceType,
 ) -> SecureResult
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     let security_state = sal.inner.state().extension_state();
@@ -269,7 +273,8 @@ fn build_sync_response_for<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P
     key: [u8; 16],
 ) -> SecureResult
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     // Step 6: Verify and decrypt the challenge.
@@ -422,7 +427,8 @@ pub(super) fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberS
     src: u16,
 ) -> SecureResult
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     let pending = match sal.p2p_state.pending_sync.get() {
@@ -569,7 +575,8 @@ pub(super) fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
     is_broadcast: bool,
 ) -> Option<KnxMessageBuffer<Buffer<'static>>>
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     let security_state = sal.inner.state().extension_state();
@@ -577,7 +584,11 @@ where
     // Step 1: Key lookup.
     let key = if tool_access {
         let tk = security_state.tool_key();
-        if tk != [0u8; 16] { tk } else { sal.inner.state().fdsk().copied().unwrap_or([0u8; 16]) }
+        if tk != [0u8; 16] {
+            tk
+        } else {
+            *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(sal.inner.state().identity())
+        }
     } else {
         match security_state.p2p_key_for_ia(peer_ia) {
             Some((k, _roles)) => k,

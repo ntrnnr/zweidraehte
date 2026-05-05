@@ -815,6 +815,8 @@ impl ConformanceState {
 // ============================================================================
 
 impl StackState for ConformanceState {
+    type Identity = <InnerState as StackState>::Identity;
+
     fn individual_address(&self) -> IndividualAddress {
         self.inner.individual_address()
     }
@@ -823,8 +825,8 @@ impl StackState for ConformanceState {
         self.inner.set_individual_address(addr);
     }
 
-    fn serial_number(&self) -> &[u8; 6] {
-        self.inner.serial_number()
+    fn identity(&self) -> &Self::Identity {
+        self.inner.identity()
     }
 
     fn max_apdu_length(&self) -> u16 {

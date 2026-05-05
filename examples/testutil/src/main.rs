@@ -106,7 +106,11 @@ impl DeviceModelNotifier for MyState {
     }
 }
 
+const TESTUTIL_IDENTITY: StaticIdentity = StaticIdentity::new([0x00, 0xFA, 0x00, 0x00, 0x00, 0x01]);
+
 impl StackState for MyState {
+    type Identity = StaticIdentity;
+
     fn individual_address(&self) -> IndividualAddress {
         self.individual_address.get()
     }
@@ -115,8 +119,8 @@ impl StackState for MyState {
         self.individual_address.set(addr);
     }
 
-    fn serial_number(&self) -> &[u8; 6] {
-        &[0x00, 0xFA, 0x00, 0x00, 0x00, 0x01]
+    fn identity(&self) -> &Self::Identity {
+        &TESTUTIL_IDENTITY
     }
 
     fn max_apdu_length(&self) -> u16 {

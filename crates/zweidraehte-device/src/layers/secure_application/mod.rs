@@ -13,7 +13,7 @@
 use core::cell::{Cell, RefCell};
 
 use crate::{
-    HasSecureIdentity, StackState,
+    StackState,
     actor::Request,
     bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
     context::layer::HasOutbox,
@@ -21,7 +21,7 @@ use crate::{
     layers::application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
-    storage::SequenceNumberStorage,
+    storage::{SecureDeviceIdentity, SequenceNumberStorage},
 };
 use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};
 use zweidraehte_proto::address::GroupAddress;
@@ -167,7 +167,8 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Secure
 
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> SecureApplicationLayer<'a, D, SEQ, P2P>
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     // ========================================================================
@@ -445,7 +446,9 @@ where
                 crate::logging::debug!("S-AL: decrypt using configured tool key");
                 tk
             } else {
-                let fdsk = self.inner.state().fdsk().copied().unwrap_or([0u8; 16]);
+                let fdsk = *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(
+                    self.inner.state().identity(),
+                );
                 crate::logging::debug!("S-AL: decrypt using FDSK fallback (tool key empty)");
                 fdsk
             }
@@ -889,7 +892,8 @@ where
 impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> crate::service::Layer<D>
     for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     const HANDLES: &'static [ServiceType] = <ApplicationLayer<'_, D> as crate::service::Layer<D>>::HANDLES;

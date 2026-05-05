@@ -182,14 +182,16 @@ impl SecureConformanceState {
 // ============================================================================
 
 impl StackState for SecureConformanceState {
+    type Identity = <SecureInnerState as StackState>::Identity;
+
     fn individual_address(&self) -> IndividualAddress {
         self.inner.individual_address()
     }
     fn set_individual_address(&self, addr: IndividualAddress) {
         self.inner.set_individual_address(addr);
     }
-    fn serial_number(&self) -> &[u8; 6] {
-        self.inner.serial_number()
+    fn identity(&self) -> &Self::Identity {
+        self.inner.identity()
     }
     fn max_apdu_length(&self) -> u16 {
         device_info::MAX_APDU_LENGTH
@@ -228,16 +230,6 @@ impl StackState for SecureConformanceState {
 impl HasPersistence for SecureConformanceState {
     fn mark_dirty(&self) {
         self.inner.mark_dirty();
-    }
-}
-
-// ============================================================================
-// HasSecureIdentity Forwarding
-// ============================================================================
-
-impl HasSecureIdentity for SecureConformanceState {
-    fn fdsk(&self) -> Option<&[u8; 16]> {
-        self.inner.fdsk()
     }
 }
 

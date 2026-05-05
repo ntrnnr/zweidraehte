@@ -14,7 +14,7 @@ use core::cell::{Cell, RefCell};
 use const_default::ConstDefault;
 
 use crate::{
-    HasAuthorization, HasPersistence, HasSecureIdentity, StackDefinition, StackState,
+    HasAuthorization, HasPersistence, StackDefinition, StackState,
     config::MAX_APDU_LENGTH_EXTENDED,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
@@ -29,7 +29,6 @@ use crate::{
             co7::CoTab7Impl,
         },
     },
-    prelude::SecureDeviceIdentity,
     restart::{EraseCode, RestartError, RestartHandler},
 };
 use zweidraehte_proto::MAX_ACCESS_LEVELS;
@@ -40,7 +39,6 @@ use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 use super::{
     DeviceConfig, ExtensionState, HasDeviceConfig, HasDiagnosticsContext, HasSecurityMode, OperationModeState,
 };
-use crate::storage::DeviceIdentity;
 
 // ============================================================================
 // HasExtensionState trait
@@ -622,6 +620,8 @@ impl<
     ES: ExtensionState + HasSecurityMode,
 > StackState for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
+    type Identity = D::Identity;
+
     fn individual_address(&self) -> IndividualAddress {
         self.individual_address.get()
     }
@@ -631,8 +631,8 @@ impl<
         self.mark_dirty();
     }
 
-    fn serial_number(&self) -> &[u8; 6] {
-        self.identity.serial_number()
+    fn identity(&self) -> &Self::Identity {
+        &self.identity
     }
 
     fn is_programming_mode(&self) -> bool {
@@ -673,33 +673,6 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 {
     fn mark_dirty(&self) {
         SystemBDeviceState::mark_dirty(self);
-    }
-}
-
-// ============================================================================
-// HasSecureIdentity Implementation
-// ============================================================================
-
-// `HasSecureIdentity` is implemented only when the stack's identity
-// type carries an FDSK — i.e. implements `SecureDeviceIdentity`.
-// Non-secure stacks (whose `D::Identity` is e.g. `StaticIdentity`) do
-// not get this impl, and the secure application layer's
-// `D::State: HasSecureIdentity` bound statically rejects them. This
-// keeps the FDSK a type-level property of the stack rather than a
-// runtime `Option` that everyone has to carry.
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition,
-    ES: ExtensionState,
-    const MAX_CONN: usize,
-> HasSecureIdentity for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES, MAX_CONN>
-where
-    D::Identity: SecureDeviceIdentity,
-{
-    fn fdsk(&self) -> Option<&[u8; 16]> {
-        Some(<D::Identity as SecureDeviceIdentity>::fdsk(&self.identity))
     }
 }
 

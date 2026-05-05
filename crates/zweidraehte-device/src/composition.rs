@@ -9,8 +9,9 @@
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
-use crate::HasSecureIdentity;
+use crate::StackState;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
+use crate::storage::SecureDeviceIdentity;
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{CemiEvent, CemiTransportLayer};
 use crate::{
@@ -185,7 +186,8 @@ impl<D: StackDefinition> HasAppRequest for ApplicationLayer<'_, D> {
 impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> HasAppRequest
     for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>) {
@@ -271,7 +273,8 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
 impl<'a, D: StackDefinition + HasSequenceStorage, P2P: P2pFeature>
     StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage, P2P>>
 where
-    D::State: HasSecureIdentity + HasExtensionState + HasAddressTable + HasAssociationTable,
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
@@ -318,7 +321,8 @@ pub struct SecureDeviceBuilder<P2P: P2pFeature = NoP2p> {
 impl<D: StackDefinition + HasSequenceStorage, P2P: P2pFeature> LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
-    D::State: HasSecureIdentity + HasExtensionState,
+    D::State: HasExtensionState,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
     // Forbid `NoRng` on secure stacks. Without this, forgetting to
     // set `type Rng = …` would still compile (the default is

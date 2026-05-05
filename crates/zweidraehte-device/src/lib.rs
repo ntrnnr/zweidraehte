@@ -21,7 +21,7 @@ extern crate zweidraehte_util;
 extern crate zweidraehte_proto;
 
 mod state;
-pub use state::{HasAuthorization, HasPersistence, HasSecureIdentity, ReadObjectError, StackState, UpdateObjectError};
+pub use state::{HasAuthorization, HasPersistence, ReadObjectError, StackState, UpdateObjectError};
 
 pub mod actor;
 
