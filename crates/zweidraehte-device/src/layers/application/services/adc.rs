@@ -10,7 +10,6 @@
 //! ```
 
 use crate::{
-    context::layer::HasOutbox,
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
 };

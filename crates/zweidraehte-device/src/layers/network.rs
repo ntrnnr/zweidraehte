@@ -1,7 +1,6 @@
 use heapless::Deque;
 
 use crate::context::StackContext;
-use crate::context::layer::HasOutbox;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
 use crate::{StackDefinition, StackState};
 use zweidraehte_proto::messages::buffers::Buffer;
@@ -53,11 +52,7 @@ impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
         ServiceType::N_SystemBroadcast_Req,
     ];
 
-    fn process(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        _ctx: &crate::service::ServiceCtx<'_, D>,
-    ) {
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
         match msg.service_type() {
             // =================================================================
             // Indications from link layer (upward: L_Data_Ind → N_*_Ind)
@@ -178,4 +173,3 @@ impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
         }
     }
 }
-

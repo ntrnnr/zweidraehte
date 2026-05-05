@@ -16,7 +16,6 @@ use crate::{
     StackState,
     actor::Request,
     bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
-    context::layer::HasOutbox,
     definition::StackDefinition,
     layers::application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     objects::tables::{AssociationTable, HasAssociationTable},

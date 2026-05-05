@@ -20,7 +20,10 @@ use crate::{
     restart,
     router::Outbox,
 };
-use zweidraehte_proto::messages::buffers::DynBufferManager;
+use zweidraehte_proto::messages::{
+    buffers::{Buffer, DynBufferManager},
+    knx::KnxMessageBuffer,
+};
 
 // ============================================================================
 // LayerContext
@@ -65,35 +68,26 @@ impl<D: StackDefinition> LayerContext<D> {
 }
 
 // ============================================================================
-// Context Trait Implementations
+// Outbox helpers (inherent, no trait soup)
 // ============================================================================
 
-pub trait HasOutbox {
-    fn push_outbox(
-        &self,
-        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
-    );
-    fn push_deferred_outbox(
-        &self,
-        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
-    );
-}
-
-impl<D: StackDefinition> HasOutbox for LayerContext<D> {
-    fn push_outbox(
-        &self,
-        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
-    ) {
+impl<D: StackDefinition> LayerContext<D> {
+    /// Push a wire message onto the outbox for the next router drain pass.
+    pub fn push_outbox(&self, msg: KnxMessageBuffer<Buffer<'static>>) {
         self.outbox.borrow_mut().push(msg);
     }
 
-    fn push_deferred_outbox(
-        &self,
-        msg: zweidraehte_proto::messages::knx::KnxMessageBuffer<zweidraehte_proto::messages::buffers::Buffer<'static>>,
-    ) {
+    /// Push a wire message onto the deferred queue, dispatched after the
+    /// main outbox drain (e.g. GO diagnostics bus telegrams that must
+    /// follow the management response on the wire).
+    pub fn push_outbox_deferred(&self, msg: KnxMessageBuffer<Buffer<'static>>) {
         self.outbox.borrow_mut().push_deferred(msg);
     }
 }
+
+// ============================================================================
+// Context Trait Implementations
+// ============================================================================
 
 impl<D: StackDefinition> crate::context::EventPublisherContext<<<D as StackDefinition>::CO as ComObjects>::Index>
     for LayerContext<D>

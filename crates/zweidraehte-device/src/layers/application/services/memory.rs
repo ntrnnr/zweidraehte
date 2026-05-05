@@ -12,7 +12,6 @@
 
 use crate::{
     HasPersistence,
-    context::layer::HasOutbox,
     definition::StackDefinition,
     memory::MemoryMap,
     objects::interface::HasDeviceObject,

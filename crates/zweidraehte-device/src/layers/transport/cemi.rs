@@ -30,7 +30,7 @@
 
 use embassy_sync::channel::DynamicSender;
 
-use crate::{StackDefinition, context::layer::HasOutbox};
+use crate::StackDefinition;
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{

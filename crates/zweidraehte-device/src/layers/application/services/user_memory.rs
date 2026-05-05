@@ -12,7 +12,6 @@
 
 use crate::{
     HasPersistence,
-    context::layer::HasOutbox,
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
     memory::MemoryMap,

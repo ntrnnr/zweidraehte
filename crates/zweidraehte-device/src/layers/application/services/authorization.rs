@@ -12,7 +12,6 @@
 
 use crate::{
     HasAuthorization, StackState,
-    context::layer::HasOutbox,
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
 };

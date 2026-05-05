@@ -41,7 +41,6 @@ use embassy_time::{Duration, Instant};
 use crate::{
     HasAuthorization, StackDefinition,
     context::StackContext,
-    context::layer::HasOutbox,
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
 };
 use zweidraehte_proto::AccessSource;

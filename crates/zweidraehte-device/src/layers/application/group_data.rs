@@ -10,7 +10,7 @@
 use crate::{
     StackDefinition, StackState,
     context::EventPublisherContext,
-    context::layer::{HasOutbox, LayerContext},
+    context::layer::LayerContext,
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
     objects::{
         comm::{
@@ -813,7 +813,7 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
             }
         });
 
-        self.lctx.outbox.borrow_mut().push_deferred(msg.into_inner());
+        self.lctx.push_outbox_deferred(msg.into_inner());
     }
 
     fn send_group_read_tsap(&self, tsap: u16, priority: Priority) {
@@ -833,7 +833,7 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
         .with_application(ApciCode::GroupValueRead)
         .build();
 
-        self.lctx.outbox.borrow_mut().push_deferred(msg.into_inner());
+        self.lctx.push_outbox_deferred(msg.into_inner());
     }
 }
 

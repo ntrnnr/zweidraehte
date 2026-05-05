@@ -23,7 +23,7 @@ pub mod layer;
 pub mod stack;
 pub mod traits;
 
-pub use layer::{HasOutbox, LayerContext};
+pub use layer::LayerContext;
 pub use stack::StackContext;
 pub use traits::*;
 

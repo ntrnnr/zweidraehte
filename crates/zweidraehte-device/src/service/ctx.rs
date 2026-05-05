@@ -19,7 +19,6 @@
 //! continue to receive the rich ctx so they can dispatch property
 //! and memory ops without extra plumbing.
 
-use core::cell::RefCell;
 use core::ops::Deref;
 
 use zweidraehte_proto::access::{AccessContext, SecurityMode};
@@ -31,16 +30,17 @@ use crate::context::layer::LayerContext;
 use crate::definition::StackDefinition;
 use crate::layers::application::group_data::GroupDataProvider;
 use crate::layers::secure_application::SecureGroupDataProvider;
-use crate::router::Outbox;
 
 /// Lean per-call context handed to augments and any handler that
 /// only needs state / layer-context / access.
 ///
 /// Field access is `pub` so handlers can reach the underlying
 /// references directly. The convenience accessors below mirror the
-/// most frequently used capability shortcuts (outbox, buffer
-/// manager, capability senders) without forcing handlers to chase
-/// trait re-exports.
+/// most frequently used capability shortcuts (buffer manager, APDU
+/// budget helpers, capability senders) without forcing handlers to
+/// chase trait re-exports. To enqueue outgoing wire messages, call
+/// [`LayerContext::push_outbox`] /
+/// [`LayerContext::push_outbox_deferred`] directly on `ctx.lctx`.
 ///
 /// # Lifetime
 ///
@@ -73,12 +73,6 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
     // Convenience accessors. Keep this surface small — direct field
     // access through the public fields is the canonical path.
     // -----------------------------------------------------------------
-
-    /// Shared outbox; push wire messages here from inside `process`.
-    #[inline]
-    pub fn outbox(&self) -> &'a RefCell<Outbox> {
-        &self.lctx.outbox
-    }
 
     /// Buffer manager for response-buffer allocation.
     #[inline]
@@ -151,7 +145,7 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
 /// fn handle(ctx: &AlCtx<'_, D>) {
 ///     // Works because of Deref → ServiceCtx:
 ///     let _ = ctx.state;
-///     let _ = ctx.outbox();
+///     let _ = ctx.buffer_manager();
 ///
 ///     // Rich-only fields:
 ///     let _ = ctx.interface_objects;

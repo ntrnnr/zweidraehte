@@ -25,7 +25,6 @@ use crate::{
     HasAuthorization, StackDefinition, StackState,
     actor::Request,
     context::StackContext,
-    context::layer::HasOutbox,
     objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
     restart::{EraseCode, RestartError, RestartRequest},
 };
@@ -186,11 +185,7 @@ impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
         ServiceType::T_DataUnack_Con,
     ];
 
-    fn process(
-        &mut self,
-        mut msg: KnxMessageBuffer<Buffer<'static>>,
-        _ctx: &crate::service::ServiceCtx<'_, D>,
-    ) {
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
         match msg.service_type() {
             // =================================================================
             // Confirmations from TL — complete pending group sends

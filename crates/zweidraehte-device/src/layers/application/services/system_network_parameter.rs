@@ -15,7 +15,6 @@
 
 use crate::{
     StackState,
-    context::layer::HasOutbox,
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
     objects::interface::pid,
