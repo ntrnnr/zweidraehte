@@ -137,16 +137,24 @@ impl SecureDeviceIdentity for StaticSecureIdentity {
 /// This means callers work exclusively with the runtime state type —
 /// no manual `to_config()` / `from_config()` calls needed.
 ///
+/// # Dirty tracking lives on state, not here
+///
+/// The stack signals "state needs to be saved" via
+/// [`HasPersistence::mark_dirty`](crate::HasPersistence::mark_dirty)
+/// on the *state* (every property write / `A_Memory_Write` calls it).
+/// User code is responsible for the save loop: observe the state's
+/// dirty flag, then call [`save`](Self::save) (or [`flush`](Self::flush)
+/// if the impl batches writes internally) and clear the flag.
+///
 /// # Persistence Strategy
 ///
-/// The device calls [`mark_dirty`](Self::mark_dirty) whenever persistent
-/// state changes. Implementations can choose to:
+/// Implementations can choose to:
 ///
-/// 1. **Immediate write**: Save on every change (simple but high wear)
-/// 2. **Deferred write**: Batch changes and write periodically
-/// 3. **Shutdown write**: Only save on graceful shutdown
-///
-/// Call [`flush`](Self::flush) to force pending writes to storage.
+/// 1. **Immediate write**: `save()` writes synchronously every call
+///    (simple but high wear).
+/// 2. **Deferred write**: `save()` queues / coalesces;
+///    [`flush`](Self::flush) commits.
+/// 3. **Shutdown write**: only [`flush`](Self::flush) writes.
 pub trait DeviceStorage: Sized {
     /// The runtime state type this storage handles.
     ///
@@ -184,13 +192,6 @@ pub trait DeviceStorage: Sized {
     /// corruption on power loss during write.
     fn save(&mut self, state: &Self::State) -> Result<(), Self::Error>;
 
-    /// Mark state as dirty (needs save).
-    ///
-    /// Called whenever persistent state changes. Implementations can
-    /// use this to track that a save is needed without immediately
-    /// writing to storage.
-    fn mark_dirty(&mut self);
-
     /// Flush any pending writes to storage.
     ///
     /// Called to ensure all changes are persisted. Should be called:
@@ -198,11 +199,6 @@ pub trait DeviceStorage: Sized {
     /// - Periodically (for wear leveling)
     /// - After critical configuration changes
     fn flush(&mut self) -> Result<(), Self::Error>;
-
-    /// Check if there are unsaved changes.
-    fn is_dirty(&self) -> bool {
-        false // Default: not tracked
-    }
 }
 
 // ============================================================================
@@ -267,10 +263,6 @@ impl<S: HasDeviceConfig> DeviceStorage for NoStorage<S> {
 
     fn save(&mut self, _state: &S) -> Result<(), Self::Error> {
         Ok(()) // Silently discard
-    }
-
-    fn mark_dirty(&mut self) {
-        // Nothing to mark
     }
 
     fn flush(&mut self) -> Result<(), Self::Error> {
