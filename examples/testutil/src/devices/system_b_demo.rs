@@ -59,7 +59,7 @@ impl core::fmt::Display for BeU16 {
 }
 use zweidraehte_device::bcus::system_b::{
     Extension, HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
-    SystemBStackDefinition,
+    SystemBStackDefinition, SystemBStateInit,
 };
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
@@ -541,23 +541,6 @@ pub type DemoState = IpStateFor<DemoStack, KnxIpDeviceTcp>;
 /// Device config (persisted snapshot) type for the demo device.
 pub type DemoDeviceConfig = <DemoState as HasDeviceConfig>::Config;
 
-/// Init envelope for constructing `DemoState` inside the runner.
-///
-/// Carries the device identity and an optional loaded device config.
-/// If `loaded_config` is `None`, the state is initialized with factory defaults.
-pub struct DemoStateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<DemoDeviceConfig>,
-}
-
-impl DemoStateInit {
-    /// Build the init envelope from a device identity and optional
-    /// loaded device config.
-    pub fn new(identity: &impl DeviceIdentity, loaded_config: Option<DemoDeviceConfig>) -> Self {
-        Self { serial: *identity.serial_number(), loaded_config }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct DemoStack;
 
@@ -573,16 +556,11 @@ impl StackDefinition for DemoStack {
     type Platform = MockIpPlatform;
     type ES = IpExtension<KnxIpDeviceTcp>;
     type State = DemoState;
-    type StateInit = DemoStateInit;
+    type StateInit = SystemBStateInit<Self::Identity, DemoDeviceConfig>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(init.serial);
-        match init.loaded_config {
-            Some(config) => DemoState::from_config(identity, config, ()),
-            None => DemoState::new(identity, comm_objs::DemoComObjects::new(), ()),
-        }
+        DemoState::from_init(init)
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;

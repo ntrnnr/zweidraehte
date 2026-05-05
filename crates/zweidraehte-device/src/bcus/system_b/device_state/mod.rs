@@ -38,6 +38,7 @@ use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
 use super::{
     DeviceConfig, ExtensionState, HasDeviceConfig, HasDiagnosticsContext, HasSecurityMode, OperationModeState,
+    SystemBStateInit,
 };
 
 // ============================================================================
@@ -534,6 +535,24 @@ impl<
             extension_state: ES::from_config(extension_config, extension_resources),
             dirty: Cell::new(false),
             dm_slot: DmNotificationSlot::new(),
+        }
+    }
+
+    /// Build state from a [`SystemBStateInit`] envelope.
+    ///
+    /// `Some(snapshot)` → [`from_config`](Self::from_config),
+    /// `None` → [`new`](Self::new) with factory-fresh comm objects.
+    /// Collapses the boilerplate every device used to spell out by hand.
+    pub fn from_init(
+        init: SystemBStateInit<
+            D::Identity,
+            DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, D::P, ES::Config>,
+            ES::Resources,
+        >,
+    ) -> Self {
+        match init.loaded_config {
+            Some(config) => Self::from_config(init.identity, config, init.resources),
+            None => Self::new(init.identity, D::CO::new(), init.resources),
         }
     }
 }

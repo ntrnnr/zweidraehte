@@ -77,12 +77,6 @@ struct PicoEthAugments<'a> {
     easter: EasterEggAugment,
 }
 
-/// Init envelope: identity + optional loaded device config.
-pub struct PicoEthStateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<<PicoEthState as HasDeviceConfig>::Config>,
-}
-
 impl SystemBStackDefinition for PicoEthLightSwitch {}
 
 impl StackDefinition for PicoEthLightSwitch {
@@ -94,19 +88,14 @@ impl StackDefinition for PicoEthLightSwitch {
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpDeviceUdp>;
+    type Identity = FlashIdentityData;
     type State = PicoEthState;
-    type StateInit = PicoEthStateInit;
+    type StateInit =
+        SystemBStateInit<Self::Identity, <PicoEthState as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-
-        let identity = StaticIdentity::new(init.serial);
-
-        match init.loaded_config {
-            Some(config) => PicoEthState::from_config(identity, config, ()),
-            None => PicoEthState::new(identity, LightSwitchComObjects::new(), ()),
-        }
+        PicoEthState::from_init(init)
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
@@ -521,7 +510,8 @@ async fn main(spawner: Spawner) {
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
     // Build state init from the device config loaded earlier (line 430).
-    let state_init = PicoEthStateInit { serial: *storage.identity().serial_number(), loaded_config };
+    let state_init =
+        SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.

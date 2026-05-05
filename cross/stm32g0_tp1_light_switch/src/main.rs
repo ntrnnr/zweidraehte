@@ -86,11 +86,6 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1;
 type Stm32G0State = Tp1StateFor<Stm32G0LightSwitch>;
 type Storage = StmFlashStorage<Stm32G0State, FlashIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
 
-pub struct Stm32G0StateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<<Stm32G0State as HasDeviceConfig>::Config>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0LightSwitch;
 
@@ -118,19 +113,16 @@ impl StackDefinition for Stm32G0LightSwitch {
     type CO = LightSwitchComObjects;
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type ES = Tp1ExtensionState;
+    type Identity = FlashIdentityData;
     type State = Stm32G0State;
-    type StateInit = Stm32G0StateInit;
+    type StateInit =
+        SystemBStateInit<Self::Identity, <Stm32G0State as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = Stm32G0LightSwitchAugments<'a>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(init.serial);
-        match init.loaded_config {
-            Some(config) => Stm32G0State::from_config(identity, config, ()),
-            None => Stm32G0State::new(identity, LightSwitchComObjects::new(), ()),
-        }
+        Stm32G0State::from_init(init)
     }
 
     fn create_interface_objects<'a>(
@@ -574,7 +566,8 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = Stm32G0StateInit { serial: *storage.identity().serial_number(), loaded_config };
+    let state_init =
+        SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

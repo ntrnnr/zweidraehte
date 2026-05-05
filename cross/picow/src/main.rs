@@ -25,7 +25,7 @@ use devices::light_switch::{
 use zweidraehte_device::{
     bcus::system_b::{
         Extension, HasDeviceConfig, IpAugmentFor, IpExtension, IpStateFor, SystemBInterfaceObjectsFor,
-        SystemBMemoryMap, SystemBStackDefinition,
+        SystemBMemoryMap, SystemBStackDefinition, SystemBStateInit,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
     prelude::*,
@@ -66,12 +66,6 @@ struct PicoWAugments<'a> {
     easter: EasterEggAugment,
 }
 
-/// Init envelope: identity + optional loaded device config.
-pub struct PicoWStateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<<PicoWState as HasDeviceConfig>::Config>,
-}
-
 impl SystemBStackDefinition for PicoWLightSwitch {}
 
 impl StackDefinition for PicoWLightSwitch {
@@ -83,17 +77,14 @@ impl StackDefinition for PicoWLightSwitch {
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpDeviceUdp>;
+    type Identity = rp_common::FlashIdentityData;
     type State = PicoWState;
-    type StateInit = PicoWStateInit;
+    type StateInit =
+        SystemBStateInit<Self::Identity, <PicoWState as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(init.serial);
-        match init.loaded_config {
-            Some(config) => PicoWState::from_config(identity, config, ()),
-            None => PicoWState::new(identity, LightSwitchComObjects::new(), ()),
-        }
+        PicoWState::from_init(init)
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
@@ -385,7 +376,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = PicoWStateInit { serial: *storage.identity().serial_number(), loaded_config };
+    let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded

@@ -152,12 +152,6 @@ type Stm32G0SecureState = SecureTp1StateFor<Stm32G0SecureLightSwitch, Stm32G0Seq
 
 type Storage = StmFlashStorage<Stm32G0SecureState, FlashSecureIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
 
-pub struct Stm32G0SecureStateInit {
-    pub identity: FlashSecureIdentityData,
-    pub seq_storage: Stm32G0SeqStorage,
-    pub loaded_config: Option<<Stm32G0SecureState as HasDeviceConfig>::Config>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0SecureLightSwitch;
 
@@ -209,7 +203,11 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     // Flash-backed identity that carries the FDSK.
     type Identity = FlashSecureIdentityData;
     type State = Stm32G0SecureState;
-    type StateInit = Stm32G0SecureStateInit;
+    type StateInit = SystemBStateInit<
+        Self::Identity,
+        <Stm32G0SecureState as HasDeviceConfig>::Config,
+        SecureResources<Tp1ExtensionState, Stm32G0SeqStorage>,
+    >;
     type Mem = SystemBMemoryMap;
     // `SecAugment` extends the interface-object list with the Security
     // Object (IOT 0x11) that ETS uses to write group keys etc. It is
@@ -221,13 +219,7 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     type Augments<'a> = Stm32G0SecureAugments<'a>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        let Stm32G0SecureStateInit { identity, seq_storage, loaded_config } = init;
-        let fdsk = *SecureDeviceIdentity::fdsk(&identity);
-        let resources = SecureResources { inner: (), seq_storage, fdsk };
-        match loaded_config {
-            Some(config) => Stm32G0SecureState::from_config(identity, config, resources),
-            None => Stm32G0SecureState::new(identity, LightSwitchComObjects::new(), resources),
-        }
+        Stm32G0SecureState::from_init(init)
     }
 
     fn create_interface_objects<'a>(
@@ -589,7 +581,13 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = Stm32G0SecureStateInit { identity: identity_data, seq_storage, loaded_config };
+    let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
+    let resources = SecureResources { inner: (), seq_storage, fdsk };
+    let state_init = SystemBStateInit {
+        identity: identity_data,
+        loaded_config,
+        resources,
+    };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

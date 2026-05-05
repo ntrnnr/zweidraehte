@@ -61,12 +61,6 @@ type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 // StackDefinition
 // ----------------------------------------------------------------------------
 
-/// Init envelope: identity + optional loaded device config.
-pub struct PicoTp1StateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<<PicoTp1State as HasDeviceConfig>::Config>,
-}
-
 #[derive(Debug, Clone, Copy)]
 struct PicoTp1LightSwitch;
 
@@ -99,19 +93,18 @@ impl StackDefinition for PicoTp1LightSwitch {
     type CO = LightSwitchComObjects;
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
     type ES = Tp1ExtensionState;
+    type Identity = FlashIdentityData;
     type State = PicoTp1State;
-    type StateInit = PicoTp1StateInit;
+    type StateInit = SystemBStateInit<
+        Self::Identity,
+        <PicoTp1State as HasDeviceConfig>::Config,
+    >;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = PicoTp1Augments<'a>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(init.serial);
-        match init.loaded_config {
-            Some(config) => PicoTp1State::from_config(identity, config, ()),
-            None => PicoTp1State::new(identity, LightSwitchComObjects::new(), ()),
-        }
+        PicoTp1State::from_init(init)
     }
 
     fn create_interface_objects<'a>(
@@ -430,7 +423,8 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = PicoTp1StateInit { serial: *storage.identity().serial_number(), loaded_config };
+    let state_init =
+        SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded

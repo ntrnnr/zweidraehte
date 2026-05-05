@@ -86,12 +86,6 @@ type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoIpInterface;
 
-/// Init envelope: identity + optional loaded device config.
-pub struct IpIfStateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<<IpIfState as HasDeviceConfig>::Config>,
-}
-
 impl SystemBStackDefinition for PicoIpInterface {}
 
 impl StackDefinition for PicoIpInterface {
@@ -112,17 +106,14 @@ impl StackDefinition for PicoIpInterface {
     >;
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtension<KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
+    type Identity = FlashIdentityData;
     type State = IpIfState;
-    type StateInit = IpIfStateInit;
+    type StateInit =
+        SystemBStateInit<Self::Identity, <IpIfState as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(init.serial);
-        match init.loaded_config {
-            Some(config) => IpIfState::from_config(identity, config, ()),
-            None => IpIfState::new(identity, IpInterfaceComObjects::new(), ()),
-        }
+        IpIfState::from_init(init)
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
@@ -413,7 +404,8 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init = IpIfStateInit { serial: *storage.identity().serial_number(), loaded_config };
+    let state_init =
+        SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

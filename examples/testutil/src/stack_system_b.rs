@@ -15,7 +15,9 @@ use static_cell::StaticCell;
 use std::net::SocketAddrV4;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    bcus::system_b::SystemBStackDefinition, layers::linklayers::knxip::KnxNetIpBuilder, restart::EraseCode,
+    bcus::system_b::{SystemBStackDefinition, SystemBStateInit},
+    layers::linklayers::knxip::KnxNetIpBuilder,
+    restart::EraseCode,
 };
 
 use testutil::devices::system_b_demo::*;
@@ -177,7 +179,8 @@ async fn main(spawner: Spawner) {
             None
         }
     };
-    let state_init = DemoStateInit::new(storage.identity(), loaded_config);
+    let state_init =
+        SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
 
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);

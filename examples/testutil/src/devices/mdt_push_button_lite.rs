@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
     Extension, HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
-    SystemBStackDefinition,
+    SystemBStackDefinition, SystemBStateInit,
 };
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
@@ -3212,20 +3212,6 @@ pub type MdtState = IpStateFor<MdtStack, KnxIpDeviceUdp>;
 /// Device config (persisted snapshot) type for the MDT device.
 pub type MdtDeviceConfig = <MdtState as HasDeviceConfig>::Config;
 
-/// Init envelope for constructing `MdtState` inside the runner.
-pub struct MdtStateInit {
-    pub serial: [u8; 6],
-    pub loaded_config: Option<MdtDeviceConfig>,
-}
-
-impl MdtStateInit {
-    /// Build the init envelope from a device identity and optional
-    /// loaded device config.
-    pub fn new(identity: &impl DeviceIdentity, loaded_config: Option<MdtDeviceConfig>) -> Self {
-        Self { serial: *identity.serial_number(), loaded_config }
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct MdtStack;
 
@@ -3241,16 +3227,11 @@ impl StackDefinition for MdtStack {
     type Platform = MockIpPlatform;
     type ES = IpExtension<KnxIpDeviceUdp>;
     type State = MdtState;
-    type StateInit = MdtStateInit;
+    type StateInit = SystemBStateInit<Self::Identity, MdtDeviceConfig>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
-        use zweidraehte_device::storage::StaticIdentity;
-        let identity = StaticIdentity::new(init.serial);
-        match init.loaded_config {
-            Some(config) => MdtState::from_config(identity, config, ()),
-            None => MdtState::new(identity, comm_objs::MdtComObjects::new(), ()),
-        }
+        MdtState::from_init(init)
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;

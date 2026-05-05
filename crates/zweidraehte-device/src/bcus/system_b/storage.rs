@@ -72,6 +72,60 @@ use crate::{
 use zweidraehte_proto::address::IndividualAddress;
 
 // ============================================================================
+// SystemBStateInit — boilerplate-free `StateInit` envelope for System B
+// ============================================================================
+
+/// Standard `StateInit` shape for [`SystemBDeviceState`](super::SystemBDeviceState)-based devices.
+///
+/// Bundles the three things every System B device's `create_state` needs:
+///
+/// - `identity` — factory-programmed identity, threaded into the state.
+/// - `loaded_config` — `Some(snapshot)` from a previous boot, or `None` for
+///   factory-fresh.
+/// - `resources` — non-serialisable construction inputs for the extension
+///   state. `()` for non-secure stacks; for KNX Data Secure stacks, a
+///   [`SecureResources`](super::SecureResources) carrying the FDSK and a
+///   sequence-number storage handle.
+///
+/// Pair with [`SystemBDeviceState::from_init`](super::SystemBDeviceState::from_init)
+/// to collapse the boilerplate `match init.loaded_config { Some => from_config, None => new }`
+/// every device used to write by hand:
+///
+/// ```rust,ignore
+/// type StateInit = SystemBStateInit<MyIdentity, <Self::State as HasDeviceConfig>::Config>;
+///
+/// fn create_state(init: Self::StateInit) -> Self::State {
+///     <Self::State>::from_init(init)
+/// }
+/// ```
+///
+/// Devices with a non-`()` resource type (secure stacks) use the third type
+/// parameter:
+///
+/// ```rust,ignore
+/// type StateInit = SystemBStateInit<
+///     FlashSecureIdentityData,
+///     <Self::State as HasDeviceConfig>::Config,
+///     SecureResources<(), MySeqStorage>,
+/// >;
+/// ```
+pub struct SystemBStateInit<I, C, R = ()> {
+    /// Factory-programmed device identity.
+    pub identity: I,
+    /// `Some(snapshot)` from a previous boot, or `None` for factory-fresh.
+    pub loaded_config: Option<C>,
+    /// Non-serialisable construction inputs for the extension state.
+    pub resources: R,
+}
+
+impl<I, C> SystemBStateInit<I, C, ()> {
+    /// Build an init envelope for a non-secure stack (resources defaulted to `()`).
+    pub fn new(identity: I, loaded_config: Option<C>) -> Self {
+        Self { identity, loaded_config, resources: () }
+    }
+}
+
+// ============================================================================
 // HasDeviceConfig — bridge between runtime state and its serializable config
 // ============================================================================
 
