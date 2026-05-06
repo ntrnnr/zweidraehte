@@ -206,33 +206,6 @@ impl DiagnosticsContext for OperationModeState {
 
 /// Interface object augment for diagnostics: PID_OPERATION_MODE (PID 52)
 /// on the Application Program Object and PID_GO_DIAGNOSTICS (PID 66) on
-// ============================================================================
-// GO Diagnostics Response Helpers
-// ============================================================================
-
-/// Build a `PropertyBuf` carrying the three-byte `PID_OPERATION_MODE`
-/// response body (`[service_id, mode, time_left]`). Works for both the
-/// success (return code 0x20) and negative acknowledgement (0xA0)
-/// paths, which share the same data layout.
-fn operation_mode_buf<const N: usize>(service_id: u8, mode: u8, time_left: u8) -> PropertyBuf<N> {
-    let mut scratch = [0u8; OperationModeResponse::LEN];
-    PropertyBuf::new(OperationModeResponse { service_id, operation_mode: mode, time_left }.write(&mut scratch))
-}
-
-/// Build a GO diagnostics success response (return code 0x21 —
-/// `E_GD_GO_STATUS_VALUE`) with the standard `[service_id, go_idx,
-/// status, value...]` envelope, serialised by
-/// [`GoStatusValueResponse`].
-fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> FunctionPropertyResult {
-    // 4-byte header + up to 60 value bytes fits comfortably inside
-    // `PropertyBuf`. Values longer than this are truncated per the
-    // GoStatusValueResponse contract — consistent with the prior
-    // implementation's `.min(60)`.
-    let mut resp = [0u8; 64];
-    let out = GoStatusValueResponse { service_id, go_idx, status, value }.write(&mut resp);
-    FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(out) }
-}
-
 /// the Group Object Table Object.
 ///
 /// This augment does NOT add additional objects — it extends existing
@@ -314,6 +287,33 @@ pub struct DiagnosticsAugment<'a> {
         },
     )]
     _go_diagnostics_io: (),
+}
+
+// ============================================================================
+// GO Diagnostics Response Helpers
+// ============================================================================
+
+/// Build a `PropertyBuf` carrying the three-byte `PID_OPERATION_MODE`
+/// response body (`[service_id, mode, time_left]`). Works for both the
+/// success (return code 0x20) and negative acknowledgement (0xA0)
+/// paths, which share the same data layout.
+fn operation_mode_buf<const N: usize>(service_id: u8, mode: u8, time_left: u8) -> PropertyBuf<N> {
+    let mut scratch = [0u8; OperationModeResponse::LEN];
+    PropertyBuf::new(OperationModeResponse { service_id, operation_mode: mode, time_left }.write(&mut scratch))
+}
+
+/// Build a GO diagnostics success response (return code 0x21 —
+/// `E_GD_GO_STATUS_VALUE`) with the standard `[service_id, go_idx,
+/// status, value...]` envelope, serialised by
+/// [`GoStatusValueResponse`].
+fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> FunctionPropertyResult {
+    // 4-byte header + up to 60 value bytes fits comfortably inside
+    // `PropertyBuf`. Values longer than this are truncated per the
+    // GoStatusValueResponse contract — consistent with the prior
+    // implementation's `.min(60)`.
+    let mut resp = [0u8; 64];
+    let out = GoStatusValueResponse { service_id, go_idx, status, value }.write(&mut resp);
+    FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(out) }
 }
 
 impl<'a> DiagnosticsAugment<'a> {
