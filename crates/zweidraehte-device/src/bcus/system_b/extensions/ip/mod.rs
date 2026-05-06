@@ -14,8 +14,10 @@
 //! [`Extension::create_augment`](crate::bcus::system_b::Extension::create_augment).
 
 mod augment;
+mod tunnelling;
 
 pub use augment::IpAugment;
+pub use tunnelling::{TunnellingAugment, TunnellingExtension, TunnellingExtensionConfig};
 
 use core::cell::{Cell, RefCell};
 use core::net::Ipv4Addr;
