@@ -157,15 +157,24 @@ pub trait ExtensionConfig: Default + Serialize + Deserialize {}
 /// Runtime form (with interior mutability)
 pub trait ExtensionState: Sized {
     type Config: ExtensionConfig;
-    fn from_config(config: Self::Config) -> Self;
+    /// Non-serialisable construction inputs (FDSK copy, sequence
+    /// storage handle, …). Use `()` if the extension needs none.
+    type Resources;
+    fn from_config(config: Self::Config, resources: Self::Resources) -> Self;
     fn to_config(&self) -> Self::Config;
-    fn factory_reset(&self);
+    /// Handle a master-reset erase code. Each extension decides per
+    /// code what to clear (see [`EraseCode`](crate::restart::EraseCode)).
+    /// Called from `SystemBDeviceState::factory_reset()` and
+    /// `execute_reset()`.
+    fn on_erase(&self, code: EraseCode);
 }
 ```
 
 `ExtensionConfig` is what gets serialized to storage (JSON, flash).
 `ExtensionState` is the runtime representation with `Cell`/`RefCell`
-fields for interior mutability.
+fields for interior mutability. `Resources` is the non-serialisable
+construction-time bundle — typically `()`, but secure extensions use
+it to receive a sequence-number storage handle and the FDSK copy.
 
 ### Built-in Extensions
 
@@ -232,7 +241,7 @@ pub struct MyBridgeState {
 
 impl ExtensionState for MyBridgeState {
     type Config = MyBridgeConfig;
-    // ... implement from_config, to_config, factory_reset
+    // ... implement from_config, to_config, on_erase
 }
 
 impl<P: IpPlatform> Extension<P> for MyBridgeState {
@@ -269,15 +278,16 @@ pub trait Augment<D: StackDefinition> {
     fn property_value_write  (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_command   (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_state_read(&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
-    fn next_deadline(&self) -> Option<Instant> { None }
-    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    fn next_augment_deadline(&self) -> Option<Instant> { None }
 }
 ```
 
 All hook methods return `Option<…>` — returning `None` delegates to
-the next augment in the chain or the base object. `next_deadline` /
-`poll` are opt-in lifecycle hooks for augments with temporal
-behaviour (Diagnostics auto-revert, Security rekey timers).
+the next augment in the chain or the base object.
+`next_augment_deadline` / `poll_augments` are opt-in lifecycle hooks
+for augments with temporal behaviour (Diagnostics auto-revert,
+Security rekey timers).
 
 ### How Augments Relate to Extensions
 
@@ -419,80 +429,103 @@ derive. Mix and match as suits the device.
 The persistence system has three layers:
 
 ```
-SystemBDeviceState (runtime, interior mutability)
+SystemBDeviceState<..., ES>          (runtime, interior mutability)
         |
-        | to_persisted() / from_persisted()
-        v
-PersistedState (serializable snapshot, serde)
-        |
-        | serialize / deserialize
-        v
-Storage backend (JSON file, flash, etc.)
+        | HasDeviceConfig::to_config()        SystemBDeviceState::from_init(StateInit)
+        v                                              ^
+DeviceConfig<..., ES::Config>        (serializable snapshot, serde)
+        |                                              |
+        | DeviceStorage::save / load_config            |
+        v                                              |
+Storage backend (JSON file, flash, ...)  ─────────────┘
+                                          (loaded snapshot reaches state via SystemBStateInit)
 ```
 
-**`HasPersistedState`** converts between runtime and serializable form:
+**`HasDeviceConfig`** is the trait that bridges runtime state to its
+serializable form:
+
 ```rust
-pub trait HasPersistedState: Sized {
-    type Persisted: Serialize + Deserialize;
-    fn to_persisted(&self) -> Self::Persisted;
-    fn from_persisted(identity: &impl DeviceIdentity, persisted: Self::Persisted) -> Self;
+pub trait HasDeviceConfig: Sized {
+    type Config: Serialize + for<'de> Deserialize<'de>;
+    /// Export current runtime state to a serializable config.
+    fn to_config(&self) -> Self::Config;
 }
 ```
 
-**`PersistedState`** is the serializable snapshot:
+`SystemBDeviceState` implements `HasDeviceConfig` with
+`type Config = DeviceConfig<..., ES::Config>`. The struct holds
+individual address, auth keys, routing count, the four ETS-loaded
+tables, the application program, the program version, and the
+embedded extension config — i.e. exactly the state that survives a
+power cycle.
+
+**Reverse direction.** There is no `from_config` trait method.
+Restoration goes through `D::StateInit` (the envelope passed to
+`StackDefinition::create_state`), which for System B devices is
+`SystemBStateInit<Identity, DeviceConfig, ExtensionResources>`:
+
 ```rust
-pub struct PersistedState<..., E: ExtensionConfig = ()> {
-    pub version: u8,
-    pub individual_address: IndividualAddress,
-    pub auth_keys: [[u8; 4]; 3],
-    pub routing_count: u8,
-    pub address_table: Table<...>,
-    pub association_table: Table<...>,
-    pub group_object_table: Table<...>,
-    pub application: Application<P>,
-    pub program_version: [u8; 5],
-    pub extension_config: E,  // Extension state serialized here
+pub struct SystemBStateInit<I, C, R = ()> {
+    pub identity: I,
+    /// `Some(snapshot)` from a previous boot, or `None` for factory-fresh.
+    pub loaded_config: Option<C>,
+    /// Non-serialisable construction inputs for the extension state.
+    pub resources: R,
 }
 ```
 
-Extension state is serialized as part of the `PersistedState` via
-`extension_state.to_config()`.
+`SystemBDeviceState::from_init(init)` consumes the envelope: if
+`loaded_config` is `Some`, it rebuilds the runtime state from it
+(calling `ExtensionState::from_config(extension_config, resources)`
+on the embedded extension config); if `None`, it constructs
+factory-fresh defaults.
 
 ### Dirty Tracking
 
-`SystemBDeviceState` tracks whether unsaved changes exist:
+`SystemBDeviceState` tracks whether unsaved changes exist via
+inherent methods (these are **not** on `DeviceStorage`):
 
 ```rust
 state.is_dirty()    // Check if there are unsaved changes
-state.mark_dirty()  // Called automatically by property writes
+state.mark_dirty()  // Called automatically by property writes (HasPersistence)
 state.clear_dirty() // Called after successful save
 ```
 
-The binary is responsible for checking `is_dirty()` and calling the
-storage backend to save when needed.
+The binary's main loop is responsible for polling `is_dirty()` and
+calling `DeviceStorage::save(&state)` when needed.
 
 ### Storage Backends
 
 **`JsonStorage`** (for Linux userspace, in `examples/testutil`):
 ```rust
-let identity = FileIdentity::load_or_provision("device_identity.json", serial)?;
-let mut storage = JsonStorage::<MyState, _>::new("device_state.json", identity);
+use zweidraehte_testutil::storage::{FileIdentity, JsonStorage};
 
-// Load
-let state = match storage.load()? {
-    Some(state) => state,
-    None => MyState::new(storage.identity()), // Factory defaults
-};
+let identity = FileIdentity::load_or_provision("device_identity.json", SERIAL)?;
+let mut storage: JsonStorage<MyState, _> =
+    JsonStorage::new("device_state.json", identity);
 
-// Save (periodic or on dirty)
-if state.is_dirty() {
-    storage.save(&state)?;
-    state.clear_dirty();
+// Load (returns Option<DeviceConfig>; None on first boot)
+let loaded_config = storage.load_config()?;
+
+// Hand the optional snapshot into D::StateInit; the runner builds
+// the runtime state via D::create_state(state_init).
+let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
+
+// Periodic save loop
+if stack.state().is_dirty() {
+    storage.save(stack.state())?;
+    stack.state().clear_dirty();
 }
 ```
 
-**`RpFlashStorage`** (for embedded RP2040, in `cross/rp-common`):
-Same trait interface, writes to flash sectors instead of files.
+`DeviceStorage` itself has four methods: `identity()`,
+`load_config() -> Option<Self::State::Config>`, `save(&State)`, and
+`flush()`. Storage backends call `state.to_config()` internally
+inside `save()`; `load_config()` returns the deserialised
+`DeviceConfig` for the binary to slot into `SystemBStateInit`.
+
+**Embedded backends** (e.g. RP2040 flash) implement the same
+`DeviceStorage` trait but write sectors instead of files.
 
 ## Defining a New Device
 
@@ -583,6 +616,15 @@ impl StackDefinition for MyDevice {
     type State = MyState;
     type Mem = SystemBMemoryMap;
 
+    // Construction-time envelope. SystemBStateInit bundles the
+    // factory identity with an optional persisted DeviceConfig
+    // snapshot loaded from storage. Resources defaulted to ().
+    type StateInit = SystemBStateInit<Self::Identity, <MyState as HasDeviceConfig>::Config>;
+
+    fn create_state(init: Self::StateInit) -> Self::State {
+        MyState::from_init(init)
+    }
+
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
 
     // No extras: D::Augments is just the medium extension's augment.
@@ -667,51 +709,76 @@ including `#[service(flatten)]` for nested composition.
 
 ### Step 5: Startup
 
+The runner takes ownership of the stack resources, link-layer
+builder, the `D::StateInit` envelope, the platform, and the memory
+map — five arguments to `zweidraehte_device::new()`. The runtime
+state is **not** built by the binary; the runner constructs it
+internally via `D::create_state(state_init)` so it can hand the
+freshly built state a reference to the `LayerContext` from birth (no
+two-phase init).
+
 ```rust
+use zweidraehte_device::{
+    StackResources, StackDefinition,
+    bcus::system_b::SystemBStateInit,
+};
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // 1. Load device identity
+    // 1. Load device identity (factory-fixed: serial number, optional FDSK).
     let identity = FileIdentity::load_or_provision("identity.json", SERIAL)?;
 
-    // 2. Load or create device state
+    // 2. Open storage and load the persisted DeviceConfig (None on first boot).
     let mut storage = JsonStorage::<MyState, _>::new("state.json", identity);
-    let state = match storage.load()? {
-        Some(state) => state,
-        None => MyState::new(storage.identity()),
-    };
+    let loaded_config = storage.load_config()?;
 
-    // 3. Create link layer builder
-    let link_layer_builder = KnxNetIpBuilder::new(
+    // 3. Build the StateInit envelope. The runner consumes it inside
+    //    D::create_state. For System B, SystemBStateInit::new() handles
+    //    the no-resources case (resources defaulted to ()).
+    let state_init = SystemBStateInit::new(
+        StaticIdentity::new(*storage.identity().serial_number()),
+        loaded_config,
+    );
+
+    // 4. Create link layer builder.
+    let link_layer_builder = KnxNetIpBuilder::<LinuxIpTransport, KnxIpDeviceUdp, 2>::new(
         "eth0", local_addr, control_endpoint, (),
     );
 
-    // 4. Allocate resources and create the stack
-    static RESOURCES: StaticCell<StackResources<MyDevice, { buffer_size }>> = StaticCell::new();
+    // 5. Allocate static stack resources.
+    const BUF_SZ: usize = zweidraehte_device::config::buffer_size_for_apdu(
+        <MyDevice as StackDefinition>::MAX_APDU_LENGTH,
+    );
+    static RESOURCES: StaticCell<StackResources<MyDevice, BUF_SZ>> = StaticCell::new();
 
+    // 6. Create the stack. Five args, in this order.
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
-        MyComObjects::new(),
-        (),                          // hook context
         link_layer_builder,
-        state,
+        state_init,
         platform,
         MyDevice::memory_map(),
     );
 
-    // 5. Run the stack
+    // 7. Spawn the stack runner.
     spawner.spawn(run_stack(runner)).unwrap();
 
-    // 6. Application loop
+    // 8. Application loop — read/write COs via `stack`, persist on dirty.
     loop {
-        // Read/write communication objects via `stack`
-        // Periodically save state if dirty
         if stack.state().is_dirty() {
-            storage.save(stack.state()).unwrap();
+            storage.save(stack.state())?;
             stack.state().clear_dirty();
         }
+        // ... user logic ...
     }
 }
 ```
+
+Note what is **not** an argument: there is no `MyComObjects::new()`
+parameter and no separate "hook context". The CO container is part
+of `D::State` (built inside `create_state`), and any per-device
+context the layers need is reached through `D::Augments<'a>` and
+`D::AlExtensions`.
 
 ## Architecture Diagram
 
@@ -783,13 +850,21 @@ pub struct MyExtension {
 
 impl ExtensionState for MyExtension {
     type Config = MyConfig;
-    fn from_config(config: MyConfig) -> Self {
+    type Resources = ();
+    fn from_config(config: MyConfig, _resources: ()) -> Self {
         Self { counter: Cell::new(config.counter) }
     }
     fn to_config(&self) -> MyConfig {
         MyConfig { counter: self.counter.get() }
     }
-    fn factory_reset(&self) { self.counter.set(0); }
+    fn on_erase(&self, code: EraseCode) {
+        // Decide per code what to clear. For a counter, clear on
+        // FactoryReset and ResetActiveAppParameters; leave alone
+        // for ConfirmedRestart.
+        if matches!(code, EraseCode::FactoryReset | EraseCode::ResetActiveAppParameters) {
+            self.counter.set(0);
+        }
+    }
 }
 ```
 

@@ -140,6 +140,8 @@ The macro generates defaults as follows:
 | `type_name = "..."` | Override ETS type name | `type_name = "MyCustomType"` |
 | `skip` | Exclude from ETS output | For padding fields |
 | `string` | Treat `[u8; N]` as text | For text parameters |
+| `text_pattern = "..."` | ETS text template substituted with `{{0:default}}` against the parameter's own ParameterRef | `text_pattern = "{{0:Channel}}"` |
+| `text_source = "..."` | Mark this parameter as the text source for a module's text-substitution mechanism (V20 modules only) | `text_source = "channel_name"` |
 
 ### Supported Field Types
 
@@ -294,9 +296,9 @@ The macro generates:
 ```rust
 impl SendMode {
     pub const ETS_VARIANTS: &'static [EtsEnumVariant] = &[
-        EtsEnumVariant { text: "cyclic", value: 0 },
-        EtsEnumVariant { text: "on change", value: 1 },
-        EtsEnumVariant { text: "on request", value: 2 },
+        EtsEnumVariant { text: "cyclic",     variant_name: "cyclic",     value: 0 },
+        EtsEnumVariant { text: "on change",  variant_name: "on change",  value: 1 },
+        EtsEnumVariant { text: "on request", variant_name: "on request", value: 2 },
     ];
     pub const ETS_SIZE_BITS: u8 = 8;
 }
@@ -360,9 +362,9 @@ pub enum OutputConfigUnion {
 impl OutputConfigUnion {
     pub const ETS_UNION_INFO: EtsUnionInfo = /* variant info */;
     pub const ETS_SELECTOR_VARIANTS: &'static [EtsEnumVariant] = &[
-        EtsEnumVariant { text: "Switch", value: 0 },
-        EtsEnumVariant { text: "Dimmer", value: 1 },
-        EtsEnumVariant { text: "Scene", value: 2 },
+        EtsEnumVariant { text: "Switch", variant_name: "Switch", value: 0 },
+        EtsEnumVariant { text: "Dimmer", variant_name: "Dimmer", value: 1 },
+        EtsEnumVariant { text: "Scene",  variant_name: "Scene",  value: 2 },
     ];
 }
 
@@ -441,6 +443,9 @@ Use `#[derive(EtsComObjects)]` to define communication objects (group objects).
 
 ```rust
 #[derive(Debug, EtsComObjects)]
+// `selector_enum` is a STRUCT-level attribute (not a field
+// attribute) and takes a bare type path, not a quoted string.
+#[ets(selector_enum = ObjectType)]
 pub struct MyComObjects {
     /// Simple switch object
     #[ets_ref(dpt = DPT_Switch, text = "Switch Output", function = "Switching")]
@@ -450,7 +455,6 @@ pub struct MyComObjects {
     #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "Value Output", function = "Switch")]
     #[ets_ref(dpt = DPT_Value_1_Ucount, when = ObjectType::Percent, text = "Value Output", function = "Value")]
     #[ets_ref(dpt = DPT_SceneNumber, when = ObjectType::Scene, text = "Value Output", function = "Scene")]
-    #[ets(selector_enum = "ObjectType")]
     pub value_output: ComObject<ComObjectStorage<4>>,
 }
 ```
@@ -466,6 +470,8 @@ pub struct MyComObjects {
 | `flags = EXPR` | Default flags (see below) | `flags = C \| T \| LOW` |
 | `object_size = "..."` | Override object size | `object_size = "4 Bytes"` |
 | `selector_param = "..."` | Parameter controlling DPT selection | `selector_param = "object_type"` |
+| `text_template = "..."` | ETS text template using `{{N:default}}` substitution against the shared parameter-ref namespace | `text_template = "Channel {{0:1}}: Switch"` |
+| `module = ModuleType` | Bind this object to a module instance — see "Module Definitions" | `module = SwitchChannel` |
 
 #### Flags Expression
 
@@ -506,6 +512,8 @@ Default (if omitted): `C | R | W | T | U | LOW` (0xDF)
 | `transmit = bool` | Override Transmit Enable flag | `transmit = true` |
 | `update = bool` | Override Update Enable flag | `update = false` |
 | `communication = bool` | Override Communication Enable flag | `communication = true` |
+| `read_on_init = bool` | Emit `ReadOnInit` flag on the ComObjectRef so ETS issues an initial read after download | `read_on_init = true` |
+| `ref_name = "..."` | Override the auto-generated ComObjectRef internal name | `ref_name = "ChannelA_OnOff"` |
 
 ### Text Interpolation
 

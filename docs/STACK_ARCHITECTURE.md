@@ -61,7 +61,7 @@ compile-time type with a known dispatch shape.
 2. **Small single-responsibility "context" traits.** A layer or
    augment depends on the narrow capability it actually uses —
    `BufferManagerContext`, `ApduLengthContext`,
-   `AddressTableContext`, `OutboxContext`, and so on. Big shared
+   `AddressTableContext`, `EventPublisherContext`, and so on. Big shared
    containers (`LayerContext<D>`, `StackContext<'a, D>`) implement
    many of these traits; consumers accept
    `ctx: &(impl A + B)`. This keeps every layer's bound explicit
@@ -220,6 +220,7 @@ defines a zero-sized struct and implements `StackDefinition` for it.
 | `TL_MAX_OUTGOING` | `usize` | `0` | Max outgoing transport connections. |
 | `TL_STYLE` | `TlStyle` | — | TL state-machine style per 03/03/04 §5.4. |
 | `Mutex` | `RawMutex` | `NoopRawMutex` | Inter-executor synchronisation. `CriticalSectionRawMutex` when user code and stack share preemption. |
+| `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure. Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
 | `Platform` | — | `()` | IP platform (network config/query). |
 | `P` | `ConstDefault` | — | Application parameter struct. |
 | `CO` | `ComObjects` | — | Communication-object container. |
@@ -230,11 +231,15 @@ defines a zero-sized struct and implements `StackDefinition` for it.
 | `StateInit` | — | — | Envelope passed to `create_state`. Not serialisable. |
 | `Mem` | `MemoryMap<Self::State>` | — | Dispatcher for `A_Memory_Read/Write`. |
 | `InterfaceObjects<'a>` | `PropertyServiceHandler + HasDeviceObject` | — | Container of interface objects. |
-| `Services` | `AlService<Self>` | `()` | Extra AL APCI handlers. |
+| `AlExtensions` | `ApciHandler<Self> + Default` | `()` | Extra AL APCI handlers. Composed by tupling — e.g. `(SystemBAlServices, DomainAddressService)`. |
+| `Augments<'a>` | `Augment<Self>` | `()` | Device-wide augment chain. See §3.12. |
 | `LayerBuilder` | `LayerStackBuilder<Self>` | — | Wires NL/TL/AL together. |
 
-**Methods required:** `create_state(init)` and
-`create_interface_objects(state, platform, layer_ctx)`.
+**Methods required:** `create_state(init) -> State`,
+`create_augments(state, platform, layer_ctx) -> Augments<'a>`, and
+`create_interface_objects(state, platform, layer_ctx, augments) -> InterfaceObjects<'a>`.
+The runner calls them in that order — augments are built first so the
+IO container can borrow `&'a Augments<'a>` for the stack's lifetime.
 
 **Convenience supertrait.** System B devices should implement the
 `SystemBStackDefinition` supertrait instead
@@ -294,8 +299,8 @@ pub trait Augment<D: StackDefinition> {
     fn property_value_write  (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_command   (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_state_read(&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
-    fn next_augment_deadline(&self) -> Option<Instant> { None }
     fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    fn next_augment_deadline(&self) -> Option<Instant> { None }
 }
 ```
 
@@ -399,12 +404,19 @@ pub struct PicoTp1Augments<'a> {
 }
 ```
 
-`#[service(flatten)]` lets one services struct embed another and
-inherit its augment chain wholesale (augment-only — handlers can't
-flatten, since the const dispatch table would need a 2D mapping
-through the flattened sub-table). Hook methods walk the fields
-left-to-right; the first `Some` claims the request. IO list counts
-sum across all fields; lifecycle delegates to each.
+The full attribute set on `#[derive(ServiceRegistry)]` fields:
+
+| Attribute | Role |
+|---|---|
+| `#[service(handler)]` | A `Layer<D>` — wire-frame handler. Contributes to the const dispatch table via its `HANDLES` slice. |
+| `#[service(augment)]` | An `Augment<D>` — property-dispatch + IO-list contributor. Hook calls walk left-to-right; first `Some` claims. |
+| `#[service(flatten)]` | Embeds another services struct and inherits its augment chain wholesale. **Augment-only** — handlers can't flatten, since the const dispatch table would need a 2D mapping through the flattened sub-table. |
+| `#[service(lifecycle)]` | A `LifecycleHook<D>` — runs `init` / `poll` / `next_deadline` / `drain_events` on each cycle. For services-struct members that need lifecycle but neither dispatch a wire frame nor contribute to property dispatch (e.g. `DeviceModel`). |
+| `#[service(channel(dispatch = path))]` | A receiver/`Channel` — the runner `select!`s on it inside the async loop. The `dispatch` path names a method on the services struct that consumes the received value. Used to wire actor-style request channels (`app_service_channel`) and cEMI events from KNX/IP runtime tasks into the same loop as wire frames. |
+
+Hook methods on `Augment` walk fields left-to-right; the first `Some`
+claims the request. IO list counts sum across all fields; lifecycle
+delegates to each.
 
 The `()` and `&A` shapes also implement `Augment<D>`
 directly, so devices that need no augments (`()`) and projection
@@ -447,8 +459,17 @@ the `*Config` persistence vocabulary in §4. Contents:
 | `group_data` | `GroupDataState` | Shared bookkeeping between AL's built-in group handler and augment-held `GroupDataProvider`s. |
 
 **Context traits provided:**
-`BufferManagerContext`, `OutboxContext`,
-`EventPublisherContext<CO::Index>`, `RestartPublisherContext`.
+`BufferManagerContext`, `EventPublisherContext<CO::Index>`,
+`RestartPublisherContext`.
+
+**Inherent helpers (no trait):** `push_outbox(msg)` and
+`push_outbox_deferred(msg)` are inherent methods on `LayerContext<D>`
+— consumers (layers, augments emitting telegrams) call them directly
+without going through a context trait. The deferred queue is flushed
+at the end of a dispatch cycle and is used by augments that must send
+a bus telegram *after* a management response has been emitted (e.g.
+GO diagnostics emitting a `GroupValue_Write` after acknowledging the
+management command).
 
 ### 3.4 `StackContext<'a, D>` — transient
 
@@ -549,9 +570,10 @@ All layers live under
 **Context traits required by layers** (selected, non-exhaustive; see
 §5 for the full surface):
 
-- AL requires: `BufferManagerContext`, `OutboxContext`,
-  `EventPublisherContext`, `RestartPublisherContext`,
-  `PropertyServiceHandler` on `InterfaceObjects`.
+- AL requires: `BufferManagerContext`, `EventPublisherContext`,
+  `RestartPublisherContext`, `PropertyServiceHandler` on
+  `InterfaceObjects`. Outbox writes use the inherent
+  `LayerContext::push_outbox()` / `push_outbox_deferred()` helpers.
 - TL requires access to `HasConnectionAuth` on `D::State` for
   per-connection access levels.
 - Secure AL additionally requires `HasSecurityState` and
@@ -573,7 +595,7 @@ router and link layer is three channels: `req` (router→LL), `ind`
 | TP1 (TPUART / NCN / Elmos) | `tpuart/` | yes | `BufferManagerContext`, `ApduLengthContext`, `MaxRetryCountContext`, `KnxIndividualAddressContext`, `AddressTableContext` |
 | KNX/IP | `knxip/` | yes | `BufferManagerContext`, `ApduLengthContext`, `PropertyServiceContext` (device-management connection), `DeviceInfoContext`, `IpDiagnosticsContext`, `IpAdditionalIndividualAddressContext` |
 | USB (HID) | `usb/` | yes | `BufferManagerContext`, `ApduLengthContext`, `PropertyServiceContext` |
-| External IP interface | `ip_interface/` (feature `ip-interface`) | yes | `BufferManagerContext`, `ApduLengthContext` |
+| External IP interface | `ip_interface.rs` (feature `ip-interface`) | yes | `BufferManagerContext`, `ApduLengthContext` |
 | Mock (tests) | `mock.rs` | yes | `BufferManagerContext` |
 
 Builders implement two traits:
@@ -617,19 +639,19 @@ Property-service infrastructure. Key types:
   `RoutingCount`) without going through byte buffers. Required by
   `StackDefinition::InterfaceObjects<'a>`.
 
-- **`InterfaceObjectAugment<D>`**
-  ([`traits.rs`](../crates/zweidraehte-device/src/objects/interface/traits.rs))
+- **`Augment<D>`**
+  ([`service/traits.rs`](../crates/zweidraehte-device/src/service/traits.rs))
   — the **hook** that extensions use to contribute property
   handling. Every method defaults to `None` / no-op. Returning
   `None` from a read/write hook passes through to the next augment
   (or to the base object if none intercepts). Augments can also
   claim whole new object indices via `additional_object_count()`
-  and `additional_object_type_at()`.
-
-- **`AugmentContext<'a, D>`** bundles `state`, `lctx`,
-  `buffer_manager()`, `outbox()`, `group_value_sender()`, and
-  `secure_group_value_sender()` so augments can both serve
-  properties and emit telegrams.
+  and `additional_object_type_at()`. Augments emit telegrams by
+  calling `ctx.lctx.push_outbox(msg)` on the
+  [`ServiceCtx<'_, D>`](#32-router-and-the-three-service-traits)
+  passed to each hook — `state`, `lctx` (for buffer allocation +
+  outbox + event publishing), and `access` are all on the same
+  context bundle.
 
 #### `objects/comm`
 
@@ -747,11 +769,11 @@ Key pieces:
   AssociationTable, GroupObjectTable, ApplicationProgram,
   PeiProgram) plus augment-contributed objects at 6+. Dispatch
   gives the augment first shot; returning `None` falls through to
-  the base object. The helper functions
-  `create_system_b_objects_from_extension` (for persisted
-  extensions) and `create_system_b_objects_with_extra` (for
-  runtime-only augments) are how `create_interface_objects()`
-  typically builds this.
+  the base object. The helper function
+  `create_system_b_objects::<D, _>(state, layer_ctx, &Self::memory_layout(), augments)`
+  is how `create_interface_objects()` typically builds this — or
+  call `Self::default_interface_objects(state, layer_ctx, augments)`
+  on `SystemBStackDefinition` for the same wiring.
 
 ### 3.12 Extensions, augments, and `D::Augments<'a>`
 
@@ -781,14 +803,22 @@ property hook through `Augment<D>`.
 
 ```
 ExtensionConfig        :  Default + Serialize + Deserialize
-ExtensionState         :  type Config; type Resources;
+ExtensionState         :  type Config: ExtensionConfig;
+                          type Resources;
                           from_config(Config, Resources) -> Self
                           to_config() -> Config
-                          on_erase(EraseCode)
+                          on_erase(&self, code: EraseCode)
 Extension<Platform>    :  (ExtensionState supertrait)
                           type Augment<'a, D>: Augment<D>
-                          create_augment(&'a self, &'a Platform) -> Augment
+                          create_augment(&'a self, &'a Platform) -> Augment<'a, D>
 ```
+
+`Resources` is the non-serialisable construction-time bundle (FDSK
+copy, sequence-number storage handle, platform handles). `()` for
+extensions that need none. `on_erase` is invoked from
+`SystemBDeviceState::factory_reset()` and `execute_reset()` and
+receives the `EraseCode` so each extension decides per code what to
+clear.
 
 The `Extension` trait survives because it lets devices spell
 `<D::ES as Extension<D::Platform>>::Augment<'a, D>` as a clean type
@@ -1030,7 +1060,11 @@ file, methods (short form), typical provider, and typical consumer.
 | `AddressTableContext` | `type ADT`, `address_table() -> &RefCell<ADT>` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
 | `EventPublisherContext<Index>` | `publish_event(index, ComObjectEvent)` | `LayerContext<D>` | AL group-data handler; augments with `GroupDataProvider` |
 | `RestartPublisherContext` | `try_send_restart_request(RestartRequest) -> bool` | `LayerContext<D>` | AL `handle_restart()` |
-| `OutboxContext` | `outbox() -> &RefCell<Outbox>` | `LayerContext<D>` | Augments that must emit telegrams (security GO diagnostics) |
+
+The outbox is **not** behind a context trait. `LayerContext<D>`
+exposes inherent helpers `push_outbox(msg)` /
+`push_outbox_deferred(msg)`; augments that need to emit telegrams
+(security GO diagnostics, cyclic group writes) call those directly.
 
 ### 5.2 KNX/IP (`linklayers/knxip/context.rs`, feature `knxip`)
 
@@ -1057,9 +1091,16 @@ Also re-exported in `ip.rs`: the platform-provided
 |---|---|---|
 | `StackState` | `individual_address`, `set_individual_address`, `serial_number`, `max_apdu_length` (get/set), `is_programming_mode`, `set_programming_mode`, `security_mode_enabled`, `log_access_denied`, `has_group_key` | `SystemBDeviceState<…>` |
 | `HasAuthorization` | `max_access_levels`, `default_access_level`, `authorize(&[u8;4]) -> u8`, `key_write(level, key, ctx)` | `SystemBDeviceState<…>` |
-| `HasSecureIdentity` | `fdsk() -> Option<&[u8;16]>`, `fill_random(&mut [u8])` | `SystemBDeviceState<…>` when `D::Identity: SecureDeviceIdentity` |
 | `HasPersistence` | `mark_dirty()` | `SystemBDeviceState<…>` |
 | `CoreDeviceState<CO>` | supertrait bundle: `StackState + HasAuthorization + HasPersistence + HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasCommObjects<CO=CO> + HasDiagnosticsContext + HasConnectionAuth + HasRoutingCount + DeviceModelNotifier` | blanket over anything meeting all bounds |
+
+**Secure identity story.** There is no separate `HasSecureIdentity`
+trait. `StackState::Identity` is a `DeviceIdentity` associated type;
+secure call sites (the secure layer stack builder, the security
+extension's tool-key seeding) bound it on `SecureDeviceIdentity` to
+reach `fdsk()`. RNG is a separate associated type
+`StackDefinition::Rng`; the `SecureDeviceBuilder` adds a `Rng:
+SecureRng` bound that rejects the default `NoRng` at compile time.
 
 ### 5.5 Storage / identity (`storage.rs`)
 
@@ -1067,7 +1108,14 @@ Also re-exported in `ip.rs`: the platform-provided
 |---|---|---|
 | `DeviceIdentity` | `serial_number() -> &[u8;6]` | `StaticIdentity`, `FileIdentity`, embedded HAL wrappers |
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
-| `DeviceStorage` | `identity`, `load_config`, `save`, `mark_dirty`, `flush`, `is_dirty` | `NoStorage`, `JsonStorage`, flash-backed impl |
+| `DeviceStorage` | `identity`, `load_config`, `save`, `flush` | `NoStorage`, `JsonStorage`, flash-backed impl |
+
+Dirty tracking is **not** on `DeviceStorage`. `SystemBDeviceState`
+exposes inherent `is_dirty()` / `mark_dirty()` / `clear_dirty()`
+methods; the binary's main loop polls `is_dirty()` and decides when
+to call `storage.save(&state)`. `mark_dirty()` is also the single
+method on the `HasPersistence` trait, called by property writes that
+mutate persisted state.
 | `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `ShmSeqStorage` (Linux), RAM impl (tests) |
 | `HasSequenceStorage` | `type SeqStorage`, `create_seq_storage() -> SeqStorage` | Secure `StackDefinition` impls |
 
@@ -1077,9 +1125,9 @@ Also re-exported in `ip.rs`: the platform-provided
 |---|---|
 | `HasDeviceConfig` | `type Config; to_config() -> Config`. Bridge between runtime state and its serialisable config. |
 | `ExtensionConfig` | Marker for `Default + Serialize + Deserialize`. |
-| `ExtensionState` | `type Config; type Resources; from_config(Config, Resources); to_config; on_erase(EraseCode)`. |
+| `ExtensionState` | `type Config: ExtensionConfig; type Resources; from_config(Config, Resources) -> Self; to_config() -> Config; on_erase(&self, code: EraseCode)`. |
 | `HasSecurityMode` | `security_mode_enabled`, `log_access_denied`, `has_group_key`. Non-secure extensions use defaults (false / noop). |
-| `Extension<Platform>` | Adds `type Augment<'a, D>: InterfaceObjectAugment<D>; create_augment(&self, &Platform)`. |
+| `Extension<Platform>` | Adds `type Augment<'a, D>: Augment<D>; create_augment(&self, &Platform)`. |
 
 ### 5.7 Security-specific (`bcus/system_b/extensions/security/mod.rs`)
 
@@ -1092,7 +1140,7 @@ Also re-exported in `ip.rs`: the platform-provided
 
 | Trait | Location | Role |
 |---|---|---|
-| `InterfaceObjectAugment<D>` | `objects/interface/traits.rs` | Property-service hook. Default everything to `None`. |
+| `Augment<D>` | `service/traits.rs` | Property-service hook + IO-list contributor + lifecycle. Default everything to `None` / no-op. See §3.2. |
 | `PropertyServiceHandler` | `objects/interface/` | Object-safe container-level dispatch trait. |
 | `HasDeviceObject` | `objects/interface/` | Typed accessors for Device Object properties. |
 | `HasExtensionState` | `bcus/system_b/device_state/mod.rs` | `type ES; extension_state() -> &ES`. Required for IP context impls and security layer wiring. |
@@ -1159,12 +1207,13 @@ pin each step to a specific handler.
 14. [Drain] L_Data_Req → ll_req channel → link-layer task → wire.
 ```
 
-Observe how context flows: the AL holds `&LayerContext<D>` (for
-`BufferManagerContext` + `OutboxContext`); each augment hook
-receives a fresh `&ServiceCtx<'_, D>` constructed in the IO
-container's dispatch.rs (carrying `state`, `lctx`, `access`); the
-link layer consumes `BufferManagerContext + ApduLengthContext` at
-build time and never again looks at the state directly.
+Observe how context flows: the AL holds `&LayerContext<D>` for
+`BufferManagerContext` + the inherent `push_outbox()` /
+`push_outbox_deferred()` helpers; each augment hook receives a
+fresh `&ServiceCtx<'_, D>` constructed in the IO container's
+dispatch.rs (carrying `state`, `lctx`, `access`); the link layer
+consumes `BufferManagerContext + ApduLengthContext` at build time
+and never again looks at the state directly.
 
 ---
 
