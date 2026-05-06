@@ -4,7 +4,7 @@
 //! - [`ServiceCtx`] is the lean, augment-friendly bundle: state,
 //!   layer context, access context. Anyone that can borrow these
 //!   three references can build one. Carries the convenience
-//!   accessors (`outbox`, `buffer_manager`, capability senders, APDU
+//!   accessors (`buffer_manager`, capability senders, APDU
 //!   budget helpers).
 //! - [`AlCtx`] wraps a `ServiceCtx` and adds the AL-only handles —
 //!   the interface-objects container and the memory map — that
