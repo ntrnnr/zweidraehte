@@ -166,6 +166,15 @@ pub trait ExtensionConfig: Default + Serialize + for<'de> Deserialize<'de> {}
 
 impl ExtensionConfig for () {}
 
+// Tuple combinator. Aggregating extension types like
+// `IpInterfaceExtension` (IP + tunnelling) carry a tuple of inner
+// configs as their `ExtensionState::Config`; this blanket impl lets
+// the tuple round-trip through storage without a wrapping newtype.
+// `serde` already derives `Serialize` / `Deserialize` for tuples
+// whose elements satisfy them, and `Default` for the unit value
+// `(A::default(), B::default())` is automatic.
+impl<A: ExtensionConfig, B: ExtensionConfig> ExtensionConfig for (A, B) {}
+
 /// Runtime state for extension-specific persistent configuration.
 ///
 /// This trait bridges the serializable config ([`ExtensionConfig`]) and

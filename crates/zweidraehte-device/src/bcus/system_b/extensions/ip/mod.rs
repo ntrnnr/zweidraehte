@@ -508,6 +508,209 @@ pub type IpDeviceState<
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpExtension<F>>;
 
 // ============================================================================
+// IpInterfaceExtension — IP + tunnelling aggregator
+// ============================================================================
+
+/// IP extension aggregator for tunnelling-capable devices.
+///
+/// Pairs an [`IpExtensionState`] (with `N = 0` because the inner
+/// extension carries no tunnelling slots in this composition) with a
+/// [`TunnellingExtension`] sized at `N`. The aggregator implements
+/// every trait the device's `D::State` flow expects from a single
+/// extension — `ExtensionState`, `Extension<P>`, `IpStackState`,
+/// `HasGoSecurityView`, `HasSecurityMode`, `HasRoutingMulticastRebind`,
+/// `HasDomainAddress` — by delegating each to the inner part that
+/// owns the relevant state.
+///
+/// The augment side is the
+/// [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry)
+/// bundle [`IpInterfaceAugmentBundle`], which chains
+/// [`TunnellingAugment`] before [`IpAugment`] so that PIDs 53 and 79
+/// land on the new dispatch path; PIDs the inner `IpAugment` owns
+/// (the routing-only IP PIDs) fall through to it.
+///
+/// `Config` round-trips as a `(PersistedIpConfig<0>,
+/// TunnellingExtensionConfig<N>)` tuple — flash payloads grown in
+/// previous releases are migrated by the device's storage layer when
+/// it picks up this struct as the new `ES`.
+pub struct IpInterfaceExtension<const N: usize, const CAPS: u16> {
+    /// IP-side state (no tunnelling slots here — `N = 0`).
+    pub ip: IpExtensionState<0, CAPS>,
+    /// Tunnelling-side state (`N` slots).
+    pub tunnelling: TunnellingExtension<N>,
+}
+
+impl<const N: usize, const CAPS: u16> HasGoSecurityView for IpInterfaceExtension<N, CAPS> {}
+
+impl<const N: usize, const CAPS: u16> HasSecurityMode for IpInterfaceExtension<N, CAPS> {}
+
+impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpInterfaceExtension<N, CAPS> {
+    fn routing_multicast_rebind_channel(&self) -> &RoutingMulticastRebindChannel {
+        self.ip.routing_multicast_rebind_channel()
+    }
+}
+
+impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N, CAPS> {
+    type Config = (PersistedIpConfig<0>, TunnellingExtensionConfig<N>);
+    type Resources = ();
+
+    fn from_config((ip_cfg, tun_cfg): Self::Config, _resources: ()) -> Self {
+        Self {
+            ip: IpExtensionState::<0, CAPS>::from_config(ip_cfg, ()),
+            tunnelling: TunnellingExtension::<N>::from_config(tun_cfg, ()),
+        }
+    }
+
+    fn to_config(&self) -> Self::Config {
+        (self.ip.to_config(), self.tunnelling.to_config())
+    }
+
+    fn on_erase(&self, code: EraseCode) {
+        self.ip.on_erase(code);
+        self.tunnelling.on_erase(code);
+    }
+}
+
+// `IpStackState` mirrors `IpExtensionState`'s impl exactly except for
+// the additional-individual-address methods, which delegate to
+// `TunnellingExtension` so the same data backs PID 53/79 dispatch
+// (via `TunnellingAugment`) and any direct call through the
+// `IpStackState` surface.
+impl<const N: usize, const CAPS: u16> IpStackState for IpInterfaceExtension<N, CAPS> {
+    fn configured_ip_address(&self) -> Ipv4Addr {
+        self.ip.configured_ip_address()
+    }
+    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
+        self.ip.set_configured_ip_address(addr);
+    }
+    fn configured_subnet_mask(&self) -> Ipv4Addr {
+        self.ip.configured_subnet_mask()
+    }
+    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
+        self.ip.set_configured_subnet_mask(mask);
+    }
+    fn configured_default_gateway(&self) -> Ipv4Addr {
+        self.ip.configured_default_gateway()
+    }
+    fn set_configured_default_gateway(&self, gw: Ipv4Addr) {
+        self.ip.set_configured_default_gateway(gw);
+    }
+    fn ip_assignment_method(&self) -> u8 {
+        self.ip.ip_assignment_method()
+    }
+    fn set_ip_assignment_method(&self, method: u8) {
+        self.ip.set_ip_assignment_method(method);
+    }
+    fn routing_multicast_address(&self) -> Ipv4Addr {
+        self.ip.routing_multicast_address()
+    }
+    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
+        self.ip.set_routing_multicast_address(addr);
+    }
+    fn ttl(&self) -> u8 {
+        self.ip.ttl()
+    }
+    fn set_ttl(&self, ttl: u8) {
+        self.ip.set_ttl(ttl);
+    }
+    fn friendly_name_len(&self) -> usize {
+        self.ip.friendly_name_len()
+    }
+    fn friendly_name(&self) -> [u8; 30] {
+        self.ip.friendly_name()
+    }
+    fn set_friendly_name(&self, name: &[u8]) {
+        self.ip.set_friendly_name(name);
+    }
+    fn project_installation_id(&self) -> u16 {
+        self.ip.project_installation_id()
+    }
+    fn set_project_installation_id(&self, id: u16) {
+        self.ip.set_project_installation_id(id);
+    }
+
+    fn additional_individual_address_capacity(&self) -> usize {
+        N
+    }
+
+    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
+        self.tunnelling.write_into(buf)
+    }
+
+    fn set_additional_individual_addresses(&self, addresses: &[IndividualAddress]) -> Result<(), ()> {
+        self.tunnelling.set(addresses)
+    }
+}
+
+impl<const N: usize, const CAPS: u16> HasDomainAddress for IpInterfaceExtension<N, CAPS> {
+    const DOMAIN_ADDRESS_LENGTH: usize = IpExtensionState::<0, CAPS>::DOMAIN_ADDRESS_LENGTH;
+
+    fn domain_address(&self, buf: &mut [u8]) {
+        self.ip.domain_address(buf);
+    }
+
+    fn set_domain_address(&self, addr: &[u8]) {
+        self.ip.set_domain_address(addr);
+    }
+}
+
+/// `Augment<D>` bundle for [`IpInterfaceExtension`].
+///
+/// `TunnellingAugment` is listed *before* `IpAugment` so that PIDs 53
+/// and 79 are claimed by the new tunnelling dispatch — `IpAugment`'s
+/// own (now empty / `N = 0`) handling falls through. Other IP
+/// Parameter Object PIDs route to `IpAugment` as before.
+#[derive(crate::service::ServiceRegistry)]
+pub struct IpInterfaceAugmentBundle<'a, P: IpPlatform, const N: usize, const CAPS: u16> {
+    #[service(augment)]
+    pub tunnelling: TunnellingAugment<'a, N>,
+    #[service(augment)]
+    pub ip: IpAugment<'a, P, 0, CAPS>,
+}
+
+impl<P: IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpInterfaceExtension<N, CAPS> {
+    type Augment<'a, D: StackDefinition>
+        = IpInterfaceAugmentBundle<'a, P, N, CAPS>
+    where
+        Self: 'a,
+        P: 'a;
+
+    fn create_augment<'a, D: StackDefinition>(&'a self, platform: &'a P) -> Self::Augment<'a, D>
+    where
+        P: 'a,
+    {
+        IpInterfaceAugmentBundle {
+            tunnelling: self.tunnelling.create_augment::<D>(&()),
+            ip: self.ip.create_augment::<D>(platform),
+        }
+    }
+}
+
+/// [`IpInterfaceExtension`] with `N` and `CAPS` derived from a
+/// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
+///
+/// Mirror of [`IpExtension`] for tunnelling-capable devices.
+///
+/// ```rust,ignore
+/// type ES = IpInterfaceExtensionFor<KnxIpInterfaceUdp<4>>;
+/// ```
+pub type IpInterfaceExtensionFor<F: FeatureSet> = IpInterfaceExtension<
+    { <<F as FeatureSet>::Tunneling as TunnelingFeature>::CAPACITY },
+    { <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
+>;
+
+/// Like [`IpDeviceState`], but uses [`IpInterfaceExtension`] as the
+/// extension state — pairs an `IpExtensionState` with a
+/// `TunnellingExtension`.
+pub type IpInterfaceDeviceState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: StackDefinition,
+    F: FeatureSet,
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpInterfaceExtensionFor<F>>;
+
+// ============================================================================
 // IpStackState — persisted config accessors
 // ============================================================================
 

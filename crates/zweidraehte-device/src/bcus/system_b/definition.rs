@@ -164,6 +164,23 @@ where
     Proto,
 >;
 
+/// KNX/IP System B state for tunnelling-capable `D` using feature set
+/// `Proto`, with sizes drawn from `D::DEVICE`. Pairs `IpExtensionState`
+/// with [`TunnellingExtension`](super::extensions::TunnellingExtension);
+/// the resulting `ES` is
+/// [`IpInterfaceExtension`](super::extensions::IpInterfaceExtension).
+#[cfg(feature = "knxip")]
+pub type IpInterfaceStateFor<D, Proto>
+where
+    D: SystemBStackDefinition,
+= super::extensions::IpInterfaceDeviceState<
+    { <D as SystemBStackDefinition>::ADT_SIZE },
+    { <D as SystemBStackDefinition>::AST_SIZE },
+    { <D as SystemBStackDefinition>::COT_SIZE },
+    D,
+    Proto,
+>;
+
 /// Secure TP1 System B state for `D` with sequence-number storage `SEQ`,
 /// P2P Key Table capacity `P2P`, and SIAT capacity `SIAT`.
 ///

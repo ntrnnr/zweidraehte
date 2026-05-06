@@ -71,7 +71,7 @@ const MAC_OUI: [u8; 3] = [0x02, 0x00, 0xFA];
 /// Maximum number of concurrent tunneling connections (additional individual addresses).
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
 
-type IpIfState = IpStateFor<PicoIpInterface, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
+type IpIfState = IpInterfaceStateFor<PicoIpInterface, KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
 
 type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 
@@ -105,7 +105,7 @@ impl StackDefinition for PicoIpInterface {
         1,
     >;
     type Platform = EmbassyNetworkInfo;
-    type ES = IpExtension<KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
+    type ES = IpInterfaceExtensionFor<KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
     type Identity = FlashIdentityData;
     type State = IpIfState;
     type StateInit =
