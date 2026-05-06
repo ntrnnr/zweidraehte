@@ -14,6 +14,11 @@ mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::*;
 
+#[cfg(feature = "knxip")]
+pub mod tunnelling;
+#[cfg(feature = "knxip")]
+pub use tunnelling::{TunnellingAugment, TunnellingExtension, TunnellingExtensionConfig};
+
 pub mod operation_mode;
 pub use operation_mode::{DiagnosticsAugment, DiagnosticsContext, HasDiagnosticsContext, OperationModeState};
 
