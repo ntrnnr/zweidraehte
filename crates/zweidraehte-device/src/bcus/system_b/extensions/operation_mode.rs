@@ -104,17 +104,23 @@ pub struct OperationModeState {
     mode: Cell<u8>,
     deadline: Cell<Option<Instant>>,
     source_filter: Cell<Option<u16>>,
-    /// Timeout in seconds when diagnostic mode is activated.
-    timeout_secs: u8,
+}
+
+impl Default for OperationModeState {
+    fn default() -> Self {
+        // Normal mode (0x00), no active timeout, no source filter.
+        Self { mode: Cell::new(0x00), deadline: Cell::new(None), source_filter: Cell::new(None) }
+    }
 }
 
 impl OperationModeState {
-    /// Create a new operation mode state with the given diagnostic timeout.
-    ///
-    /// `timeout_secs` is the number of seconds diagnostic mode stays active
-    /// before auto-returning to normal. The spec requires at least 30s.
-    pub fn new(timeout_secs: u8) -> Self {
-        Self { mode: Cell::new(0x00), deadline: Cell::new(None), source_filter: Cell::new(None), timeout_secs }
+    /// Diagnostic-mode auto-return timeout. The spec mandates ≥ 30 s
+    /// and we don't expose a runtime override.
+    pub const DIAGNOSTIC_TIMEOUT_SECS: u8 = 30;
+
+    /// Create a new operation mode state in Normal mode.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Set the operation mode. Returns `true` if the mode was changed.
@@ -125,7 +131,7 @@ impl OperationModeState {
         self.mode.set(mode);
         if mode == 0x01 {
             // Diagnostic mode: start timeout countdown.
-            let deadline = Instant::now() + embassy_time::Duration::from_secs(self.timeout_secs as u64);
+            let deadline = Instant::now() + embassy_time::Duration::from_secs(Self::DIAGNOSTIC_TIMEOUT_SECS as u64);
             self.deadline.set(Some(deadline));
         } else {
             // Normal mode: clear deadline and source filter.
