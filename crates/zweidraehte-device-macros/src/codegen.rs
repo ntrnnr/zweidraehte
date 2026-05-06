@@ -828,8 +828,11 @@ fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr) -> TokenStream {
     let rl = p.rl.unwrap_or(default_rl);
     let wl = p.wl.unwrap_or(default_wl);
 
-    let max_elements = if let Some(n) = p.array_max {
-        quote! { #n }
+    let max_elements = if let Some(n) = &p.array_max {
+        // `array(max = <expr>)` — `<expr>` is forwarded verbatim and
+        // must evaluate to `u16`. The `as u16` cast covers the common
+        // `array(max = N)` case where `N` is a `usize` const generic.
+        quote! { (#n) as u16 }
     } else if p.computed_max.is_some() {
         // Sentinel; patched at lookup time by the user's `computed_max` site.
         quote! { 0u16 }

@@ -149,7 +149,7 @@ pub(crate) struct PropertyAttrs {
     // Optional -----------------------------------------------------------
     pub rl: Option<u8>,
     pub wl: Option<u8>,
-    pub array_max: Option<u16>,
+    pub array_max: Option<Expr>,
     pub computed_max: Option<Expr>,
     pub backing: Backing,
     pub read_fn: Option<Expr>,
@@ -206,7 +206,7 @@ impl PropertyAttrs {
         let mut policy: Option<Expr> = None;
         let mut rl: Option<u8> = None;
         let mut wl: Option<u8> = None;
-        let mut array_max: Option<u16> = None;
+        let mut array_max: Option<Expr> = None;
         let mut computed_max: Option<Expr> = None;
         let mut read_fn: Option<Expr> = None;
         let mut write_fn: Option<Expr> = None;
@@ -249,11 +249,15 @@ impl PropertyAttrs {
                     let lit: syn::LitInt = meta.value()?.parse()?;
                     wl = Some(lit.base10_parse()?);
                 } else if key.is_ident("array") {
-                    // array(max = N)
+                    // `array(max = <expr>)` — `<expr>` evaluates to a
+                    // `u16`. A bare integer literal is the common case
+                    // (e.g. `max = 30`); const-generic expressions
+                    // (`N as u16`) are also accepted so augments
+                    // parameterised on a const generic don't have to
+                    // patch their descriptors at lookup time.
                     meta.parse_nested_meta(|inner| {
                         if inner.path.is_ident("max") {
-                            let lit: syn::LitInt = inner.value()?.parse()?;
-                            array_max = Some(lit.base10_parse()?);
+                            array_max = Some(inner.value()?.parse()?);
                             Ok(())
                         } else {
                             Err(inner.error("unknown array attribute (expected `max`)"))
