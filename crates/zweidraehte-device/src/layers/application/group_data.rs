@@ -12,10 +12,11 @@ use crate::{
     context::EventPublisherContext,
     context::layer::LayerContext,
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
+    lifecycle::LifecycleEvent,
     objects::{
         comm::{
             ComObjectBusHook, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects,
-            HasGoSecurityView, LifecycleEvent,
+            HasGoSecurityView,
         },
         tables::{
             AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,

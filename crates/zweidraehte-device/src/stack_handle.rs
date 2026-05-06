@@ -13,8 +13,9 @@ use crate::{
     definition::StackDefinition,
     inner::Inner,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
+    lifecycle::LifecycleEvent,
     objects::{
-        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects, LifecycleEvent},
+        comm::{ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, HasCommObjects},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },

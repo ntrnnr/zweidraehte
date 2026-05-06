@@ -28,9 +28,10 @@ pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 pub use crate::ets::{DeviceDescriptor, EtsComObjects, EtsEnum, EtsParams, EtsUnion, MaskVersion};
 
 // Communication objects
-pub use crate::objects::comm::{
-    ComObject, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects, LifecycleEvent,
-};
+pub use crate::objects::comm::{ComObject, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects};
+
+// Stack-level lifecycle events
+pub use crate::lifecycle::LifecycleEvent;
 
 // Interface objects (traits + response/error types)
 pub use crate::objects::interface::{

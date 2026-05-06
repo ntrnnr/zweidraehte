@@ -27,8 +27,9 @@ use embassy_sync::pubsub::{PubSubBehavior, PubSubChannel};
 
 use crate::{
     definition::StackDefinition,
+    lifecycle::LifecycleEvent,
     objects::{
-        comm::{ComObjects, HasCommObjects, LifecycleEvent},
+        comm::{ComObjects, HasCommObjects},
         interface::HasDeviceObject,
         tables::{HasApplication, HasLoadStateMachine, HasRunStateMachine, RunAction, RunEvent},
     },

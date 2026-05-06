@@ -437,7 +437,7 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)
     pub alloc_address: u32,
     /// Notifier for DeviceModel events. PEI RSM transitions are surfaced as
-    /// [`LifecycleEvent::PeiStarted`] / [`LifecycleEvent::PeiStopped`](crate::objects::comm::LifecycleEvent)
+    /// [`LifecycleEvent::PeiStarted`] / [`LifecycleEvent::PeiStopped`](crate::lifecycle::LifecycleEvent)
     /// even though PEI has no required side effects on device operation —
     /// this is purely for observability of the full ETS programming cascade.
     pub notifier: &'a dyn DeviceModelNotifier,

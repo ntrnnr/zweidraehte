@@ -85,6 +85,7 @@ pub mod context;
 pub mod device_model;
 pub mod ets;
 pub mod layers;
+pub mod lifecycle;
 pub mod memory;
 pub mod objects;
 pub mod prelude;

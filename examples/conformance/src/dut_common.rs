@@ -241,10 +241,10 @@ pub async fn exit_with_reason(reason: ExitReason) -> ! {
 /// `stack.lifecycle_events()`.
 #[embassy_executor::task]
 pub async fn bridge_lifecycle_to_ipc(
-    mut events: embassy_sync::pubsub::DynSubscriber<'static, zweidraehte_device::objects::comm::LifecycleEvent>,
+    mut events: embassy_sync::pubsub::DynSubscriber<'static, zweidraehte_device::lifecycle::LifecycleEvent>,
 ) {
     use embassy_sync::pubsub::WaitResult;
-    use zweidraehte_device::objects::comm::LifecycleEvent;
+    use zweidraehte_device::lifecycle::LifecycleEvent;
     loop {
         match events.next_message().await {
             WaitResult::Message(LifecycleEvent::ReadOnInitComplete) => {

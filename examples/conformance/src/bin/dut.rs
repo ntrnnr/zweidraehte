@@ -126,7 +126,7 @@ async fn main(spawner: Spawner) {
     // SAFETY: `stack` lives for the duration of the process via
     // `STACK_RESOURCES: StaticCell<...>`, so the subscriber borrows
     // from a `'static` channel.
-    let lifecycle_sub: embassy_sync::pubsub::DynSubscriber<'static, zweidraehte_device::objects::comm::LifecycleEvent> =
+    let lifecycle_sub: embassy_sync::pubsub::DynSubscriber<'static, zweidraehte_device::lifecycle::LifecycleEvent> =
         unsafe { core::mem::transmute(lifecycle_sub) };
     spawner.spawn(dut_common::bridge_lifecycle_to_ipc(lifecycle_sub)).expect("spawn lifecycle bridge");
 

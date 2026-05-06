@@ -16,7 +16,8 @@ use crate::{
     actor::Request,
     definition::StackDefinition,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse, group_data::GroupDataState},
-    objects::comm::{ComObjectEvent, ComObjects, LifecycleEvent},
+    lifecycle::LifecycleEvent,
+    objects::comm::{ComObjectEvent, ComObjects},
     restart,
     router::Outbox,
 };
