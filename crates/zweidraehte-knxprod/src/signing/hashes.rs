@@ -6,12 +6,12 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use sha1::{Digest, Sha1};
 
 use super::attributes::{
-    normalize_appl_prog_id, serialize_element, AttributeProvider, APPLICATION_PROGRAM_ATTRS, HARDWARE2PROGRAM_ATTRS,
-    HARDWARE_ATTRS, PRODUCT_ATTRS,
+    APPLICATION_PROGRAM_ATTRS, AttributeProvider, HARDWARE_ATTRS, HARDWARE2PROGRAM_ATTRS, PRODUCT_ATTRS,
+    normalize_appl_prog_id, serialize_element,
 };
 use super::binary_writer::write_dotnet_string;
 

@@ -9,6 +9,7 @@ use heapless::Vec;
 use zweidraehte_platform::IpTransport;
 
 use crate::layers::Inbox;
+use crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext;
 use zweidraehte_proto::messages::{
     buffers::Buffer,
     builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
@@ -340,8 +341,9 @@ where
                             let mut addr_buf2 = [zweidraehte_proto::address::IndividualAddress::default();
                                 <F::Tunneling as features::TunnelingFeature>::CAPACITY];
                             let addr_count2 =
-                                crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-                                    self.context, &mut addr_buf2,
+                                IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                                    self.context,
+                                    &mut addr_buf2,
                                 );
                             let tunnel_slots = self.connection_manager.tunneling_slot_info();
                             let tunnel_ref2 = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));

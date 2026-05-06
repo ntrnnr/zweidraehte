@@ -22,8 +22,7 @@ const CHALLENGE_1: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 
 // Read PID_SEQUENCE_NUMBER_SENDING to verify DUT is functional.
 const READ_SEQ_SENDING: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3B 01 00 01";
-const READ_SEQ_SENDING_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI ?? 01 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
+const READ_SEQ_SENDING_OK: &str = "3C 60 #BDUT_ADDR #EDI ?? 01 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
 
 // ============================================================================
 // P2P Peer Addresses
@@ -41,52 +40,36 @@ const P2P_PEER_TEMPLATE: &str = "10 41";
 // Write SIAT entry 1: IA=0x1041 (1.0.65), seq=000000000000.
 // PropertyExtValueWriteCon on Security IO (0x0011), instance 0x0010,
 // PID 0x36 (PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE), count=1, start=1.
-const WRITE_SIAT_1041: &str =
-    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 00";
-const WRITE_SIAT_1041_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
+const WRITE_SIAT_1041: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 00";
+const WRITE_SIAT_1041_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
 
 // Write SIAT entry 2: IA=#ALT_SRC_ADDR (0xAFFD), seq=000000000000.
-const WRITE_SIAT_ALT: &str =
-    "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #ALT_SRC_ADDR 00 00 00 00 00 00";
-const WRITE_SIAT_ALT_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
+const WRITE_SIAT_ALT: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #ALT_SRC_ADDR 00 00 00 00 00 00";
+const WRITE_SIAT_ALT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
 
 // Write P2P key entry 1: IA=0x1041, key=P2PK1 (0x22*16), roles=0x0001.
-const WRITE_P2P_KEY_1041: &str =
-    "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 10 41 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
-const WRITE_P2P_KEY_1041_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 01 00";
+const WRITE_P2P_KEY_1041: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 10 41 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
+const WRITE_P2P_KEY_1041_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 01 00";
 
 // Write P2P key entry 2: IA=#ALT_SRC_ADDR (0xAFFD), key=P2PK2 (0x33*16), roles=0x0001.
-const WRITE_P2P_KEY_ALT: &str =
-    "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 02 #ALT_SRC_ADDR 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 00 01";
-const WRITE_P2P_KEY_ALT_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 02 00";
+const WRITE_P2P_KEY_ALT: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 02 #ALT_SRC_ADDR 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 00 01";
+const WRITE_P2P_KEY_ALT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 02 00";
 
 // Security IO Load state transitions.
 // PropertyExtValueWriteCon on Security IO (0x0011), instance 0x0010,
 // PID 0x05 (PID_LOAD_STATE_CONTROL), count=1, start=1, 10-byte load record.
-const SEC_LOAD_LOADING: &str =
-    "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
-const SEC_LOAD_LOADED: &str =
-    "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
-const SEC_LOAD_UNLOADED: &str =
-    "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 04 00 00 00 00 00 00 00 00 00";
-const SEC_LOAD_RESP_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
+const SEC_LOAD_LOADING: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
+const SEC_LOAD_LOADED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
+const SEC_LOAD_UNLOADED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 04 00 00 00 00 00 00 00 00 00";
+const SEC_LOAD_RESP_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
 
 // Clear SIAT: write count=0, start=0.
-const CLEAR_SIAT: &str =
-    "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
-const CLEAR_SIAT_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
+const CLEAR_SIAT: &str = "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
+const CLEAR_SIAT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
 
 // Clear P2P key table: write count=0, start=0.
-const CLEAR_P2P: &str =
-    "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 34 01 00 00 00 00";
-const CLEAR_P2P_OK: &str =
-    "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 00 00";
+const CLEAR_P2P: &str = "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 34 01 00 00 00 00";
+const CLEAR_P2P_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 00 00";
 
 // ============================================================================
 // Suite Constructor
@@ -327,9 +310,8 @@ fn test_3_4_9() -> TestCase {
 // ============================================================================
 
 fn test_3_4_6() -> TestCase {
-    TestCase::new("3.4.6 incorrect S-A_Sync_Res-PDU to a P2P request - wrong APCI").with_steps(vec![
-        comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'."),
-    ])
+    TestCase::new("3.4.6 incorrect S-A_Sync_Res-PDU to a P2P request - wrong APCI")
+        .with_steps(vec![comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'.")])
 }
 
 // ============================================================================
@@ -337,9 +319,8 @@ fn test_3_4_6() -> TestCase {
 // ============================================================================
 
 fn test_3_4_8() -> TestCase {
-    TestCase::new("3.4.8 incorrect S-A_Sync_Res-PDU to a P2P request - incorrect SAI").with_steps(vec![
-        comment("Placeholder: not testable — BDUT-sent random value is unknown to the test tool."),
-    ])
+    TestCase::new("3.4.8 incorrect S-A_Sync_Res-PDU to a P2P request - incorrect SAI")
+        .with_steps(vec![comment("Placeholder: not testable — BDUT-sent random value is unknown to the test tool.")])
 }
 
 // ============================================================================
@@ -347,7 +328,6 @@ fn test_3_4_8() -> TestCase {
 // ============================================================================
 
 fn test_3_4_10() -> TestCase {
-    TestCase::new("3.4.10 incorrect S-A_Sync_Res-PDU to a broadcast request - wrong MAC").with_steps(vec![
-        comment("Placeholder: not testable — BDUT-sent random value is unknown to the test tool."),
-    ])
+    TestCase::new("3.4.10 incorrect S-A_Sync_Res-PDU to a broadcast request - wrong MAC")
+        .with_steps(vec![comment("Placeholder: not testable — BDUT-sent random value is unknown to the test tool.")])
 }

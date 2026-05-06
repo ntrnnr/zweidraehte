@@ -21,7 +21,7 @@ use zweidraehte_platform::{
 };
 
 use zweidraehte_device::layers::linklayers::tpuart::busmon::{
-    AckStatus, BusMonitor, BusMonitorError, BUSMON_ACK, BUSMON_BUSY, BUSMON_NACK,
+    AckStatus, BUSMON_ACK, BUSMON_BUSY, BUSMON_NACK, BusMonitor, BusMonitorError,
 };
 
 /// Print a captured frame with decoded information

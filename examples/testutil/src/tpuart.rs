@@ -8,22 +8,16 @@ use zweidraehte_platform::{
     serialport::{Options, Parity},
 };
 
-use zweidraehte_device::{
-    layers::linklayers::tpuart::TpUartLinkLayer};
+use zweidraehte_device::layers::linklayers::tpuart::TpUartLinkLayer;
 use zweidraehte_proto::messages::{
-        buffers::{Buffer, BufferManager},
-        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::{KnxMessageBuffer, ServiceType},
-    };
+    buffers::{Buffer, BufferManager},
+    builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
+    knx::{KnxMessageBuffer, ServiceType},
+};
 
 // Fake network layer that just prints received indications
 struct FakeNetworkLayer {
-    ind_rx: embassy_sync::channel::Receiver<
-        'static,
-        NoopRawMutex,
-        IndicationMessage<Buffer<'static>>,
-        32,
-    >,
+    ind_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>,
 }
 
 impl FakeNetworkLayer {
@@ -43,12 +37,7 @@ async fn run_fake_network(mut fake_network: FakeNetworkLayer) {
 #[embassy_executor::task]
 async fn run_link_layer(
     mut ll: TpUartLinkLayer<'static, AsyncSerialPortTx, AsyncSerialPortRx>,
-    req_rx: embassy_sync::channel::Receiver<
-        'static,
-        NoopRawMutex,
-        RequestMessage<Buffer<'static>>,
-        32,
-    >,
+    req_rx: embassy_sync::channel::Receiver<'static, NoopRawMutex, RequestMessage<Buffer<'static>>, 32>,
 ) {
     ll.run(req_rx).await;
 }
@@ -65,20 +54,17 @@ async fn main(spawner: Spawner) {
     let ctx: &_ = Box::leak(Box::new(testutil::util::MockContext::new(*bm)));
 
     // Indication channel: link layer -> fake network layer
-    let ind_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>::new()));
+    let ind_channel = Box::leak(Box::new(Channel::<NoopRawMutex, IndicationMessage<Buffer<'static>>, 32>::new()));
     let ind_tx = ind_channel.sender().into();
     let ind_rx = ind_channel.receiver();
 
     // Confirmation channel: link layer -> main loop
-    let conf_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 32>::new()));
+    let conf_channel = Box::leak(Box::new(Channel::<NoopRawMutex, ConfirmationMessage<Buffer<'static>>, 32>::new()));
     let conf_tx = conf_channel.sender().into();
     let conf_rx = conf_channel.receiver();
 
     // Request channel: main loop -> link layer
-    let req_channel =
-        Box::leak(Box::new(Channel::<NoopRawMutex, RequestMessage<Buffer<'static>>, 32>::new()));
+    let req_channel = Box::leak(Box::new(Channel::<NoopRawMutex, RequestMessage<Buffer<'static>>, 32>::new()));
     let req_tx = req_channel.sender();
     let req_rx = req_channel.receiver();
 

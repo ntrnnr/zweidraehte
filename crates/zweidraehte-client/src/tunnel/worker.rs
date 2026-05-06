@@ -12,9 +12,9 @@ use tokio::time::{Duration, Instant, timeout_at};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::encoding::cemi::{CemiMessageCode, cemi_to_knx_message};
 use zweidraehte_proto::messages::knx::{ApciCode, decode_apci_code, offsets};
-use zweidraehte_proto::messages::knxip::*;
 use zweidraehte_proto::messages::knxip::substructs::*;
 use zweidraehte_proto::messages::knxip::tunneling_feature_id;
+use zweidraehte_proto::messages::knxip::*;
 use zweidraehte_proto::util::packets::{ParseBuffer, SerializablePacket, SerializeBuffer};
 
 use crate::error::{Error, Result};
@@ -57,14 +57,9 @@ pub enum Command {
     },
     /// Send a cEMI frame but don't wait for a bus response.
     /// Used for fire-and-forget messages (like T_Connect, T_Disconnect).
-    SendFrameNoResponse {
-        cemi: Vec<u8>,
-        response_tx: oneshot::Sender<Result<Vec<u8>>>,
-    },
+    SendFrameNoResponse { cemi: Vec<u8>, response_tx: oneshot::Sender<Result<Vec<u8>>> },
     /// Disconnect from the tunnel.
-    Disconnect {
-        response_tx: oneshot::Sender<Result<()>>,
-    },
+    Disconnect { response_tx: oneshot::Sender<Result<()>> },
 }
 
 /// Command channel sender half (held by the client API).
@@ -105,10 +100,7 @@ impl TunnelWorker {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
 
         // CONNECT_REQUEST: NAT mode (0.0.0.0:0), tunnel link layer.
-        let nat_hpai = HPAI::Ipv4Udp {
-            addr: Ipv4Addr::UNSPECIFIED,
-            port: 0,
-        };
+        let nat_hpai = HPAI::Ipv4Udp { addr: Ipv4Addr::UNSPECIFIED, port: 0 };
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
         let req = ConnectRequestBuilder::new(nat_hpai, nat_hpai, cri);
         Self::send_raw(&socket, server_addr, &req).await?;
@@ -117,15 +109,10 @@ impl TunnelWorker {
         let mut recv_buf = [0u8; MAX_PACKET_SIZE];
         let (len, _source) = socket.recv_from(&mut recv_buf).await?;
         let mut response_slice: &[u8] = &recv_buf[..len];
-        let response: ConnectResponse = response_slice
-            .parse()
-            .map_err(|_| Error::Parse("invalid ConnectResponse"))?;
+        let response: ConnectResponse = response_slice.parse().map_err(|_| Error::Parse("invalid ConnectResponse"))?;
 
         if response.status != ConnectionStatus::NoError {
-            return Err(Error::ConnectionRefused {
-                addr: server_addr,
-                status: response.status,
-            });
+            return Err(Error::ConnectionRefused { addr: server_addr, status: response.status });
         }
 
         let assigned_address = match response.crd {
@@ -135,11 +122,7 @@ impl TunnelWorker {
 
         let channel_id = response.communication_channel_id;
 
-        log::info!(
-            "Tunnel connected: channel_id={}, assigned_address={}",
-            channel_id,
-            assigned_address,
-        );
+        log::info!("Tunnel connected: channel_id={}, assigned_address={}", channel_id, assigned_address,);
 
         // Query the tunnel's max APDU length via TunnelingFeatureGet.
         // This is the IP-side limit (typically 254 for extended frames).
@@ -187,18 +170,10 @@ impl TunnelWorker {
     /// Returns `(max_apdu, seq_consumed)` where `seq_consumed` is true if
     /// the interface responded (meaning seq=0 was consumed and the event
     /// loop should start at seq=1).
-    async fn query_tunnel_max_apdu(
-        socket: &UdpSocket,
-        server_addr: SocketAddrV4,
-        channel_id: u8,
-    ) -> (u16, bool) {
+    async fn query_tunnel_max_apdu(socket: &UdpSocket, server_addr: SocketAddrV4, channel_id: u8) -> (u16, bool) {
         use zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED;
 
-        let req = TunnelingFeatureGetBuilder::new(
-            channel_id,
-            0,
-            tunneling_feature_id::MAX_APDU_LENGTH,
-        );
+        let req = TunnelingFeatureGetBuilder::new(channel_id, 0, tunneling_feature_id::MAX_APDU_LENGTH);
 
         if Self::send_raw(socket, server_addr, &req).await.is_err() {
             log::warn!("Failed to send TunnelingFeatureGet, assuming tunnel max APDU {}", MAX_APDU_LENGTH_EXTENDED);
@@ -319,24 +294,19 @@ impl TunnelWorker {
             KNXnetIPServiceType::TunnelingRequest => {
                 let mut slice: &[u8] = data;
                 if let Ok(req) = slice.parse::<TunnelingRequest>()
-                    && req.communication_channel_id == self.channel_id {
-                        self.send_ack(req.sequence_counter).await?;
-                        if req.sequence_counter == self.recv_seq {
-                            self.recv_seq = self.recv_seq.wrapping_add(1);
-                            let cemi_data = &data[10..];
-                            log::trace!(
-                                "Unsolicited indication ({} bytes cEMI)",
-                                cemi_data.len()
-                            );
-                        }
+                    && req.communication_channel_id == self.channel_id
+                {
+                    self.send_ack(req.sequence_counter).await?;
+                    if req.sequence_counter == self.recv_seq {
+                        self.recv_seq = self.recv_seq.wrapping_add(1);
+                        let cemi_data = &data[10..];
+                        log::trace!("Unsolicited indication ({} bytes cEMI)", cemi_data.len());
                     }
+                }
             }
             KNXnetIPServiceType::DisconnectRequest => {
                 log::info!("Server sent DisconnectRequest");
-                let resp = DisconnectResponseBuilder::new(
-                    self.channel_id,
-                    ConnectionStatus::NoError,
-                );
+                let resp = DisconnectResponseBuilder::new(self.channel_id, ConnectionStatus::NoError);
                 Self::send_raw(&self.socket, self.server_addr, &resp).await?;
                 return Err(Error::Disconnected);
             }
@@ -403,26 +373,27 @@ impl TunnelWorker {
                 let mut slice: &[u8] = data;
                 if let Ok(ack) = slice.parse::<TunnelingAck>()
                     && ack.communication_channel_id == self.channel_id
-                        && ack.sequence_counter == self.send_seq
-                    {
-                        if ack.status != ConnectionStatus::NoError {
-                            return Err(Error::NegativeConfirmation);
-                        }
-                        self.send_seq = self.send_seq.wrapping_add(1);
-                        return Ok(true);
+                    && ack.sequence_counter == self.send_seq
+                {
+                    if ack.status != ConnectionStatus::NoError {
+                        return Err(Error::NegativeConfirmation);
                     }
+                    self.send_seq = self.send_seq.wrapping_add(1);
+                    return Ok(true);
+                }
             }
 
             // Handle other incoming frames while waiting for ACK.
             if let Ok(KNXnetIPServiceType::TunnelingRequest) = peek_service_type(data) {
                 let mut slice: &[u8] = data;
                 if let Ok(req) = slice.parse::<TunnelingRequest>()
-                    && req.communication_channel_id == self.channel_id {
-                        self.send_ack(req.sequence_counter).await?;
-                        if req.sequence_counter == self.recv_seq {
-                            self.recv_seq = self.recv_seq.wrapping_add(1);
-                        }
+                    && req.communication_channel_id == self.channel_id
+                {
+                    self.send_ack(req.sequence_counter).await?;
+                    if req.sequence_counter == self.recv_seq {
+                        self.recv_seq = self.recv_seq.wrapping_add(1);
                     }
+                }
             }
 
             if let Ok(KNXnetIPServiceType::DisconnectRequest) = peek_service_type(data) {
@@ -462,70 +433,62 @@ impl TunnelWorker {
             if let Ok(KNXnetIPServiceType::TunnelingRequest) = peek_service_type(data) {
                 let mut slice: &[u8] = data;
                 if let Ok(req) = slice.parse::<TunnelingRequest>()
-                    && req.communication_channel_id == self.channel_id {
-                        self.send_ack(req.sequence_counter).await?;
-                        if req.sequence_counter == self.recv_seq {
-                            self.recv_seq = self.recv_seq.wrapping_add(1);
+                    && req.communication_channel_id == self.channel_id
+                {
+                    self.send_ack(req.sequence_counter).await?;
+                    if req.sequence_counter == self.recv_seq {
+                        self.recv_seq = self.recv_seq.wrapping_add(1);
 
-                            let cemi_data = &data[10..];
-                            if cemi_data.is_empty() {
-                                continue;
+                        let cemi_data = &data[10..];
+                        if cemi_data.is_empty() {
+                            continue;
+                        }
+
+                        let msg_code = CemiMessageCode::from(cemi_data[0]);
+                        match msg_code {
+                            CemiMessageCode::LDataCon => {
+                                // Bus confirmation of our request.
+                                _got_confirmation = true;
+                                // Check for negative confirmation using internal format.
+                                let con_internal = cemi_to_knx_message(cemi_data.to_vec());
+                                if !con_internal.is_empty() && (con_internal[offsets::MSG_CONTROL] & 0x01) != 0 {
+                                    return Err(Error::NegativeConfirmation);
+                                }
                             }
+                            CemiMessageCode::LDataInd => {
+                                // Convert to internal format.
+                                let internal = cemi_to_knx_message(cemi_data.to_vec());
 
-                            let msg_code = CemiMessageCode::from(cemi_data[0]);
-                            match msg_code {
-                                CemiMessageCode::LDataCon => {
-                                    // Bus confirmation of our request.
-                                    _got_confirmation = true;
-                                    // Check for negative confirmation using internal format.
-                                    let con_internal = cemi_to_knx_message(cemi_data.to_vec());
-                                    if !con_internal.is_empty()
-                                        && (con_internal[offsets::MSG_CONTROL] & 0x01) != 0
-                                    {
-                                        return Err(Error::NegativeConfirmation);
+                                // Filter by source address.
+                                if let Some(expected) = expected_source
+                                    && internal.len() >= offsets::MSG_SOURCE_ADDR + 2
+                                {
+                                    let source = IndividualAddress::from_bytes(
+                                        &internal[offsets::MSG_SOURCE_ADDR..offsets::MSG_SOURCE_ADDR + 2],
+                                    );
+                                    if source != expected {
+                                        log::debug!("Skipping L_Data.ind from {} (expected {})", source, expected,);
+                                        continue;
                                     }
                                 }
-                                CemiMessageCode::LDataInd => {
-                                    // Convert to internal format.
-                                    let internal = cemi_to_knx_message(cemi_data.to_vec());
 
-                                    // Filter by source address.
-                                    if let Some(expected) = expected_source
-                                        && internal.len() >= offsets::MSG_SOURCE_ADDR + 2 {
-                                            let source = IndividualAddress::from_bytes(
-                                                &internal[offsets::MSG_SOURCE_ADDR
-                                                    ..offsets::MSG_SOURCE_ADDR + 2],
-                                            );
-                                            if source != expected {
-                                                log::debug!(
-                                                    "Skipping L_Data.ind from {} (expected {})",
-                                                    source,
-                                                    expected,
-                                                );
-                                                continue;
-                                            }
-                                        }
-
-                                    // Filter by APCI code.
-                                    if let Some(expected) = expected_apci
-                                        && let Some(actual) = decode_apci_code(&internal)
-                                            && actual != expected {
-                                                log::debug!(
-                                                    "Skipping APCI {} (expected {})",
-                                                    actual,
-                                                    expected,
-                                                );
-                                                continue;
-                                            }
-
-                                    return Ok(internal);
+                                // Filter by APCI code.
+                                if let Some(expected) = expected_apci
+                                    && let Some(actual) = decode_apci_code(&internal)
+                                    && actual != expected
+                                {
+                                    log::debug!("Skipping APCI {} (expected {})", actual, expected,);
+                                    continue;
                                 }
-                                _ => {
-                                    log::trace!("Ignoring cEMI {}", msg_code);
-                                }
+
+                                return Ok(internal);
+                            }
+                            _ => {
+                                log::trace!("Ignoring cEMI {}", msg_code);
                             }
                         }
                     }
+                }
             } else if let Ok(KNXnetIPServiceType::DisconnectRequest) = peek_service_type(data) {
                 return Err(Error::Disconnected);
             }
@@ -537,10 +500,7 @@ impl TunnelWorker {
     // ========================================================================
 
     async fn send_heartbeat(&mut self) -> Result<()> {
-        let nat_hpai = HPAI::Ipv4Udp {
-            addr: Ipv4Addr::UNSPECIFIED,
-            port: 0,
-        };
+        let nat_hpai = HPAI::Ipv4Udp { addr: Ipv4Addr::UNSPECIFIED, port: 0 };
         let req = ConnectionstateRequestBuilder::new(self.channel_id, nat_hpai);
         Self::send_raw(&self.socket, self.server_addr, &req).await?;
 
@@ -550,30 +510,29 @@ impl TunnelWorker {
         for attempt in 0..2 {
             let deadline = Instant::now() + HEARTBEAT_TIMEOUT;
             loop {
-                let recv_result =
-                    timeout_at(deadline, self.socket.recv_from(&mut recv_buf)).await;
+                let recv_result = timeout_at(deadline, self.socket.recv_from(&mut recv_buf)).await;
                 let (len, _) = match recv_result {
                     Ok(r) => r?,
                     Err(_) => break, // Timeout — try next attempt.
                 };
                 let data = &recv_buf[..len];
 
-                if let Ok(KNXnetIPServiceType::ConnectionstateResponse) =
-                    peek_service_type(data)
-                {
+                if let Ok(KNXnetIPServiceType::ConnectionstateResponse) = peek_service_type(data) {
                     let mut slice: &[u8] = data;
                     if let Ok(resp) = slice.parse::<ConnectionstateResponse>()
-                        && resp.communication_channel_id == self.channel_id {
-                            self.last_heartbeat = Instant::now();
-                            return Ok(());
-                        }
+                        && resp.communication_channel_id == self.channel_id
+                    {
+                        self.last_heartbeat = Instant::now();
+                        return Ok(());
+                    }
                 }
 
                 // Process other frames while waiting.
                 if let Err(e) = self.handle_incoming(data).await
-                    && matches!(e, Error::Disconnected) {
-                        return Err(e);
-                    }
+                    && matches!(e, Error::Disconnected)
+                {
+                    return Err(e);
+                }
             }
 
             if attempt == 0 {
@@ -590,10 +549,7 @@ impl TunnelWorker {
     // ========================================================================
 
     async fn disconnect(&mut self) -> Result<()> {
-        let nat_hpai = HPAI::Ipv4Udp {
-            addr: Ipv4Addr::UNSPECIFIED,
-            port: 0,
-        };
+        let nat_hpai = HPAI::Ipv4Udp { addr: Ipv4Addr::UNSPECIFIED, port: 0 };
         let req = DisconnectRequestBuilder::new(self.channel_id, nat_hpai);
         Self::send_raw(&self.socket, self.server_addr, &req).await?;
 
@@ -605,9 +561,7 @@ impl TunnelWorker {
             let recv_result = timeout_at(deadline, self.socket.recv_from(&mut recv_buf)).await;
             match recv_result {
                 Ok(Ok((len, _))) => {
-                    if let Ok(KNXnetIPServiceType::DisconnectResponse) =
-                        peek_service_type(&recv_buf[..len])
-                    {
+                    if let Ok(KNXnetIPServiceType::DisconnectResponse) = peek_service_type(&recv_buf[..len]) {
                         break;
                     }
                 }
@@ -632,11 +586,7 @@ impl TunnelWorker {
         Self::send_raw(&self.socket, self.server_addr, &ack).await
     }
 
-    async fn send_raw<P: SerializablePacket>(
-        socket: &UdpSocket,
-        addr: SocketAddrV4,
-        packet: &P,
-    ) -> Result<()> {
+    async fn send_raw<P: SerializablePacket>(socket: &UdpSocket, addr: SocketAddrV4, packet: &P) -> Result<()> {
         let len = packet.bytes_len();
         let mut buf = vec![0u8; len];
         {

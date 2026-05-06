@@ -151,7 +151,9 @@ impl<'a, MUT: RawMutex, M, R> ActorRequest<MUT, M, R> for DynamicSender<'a, Requ
     }
 }
 
-impl<MUT: RawMutex, OuterMut: RawMutex, M, R, const N: usize> ActorRequest<MUT, M, R> for Sender<'static, OuterMut, Request<M, R>, N> {
+impl<MUT: RawMutex, OuterMut: RawMutex, M, R, const N: usize> ActorRequest<MUT, M, R>
+    for Sender<'static, OuterMut, Request<M, R>, N>
+{
     async fn request(&self, message: M) -> R {
         let channel: Channel<MUT, R, 1> = Channel::new();
         let sender: DynamicSender<'_, R> = channel.sender().into();

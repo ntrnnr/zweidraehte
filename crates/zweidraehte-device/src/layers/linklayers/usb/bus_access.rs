@@ -137,17 +137,12 @@ impl BusAccessFrameBuilder {
     /// Per spec Figure 22: body contains only Feature Identifier
     pub fn feature_get(feature_id: FeatureId, output: &mut [u8]) -> Result<usize, BusAccessError> {
         let body = [feature_id as u8];
-        encode_bus_access_frame(ServiceId::Get as u8, &body, output)
-            .map_err(|_| BusAccessError::BufferTooSmall)
+        encode_bus_access_frame(ServiceId::Get as u8, &body, output).map_err(|_| BusAccessError::BufferTooSmall)
     }
 
     /// Build a Device Feature Set request
     /// Per spec Figure 25: body contains Feature Identifier + Feature Data
-    pub fn feature_set(
-        feature_id: FeatureId,
-        data: &[u8],
-        output: &mut [u8],
-    ) -> Result<usize, BusAccessError> {
+    pub fn feature_set(feature_id: FeatureId, data: &[u8], output: &mut [u8]) -> Result<usize, BusAccessError> {
         if output.len() < TransferHeader::SIZE + 1 + data.len() {
             return Err(BusAccessError::BufferTooSmall);
         }
@@ -198,22 +193,14 @@ impl<'a> BusAccessResponse<'a> {
             return Err(BusAccessError::FrameTooShort);
         }
 
-        let feature_id =
-            FeatureId::from_byte(body[0]).ok_or(BusAccessError::UnknownFeatureId(body[0]))?;
+        let feature_id = FeatureId::from_byte(body[0]).ok_or(BusAccessError::UnknownFeatureId(body[0]))?;
 
-        Ok(Self {
-            feature_id,
-            data: &body[1..],
-        })
+        Ok(Self { feature_id, data: &body[1..] })
     }
 
     /// Get supported EMI types from response
     pub fn get_supported_emi_types(&self) -> Option<SupportedEmiTypes> {
-        if self.feature_id == FeatureId::SupportedEmiType {
-            SupportedEmiTypes::from_bytes(self.data)
-        } else {
-            None
-        }
+        if self.feature_id == FeatureId::SupportedEmiType { SupportedEmiTypes::from_bytes(self.data) } else { None }
     }
 
     /// Get active EMI type from response

@@ -12,6 +12,7 @@ use embassy_sync::{
     pubsub::{PubSubBehavior, PubSubChannel},
 };
 
+use super::traits::{BufferManagerContext, EventPublisherContext, RestartPublisherContext};
 use crate::{
     actor::Request,
     definition::StackDefinition,
@@ -90,21 +91,19 @@ impl<D: StackDefinition> LayerContext<D> {
 // Context Trait Implementations
 // ============================================================================
 
-impl<D: StackDefinition> crate::context::EventPublisherContext<<<D as StackDefinition>::CO as ComObjects>::Index>
-    for LayerContext<D>
-{
+impl<D: StackDefinition> EventPublisherContext<<<D as StackDefinition>::CO as ComObjects>::Index> for LayerContext<D> {
     fn publish_event(&self, index: <<D as StackDefinition>::CO as ComObjects>::Index, event: ComObjectEvent) {
         self.event_channel.publish_immediate((index, event));
     }
 }
 
-impl<D: StackDefinition> crate::context::RestartPublisherContext for LayerContext<D> {
+impl<D: StackDefinition> RestartPublisherContext for LayerContext<D> {
     fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
         self.restart_channel.try_send(request).is_ok()
     }
 }
 
-impl<D: StackDefinition> crate::context::BufferManagerContext for LayerContext<D> {
+impl<D: StackDefinition> BufferManagerContext for LayerContext<D> {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {
         &self.buffer_manager
     }

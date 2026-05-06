@@ -20,7 +20,11 @@ pub mod capabilities;
 pub(crate) mod group_data;
 pub mod services;
 
+use crate::access_policy::{AccessDecision, check_service_access};
 use crate::context::RestartPublisherContext;
+use crate::context::layer::LayerContext;
+use crate::objects::interface::PropertyError;
+use crate::service::{AlCtx, ApciHandler as _, Layer, ServiceCtx};
 use crate::{
     HasAuthorization, StackDefinition, StackState,
     actor::Request,
@@ -81,7 +85,7 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
     /// Unified device state (contains tables and runtime configuration)
     state: &'a D::State,
 
-    lctx: &'a crate::context::layer::LayerContext<D>,
+    lctx: &'a LayerContext<D>,
 
     // --- Interface objects ---
     /// Interface objects container with typed access to device properties.
@@ -154,7 +158,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     }
 
     /// Access the layer context.
-    pub(crate) fn lctx(&self) -> &'a crate::context::layer::LayerContext<D> {
+    pub(crate) fn lctx(&self) -> &'a LayerContext<D> {
         self.lctx
     }
 }
@@ -167,7 +171,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 // Layer Trait Implementation
 // ============================================================================
 
-impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
+impl<D: StackDefinition> Layer<D> for ApplicationLayer<'_, D> {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from TL (upward — group communication)
         ServiceType::T_GroupData_Ind,
@@ -185,7 +189,7 @@ impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
         ServiceType::T_DataUnack_Con,
     ];
 
-    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &ServiceCtx<'_, D>) {
         match msg.service_type() {
             // =================================================================
             // Confirmations from TL — complete pending group sends
@@ -210,9 +214,7 @@ impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
                 // Service-level access check (first line of defense).
                 // Handlers may perform additional fine-grained checks.
                 let access_ctx = self.resolve_access(&msg);
-                if crate::access_policy::check_service_access(apci, &access_ctx)
-                    == crate::access_policy::AccessDecision::Denied
-                {
+                if check_service_access(apci, &access_ctx) == AccessDecision::Denied {
                     warn!("AL service {:?} denied: {:?}", apci, access_ctx);
                     return;
                 }
@@ -252,7 +254,6 @@ impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
                         self.handle_restart(&msg);
                     }
                     _ => {
-                        use crate::service::{AlCtx, ApciHandler as _, ServiceCtx};
                         let ctx = AlCtx::new(
                             ServiceCtx::new(self.state, self.lctx, access_ctx),
                             self.interface_objects,
@@ -271,7 +272,7 @@ impl<D: StackDefinition> crate::service::Layer<D> for ApplicationLayer<'_, D> {
         self.group_data.next_deadline()
     }
 
-    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {
         self.group_data.poll();
     }
 }
@@ -391,9 +392,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
                 };
                 let mut dummy = [0u8; 4];
                 match self.interface_objects.property_value_read(&test_req, &mut dummy) {
-                    Err(crate::objects::interface::PropertyError::AccessDenied) => {
-                        Err(crate::objects::interface::PropertyError::AccessDenied)
-                    }
+                    Err(PropertyError::AccessDenied) => Err(PropertyError::AccessDenied),
                     _ => Ok(desc),
                 }
             }

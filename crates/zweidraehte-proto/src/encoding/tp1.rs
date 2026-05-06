@@ -251,8 +251,7 @@ pub fn knx_to_tp1_bytes_no_checksum<const N: usize>(src: &[u8]) -> heapless::Vec
     } else {
         // Extended frame: insert the extended-control byte at position 1 and
         // shift the rest rightward. Output length is `len + 1`.
-        out.push((src[0] & 0x0C) | 0x30)
-            .expect("destination capacity too small for TP1 conversion");
+        out.push((src[0] & 0x0C) | 0x30).expect("destination capacity too small for TP1 conversion");
         out.push(src[5]).expect("destination capacity too small for TP1 conversion");
         out.extend_from_slice(&src[1..5]).expect("destination capacity too small for TP1 conversion");
         out.push((len - 7) as u8).expect("destination capacity too small for TP1 conversion");
@@ -302,7 +301,9 @@ mod tests {
                 // This matches the semantics of a fixed-size buffer where set_len
                 // doesn't initialize the new bytes
                 self.data.reserve(len - self.data.len());
-                unsafe { self.data.set_len(len); }
+                unsafe {
+                    self.data.set_len(len);
+                }
             } else {
                 self.data.truncate(len);
             }

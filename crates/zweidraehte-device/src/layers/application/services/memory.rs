@@ -41,12 +41,7 @@ use crate::logging::{debug, error, warn};
 pub struct MemoryService;
 
 impl<D: StackDefinition> ApciHandler<D> for MemoryService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::MemoryRead => {
                 handle_memory_read::<D>(msg, ctx);
@@ -240,8 +235,7 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 
     // Read current memory values.
     let mut current_data = [0u8; 5];
-    let read_result =
-        ctx.memory_map.read(ctx.state, mbw.address, &mut current_data[..mbw.count as usize], ctx.access);
+    let read_result = ctx.memory_map.read(ctx.state, mbw.address, &mut current_data[..mbw.count as usize], ctx.access);
 
     match read_result {
         Ok(_) => {

@@ -49,7 +49,6 @@ pub fn create_transport_layer_timing_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // --------------------------------------------------------------------
         // Test 4.2: Testing of the acknowledgement-time-out timer
         // --------------------------------------------------------------------

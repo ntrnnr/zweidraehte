@@ -588,8 +588,7 @@ pub trait HasDptInfo {
 // Blanket impl of HasDptInfo for all DatapointType instances from proto.
 use zweidraehte_proto::dpt::{DatapointType, PropertyDataDefinition};
 
-impl<PDT: PropertyDataDefinition, const MAIN: u16, const SUB: u16> HasDptInfo
-    for DatapointType<PDT, MAIN, SUB>
+impl<PDT: PropertyDataDefinition, const MAIN: u16, const SUB: u16> HasDptInfo for DatapointType<PDT, MAIN, SUB>
 where
     PDT: Default,
 {

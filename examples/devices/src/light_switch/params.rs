@@ -208,9 +208,7 @@ pub enum ButtonConfig {
 }
 
 impl ConstDefault for ButtonConfig {
-    const DEFAULT: Self = ButtonConfig::Switch {
-        action: SwitchAction::DEFAULT,
-    };
+    const DEFAULT: Self = ButtonConfig::Switch { action: SwitchAction::DEFAULT };
 }
 
 // ============================================================================

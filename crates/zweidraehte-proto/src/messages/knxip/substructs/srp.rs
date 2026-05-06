@@ -204,10 +204,7 @@ impl<B: SplitByteSlice> SearchRequestParameter<B> {
     /// Whether this SRP is a selection filter (as opposed to a meta-parameter
     /// like RequestDIBs, or an unknown/invalid type).
     pub fn is_selection_filter(&self) -> bool {
-        matches!(
-            self,
-            Self::SelectByProgrammingMode | Self::SelectByMacAddress { .. } | Self::SelectByService { .. }
-        )
+        matches!(self, Self::SelectByProgrammingMode | Self::SelectByMacAddress { .. } | Self::SelectByService { .. })
     }
 }
 
@@ -785,10 +782,9 @@ mod test {
     fn test_is_mandatory() {
         // Standard types are always mandatory
         assert!(SearchRequestParameter::<&[u8]>::SelectByProgrammingMode.is_mandatory());
-        assert!(SearchRequestParameter::<&[u8]>::SelectByMacAddress {
-            mac_address: EthernetAddress([0; 6])
-        }
-        .is_mandatory());
+        assert!(
+            SearchRequestParameter::<&[u8]>::SelectByMacAddress { mac_address: EthernetAddress([0; 6]) }.is_mandatory()
+        );
         assert!(SearchRequestParameter::<&[u8]>::SelectByService { service_family: 0, version: 0 }.is_mandatory());
 
         // Invalid/Unknown depend on the wire M bit

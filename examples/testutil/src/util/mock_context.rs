@@ -8,11 +8,11 @@ use zweidraehte_device::context::{
 use zweidraehte_device::layers::linklayers::knxip::context::{
     DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
 };
+use zweidraehte_device::objects::interface::PropertyServiceHandler;
+use zweidraehte_device::objects::tables::Table;
+use zweidraehte_device::objects::tables::addr7::AddrTab7Impl;
 use zweidraehte_proto::messages::buffers::DynBufferManager;
 use zweidraehte_proto::messages::knxip::substructs::DeviceInformation;
-use zweidraehte_device::objects::interface::PropertyServiceHandler;
-use zweidraehte_device::objects::tables::addr7::AddrTab7Impl;
-use zweidraehte_device::objects::tables::Table;
 
 /// Mock context for testing link layers.
 ///

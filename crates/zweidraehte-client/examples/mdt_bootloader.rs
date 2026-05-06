@@ -147,13 +147,14 @@ async fn bsl_command(
     let mut service_data = vec![0x00, cmd, seq];
     service_data.extend_from_slice(extra_data);
 
-    let result = client
-        .function_property_command(device, BSL_OBJECT_IDX, BSL_PROPERTY_ID, &service_data)
-        .await?;
+    let result = client.function_property_command(device, BSL_OBJECT_IDX, BSL_PROPERTY_ID, &service_data).await?;
 
     log::debug!(
         "BSL cmd={:#04x} seq={}: return_code={:#04x}, data=[{}]",
-        cmd, seq, result.return_code, hex_bytes(&result.data),
+        cmd,
+        seq,
+        result.return_code,
+        hex_bytes(&result.data),
     );
 
     // The BSL protocol response is inside result.data.
@@ -171,11 +172,7 @@ async fn bsl_command(
     // Verify the echo matches our command with the response bit set.
     let expected_echo = cmd | RESPONSE_BIT;
     if echo != expected_echo {
-        return Err(format!(
-            "BSL response mismatch: expected echo {:#04x}, got {:#04x}",
-            expected_echo, echo,
-        )
-        .into());
+        return Err(format!("BSL response mismatch: expected echo {:#04x}, got {:#04x}", expected_echo, echo,).into());
     }
 
     // Return everything after the echo byte.
@@ -208,11 +205,7 @@ async fn bsl_read_multipart(
         let data = bsl_command(client, device, cmd, seq, &[]).await?;
 
         if data.len() < 3 {
-            return Err(format!(
-                "Info response too short ({} bytes, need at least 3 for header)",
-                data.len()
-            )
-            .into());
+            return Err(format!("Info response too short ({} bytes, need at least 3 for header)", data.len()).into());
         }
 
         let max_seq = data[0];
@@ -220,11 +213,7 @@ async fn bsl_read_multipart(
         let data_len = data[2] as usize;
 
         if current_seq != seq {
-            return Err(format!(
-                "Sequence mismatch: expected {}, got {}",
-                seq, current_seq
-            )
-            .into());
+            return Err(format!("Sequence mismatch: expected {}, got {}", seq, current_seq).into());
         }
 
         if data.len() < 3 + data_len {
@@ -238,10 +227,7 @@ async fn bsl_read_multipart(
         }
 
         let payload = &data[3..3 + data_len];
-        log::debug!(
-            "Fragment {}/{}: {} bytes [{}]",
-            current_seq, max_seq, data_len, hex_bytes(payload),
-        );
+        log::debug!("Fragment {}/{}: {} bytes [{}]", current_seq, max_seq, data_len, hex_bytes(payload),);
         assembled.extend_from_slice(payload);
 
         if seq >= max_seq {
@@ -262,12 +248,7 @@ fn read_u16(data: &[u8], offset: usize) -> u16 {
 }
 
 fn read_u32(data: &[u8], offset: usize) -> u32 {
-    u32::from_le_bytes([
-        data[offset],
-        data[offset + 1],
-        data[offset + 2],
-        data[offset + 3],
-    ])
+    u32::from_le_bytes([data[offset], data[offset + 1], data[offset + 2], data[offset + 3]])
 }
 
 fn parse_bsl_info(data: &[u8]) -> Result<BslInfo, Box<dyn std::error::Error>> {
@@ -374,19 +355,11 @@ fn print_hex_dump(label: &str, data: &[u8]) {
         let hex: String = chunk
             .iter()
             .enumerate()
-            .map(|(j, b)| {
-                if j == 8 {
-                    format!(" {:02x}", b)
-                } else {
-                    format!("{:02x}", b)
-                }
-            })
+            .map(|(j, b)| if j == 8 { format!(" {:02x}", b) } else { format!("{:02x}", b) })
             .collect::<Vec<_>>()
             .join(" ");
-        let ascii: String = chunk
-            .iter()
-            .map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' })
-            .collect();
+        let ascii: String =
+            chunk.iter().map(|&b| if b.is_ascii_graphic() || b == b' ' { b as char } else { '.' }).collect();
         println!("  {:04x}  {:<49} {}", i * 16, hex, ascii);
     }
 }
@@ -415,9 +388,7 @@ fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
             }
             "--device" | "-d" => {
                 i += 1;
-                device_addr = Some(parse_individual_address(
-                    args.get(i).ok_or("--device requires a value")?,
-                )?);
+                device_addr = Some(parse_individual_address(args.get(i).ok_or("--device requires a value")?)?);
             }
             "--help" | "-h" => {
                 print_usage();
@@ -480,7 +451,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to the KNX/IP interface.
     println!("Connecting to {}...", config.server_addr);
     let (client, mut worker, mut cmd_rx) = KnxClient::connect(config.server_addr).await?;
-    println!("Connected. Assigned address: {}, tunnel max APDU: {}", client.assigned_address(), client.tunnel_max_apdu());
+    println!(
+        "Connected. Assigned address: {}, tunnel max APDU: {}",
+        client.assigned_address(),
+        client.tunnel_max_apdu()
+    );
 
     let worker_handle = tokio::spawn(async move {
         if let Err(e) = worker.run(&mut cmd_rx).await {

@@ -8,22 +8,20 @@
 
 use core::net::SocketAddrV4;
 
+use crate::layers::linklayers::knxip::context::{IpAdditionalIndividualAddressContext, IpDiagnosticsContext};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
 };
 use embassy_time::{Duration, Instant};
-use crate::{
-    layers::linklayers::knxip::context::IpDiagnosticsContext};
 use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        builder::{ConfirmationExt, IndicationMessage, RequestMessage},
-        knxip::*,
-    };
+    buffers::Buffer,
+    builder::{ConfirmationExt, IndicationMessage, RequestMessage},
+    knxip::*,
+};
 
 use super::{
-    KnxNetIpContext, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError,
-    connections,
+    KnxNetIpContext, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError, connections,
     features::{self, RemoteConfigFeature, RoutingFeature},
     services,
 };
@@ -99,8 +97,11 @@ impl<
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel:
         connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
-    connections::CompositeHandlers<'res, connections::WithDevMgmt, <F::Tunneling as features::TunnelingFeature>::Tunnel>:
-        connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    connections::CompositeHandlers<
+        'res,
+        connections::WithDevMgmt,
+        <F::Tunneling as features::TunnelingFeature>::Tunnel,
+    >: connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
 {
     /// Process expired retry requests.
     ///
@@ -126,11 +127,10 @@ where
 
                 let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default();
                     <F::Tunneling as features::TunnelingFeature>::CAPACITY];
-                let addr_count =
-                    crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-                        self.context,
-                        &mut addr_buf,
-                    );
+                let addr_count = IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
+                    self.context,
+                    &mut addr_buf,
+                );
                 let tunnel_slots = self.connection_manager.tunneling_slot_info();
                 let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
                 let context = make_server_context::<F::RemoteConfig>(
@@ -298,12 +298,10 @@ where
         socket_idx: usize,
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
-        let mut addr_buf =
-            [zweidraehte_proto::address::IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
-        let addr_count = crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-            self.context,
-            &mut addr_buf,
-        );
+        let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default();
+            <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+        let addr_count =
+            IpAdditionalIndividualAddressContext::write_additional_individual_addresses(self.context, &mut addr_buf);
         let additional_addresses = &addr_buf[..addr_count];
         let tunnel_slots = self.connection_manager.tunneling_slot_info();
         let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
@@ -311,8 +309,15 @@ where
         // Helper closure to build server context — captures immutable fields
         // that are disjoint from the mutable server fields.
         let address_filter = self.address_filter;
-        let make_ctx =
-            |ind_tx| make_server_context::<F::RemoteConfig>(self.context, ind_tx, additional_addresses, tunnel_ref, address_filter);
+        let make_ctx = |ind_tx| {
+            make_server_context::<F::RemoteConfig>(
+                self.context,
+                ind_tx,
+                additional_addresses,
+                tunnel_ref,
+                address_filter,
+            )
+        };
 
         // Discovery server (always present)
         {

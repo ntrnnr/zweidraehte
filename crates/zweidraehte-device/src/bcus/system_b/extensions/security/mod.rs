@@ -52,8 +52,9 @@ use crate::bcus::system_b::IpExtensionState;
 use crate::bcus::system_b::{
     Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState, Tp1ExtensionState,
 };
+use crate::logging::debug;
 use crate::objects::comm::HasGoSecurityView;
-use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount};
+use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, PropertyError};
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::storage::SequenceNumberStorage;
@@ -112,14 +113,7 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     ///
     /// `start` is 0-based. Returns the number of bytes written, or an
     /// error if `start` is out of range or `buf` is too small.
-    pub fn read_entries(
-        &self,
-        start: u16,
-        count: u16,
-        buf: &mut [u8],
-    ) -> Result<usize, crate::objects::interface::PropertyError> {
-        use crate::objects::interface::PropertyError;
-
+    pub fn read_entries(&self, start: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
         if start >= self.count {
             return Err(PropertyError::InvalidStartIndex);
         }
@@ -141,9 +135,7 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     /// `start` is 0-based. `data` must be a multiple of `ENTRY_SIZE`.
     /// Validates that the write stays within table capacity and that
     /// the data length is aligned to the entry size.
-    pub fn write_entries(&mut self, start: u16, data: &[u8]) -> Result<(), crate::objects::interface::PropertyError> {
-        use crate::objects::interface::PropertyError;
-
+    pub fn write_entries(&mut self, start: u16, data: &[u8]) -> Result<(), PropertyError> {
         if data.is_empty() {
             return Ok(()); // Nothing to write.
         }
@@ -506,13 +498,9 @@ impl<const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> Sec
         let old = self.tool_key.get();
         #[allow(unused_variables)]
         let old_zero = old == [0u8; 16];
-        crate::logging::debug!(
+        debug!(
             "Security: set_tool_key old[0..2]={:02x}{:02x} new[0..2]={:02x}{:02x} old_was_zero={}",
-            old[0],
-            old[1],
-            key[0],
-            key[1],
-            old_zero
+            old[0], old[1], key[0], key[1], old_zero
         );
         self.tool_key.set(key);
     }
@@ -611,7 +599,7 @@ impl<const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> Sec
     /// Called when the security load state transitions to Loaded.
     /// Copies each SIAT entry's Last Valid SeqNr into the wear-resistant
     /// `SequenceNumberStorage` so the S-AL can validate incoming frames.
-    pub fn seed_receiving_seqs<S: crate::storage::SequenceNumberStorage>(&self, storage: &mut S) {
+    pub fn seed_receiving_seqs<S: SequenceNumberStorage>(&self, storage: &mut S) {
         let table = self.siat.borrow();
         let count = table.count() as usize;
         for i in 0..count {
@@ -729,7 +717,7 @@ pub trait HasSecurityState {
     /// Per KNX spec 03/05/01 §6.3.4: security tables (P2P keys, group
     /// keys, SIAT) are only evaluated by the S-AL when this is `Loaded`.
     /// Tool Key and Security Mode are independent of load state.
-    fn security_load_state(&self) -> crate::objects::tables::LoadState;
+    fn security_load_state(&self) -> LoadState;
 
     /// Get the 16-byte tool key.
     fn tool_key(&self) -> [u8; 16];

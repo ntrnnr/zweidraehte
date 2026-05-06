@@ -5,9 +5,9 @@
 //!
 //! Only includes tests that don't require mode toggling or user objects.
 
-use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{TestCase, TestSuite};
 
 const TIMEOUT: u32 = 3000;
 
@@ -38,21 +38,19 @@ pub fn create_section_4_6_4_7_suite() -> TestSuite {
 }
 
 fn test_4_6_0() -> TestCase {
-    TestCase::new("4.6.0 Test preparation").with_steps(vec![
-        comment("Placeholder: documentation-only test-preparation entry (no active telegrams)."),
-    ])
+    TestCase::new("4.6.0 Test preparation")
+        .with_steps(vec![comment("Placeholder: documentation-only test-preparation entry (no active telegrams).")])
 }
 
 fn test_4_6_2() -> TestCase {
-    TestCase::new("4.6.2 A_FunctionPropertyExtCommand with funtion returns error").with_steps(vec![
-        comment("Placeholder: XML entry is comment-only (no active telegrams) — documentation-only cross-reference."),
-    ])
+    TestCase::new("4.6.2 A_FunctionPropertyExtCommand with funtion returns error").with_steps(vec![comment(
+        "Placeholder: XML entry is comment-only (no active telegrams) — documentation-only cross-reference.",
+    )])
 }
 
 fn test_4_7_0() -> TestCase {
-    TestCase::new("4.7.0 Test preparation").with_steps(vec![
-        comment("Placeholder: documentation-only test-preparation entry (no active telegrams)."),
-    ])
+    TestCase::new("4.7.0 Test preparation")
+        .with_steps(vec![comment("Placeholder: documentation-only test-preparation entry (no active telegrams).")])
 }
 
 // ============================================================================
@@ -80,7 +78,6 @@ fn test_4_6_3() -> TestCase {
         comment("IOT 0x000F does not exist → return_code=0xFD"),
         inject("BC #EDI #BDUT_ADDR 69 01 D4 00 0F 00 10 34 00 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 00 0F 00 10 34 FD", TIMEOUT),
-
         comment("IOT 0x8000 does not exist → return_code=0xFD"),
         inject("BC #EDI #BDUT_ADDR 69 01 D4 80 00 00 10 34 00 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 80 00 00 10 34 FD", TIMEOUT),
@@ -96,7 +93,6 @@ fn test_4_6_4() -> TestCase {
         comment("PID 3 on GO Table (IOT=0x0003) does not exist → 0xFD"),
         inject("BC #EDI #BDUT_ADDR 69 01 D4 00 03 00 10 03 00 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 00 03 00 10 03 FD", TIMEOUT),
-
         comment("PID 0 on non-existing instance 0x0018 → 0xFD"),
         inject("BC #EDI #BDUT_ADDR 69 01 D4 00 03 00 18 00 00 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 00 03 00 18 00 FD", TIMEOUT),
@@ -160,11 +156,9 @@ fn test_4_7_3() -> TestCase {
         comment("Instance 0x0000 does not exist → return_code=0xFD"),
         inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 00 34 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 #USER_OBJ_TYPE1 00 00 34 FD", TIMEOUT),
-
         comment("Instance 0x0020 does not exist → return_code=0xFD"),
         inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 20 34 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 #USER_OBJ_TYPE1 00 20 34 FD", TIMEOUT),
-
         comment("Instance 0x8000 does not exist → return_code=0xFD"),
         inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 80 00 34 00 00"),
         expect("BC #BDUT_ADDR #EDI 67 01 D6 #USER_OBJ_TYPE1 80 00 34 FD", TIMEOUT),

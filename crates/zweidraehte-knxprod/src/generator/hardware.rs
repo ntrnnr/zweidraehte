@@ -6,7 +6,7 @@ use crate::schema::{
 use crate::signing::KnxSchemaVersion;
 
 use super::builder::AppProgramRef;
-use super::{medium_type_from_mask, ApplicationProgramDef, GeneratorError, HardwareDef};
+use super::{ApplicationProgramDef, GeneratorError, HardwareDef, medium_type_from_mask};
 
 /// Generator for creating Hardware MTXML files.
 pub struct HardwareGenerator;
@@ -53,11 +53,8 @@ impl HardwareGenerator {
                 .products
                 .iter()
                 .map(|p| {
-                    let product_id = format!(
-                        "{}_P-{}",
-                        hardware_id,
-                        super::mtxml::MtxmlGenerator::encode_id(p.order_number)
-                    );
+                    let product_id =
+                        format!("{}_P-{}", hardware_id, super::mtxml::MtxmlGenerator::encode_id(p.order_number));
                     Product {
                         id: product_id,
                         text: p.name.to_string(),

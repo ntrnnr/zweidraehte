@@ -15,11 +15,12 @@
 
 use crate::{
     definition::StackDefinition,
-    service::{AlCtx, ApciHandler},
-    memory::MemoryMap,
+    memory::{MemoryError, MemoryMap},
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyServiceHandler,
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyError,
+        PropertyServiceHandler, pid,
     },
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
     apdu::property_ext::{
@@ -51,12 +52,7 @@ impl<D> ApciHandler<D> for PropertyExtValueService
 where
     D: StackDefinition,
 {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::PropertyExtValueRead => {
                 handle_ext_value_read::<D>(msg, ctx);
@@ -108,7 +104,6 @@ where
     }
 }
 
-
 // ============================================================================
 // Handlers
 // ============================================================================
@@ -148,7 +143,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         // value via PropertyExtValue_Read (see TSS J §3.8.7.4 expected
         // response and AN163 Table 4) so the MaC can read the current
         // state without invoking a load-control function.
-        if is_function_pdt(desc.pdt) && hdr.prop_id != crate::objects::interface::pid::LOAD_STATE_CONTROL {
+        if is_function_pdt(desc.pdt) && hdr.prop_id != pid::LOAD_STATE_CONTROL {
             debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION → type conflict");
             send_ext_read_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
@@ -230,10 +225,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
 ///
 /// Confirmed write: resolves, writes, responds with `WriteConRes` carrying
 /// a return code.
-fn handle_ext_value_write_con<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlCtx<'_, D>,
-) {
+fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtValueWriteCon unexpected service type: {:?}", ind.service_type());
         return;
@@ -268,7 +260,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
         // LOAD_STATE_CONTROL (PID 5) is a special case — the spec allows
         // writing it via property value services to trigger load state
         // transitions. Allow it through; reject other function PDTs.
-        if is_function_pdt(desc.pdt) && hdr.prop_id != crate::objects::interface::pid::LOAD_STATE_CONTROL {
+        if is_function_pdt(desc.pdt) && hdr.prop_id != pid::LOAD_STATE_CONTROL {
             debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION → type conflict");
             send_ext_write_con_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
             return;
@@ -368,10 +360,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(
 ///
 /// Unconfirmed write: resolves and writes silently. No response is sent.
 /// If the object/property doesn't exist, the request is ignored per spec.
-fn handle_ext_value_write_uncon<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlCtx<'_, D>,
-) {
+fn handle_ext_value_write_uncon<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL PropertyExtValueWriteUnCon unexpected service type: {:?}", ind.service_type());
         return;
@@ -753,10 +742,7 @@ fn send_function_ext_empty_response<D: StackDefinition>(
 /// Response: APCI(2) + IOT(2) + INST(2) + PID(1) + propIdx(2) + descType(1) +
 ///           PDT+WrEnable(1) + MaxElem(2) + Access(1) = 14 data + 2 APCI = 16 bytes.
 /// Error: all descriptor bytes zero.
-fn handle_ext_description_read<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlCtx<'_, D>,
-) {
+fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     use zweidraehte_proto::messages::apdu::property_ext::{
         PropertyExtDescriptionHeader, PropertyExtDescriptionResponse,
     };
@@ -799,7 +785,7 @@ fn handle_ext_description_read<D: StackDefinition>(
         };
         let mut dummy = [0u8; 4];
         match ctx.interface_objects.property_value_read(&test_req, &mut dummy) {
-            Err(crate::objects::interface::PropertyError::AccessDenied) => None,
+            Err(PropertyError::AccessDenied) => None,
             _ => Some(desc_resp),
         }
     });
@@ -880,10 +866,10 @@ fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
     let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access);
 
     let rc = match result {
-        Ok(_) => 0x00,                                           // E_SUCCESS
-        Err(crate::memory::MemoryError::AccessDenied) => 0xFC,   // E_ILLEGAL_COMMAND
-        Err(crate::memory::MemoryError::WriteProtected) => 0xFB, // E_READ_ONLY
-        Err(_) => 0xFD,                                          // E_ADDRESS_VOID
+        Ok(_) => 0x00,                            // E_SUCCESS
+        Err(MemoryError::AccessDenied) => 0xFC,   // E_ILLEGAL_COMMAND
+        Err(MemoryError::WriteProtected) => 0xFB, // E_READ_ONLY
+        Err(_) => 0xFD,                           // E_ADDRESS_VOID
     };
 
     send_memory_ext_write_response(ind, ctx, rc, addr_hi, addr_mid, addr_lo);
@@ -962,9 +948,9 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
         }
         Err(e) => {
             let rc = match e {
-                crate::memory::MemoryError::AccessDenied => 0xFC,   // E_ILLEGAL_COMMAND
-                crate::memory::MemoryError::WriteProtected => 0xFA, // E_WRITE_ONLY (read of write-only region)
-                _ => 0xFD,                                          // E_ADDRESS_VOID
+                MemoryError::AccessDenied => 0xFC,   // E_ILLEGAL_COMMAND
+                MemoryError::WriteProtected => 0xFA, // E_WRITE_ONLY (read of write-only region)
+                _ => 0xFD,                           // E_ADDRESS_VOID
             };
             let resp_len = offsets::MSG_APCI + 6;
             let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };

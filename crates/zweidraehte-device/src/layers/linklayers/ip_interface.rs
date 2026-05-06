@@ -47,14 +47,16 @@ use embassy_sync::{
 use zweidraehte_platform::IpTransport;
 
 use crate::{
-    context::AddressTableContext,
-    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase},
-    objects::tables::{AddressTable, HasLoadStateMachine}};
+    context::CemiTransportLayerEndpoints,
+    context::{AddressTableContext, IpAdditionalIndividualAddressContext},
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities},
+    objects::tables::{AddressTable, HasLoadStateMachine},
+};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
-        buffers::*,
-        builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
-    };
+    buffers::*,
+    builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
+};
 
 use super::{
     knxip::{KnxNetIpBuilder, KnxNetIpContext, KnxNetIpResources, SubnetIndication, SubnetLink, features},
@@ -187,7 +189,7 @@ impl<
 > LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
 {
     type Resources = IpInterfaceResources;
-    type LLEndpoints<'a> = crate::context::CemiTransportLayerEndpoints<'a>;
+    type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 
     fn create_resources(&self) -> Self::Resources {
         IpInterfaceResources::new()
@@ -202,7 +204,7 @@ impl<
     const MS: usize,
     const MTS: usize,
     const MC: usize,
-> crate::layers::LinkLayerCapabilities for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
+> LinkLayerCapabilities for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
 {
     const KNXNETIP_DEVICE_CAPABILITIES: u16 = F::KNXNETIP_DEVICE_CAPABILITIES;
 }
@@ -227,7 +229,7 @@ where
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        ll_endpoints: crate::context::CemiTransportLayerEndpoints<'a>,
+        ll_endpoints: CemiTransportLayerEndpoints<'a>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
@@ -238,10 +240,7 @@ where
             // ==============================================================
             let mut addr_buf = [IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
             let addr_count =
-                crate::context::IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-                    context,
-                    &mut addr_buf,
-                );
+                IpAdditionalIndividualAddressContext::write_additional_individual_addresses(context, &mut addr_buf);
             let mut additional_ias =
                 heapless::Vec::<IndividualAddress, { <F::Tunneling as features::TunnelingFeature>::CAPACITY }>::new();
             for &addr in &addr_buf[..addr_count] {

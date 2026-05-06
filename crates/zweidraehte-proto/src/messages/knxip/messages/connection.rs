@@ -11,8 +11,7 @@
 use core::mem;
 
 use zerocopy::{
-    FromBytes, Immutable, IntoBytes, KnownLayout, SplitByteSlice, SplitByteSliceMut, Unaligned,
-    big_endian::U16,
+    FromBytes, Immutable, IntoBytes, KnownLayout, SplitByteSlice, SplitByteSliceMut, Unaligned, big_endian::U16,
 };
 
 use crate::{messages::knxip::error::*, util::packets::*};
@@ -83,9 +82,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::ConnectRequest
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::ConnectRequest {
             return Err(ParseError::Format);
         }
 
@@ -155,25 +152,19 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectResponse {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::ConnectResponse
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::ConnectResponse {
             return Err(ParseError::Format);
         }
 
-        let response_info =
-            buffer.take_obj_front::<raw::ConnectResponseInfo>().ok_or(ParseError::Format)?;
+        let response_info = buffer.take_obj_front::<raw::ConnectResponseInfo>().ok_or(ParseError::Format)?;
         let communication_channel_id = response_info.communication_channel_id;
         let status: ConnectionStatus = response_info.status.into();
 
         let data_endpoint = HPAI::parse(buffer, ())?;
 
         // CRD is only present if connection was successful
-        let crd = if status == ConnectionStatus::NoError && buffer.len() > 0 {
-            Some(CRD::parse(buffer, ())?)
-        } else {
-            None
-        };
+        let crd =
+            if status == ConnectionStatus::NoError && buffer.len() > 0 { Some(CRD::parse(buffer, ())?) } else { None };
 
         Ok(ConnectResponse { communication_channel_id, status, data_endpoint, crd })
     }
@@ -188,12 +179,7 @@ pub struct ConnectResponseBuilder {
 }
 
 impl ConnectResponseBuilder {
-    pub fn new(
-        communication_channel_id: u8,
-        status: ConnectionStatus,
-        data_endpoint: HPAI,
-        crd: Option<CRD>,
-    ) -> Self {
+    pub fn new(communication_channel_id: u8, status: ConnectionStatus, data_endpoint: HPAI, crd: Option<CRD>) -> Self {
         Self { communication_channel_id, status, data_endpoint, crd }
     }
 }
@@ -254,20 +240,14 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectionstateRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::ConnectionstateRequest
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::ConnectionstateRequest {
             return Err(ParseError::Format);
         }
 
-        let conn_info =
-            buffer.take_obj_front::<raw::ConnectionInfo>().ok_or(ParseError::Format)?;
+        let conn_info = buffer.take_obj_front::<raw::ConnectionInfo>().ok_or(ParseError::Format)?;
         let control_endpoint = HPAI::parse(buffer, ())?;
 
-        Ok(ConnectionstateRequest {
-            communication_channel_id: conn_info.communication_channel_id,
-            control_endpoint,
-        })
+        Ok(ConnectionstateRequest { communication_channel_id: conn_info.communication_channel_id, control_endpoint })
     }
 }
 
@@ -285,9 +265,7 @@ impl ConnectionstateRequestBuilder {
 
 impl SerializablePacket for ConnectionstateRequestBuilder {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<KNXnetIPHeader>()
-            + mem::size_of::<raw::ConnectionInfo>()
-            + self.control_endpoint.bytes_len()
+        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::ConnectionInfo>() + self.control_endpoint.bytes_len()
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -299,10 +277,7 @@ impl SerializablePacket for ConnectionstateRequestBuilder {
         };
         bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
 
-        let conn_info = raw::ConnectionInfo {
-            communication_channel_id: self.communication_channel_id,
-            _reserved: 0,
-        };
+        let conn_info = raw::ConnectionInfo { communication_channel_id: self.communication_channel_id, _reserved: 0 };
         bv.write_obj_front(&conn_info).expect("too few bytes for connection info");
 
         self.control_endpoint.serialize(bv);
@@ -334,14 +309,11 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for ConnectionstateResponse {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::ConnectionstateResponse
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::ConnectionstateResponse {
             return Err(ParseError::Format);
         }
 
-        let response_info =
-            buffer.take_obj_front::<raw::ConnectResponseInfo>().ok_or(ParseError::Format)?;
+        let response_info = buffer.take_obj_front::<raw::ConnectResponseInfo>().ok_or(ParseError::Format)?;
 
         Ok(ConnectionstateResponse {
             communication_channel_id: response_info.communication_channel_id,
@@ -409,20 +381,14 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DisconnectRequest {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::DisconnectRequest
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::DisconnectRequest {
             return Err(ParseError::Format);
         }
 
-        let conn_info =
-            buffer.take_obj_front::<raw::ConnectionInfo>().ok_or(ParseError::Format)?;
+        let conn_info = buffer.take_obj_front::<raw::ConnectionInfo>().ok_or(ParseError::Format)?;
         let control_endpoint = HPAI::parse(buffer, ())?;
 
-        Ok(DisconnectRequest {
-            communication_channel_id: conn_info.communication_channel_id,
-            control_endpoint,
-        })
+        Ok(DisconnectRequest { communication_channel_id: conn_info.communication_channel_id, control_endpoint })
     }
 }
 
@@ -440,9 +406,7 @@ impl DisconnectRequestBuilder {
 
 impl SerializablePacket for DisconnectRequestBuilder {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<KNXnetIPHeader>()
-            + mem::size_of::<raw::ConnectionInfo>()
-            + self.control_endpoint.bytes_len()
+        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::ConnectionInfo>() + self.control_endpoint.bytes_len()
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -454,10 +418,7 @@ impl SerializablePacket for DisconnectRequestBuilder {
         };
         bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
 
-        let conn_info = raw::ConnectionInfo {
-            communication_channel_id: self.communication_channel_id,
-            _reserved: 0,
-        };
+        let conn_info = raw::ConnectionInfo { communication_channel_id: self.communication_channel_id, _reserved: 0 };
         bv.write_obj_front(&conn_info).expect("too few bytes for connection info");
 
         self.control_endpoint.serialize(bv);
@@ -489,14 +450,11 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DisconnectResponse {
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
         let header = buffer.take_obj_front::<KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::DisconnectResponse
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::DisconnectResponse {
             return Err(ParseError::Format);
         }
 
-        let response_info =
-            buffer.take_obj_front::<raw::ConnectResponseInfo>().ok_or(ParseError::Format)?;
+        let response_info = buffer.take_obj_front::<raw::ConnectResponseInfo>().ok_or(ParseError::Format)?;
 
         Ok(DisconnectResponse {
             communication_channel_id: response_info.communication_channel_id,
@@ -557,11 +515,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3672);
         let cri = CRI::Tunnel(TunnelingCRI::new(TunnelingLayer::LinkLayer));
 
-        let builder = ConnectRequestBuilder::new(
-            control_endpoint.clone(),
-            data_endpoint.clone(),
-            cri,
-        );
+        let builder = ConnectRequestBuilder::new(control_endpoint.clone(), data_endpoint.clone(), cri);
 
         // Serialize
         let mut buffer = [0u8; 64];
@@ -588,11 +542,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 100), 3672);
         let cri = CRI::DeviceManagement(DeviceManagementCRI);
 
-        let builder = ConnectRequestBuilder::new(
-            control_endpoint.clone(),
-            data_endpoint.clone(),
-            cri,
-        );
+        let builder = ConnectRequestBuilder::new(control_endpoint.clone(), data_endpoint.clone(), cri);
 
         // Serialize
         let mut buffer = [0u8; 64];
@@ -611,12 +561,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 1), 3671);
         let crd = CRD::Tunnel(TunnelingCRD::new(IndividualAddress::new(1, 1, 1)));
 
-        let builder = ConnectResponseBuilder::new(
-            5,
-            ConnectionStatus::NoError,
-            data_endpoint.clone(),
-            Some(crd),
-        );
+        let builder = ConnectResponseBuilder::new(5, ConnectionStatus::NoError, data_endpoint.clone(), Some(crd));
 
         // Serialize
         let mut buffer = [0u8; 64];
@@ -642,12 +587,7 @@ mod tests {
         let data_endpoint = HPAI::ipv4_udp(Ipv4Addr::new(192, 168, 1, 1), 3671);
         let crd = CRD::DeviceManagement(DeviceManagementCRD);
 
-        let builder = ConnectResponseBuilder::new(
-            3,
-            ConnectionStatus::NoError,
-            data_endpoint.clone(),
-            Some(crd),
-        );
+        let builder = ConnectResponseBuilder::new(3, ConnectionStatus::NoError, data_endpoint.clone(), Some(crd));
 
         let mut buffer = [0u8; 64];
         let mut cursor = &mut buffer[..];

@@ -60,6 +60,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     StackDefinition,
+    objects::comm::HasGoSecurityView,
     objects::tables::{
         Table,
         addr7::AddrTab7Impl,
@@ -68,6 +69,7 @@ use crate::{
         co7::CoTab7Impl,
     },
     restart::EraseCode,
+    service::Augment,
 };
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -206,7 +208,7 @@ pub trait ExtensionState: Sized {
     /// Secure extensions fold the FDSK tool-key re-seed into the
     /// `FactoryReset` arm so the caller does not need to know about it
     /// (03/05/01 §6.1.4).
-    fn on_erase(&self, code: crate::restart::EraseCode);
+    fn on_erase(&self, code: EraseCode);
 }
 
 /// Whether the device's Security Mode is currently enabled.
@@ -243,7 +245,7 @@ pub trait HasSecurityMode {
 impl HasSecurityMode for () {}
 
 // The empty extension state has no security policy — every send is plain.
-impl crate::objects::comm::HasGoSecurityView for () {}
+impl HasGoSecurityView for () {}
 
 impl ExtensionState for () {
     type Config = ();
@@ -300,7 +302,7 @@ pub trait Extension<Platform = ()>: ExtensionState {
     ///   (a `#[derive(ServiceRegistry)]` struct holding the inner
     ///   augment plus `SecurityAugment`).
     /// For `()`: `()` (no augmentation).
-    type Augment<'a, D: StackDefinition>: crate::service::Augment<D>
+    type Augment<'a, D: StackDefinition>: Augment<D>
     where
         Self: 'a,
         Platform: 'a;

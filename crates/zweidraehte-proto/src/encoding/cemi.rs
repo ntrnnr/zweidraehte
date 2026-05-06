@@ -49,8 +49,7 @@
 use core::mem;
 
 use zerocopy::{
-    FromBytes, Immutable, IntoBytes, KnownLayout, SplitByteSlice, SplitByteSliceMut, Unaligned,
-    big_endian::U16,
+    FromBytes, Immutable, IntoBytes, KnownLayout, SplitByteSlice, SplitByteSliceMut, Unaligned, big_endian::U16,
 };
 
 use crate::{
@@ -307,12 +306,7 @@ impl<B: SplitByteSlice> CemiLocalMgmt<B> {
     /// Flips the message code from .req to .con and copies the addressing
     /// fields. The `count` and `start_index` are taken from `self` (the
     /// caller may override them for error responses where count=0).
-    pub fn response_builder<'a>(
-        &self,
-        count: u16,
-        start_index: u16,
-        data: &'a [u8],
-    ) -> CemiLocalMgmtBuilder<'a> {
+    pub fn response_builder<'a>(&self, count: u16, start_index: u16, data: &'a [u8]) -> CemiLocalMgmtBuilder<'a> {
         let response_code = self.message_code.to_confirmation().unwrap_or(self.message_code);
         CemiLocalMgmtBuilder {
             message_code: response_code,
@@ -330,9 +324,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiLocalMgmt<B> {
     type Error = ParseError;
 
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
-        let header = buffer
-            .take_obj_front::<raw::CemiLocalMgmtHeader>()
-            .ok_or(ParseError::Format)?;
+        let header = buffer.take_obj_front::<raw::CemiLocalMgmtHeader>().ok_or(ParseError::Format)?;
 
         let message_code = CemiMessageCode::from(header.message_code);
         let count_start = header.count_start_index.get();
@@ -382,13 +374,10 @@ impl SerializablePacket for CemiLocalMgmtBuilder<'_> {
             property_id: self.property_id,
             count_start_index: U16::from(count_start),
         };
-        bv.write_obj_front(&header)
-            .expect("too few bytes for cEMI Local Management header");
+        bv.write_obj_front(&header).expect("too few bytes for cEMI Local Management header");
 
         if !self.data.is_empty() {
-            let mut data_buf = bv
-                .take_front(self.data.len())
-                .expect("too few bytes for cEMI Local Management data");
+            let mut data_buf = bv.take_front(self.data.len()).expect("too few bytes for cEMI Local Management data");
             data_buf.deref_mut().copy_from_slice(self.data);
         }
     }
@@ -442,9 +431,7 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CemiTransport<B> {
         };
 
         // Skip 6 reserved bytes
-        let _reserved = buffer
-            .take_front(CEMI_TRANSPORT_RESERVED_LEN)
-            .ok_or(ParseError::Format)?;
+        let _reserved = buffer.take_front(CEMI_TRANSPORT_RESERVED_LEN).ok_or(ParseError::Format)?;
 
         // L (1 byte): number of TPDU octets after the first one. Total
         // TPDU size = L + 1. This follows the same convention as the NPDU
@@ -484,9 +471,7 @@ impl SerializablePacket for CemiTransportBuilder<'_> {
         header_buf.deref_mut().copy_from_slice(&header);
 
         // 6 reserved zero bytes
-        let mut reserved_buf = bv
-            .take_front(CEMI_TRANSPORT_RESERVED_LEN)
-            .expect("too few bytes for reserved padding");
+        let mut reserved_buf = bv.take_front(CEMI_TRANSPORT_RESERVED_LEN).expect("too few bytes for reserved padding");
         reserved_buf.deref_mut().fill(0);
 
         // L (number of TPDU octets after the first — same convention as NPDU length)
@@ -496,9 +481,7 @@ impl SerializablePacket for CemiTransportBuilder<'_> {
 
         // TPDU
         if !self.tpdu.is_empty() {
-            let mut tpdu_buf = bv
-                .take_front(self.tpdu.len())
-                .expect("too few bytes for TPDU data");
+            let mut tpdu_buf = bv.take_front(self.tpdu.len()).expect("too few bytes for TPDU data");
             tpdu_buf.deref_mut().copy_from_slice(self.tpdu);
         }
     }
@@ -555,30 +538,18 @@ impl<B: MessageBuffer> CemiBuffer<B> {
 
     /// Get the message code
     pub fn message_code(&self) -> CemiMessageCode {
-        if self.inner.len() > 0 {
-            CemiMessageCode::from(self.inner[0])
-        } else {
-            CemiMessageCode::Other(0)
-        }
+        if self.inner.len() > 0 { CemiMessageCode::from(self.inner[0]) } else { CemiMessageCode::Other(0) }
     }
 
     /// Get the additional info length
     pub fn additional_info_len(&self) -> usize {
-        if self.inner.len() > 1 {
-            self.inner[1] as usize
-        } else {
-            0
-        }
+        if self.inner.len() > 1 { self.inner[1] as usize } else { 0 }
     }
 
     /// Get the additional info bytes
     pub fn additional_info(&self) -> &[u8] {
         let add_len = self.additional_info_len();
-        if self.inner.len() >= 2 + add_len {
-            &self.inner[2..2 + add_len]
-        } else {
-            &[]
-        }
+        if self.inner.len() >= 2 + add_len { &self.inner[2..2 + add_len] } else { &[] }
     }
 
     /// Get the frame data (everything after message code and additional info)
@@ -587,22 +558,14 @@ impl<B: MessageBuffer> CemiBuffer<B> {
     pub fn frame_data(&self) -> &[u8] {
         let add_len = self.additional_info_len();
         let start = 2 + add_len;
-        if self.inner.len() > start {
-            &self.inner[start..]
-        } else {
-            &[]
-        }
+        if self.inner.len() > start { &self.inner[start..] } else { &[] }
     }
 
     /// Get the frame data mutably
     pub fn frame_data_mut(&mut self) -> &mut [u8] {
         let add_len = self.additional_info_len();
         let start = 2 + add_len;
-        if self.inner.len() > start {
-            &mut self.inner[start..]
-        } else {
-            &mut []
-        }
+        if self.inner.len() > start { &mut self.inner[start..] } else { &mut [] }
     }
 
     /// Get the raw cEMI frame bytes
@@ -779,12 +742,7 @@ pub fn cemi_to_knx_message<B: MessageBuffer>(mut msg: B) -> B {
 ///
 /// # Returns
 /// The final length of the cEMI frame (original knx_len + 3)
-pub fn knx_to_cemi_message(
-    buffer: &mut [u8],
-    offset: usize,
-    knx_len: usize,
-    message_code: CemiMessageCode,
-) -> usize {
+pub fn knx_to_cemi_message(buffer: &mut [u8], offset: usize, knx_len: usize, message_code: CemiMessageCode) -> usize {
     // Save the original NPDU value before shifting (needed for ctrl2)
     let orig_npdu = buffer[offset + 5];
 
@@ -799,12 +757,12 @@ pub fn knx_to_cemi_message(
     }
 
     // Set cEMI header
-    buffer[offset] = message_code.into();     // msg_code
-    buffer[offset + 1] = 0;                   // add_info_len = 0
+    buffer[offset] = message_code.into(); // msg_code
+    buffer[offset + 1] = 0; // add_info_len = 0
 
     // ctrl1 is now at offset + 2 (was shifted)
     // Set ctrl2 at offset + 3
-    buffer[offset + 3] = orig_npdu;           // ctrl2: AT/HC/EFF from original npdu
+    buffer[offset + 3] = orig_npdu; // ctrl2: AT/HC/EFF from original npdu
 
     // Set npdu_len at offset + 8 (after ctrl1, ctrl2, src(2), dst(2))
     buffer[offset + 8] = (knx_len - 7) as u8; // Length of TPCI/APCI + data
@@ -957,7 +915,9 @@ mod tests {
                 // This matches the semantics of a fixed-size buffer where set_len
                 // doesn't initialize the new bytes
                 self.data.reserve(len - self.data.len());
-                unsafe { self.data.set_len(len); }
+                unsafe {
+                    self.data.set_len(len);
+                }
             } else {
                 self.data.truncate(len);
             }
@@ -1254,22 +1214,15 @@ mod tests {
 
         let expected_err = [
             0xFB, // M_PropRead.con
-            0x00, 0x00, 0x01, 0x33,
-            0x00, 0x01, // count=0, start_index=1
+            0x00, 0x00, 0x01, 0x33, 0x00, 0x01, // count=0, start_index=1
         ];
         assert_eq!(written, &expected_err);
     }
 
     #[test]
     fn test_message_code_to_confirmation() {
-        assert_eq!(
-            CemiMessageCode::MPropReadReq.to_confirmation(),
-            Some(CemiMessageCode::MPropReadCon)
-        );
-        assert_eq!(
-            CemiMessageCode::MPropWriteReq.to_confirmation(),
-            Some(CemiMessageCode::MPropWriteCon)
-        );
+        assert_eq!(CemiMessageCode::MPropReadReq.to_confirmation(), Some(CemiMessageCode::MPropReadCon));
+        assert_eq!(CemiMessageCode::MPropWriteReq.to_confirmation(), Some(CemiMessageCode::MPropWriteCon));
         assert_eq!(CemiMessageCode::LDataReq.to_confirmation(), None);
         assert_eq!(CemiMessageCode::MPropReadCon.to_confirmation(), None);
     }
@@ -1345,10 +1298,7 @@ mod tests {
 
     #[test]
     fn test_transport_builder_serialize() {
-        let builder = CemiTransportBuilder {
-            message_code: CemiMessageCode::TDataConnectedInd,
-            tpdu: &[0x00, 0x81],
-        };
+        let builder = CemiTransportBuilder { message_code: CemiMessageCode::TDataConnectedInd, tpdu: &[0x00, 0x81] };
 
         let mut buffer = [0u8; 32];
         let mut cursor = &mut buffer[..];
@@ -1367,10 +1317,7 @@ mod tests {
     #[test]
     fn test_transport_builder_empty_tpdu() {
         // Empty TPDU is an edge case — L = saturating_sub(1) = 0
-        let builder = CemiTransportBuilder {
-            message_code: CemiMessageCode::TDataIndividualReq,
-            tpdu: &[],
-        };
+        let builder = CemiTransportBuilder { message_code: CemiMessageCode::TDataIndividualReq, tpdu: &[] };
 
         assert_eq!(builder.bytes_len(), 9); // MC(1) + AddIL(1) + Reserved(6) + L(1)
 
@@ -1396,10 +1343,7 @@ mod tests {
         let parsed = buf.parse::<CemiTransport<_>>().unwrap();
 
         // Serialize back
-        let builder = CemiTransportBuilder {
-            message_code: parsed.message_code,
-            tpdu: parsed.tpdu,
-        };
+        let builder = CemiTransportBuilder { message_code: parsed.message_code, tpdu: parsed.tpdu };
 
         let mut buffer = [0u8; 32];
         let mut cursor = &mut buffer[..];
@@ -1410,14 +1354,8 @@ mod tests {
 
     #[test]
     fn test_message_code_to_indication() {
-        assert_eq!(
-            CemiMessageCode::TDataIndividualReq.to_indication(),
-            Some(CemiMessageCode::TDataIndividualInd)
-        );
-        assert_eq!(
-            CemiMessageCode::TDataConnectedReq.to_indication(),
-            Some(CemiMessageCode::TDataConnectedInd)
-        );
+        assert_eq!(CemiMessageCode::TDataIndividualReq.to_indication(), Some(CemiMessageCode::TDataIndividualInd));
+        assert_eq!(CemiMessageCode::TDataConnectedReq.to_indication(), Some(CemiMessageCode::TDataConnectedInd));
         // Non-transport codes return None
         assert_eq!(CemiMessageCode::LDataReq.to_indication(), None);
         assert_eq!(CemiMessageCode::MPropReadReq.to_indication(), None);

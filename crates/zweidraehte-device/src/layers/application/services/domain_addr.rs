@@ -13,8 +13,8 @@
 use crate::{
     StackState,
     definition::StackDefinition,
-    service::{AlCtx, ApciHandler},
     objects::interface::HasDomainAddress,
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::messages::{
@@ -49,12 +49,7 @@ where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::DomainAddressSerialNumberRead => {
                 handle_domain_address_serial_number_read::<D>(msg, ctx);
@@ -81,7 +76,6 @@ where
         }
     }
 }
-
 
 // ============================================================================
 // Handlers

@@ -41,12 +41,7 @@ use crate::logging::{debug, error, warn};
 pub struct AuthorizationService;
 
 impl<D: StackDefinition> ApciHandler<D> for AuthorizationService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::AuthorizeRequest => {
                 handle_authorize_request::<D>(msg, ctx);
@@ -65,16 +60,12 @@ impl<D: StackDefinition> ApciHandler<D> for AuthorizationService {
     }
 }
 
-
 // ============================================================================
 // Handlers
 // ============================================================================
 
 /// Handle `A_Authorize_Request.ind`
-fn handle_authorize_request<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlCtx<'_, D>,
-) {
+fn handle_authorize_request<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     let Some(req) = AuthorizeRequest::parse(ind.buf()) else {
         error!("Authorize_Request message too short: {}", ind.len());
         return;

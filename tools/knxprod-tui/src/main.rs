@@ -14,16 +14,16 @@ use clap::Parser;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use log::LevelFilter;
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use simplelog::{Config, WriteLogger};
 
 use app::{App, EditMode};
 use zweidraehte_knxprod::runtime::baggage::BaggageIndex;
 use zweidraehte_knxprod::runtime::parser::ProgramSummary;
-use zweidraehte_knxprod::{parse_application_program_from_file, Device, MasterData};
+use zweidraehte_knxprod::{Device, MasterData, parse_application_program_from_file};
 
 /// KNX ApplicationProgram TUI Viewer
 #[derive(Parser, Debug)]
@@ -181,10 +181,9 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
                 KeyCode::Char('q') if !in_edit_mode => {
                     app.should_quit = true;
                 }
-                KeyCode::Esc
-                    if in_edit_mode => {
-                        app.cancel_edit();
-                    }
+                KeyCode::Esc if in_edit_mode => {
+                    app.cancel_edit();
+                }
                 KeyCode::Tab if !in_edit_mode => {
                     app.toggle_focus();
                 }

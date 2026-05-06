@@ -26,10 +26,11 @@ use core::cell::Cell;
 
 use serde::{Deserialize, Serialize};
 
+use crate::StackDefinition;
 use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
-use crate::objects::interface::{
-    HasMaxRetryCount, PropertyError, WriteResponse, interface_object_augment, pid,
-};
+use crate::objects::comm::HasGoSecurityView;
+use crate::objects::interface::{HasMaxRetryCount, PropertyError, WriteResponse, interface_object_augment, pid};
+use crate::restart::EraseCode;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 
@@ -104,10 +105,9 @@ pub struct Tp1ExtensionState {
     _max_retry_count_io: (),
 }
 
-
 // Plain TP1 has no Data Secure layer — every send is plaintext, so the
 // trait's `Plain` defaults are correct without any override.
-impl crate::objects::comm::HasGoSecurityView for Tp1ExtensionState {}
+impl HasGoSecurityView for Tp1ExtensionState {}
 
 impl ExtensionState for Tp1ExtensionState {
     type Config = Tp1ExtensionConfig;
@@ -121,8 +121,7 @@ impl ExtensionState for Tp1ExtensionState {
         Tp1ExtensionConfig { max_retry_count: self.max_retry_count.get() }
     }
 
-    fn on_erase(&self, code: crate::restart::EraseCode) {
-        use crate::restart::EraseCode;
+    fn on_erase(&self, code: EraseCode) {
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
             self.max_retry_count.set(default_max_retry_count());
         }
@@ -136,12 +135,12 @@ impl HasSecurityMode for Tp1ExtensionState {}
 // ============================================================================
 
 impl Extension<()> for Tp1ExtensionState {
-    type Augment<'a, D: crate::StackDefinition>
+    type Augment<'a, D: StackDefinition>
         = &'a Tp1ExtensionState
     where
         Self: 'a;
 
-    fn create_augment<'a, D: crate::StackDefinition>(&'a self, _platform: &'a ()) -> Self::Augment<'a, D>
+    fn create_augment<'a, D: StackDefinition>(&'a self, _platform: &'a ()) -> Self::Augment<'a, D>
     where
         (): 'a,
     {

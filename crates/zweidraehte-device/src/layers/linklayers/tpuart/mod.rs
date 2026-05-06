@@ -55,7 +55,7 @@ use embassy_futures::select::{Either4, select4};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Instant, Timer};
 
-use crate::context::KnxIndividualAddressContext;
+use crate::context::{AddressTableContext, KnxIndividualAddressContext, LinkLayerBufferContext, MaxRetryCountContext};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
     buffers::{Buffer, MessageBuffer},
@@ -311,7 +311,7 @@ impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static> s
 
 impl<CTX, W, R, A> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, A>
 where
-    CTX: crate::context::LinkLayerBufferContext + crate::context::MaxRetryCountContext,
+    CTX: LinkLayerBufferContext + MaxRetryCountContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
     A: AddressChecker + Send + 'static,
@@ -365,10 +365,7 @@ impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerCapabilities
 
 impl<CTX, W, R> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
 where
-    CTX: crate::context::LinkLayerBufferContext
-        + crate::context::KnxIndividualAddressContext
-        + crate::context::AddressTableContext
-        + crate::context::MaxRetryCountContext,
+    CTX: LinkLayerBufferContext + KnxIndividualAddressContext + AddressTableContext + MaxRetryCountContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
 {
@@ -410,7 +407,7 @@ where
     uart_rx: R,
 
     // Stack context — provides buffer allocation and max APDU length management.
-    context: &'a dyn crate::context::LinkLayerBufferContext,
+    context: &'a dyn LinkLayerBufferContext,
 
     // Upper layer channels — indications and confirmations flow UP to NL
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
@@ -468,7 +465,7 @@ where
     pub fn new(
         uart_tx: W,
         uart_rx: R,
-        context: &'a dyn crate::context::LinkLayerBufferContext,
+        context: &'a dyn LinkLayerBufferContext,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     ) -> Self {
@@ -490,7 +487,7 @@ where
     pub fn with_address_checker(
         uart_tx: W,
         uart_rx: R,
-        context: &'a dyn crate::context::LinkLayerBufferContext,
+        context: &'a dyn LinkLayerBufferContext,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         address_checker: A,

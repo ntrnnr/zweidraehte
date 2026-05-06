@@ -184,13 +184,7 @@ pub struct KnxTime {
 
 impl KnxTime {
     pub const fn new(day_of_week: u8, hour: u8, minutes: u8, seconds: u8) -> Self {
-        Self {
-            data: [
-                ((day_of_week & 0x07) << 5) | (hour & 0x1F),
-                minutes & 0x3F,
-                seconds & 0x3F,
-            ],
-        }
+        Self { data: [((day_of_week & 0x07) << 5) | (hour & 0x1F), minutes & 0x3F, seconds & 0x3F] }
     }
 
     pub const fn from_bytes(bytes: [u8; 3]) -> Self {
@@ -2344,12 +2338,7 @@ impl Default for MaxRetryCount {
 
 impl fmt::Debug for MaxRetryCount {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "MaxRetryCount(busy={}, nak={})",
-            self.busy_retry(),
-            self.nak_retry()
-        )
+        write!(f, "MaxRetryCount(busy={}, nak={})", self.busy_retry(), self.nak_retry())
     }
 }
 

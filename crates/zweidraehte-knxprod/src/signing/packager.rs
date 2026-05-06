@@ -5,11 +5,11 @@ use std::fs;
 use std::io::{Cursor, Seek, Write};
 use std::path::PathBuf;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::{Reader, Writer};
-use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
+use zip::write::SimpleFileOptions;
 
 use super::{KnxSchemaVersion, MasterDataSource, SigningConfig, SigningError};
 
@@ -32,10 +32,11 @@ fn download_and_cache_master_data(version: KnxSchemaVersion) -> Result<String, S
     if let Some(cache_dir) = get_cache_dir() {
         let cache_path = cache_dir.join(&cache_filename);
         if cache_path.exists()
-            && let Ok(content) = fs::read_to_string(&cache_path) {
-                log::info!("Using cached {} from {:?}", cache_filename, cache_path);
-                return Ok(content);
-            }
+            && let Ok(content) = fs::read_to_string(&cache_path)
+        {
+            log::info!("Using cached {} from {:?}", cache_filename, cache_path);
+            return Ok(content);
+        }
     }
 
     // Download
@@ -571,10 +572,7 @@ pub fn create_knxproj(
         ("project.xml".to_string(), project.project_xml.as_bytes().to_vec()),
         ("0.xml".to_string(), project.topology_xml.as_bytes().to_vec()),
     ];
-    let project_refs: Vec<(String, &[u8])> = project_files
-        .iter()
-        .map(|(p, c)| (p.clone(), c.as_slice()))
-        .collect();
+    let project_refs: Vec<(String, &[u8])> = project_files.iter().map(|(p, c)| (p.clone(), c.as_slice())).collect();
     let project_signature = sign_directory_contents(&project_refs)?;
 
     // Build the ZIP archive.

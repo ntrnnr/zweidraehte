@@ -4,9 +4,9 @@
 //! for managing connection-oriented transport layer communication per
 //! KNX specification 03/03/04.
 
+use embassy_time::Instant;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
-use embassy_time::Instant;
 
 // ============================================================================
 // Connection State
@@ -222,10 +222,7 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
     /// Used for applying deferred state transitions where the connection may
     /// be temporarily in an intermediate state.
     pub fn find_any_including_closed(&mut self, addr: IndividualAddress) -> Option<&mut Connection> {
-        self.incoming
-            .iter_mut()
-            .chain(self.outgoing.iter_mut())
-            .find(|conn| conn.remote_addr == addr)
+        self.incoming.iter_mut().chain(self.outgoing.iter_mut()).find(|conn| conn.remote_addr == addr)
     }
 
     /// Allocate a new incoming connection slot for the given address.

@@ -112,15 +112,22 @@ impl KNXnetIPServiceType {
         use KNXnetIPServiceType::*;
         match self {
             // Connection lifecycle
-            ConnectRequest | ConnectResponse
-            | ConnectionstateRequest | ConnectionstateResponse
-            | DisconnectRequest | DisconnectResponse => ServiceCategory::ConnectionLifecycle,
+            ConnectRequest
+            | ConnectResponse
+            | ConnectionstateRequest
+            | ConnectionstateResponse
+            | DisconnectRequest
+            | DisconnectResponse => ServiceCategory::ConnectionLifecycle,
 
             // Connection-oriented data
-            DeviceConfigurationRequest | DeviceConfigurationAck
-            | TunnelingRequest | TunnelingAck
-            | TunnelingFeatureGet | TunnelingFeatureResponse
-            | TunnelingFeatureSet | TunnelingFeatureInfo => ServiceCategory::ConnectionData,
+            DeviceConfigurationRequest
+            | DeviceConfigurationAck
+            | TunnelingRequest
+            | TunnelingAck
+            | TunnelingFeatureGet
+            | TunnelingFeatureResponse
+            | TunnelingFeatureSet
+            | TunnelingFeatureInfo => ServiceCategory::ConnectionData,
 
             // Everything else: discovery, routing, remote config, secure
             // session bootstrap, and unknown service types.
@@ -157,34 +164,43 @@ impl KNXnetIPServiceType {
         use KNXnetIPServiceType::*;
         match self {
             // Connection lifecycle — unicast only (KNX 3/8/2 §7)
-            ConnectRequest | ConnectResponse
-            | ConnectionstateRequest | ConnectionstateResponse
-            | DisconnectRequest | DisconnectResponse => TrafficRule::UnicastOnly,
+            ConnectRequest
+            | ConnectResponse
+            | ConnectionstateRequest
+            | ConnectionstateResponse
+            | DisconnectRequest
+            | DisconnectResponse => TrafficRule::UnicastOnly,
 
             // Connection-oriented data — unicast only
-            DeviceConfigurationRequest | DeviceConfigurationAck
-            | TunnelingRequest | TunnelingAck
-            | TunnelingFeatureGet | TunnelingFeatureResponse
-            | TunnelingFeatureSet | TunnelingFeatureInfo => TrafficRule::UnicastOnly,
+            DeviceConfigurationRequest
+            | DeviceConfigurationAck
+            | TunnelingRequest
+            | TunnelingAck
+            | TunnelingFeatureGet
+            | TunnelingFeatureResponse
+            | TunnelingFeatureSet
+            | TunnelingFeatureInfo => TrafficRule::UnicastOnly,
 
             // Routing — multicast only (KNX 3/8/5)
-            RoutingIndication | RoutingLostMessage
-            | RoutingBusy | RoutingSystemBroadcast => TrafficRule::MulticastOnly,
+            RoutingIndication | RoutingLostMessage | RoutingBusy | RoutingSystemBroadcast => TrafficRule::MulticastOnly,
 
             // Discovery — either (SearchRequest can be multicast or unicast,
             // DescriptionRequest is unicast to the control endpoint)
-            SearchRequest | SearchResponse
-            | SearchRequestExtended | SearchResponseExtended
-            | DescriptionRequest | DescriptionResponse => TrafficRule::Any,
+            SearchRequest
+            | SearchResponse
+            | SearchRequestExtended
+            | SearchResponseExtended
+            | DescriptionRequest
+            | DescriptionResponse => TrafficRule::Any,
 
             // Remote config — multicast (KNX 3/8/7)
-            RemoteDiagnosticRequest | RemoteDiagnosticResponse
+            RemoteDiagnosticRequest
+            | RemoteDiagnosticResponse
             | RemoteBasicConfigurationRequest
             | RemoteResetRequest => TrafficRule::MulticastOnly,
 
             // Secure session bootstrap — unicast (TCP)
-            SessionRequest | SessionResponse
-            | SessionAuthenticate | SessionStatus => TrafficRule::UnicastOnly,
+            SessionRequest | SessionResponse | SessionAuthenticate | SessionStatus => TrafficRule::UnicastOnly,
 
             // SecureWrapper and TimerNotify can wrap any service type
             SecureWrapper | TimerNotify => TrafficRule::Any,

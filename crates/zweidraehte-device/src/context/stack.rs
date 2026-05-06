@@ -22,9 +22,20 @@
 
 #[cfg(feature = "knxip")]
 use crate::bcus::system_b::HasExtensionState;
+use crate::objects::interface::HasMaxRetryCount;
+#[cfg(feature = "knxip")]
+use crate::{
+    HasRoutingMulticastRebind, IpPlatform, IpStackState,
+    layers::linklayers::knxip::context::{
+        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext, RoutingMulticastRebindContext,
+    },
+};
 use crate::{
     StackState,
-    context::{BufferManagerContext, PropertyServiceContext, layer::LayerContext},
+    context::{
+        AddressTableContext, ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext,
+        MaxRetryCountContext, PropertyServiceContext, layer::LayerContext,
+    },
     definition::StackDefinition,
     inner::Inner,
     objects::tables::HasAddressTable,
@@ -55,18 +66,15 @@ fn set_clamped_apdu_length<D: StackDefinition>(state: &D::State, length: u16) {
 /// Auto-implemented via blanket impl. Simplifies where clauses on
 /// [`StackContext`] trait impls that need IP extension state and platform.
 #[cfg(feature = "knxip")]
-pub trait IpCapableStack:
-    StackDefinition<State: HasExtensionState<ES: crate::IpStackState>, Platform: crate::IpPlatform>
-{
-}
+pub trait IpCapableStack: StackDefinition<State: HasExtensionState<ES: IpStackState>, Platform: IpPlatform> {}
 
 #[cfg(feature = "knxip")]
 impl<D> IpCapableStack for D
 where
     D: StackDefinition,
     D::State: HasExtensionState,
-    <D::State as HasExtensionState>::ES: crate::IpStackState,
-    D::Platform: crate::IpPlatform,
+    <D::State as HasExtensionState>::ES: IpStackState,
+    D::Platform: IpPlatform,
 {
 }
 
@@ -124,7 +132,7 @@ impl<D: StackDefinition> BufferManagerContext for StackContext<'_, D> {
     }
 }
 
-impl<D: StackDefinition> crate::context::ApduLengthContext for StackContext<'_, D> {
+impl<D: StackDefinition> ApduLengthContext for StackContext<'_, D> {
     fn max_apdu_length(&self) -> u16 {
         self.inner.state.max_apdu_length()
     }
@@ -141,11 +149,8 @@ impl<D: StackDefinition> PropertyServiceContext for StackContext<'_, D> {
 }
 
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::DeviceInfoContext for StackContext<'_, D> {
+impl<D: IpCapableStack> DeviceInfoContext for StackContext<'_, D> {
     fn device_information(&self) -> zweidraehte_proto::messages::knxip::substructs::DeviceInformation {
-        use crate::IpPlatform;
-        use crate::IpStackState;
-        use crate::bcus::system_b::HasExtensionState;
         use zweidraehte_platform::address::EthernetAddress;
         use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, DeviceStatus, KNXMedium};
 
@@ -181,12 +186,8 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::DeviceInfoCon
 }
 
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpDiagnosticsContext for StackContext<'_, D> {
+impl<D: IpCapableStack> IpDiagnosticsContext for StackContext<'_, D> {
     fn ip_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpConfig {
-        use crate::IpPlatform;
-        use crate::IpStackState;
-        use crate::bcus::system_b::HasExtensionState;
-
         let ip = self.inner.state.extension_state();
         let platform = &self.inner.platform;
         zweidraehte_proto::messages::knxip::substructs::IpConfig {
@@ -199,8 +200,6 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpDiagnostics
     }
 
     fn ip_current_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig {
-        use crate::IpPlatform;
-
         let platform = &self.inner.platform;
         zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig {
             ip_address: platform.current_ip_address(),
@@ -214,15 +213,11 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpDiagnostics
 }
 
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext
-    for StackContext<'_, D>
-{
+impl<D: IpCapableStack> IpAdditionalIndividualAddressContext for StackContext<'_, D> {
     fn write_additional_individual_addresses(
         &self,
         buf: &mut [zweidraehte_proto::address::IndividualAddress],
     ) -> usize {
-        use crate::IpStackState;
-        use crate::bcus::system_b::HasExtensionState;
         self.inner.state.extension_state().write_additional_individual_addresses(buf)
     }
 }
@@ -232,39 +227,36 @@ impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::IpAdditionalI
 /// + `HasRoutingMulticastRebind` bounds ensure this only applies to stacks
 /// whose extension state actually carries the channel.
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> crate::layers::linklayers::knxip::context::RoutingMulticastRebindContext for StackContext<'_, D>
+impl<D: IpCapableStack> RoutingMulticastRebindContext for StackContext<'_, D>
 where
-    <D::State as crate::bcus::system_b::HasExtensionState>::ES: crate::HasRoutingMulticastRebind,
+    <D::State as HasExtensionState>::ES: HasRoutingMulticastRebind,
 {
     fn routing_multicast_rebind_channel(
         &self,
     ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::net::Ipv4Addr, 2> {
-        use crate::HasRoutingMulticastRebind;
-        use crate::bcus::system_b::HasExtensionState;
         self.inner.state.extension_state().routing_multicast_rebind_channel()
     }
 }
 
-impl<D: StackDefinition> crate::context::MaxRetryCountContext for StackContext<'_, D>
+impl<D: StackDefinition> MaxRetryCountContext for StackContext<'_, D>
 where
-    D::State: crate::objects::interface::HasMaxRetryCount,
+    D::State: HasMaxRetryCount,
 {
     fn max_retry_count(&self) -> u8 {
-        use crate::objects::interface::HasMaxRetryCount;
         self.inner.state.max_retry_count()
     }
 }
 
 // Unconditional — `individual_address()` is on `StackState`, so this works
 // for both IP and TP1 devices.
-impl<D: StackDefinition> crate::context::KnxIndividualAddressContext for StackContext<'_, D> {
+impl<D: StackDefinition> KnxIndividualAddressContext for StackContext<'_, D> {
     fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress {
         self.inner.state.individual_address()
     }
 }
 
-impl<D: StackDefinition> crate::context::AddressTableContext for StackContext<'_, D> {
-    type ADT = <D::State as crate::objects::tables::HasAddressTable>::ADT;
+impl<D: StackDefinition> AddressTableContext for StackContext<'_, D> {
+    type ADT = <D::State as HasAddressTable>::ADT;
 
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT> {
         self.inner.state.adt()

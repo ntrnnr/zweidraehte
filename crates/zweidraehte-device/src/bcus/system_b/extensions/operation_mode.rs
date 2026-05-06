@@ -22,7 +22,6 @@ use core::cell::Cell;
 
 use embassy_time::Instant;
 
-use crate::StackState;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
 use crate::layers::application::capabilities::{
     GroupValueAddressedSender, GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender,
@@ -36,6 +35,7 @@ use crate::objects::tables::{
     HasCommunicationObjectTable, HasRunStateMachine,
 };
 use crate::service::ServiceCtx;
+use crate::{StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_proto::messages::apdu::go_diagnostics::{
@@ -445,7 +445,7 @@ impl<'a> DiagnosticsAugment<'a> {
     // ================================================================
 
     /// Handle FunctionPropertyExtCommand for PID_GO_DIAGNOSTICS.
-    fn handle_go_diag_command<D: crate::StackDefinition>(
+    fn handle_go_diag_command<D: StackDefinition>(
         &self,
         ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,
@@ -612,7 +612,7 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// On success, builds and pushes a GroupValue_Write telegram to the
     /// outbox before returning the response.
-    fn handle_go_diag_direct_write<D: crate::StackDefinition>(
+    fn handle_go_diag_direct_write<D: StackDefinition>(
         &self,
         ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,
@@ -736,7 +736,7 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// On success, builds and pushes a GroupValue_Write telegram with the
     /// GO's current value and configured priority.
-    fn handle_go_diag_transmit<D: crate::StackDefinition>(
+    fn handle_go_diag_transmit<D: StackDefinition>(
         &self,
         ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,
@@ -816,7 +816,7 @@ impl<'a> DiagnosticsAugment<'a> {
     ///
     /// On success, builds and pushes a GroupValue_Read telegram to the
     /// outbox before returning the response.
-    fn handle_go_diag_direct_read<D: crate::StackDefinition>(
+    fn handle_go_diag_direct_read<D: StackDefinition>(
         &self,
         ctx: &ServiceCtx<'_, D>,
         req: &FunctionPropertyRequest<'_>,

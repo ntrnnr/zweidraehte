@@ -10,9 +10,9 @@
 //! The DUT runs with Security Mode OFF — all tests operate via tool key
 //! commissioning through the FDSK.
 
-use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{InvalidSecurityParam, SecureParams, SeqSource, TestCase, TestSuite};
 
 // ============================================================================
 // Plaintext templates
@@ -50,57 +50,50 @@ const TIMEOUT: u32 = 3000;
 pub fn create_section_3_1_suite() -> TestSuite {
     let variables = create_security_variables();
 
-    TestSuite::new("3.1 S-A_Data PDU with Tool Key", variables)
-        .secure()
-        .with_cases(vec![
-            // ================================================================
-            // Positive tests: auth-only
-            // ================================================================
-            test_3_1_1(),
-            test_3_1_3(),
-            test_3_1_7(),
-            test_3_1_10(),
-            test_3_1_11(),
-
-            // ================================================================
-            // Positive tests: auth+conf
-            // ================================================================
-            test_3_1_2(),
-            test_3_1_14(),
-            test_3_1_15(),
-            test_3_1_18(),
-            test_3_1_20(),
-            test_3_1_21(),
-
-            // ================================================================
-            // Negative tests: auth-only
-            // ================================================================
-            test_3_1_5(),
-            test_3_1_6(),
-            test_3_1_8(),
-            test_3_1_9(),
-            test_3_1_12(),
-            test_3_1_13(),
-            test_3_1_26(),
-            test_3_1_28(),
-
-            // ================================================================
-            // Negative tests: auth+conf
-            // ================================================================
-            test_3_1_17(),
-            test_3_1_19(),
-            test_3_1_22(),
-            test_3_1_23(),
-            test_3_1_25(),
-            test_3_1_27(),
-            test_3_1_29(),
-
-            test_3_1_24(),
-
-            // Placeholders for cross-reference cases (0 active telegrams in XML).
-            test_3_1_4(),
-            test_3_1_16(),
-        ])
+    TestSuite::new("3.1 S-A_Data PDU with Tool Key", variables).secure().with_cases(vec![
+        // ================================================================
+        // Positive tests: auth-only
+        // ================================================================
+        test_3_1_1(),
+        test_3_1_3(),
+        test_3_1_7(),
+        test_3_1_10(),
+        test_3_1_11(),
+        // ================================================================
+        // Positive tests: auth+conf
+        // ================================================================
+        test_3_1_2(),
+        test_3_1_14(),
+        test_3_1_15(),
+        test_3_1_18(),
+        test_3_1_20(),
+        test_3_1_21(),
+        // ================================================================
+        // Negative tests: auth-only
+        // ================================================================
+        test_3_1_5(),
+        test_3_1_6(),
+        test_3_1_8(),
+        test_3_1_9(),
+        test_3_1_12(),
+        test_3_1_13(),
+        test_3_1_26(),
+        test_3_1_28(),
+        // ================================================================
+        // Negative tests: auth+conf
+        // ================================================================
+        test_3_1_17(),
+        test_3_1_19(),
+        test_3_1_22(),
+        test_3_1_23(),
+        test_3_1_25(),
+        test_3_1_27(),
+        test_3_1_29(),
+        test_3_1_24(),
+        // Placeholders for cross-reference cases (0 active telegrams in XML).
+        test_3_1_4(),
+        test_3_1_16(),
+    ])
 }
 
 // ============================================================================
@@ -108,9 +101,8 @@ pub fn create_section_3_1_suite() -> TestSuite {
 // ============================================================================
 
 fn test_3_1_4() -> TestCase {
-    TestCase::new("3.1.4 incorrect S-A_Data A only - incorrect APCI Sec").with_steps(vec![
-        comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'."),
-    ])
+    TestCase::new("3.1.4 incorrect S-A_Data A only - incorrect APCI Sec")
+        .with_steps(vec![comment("Placeholder: covered by Application Layer Tests 8/3/7 'wrong APCIs'.")])
 }
 
 // ============================================================================
@@ -118,9 +110,8 @@ fn test_3_1_4() -> TestCase {
 // ============================================================================
 
 fn test_3_1_16() -> TestCase {
-    TestCase::new("3.1.16 incorrect S-A_Data PDU - incorrect APCI").with_steps(vec![
-        comment("Placeholder: covered by Application Layer Test 8/3/7 'wrong APCIs'."),
-    ])
+    TestCase::new("3.1.16 incorrect S-A_Data PDU - incorrect APCI")
+        .with_steps(vec![comment("Placeholder: covered by Application Layer Test 8/3/7 'wrong APCIs'.")])
 }
 
 // ============================================================================
@@ -129,11 +120,10 @@ fn test_3_1_16() -> TestCase {
 
 fn test_3_1_1() -> TestCase {
     TestCase::new("3.1.1 correct S-A_Data A only").with_steps(vec![
-            comment("Inject A_PropertyExtValueRead with auth-only, expect response"),
-            inject_secure_ao(READ_PID1, "TK1"),
-            expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-        ],
-    )
+        comment("Inject A_PropertyExtValueRead with auth-only, expect response"),
+        inject_secure_ao(READ_PID1, "TK1"),
+        expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -142,11 +132,10 @@ fn test_3_1_1() -> TestCase {
 
 fn test_3_1_2() -> TestCase {
     TestCase::new("3.1.2 correct S-A_Data A+C").with_steps(vec![
-            comment("Inject A_PropertyExtValueRead with auth+conf, expect response"),
-            inject_secure_ac(READ_PID1, "TK1"),
-            expect_secure_ac(RESP_PID1, "TK1", TIMEOUT),
-        ],
-    )
+        comment("Inject A_PropertyExtValueRead with auth+conf, expect response"),
+        inject_secure_ac(READ_PID1, "TK1"),
+        expect_secure_ac(RESP_PID1, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -155,11 +144,10 @@ fn test_3_1_2() -> TestCase {
 
 fn test_3_1_3() -> TestCase {
     TestCase::new("3.1.3 correct S-A_Data A only - second source").with_steps(vec![
-            comment("Inject from ALT_SRC_ADDR (11.F1) with auth-only"),
-            inject_secure_ao(READ_PID1_ALT_SRC, "TK1"),
-            expect_secure_ao(RESP_PID1_ALT_SRC, "TK1", TIMEOUT),
-        ],
-    )
+        comment("Inject from ALT_SRC_ADDR (11.F1) with auth-only"),
+        inject_secure_ao(READ_PID1_ALT_SRC, "TK1"),
+        expect_secure_ao(RESP_PID1_ALT_SRC, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -168,11 +156,10 @@ fn test_3_1_3() -> TestCase {
 
 fn test_3_1_5() -> TestCase {
     TestCase::new("3.1.5 incorrect SCF - no tool access (A only)").with_steps(vec![
-            comment("Auth-only with SCF=0x00 (tool bit cleared) → reject"),
-            inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::InvalidScf(0x00)),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("Auth-only with SCF=0x00 (tool bit cleared) → reject"),
+        inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::InvalidScf(0x00)),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -181,11 +168,10 @@ fn test_3_1_5() -> TestCase {
 
 fn test_3_1_6() -> TestCase {
     TestCase::new("3.1.6 reserved SAI in SCF (A only)").with_steps(vec![
-            comment("Auth-only with SCF=0x20 (reserved SAI bits set) → reject"),
-            inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::InvalidScf(0x20)),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("Auth-only with SCF=0x20 (reserved SAI bits set) → reject"),
+        inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::InvalidScf(0x20)),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -196,11 +182,10 @@ fn test_3_1_7() -> TestCase {
     let mut params = SecureParams::tool_auth_only("TK1");
     params.system_broadcast = true;
     TestCase::new("3.1.7 correct S-A_Data A only with SBC=1").with_steps(vec![
-            comment("Auth-only with system_broadcast flag set → accepted"),
-            inject_secure(READ_PID1, params.clone()),
-            expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-        ],
-    )
+        comment("Auth-only with system_broadcast flag set → accepted"),
+        inject_secure(READ_PID1, params.clone()),
+        expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -209,11 +194,10 @@ fn test_3_1_7() -> TestCase {
 
 fn test_3_1_8() -> TestCase {
     TestCase::new("3.1.8 reserved S-AL service type (A only)").with_steps(vec![
-            comment("SCF=0x84 has reserved service type bits → reject"),
-            inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::InvalidScf(0x84)),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("SCF=0x84 has reserved service type bits → reject"),
+        inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::InvalidScf(0x84)),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -222,18 +206,17 @@ fn test_3_1_8() -> TestCase {
 
 fn test_3_1_9() -> TestCase {
     TestCase::new("3.1.9 sequence number replay (A only)").with_steps(vec![
-            comment("First: valid request to establish sequence number"),
-            inject_secure_ao(READ_PID1, "TK1"),
-            expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-            comment("Second: replay with old seq (Fixed=1) → reject"),
-            inject_secure(READ_PID1, {
-                let mut p = SecureParams::tool_auth_only("TK1");
-                p.seq_source = SeqSource::Fixed(1);
-                p
-            }),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("First: valid request to establish sequence number"),
+        inject_secure_ao(READ_PID1, "TK1"),
+        expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
+        comment("Second: replay with old seq (Fixed=1) → reject"),
+        inject_secure(READ_PID1, {
+            let mut p = SecureParams::tool_auth_only("TK1");
+            p.seq_source = SeqSource::Fixed(1);
+            p
+        }),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -242,13 +225,12 @@ fn test_3_1_9() -> TestCase {
 
 fn test_3_1_10() -> TestCase {
     TestCase::new("3.1.10 sequence number +1 (A only)").with_steps(vec![
-            comment("Two consecutive requests — seq increments by 1 each time"),
-            inject_secure_ao(READ_PID1, "TK1"),
-            expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-            inject_secure_ao(READ_PID1, "TK1"),
-            expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-        ],
-    )
+        comment("Two consecutive requests — seq increments by 1 each time"),
+        inject_secure_ao(READ_PID1, "TK1"),
+        expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
+        inject_secure_ao(READ_PID1, "TK1"),
+        expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -257,16 +239,15 @@ fn test_3_1_10() -> TestCase {
 
 fn test_3_1_11() -> TestCase {
     TestCase::new("3.1.11 sequence number +2 (A only)").with_steps(vec![
-            comment("Two requests — but seq jumps by 2 (gap is acceptable)"),
-            inject_secure_ao(READ_PID1, "TK1"),
-            expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-            // The SecurityTestContext auto-increments seq by 1, so the second
-            // request will have seq = first + 2 (gap of 1). This is valid per
-            // spec — the DUT only rejects seq ≤ last known.
-            inject_secure_ao(READ_PID1, "TK1"),
-            expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
-        ],
-    )
+        comment("Two requests — but seq jumps by 2 (gap is acceptable)"),
+        inject_secure_ao(READ_PID1, "TK1"),
+        expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
+        // The SecurityTestContext auto-increments seq by 1, so the second
+        // request will have seq = first + 2 (gap of 1). This is valid per
+        // spec — the DUT only rejects seq ≤ last known.
+        inject_secure_ao(READ_PID1, "TK1"),
+        expect_secure_ao(RESP_PID1, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -275,12 +256,11 @@ fn test_3_1_11() -> TestCase {
 
 fn test_3_1_12() -> TestCase {
     TestCase::new("3.1.12 padded bits not zero (A only)").with_steps(vec![
-            comment("Reserved 6 bits in secure data following seq_nr must be 0"),
-            // TODO: Need infrastructure to set reserved padding bits.
-            // The XML injects 6 separate telegrams each with different
-            // non-zero padding patterns. For now this is a placeholder.
-        ],
-    )
+        comment("Reserved 6 bits in secure data following seq_nr must be 0"),
+        // TODO: Need infrastructure to set reserved padding bits.
+        // The XML injects 6 separate telegrams each with different
+        // non-zero padding patterns. For now this is a placeholder.
+    ])
 }
 
 // ============================================================================
@@ -289,15 +269,14 @@ fn test_3_1_12() -> TestCase {
 
 fn test_3_1_13() -> TestCase {
     TestCase::new("3.1.13 invalid MAC (A only)").with_steps(vec![
-            comment("Auth-only with wrong MAC bytes → reject"),
-            inject_secure_invalid(
-                READ_PID1,
-                SecureParams::tool_auth_only("TK1"),
-                InvalidSecurityParam::InvalidMac([0x01, 0x02, 0x03, 0x04]),
-            ),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("Auth-only with wrong MAC bytes → reject"),
+        inject_secure_invalid(
+            READ_PID1,
+            SecureParams::tool_auth_only("TK1"),
+            InvalidSecurityParam::InvalidMac([0x01, 0x02, 0x03, 0x04]),
+        ),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -306,11 +285,10 @@ fn test_3_1_13() -> TestCase {
 
 fn test_3_1_14() -> TestCase {
     TestCase::new("3.1.14 correct S-A_Data A+C (PID 57)").with_steps(vec![
-            comment("A+C read of PID_SERIAL_NUMBER (requires A+C access)"),
-            inject_secure_ac(READ_PID57, "TK1"),
-            expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-        ],
-    )
+        comment("A+C read of PID_SERIAL_NUMBER (requires A+C access)"),
+        inject_secure_ac(READ_PID57, "TK1"),
+        expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -319,11 +297,10 @@ fn test_3_1_14() -> TestCase {
 
 fn test_3_1_15() -> TestCase {
     TestCase::new("3.1.15 correct S-A_Data A+C - second source").with_steps(vec![
-            comment("A+C from ALT_SRC_ADDR reading PID 57"),
-            inject_secure_ac(READ_PID57_ALT_SRC, "TK1"),
-            expect_secure_ac(RESP_PID57_ALT_SRC, "TK1", TIMEOUT),
-        ],
-    )
+        comment("A+C from ALT_SRC_ADDR reading PID 57"),
+        inject_secure_ac(READ_PID57_ALT_SRC, "TK1"),
+        expect_secure_ac(RESP_PID57_ALT_SRC, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -332,11 +309,10 @@ fn test_3_1_15() -> TestCase {
 
 fn test_3_1_17() -> TestCase {
     TestCase::new("3.1.17 incorrect SCF - no tool access (A+C)").with_steps(vec![
-            comment("A+C with SCF=0x10 (tool bit cleared) → reject"),
-            inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::InvalidScf(0x10)),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("A+C with SCF=0x10 (tool bit cleared) → reject"),
+        inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::InvalidScf(0x10)),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -347,11 +323,10 @@ fn test_3_1_18() -> TestCase {
     let mut params = SecureParams::tool_auth_conf("TK1");
     params.system_broadcast = true;
     TestCase::new("3.1.18 correct S-A_Data A+C with SBC=1").with_steps(vec![
-            comment("A+C with system broadcast flag → accepted"),
-            inject_secure(READ_PID57, params.clone()),
-            expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-        ],
-    )
+        comment("A+C with system broadcast flag → accepted"),
+        inject_secure(READ_PID57, params.clone()),
+        expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -360,11 +335,10 @@ fn test_3_1_18() -> TestCase {
 
 fn test_3_1_19() -> TestCase {
     TestCase::new("3.1.19 reserved S-AL service type (A+C)").with_steps(vec![
-            comment("SCF=0x94 has reserved service type bits → reject"),
-            inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::InvalidScf(0x94)),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("SCF=0x94 has reserved service type bits → reject"),
+        inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::InvalidScf(0x94)),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -373,12 +347,11 @@ fn test_3_1_19() -> TestCase {
 
 fn test_3_1_20() -> TestCase {
     TestCase::new("3.1.20 sequence number +1 (A+C)").with_steps(vec![
-            inject_secure_ac(READ_PID57, "TK1"),
-            expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-            inject_secure_ac(READ_PID57, "TK1"),
-            expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-        ],
-    )
+        inject_secure_ac(READ_PID57, "TK1"),
+        expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
+        inject_secure_ac(READ_PID57, "TK1"),
+        expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -387,12 +360,11 @@ fn test_3_1_20() -> TestCase {
 
 fn test_3_1_21() -> TestCase {
     TestCase::new("3.1.21 sequence number +2 (A+C)").with_steps(vec![
-            inject_secure_ac(READ_PID57, "TK1"),
-            expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-            inject_secure_ac(READ_PID57, "TK1"),
-            expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-        ],
-    )
+        inject_secure_ac(READ_PID57, "TK1"),
+        expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
+        inject_secure_ac(READ_PID57, "TK1"),
+        expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -401,18 +373,17 @@ fn test_3_1_21() -> TestCase {
 
 fn test_3_1_22() -> TestCase {
     TestCase::new("3.1.22 sequence number replay (A+C)").with_steps(vec![
-            comment("First: valid A+C request"),
-            inject_secure_ac(READ_PID57, "TK1"),
-            expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
-            comment("Replay with old seq (Fixed=1) → reject"),
-            inject_secure(READ_PID57, {
-                let mut p = SecureParams::tool_auth_conf("TK1");
-                p.seq_source = SeqSource::Fixed(1);
-                p
-            }),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("First: valid A+C request"),
+        inject_secure_ac(READ_PID57, "TK1"),
+        expect_secure_ac(RESP_PID57, "TK1", TIMEOUT),
+        comment("Replay with old seq (Fixed=1) → reject"),
+        inject_secure(READ_PID57, {
+            let mut p = SecureParams::tool_auth_conf("TK1");
+            p.seq_source = SeqSource::Fixed(1);
+            p
+        }),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -421,11 +392,10 @@ fn test_3_1_22() -> TestCase {
 
 fn test_3_1_23() -> TestCase {
     TestCase::new("3.1.23 invalid ciphertext (A+C)").with_steps(vec![
-            comment("A+C with corrupted ciphertext → reject"),
-            inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::InvalidCipher),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("A+C with corrupted ciphertext → reject"),
+        inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::InvalidCipher),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -434,15 +404,14 @@ fn test_3_1_23() -> TestCase {
 
 fn test_3_1_25() -> TestCase {
     TestCase::new("3.1.25 invalid MAC (A+C)").with_steps(vec![
-            comment("A+C with wrong MAC → reject"),
-            inject_secure_invalid(
-                READ_PID57,
-                SecureParams::tool_auth_conf("TK1"),
-                InvalidSecurityParam::InvalidMac([0x11, 0x22, 0x33, 0x44]),
-            ),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("A+C with wrong MAC → reject"),
+        inject_secure_invalid(
+            READ_PID57,
+            SecureParams::tool_auth_conf("TK1"),
+            InvalidSecurityParam::InvalidMac([0x11, 0x22, 0x33, 0x44]),
+        ),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -451,11 +420,10 @@ fn test_3_1_25() -> TestCase {
 
 fn test_3_1_26() -> TestCase {
     TestCase::new("3.1.26 A only with AT=group in CCM → reject").with_steps(vec![
-            comment("MAC computed with AT=group instead of individual → reject"),
-            inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::WrongAddressType),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("MAC computed with AT=group instead of individual → reject"),
+        inject_secure_invalid(READ_PID1, SecureParams::tool_auth_only("TK1"), InvalidSecurityParam::WrongAddressType),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -464,11 +432,10 @@ fn test_3_1_26() -> TestCase {
 
 fn test_3_1_27() -> TestCase {
     TestCase::new("3.1.27 A+C with AT=group in CCM → reject").with_steps(vec![
-            comment("Encrypted with AT=group instead of individual → reject"),
-            inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::WrongAddressType),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("Encrypted with AT=group instead of individual → reject"),
+        inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::WrongAddressType),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -477,15 +444,14 @@ fn test_3_1_27() -> TestCase {
 
 fn test_3_1_28() -> TestCase {
     TestCase::new("3.1.28 A only – one byte too many").with_steps(vec![
-            comment("Auth-only frame with one extra byte appended after MAC → reject"),
-            inject_secure_invalid(
-                READ_PID1,
-                SecureParams::tool_auth_only("TK1"),
-                InvalidSecurityParam::AppendBytes(vec![0x00]),
-            ),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("Auth-only frame with one extra byte appended after MAC → reject"),
+        inject_secure_invalid(
+            READ_PID1,
+            SecureParams::tool_auth_only("TK1"),
+            InvalidSecurityParam::AppendBytes(vec![0x00]),
+        ),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -494,15 +460,10 @@ fn test_3_1_28() -> TestCase {
 
 fn test_3_1_29() -> TestCase {
     TestCase::new("3.1.29 A+C – one byte too few").with_steps(vec![
-            comment("A+C frame truncated by one byte → reject"),
-            inject_secure_invalid(
-                READ_PID57,
-                SecureParams::tool_auth_conf("TK1"),
-                InvalidSecurityParam::TruncateBytes(1),
-            ),
-            expect_none(TIMEOUT),
-        ],
-    )
+        comment("A+C frame truncated by one byte → reject"),
+        inject_secure_invalid(READ_PID57, SecureParams::tool_auth_conf("TK1"), InvalidSecurityParam::TruncateBytes(1)),
+        expect_none(TIMEOUT),
+    ])
 }
 
 // ============================================================================
@@ -524,16 +485,8 @@ fn test_3_1_24() -> TestCase {
 
     TestCase::new("3.1.24 A+C with plain APDU (not encrypted) → reject").with_steps(vec![
         comment("Enable Security Mode"),
-        inject_secure_ac(
-            "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01",
-            "TK1",
-        ),
-        expect_secure_ac(
-            "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00",
-            "TK1",
-            TIMEOUT,
-        ),
-
+        inject_secure_ac("3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01", "TK1"),
+        expect_secure_ac("3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00", "TK1", TIMEOUT),
         comment("A+C frame with plaintext as ciphertext → reject (MAC mismatch)"),
         inject_secure_invalid(
             READ_PID57,
@@ -541,16 +494,8 @@ fn test_3_1_24() -> TestCase {
             InvalidSecurityParam::PlainCipher(plain_apdu),
         ),
         expect_none(TIMEOUT),
-
         comment("Disable Security Mode"),
-        inject_secure_ac(
-            "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00",
-            "TK1",
-        ),
-        expect_secure_ac(
-            "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00",
-            "TK1",
-            TIMEOUT,
-        ),
+        inject_secure_ac("3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 00", "TK1"),
+        expect_secure_ac("3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00", "TK1", TIMEOUT),
     ])
 }

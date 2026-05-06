@@ -9,6 +9,7 @@
 
 use crate::{
     StackDefinition, StackState,
+    bcus::system_b::{DiagnosticsContext, HasDiagnosticsContext},
     context::EventPublisherContext,
     context::layer::LayerContext,
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
@@ -19,7 +20,7 @@ use crate::{
             HasGoSecurityView,
         },
         tables::{
-            AssociationTable, CommunicationObjectTable, HasApplication, HasAssociationTable,
+            AssociationTable, ComObjectTableEntry, CommunicationObjectTable, HasApplication, HasAssociationTable,
             HasCommunicationObjectTable, HasLoadStateMachine, HasRunStateMachine,
         },
     },
@@ -165,7 +166,6 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         // Check diagnostic source address filter: in diagnostic mode, if a
         // filter is set, only accept group telegrams from the filtered source.
         {
-            use crate::bcus::system_b::{DiagnosticsContext, HasDiagnosticsContext};
             let diag = self.state.diagnostics();
             if let Some(filter_ia) = diag.diagnostic_source_filter() {
                 let src = u16::from_be_bytes(ind.get_source_addr().0);
@@ -847,7 +847,7 @@ impl<D: StackDefinition> GroupValueAddressedSender for GroupDataProvider<'_, D> 
 /// Returns `(size_in_bytes, offset)` where offset is either:
 /// - `offsets::MSG_APCI + 1` for objects > 6 bits (data starts after APCI byte)
 /// - `offsets::MSG_APDU` for objects <= 6 bits (data fits in APCI low bits)
-pub(crate) fn get_object_size_and_offset(cot_info: &crate::objects::tables::ComObjectTableEntry) -> (usize, usize) {
+pub(crate) fn get_object_size_and_offset(cot_info: &ComObjectTableEntry) -> (usize, usize) {
     match cot_info.object_type.size_in_bytes() {
         (s, true) => (s, offsets::MSG_APCI + 1),
         (s, false) => (s, offsets::MSG_APDU),

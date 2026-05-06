@@ -89,8 +89,7 @@ impl AsyncSerialPort {
     /// consumed to ensure the serial port settings remain valid for the
     /// lifetime of both halves.
     pub fn split(self) -> Result<(AsyncSerialPortTx, AsyncSerialPortRx)> {
-        let dup_owned = nix::unistd::dup(self.s.as_fd())
-            .map_err(std::io::Error::from)?;
+        let dup_owned = nix::unistd::dup(self.s.as_fd()).map_err(std::io::Error::from)?;
         let tx = AsyncSerialPortTx { s: Async::new(dup_owned)? };
         // Consume self, keeping _t alive via the rx half's implicit lifetime.
         // The original fd is owned by self.s which we move into rx.

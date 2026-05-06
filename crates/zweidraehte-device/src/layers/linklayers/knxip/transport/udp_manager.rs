@@ -21,6 +21,8 @@ use zweidraehte_platform::{AsyncUdpSocket, IpTransport, UdpSocketOptions};
 
 use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
 
+use crate::{KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS};
+
 use super::super::EndpointType;
 
 // ============================================================================
@@ -241,7 +243,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
         let mut descriptors = self.descriptors.borrow_mut();
 
         for (i, desc) in descriptors.iter_mut().enumerate() {
-            if desc.port() != crate::KNX_PORT {
+            if desc.port() != KNX_PORT {
                 continue;
             }
 
@@ -253,7 +255,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
             // entry is in the descriptor. At most one exists in
             // practice: `bind_all` joins either just System Setup (for
             // default config) or System Setup plus one routing group.
-            let current = desc.multicast_groups().iter().copied().find(|&a| a != crate::SYSTEM_SETUP_MULTICAST_ADDRESS);
+            let current = desc.multicast_groups().iter().copied().find(|&a| a != SYSTEM_SETUP_MULTICAST_ADDRESS);
 
             if current == Some(new) {
                 continue;
@@ -266,7 +268,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
                 desc.remove_multicast_group(old);
             }
 
-            if new != crate::SYSTEM_SETUP_MULTICAST_ADDRESS && !desc.multicast_groups().contains(&new) {
+            if new != SYSTEM_SETUP_MULTICAST_ADDRESS && !desc.multicast_groups().contains(&new) {
                 match socket.join_multicast(new, interface) {
                     Ok(()) => {
                         let _ = desc.add_multicast_group(new);
@@ -415,7 +417,7 @@ mod rebind_tests {
     extern crate alloc;
 
     const IFACE: Ipv4Addr = Ipv4Addr::new(192, 168, 1, 10);
-    const SYS: Ipv4Addr = crate::SYSTEM_SETUP_MULTICAST_ADDRESS;
+    const SYS: Ipv4Addr = SYSTEM_SETUP_MULTICAST_ADDRESS;
     const ALT_A: Ipv4Addr = Ipv4Addr::new(239, 0, 0, 1);
     const ALT_B: Ipv4Addr = Ipv4Addr::new(239, 0, 0, 2);
 
@@ -456,7 +458,7 @@ mod rebind_tests {
         }
 
         fn local_endpoint(&self) -> SocketAddrV4 {
-            SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, crate::KNX_PORT)
+            SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, KNX_PORT)
         }
 
         async fn recv_from(&self, _buf: &mut [u8]) -> Result<(usize, SocketAddrV4, Option<Ipv4Addr>), Self::Error> {
@@ -485,7 +487,7 @@ mod rebind_tests {
         let log: Rc<RefCell<StdVec<Op>>> = Rc::new(RefCell::new(StdVec::new()));
 
         let mut descriptors = Vec::<SocketDescriptor, 4>::new();
-        let mut desc = SocketDescriptor::new(EndpointType::new(Ipv4Addr::UNSPECIFIED, crate::KNX_PORT));
+        let mut desc = SocketDescriptor::new(EndpointType::new(Ipv4Addr::UNSPECIFIED, KNX_PORT));
         for g in initial_groups {
             let _ = desc.add_multicast_group(*g);
         }

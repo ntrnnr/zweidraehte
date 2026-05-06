@@ -6,6 +6,7 @@
 //! programming mode. It has no dependency on KNX/IP.
 
 use crate::bcus::system_b::HasDiagnosticsContext;
+use crate::config::MAX_APDU_LENGTH_EXTENDED;
 use crate::device_model::DeviceModelNotifier;
 use crate::objects::{
     comm::{HasCommObjects, HasGoSecurityView},
@@ -133,7 +134,7 @@ pub trait StackState {
     /// Override this in your state implementation to return a value based on
     /// detected hardware capabilities.
     fn max_apdu_length(&self) -> u16 {
-        crate::config::MAX_APDU_LENGTH_EXTENDED
+        MAX_APDU_LENGTH_EXTENDED
     }
 
     /// Set the runtime maximum APDU length.

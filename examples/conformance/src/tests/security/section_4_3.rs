@@ -9,9 +9,9 @@
 //! Skipped: 4.3.7 (start_index=0 with >2 octets), 4.3.10 (data type conflict),
 //! 4.3.11 (access level), 4.3.12 (PDT_FUNCTION).
 
-use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{TestCase, TestSuite};
 
 /// Default response timeout.
 const TIMEOUT: u32 = 3000;
@@ -68,24 +68,15 @@ fn test_4_3_1() -> TestCase {
         comment("WriteUnCon PID_PROG_MODE = 0x01 (no response expected)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 10 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Read back PID_PROG_MODE → should be 0x01"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 01",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 01", TIMEOUT),
         comment("WriteUnCon PID_PROG_MODE = 0x00 (no response expected)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 10 36 01 00 01 00"),
         wait(SETTLE),
-
         comment("Read back PID_PROG_MODE → should be 0x00"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -98,24 +89,15 @@ fn test_4_3_2() -> TestCase {
         comment("WriteUnCon to IOT 0x000F (non-existing) → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 0F 00 10 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged (still 0x00)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("WriteUnCon to IOT 0x8000 (non-existing) → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 80 00 00 10 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE still 0x00"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -128,24 +110,15 @@ fn test_4_3_3() -> TestCase {
         comment("WriteUnCon to instance 0x0020 (non-existing) → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 20 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged (still 0x00)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("WriteUnCon to instance 0x8000 (non-existing) → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 80 00 36 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE still 0x00"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -158,35 +131,21 @@ fn test_4_3_4() -> TestCase {
         comment("WriteUnCon PID 3 on Device Object → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 10 03 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("WriteUnCon PID 0 on instance 0x0018 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 18 00 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("WriteUnCon PID 0x0C on instance 0x0018 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 18 0C 01 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -199,13 +158,9 @@ fn test_4_3_5() -> TestCase {
         comment("WriteUnCon PID_PROG_MODE with count=0 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 10 36 00 00 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged (still 0x00)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -218,13 +173,9 @@ fn test_4_3_6() -> TestCase {
         comment("WriteUnCon PID_PROG_MODE with count=2 (only 1 element) → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6B 01 D0 00 00 00 10 36 02 00 01 01 00"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged (still 0x00)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -237,13 +188,9 @@ fn test_4_3_8() -> TestCase {
         comment("WriteUnCon PID_PROG_MODE at start_index=2 → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D0 00 00 00 10 36 01 00 02 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged (still 0x00)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -256,13 +203,9 @@ fn test_4_3_9() -> TestCase {
         comment("WriteUnCon to PID_SERIAL_NUMBER (PID 0x0B, read-only) → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6F 01 D0 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
         wait(SETTLE),
-
         comment("Verify PID_SERIAL_NUMBER unchanged (6 bytes, wildcard)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??", TIMEOUT),
     ])
 }
 
@@ -275,13 +218,9 @@ fn test_4_3_7() -> TestCase {
         comment("WriteUnCon 6 bytes at start_index=0 to PID_PROG_MODE → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D0 00 00 00 10 36 01 00 00 01 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -294,13 +233,9 @@ fn test_4_3_10() -> TestCase {
         comment("WriteUnCon 3 bytes to 1-byte PID_PROG_MODE → silently ignored"),
         inject("BC #EDI #BDUT_ADDR 6B 01 D0 00 00 00 10 36 01 00 01 01 01"),
         wait(SETTLE),
-
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -313,12 +248,8 @@ fn test_4_3_12() -> TestCase {
         comment("WriteUnCon to Security IO PID_SECURITY_MODE (PDT_FUNCTION) → ignored"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D0 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 01 00 01 00 00 01"),
         wait(SETTLE),
-
         comment("Verify Security Mode unchanged via FunctionPropertyStateRead"),
         inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 00 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 69 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ??",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 69 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ??", TIMEOUT),
     ])
 }

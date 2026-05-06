@@ -8,8 +8,7 @@ use embassy_sync::{
 use crate::{
     context::{ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext, PropertyServiceContext},
     layers::linklayers::knxip::context::{
-        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
-        RoutingMulticastRebindContext,
+        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext, RoutingMulticastRebindContext,
     },
 };
 use zweidraehte_proto::messages::{buffers::Buffer, builder::IndicationMessage};

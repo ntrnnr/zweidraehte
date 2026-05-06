@@ -5,14 +5,13 @@ use embassy_sync::{
     channel::{Channel, DynamicSender, Receiver, Sender, TrySendError},
 };
 
-use crate::{
-    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase}};
+use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use zweidraehte_proto::encoding::tp1;
 use zweidraehte_proto::messages::{
-        buffers::Buffer,
-        builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
-        knx::*,
-    };
+    buffers::Buffer,
+    builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
+    knx::*,
+};
 
 /// A mock link layer that allows injecting messages via a channel
 ///
@@ -233,7 +232,7 @@ impl<const N: usize, const C: usize> LinkLayerBuilderBase for MockLinkLayerBuild
     }
 }
 
-impl<const N: usize, const C: usize> crate::layers::LinkLayerCapabilities for MockLinkLayerBuilder<N, C> {}
+impl<const N: usize, const C: usize> LinkLayerCapabilities for MockLinkLayerBuilder<N, C> {}
 
 impl<CTX, const N: usize, const C: usize> LinkLayerBuilder<CTX> for MockLinkLayerBuilder<N, C> {
     fn build_and_run<'a>(

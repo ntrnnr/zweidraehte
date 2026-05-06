@@ -13,13 +13,11 @@ use zerocopy::{SplitByteSlice, SplitByteSliceMut, big_endian::U16};
 
 use crate::{
     messages::knxip::error::*,
-    util::packets::{*, records::RecordSequenceBuilder},
+    util::packets::{records::RecordSequenceBuilder, *},
 };
 
 use super::{
-    super::substructs::{
-        DescriptionInformationBlockBuilder, DibRecords, HPAI, Selector,
-    },
+    super::substructs::{DescriptionInformationBlockBuilder, DibRecords, HPAI, Selector},
     KNXnetIPServiceType, KNXnetIPVersion, raw,
 };
 
@@ -46,13 +44,9 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteDiagnosticRequest {
     type Error = ParseError;
 
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
-        let header = buffer
-            .take_obj_front::<raw::KNXnetIPHeader>()
-            .ok_or(ParseError::Format)?;
+        let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::RemoteDiagnosticRequest
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::RemoteDiagnosticRequest {
             return Err(ParseError::Format);
         }
 
@@ -77,9 +71,7 @@ impl RemoteDiagnosticRequestBuilder {
 
 impl SerializablePacket for RemoteDiagnosticRequestBuilder {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<raw::KNXnetIPHeader>()
-            + self.discovery_endpoint.bytes_len()
-            + self.selector.bytes_len()
+        mem::size_of::<raw::KNXnetIPHeader>() + self.discovery_endpoint.bytes_len() + self.selector.bytes_len()
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -89,8 +81,7 @@ impl SerializablePacket for RemoteDiagnosticRequestBuilder {
             service_type: U16::from(u16::from(KNXnetIPServiceType::RemoteDiagnosticRequest)),
             total_length: (self.bytes_len() as u16).into(),
         };
-        bv.write_obj_front(&header)
-            .expect("too few bytes for KNXnet/IP header");
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
 
         self.discovery_endpoint.serialize(bv);
         self.selector.serialize(bv);
@@ -119,13 +110,9 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteDiagnosticResponse<B> {
     type Error = ParseError;
 
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
-        let header = buffer
-            .take_obj_front::<raw::KNXnetIPHeader>()
-            .ok_or(ParseError::Format)?;
+        let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::RemoteDiagnosticResponse
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::RemoteDiagnosticResponse {
             return Err(ParseError::Format);
         }
 
@@ -163,8 +150,7 @@ impl<'a> SerializablePacket for RemoteDiagnosticResponseBuilder<'a> {
             service_type: U16::from(u16::from(KNXnetIPServiceType::RemoteDiagnosticResponse)),
             total_length: (self.bytes_len() as u16).into(),
         };
-        bv.write_obj_front(&header)
-            .expect("too few bytes for KNXnet/IP header");
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
 
         self.selector.serialize(bv);
 
@@ -199,12 +185,9 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteBasicConfigurationReques
     type Error = ParseError;
 
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
-        let header = buffer
-            .take_obj_front::<raw::KNXnetIPHeader>()
-            .ok_or(ParseError::Format)?;
+        let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::RemoteBasicConfigurationRequest
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::RemoteBasicConfigurationRequest
         {
             return Err(ParseError::Format);
         }
@@ -249,13 +232,10 @@ impl<'a> SerializablePacket for RemoteBasicConfigurationRequestBuilder<'a> {
         let header = raw::KNXnetIPHeader {
             header_size: mem::size_of::<raw::KNXnetIPHeader>() as u8,
             version: KNXnetIPVersion::Version10.into(),
-            service_type: U16::from(u16::from(
-                KNXnetIPServiceType::RemoteBasicConfigurationRequest,
-            )),
+            service_type: U16::from(u16::from(KNXnetIPServiceType::RemoteBasicConfigurationRequest)),
             total_length: (self.bytes_len() as u16).into(),
         };
-        bv.write_obj_front(&header)
-            .expect("too few bytes for KNXnet/IP header");
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
 
         self.discovery_endpoint.serialize(bv);
         self.selector.serialize(bv);
@@ -312,13 +292,9 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RemoteResetRequest {
     type Error = ParseError;
 
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
-        let header = buffer
-            .take_obj_front::<raw::KNXnetIPHeader>()
-            .ok_or(ParseError::Format)?;
+        let header = buffer.take_obj_front::<raw::KNXnetIPHeader>().ok_or(ParseError::Format)?;
 
-        if KNXnetIPServiceType::from(header.service_type.get())
-            != KNXnetIPServiceType::RemoteResetRequest
-        {
+        if KNXnetIPServiceType::from(header.service_type.get()) != KNXnetIPServiceType::RemoteResetRequest {
             return Err(ParseError::Format);
         }
 
@@ -354,9 +330,7 @@ impl RemoteResetRequestBuilder {
 
 impl SerializablePacket for RemoteResetRequestBuilder {
     fn bytes_len(&self) -> usize {
-        mem::size_of::<raw::KNXnetIPHeader>()
-            + self.selector.bytes_len()
-            + 2 // command + reserved
+        mem::size_of::<raw::KNXnetIPHeader>() + self.selector.bytes_len() + 2 // command + reserved
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
@@ -366,15 +340,12 @@ impl SerializablePacket for RemoteResetRequestBuilder {
             service_type: U16::from(u16::from(KNXnetIPServiceType::RemoteResetRequest)),
             total_length: (self.bytes_len() as u16).into(),
         };
-        bv.write_obj_front(&header)
-            .expect("too few bytes for KNXnet/IP header");
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
 
         self.selector.serialize(bv);
 
         // Command byte + reserved byte
-        let mut tail = bv
-            .take_front(2)
-            .expect("too few bytes for reset command + reserved");
+        let mut tail = bv.take_front(2).expect("too few bytes for reset command + reserved");
         tail.deref_mut()[0] = self.command as u8;
         tail.deref_mut()[1] = 0x00;
     }
@@ -425,10 +396,7 @@ mod tests {
 
         let mut buf = &data[..];
         let parsed = buf.parse::<RemoteDiagnosticRequest>().unwrap();
-        assert_eq!(
-            parsed.selector,
-            Selector::Mac(EthernetAddress([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]))
-        );
+        assert_eq!(parsed.selector, Selector::Mac(EthernetAddress([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])));
     }
 
     #[test]
@@ -611,10 +579,7 @@ mod tests {
     #[test]
     fn remote_diagnostic_request_mac_round_trip() {
         let mac = EthernetAddress([0x12, 0x34, 0x56, 0x78, 0x9A, 0xBC]);
-        let builder = RemoteDiagnosticRequestBuilder::new(
-            HPAI::ipv4_udp(Ipv4Addr::UNSPECIFIED, 0),
-            Selector::Mac(mac),
-        );
+        let builder = RemoteDiagnosticRequestBuilder::new(HPAI::ipv4_udp(Ipv4Addr::UNSPECIFIED, 0), Selector::Mac(mac));
 
         let mut buf = [0u8; 64];
         let mut cursor = &mut buf[..];

@@ -129,8 +129,7 @@ impl TransferHeader {
 
         let body_length = u16::from_be_bytes([data[2], data[3]]);
 
-        let protocol_id = ProtocolId::from_byte(data[4])
-            .ok_or(TransferProtocolError::UnknownProtocolId(data[4]))?;
+        let protocol_id = ProtocolId::from_byte(data[4]).ok_or(TransferProtocolError::UnknownProtocolId(data[4]))?;
 
         let emi_id_or_service = data[5];
 
@@ -143,14 +142,7 @@ impl TransferHeader {
 
         let manufacturer_code = u16::from_be_bytes([data[6], data[7]]);
 
-        Ok(Self {
-            protocol_version,
-            header_length,
-            body_length,
-            protocol_id,
-            emi_id_or_service,
-            manufacturer_code,
-        })
+        Ok(Self { protocol_version, header_length, body_length, protocol_id, emi_id_or_service, manufacturer_code })
     }
 
     /// Encode header to bytes
@@ -172,11 +164,7 @@ impl TransferHeader {
 
     /// Get the EMI ID (only valid for KNX Tunnel protocol)
     pub fn emi_id(&self) -> Option<EmiId> {
-        if self.protocol_id == ProtocolId::KnxTunnel {
-            EmiId::from_byte(self.emi_id_or_service)
-        } else {
-            None
-        }
+        if self.protocol_id == ProtocolId::KnxTunnel { EmiId::from_byte(self.emi_id_or_service) } else { None }
     }
 }
 
@@ -221,16 +209,12 @@ impl<'a> TransferFrame<'a> {
             });
         }
 
-        Ok(Self {
-            header,
-            body: &data[body_start..body_end],
-        })
+        Ok(Self { header, body: &data[body_start..body_end] })
     }
 
     /// Check if this is a KNX Tunnel frame with cEMI
     pub fn is_cemi_tunnel(&self) -> bool {
-        self.header.protocol_id == ProtocolId::KnxTunnel
-            && self.header.emi_id() == Some(EmiId::CEmi)
+        self.header.protocol_id == ProtocolId::KnxTunnel && self.header.emi_id() == Some(EmiId::CEmi)
     }
 
     /// Check if this is a Bus Access Server frame
@@ -240,11 +224,7 @@ impl<'a> TransferFrame<'a> {
 
     /// Get the cEMI message code (first byte of body for KNX Tunnel)
     pub fn cemi_message_code(&self) -> Option<u8> {
-        if self.is_cemi_tunnel() && !self.body.is_empty() {
-            Some(self.body[0])
-        } else {
-            None
-        }
+        if self.is_cemi_tunnel() && !self.body.is_empty() { Some(self.body[0]) } else { None }
     }
 }
 
@@ -254,10 +234,7 @@ impl<'a> TransferFrame<'a> {
 pub fn encode_cemi_frame(cemi_data: &[u8], output: &mut [u8]) -> Result<usize, TransferProtocolError> {
     let total_len = TransferHeader::SIZE + cemi_data.len();
     if output.len() < total_len {
-        return Err(TransferProtocolError::BodyLengthMismatch {
-            expected: total_len as u16,
-            actual: output.len(),
-        });
+        return Err(TransferProtocolError::BodyLengthMismatch { expected: total_len as u16, actual: output.len() });
     }
 
     let header = TransferHeader::new_knx_tunnel_cemi(cemi_data.len() as u16);
@@ -275,10 +252,7 @@ pub fn encode_bus_access_frame(
 ) -> Result<usize, TransferProtocolError> {
     let total_len = TransferHeader::SIZE + data.len();
     if output.len() < total_len {
-        return Err(TransferProtocolError::BodyLengthMismatch {
-            expected: total_len as u16,
-            actual: output.len(),
-        });
+        return Err(TransferProtocolError::BodyLengthMismatch { expected: total_len as u16, actual: output.len() });
     }
 
     let header = TransferHeader::new_bus_access_server(service_type, data.len() as u16);
@@ -300,7 +274,7 @@ mod tests {
         assert_eq!(encoded[0], 0x00); // protocol version
         assert_eq!(encoded[1], 0x08); // header length
         assert_eq!(encoded[2], 0x00); // body length high
-        assert_eq!(encoded[3], 26);   // body length low
+        assert_eq!(encoded[3], 26); // body length low
         assert_eq!(encoded[4], 0x01); // protocol ID (KNX Tunnel)
         assert_eq!(encoded[5], 0x03); // EMI ID (cEMI)
         assert_eq!(encoded[6], 0x00); // manufacturer code high
@@ -344,17 +318,11 @@ mod tests {
         let mut data = [0u8; 8];
         data[0] = 0x01; // Wrong version
         data[1] = 0x08;
-        assert!(matches!(
-            TransferHeader::parse(&data),
-            Err(TransferProtocolError::UnsupportedVersion(1))
-        ));
+        assert!(matches!(TransferHeader::parse(&data), Err(TransferProtocolError::UnsupportedVersion(1))));
 
         // Wrong header length
         data[0] = 0x00;
         data[1] = 0x10; // Wrong length
-        assert!(matches!(
-            TransferHeader::parse(&data),
-            Err(TransferProtocolError::InvalidHeaderLength(0x10))
-        ));
+        assert!(matches!(TransferHeader::parse(&data), Err(TransferProtocolError::InvalidHeaderLength(0x10))));
     }
 }

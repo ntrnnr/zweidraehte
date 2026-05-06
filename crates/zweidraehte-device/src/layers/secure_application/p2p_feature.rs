@@ -45,6 +45,7 @@ use zweidraehte_proto::messages::{
 use crate::StackState;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState};
 use crate::definition::StackDefinition;
+use crate::logging::info;
 use crate::objects::tables::HasAssociationTable;
 use crate::prelude::HasAddressTable;
 use crate::storage::SecureDeviceIdentity;
@@ -74,7 +75,7 @@ pub(super) fn default_sync_rate_limit() -> embassy_time::Duration {
             std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1);
         let scaled = SYNC_RATE_LIMIT_MS / divisor;
         if divisor > 1 {
-            crate::logging::info!("S-AL sync rate-limit scaled: divisor={}, window={}ms", divisor, scaled);
+            info!("S-AL sync rate-limit scaled: divisor={}, window={}ms", divisor, scaled);
         }
         embassy_time::Duration::from_millis(scaled)
     }

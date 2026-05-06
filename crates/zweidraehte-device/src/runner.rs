@@ -11,8 +11,16 @@ use embassy_sync::{
 use embassy_time::Timer;
 
 use crate::{
-    StackState, composition::LayerStackBuilder, context::StackContext, definition::StackDefinition, inner::Inner,
-    layers::LinkLayerBuilderBase, resources::StackResources, service::LayerRegistry, stack_handle::Stack,
+    StackState,
+    composition::LayerStackBuilder,
+    context::StackContext,
+    context::layer::LayerContext,
+    definition::StackDefinition,
+    inner::Inner,
+    layers::LinkLayerBuilderBase,
+    resources::StackResources,
+    service::{LayerRegistry, ServiceCtx},
+    stack_handle::Stack,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -91,7 +99,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // for lifecycle / dispatch sites that aren't bound to an
         // incoming request.
         let make_ctx = || {
-            crate::service::ServiceCtx::new(
+            ServiceCtx::new(
                 &self.stack.inner.state,
                 self.stack.inner.layer_context,
                 ::zweidraehte_proto::access::AccessContext::default(),
@@ -276,8 +284,6 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     platform: D::Platform,
     memory_map: D::Mem,
 ) -> (Stack<'static, D>, Runner<'static, D>) {
-    use crate::context::layer::LayerContext;
-
     // ================================================================
     // Step 1: Allocate buffers
     // ================================================================
@@ -322,8 +328,7 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     let augments: &'static D::Augments<'static> = resources.augments.write(augments);
 
     // Build interface objects with reference to the state stored in Inner.
-    let interface_objects =
-        D::create_interface_objects(&inner.state, &inner.platform, inner.layer_context, augments);
+    let interface_objects = D::create_interface_objects(&inner.state, &inner.platform, inner.layer_context, augments);
     let interface_objects: &'static D::InterfaceObjects<'static> = resources.interface_objects.write(interface_objects);
 
     // Channels live on LayerContext. Create sender/receiver

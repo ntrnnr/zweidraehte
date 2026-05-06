@@ -18,7 +18,8 @@ use zweidraehte_device::{
     layers::{
         LinkLayerBuilder,
         linklayers::usb::{UsbLinkLayerBuilder, UsbLinkLayerResources},
-    }};
+    },
+};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager, MessageBuffer};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};

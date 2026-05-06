@@ -56,7 +56,6 @@ pub enum DeviceSelector {
     Path(String),
 }
 
-
 /// Known KNX USB interface vendor/product IDs
 ///
 /// Taken from the Calimero project.

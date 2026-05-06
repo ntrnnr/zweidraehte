@@ -5,8 +5,21 @@ use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Unaligned};
 
 /// A KNX individual address.
 #[derive(
-    Hash, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable,
-    Serialize, Deserialize,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Clone,
+    Copy,
+    Default,
+    FromBytes,
+    IntoBytes,
+    Unaligned,
+    KnownLayout,
+    Immutable,
+    Serialize,
+    Deserialize,
 )]
 //#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[repr(transparent)]

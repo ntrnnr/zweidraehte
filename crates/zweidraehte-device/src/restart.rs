@@ -179,7 +179,7 @@ pub trait RestartHandler {
     fn required_access_level(&self, code: EraseCode) -> u8 {
         match code {
             EraseCode::Basic | EraseCode::Confirmed => 3, // Anyone can do basic restart
-            _ => 0, // Master reset operations require system access
+            _ => 0,                                       // Master reset operations require system access
         }
     }
 

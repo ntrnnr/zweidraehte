@@ -134,7 +134,8 @@ pub fn create_section_3_8_17_suite() -> TestSuite {
 fn test_3_8_17_1() -> TestCase {
     // ---- Security IO Load State Control (PID 5) ----
     // Write PID 5 = 0x01 (StartLoading) — 10-byte load procedure record.
-    const LOAD_START_LOADING: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
+    const LOAD_START_LOADING: &str =
+        "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 01 00 00 00 00 00 00 00 00 00";
     const LOAD_START_LOADING_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 05 01 00 01 00";
     // Write PID 5 = 0x02 (LoadCompleted).
     const LOAD_COMPLETED: &str = "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 02 00 00 00 00 00 00 00 00 00";
@@ -144,8 +145,7 @@ fn test_3_8_17_1() -> TestCase {
     // (e.g. 3.8.10) may overwrite this entry with test data.
     const RESTORE_GRP_KEY: &str =
         "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F";
-    const RESTORE_GRP_KEY_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
+    const RESTORE_GRP_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
 
     // ---- GO Flags Write/Read (PID 0x3D) ----
     //
@@ -373,83 +373,64 @@ fn test_3_8_17_5() -> TestCase {
     // Connection-oriented A_Restart: master reset (restart_type=1).
     // TPCI = 0x43 (numbered seq 0 + APCI high 0x03), APCI = 0x81 01 00
     // = A_Restart master reset, erase_code=0x01 (Confirmed), channel=0x00.
-    const CONNECTED_RESTART_CONFIRMED: &str =
-        "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
+    const CONNECTED_RESTART_CONFIRMED: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 01 00";
 
     // A_Restart_Response: error_code=0x00, process_time=?? (2 bytes).
-    const CONNECTED_RESTART_CONFIRMED_RESP: &str =
-        "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
+    const CONNECTED_RESTART_CONFIRMED_RESP: &str = "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
 
     // Connection-oriented basic restart (restart_type=0).
     // Standard frame: BC prefix, TPCI = 0x43 (numbered seq 0), APCI = 0x0380.
-    const CONNECTED_BASIC_RESTART: &str =
-        "BC #EDI #BDUT_ADDR 61 43 80";
+    const CONNECTED_BASIC_RESTART: &str = "BC #EDI #BDUT_ADDR 61 43 80";
 
     // Write GO flags = FC FD FF (same as WRITE_FLAGS_MAX in test 3.8.17.1).
     // This makes the test self-contained — it doesn't rely on 3.8.17.1 having
     // run first and left these values in the GO flags table.
-    const WRITE_FLAGS: &str =
-        "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B FC FD FF";
-    const WRITE_FLAGS_OK: &str =
-        "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00";
+    const WRITE_FLAGS: &str = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B FC FD FF";
+    const WRITE_FLAGS_OK: &str = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00";
 
     // Read GO flags at start=11 (the 3 security GOs: GO_SEC_2, GO_SEC_0, GO_SEC_1).
     // APDU: 01 CC + 00 11 + 00 10 + 3D + 03 + 00 0B = 10 bytes → len = 0x09
-    const READ_FLAGS_PERSIST: &str =
-        "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B";
+    const READ_FLAGS_PERSIST: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B";
 
     // Expected response: flags = FC FD FF.
     // APDU: 01 CD + 00 11 + 00 10 + 3D + 03 + 00 0B + FC FD FF = 13 bytes → len = 0x0C
-    const READ_FLAGS_PERSIST_OK: &str =
-        "3C 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B FC FD FF";
+    const READ_FLAGS_PERSIST_OK: &str = "3C 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B FC FD FF";
 
     TestCase::new("3.8.17.5 Secure PropertyValueRead after power down/master reset").with_steps(vec![
         comment("Enable Security Mode"),
         inject_secure_ac(ENABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(ENABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-
         // Setup: write non-trivial GO flags so we can verify they persist.
         comment("Write GO flags = FC FD FF"),
         inject_secure_ac(WRITE_FLAGS, "TK1"),
         expect_secure_ac(WRITE_FLAGS_OK, "TK1", TIMEOUT),
-
         // ==== Phase A: Confirmed Restart ====
         comment("A. T_Connect + Confirmed Restart (erase=0x01)"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
-
         inject_secure_ac(CONNECTED_RESTART_CONFIRMED, "TK1"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
         expect_secure_ac(CONNECTED_RESTART_CONFIRMED_RESP, "TK1", TIMEOUT),
-
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-
         comment("Wait for DUT to restart"),
         wait(500),
-
         comment("Read GO flags → unchanged after confirmed restart"),
         inject_secure_ac(READ_FLAGS_PERSIST, "TK1"),
         expect_secure_ac(READ_FLAGS_PERSIST_OK, "TK1", TIMEOUT),
-
         // ==== Phase B: Power Down (simulated — DUT already restarted by Phase A) ====
         comment("B. Power down (simulated — verify read still works)"),
         inject_secure_ac(READ_FLAGS_PERSIST, "TK1"),
         expect_secure_ac(READ_FLAGS_PERSIST_OK, "TK1", TIMEOUT),
-
         // ==== Phase C: Basic Restart ====
         comment("C. T_Connect + Basic Restart"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
-
         inject_secure_ac(CONNECTED_BASIC_RESTART, "TK1"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-
         comment("Wait for DUT to restart"),
         wait(500),
-
         comment("Read GO flags → unchanged after basic restart"),
         inject_secure_ac(READ_FLAGS_PERSIST, "TK1"),
         expect_secure_ac(READ_FLAGS_PERSIST_OK, "TK1", TIMEOUT),
-
         // Cleanup: disable security mode for next suite.
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),

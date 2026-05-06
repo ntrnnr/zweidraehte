@@ -20,7 +20,7 @@ use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 
 use super::SystemBObjects;
-use crate::objects::interface::HasRoutingCount;
+use crate::objects::interface::{HasRoutingCount, PropertyLookup};
 
 // ============================================================================
 // PropertyServiceHandler — property dispatch across base + augment objects
@@ -51,8 +51,6 @@ where
         prop_id: u16,
         prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError> {
-        use crate::objects::interface::PropertyLookup;
-
         let obj_type = self.object_type_for(object_idx).ok_or(PropertyError::InvalidObjectIndex)?;
 
         // ================================================================

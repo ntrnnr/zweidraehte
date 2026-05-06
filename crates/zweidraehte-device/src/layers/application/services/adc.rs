@@ -29,12 +29,7 @@ use crate::logging::{debug, error, warn};
 pub struct AdcService;
 
 impl<D: StackDefinition> ApciHandler<D> for AdcService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::AdcRead => {
                 handle_adc_read::<D>(msg, ctx);
@@ -48,7 +43,6 @@ impl<D: StackDefinition> ApciHandler<D> for AdcService {
         }
     }
 }
-
 
 fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     let Some(req) = AdcRead::parse(ind.buf()) else {

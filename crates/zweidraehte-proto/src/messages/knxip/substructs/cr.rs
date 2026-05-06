@@ -2,8 +2,8 @@ use core::mem;
 
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, SplitByteSlice, SplitByteSliceMut, Unaligned};
 
-use crate::messages::knxip::error::{ParseError, ParseResult};
 use crate::address::IndividualAddress;
+use crate::messages::knxip::error::{ParseError, ParseResult};
 use crate::util::packets::*;
 
 macro_rules! debug_err {
@@ -378,20 +378,15 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CRI {
         let struct_len = header.struct_len as usize;
 
         match connection_type {
-            ConnectionType::DeviceManagement => {
-                Ok(CRI::DeviceManagement(DeviceManagementCRI::parse(buffer, ())?))
-            }
-            ConnectionType::Tunnel => {
-                Ok(CRI::Tunnel(TunnelingCRI::parse(buffer, ())?))
-            }
+            ConnectionType::DeviceManagement => Ok(CRI::DeviceManagement(DeviceManagementCRI::parse(buffer, ())?)),
+            ConnectionType::Tunnel => Ok(CRI::Tunnel(TunnelingCRI::parse(buffer, ())?)),
             other => {
                 // Consume the entire CRI structure (header + body)
-                let _ = buffer
-                    .take_front(struct_len)
-                    .ok_or_else(debug_err_fn!(
-                        ParseError::Format,
-                        "too few bytes for unknown CRI (struct_len={})", struct_len
-                    ))?;
+                let _ = buffer.take_front(struct_len).ok_or_else(debug_err_fn!(
+                    ParseError::Format,
+                    "too few bytes for unknown CRI (struct_len={})",
+                    struct_len
+                ))?;
                 Ok(CRI::Unknown(other))
             }
         }
@@ -402,10 +397,9 @@ impl SerializablePacket for CRI {
     fn bytes_len(&self) -> usize {
         match self {
             CRI::DeviceManagement(_) => DeviceManagementCRIBuilder.bytes_len(),
-            CRI::Tunnel(cri) => TunnelingCRIBuilder {
-                knx_layer: cri.knx_layer,
-                individual_address: cri.individual_address,
-            }.bytes_len(),
+            CRI::Tunnel(cri) => {
+                TunnelingCRIBuilder { knx_layer: cri.knx_layer, individual_address: cri.individual_address }.bytes_len()
+            }
             CRI::Unknown(_) => {
                 // Unknown CRI cannot be serialized meaningfully — just the header
                 mem::size_of::<raw::Header>()
@@ -417,17 +411,12 @@ impl SerializablePacket for CRI {
         match self {
             CRI::DeviceManagement(_) => DeviceManagementCRIBuilder.serialize(bv),
             CRI::Tunnel(cri) => {
-                let builder = TunnelingCRIBuilder {
-                    knx_layer: cri.knx_layer,
-                    individual_address: cri.individual_address,
-                };
+                let builder =
+                    TunnelingCRIBuilder { knx_layer: cri.knx_layer, individual_address: cri.individual_address };
                 builder.serialize(bv);
             }
             CRI::Unknown(ct) => {
-                let header = raw::Header {
-                    struct_len: mem::size_of::<raw::Header>() as u8,
-                    struct_type: (*ct).into(),
-                };
+                let header = raw::Header { struct_len: mem::size_of::<raw::Header>() as u8, struct_type: (*ct).into() };
                 bv.write_obj_front(&header).expect("too few bytes for CRI header");
             }
         }
@@ -470,12 +459,8 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for CRD {
         let connection_type: ConnectionType = header.struct_type.into();
 
         match connection_type {
-            ConnectionType::DeviceManagement => {
-                Ok(CRD::DeviceManagement(DeviceManagementCRD::parse(buffer, ())?))
-            }
-            ConnectionType::Tunnel => {
-                Ok(CRD::Tunnel(TunnelingCRD::parse(buffer, ())?))
-            }
+            ConnectionType::DeviceManagement => Ok(CRD::DeviceManagement(DeviceManagementCRD::parse(buffer, ())?)),
+            ConnectionType::Tunnel => Ok(CRD::Tunnel(TunnelingCRD::parse(buffer, ())?)),
             _ => {
                 debug!("unsupported CRD connection type: {:?}", connection_type);
                 Err(ParseError::NotSupported)

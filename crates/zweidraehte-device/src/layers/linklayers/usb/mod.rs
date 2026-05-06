@@ -78,16 +78,10 @@ pub mod transport;
 pub use link_layer::{UsbLinkLayerBuilder, UsbLinkLayerResources};
 
 // Re-exports for Transport usage
-pub use transport::{
-    UsbCemiTransport, UsbCemiTransportResources, InitializedResources,
-    comm_mode, properties,
-};
+pub use transport::{InitializedResources, UsbCemiTransport, UsbCemiTransportResources, comm_mode, properties};
 
 // Re-exports for device handling
-pub use device::{
-    AsyncHidDevice, DeviceSelector, UsbHidDevice, UsbHidError,
-    KNOWN_KNX_DEVICES, list_devices,
-};
+pub use device::{AsyncHidDevice, DeviceSelector, KNOWN_KNX_DEVICES, UsbHidDevice, UsbHidError, list_devices};
 
 // Legacy alias for backward compatibility
 pub use device::DeviceSelector as UsbDeviceSelector;

@@ -187,9 +187,8 @@ pub fn create_section_3_6_suite() -> TestSuite {
 // ============================================================================
 
 fn test_3_6_1_1() -> TestCase {
-    TestCase::new("3.6.1.1 Introduction").with_steps(vec![
-        comment("Placeholder: documents role/GA/key assumptions for the 3.6 suite."),
-    ])
+    TestCase::new("3.6.1.1 Introduction")
+        .with_steps(vec![comment("Placeholder: documents role/GA/key assumptions for the 3.6 suite.")])
 }
 
 // ============================================================================
@@ -197,9 +196,8 @@ fn test_3_6_1_1() -> TestCase {
 // ============================================================================
 
 fn test_3_6_1_x() -> TestCase {
-    TestCase::new("3.6.1.x Clean up").with_steps(vec![
-        comment("Placeholder: cleanup is executed as suite-level teardown."),
-    ])
+    TestCase::new("3.6.1.x Clean up")
+        .with_steps(vec![comment("Placeholder: cleanup is executed as suite-level teardown.")])
 }
 
 // ============================================================================

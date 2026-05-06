@@ -132,8 +132,7 @@ impl KnxIpFrameReader {
         let need = KNXIP_HEADER_SIZE - self.header_len;
         let available = input.len().min(need);
 
-        self.header_buf[self.header_len..self.header_len + available]
-            .copy_from_slice(&input[..available]);
+        self.header_buf[self.header_len..self.header_len + available].copy_from_slice(&input[..available]);
         self.header_len += available;
 
         if self.header_len < KNXIP_HEADER_SIZE {

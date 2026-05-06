@@ -1,15 +1,15 @@
 //! UI rendering for the KNX TUI viewer.
 
 use ratatui::{
+    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
-    Frame,
 };
 
 #[cfg(feature = "images")]
-use ratatui_image::{protocol::StatefulProtocol, Resize, StatefulImage};
+use ratatui_image::{Resize, StatefulImage, protocol::StatefulProtocol};
 
 use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
 
@@ -43,9 +43,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 fn render_tabs(frame: &mut Frame, area: Rect, app: &App) {
     let focused = app.focus == Focus::Tabs;
 
-    let tabs = [("Parameters", MainTab::Parameters),
+    let tabs = [
+        ("Parameters", MainTab::Parameters),
         ("Communication Objects", MainTab::CommObjects),
-        ("Memory", MainTab::Memory)];
+        ("Memory", MainTab::Memory),
+    ];
 
     let mut spans = Vec::new();
     spans.push(Span::raw(" "));
@@ -128,15 +130,7 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
             let indent = "  ".repeat(node.depth);
 
             // Expand/collapse indicator
-            let prefix = if node.has_children {
-                if node.expanded {
-                    "▼ "
-                } else {
-                    "► "
-                }
-            } else {
-                "  "
-            };
+            let prefix = if node.has_children { if node.expanded { "▼ " } else { "► " } } else { "  " };
 
             let style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
@@ -258,13 +252,11 @@ fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, wid
             let value_spans = render_widget(widget, editing, app, suffix_text, width - label_width);
 
             let mut spans = vec![Span::styled(label, Style::default().fg(Color::White).bg(bg))];
-            spans.extend(value_spans.into_iter().map(|s| {
-                if bg != Color::Reset {
-                    Span::styled(s.content, s.style.bg(bg))
-                } else {
-                    s
-                }
-            }));
+            spans.extend(
+                value_spans
+                    .into_iter()
+                    .map(|s| if bg != Color::Reset { Span::styled(s.content, s.style.bg(bg)) } else { s }),
+            );
 
             Line::from(spans)
         }
@@ -549,11 +541,7 @@ fn render_comm_objects_view(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() > max_len {
-        format!("{}…", &s[..max_len - 1])
-    } else {
-        s.to_string()
-    }
+    if s.len() > max_len { format!("{}…", &s[..max_len - 1]) } else { s.to_string() }
 }
 
 fn render_memory_view(frame: &mut Frame, area: Rect, app: &App) {

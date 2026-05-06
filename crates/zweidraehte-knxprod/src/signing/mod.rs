@@ -49,7 +49,7 @@ use thiserror::Error;
 // Re-export public API
 pub use attributes::normalize_appl_prog_id;
 pub use hashes::{compute_application_program_hash, compute_hardware2program_hash, compute_product_hash};
-pub use packager::{create_knxprod, create_knxproj, sign_application_program_xml, sign_hardware_xml, ProjectConfig};
+pub use packager::{ProjectConfig, create_knxprod, create_knxproj, sign_application_program_xml, sign_hardware_xml};
 pub use signatures::{
     sign_directory_contents, verify_directory_signature, verify_hardware_xml, verify_registration_signature,
 };

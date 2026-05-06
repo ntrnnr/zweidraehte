@@ -28,18 +28,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect to the KNX/IP interface
     // ========================================================================
 
-    println!(
-        "Connecting to KNX/IP interface at {}...",
-        config.server_addr
-    );
+    println!("Connecting to KNX/IP interface at {}...", config.server_addr);
 
-    let (client, mut worker, mut cmd_rx) =
-        KnxClient::connect(config.server_addr).await?;
+    let (client, mut worker, mut cmd_rx) = KnxClient::connect(config.server_addr).await?;
 
-    println!(
-        "Connected. Assigned address: {}",
-        client.assigned_address()
-    );
+    println!("Connected. Assigned address: {}", client.assigned_address());
 
     // Spawn the tunnel worker as a background task.
     let worker_handle = tokio::spawn(async move {
@@ -61,12 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let result = client
-        .function_property_command(
-            config.device_addr,
-            config.object_idx,
-            config.property_id,
-            &config.service_data,
-        )
+        .function_property_command(config.device_addr, config.object_idx, config.property_id, &config.service_data)
         .await;
 
     match result {
@@ -188,16 +176,10 @@ fn hex_decode(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     if s.len() % 2 != 0 {
         return Err("Hex string must have even length".into());
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(Into::into))
-        .collect()
+    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(Into::into)).collect()
 }
 
 /// Format bytes as a hex string with spaces.
 fn hex_string(data: &[u8]) -> String {
-    data.iter()
-        .map(|b| format!("{:02x}", b))
-        .collect::<Vec<_>>()
-        .join(" ")
+    data.iter().map(|b| format!("{:02x}", b)).collect::<Vec<_>>().join(" ")
 }

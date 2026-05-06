@@ -85,18 +85,15 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for Selector {
     type Error = ParseError;
 
     fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> ParseResult<Self> {
-        let header = buffer
-            .take_obj_front::<raw::SelectorHeader>()
-            .ok_or_else(|| {
-                debug!("too few bytes for Selector header");
-                ParseError::Format
-            })?;
+        let header = buffer.take_obj_front::<raw::SelectorHeader>().ok_or_else(|| {
+            debug!("too few bytes for Selector header");
+            ParseError::Format
+        })?;
 
-        let body_len = header.struct_len.checked_sub(mem::size_of::<raw::SelectorHeader>() as u8)
-            .ok_or_else(|| {
-                debug!("Selector struct_len {} too small", header.struct_len);
-                ParseError::Format
-            })?;
+        let body_len = header.struct_len.checked_sub(mem::size_of::<raw::SelectorHeader>() as u8).ok_or_else(|| {
+            debug!("Selector struct_len {} too small", header.struct_len);
+            ParseError::Format
+        })?;
 
         match header.selector_type {
             SELECTOR_TYPE_PRGMODE => {
@@ -113,12 +110,10 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for Selector {
                     debug!("MAC selector has unexpected body length {}", body_len);
                     return Err(ParseError::Format);
                 }
-                let mac = buffer
-                    .take_obj_front::<EthernetAddress>()
-                    .ok_or_else(|| {
-                        debug!("too few bytes for MAC selector body");
-                        ParseError::Format
-                    })?;
+                let mac = buffer.take_obj_front::<EthernetAddress>().ok_or_else(|| {
+                    debug!("too few bytes for MAC selector body");
+                    ParseError::Format
+                })?;
                 Ok(Selector::Mac(*mac))
             }
             other => {
@@ -142,9 +137,7 @@ impl SerializablePacket for Selector {
     }
 
     fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
-        let mut header = bv
-            .take_obj_front_zero::<raw::SelectorHeader>()
-            .expect("too few bytes for Selector header");
+        let mut header = bv.take_obj_front_zero::<raw::SelectorHeader>().expect("too few bytes for Selector header");
 
         header.struct_len = self.bytes_len() as u8;
 
@@ -154,9 +147,8 @@ impl SerializablePacket for Selector {
             }
             Selector::Mac(mac) => {
                 header.selector_type = SELECTOR_TYPE_MAC;
-                let mut mac_field = bv
-                    .take_obj_front_zero::<EthernetAddress>()
-                    .expect("too few bytes for MAC selector body");
+                let mut mac_field =
+                    bv.take_obj_front_zero::<EthernetAddress>().expect("too few bytes for MAC selector body");
                 *mac_field = *mac;
             }
         }

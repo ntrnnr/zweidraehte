@@ -5,7 +5,12 @@ use heapless::Vec;
 
 use zweidraehte_platform::{IpTransport, TcpListenerOptions};
 
-use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
+use crate::{
+    DEFAULT_MULTICAST_ADDR, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
+    context::AddressTableContext,
+    layers::transport::cemi::CemiTransportLayerEndpoints,
+    layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities},
+};
 use zweidraehte_proto::messages::{
     buffers::Buffer,
     builder::{ConfirmationMessage, IndicationMessage, RequestMessage},
@@ -78,7 +83,7 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             interface_name,
             local_addr,
             control_endpoint,
-            routing_multicast_addr: crate::DEFAULT_MULTICAST_ADDR,
+            routing_multicast_addr: DEFAULT_MULTICAST_ADDR,
             socket_ctx,
             _features: core::marker::PhantomData,
         }
@@ -272,7 +277,7 @@ where
         self,
         resources: &'res KnxNetIpResources,
         context: &'res dyn KnxNetIpContext,
-        cemi_ll: crate::layers::transport::cemi::CemiTransportLayerEndpoints<'res>,
+        cemi_ll: CemiTransportLayerEndpoints<'res>,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
         subnet_link: Option<SubnetLink<'res>>,
@@ -317,8 +322,8 @@ where
         // Discovery endpoints (always present). Spec-fixed at the
         // System Setup multicast per 03/02/06 §2.1 / 03/08/02 §4.2
         // — never moves with PID_ROUTING_MULTICAST_ADDRESS.
-        let _ = all_endpoints.push(EndpointType::new(crate::SYSTEM_SETUP_MULTICAST_ADDRESS, crate::KNX_PORT));
-        let _ = all_endpoints.push(EndpointType::new_any(crate::KNX_PORT));
+        let _ = all_endpoints.push(EndpointType::new(SYSTEM_SETUP_MULTICAST_ADDRESS, KNX_PORT));
+        let _ = all_endpoints.push(EndpointType::new_any(KNX_PORT));
 
         // Routing endpoints (empty vec when disabled)
         for ep in F::Routing::endpoints(self.routing_multicast_addr) {
@@ -368,7 +373,7 @@ where
             let mut indices = Vec::<usize, 4>::new();
             // Discovery listens on multicast + unicast on KNX_PORT
             for desc_idx in 0..socket_descriptors.len() {
-                if socket_descriptors[desc_idx].port() == crate::KNX_PORT && !indices.contains(&desc_idx) {
+                if socket_descriptors[desc_idx].port() == KNX_PORT && !indices.contains(&desc_idx) {
                     let _ = indices.push(desc_idx);
                 }
             }
@@ -417,7 +422,7 @@ where
         let control_hpai = substructs::HPAI::ipv4_udp(*self.control_endpoint.ip(), self.control_endpoint.port());
         let discovery = services::DiscoveryServer::new(control_hpai, supported_services);
 
-        let routing = F::Routing::create_server(self.routing_multicast_addr, crate::KNX_PORT);
+        let routing = F::Routing::create_server(self.routing_multicast_addr, KNX_PORT);
         let remote_config = F::RemoteConfig::create_server();
 
         // ====================================================================
@@ -478,7 +483,7 @@ impl<
 > LinkLayerBuilderBase for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     type Resources = KnxNetIpResources;
-    type LLEndpoints<'a> = crate::layers::transport::cemi::CemiTransportLayerEndpoints<'a>;
+    type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 
     fn create_resources(&self) -> Self::Resources {
         KnxNetIpResources::new()
@@ -491,13 +496,13 @@ impl<
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
-> crate::layers::LinkLayerCapabilities for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+> LinkLayerCapabilities for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
 {
     const KNXNETIP_DEVICE_CAPABILITIES: u16 = F::KNXNETIP_DEVICE_CAPABILITIES;
 }
 
 impl<
-    CTX: KnxNetIpContext + crate::context::AddressTableContext,
+    CTX: KnxNetIpContext + AddressTableContext,
     T: IpTransport + 'static,
     F: features::FeatureSet + 'static,
     const MAX_SOCKETS: usize,
@@ -512,7 +517,7 @@ where
         self,
         resources: &'a mut Self::Resources,
         context: &'a CTX,
-        ll_endpoints: crate::layers::transport::cemi::CemiTransportLayerEndpoints<'a>,
+        ll_endpoints: CemiTransportLayerEndpoints<'a>,
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,

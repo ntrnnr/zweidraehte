@@ -6,18 +6,18 @@
 
 use std::collections::HashMap;
 
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
-use quick_xml::events::{BytesStart, Event};
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 use rsa::traits::PublicKeyParts;
 use sha1::{Digest, Sha1};
 
-use super::attributes::{serialize_element, REGISTRATION_INFO_ATTRS};
+use super::attributes::{REGISTRATION_INFO_ATTRS, serialize_element};
 use super::hashes::{
-    compute_hardware2program_hash, compute_hardware2program_hash_bytes, compute_product_hash,
-    compute_product_hash_bytes, MapAttributeProvider,
+    MapAttributeProvider, compute_hardware2program_hash, compute_hardware2program_hash_bytes, compute_product_hash,
+    compute_product_hash_bytes,
 };
-use super::keys::{get_converter_private_key, get_converter_public_key, get_knx_cert_public_key, KeyType};
+use super::keys::{KeyType, get_converter_private_key, get_converter_public_key, get_knx_cert_public_key};
 use super::{
     DirectorySignatureResult, Hardware2ProgramHashResult, HardwareVerificationResult, ProductHashResult,
     RegistrationSignatureResult, SigningError,
@@ -333,44 +333,45 @@ pub fn verify_hardware_xml(
                                     result.registration_signatures.push(sig_result);
                                 }
                             } else if let Some(ref h2p_attrs) = current_h2p_attrs
-                                && let Some(ref hw_attrs) = current_hardware_attrs {
-                                    let h2p_app_hashes: Vec<String> = current_app_refs
-                                        .iter()
-                                        .filter_map(|r| app_program_hashes.get(r).cloned())
-                                        .collect();
+                                && let Some(ref hw_attrs) = current_hardware_attrs
+                            {
+                                let h2p_app_hashes: Vec<String> = current_app_refs
+                                    .iter()
+                                    .filter_map(|r| app_program_hashes.get(r).cloned())
+                                    .collect();
 
-                                    let parent_hash = compute_hardware2program_hash_bytes(
-                                        hw_attrs,
-                                        h2p_attrs,
-                                        &current_app_refs,
-                                        if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
-                                    );
-                                    let parent_id = h2p_attrs.get("Id").cloned().unwrap_or_default();
+                                let parent_hash = compute_hardware2program_hash_bytes(
+                                    hw_attrs,
+                                    h2p_attrs,
+                                    &current_app_refs,
+                                    if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
+                                );
+                                let parent_id = h2p_attrs.get("Id").cloned().unwrap_or_default();
 
-                                    let sig_result = match verify_registration_signature(&attrs, &parent_hash, sig) {
-                                        Ok(key) => RegistrationSignatureResult {
-                                            parent_id,
-                                            parent_type: "Hardware2Program".to_string(),
-                                            status: attrs.get("RegistrationStatus").cloned(),
-                                            date: attrs.get("RegistrationDate").cloned(),
-                                            number: attrs.get("RegistrationNumber").cloned(),
-                                            valid: true,
-                                            key: Some(key.to_string()),
-                                            error: None,
-                                        },
-                                        Err(e) => RegistrationSignatureResult {
-                                            parent_id,
-                                            parent_type: "Hardware2Program".to_string(),
-                                            status: attrs.get("RegistrationStatus").cloned(),
-                                            date: attrs.get("RegistrationDate").cloned(),
-                                            number: attrs.get("RegistrationNumber").cloned(),
-                                            valid: false,
-                                            key: None,
-                                            error: Some(e.to_string()),
-                                        },
-                                    };
-                                    result.registration_signatures.push(sig_result);
-                                }
+                                let sig_result = match verify_registration_signature(&attrs, &parent_hash, sig) {
+                                    Ok(key) => RegistrationSignatureResult {
+                                        parent_id,
+                                        parent_type: "Hardware2Program".to_string(),
+                                        status: attrs.get("RegistrationStatus").cloned(),
+                                        date: attrs.get("RegistrationDate").cloned(),
+                                        number: attrs.get("RegistrationNumber").cloned(),
+                                        valid: true,
+                                        key: Some(key.to_string()),
+                                        error: None,
+                                    },
+                                    Err(e) => RegistrationSignatureResult {
+                                        parent_id,
+                                        parent_type: "Hardware2Program".to_string(),
+                                        status: attrs.get("RegistrationStatus").cloned(),
+                                        date: attrs.get("RegistrationDate").cloned(),
+                                        number: attrs.get("RegistrationNumber").cloned(),
+                                        valid: false,
+                                        key: None,
+                                        error: Some(e.to_string()),
+                                    },
+                                };
+                                result.registration_signatures.push(sig_result);
+                            }
                         }
                     }
                     _ => {}
@@ -393,48 +394,48 @@ pub fn verify_hardware_xml(
                     "Product" => {
                         // Verify product hash if present
                         if let (Some(hw_attrs), Some(prod_attrs)) = (&current_hardware_attrs, &current_product_attrs)
-                            && let Some(expected_hash) = prod_attrs.get("Hash") {
-                                let computed_hash = compute_product_hash(hw_attrs, prod_attrs);
-                                let id = prod_attrs.get("Id").cloned().unwrap_or_default();
+                            && let Some(expected_hash) = prod_attrs.get("Hash")
+                        {
+                            let computed_hash = compute_product_hash(hw_attrs, prod_attrs);
+                            let id = prod_attrs.get("Id").cloned().unwrap_or_default();
 
-                                result.products.push(ProductHashResult {
-                                    id,
-                                    hardware_id: current_hardware_id.clone(),
-                                    expected: expected_hash.clone(),
-                                    computed: computed_hash.clone(),
-                                    valid: expected_hash == &computed_hash,
-                                });
-                            }
+                            result.products.push(ProductHashResult {
+                                id,
+                                hardware_id: current_hardware_id.clone(),
+                                expected: expected_hash.clone(),
+                                computed: computed_hash.clone(),
+                                valid: expected_hash == &computed_hash,
+                            });
+                        }
                         current_product_attrs = None;
                     }
                     "Hardware2Program" => {
                         // Verify H2P hash if present
                         if let (Some(hw_attrs), Some(h2p_attrs)) = (&current_hardware_attrs, &current_h2p_attrs)
-                            && let Some(expected_hash) = h2p_attrs.get("Hash") {
-                                let h2p_app_hashes: Vec<String> = current_app_refs
-                                    .iter()
-                                    .filter_map(|r| app_program_hashes.get(r).cloned())
-                                    .collect();
+                            && let Some(expected_hash) = h2p_attrs.get("Hash")
+                        {
+                            let h2p_app_hashes: Vec<String> =
+                                current_app_refs.iter().filter_map(|r| app_program_hashes.get(r).cloned()).collect();
 
-                                let computed_hash = compute_hardware2program_hash(
-                                    hw_attrs,
-                                    h2p_attrs,
-                                    &current_app_refs,
-                                    if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
-                                );
+                            let computed_hash = compute_hardware2program_hash(
+                                hw_attrs,
+                                h2p_attrs,
+                                &current_app_refs,
+                                if h2p_app_hashes.is_empty() { None } else { Some(&h2p_app_hashes) },
+                            );
 
-                                let id = h2p_attrs.get("Id").cloned().unwrap_or_default();
+                            let id = h2p_attrs.get("Id").cloned().unwrap_or_default();
 
-                                result.hardware2programs.push(Hardware2ProgramHashResult {
-                                    id,
-                                    hardware_id: current_hardware_id.clone(),
-                                    expected: expected_hash.clone(),
-                                    computed: computed_hash.clone(),
-                                    valid: expected_hash == &computed_hash,
-                                    app_refs: current_app_refs.clone(),
-                                    app_hashes_found: h2p_app_hashes.len(),
-                                });
-                            }
+                            result.hardware2programs.push(Hardware2ProgramHashResult {
+                                id,
+                                hardware_id: current_hardware_id.clone(),
+                                expected: expected_hash.clone(),
+                                computed: computed_hash.clone(),
+                                valid: expected_hash == &computed_hash,
+                                app_refs: current_app_refs.clone(),
+                                app_hashes_found: h2p_app_hashes.len(),
+                            });
+                        }
                         current_h2p_attrs = None;
                         current_app_refs.clear();
                     }

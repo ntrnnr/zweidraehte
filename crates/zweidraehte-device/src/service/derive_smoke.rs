@@ -13,8 +13,27 @@ use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
+#[cfg(feature = "knxip")]
+use crate::IpPlatform;
 use crate::StackDefinition;
+use crate::StackState;
+#[cfg(feature = "knxip")]
+use crate::bcus::system_b::IpAugment;
+use crate::bcus::system_b::{SecurityAugment, Tp1ExtensionState};
+use crate::layers::application::services::{
+    adc::AdcService, address_serial::IndividualAddressSerialNumberService, authorization::AuthorizationService,
+    domain_addr::DomainAddressService, function_property::FunctionPropertyService,
+    manufacturer::UserManufacturerInfoService, memory::MemoryService, property_ext::PropertyExtValueService,
+    system_network_parameter::SystemNetworkParameterService, user_memory::UserMemoryService,
+};
+use crate::layers::network::NetworkLayer;
+use crate::layers::transport::TransportLayer;
+#[cfg(feature = "knxip")]
+use crate::layers::transport::cemi::CemiTransportLayer;
+use crate::objects::comm::HasCommObjects;
+use crate::objects::interface::HasDomainAddress;
 use crate::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, LifecycleHook, ServiceCtx, ServiceRegistry};
+use crate::storage::SequenceNumberStorage;
 
 // -----------------------------------------------------------------
 // Shim Layer that handles a single, otherwise-unused ServiceType so
@@ -250,15 +269,15 @@ fn smoke_module_compiles() {
 /// build.
 fn _assert_real_layers_implement_service_layer<D: StackDefinition>()
 where
-    crate::layers::network::NetworkLayer<'static, D>: Layer<D>,
-    crate::layers::transport::TransportLayer<'static, D, 1, 0>: Layer<D>,
+    NetworkLayer<'static, D>: Layer<D>,
+    TransportLayer<'static, D, 1, 0>: Layer<D>,
 {
 }
 
 #[cfg(feature = "knxip")]
 fn _assert_cemi_tl_implements_service_layer<D: StackDefinition>()
 where
-    crate::layers::transport::cemi::CemiTransportLayer<'static, D, 1, 0>: Layer<D>,
+    CemiTransportLayer<'static, D, 1, 0>: Layer<D>,
 {
 }
 
@@ -269,18 +288,18 @@ where
 fn _assert_al_services_implement_apci_handler<D>()
 where
     D: StackDefinition,
-    D::State: crate::objects::comm::HasCommObjects<CO = D::CO>,
-    D::State: crate::objects::interface::HasDomainAddress,
-    crate::layers::application::services::adc::AdcService: ApciHandler<D>,
-    crate::layers::application::services::address_serial::IndividualAddressSerialNumberService: ApciHandler<D>,
-    crate::layers::application::services::authorization::AuthorizationService: ApciHandler<D>,
-    crate::layers::application::services::domain_addr::DomainAddressService: ApciHandler<D>,
-    crate::layers::application::services::function_property::FunctionPropertyService: ApciHandler<D>,
-    crate::layers::application::services::manufacturer::UserManufacturerInfoService: ApciHandler<D>,
-    crate::layers::application::services::memory::MemoryService: ApciHandler<D>,
-    crate::layers::application::services::property_ext::PropertyExtValueService: ApciHandler<D>,
-    crate::layers::application::services::system_network_parameter::SystemNetworkParameterService: ApciHandler<D>,
-    crate::layers::application::services::user_memory::UserMemoryService: ApciHandler<D>,
+    D::State: HasCommObjects<CO = D::CO>,
+    D::State: HasDomainAddress,
+    AdcService: ApciHandler<D>,
+    IndividualAddressSerialNumberService: ApciHandler<D>,
+    AuthorizationService: ApciHandler<D>,
+    DomainAddressService: ApciHandler<D>,
+    FunctionPropertyService: ApciHandler<D>,
+    UserManufacturerInfoService: ApciHandler<D>,
+    MemoryService: ApciHandler<D>,
+    PropertyExtValueService: ApciHandler<D>,
+    SystemNetworkParameterService: ApciHandler<D>,
+    UserMemoryService: ApciHandler<D>,
 {
 }
 
@@ -291,9 +310,9 @@ where
 fn _assert_augments_implement_augment<'a, D, SEQ>()
 where
     D: StackDefinition,
-    SEQ: crate::storage::SequenceNumberStorage + 'a,
-    crate::bcus::system_b::Tp1ExtensionState: Augment<D>,
-    crate::bcus::system_b::SecurityAugment<'a, SEQ, 8, 8, 16, 16>: Augment<D>,
+    SEQ: SequenceNumberStorage + 'a,
+    Tp1ExtensionState: Augment<D>,
+    SecurityAugment<'a, SEQ, 8, 8, 16, 16>: Augment<D>,
 {
 }
 
@@ -301,8 +320,8 @@ where
 fn _assert_ip_augment_implements_augment<'a, D, P>()
 where
     D: StackDefinition,
-    P: crate::IpPlatform + 'a,
-    D::State: crate::StackState,
-    crate::bcus::system_b::IpAugment<'a, P, 0, 0>: Augment<D>,
+    P: IpPlatform + 'a,
+    D::State: StackState,
+    IpAugment<'a, P, 0, 0>: Augment<D>,
 {
 }

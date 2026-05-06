@@ -8,8 +8,8 @@ pub mod serialport;
 pub mod traits;
 
 pub use traits::{
-    AsyncTcpListener, AsyncUdpSocket, IpConfig, IpTransport, NeverTcpError, NeverTcpListener, NeverTcpStream,
-    NetworkConfig, NetworkInfo, SystemControl, TcpListenerOptions, UdpSocketOptions,
+    AsyncTcpListener, AsyncUdpSocket, IpConfig, IpTransport, NetworkConfig, NetworkInfo, NeverTcpError,
+    NeverTcpListener, NeverTcpStream, SystemControl, TcpListenerOptions, UdpSocketOptions,
 };
 
 #[cfg(feature = "linux")]
@@ -17,8 +17,8 @@ mod linux;
 
 #[cfg(feature = "linux")]
 pub use linux::{
-    AsyncLinuxTcpListener, AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx, AsyncTcpStream,
-    Error as LinuxError, LinuxIpTransport, LinuxSystem, get_interface_address,
+    AsyncLinuxTcpListener, AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx, AsyncTcpStream, Error as LinuxError,
+    LinuxIpTransport, LinuxSystem, get_interface_address,
 };
 
 #[derive(Debug)]

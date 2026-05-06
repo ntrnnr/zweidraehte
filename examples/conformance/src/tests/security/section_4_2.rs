@@ -11,9 +11,9 @@
 //! 4.2.10 (data type conflict), 4.2.11 (access level), 4.2.12, 4.2.13
 //! (connection-oriented auth / special setup).
 
-use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{TestCase, TestSuite};
 
 /// Default response timeout.
 const TIMEOUT: u32 = 3000;
@@ -30,9 +30,7 @@ pub fn create_section_4_2_suite() -> TestSuite {
         .with_preparation(vec![
             // Write IA via serial number broadcast (same as 4.1)
             comment("Set BDUT individual address via A_IndividualAddressSerialNumber_Write"),
-            inject(
-                "BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00",
-            ),
+            inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
             wait(1000),
         ])
         .with_cases(vec![
@@ -79,36 +77,19 @@ fn test_4_2_2() -> TestCase {
         // Ensure PID_PROG_MODE starts at 0x00 by writing it
         comment("Pre-condition: write PID_PROG_MODE = 0x00"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 36 01 00 01 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("IOT 0x000F does not exist → E_ADDRESS_VOID (0xFD)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 0F 00 10 36 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 0F 00 10 36 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 0F 00 10 36 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("IOT 0x8000 does not exist → E_ADDRESS_VOID"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 80 00 00 10 36 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 80 00 00 10 36 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 80 00 00 10 36 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -120,29 +101,16 @@ fn test_4_2_3() -> TestCase {
     TestCase::new("4.2.3 non-existing IO instance").with_steps(vec![
         comment("Instance 0x0020 on Device Object → E_ADDRESS_VOID (0xFD)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 20 36 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 20 36 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 20 36 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("Instance 0x8000 on Device Object → E_ADDRESS_VOID"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 80 00 36 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 80 00 36 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 80 00 36 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -154,42 +122,22 @@ fn test_4_2_4() -> TestCase {
     TestCase::new("4.2.4 non-existing PID").with_steps(vec![
         comment("PID 3 on Device Object does not exist → E_ADDRESS_VOID (0xFD)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 03 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 03 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 03 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("PID 0 on instance 0x0018 → E_ADDRESS_VOID"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 18 00 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 18 00 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 18 00 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("PID 0x0C on instance 0x0018 → E_ADDRESS_VOID"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 18 0C 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 18 0C 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 18 0C 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -201,31 +149,16 @@ fn test_4_2_5() -> TestCase {
     TestCase::new("4.2.5 count=1 succeeds, count=0 fails").with_steps(vec![
         comment("Write PID_PROG_MODE = 0x01 with count=1 → success (0x00)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 36 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00", TIMEOUT),
         comment("Write PID_PROG_MODE with count=0 → E_ADDRESS_VOID (0xFD)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 36 00 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 01 FD",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE is still 0x01 (from the successful write)"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 01",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 01", TIMEOUT),
         comment("Reset PID_PROG_MODE back to 0x00"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 36 01 00 01 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -237,16 +170,10 @@ fn test_4_2_6() -> TestCase {
     TestCase::new("4.2.6 count too big").with_steps(vec![
         comment("Write PID_PROG_MODE with count=2 (only 1 element) → E_ADDRESS_VOID (0xFD)"),
         inject("BC #EDI #BDUT_ADDR 6B 01 CE 00 00 00 10 36 02 00 01 01 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 01 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 01 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -258,16 +185,10 @@ fn test_4_2_8() -> TestCase {
     TestCase::new("4.2.8 start_index too big").with_steps(vec![
         comment("Write PID_PROG_MODE at start_index=2 (only 1 element) → E_ADDRESS_VOID (0xFD)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 36 01 00 02 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 02 FD",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 02 FD", TIMEOUT),
         comment("Verify PID_PROG_MODE unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -279,24 +200,13 @@ fn test_4_2_9() -> TestCase {
     TestCase::new("4.2.9 write to read-only property").with_steps(vec![
         comment("Read PID_SERIAL_NUMBER (PID 0x0B) to capture original value"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??", TIMEOUT),
         comment("Write to PID_SERIAL_NUMBER → E_ACCESS_READ_ONLY (0xFB)"),
         inject("BC #EDI #BDUT_ADDR 6F 01 CE 00 00 00 10 0B 01 00 01 00 00 00 00 00 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 0B 00 00 01 FB",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 0B 00 00 01 FB", TIMEOUT),
         comment("Verify PID_SERIAL_NUMBER unchanged via read"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 0B 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6F 01 CD 00 00 00 10 0B 01 00 01 ?? ?? ?? ?? ?? ??", TIMEOUT),
     ])
 }
 
@@ -311,19 +221,11 @@ fn test_4_2_1() -> TestCase {
         // Write PID_PROG_MODE = 0x01 on Device Object
         comment("Write PID_PROG_MODE = 0x01"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 36 01 00 01 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00", TIMEOUT),
         // Read back PID_PROG_MODE → should be 0x01
         comment("Read back PID_PROG_MODE → 0x01"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 01",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 01", TIMEOUT),
         // Write to GO Table (IOT=0x0003) PID_TABLE_REFERENCE (6): PDT_CONTROL.
         // The GO table is loaded via load state, writing data to it in loaded
         // state should succeed (as an element-count write at start_index=0).
@@ -331,10 +233,7 @@ fn test_4_2_1() -> TestCase {
         // a load control write. For our DUT just write PID_PROG_MODE back to 0.
         comment("Write PID_PROG_MODE = 0x00 (restore)"),
         inject("BC #EDI #BDUT_ADDR 6A 01 CE 00 00 00 10 36 01 00 01 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 01 00 01 00", TIMEOUT),
     ])
 }
 
@@ -349,18 +248,11 @@ fn test_4_2_7() -> TestCase {
     TestCase::new("4.2.7 start_index=0 with >2 octets").with_steps(vec![
         comment("Write 4 bytes at start_index=0 → E_ERROR (0xFE)"),
         inject("BC #EDI #BDUT_ADDR 6C 01 CE 00 00 00 10 36 01 00 00 00 00 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 00 FE",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 00 FE", TIMEOUT),
         // Verify PID_PROG_MODE unchanged
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 ??",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 ??", TIMEOUT),
     ])
 }
 
@@ -374,18 +266,11 @@ fn test_4_2_10() -> TestCase {
     TestCase::new("4.2.10 data type conflict").with_steps(vec![
         comment("Write 3 bytes to 1-byte PID_PROG_MODE → E_DATA_TYPE_CONFLICT"),
         inject("BC #EDI #BDUT_ADDR 6C 01 CE 00 00 00 10 36 01 00 01 00 00 00"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 01 FE",
-            TIMEOUT,
-        ),
-
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF 00 00 00 10 36 00 00 01 FE", TIMEOUT),
         // Verify PID_PROG_MODE unchanged
         comment("Verify PID_PROG_MODE unchanged"),
         inject("BC #EDI #BDUT_ADDR 69 01 CC 00 00 00 10 36 01 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 ??",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CD 00 00 00 10 36 01 00 01 ??", TIMEOUT),
     ])
 }
 
@@ -401,9 +286,6 @@ fn test_4_2_13() -> TestCase {
     TestCase::new("4.2.13 write to PDT_FUNCTION → type conflict").with_steps(vec![
         comment("WriteCon to Security IO PID_SECURITY_MODE (PDT_FUNCTION) → type conflict"),
         inject("BC #EDI #BDUT_ADDR 6C 01 CE #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 01 00 01 00 00 01"),
-        expect(
-            "BC #BDUT_ADDR #EDI 6A 01 CF #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 00 00 01 FE",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 6A 01 CF #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 00 00 01 FE", TIMEOUT),
     ])
 }

@@ -217,11 +217,7 @@ impl DomainAddressSerialNumberWrite {
     /// Returns an empty slice if no domain address is present.
     pub fn domain_address(buf: &[u8]) -> &[u8] {
         let start = offsets::MSG_APCI + 8;
-        if buf.len() <= start {
-            &[]
-        } else {
-            &buf[start..buf.len()]
-        }
+        if buf.len() <= start { &[] } else { &buf[start..buf.len()] }
     }
 }
 

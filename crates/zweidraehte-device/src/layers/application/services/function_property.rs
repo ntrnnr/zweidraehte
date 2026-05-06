@@ -17,8 +17,8 @@
 
 use crate::{
     definition::StackDefinition,
-    service::{AlCtx, ApciHandler},
     objects::interface::{FunctionPropertyRequest, PropertyServiceHandler},
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
     apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
@@ -38,12 +38,7 @@ use crate::logging::{debug, error, warn};
 pub struct FunctionPropertyService;
 
 impl<D: StackDefinition> ApciHandler<D> for FunctionPropertyService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::FunctionPropertyCommand => {
                 handle::<D>(msg, ctx, true);
@@ -62,15 +57,10 @@ impl<D: StackDefinition> ApciHandler<D> for FunctionPropertyService {
     }
 }
 
-
 /// Shared implementation for command and state-read. Both share the same
 /// wire format and response format and differ only in which trait method
 /// is invoked on the interface objects.
-fn handle<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlCtx<'_, D>,
-    is_command: bool,
-) {
+fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>, is_command: bool) {
     if !matches!(ind.service_type(), ServiceType::T_Data_Ind | ServiceType::T_DataUnack_Ind) {
         warn!("AL FunctionProperty unexpected service type: {:?}", ind.service_type());
         return;

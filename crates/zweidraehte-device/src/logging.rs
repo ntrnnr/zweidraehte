@@ -4,7 +4,6 @@
 //! When neither is enabled, provides silent no-op macros so the crate compiles
 //! without a logging backend.
 
-
 #[cfg(feature = "defmt")]
 pub use defmt::{debug, error, info, trace, warn};
 

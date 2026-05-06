@@ -11,9 +11,13 @@ use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
 use crate::StackState;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
-use crate::storage::SecureDeviceIdentity;
 #[cfg(feature = "knxip")]
-use crate::layers::transport::cemi::{CemiEvent, CemiTransportLayer};
+use crate::layers::transport::cemi::{
+    CemiEvent, CemiTransportLayer, CemiTransportLayerChannelPair, CemiTransportLayerEndpoints,
+};
+use crate::rng::SecureRng;
+use crate::service::{Layer, LayerRegistry};
+use crate::storage::SecureDeviceIdentity;
 use crate::{
     actor::Request,
     context::StackContext,
@@ -50,7 +54,7 @@ use zweidraehte_proto::messages::buffers::Buffer;
 /// - [`InsecureIpDeviceBuilder`] — `(NL, CemiTL<TL>, AL)` stack with cEMI channels
 pub trait LayerStackBuilder<D: StackDefinition>: Sized {
     /// Composed layer stack produced by [`build`](Self::build).
-    type Stack<'a>: crate::service::LayerRegistry<D>
+    type Stack<'a>: LayerRegistry<D>
     where
         D: 'a;
 
@@ -130,21 +134,15 @@ pub struct InsecureIpDeviceBuilder;
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition> LayerStackBuilder<D> for InsecureIpDeviceBuilder
 where
-    D::LLB: for<'a> layers::LinkLayerBuilder<
-            StackContext<'a, D>,
-            LLEndpoints<'a> = crate::layers::transport::cemi::CemiTransportLayerEndpoints<'a>,
-        >,
+    D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>, LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>>,
 {
     type Stack<'a>
         = IpDeviceLayers<'a, D>
     where
         D: 'a;
-    type Channels = crate::layers::transport::cemi::CemiTransportLayerChannelPair;
+    type Channels = CemiTransportLayerChannelPair;
 
-    fn build<'a>(
-        ctx: &'a StackContext<'a, D>,
-        channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
-    ) -> IpDeviceLayers<'a, D>
+    fn build<'a>(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> IpDeviceLayers<'a, D>
     where
         D: 'a,
     {
@@ -152,7 +150,7 @@ where
     }
 
     fn run_link_layer<'a>(
-        channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
+        channels: &'a CemiTransportLayerChannelPair,
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
@@ -217,7 +215,7 @@ where
 pub struct StandardLayerStack<'a, D, AL>
 where
     D: StackDefinition,
-    AL: crate::service::Layer<D> + HasAppRequest,
+    AL: Layer<D> + HasAppRequest,
 {
     #[service(handler)]
     nl: NetworkLayer<'a, D>,
@@ -330,7 +328,7 @@ where
     // `SecureRng` marker is implemented by every real RNG but not
     // by `NoRng`, so this turns the misconfiguration into a
     // compile-time error at secure-stack assembly.
-    D::Rng: crate::rng::SecureRng,
+    D::Rng: SecureRng,
 {
     type Stack<'a>
         = StandardSecureDeviceLayers<'a, D, P2P>
@@ -349,7 +347,7 @@ where
         _channels: &'a (),
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
-        context: &'a crate::context::StackContext<'a, D>,
+        context: &'a StackContext<'a, D>,
         ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
@@ -378,7 +376,7 @@ where
 pub struct IpLayerStack<'a, D, AL>
 where
     D: StackDefinition,
-    AL: crate::service::Layer<D> + HasAppRequest,
+    AL: Layer<D> + HasAppRequest,
 {
     #[service(handler)]
     nl: NetworkLayer<'a, D>,
@@ -408,10 +406,7 @@ pub type IpDeviceLayers<'a, D> = IpLayerStack<'a, D, ApplicationLayer<'a, D>>;
 
 #[cfg(feature = "knxip")]
 impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
-    pub fn with_cemi(
-        ctx: &'a StackContext<'a, D>,
-        channels: &'a crate::layers::transport::cemi::CemiTransportLayerChannelPair,
-    ) -> Self {
+    pub fn with_cemi(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
         let nl = NetworkLayer::new(ctx);
         let transport_layer = TransportLayer::new(ctx);
 

@@ -53,18 +53,12 @@ pub struct MemoryImage {
 impl MemoryImage {
     /// Create a new memory image with the given size.
     pub fn new(size: usize) -> Self {
-        Self {
-            bytes: vec![0; size],
-            base_offset: 0,
-        }
+        Self { bytes: vec![0; size], base_offset: 0 }
     }
 
     /// Create a new memory image with the given size and base offset.
     pub fn with_base(size: usize, base_offset: u32) -> Self {
-        Self {
-            bytes: vec![0; size],
-            base_offset,
-        }
+        Self { bytes: vec![0; size], base_offset }
     }
 
     /// Write a value at the given offset and bit position.
@@ -154,11 +148,7 @@ impl fmt::Display for MemoryDiff {
                 if i > 0 {
                     write!(f, ", ")?;
                 }
-                write!(
-                    f,
-                    "@0x{:X}: 0x{:02X}!=0x{:02X}",
-                    diff.offset, diff.expected, diff.actual
-                )?;
+                write!(f, "@0x{:X}: 0x{:02X}!=0x{:02X}", diff.offset, diff.expected, diff.actual)?;
             }
             if self.byte_diffs.len() > 5 {
                 write!(f, ", ...")?;
@@ -182,18 +172,11 @@ pub struct MemoryComparator<'a> {
 impl<'a> MemoryComparator<'a> {
     /// Create a new memory comparator.
     pub fn new(reference: &'a CanonicalProgram, generated: &'a CanonicalProgram) -> Self {
-        Self {
-            reference,
-            generated,
-        }
+        Self { reference, generated }
     }
 
     /// Generate a memory image for the given configuration using a program's parameters.
-    pub fn generate_memory(
-        program: &CanonicalProgram,
-        config: &TestConfig,
-        memory_size: usize,
-    ) -> MemoryImage {
+    pub fn generate_memory(program: &CanonicalProgram, config: &TestConfig, memory_size: usize) -> MemoryImage {
         let mut image = MemoryImage::new(memory_size);
 
         // Write default values first
@@ -217,33 +200,18 @@ impl<'a> MemoryComparator<'a> {
         let gen_image = Self::generate_memory(self.generated, config, memory_size);
 
         let mut byte_diffs = Vec::new();
-        for (i, (expected, actual)) in ref_image.bytes.iter().zip(gen_image.bytes.iter()).enumerate()
-        {
+        for (i, (expected, actual)) in ref_image.bytes.iter().zip(gen_image.bytes.iter()).enumerate() {
             if expected != actual {
-                byte_diffs.push(ByteDiff {
-                    offset: i as u32,
-                    expected: *expected,
-                    actual: *actual,
-                });
+                byte_diffs.push(ByteDiff { offset: i as u32, expected: *expected, actual: *actual });
             }
         }
 
-        if byte_diffs.is_empty() {
-            None
-        } else {
-            Some(MemoryDiff {
-                config: config.clone(),
-                byte_diffs,
-            })
-        }
+        if byte_diffs.is_empty() { None } else { Some(MemoryDiff { config: config.clone(), byte_diffs }) }
     }
 
     /// Compare memory layouts for multiple configurations.
     pub fn compare(&self, configs: &[TestConfig], memory_size: usize) -> Vec<MemoryDiff> {
-        configs
-            .iter()
-            .filter_map(|config| self.compare_config(config, memory_size))
-            .collect()
+        configs.iter().filter_map(|config| self.compare_config(config, memory_size)).collect()
     }
 
     /// Generate test configurations covering all parameter default values.
@@ -278,11 +246,7 @@ impl MemoryComparisonReport {
 impl fmt::Display for MemoryComparisonReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "--- Memory Layout Comparison ---")?;
-        writeln!(
-            f,
-            "Configs tested: {}, matched: {}",
-            self.configs_tested, self.configs_matched
-        )?;
+        writeln!(f, "Configs tested: {}, matched: {}", self.configs_tested, self.configs_matched)?;
         if self.diffs.is_empty() {
             writeln!(f, "✓ All memory layouts matched")?;
         } else {

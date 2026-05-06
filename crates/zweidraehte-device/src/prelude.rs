@@ -7,8 +7,8 @@
 // Core stack
 pub use crate::{
     HasAuthorization, HasPersistence, InsecureDeviceBuilder, ReadObjectError, Runner, SecureDeviceBuilder, Stack,
-    StackDefinition, StackResources, StackState, StandardDeviceLayers, StandardLayerStack,
-    StandardSecureDeviceLayers, UpdateObjectError,
+    StackDefinition, StackResources, StackState, StandardDeviceLayers, StandardLayerStack, StandardSecureDeviceLayers,
+    UpdateObjectError,
 };
 
 // KNX/IP-specific types

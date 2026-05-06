@@ -128,11 +128,7 @@ pub const APPLICATION_PROGRAM_ATTRS: &[AttrDef] = &[
 ///
 /// This matches .NET ApplProgIdAttributeInfo.NormalizeId().
 pub fn normalize_appl_prog_id(id: &str) -> String {
-    if id.len() >= 21 {
-        format!("{}{}", &id[..16], &id[21..])
-    } else {
-        id.to_string()
-    }
+    if id.len() >= 21 { format!("{}{}", &id[..16], &id[21..]) } else { id.to_string() }
 }
 
 /// Write a single attribute in .NET BinaryWriter format.

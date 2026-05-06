@@ -21,12 +21,13 @@
 //! [`NoP2p`]: super::p2p_feature::NoP2p
 //! [`WithP2p`]: super::p2p_feature::WithP2p
 
+use crate::StackState;
 use crate::bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType};
 use crate::definition::StackDefinition;
-use crate::objects::tables::HasAssociationTable;
+use crate::objects::tables::{HasAssociationTable, LoadState};
 use crate::prelude::HasAddressTable;
+use crate::rng::Rng;
 use crate::storage::{SecureDeviceIdentity, SequenceNumberStorage};
-use crate::StackState;
 use zweidraehte_proto::crypto::{
     ccm,
     scf::{SecureServiceType, SecurityControlField},
@@ -143,9 +144,8 @@ where
             debug!("S-AL sync_req: using configured tool key");
             tk
         } else {
-            let fdsk = *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(
-                sal.inner.state().identity(),
-            );
+            let fdsk =
+                *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(sal.inner.state().identity());
             debug!("S-AL sync_req: tool key empty, falling back to FDSK (present={})", fdsk != [0u8; 16]);
             fdsk
         }
@@ -209,7 +209,6 @@ where
         || matches!(incoming_service_type, ServiceType::T_Broadcast_Ind | ServiceType::T_SystemBroadcast_Ind);
 
     // SIAT check (non-tool only).
-    use crate::objects::tables::LoadState;
     if security_state.security_load_state() != LoadState::Loaded {
         return SecureResult::Dropped;
     }
@@ -339,7 +338,7 @@ where
 
     // Step 9: Generate random.
     let mut random = [0u8; 6];
-    <D::Rng as crate::rng::Rng>::fill(&mut random);
+    <D::Rng as Rng>::fill(&mut random);
 
     // Step 10: Build response — reuse the incoming buffer.
     let mut challenge_xor_random = [0u8; 6];
@@ -607,7 +606,7 @@ where
 
     // Step 3: Generate random challenge.
     let mut challenge = [0u8; 6];
-    <D::Rng as crate::rng::Rng>::fill(&mut challenge);
+    <D::Rng as Rng>::fill(&mut challenge);
 
     // Step 4: Build SCF for sync request.
     let scf = SecurityControlField {

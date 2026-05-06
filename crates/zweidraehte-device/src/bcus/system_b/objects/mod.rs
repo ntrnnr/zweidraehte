@@ -43,10 +43,12 @@ use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic05, PDT_UnsignedCha
 
 use crate::StackDefinition;
 use crate::context::layer::LayerContext;
+use crate::ets::DeviceDescriptor;
 use crate::objects::interface::HasRoutingCount;
 use crate::objects::tables::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
 };
+use crate::service::Augment;
 
 // ============================================================================
 // IO List Constants
@@ -91,10 +93,10 @@ static BASE_IO_TYPES: [InterfaceObjectType; 6] = [
 /// - `COT`: Communication object table type
 /// - `APP`: Application type (implementing both HasLoadStateMachine and HasRunStateMachine)
 /// - `PEI`: PEI application type (implementing both HasLoadStateMachine and HasRunStateMachine)
-/// - `Aug`: Borrowed augment registry implementing [`crate::service::Augment<D>`].
+/// - `Aug`: Borrowed augment registry implementing [`Augment<D>`].
 ///   The container holds `&'a Aug`; the runner owns the chain itself
 ///   and ticks lifecycles through the owner reference.
-pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug: crate::service::Augment<D> = ()>
+pub struct SystemBObjects<'a, D, ADT, AST, COT, APP, PEI, Aug: Augment<D> = ()>
 where
     D: StackDefinition,
     ADT: HasLoadStateMachine,
@@ -123,7 +125,7 @@ where
     COT: HasLoadStateMachine,
     APP: HasLoadStateMachine + HasRunStateMachine,
     PEI: HasLoadStateMachine + HasRunStateMachine,
-    Aug: crate::service::Augment<D>,
+    Aug: Augment<D>,
 {
     /// Number of base interface objects (Device, ADT, AST, GOT, APP, PEI).
     pub const BASE_OBJECT_COUNT: u16 = 6;
@@ -138,7 +140,7 @@ where
     pub fn new(
         state: &'a D::State,
         lctx: &'a LayerContext<D>,
-        device: &crate::ets::DeviceDescriptor,
+        device: &DeviceDescriptor,
         layout: &super::memory_map::MemoryLayout,
         adt: &'a RefCell<ADT>,
         ast: &'a RefCell<AST>,
@@ -429,7 +431,7 @@ where
     <D::State as HasCommunicationObjectTable>::COT: HasLoadStateMachine,
     <D::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
     <D::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
-    Aug: crate::service::Augment<D>,
+    Aug: Augment<D>,
 {
     SystemBObjects::new(
         state,

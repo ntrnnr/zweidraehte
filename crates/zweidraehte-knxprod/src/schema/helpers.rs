@@ -50,11 +50,7 @@ pub fn object_size_to_string(size_bits: u8) -> &'static str {
 
 /// Convert DPT main/sub to ETS string format
 pub fn dpt_to_string(dpt_main: u16, dpt_sub: u16) -> String {
-    if dpt_sub == 0 {
-        format!("DPT-{}", dpt_main)
-    } else {
-        format!("DPST-{}-{}", dpt_main, dpt_sub)
-    }
+    if dpt_sub == 0 { format!("DPT-{}", dpt_main) } else { format!("DPST-{}-{}", dpt_main, dpt_sub) }
 }
 
 /// Convert priority flags to ComObjectPriority

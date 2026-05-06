@@ -4,8 +4,10 @@
 //! to the device's tables for A_Memory_Read/Write services.
 
 use crate::{
+    ets::DeviceDescriptor,
     memory::{MemoryError, MemoryMap},
-    objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, TableMemory}};
+    objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, TableMemory},
+};
 use zweidraehte_proto::AccessContext;
 
 /// Memory layout information for System B devices.
@@ -82,11 +84,7 @@ impl MemoryLayout {
     /// Shorthand for `calculate()` that extracts table capacities from the
     /// descriptor. `app_data_size` is typically `core::mem::size_of::<P>()`
     /// where `P` is the application parameter type.
-    pub const fn from_descriptor(
-        base_address: u16,
-        device: &crate::ets::DeviceDescriptor,
-        app_data_size: usize,
-    ) -> Self {
+    pub const fn from_descriptor(base_address: u16, device: &DeviceDescriptor, app_data_size: usize) -> Self {
         Self::calculate(
             base_address,
             device.max_address_table_entries as usize,

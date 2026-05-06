@@ -5,7 +5,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
-use zweidraehte_knxprod::schema::{ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef};
+use zweidraehte_knxprod::schema::{
+    ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef,
+};
 
 // ============================================================================
 // Semantic Keys

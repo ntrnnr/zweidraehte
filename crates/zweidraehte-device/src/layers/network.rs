@@ -1,7 +1,9 @@
 use heapless::Deque;
 
 use crate::context::StackContext;
+use crate::context::layer::LayerContext;
 use crate::objects::interface::{HasDeviceObject, HasRoutingCount};
+use crate::service::{Layer, ServiceCtx};
 use crate::{StackDefinition, StackState};
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::*;
@@ -17,7 +19,7 @@ use zweidraehte_proto::messages::knx::*;
 /// transformed messages to the outbox for further routing.
 pub struct NetworkLayer<'a, D: StackDefinition> {
     state: &'a D::State,
-    lctx: &'a crate::context::layer::LayerContext<D>,
+    lctx: &'a LayerContext<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 
     /// FIFO of address types from outgoing requests, needed to transform each
@@ -39,7 +41,7 @@ impl<'a, D: StackDefinition> NetworkLayer<'a, D> {
     }
 }
 
-impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
+impl<D: StackDefinition> Layer<D> for NetworkLayer<'_, D> {
     const HANDLES: &'static [ServiceType] = &[
         // Indications from LL (upward)
         ServiceType::L_Data_Ind,
@@ -52,7 +54,7 @@ impl<D: StackDefinition> crate::service::Layer<D> for NetworkLayer<'_, D> {
         ServiceType::N_SystemBroadcast_Req,
     ];
 
-    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &crate::service::ServiceCtx<'_, D>) {
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &ServiceCtx<'_, D>) {
         match msg.service_type() {
             // =================================================================
             // Indications from link layer (upward: L_Data_Ind → N_*_Ind)

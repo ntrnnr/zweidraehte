@@ -12,7 +12,7 @@ use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf,
     PropertyError, WriteResponse, interface_object_augment, pid,
 };
-use crate::objects::tables::LoadState;
+use crate::objects::tables::{LoadEvent, LoadState};
 use crate::service::ServiceCtx;
 use crate::storage::SequenceNumberStorage;
 use zweidraehte_proto::access::AccessPolicy;
@@ -369,7 +369,6 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                 if req.data.is_empty() {
                     return Some(Err(PropertyError::BufferTooSmall));
                 }
-                use crate::objects::tables::LoadEvent;
                 let event = LoadEvent::from(req.data[0]);
                 let cur = self.state.load_state();
                 let new_state = match event {

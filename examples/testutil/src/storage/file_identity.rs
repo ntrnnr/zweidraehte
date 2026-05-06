@@ -118,16 +118,13 @@ mod hex_serial {
     {
         let hex = String::deserialize(deserializer)?;
         if hex.len() != 12 {
-            return Err(serde::de::Error::custom(format!(
-                "expected 12 hex characters, got {}",
-                hex.len()
-            )));
+            return Err(serde::de::Error::custom(format!("expected 12 hex characters, got {}", hex.len())));
         }
 
         let mut result = [0u8; 6];
         for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-            let pair = std::str::from_utf8(chunk)
-                .map_err(|_| serde::de::Error::custom("invalid UTF-8 in hex string"))?;
+            let pair =
+                std::str::from_utf8(chunk).map_err(|_| serde::de::Error::custom("invalid UTF-8 in hex string"))?;
             result[i] = u8::from_str_radix(pair, 16)
                 .map_err(|_| serde::de::Error::custom(format!("invalid hex byte: '{}'", pair)))?;
         }

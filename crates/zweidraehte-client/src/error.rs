@@ -11,10 +11,7 @@ pub enum Error {
     Io(#[from] std::io::Error),
 
     #[error("tunnel connection to {addr} refused: {status}")]
-    ConnectionRefused {
-        addr: SocketAddrV4,
-        status: ConnectionStatus,
-    },
+    ConnectionRefused { addr: SocketAddrV4, status: ConnectionStatus },
 
     #[error("tunnel disconnected by server")]
     Disconnected,

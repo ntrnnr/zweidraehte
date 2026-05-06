@@ -35,7 +35,10 @@ use zweidraehte_proto::messages::{
     knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
 };
 
-use crate::logging::warn;
+use crate::logging::{debug, warn};
+use crate::objects::tables::{AddressTable, LoadState};
+use crate::router::Outbox;
+use crate::service::{Layer, ServiceCtx};
 
 pub mod group_data;
 pub(crate) mod outgoing;
@@ -394,7 +397,6 @@ where
         // TSAP as `dst`, but the MAC was computed with the original GA. We
         // must restore the original GA for correct MAC verification.
         if addr_type != 0 {
-            use crate::objects::tables::AddressTable;
             let tsap = ctx.dst; // Currently holds the TSAP, not the GA.
             let adt = self.inner.state().adt().borrow();
             if let Some(ga) = adt.get_address(tsap) {
@@ -406,7 +408,6 @@ where
         // is not "Loaded", security tables (P2P keys, group keys, SIAT) must
         // not be evaluated. Tool Key is independent of load state.
         if !scf.tool_access {
-            use crate::objects::tables::LoadState;
             if security_state.security_load_state() != LoadState::Loaded {
                 warn!(
                     "S-AL: security tables not loaded (state={:?}), dropping non-tool frame",
@@ -442,13 +443,12 @@ where
             // when the device is in factory state (tool key all zeros).
             let tk = security_state.tool_key();
             if tk != [0u8; 16] {
-                crate::logging::debug!("S-AL: decrypt using configured tool key");
+                debug!("S-AL: decrypt using configured tool key");
                 tk
             } else {
-                let fdsk = *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(
-                    self.inner.state().identity(),
-                );
-                crate::logging::debug!("S-AL: decrypt using FDSK fallback (tool key empty)");
+                let fdsk =
+                    *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(self.inner.state().identity());
+                debug!("S-AL: decrypt using FDSK fallback (tool key empty)");
                 fdsk
             }
         } else if addr_type != 0 {
@@ -647,8 +647,6 @@ where
     /// spontaneous-output surface added to the inner AL automatically gets
     /// the encryption pass without a new swap site.
     fn with_outbox_swap<F: FnOnce(&mut Self)>(&mut self, f: F) {
-        use crate::router::Outbox;
-
         let original = {
             let outbox_cell = &self.inner.lctx().outbox;
             outbox_cell.replace(Outbox::new())
@@ -849,13 +847,9 @@ where
             return None;
         };
 
-        crate::logging::debug!(
+        debug!(
             "S-AL: encrypt spontaneous {:?} with key[0..2]={:02x}{:02x} (tool={}, scf=0x{:02x})",
-            st,
-            key[0],
-            key[1],
-            tool_access,
-            scf_byte
+            st, key[0], key[1], tool_access, scf_byte
         );
 
         let src = u16::from_be_bytes(self.inner.state().individual_address().0);
@@ -888,34 +882,34 @@ where
     }
 }
 
-impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> crate::service::Layer<D>
+impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Layer<D>
     for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
-    const HANDLES: &'static [ServiceType] = <ApplicationLayer<'_, D> as crate::service::Layer<D>>::HANDLES;
+    const HANDLES: &'static [ServiceType] = <ApplicationLayer<'_, D> as Layer<D>>::HANDLES;
 
-    fn init(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+    fn init(&mut self, ctx: &ServiceCtx<'_, D>) {
         // The inner AL's `init()` may queue ROI reads up front. The
         // same requirement applies: stamp + encrypt.
-        self.with_outbox_swap(|this| crate::service::Layer::<D>::init(&mut this.inner, ctx));
+        self.with_outbox_swap(|this| Layer::<D>::init(&mut this.inner, ctx));
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
-        crate::service::Layer::<D>::next_deadline(&self.inner)
+        Layer::<D>::next_deadline(&self.inner)
     }
 
-    fn poll(&mut self, ctx: &crate::service::ServiceCtx<'_, D>) {
+    fn poll(&mut self, ctx: &ServiceCtx<'_, D>) {
         // Read-on-init reads (`A_GroupValue_Read.req`) and any other
         // spontaneous emissions originating from the inner AL's poll
         // loop need the same encryption pass that frame-driven sends
         // get.
-        self.with_outbox_swap(|this| crate::service::Layer::<D>::poll(&mut this.inner, ctx));
+        self.with_outbox_swap(|this| Layer::<D>::poll(&mut this.inner, ctx));
     }
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, ctx: &crate::service::ServiceCtx<'_, D>) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
         match self.try_process_secure(msg) {
             SecureResult::Forward(msg) => {
                 // Run the inner AL inside the same outbox-swap window
@@ -929,7 +923,7 @@ where
                 // path reads `tool_key()` after `set_tool_key` has
                 // returned, so the WriteConRes for PID_TOOL_KEY
                 // encrypts with the newly-set key (TSSJ §3.8.13.1).
-                self.with_outbox_swap(|this| crate::service::Layer::<D>::process(&mut this.inner, msg, ctx));
+                self.with_outbox_swap(|this| Layer::<D>::process(&mut this.inner, msg, ctx));
             }
             SecureResult::SyncResponse(msg) => {
                 // Sync response is already fully encrypted — push

@@ -12,11 +12,9 @@ use crate::{TestCase, TestSuite};
 pub fn create_section_3_8_5_suite() -> TestSuite {
     let variables = create_security_variables();
 
-    TestSuite::new("3.8.5 PID_PROG_MODE (x-54)", variables)
-        .secure()
-        .with_cases(vec![
-            TestCase::new("3.8.5 PID_PROG_MODE (x-54)").with_steps(vec![
-                comment("Placeholder: documentation-only cross-reference to 3.7.2.13 — no telegrams of its own."),
-            ]),
-        ])
+    TestSuite::new("3.8.5 PID_PROG_MODE (x-54)", variables).secure().with_cases(vec![
+        TestCase::new("3.8.5 PID_PROG_MODE (x-54)").with_steps(vec![comment(
+            "Placeholder: documentation-only cross-reference to 3.7.2.13 — no telegrams of its own.",
+        )]),
+    ])
 }

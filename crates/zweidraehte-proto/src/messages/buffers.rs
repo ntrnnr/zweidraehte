@@ -102,10 +102,7 @@ pub trait MessageBuffer: Deref<Target = [u8]> + DerefMut<Target = [u8]> + Sized 
     /// Returns `Err` if insufficient headroom is available.
     fn try_grow_front(&mut self, count: usize) -> Result<(), BufferError> {
         if count > self.headroom() {
-            return Err(BufferError::InsufficientHeadroom {
-                requested: count,
-                available: self.headroom(),
-            });
+            return Err(BufferError::InsufficientHeadroom { requested: count, available: self.headroom() });
         }
         self.grow_front(count);
         Ok(())
@@ -158,10 +155,7 @@ pub trait MessageBuffer: Deref<Target = [u8]> + DerefMut<Target = [u8]> + Sized 
     fn try_extend_len(&mut self, additional: usize) -> Result<(), BufferError> {
         let new_len = self.len() + additional;
         if new_len > self.capacity() {
-            return Err(BufferError::InsufficientCapacity {
-                requested: new_len,
-                available: self.capacity(),
-            });
+            return Err(BufferError::InsufficientCapacity { requested: new_len, available: self.capacity() });
         }
         self.set_len(new_len);
         Ok(())
@@ -231,10 +225,7 @@ pub trait MessageBuffer: Deref<Target = [u8]> + DerefMut<Target = [u8]> + Sized 
     /// Try to set length, returning error instead of panicking.
     fn try_set_len(&mut self, len: usize) -> Result<(), BufferError> {
         if len > self.capacity() {
-            return Err(BufferError::InsufficientCapacity {
-                requested: len,
-                available: self.capacity(),
-            });
+            return Err(BufferError::InsufficientCapacity { requested: len, available: self.capacity() });
         }
         self.set_len(len);
         Ok(())
@@ -344,11 +335,7 @@ impl MessageBuffer for Buffer<'_> {
 
     fn set_len(&mut self, len: usize) {
         if len > self.capacity() {
-            panic!(
-                "Length exceeds buffer capacity: {} > {}",
-                len,
-                self.capacity()
-            );
+            panic!("Length exceeds buffer capacity: {} > {}", len, self.capacity());
         }
         self.len = len;
     }
@@ -364,10 +351,7 @@ impl MessageBuffer for Buffer<'_> {
 
     fn grow_front(&mut self, count: usize) {
         if count > self.start {
-            panic!(
-                "Headroom exceeded: requested {}, available {}",
-                count, self.start
-            );
+            panic!("Headroom exceeded: requested {}, available {}", count, self.start);
         }
         self.start -= count;
         self.len += count;
@@ -375,10 +359,7 @@ impl MessageBuffer for Buffer<'_> {
 
     fn shrink_front(&mut self, count: usize) {
         if count > self.len {
-            panic!(
-                "Cannot shrink more than length: requested {}, length {}",
-                count, self.len
-            );
+            panic!("Cannot shrink more than length: requested {}, length {}", count, self.len);
         }
         self.start += count;
         self.len -= count;
@@ -440,8 +421,7 @@ impl Drop for Buffer<'_> {
         let _ = self.sender.try_send(self.buffer);
 
         // Decrement the pool usage counter.
-        self.allocated_count
-            .set(self.allocated_count.get().saturating_sub(1));
+        self.allocated_count.set(self.allocated_count.get().saturating_sub(1));
     }
 }
 
@@ -457,10 +437,7 @@ impl core::fmt::Debug for Buffer<'_> {
 }
 
 impl crate::util::packets::SerializeBuffer for Buffer<'_> {
-    fn serialize<P: crate::util::packets::SerializablePacket>(
-        &mut self,
-        packet: &P,
-    ) -> (&mut [u8], &mut [u8]) {
+    fn serialize<P: crate::util::packets::SerializablePacket>(&mut self, packet: &P) -> (&mut [u8], &mut [u8]) {
         // Append after existing data (spare capacity starts here)
         let start = self.start + self.len;
         let full_buffer = unsafe { self.buffer.as_mut() };
@@ -527,18 +504,9 @@ impl<'a> DynBufferManager<'a> {
         let count = self.allocated_count.get() + 1;
         self.allocated_count.set(count);
         if count >= self.pool_size {
-            warn!(
-                "Buffer pool exhausted ({}/{} allocated)",
-                count, self.pool_size
-            );
+            warn!("Buffer pool exhausted ({}/{} allocated)", count, self.pool_size);
         }
-        Buffer {
-            buffer,
-            start,
-            len: 0,
-            sender: self.buffer_sender,
-            allocated_count: self.allocated_count,
-        }
+        Buffer { buffer, start, len: 0, sender: self.buffer_sender, allocated_count: self.allocated_count }
     }
 
     // ========================================================================
@@ -666,19 +634,14 @@ impl<const NUM_BUFS: usize> BufferManager<NUM_BUFS> {
     ///
     /// The caller must ensure that the buffers remain valid for the lifetime
     /// of the BufferManager and all Buffers allocated from it.
-    pub unsafe fn new<const BUFFER_SIZE: usize>(
-        buffers: &mut [[u8; BUFFER_SIZE]; NUM_BUFS],
-    ) -> Self {
+    pub unsafe fn new<const BUFFER_SIZE: usize>(buffers: &mut [[u8; BUFFER_SIZE]; NUM_BUFS]) -> Self {
         let queue = Channel::new();
 
         for buffer in buffers {
             let _ = queue.try_send(NonNull::from(buffer.as_mut_slice()));
         }
 
-        Self {
-            buffers: queue,
-            allocated_count: Cell::new(0),
-        }
+        Self { buffers: queue, allocated_count: Cell::new(0) }
     }
 
     /// Acquire a [`DynBufferManager`].
@@ -712,19 +675,12 @@ mod tests {
 
     fn make_test_buffer(data: &mut [u8], headroom: usize) -> Buffer<'static> {
         let buffer_ptr = core::ptr::NonNull::from(data.as_mut());
-        let channel =
-            Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
+        let channel = Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
         // Leak the channel and counter to get 'static lifetime for testing
         let channel = Box::leak(Box::new(channel));
         let counter = Box::leak(Box::new(Cell::new(0u8)));
         let sender = channel.sender();
-        Buffer {
-            buffer: buffer_ptr,
-            start: headroom,
-            len: 0,
-            sender: sender.into(),
-            allocated_count: counter,
-        }
+        Buffer { buffer: buffer_ptr, start: headroom, len: 0, sender: sender.into(), allocated_count: counter }
     }
 
     #[test]
@@ -819,10 +775,7 @@ mod tests {
 
         // try_grow_front failure
         let result = buffer.try_grow_front(10);
-        assert!(matches!(
-            result,
-            Err(BufferError::InsufficientHeadroom { requested: 10, available: 4 })
-        ));
+        assert!(matches!(result, Err(BufferError::InsufficientHeadroom { requested: 10, available: 4 })));
 
         // try_extend_len success
         assert!(buffer.try_extend_len(10).is_ok());
@@ -830,10 +783,7 @@ mod tests {
 
         // try_extend_len failure
         let result = buffer.try_extend_len(100);
-        assert!(matches!(
-            result,
-            Err(BufferError::InsufficientCapacity { .. })
-        ));
+        assert!(matches!(result, Err(BufferError::InsufficientCapacity { .. })));
     }
 
     #[test]
@@ -891,18 +841,11 @@ mod tests {
     fn test_fluent_api() {
         let mut data = [0u8; 32];
         let buffer_ptr = core::ptr::NonNull::from(data.as_mut_slice());
-        let channel =
-            Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
+        let channel = Channel::<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::ptr::NonNull<[u8]>, 1>::new();
         let channel = Box::leak(Box::new(channel));
         let counter = Box::leak(Box::new(Cell::new(0u8)));
         let sender = channel.sender();
-        let buffer = Buffer {
-            buffer: buffer_ptr,
-            start: 8,
-            len: 0,
-            sender: sender.into(),
-            allocated_count: counter,
-        };
+        let buffer = Buffer { buffer: buffer_ptr, start: 8, len: 0, sender: sender.into(), allocated_count: counter };
 
         let buffer = buffer.with_slice(&[1, 2, 3]);
         assert_eq!(buffer.len(), 3);

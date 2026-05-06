@@ -68,11 +68,7 @@ pub enum EnableFlag {
 
 impl From<bool> for EnableFlag {
     fn from(b: bool) -> Self {
-        if b {
-            EnableFlag::Enabled
-        } else {
-            EnableFlag::Disabled
-        }
+        if b { EnableFlag::Enabled } else { EnableFlag::Disabled }
     }
 }
 
@@ -81,15 +77,13 @@ impl From<bool> for EnableFlag {
 /// Note: KNX has 4 priority levels (System=0, High=1, Alert=2, Low=3),
 /// but the ETS/MTXML schema only supports Low, High, and Alert.
 /// System priority is mapped to Low when generating XML.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ComObjectPriority {
     #[default]
     Low,
     High,
     Alert,
 }
-
 
 /// Container for communication object references
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -66,11 +66,7 @@ impl Condition {
         // Handle space-separated list of values (OR)
         let values: Vec<i64> = test.split_whitespace().filter_map(|s| s.parse().ok()).collect();
 
-        if values.is_empty() {
-            None
-        } else {
-            Some(Condition::Eq(values))
-        }
+        if values.is_empty() { None } else { Some(Condition::Eq(values)) }
     }
 
     /// Check if a value matches this condition.
@@ -463,10 +459,11 @@ fn walk_choose<V, E>(
         }
         if let Some(test) = &when.test
             && let Some(condition) = Condition::parse(test)
-                && selector_value.is_some_and(|v| condition.matches(v)) {
-                    walk_when_items(&when.items, visitor, evaluator, module_defs, module_ctx);
-                    any_matched = true;
-                }
+            && selector_value.is_some_and(|v| condition.matches(v))
+        {
+            walk_when_items(&when.items, visitor, evaluator, module_defs, module_ctx);
+            any_matched = true;
+        }
     }
 
     // Process default if nothing matched

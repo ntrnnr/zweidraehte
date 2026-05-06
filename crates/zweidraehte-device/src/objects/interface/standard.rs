@@ -29,6 +29,7 @@ use zweidraehte_proto::dpt::PDT_Control;
 
 use crate::StackState;
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier, RunTarget};
+use crate::ets::DeviceDescriptor;
 use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
 use zweidraehte_proto::dpt::{
     DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06,
@@ -210,7 +211,7 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
     /// Populates hardware type, mask version, and other static properties
     /// from the descriptor. Serial number, manufacturer ID, and max APDU
     /// length are read dynamically from the `StackState`.
-    pub fn from_descriptor(state: &'a S, desc: &crate::ets::DeviceDescriptor) -> Self {
+    pub fn from_descriptor(state: &'a S, desc: &DeviceDescriptor) -> Self {
         let mut obj = Self::new(state);
         obj.hardware_type = PDT_Generic06::with_value(desc.hardware_type);
         obj.version = PDT_Version::with_value(KNXVersion::from_triplet(0, 0, 1));
@@ -776,10 +777,9 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for TableIn
 
     fn write_property(&mut self, req: super::PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         match req.pid {
-            super::pid::OBJECT_TYPE
-            | super::pid::TABLE_REFERENCE
-            | super::pid::MCB_TABLE
-            | super::pid::ERROR_CODE => Err(PropertyError::WriteNotAllowed),
+            super::pid::OBJECT_TYPE | super::pid::TABLE_REFERENCE | super::pid::MCB_TABLE | super::pid::ERROR_CODE => {
+                Err(PropertyError::WriteNotAllowed)
+            }
             super::pid::LOAD_STATE_CONTROL => {
                 // Write the load event to the state machine, providing the allocation address
                 self.table.borrow_mut().write_lsm(req.data, Some(self.alloc_address));

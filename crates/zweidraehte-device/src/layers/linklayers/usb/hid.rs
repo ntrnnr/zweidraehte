@@ -120,12 +120,8 @@ impl<'a> HidReport<'a> {
 
         // Validate packet type
         let pt = packet_info.packet_type();
-        let valid_types = [
-            PacketType::START_END,
-            PacketType::START_PARTIAL,
-            PacketType::PARTIAL_ONLY,
-            PacketType::PARTIAL_END,
-        ];
+        let valid_types =
+            [PacketType::START_END, PacketType::START_PARTIAL, PacketType::PARTIAL_ONLY, PacketType::PARTIAL_END];
         if !valid_types.contains(&pt) {
             return Err(HidReportError::InvalidPacketType(pt.as_u8()));
         }
@@ -140,12 +136,7 @@ impl<'a> HidReport<'a> {
             return Err(HidReportError::TooShort);
         }
 
-        Ok(Self {
-            report_id,
-            packet_info,
-            data_length,
-            data: &buf[3..data_end],
-        })
+        Ok(Self { report_id, packet_info, data_length, data: &buf[3..data_end] })
     }
 }
 
@@ -221,12 +212,7 @@ impl Default for ReassemblyBuffer {
 
 impl ReassemblyBuffer {
     pub const fn new() -> Self {
-        Self {
-            buf: [0u8; MAX_KNX_FRAME_SIZE],
-            len: 0,
-            expected_seq: 1,
-            in_progress: false,
-        }
+        Self { buf: [0u8; MAX_KNX_FRAME_SIZE], len: 0, expected_seq: 1, in_progress: false }
     }
 
     /// Reset the reassembly state
@@ -255,10 +241,7 @@ impl ReassemblyBuffer {
 
         // Validate sequence
         if seq != self.expected_seq {
-            let err = ReassemblyError::SequenceMismatch {
-                expected: self.expected_seq,
-                received: seq,
-            };
+            let err = ReassemblyError::SequenceMismatch { expected: self.expected_seq, received: seq };
             self.reset();
             return Err(err);
         }
@@ -310,11 +293,7 @@ pub enum ReassemblyError {
 ///
 /// Returns an iterator over HID report buffers.
 pub fn fragment_frame(data: &[u8]) -> FragmentIterator<'_> {
-    FragmentIterator {
-        data,
-        offset: 0,
-        sequence: 1,
-    }
+    FragmentIterator { data, offset: 0, sequence: 1 }
 }
 
 /// Iterator that yields HID report buffers for a fragmented frame
@@ -376,7 +355,7 @@ mod tests {
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0][0], REPORT_ID);
         assert_eq!(reports[0][1], 0x13); // seq=1, start+end
-        assert_eq!(reports[0][2], 4);    // data length
+        assert_eq!(reports[0][2], 4); // data length
         assert_eq!(&reports[0][3..7], &data);
     }
 
@@ -390,11 +369,11 @@ mod tests {
 
         // First packet: seq=1, start+partial
         assert_eq!(reports[0][1], 0x15); // seq=1, start+partial
-        assert_eq!(reports[0][2], 61);   // max payload
+        assert_eq!(reports[0][2], 61); // max payload
 
         // Second packet: seq=2, partial+end
         assert_eq!(reports[1][1], 0x26); // seq=2, partial+end
-        assert_eq!(reports[1][2], 39);   // remaining
+        assert_eq!(reports[1][2], 39); // remaining
     }
 
     #[test]

@@ -726,9 +726,7 @@ mod tests {
         assert_eq!(mac, expected_mac, "sync req MAC mismatch");
 
         // Now verify round-trip: decrypt and verify.
-        let result = verify_and_decrypt_sync_req(
-            &TOOL_KEY, &ctx, scf, &serial_number, &mut challenge, &expected_mac,
-        );
+        let result = verify_and_decrypt_sync_req(&TOOL_KEY, &ctx, scf, &serial_number, &mut challenge, &expected_mac);
         assert!(result.is_ok(), "sync req verify failed");
         assert_eq!(challenge, [0x00, 0x00, 0x00, 0x00, 0x00, 0x03], "sync req decrypted challenge mismatch");
     }
@@ -754,9 +752,7 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x04, // SeqNr_local
         ];
 
-        let mac = encrypt_and_mac_sync_res(
-            &TOOL_KEY, &random, 0xFF00, 0xFF67, 0x00, 0x43F1, scf, &mut payload,
-        );
+        let mac = encrypt_and_mac_sync_res(&TOOL_KEY, &random, 0xFF00, 0xFF67, 0x00, 0x43F1, scf, &mut payload);
 
         let expected_c = hex("9c 02 3a d2 5e 14 64 70 69 3e 63 8d");
         assert_eq!(&payload, expected_c.as_slice(), "sync res ciphertext mismatch");
@@ -766,8 +762,15 @@ mod tests {
 
         // Verify round-trip.
         let result = verify_and_decrypt_sync_res(
-            &TOOL_KEY, &random, 0xFF00, 0xFF67, 0x00, 0x43F1, scf,
-            &mut payload, &expected_mac,
+            &TOOL_KEY,
+            &random,
+            0xFF00,
+            0xFF67,
+            0x00,
+            0x43F1,
+            scf,
+            &mut payload,
+            &expected_mac,
         );
         assert!(result.is_ok(), "sync res verify failed");
         assert_eq!(&payload[0..6], &[0x00, 0x00, 0x00, 0x00, 0x00, 0x03], "SeqNr_remote mismatch");

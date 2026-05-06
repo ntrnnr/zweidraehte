@@ -94,7 +94,9 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("A second connect is sent to BDUT from USB A."),
                 // Second T_Connect (wait for it to be processed)
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 1000),
-                comment("BDUT remains in OPEN_WAIT. EITT confirms the MaskVersionResponse with T-Ack and actively closes."),
+                comment(
+                    "BDUT remains in OPEN_WAIT. EITT confirms the MaskVersionResponse with T-Ack and actively closes.",
+                ),
                 // T_Ack for the response
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 C2", 200),
                 // T_Disconnect to close cleanly
@@ -103,7 +105,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.2.2: Connect from a remote device during an existing connection
         // ====================================================================
@@ -157,7 +158,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.2.3: Disconnect from a remote device
         // ====================================================================
@@ -218,7 +218,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.2.4: Disconnect from a remote device during an existing connection
         // ====================================================================
@@ -260,7 +259,9 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("Send Disconnect from USB B to BDUT."),
                 // T_Disconnect from B (different source) - should be ignored
                 inject("B0 #IFACE_B_ADDR #BDUT_ADDR 60 81"),
-                comment("---> BDUT sends repetition every 3 seconds after ACK-timeout and shows that BDUT remains in OPEN_WAIT."),
+                comment(
+                    "---> BDUT sends repetition every 3 seconds after ACK-timeout and shows that BDUT remains in OPEN_WAIT.",
+                ),
                 // BDUT repeats the response
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
                 comment("Send immediate disconnect from USB A."),
@@ -270,7 +271,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.2.5: Connection timeout
         // ====================================================================
@@ -288,7 +288,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.2.6: Acknowledgement timeout
         // ====================================================================
@@ -323,7 +322,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.3.1: Reception of a correct N_Data_Individual
         // ====================================================================
@@ -354,7 +352,9 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             name: "6.3.1.2 N_Data_Individual with initial state OPEN_WAIT",
             steps: vec![
                 comment("Testcase 6.3.1.2 Sequence 13: Procedure with initial state 'OPEN_WAIT'"),
-                comment("Purpose: check whether a repetition of an N_DataIndividual with SeqNo_of_PDU = SeqNoRcv is accepted."),
+                comment(
+                    "Purpose: check whether a repetition of an N_DataIndividual with SeqNo_of_PDU = SeqNoRcv is accepted.",
+                ),
                 comment("Initial state: Send T_Connect and MaskVersionRead to BDUT to establish OPEN_WAIT."),
                 // T_Connect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
@@ -391,7 +391,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.3.3: Reception of a repeated N_Data_Individual
         // ====================================================================
@@ -458,7 +457,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.3.4: Reception of N_Data_Individual with wrong sequence number
         // ====================================================================
@@ -518,7 +516,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.3.5: Reception of N_Data_Individual with wrong source address
         // ====================================================================
@@ -572,7 +569,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.1: Reception of a T_ACK_PDU
         // ====================================================================
@@ -596,7 +592,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.2: Reception of T_ACK_PDU with wrong sequence number
         // ====================================================================
@@ -650,7 +645,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.3: Reception of T_ACK_PDU with wrong connection address
         // ====================================================================
@@ -691,7 +685,9 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("Send T-ACK from USB A to BDUT."),
                 // T_Ack from A (wrong source - connected to B)
                 inject("B0 #IFACE_A_ADDR #BDUT_ADDR 60 C2"),
-                comment("---> BDUT sends repetition of Device Data after ACK-timeout and disconnects after connection timeout."),
+                comment(
+                    "---> BDUT sends repetition of Device Data after ACK-timeout and disconnects after connection timeout.",
+                ),
                 // BDUT repeats the response to B
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
@@ -702,7 +698,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.4: Reception of T_NAK_PDU with wrong sequence number
         // ====================================================================
@@ -755,7 +750,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.5: Reception of T_NAK_PDU with correct sequence number
         // ====================================================================
@@ -777,7 +771,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.6: Reception of T_NAK_PDU and maximum number of repetitions is not reached
         // ====================================================================
@@ -810,7 +803,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.7: Reception of T_NAK_PDU and maximum number of repetitions is reached
         // ====================================================================
@@ -845,7 +837,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.4.8: Reception of T_NAK_PDU with wrong connection address
         // ====================================================================
@@ -899,7 +890,6 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-
         // ====================================================================
         // Test Suite 6.5: Events started in state 'CLOSED'
         // ====================================================================

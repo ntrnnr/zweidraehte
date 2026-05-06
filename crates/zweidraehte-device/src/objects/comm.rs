@@ -527,4 +527,3 @@ pub enum ComObjectEvent {
     /// A response to a read request was received
     ReadResponse,
 }
-

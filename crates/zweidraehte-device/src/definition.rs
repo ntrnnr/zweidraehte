@@ -16,11 +16,13 @@ use crate::{
     context::StackContext,
     context::layer::LayerContext,
     ets, layers,
+    layers::transport::TlStyle,
     memory::MemoryMap,
     objects::{
-        comm::ComObjects,
+        comm::{ComObjectBusHook, ComObjects},
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
+    rng::{NoRng, Rng},
     service::{ApciHandler, Augment},
     state::CoreDeviceState,
     storage::{DeviceIdentity, StaticIdentity},
@@ -132,7 +134,7 @@ pub trait StackDefinition: Copy + 'static {
     ///
     /// Determines connection-oriented error recovery behavior. Must be chosen
     /// explicitly — there is no default.
-    const TL_STYLE: crate::layers::transport::TlStyle;
+    const TL_STYLE: TlStyle;
 
     /// Mutex type for channels shared between the stack runner and user code.
     ///
@@ -155,7 +157,7 @@ pub trait StackDefinition: Copy + 'static {
     /// secure compositions. Secure firmware must set this to a type
     /// implementing both [`Rng`](crate::rng::Rng) and
     /// [`SecureRng`](crate::rng::SecureRng).
-    type Rng: crate::rng::Rng = crate::rng::NoRng;
+    type Rng: Rng = NoRng;
 
     /// Platform abstraction for querying/applying network configuration.
     ///
@@ -175,7 +177,7 @@ pub trait StackDefinition: Copy + 'static {
     /// emitted by `#[derive(EtsComObjects)]`); harnesses that need
     /// bus-inbound side effects (e.g. BCU1-style shadow objects)
     /// override the trait's default no-op methods.
-    type CO: ComObjects + crate::objects::comm::ComObjectBusHook;
+    type CO: ComObjects + ComObjectBusHook;
     type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
 
     /// Medium extension providing both state persistence and interface

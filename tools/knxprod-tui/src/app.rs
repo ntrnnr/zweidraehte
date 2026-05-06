@@ -1,7 +1,7 @@
 //! Application state and logic for the KNX TUI viewer.
 
 use zweidraehte_knxprod::runtime::master_data::{MaskVersion, TableFlavour};
-use zweidraehte_knxprod::runtime::model::{walk_dynamic, DynamicVisitor, ParameterValue};
+use zweidraehte_knxprod::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
 use zweidraehte_knxprod::schema::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject, ComObjectPriority,
     ComObjectRef, DynamicSection, EnableFlag, Module, ModuleDef, ModuleDefDynamicItem, Parameter, ParameterBlock,
@@ -34,12 +34,13 @@ fn compute_module_object_number(
     if let Some(base_number_ref) = &obj.base_number {
         // The base_number_ref is an argument ID - we need to find the argument name first
         if let Some(arguments) = &module_def.arguments
-            && let Some(arg_def) = arguments.arguments.iter().find(|a| a.id == *base_number_ref) {
-                // Now look up the argument value by name in the expanded module
-                if let Some(ModuleArgValue::Numeric(base)) = expanded.args.get(&arg_def.name) {
-                    return (*base as u16).saturating_add(local_number);
-                }
+            && let Some(arg_def) = arguments.arguments.iter().find(|a| a.id == *base_number_ref)
+        {
+            // Now look up the argument value by name in the expanded module
+            if let Some(ModuleArgValue::Numeric(base)) = expanded.args.get(&arg_def.name) {
+                return (*base as u16).saturating_add(local_number);
             }
+        }
     }
 
     // No BaseNumber or couldn't resolve - use local number as-is
@@ -797,7 +798,9 @@ impl App {
                     return self.device.interpolate_module_text(instance_name, expanded);
                 } else {
                     // Fallback: use module name with channel number
-                    if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = expanded.args.get("ChNo") {
+                    if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) =
+                        expanded.args.get("ChNo")
+                    {
                         return format!("{} {}", module_def.name, ch);
                     }
                     return module_def.name.clone();
@@ -870,10 +873,9 @@ impl App {
     fn collect_modules_from_pb<'a>(&self, items: &'a [ParameterBlockItem], modules: &mut Vec<&'a Module>) {
         for item in items {
             match item {
-                ParameterBlockItem::Module(module)
-                    if self.device.is_module_visible(&module.id) => {
-                        modules.push(module);
-                    }
+                ParameterBlockItem::Module(module) if self.device.is_module_visible(&module.id) => {
+                    modules.push(module);
+                }
                 ParameterBlockItem::Choose(choose) => {
                     self.collect_modules_from_choose(choose, modules);
                 }
@@ -892,10 +894,11 @@ impl App {
                 continue;
             }
             if let Some(test) = &when.test
-                && self.matches_condition(selector_value, test) {
-                    any_matched = true;
-                    self.collect_modules_from_when(&when.items, modules);
-                }
+                && self.matches_condition(selector_value, test)
+            {
+                any_matched = true;
+                self.collect_modules_from_when(&when.items, modules);
+            }
         }
 
         if !any_matched {
@@ -912,10 +915,9 @@ impl App {
     fn collect_modules_from_when<'a>(&self, items: &'a [WhenItem], modules: &mut Vec<&'a Module>) {
         for item in items {
             match item {
-                WhenItem::Module(module)
-                    if self.device.is_module_visible(&module.id) => {
-                        modules.push(module);
-                    }
+                WhenItem::Module(module) if self.device.is_module_visible(&module.id) => {
+                    modules.push(module);
+                }
                 WhenItem::Choose(nested_choose) => {
                     self.collect_modules_from_choose(nested_choose, modules);
                 }
@@ -937,10 +939,11 @@ impl App {
                 continue; // Handle defaults in second pass
             }
             if let Some(test) = &when.test
-                && self.matches_condition(selector_value, test) {
-                    any_matched = true;
-                    self.collect_when_blocks(&when.items, blocks);
-                }
+                && self.matches_condition(selector_value, test)
+            {
+                any_matched = true;
+                self.collect_when_blocks(&when.items, blocks);
+            }
         }
 
         // Second pass: if no explicit when matched, process default
@@ -958,10 +961,9 @@ impl App {
     fn collect_when_blocks<'a>(&self, items: &'a [WhenItem], blocks: &mut Vec<&'a ParameterBlock>) {
         for item in items {
             match item {
-                WhenItem::ParameterBlock(pb)
-                    if self.block_has_visible_items(&pb.items) => {
-                        blocks.push(pb);
-                    }
+                WhenItem::ParameterBlock(pb) if self.block_has_visible_items(&pb.items) => {
+                    blocks.push(pb);
+                }
                 WhenItem::Choose(nested_choose) => {
                     self.collect_blocks_from_choose(nested_choose, blocks);
                 }
@@ -1013,16 +1015,18 @@ impl App {
                 return value < test_val;
             }
         } else if let Some(rest) = test.strip_prefix('=')
-            && let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value == test_val;
-            }
+            && let Ok(test_val) = rest.trim().parse::<i64>()
+        {
+            return value == test_val;
+        }
 
         // Handle space-separated list of values (OR)
         for part in test.split_whitespace() {
             if let Ok(test_val) = part.parse::<i64>()
-                && value == test_val {
-                    return true;
-                }
+                && value == test_val
+            {
+                return true;
+            }
         }
 
         false
@@ -1140,7 +1144,9 @@ impl App {
                         self.device.interpolate_module_text(instance_name, exp)
                     } else {
                         // Fallback: use module name with channel number
-                        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) = exp.args.get("ChNo") {
+                        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) =
+                            exp.args.get("ChNo")
+                        {
                             format!("{} {}", module_def.name, ch)
                         } else {
                             module_def.name.clone()
@@ -1280,15 +1286,17 @@ impl App {
                 None => {
                     // Device settings block
                     if let Some(cib) = &dynamic.channel_independent_block
-                        && let Some(pb) = self.find_block_in_cib(cib, block_name) {
-                            self.add_block_items(&pb.items.clone());
-                        }
+                        && let Some(pb) = self.find_block_in_cib(cib, block_name)
+                    {
+                        self.add_block_items(&pb.items.clone());
+                    }
                 }
                 Some(channel_idx) => {
                     if let Some(channel) = dynamic.channels.get(channel_idx)
-                        && let Some(pb) = self.find_block_in_channel(channel, block_name) {
-                            self.add_block_items(&pb.items.clone());
-                        }
+                        && let Some(pb) = self.find_block_in_channel(channel, block_name)
+                    {
+                        self.add_block_items(&pb.items.clone());
+                    }
                 }
             }
         }
@@ -1372,7 +1380,11 @@ impl App {
     }
 
     /// Add choose items for a module.
-    fn add_module_choose_items(&mut self, choose: &Choose, expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
+    fn add_module_choose_items(
+        &mut self,
+        choose: &Choose,
+        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+    ) {
         // Try module-internal lookup first, fall back to device-level
         let module_val = self.get_module_selector_value(&choose.param_ref_id, expanded);
         let device_val = self.get_selector_value(&choose.param_ref_id);
@@ -1435,7 +1447,11 @@ impl App {
     }
 
     /// Add when items for a module.
-    fn add_module_when_items(&mut self, items: &[WhenItem], expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule) {
+    fn add_module_when_items(
+        &mut self,
+        items: &[WhenItem],
+        expanded: &zweidraehte_knxprod::runtime::model::ExpandedModule,
+    ) {
         for item in items {
             match item {
                 WhenItem::ParameterRefRef(prr) => {
@@ -1551,10 +1567,11 @@ impl App {
 
         // Check if this is a picture type (only for regular parameters)
         if let Some(FoundParameter::Regular(ref p)) = found_param
-            && let Some(ref_id) = self.get_module_picture_ref_id(p) {
-                self.content_items.push(ContentItem::Picture { ref_id });
-                return;
-            }
+            && let Some(ref_id) = self.get_module_picture_ref_id(p)
+        {
+            self.content_items.push(ContentItem::Picture { ref_id });
+            return;
+        }
 
         // Build widget based on parameter type
         let widget = self.build_widget_for_module_param_by_type(&param_type, &param_id);
@@ -1802,12 +1819,13 @@ impl App {
                 continue;
             }
             if let Some(test) = &when.test
-                && self.matches_condition(selector_value, test) {
-                    any_matched = true;
-                    if let Some(pb) = self.find_block_in_when_items(&when.items, block_name) {
-                        return Some(pb);
-                    }
+                && self.matches_condition(selector_value, test)
+            {
+                any_matched = true;
+                if let Some(pb) = self.find_block_in_when_items(&when.items, block_name) {
+                    return Some(pb);
                 }
+            }
         }
 
         // Second pass: if no explicit when matched, search in default
@@ -1826,10 +1844,9 @@ impl App {
     fn find_block_in_when_items<'a>(&self, items: &'a [WhenItem], block_name: &str) -> Option<&'a ParameterBlock> {
         for item in items {
             match item {
-                WhenItem::ParameterBlock(pb)
-                    if pb.name.as_deref() == Some(block_name) => {
-                        return Some(pb);
-                    }
+                WhenItem::ParameterBlock(pb) if pb.name.as_deref() == Some(block_name) => {
+                    return Some(pb);
+                }
                 WhenItem::Choose(nested_choose) => {
                     if let Some(pb) = self.find_block_in_choose(nested_choose, block_name) {
                         return Some(pb);
@@ -1846,46 +1863,48 @@ impl App {
             match item {
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id)
-                        && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
-                            // Skip if the ParameterRef itself has Access="None"
-                            if pref.access.as_deref() == Some("None") {
-                                continue;
-                            }
-
-                            let param_id = pref.ref_id.clone();
-
-                            // Check if this is a picture type first - pictures don't need text
-                            if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
-                                self.content_items.push(ContentItem::Picture { ref_id });
-                                continue;
-                            }
-
-                            // Skip hidden parameters (Access="None") or those with empty text
-                            if let Some(info) = self.device.get_parameter_info(&param_id)
-                                && (info.hidden || info.text.is_empty()) {
-                                    continue;
-                                }
-
-                            let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
-                                self.device
-                                    .get_parameter_info(&param_id)
-                                    .map(|p| p.text.clone())
-                                    .unwrap_or_else(|| param_id.clone())
-                            });
-
-                            // Skip if the final text is empty
-                            if raw_text.is_empty() {
-                                continue;
-                            }
-
-                            let text = self.device.interpolate_text(&raw_text);
-
-                            let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
-
-                            let widget = self.build_widget_for_param(&param_id);
-
-                            self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
+                        && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id)
+                    {
+                        // Skip if the ParameterRef itself has Access="None"
+                        if pref.access.as_deref() == Some("None") {
+                            continue;
                         }
+
+                        let param_id = pref.ref_id.clone();
+
+                        // Check if this is a picture type first - pictures don't need text
+                        if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
+                            self.content_items.push(ContentItem::Picture { ref_id });
+                            continue;
+                        }
+
+                        // Skip hidden parameters (Access="None") or those with empty text
+                        if let Some(info) = self.device.get_parameter_info(&param_id)
+                            && (info.hidden || info.text.is_empty())
+                        {
+                            continue;
+                        }
+
+                        let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
+                            self.device
+                                .get_parameter_info(&param_id)
+                                .map(|p| p.text.clone())
+                                .unwrap_or_else(|| param_id.clone())
+                        });
+
+                        // Skip if the final text is empty
+                        if raw_text.is_empty() {
+                            continue;
+                        }
+
+                        let text = self.device.interpolate_text(&raw_text);
+
+                        let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
+
+                        let widget = self.build_widget_for_param(&param_id);
+
+                        self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
+                    }
                 }
                 ParameterBlockItem::ParameterSeparator(sep) => {
                     let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
@@ -1923,10 +1942,11 @@ impl App {
                 continue; // Handle defaults in second pass
             }
             if let Some(test) = &when.test
-                && self.matches_condition(selector_value, test) {
-                    any_matched = true;
-                    self.add_when_items(&when.items);
-                }
+                && self.matches_condition(selector_value, test)
+            {
+                any_matched = true;
+                self.add_when_items(&when.items);
+            }
         }
 
         // Second pass: if no explicit when matched, process default
@@ -1946,46 +1966,48 @@ impl App {
             match item {
                 WhenItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id)
-                        && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id) {
-                            // Skip if the ParameterRef itself has Access="None"
-                            if pref.access.as_deref() == Some("None") {
-                                continue;
-                            }
-
-                            let param_id = pref.ref_id.clone();
-
-                            // Check if this is a picture type first - pictures don't need text
-                            if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
-                                self.content_items.push(ContentItem::Picture { ref_id });
-                                continue;
-                            }
-
-                            // Skip hidden parameters (Access="None") or those with empty text
-                            if let Some(info) = self.device.get_parameter_info(&param_id)
-                                && (info.hidden || info.text.is_empty()) {
-                                    continue;
-                                }
-
-                            let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
-                                self.device
-                                    .get_parameter_info(&param_id)
-                                    .map(|p| p.text.clone())
-                                    .unwrap_or_else(|| param_id.clone())
-                            });
-
-                            // Skip if the final text is empty
-                            if raw_text.is_empty() {
-                                continue;
-                            }
-
-                            let text = self.device.interpolate_text(&raw_text);
-
-                            let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
-
-                            let widget = self.build_widget_for_param(&param_id);
-
-                            self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
+                        && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id)
+                    {
+                        // Skip if the ParameterRef itself has Access="None"
+                        if pref.access.as_deref() == Some("None") {
+                            continue;
                         }
+
+                        let param_id = pref.ref_id.clone();
+
+                        // Check if this is a picture type first - pictures don't need text
+                        if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
+                            self.content_items.push(ContentItem::Picture { ref_id });
+                            continue;
+                        }
+
+                        // Skip hidden parameters (Access="None") or those with empty text
+                        if let Some(info) = self.device.get_parameter_info(&param_id)
+                            && (info.hidden || info.text.is_empty())
+                        {
+                            continue;
+                        }
+
+                        let raw_text = prr.text.clone().or_else(|| pref.text.clone()).unwrap_or_else(|| {
+                            self.device
+                                .get_parameter_info(&param_id)
+                                .map(|p| p.text.clone())
+                                .unwrap_or_else(|| param_id.clone())
+                        });
+
+                        // Skip if the final text is empty
+                        if raw_text.is_empty() {
+                            continue;
+                        }
+
+                        let text = self.device.interpolate_text(&raw_text);
+
+                        let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
+
+                        let widget = self.build_widget_for_param(&param_id);
+
+                        self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
+                    }
                 }
                 WhenItem::ParameterSeparator(sep) => {
                     let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
@@ -2059,21 +2081,13 @@ impl App {
     fn get_picture_ref_id(&self, param_id: &str) -> Option<String> {
         let info = self.device.get_parameter_info(param_id)?;
         let ptype = self.device.get_parameter_type(&info.type_id)?;
-        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
-            Some(tp.ref_id.clone())
-        } else {
-            None
-        }
+        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def { Some(tp.ref_id.clone()) } else { None }
     }
 
     /// Check if a module parameter is a TypePicture and return its ref_id if so.
     fn get_module_picture_ref_id(&self, parameter: &Parameter) -> Option<String> {
         let ptype = self.device.get_parameter_type(&parameter.parameter_type)?;
-        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
-            Some(tp.ref_id.clone())
-        } else {
-            None
-        }
+        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def { Some(tp.ref_id.clone()) } else { None }
     }
 
     /// Rebuild the communication objects table.
@@ -2250,11 +2264,7 @@ impl App {
         // Format all bindings, sending address first
         let mut addresses: Vec<String> = bindings.iter().map(|b| b.group_address.to_string()).collect();
 
-        if addresses.len() == 1 {
-            addresses.pop().unwrap()
-        } else {
-            addresses.join(", ")
-        }
+        if addresses.len() == 1 { addresses.pop().unwrap() } else { addresses.join(", ") }
     }
 
     /// Get the MaskVersion info for this device, if master data is available.
@@ -2266,11 +2276,7 @@ impl App {
     /// Returns something like "System B (MV-07B0)" or just "MV-07B0" if no master data.
     pub fn mask_version_display(&self) -> String {
         let mv_id = self.device.mask_version();
-        if let Some(mv) = self.get_mask_version() {
-            format!("{} ({})", mv.name, mv_id)
-        } else {
-            mv_id.to_string()
-        }
+        if let Some(mv) = self.get_mask_version() { format!("{} ({})", mv.name, mv_id) } else { mv_id.to_string() }
     }
 
     /// Get the management model string (e.g., "SystemB", "BimM112").
@@ -2420,12 +2426,13 @@ impl App {
         // Check if this table references an existing code segment
         // If so, add annotations to that segment instead of creating a new one
         if let Some(code_segment) = &at.code_segment
-            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
-                // Add annotations to existing segment
-                let annotations = self.build_address_table_annotations(offset, &flavour);
-                self.memory_segments[seg_idx].annotations.extend(annotations);
-                return;
-            }
+            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
+        {
+            // Add annotations to existing segment
+            let annotations = self.build_address_table_annotations(offset, &flavour);
+            self.memory_segments[seg_idx].annotations.extend(annotations);
+            return;
+        }
 
         // Create a standalone synthetic segment (for System B or if segment not found)
         // Use real assigned group addresses instead of placeholders
@@ -2523,12 +2530,13 @@ impl App {
 
         // Check if this table references an existing code segment
         if let Some(code_segment) = &at.code_segment
-            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
-                // Add annotations to existing segment
-                let annotations = self.build_association_table_annotations(offset, &flavour);
-                self.memory_segments[seg_idx].annotations.extend(annotations);
-                return;
-            }
+            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
+        {
+            // Add annotations to existing segment
+            let annotations = self.build_association_table_annotations(offset, &flavour);
+            self.memory_segments[seg_idx].annotations.extend(annotations);
+            return;
+        }
 
         // Create a standalone synthetic segment using real association entries
         let association_entries = self.device.build_association_entries();
@@ -2645,12 +2653,13 @@ impl App {
         // Check if this table references an existing code segment
         if let Some(cot) = cot_config
             && let Some(code_segment) = &cot.code_segment
-                && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment) {
-                    // Add annotations to existing segment
-                    let annotations = self.build_com_object_table_annotations(offset);
-                    self.memory_segments[seg_idx].annotations.extend(annotations);
-                    return;
-                }
+            && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
+        {
+            // Add annotations to existing segment
+            let annotations = self.build_com_object_table_annotations(offset);
+            self.memory_segments[seg_idx].annotations.extend(annotations);
+            return;
+        }
 
         // Create a standalone synthetic segment
         // Build table data: 2-byte count + entry_count x 2-byte entries
@@ -3173,7 +3182,9 @@ impl App {
         })?;
 
         // Get the resolved value from the expanded module
-        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
+        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) =
+            expanded.args.get(&arg_def.name)
+        {
             Some(*val as u32)
         } else {
             None
@@ -3197,10 +3208,12 @@ impl App {
         });
 
         if let Some(arg_def) = channel_arg
-            && let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) = expanded.args.get(&arg_def.name) {
-                // Use module name with channel number, e.g., "Ch1" or "DimmerChannel 1"
-                return format!("Ch{}", val);
-            }
+            && let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(val)) =
+                expanded.args.get(&arg_def.name)
+        {
+            // Use module name with channel number, e.g., "Ch1" or "DimmerChannel 1"
+            return format!("Ch{}", val);
+        }
 
         // Fallback: use interpolated module name if available
         if let Some(name) = &expanded.name {
@@ -3389,10 +3402,11 @@ impl App {
     /// Navigate memory view right (by 1 byte).
     pub fn memory_move_right(&mut self, visible_lines: usize) {
         if let Some(seg) = self.memory_segments.get(self.selected_segment_idx)
-            && self.selected_byte_offset + 1 < seg.data.len() {
-                self.selected_byte_offset += 1;
-                self.adjust_memory_scroll_with_visible(visible_lines);
-            }
+            && self.selected_byte_offset + 1 < seg.data.len()
+        {
+            self.selected_byte_offset += 1;
+            self.adjust_memory_scroll_with_visible(visible_lines);
+        }
     }
 
     /// Select a specific memory segment.
@@ -3494,35 +3508,31 @@ impl App {
     /// Move selection up.
     pub fn move_up(&mut self) {
         match &mut self.edit_mode {
-            EditMode::EnumDropdown { selected_idx, scroll_offset, .. }
-                if *selected_idx > 0 => {
-                    *selected_idx -= 1;
-                    // Adjust scroll if selection went above visible area
-                    if *selected_idx < *scroll_offset {
-                        *scroll_offset = *selected_idx;
-                    }
+            EditMode::EnumDropdown { selected_idx, scroll_offset, .. } if *selected_idx > 0 => {
+                *selected_idx -= 1;
+                // Adjust scroll if selection went above visible area
+                if *selected_idx < *scroll_offset {
+                    *scroll_offset = *selected_idx;
                 }
+            }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
-                (MainTab::Parameters, Focus::Sidebar)
-                    if self.selected_tree_idx > 0 => {
-                        self.selected_tree_idx -= 1;
-                        self.rebuild_content();
-                        self.selected_content_idx = 0;
-                        self.content_scroll_offset = 0;
-                    }
-                (MainTab::Parameters, Focus::Content)
-                    if self.selected_content_idx > 0 => {
-                        self.selected_content_idx -= 1;
-                        self.adjust_content_scroll();
-                    }
-                (MainTab::CommObjects, Focus::Content)
-                    if self.selected_obj_idx > 0 => {
-                        self.selected_obj_idx -= 1;
-                        self.adjust_comm_obj_scroll();
-                    }
+                (MainTab::Parameters, Focus::Sidebar) if self.selected_tree_idx > 0 => {
+                    self.selected_tree_idx -= 1;
+                    self.rebuild_content();
+                    self.selected_content_idx = 0;
+                    self.content_scroll_offset = 0;
+                }
+                (MainTab::Parameters, Focus::Content) if self.selected_content_idx > 0 => {
+                    self.selected_content_idx -= 1;
+                    self.adjust_content_scroll();
+                }
+                (MainTab::CommObjects, Focus::Content) if self.selected_obj_idx > 0 => {
+                    self.selected_obj_idx -= 1;
+                    self.adjust_comm_obj_scroll();
+                }
                 (MainTab::Memory, Focus::Sidebar) => {
                     self.segment_move_up();
                 }
@@ -3545,35 +3555,39 @@ impl App {
     pub fn move_down(&mut self) {
         match &mut self.edit_mode {
             EditMode::EnumDropdown { selected_idx, options, scroll_offset, .. }
-                if *selected_idx < options.len().saturating_sub(1) => {
-                    *selected_idx += 1;
-                    // Adjust scroll if selection went below visible area
-                    let visible_items = Self::DROPDOWN_VISIBLE_ITEMS;
-                    if *selected_idx >= *scroll_offset + visible_items {
-                        *scroll_offset = selected_idx.saturating_sub(visible_items - 1);
-                    }
+                if *selected_idx < options.len().saturating_sub(1) =>
+            {
+                *selected_idx += 1;
+                // Adjust scroll if selection went below visible area
+                let visible_items = Self::DROPDOWN_VISIBLE_ITEMS;
+                if *selected_idx >= *scroll_offset + visible_items {
+                    *scroll_offset = selected_idx.saturating_sub(visible_items - 1);
                 }
+            }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
                 (MainTab::Parameters, Focus::Sidebar)
-                    if self.selected_tree_idx < self.tree_nodes.len().saturating_sub(1) => {
-                        self.selected_tree_idx += 1;
-                        self.rebuild_content();
-                        self.selected_content_idx = 0;
-                        self.content_scroll_offset = 0;
-                    }
+                    if self.selected_tree_idx < self.tree_nodes.len().saturating_sub(1) =>
+                {
+                    self.selected_tree_idx += 1;
+                    self.rebuild_content();
+                    self.selected_content_idx = 0;
+                    self.content_scroll_offset = 0;
+                }
                 (MainTab::Parameters, Focus::Content)
-                    if self.selected_content_idx < self.content_items.len().saturating_sub(1) => {
-                        self.selected_content_idx += 1;
-                        self.adjust_content_scroll();
-                    }
+                    if self.selected_content_idx < self.content_items.len().saturating_sub(1) =>
+                {
+                    self.selected_content_idx += 1;
+                    self.adjust_content_scroll();
+                }
                 (MainTab::CommObjects, Focus::Content)
-                    if self.selected_obj_idx < self.com_object_rows.len().saturating_sub(1) => {
-                        self.selected_obj_idx += 1;
-                        self.adjust_comm_obj_scroll();
-                    }
+                    if self.selected_obj_idx < self.com_object_rows.len().saturating_sub(1) =>
+                {
+                    self.selected_obj_idx += 1;
+                    self.adjust_comm_obj_scroll();
+                }
                 (MainTab::Memory, Focus::Sidebar) => {
                     self.segment_move_down();
                 }
@@ -3596,23 +3610,20 @@ impl App {
             (_, Focus::Tabs) => {
                 // No vertical movement in tabs
             }
-            (MainTab::Parameters, Focus::Sidebar)
-                if self.selected_tree_idx > 0 => {
-                    self.selected_tree_idx = self.selected_tree_idx.saturating_sub(Self::PAGE_SIZE);
-                    self.rebuild_content();
-                    self.selected_content_idx = 0;
-                    self.content_scroll_offset = 0;
-                }
-            (MainTab::Parameters, Focus::Content)
-                if self.selected_content_idx > 0 => {
-                    self.selected_content_idx = self.selected_content_idx.saturating_sub(Self::PAGE_SIZE);
-                    self.adjust_content_scroll();
-                }
-            (MainTab::CommObjects, Focus::Content)
-                if self.selected_obj_idx > 0 => {
-                    self.selected_obj_idx = self.selected_obj_idx.saturating_sub(Self::PAGE_SIZE);
-                    self.adjust_comm_obj_scroll();
-                }
+            (MainTab::Parameters, Focus::Sidebar) if self.selected_tree_idx > 0 => {
+                self.selected_tree_idx = self.selected_tree_idx.saturating_sub(Self::PAGE_SIZE);
+                self.rebuild_content();
+                self.selected_content_idx = 0;
+                self.content_scroll_offset = 0;
+            }
+            (MainTab::Parameters, Focus::Content) if self.selected_content_idx > 0 => {
+                self.selected_content_idx = self.selected_content_idx.saturating_sub(Self::PAGE_SIZE);
+                self.adjust_content_scroll();
+            }
+            (MainTab::CommObjects, Focus::Content) if self.selected_obj_idx > 0 => {
+                self.selected_obj_idx = self.selected_obj_idx.saturating_sub(Self::PAGE_SIZE);
+                self.adjust_comm_obj_scroll();
+            }
             (MainTab::Memory, Focus::Sidebar) => {
                 for _ in 0..Self::PAGE_SIZE {
                     self.segment_move_up();
@@ -3680,10 +3691,12 @@ impl App {
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Collapse the selected tree node
                 if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
-                    && node.has_children && self.expanded_nodes.contains(&node.id) {
-                        self.expanded_nodes.remove(&node.id);
-                        self.rebuild_tree();
-                    }
+                    && node.has_children
+                    && self.expanded_nodes.contains(&node.id)
+                {
+                    self.expanded_nodes.remove(&node.id);
+                    self.rebuild_tree();
+                }
             }
             (MainTab::Memory, Focus::Content) => {
                 self.memory_move_left();
@@ -3702,10 +3715,12 @@ impl App {
             (MainTab::Parameters, Focus::Sidebar) => {
                 // Expand the selected tree node
                 if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
-                    && node.has_children && !self.expanded_nodes.contains(&node.id) {
-                        self.expanded_nodes.insert(node.id.clone());
-                        self.rebuild_tree();
-                    }
+                    && node.has_children
+                    && !self.expanded_nodes.contains(&node.id)
+                {
+                    self.expanded_nodes.insert(node.id.clone());
+                    self.rebuild_tree();
+                }
             }
             (MainTab::Memory, Focus::Content) => {
                 // Use default visible lines for now (20)
@@ -3763,10 +3778,11 @@ impl App {
 
                 // If buffer is non-empty, parse and assign the new address
                 if !buffer.is_empty()
-                    && let Some(addr) = zweidraehte_knxprod::runtime::model::GroupAddress::parse(&buffer) {
-                        // First assigned address becomes the sending address
-                        self.device.assign_group_address(object_number, addr);
-                    }
+                    && let Some(addr) = zweidraehte_knxprod::runtime::model::GroupAddress::parse(&buffer)
+                {
+                    // First assigned address becomes the sending address
+                    self.device.assign_group_address(object_number, addr);
+                }
 
                 self.edit_mode = EditMode::None;
                 self.rebuild_com_objects();
@@ -3780,15 +3796,16 @@ impl App {
                 (MainTab::Parameters, Focus::Sidebar) => {
                     // Toggle expand/collapse
                     if let Some(node) = self.tree_nodes.get(self.selected_tree_idx)
-                        && node.has_children {
-                            let id = node.id.clone();
-                            if self.expanded_nodes.contains(&id) {
-                                self.expanded_nodes.remove(&id);
-                            } else {
-                                self.expanded_nodes.insert(id);
-                            }
-                            self.rebuild_tree();
+                        && node.has_children
+                    {
+                        let id = node.id.clone();
+                        if self.expanded_nodes.contains(&id) {
+                            self.expanded_nodes.remove(&id);
+                        } else {
+                            self.expanded_nodes.insert(id);
                         }
+                        self.rebuild_tree();
+                    }
                 }
                 (MainTab::Parameters, Focus::Content) => {
                     // Enter edit mode for the selected parameter
@@ -3879,11 +3896,10 @@ impl App {
             EditMode::NumberInput { buffer, .. } | EditMode::GroupAddressInput { buffer, .. } => {
                 buffer.pop();
             }
-            EditMode::TextInput { buffer, cursor, .. }
-                if *cursor > 0 => {
-                    *cursor -= 1;
-                    buffer.remove(*cursor);
-                }
+            EditMode::TextInput { buffer, cursor, .. } if *cursor > 0 => {
+                *cursor -= 1;
+                buffer.remove(*cursor);
+            }
             _ => {}
         }
     }

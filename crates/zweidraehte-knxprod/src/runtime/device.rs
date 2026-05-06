@@ -497,7 +497,9 @@ impl Device {
                 } else {
                     // Find the idx-th text argument
                     let text_args: Vec<_> = module
-                        .args.values().filter_map(|v| match v {
+                        .args
+                        .values()
+                        .filter_map(|v| match v {
                             ModuleArgValue::Text(s) => Some(s.clone()),
                             _ => None,
                         })
@@ -659,10 +661,11 @@ impl Device {
                 continue;
             }
             if let Some(test) = &when.test
-                && self.matches_condition(selector_value, test) {
-                    items_to_process.push(when.items.clone());
-                    any_matched = true;
-                }
+                && self.matches_condition(selector_value, test)
+            {
+                items_to_process.push(when.items.clone());
+                any_matched = true;
+            }
         }
 
         if !any_matched {
@@ -707,16 +710,17 @@ impl Device {
         // First try module context if available
         if let Some(ctx) = module_ctx
             && let Some(param_refs) = &ctx.module_def.static_section.parameter_refs
-                && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
-                    let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
-                    if let Some(value) = self.module_param_values.get(&composite_id) {
-                        return match value {
-                            ParameterValue::Integer(v) => Some(*v),
-                            ParameterValue::Float(v) => Some(*v as i64),
-                            _ => None,
-                        };
-                    }
-                }
+            && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id)
+        {
+            let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
+            if let Some(value) = self.module_param_values.get(&composite_id) {
+                return match value {
+                    ParameterValue::Integer(v) => Some(*v),
+                    ParameterValue::Float(v) => Some(*v as i64),
+                    _ => None,
+                };
+            }
+        }
 
         // Fall back to main device parameter lookup
         self.get_selector_value(param_ref_id)
@@ -726,20 +730,21 @@ impl Device {
         self.visible_modules.insert(module.id.clone());
 
         if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned()
-            && let Some(dynamic) = &module_def.dynamic {
-                let module_ctx = ModuleContext { instance_id: module.id.clone(), module_def: module_def.clone() };
+            && let Some(dynamic) = &module_def.dynamic
+        {
+            let module_ctx = ModuleContext { instance_id: module.id.clone(), module_def: module_def.clone() };
 
-                for item in &dynamic.items {
-                    match item {
-                        ModuleDefDynamicItem::ParameterBlock(pb) => {
-                            self.process_parameter_block_with_module(pb, Some(&module_ctx));
-                        }
-                        ModuleDefDynamicItem::Choose(choose) => {
-                            self.process_choose_with_module(choose, Some(&module_ctx));
-                        }
+            for item in &dynamic.items {
+                match item {
+                    ModuleDefDynamicItem::ParameterBlock(pb) => {
+                        self.process_parameter_block_with_module(pb, Some(&module_ctx));
+                    }
+                    ModuleDefDynamicItem::Choose(choose) => {
+                        self.process_choose_with_module(choose, Some(&module_ctx));
                     }
                 }
             }
+        }
     }
 
     fn get_selector_value(&self, param_ref_id: &str) -> Option<i64> {
@@ -779,16 +784,17 @@ impl crate::runtime::model::ConditionEvaluator for Device {
         // If module context is provided, first try module parameter lookup
         if let Some(ctx) = module_ctx
             && let Some(param_refs) = &ctx.module_def.static_section.parameter_refs
-                && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id) {
-                    let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
-                    if let Some(value) = self.module_param_values.get(&composite_id) {
-                        return match value {
-                            ParameterValue::Integer(v) => Some(*v),
-                            ParameterValue::Float(v) => Some(*v as i64),
-                            _ => None,
-                        };
-                    }
-                }
+            && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id)
+        {
+            let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
+            if let Some(value) = self.module_param_values.get(&composite_id) {
+                return match value {
+                    ParameterValue::Integer(v) => Some(*v),
+                    ParameterValue::Float(v) => Some(*v as i64),
+                    _ => None,
+                };
+            }
+        }
 
         // Fall back to main device parameter lookup
         Device::get_selector_value(self, param_ref_id)
@@ -954,25 +960,26 @@ fn build_module_param_values(
 
     for (instance_id, expanded) in expanded_modules {
         if let Some(module_def) = module_defs.get(&expanded.module_def_id)
-            && let Some(params) = &module_def.static_section.parameters {
-                for item in &params.items {
-                    match item {
-                        ParameterItem::Parameter(p) => {
-                            let composite_id = format!("{}::{}", instance_id, p.id);
-                            let default = parse_default_value(&p.value);
+            && let Some(params) = &module_def.static_section.parameters
+        {
+            for item in &params.items {
+                match item {
+                    ParameterItem::Parameter(p) => {
+                        let composite_id = format!("{}::{}", instance_id, p.id);
+                        let default = parse_default_value(&p.value);
+                        values.insert(composite_id, default);
+                    }
+                    ParameterItem::Union(u) => {
+                        // Also initialize union parameters
+                        for up in &u.parameters {
+                            let composite_id = format!("{}::{}", instance_id, up.id);
+                            let default = parse_default_value(&up.value);
                             values.insert(composite_id, default);
-                        }
-                        ParameterItem::Union(u) => {
-                            // Also initialize union parameters
-                            for up in &u.parameters {
-                                let composite_id = format!("{}::{}", instance_id, up.id);
-                                let default = parse_default_value(&up.value);
-                                values.insert(composite_id, default);
-                            }
                         }
                     }
                 }
             }
+        }
     }
 
     values

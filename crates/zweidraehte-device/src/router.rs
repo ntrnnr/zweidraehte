@@ -15,7 +15,6 @@
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
-
 // ============================================================================
 // Outbox
 // ============================================================================

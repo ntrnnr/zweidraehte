@@ -16,8 +16,8 @@
 use crate::{
     StackState,
     definition::StackDefinition,
-    service::{AlCtx, ApciHandler},
     objects::interface::pid,
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::dpt::InterfaceObjectType;
@@ -39,12 +39,7 @@ const OPERAND_BY_PROG_MODE: u8 = 0x01;
 pub struct SystemNetworkParameterService;
 
 impl<D: StackDefinition> ApciHandler<D> for SystemNetworkParameterService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::SystemNetworkParameterRead => {
                 handle_read::<D>(msg, ctx);
@@ -58,7 +53,6 @@ impl<D: StackDefinition> ApciHandler<D> for SystemNetworkParameterService {
         }
     }
 }
-
 
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     // Per spec 03/05/02 §2.20.1.2, this service is defined *only* on

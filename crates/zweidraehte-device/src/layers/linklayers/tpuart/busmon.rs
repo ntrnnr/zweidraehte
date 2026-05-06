@@ -55,9 +55,8 @@ use embassy_time::{Duration, Instant, Timer};
 use embedded_io_async::{Read, Write};
 
 use super::state_machine::{
-    BusMonitorAction, BusMonitorContext, BusMonitorEvent, BusMonitorByteType,
-    process_busmon_event, TIMEOUT_RESET,
-    U_BUSMON_REQ, U_RESET_IND, U_RESET_REQ,
+    BusMonitorAction, BusMonitorByteType, BusMonitorContext, BusMonitorEvent, TIMEOUT_RESET, U_BUSMON_REQ, U_RESET_IND,
+    U_RESET_REQ, process_busmon_event,
 };
 
 /// Error type for bus monitor operations
@@ -121,11 +120,7 @@ impl<'a> CapturedFrame<'a> {
 
     /// Get frame data without the ACK byte (if present)
     pub fn data_without_ack(&self) -> &[u8] {
-        if self.ack_status.is_some() && !self.data.is_empty() {
-            &self.data[..self.data.len() - 1]
-        } else {
-            self.data
-        }
+        if self.ack_status.is_some() && !self.data.is_empty() { &self.data[..self.data.len() - 1] } else { self.data }
     }
 
     /// Check if this frame was successfully acknowledged
@@ -150,11 +145,7 @@ where
 {
     /// Create a new bus monitor
     pub fn new(uart: U) -> Self {
-        Self {
-            uart,
-            ctx: BusMonitorContext::new(),
-            timeout_deadline: None,
-        }
+        Self { uart, ctx: BusMonitorContext::new(), timeout_deadline: None }
     }
 
     /// Start bus monitor mode
@@ -169,8 +160,7 @@ where
 
         for action in actions.iter() {
             if let BusMonitorAction::SendBusMonitorEnable = action {
-                self.uart.write_all(&[U_BUSMON_REQ]).await
-                    .map_err(|_| BusMonitorError::IoError)?;
+                self.uart.write_all(&[U_BUSMON_REQ]).await.map_err(|_| BusMonitorError::IoError)?;
             }
         }
 
@@ -202,10 +192,7 @@ where
     /// Returns a `CapturedFrame` containing the raw frame data and acknowledgment status.
     /// The provided buffer must be large enough to hold the frame (typically 64 bytes
     /// for standard frames, 256 for extended frames).
-    pub async fn receive_frame<'a>(
-        &mut self,
-        buffer: &'a mut [u8],
-    ) -> Result<CapturedFrame<'a>, BusMonitorError> {
+    pub async fn receive_frame<'a>(&mut self, buffer: &'a mut [u8]) -> Result<CapturedFrame<'a>, BusMonitorError> {
         if !self.ctx.is_active() {
             return Err(BusMonitorError::NotStarted);
         }
@@ -219,11 +206,7 @@ where
             // Calculate timeout
             let timeout_duration = if let Some(deadline) = self.timeout_deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.as_ticks() == 0 {
-                    Duration::from_millis(0)
-                } else {
-                    remaining
-                }
+                if remaining.as_ticks() == 0 { Duration::from_millis(0) } else { remaining }
             } else {
                 // No active timeout, wait indefinitely (well, 1 hour)
                 Duration::from_secs(3600)
@@ -239,10 +222,7 @@ where
                     for action in actions.iter() {
                         if let BusMonitorAction::FrameComplete = action {
                             self.timeout_deadline = None;
-                            return Ok(CapturedFrame {
-                                data: &buffer[..write_idx],
-                                ack_status,
-                            });
+                            return Ok(CapturedFrame { data: &buffer[..write_idx], ack_status });
                         }
                     }
 
@@ -278,10 +258,7 @@ where
                             }
                             BusMonitorAction::FrameComplete => {
                                 self.timeout_deadline = None;
-                                return Ok(CapturedFrame {
-                                    data: &buffer[..write_idx],
-                                    ack_status,
-                                });
+                                return Ok(CapturedFrame { data: &buffer[..write_idx], ack_status });
                             }
                             _ => {}
                         }
@@ -293,21 +270,18 @@ where
 
     /// Reset the TPUART chip
     async fn reset_chip(&mut self) -> Result<(), BusMonitorError> {
-        self.uart.write_all(&[U_RESET_REQ]).await
-            .map_err(|_| BusMonitorError::IoError)?;
+        self.uart.write_all(&[U_RESET_REQ]).await.map_err(|_| BusMonitorError::IoError)?;
 
         let mut buf = [0u8; 1];
         let timeout = Timer::after(Duration::from_millis(TIMEOUT_RESET.as_millis()));
 
         match select(timeout, self.uart.read(&mut buf)).await {
             Either::First(_) => Err(BusMonitorError::Timeout),
-            Either::Second(result) => {
-                match result {
-                    Ok(_) if buf[0] == U_RESET_IND => Ok(()),
-                    Ok(_) => Err(BusMonitorError::UnexpectedResponse(buf[0])),
-                    Err(_) => Err(BusMonitorError::IoError),
-                }
-            }
+            Either::Second(result) => match result {
+                Ok(_) if buf[0] == U_RESET_IND => Ok(()),
+                Ok(_) => Err(BusMonitorError::UnexpectedResponse(buf[0])),
+                Err(_) => Err(BusMonitorError::IoError),
+            },
         }
     }
 

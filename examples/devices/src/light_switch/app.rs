@@ -23,8 +23,8 @@ pub use zweidraehte_util::input::{ButtonEvent, WaitForRelease};
 
 use super::comm_objs::{Index, LightSwitchComObjects};
 use super::params::{ButtonConfig, ButtonsMode, LightSwitchParams, RockerDirection, SwitchAction};
-use zweidraehte_proto::dpt::*;
 use zweidraehte_device::prelude::*;
+use zweidraehte_proto::dpt::*;
 
 // ============================================================================
 // Types
@@ -63,31 +63,17 @@ pub fn resolve_button(
                 RockerDirection::Normal => is_top,
                 RockerDirection::Inverted => !is_top,
             };
-            (
-                &params.button1_config,
-                Index::Btn1Primary,
-                Index::Btn1Status,
-                Index::Btn1Secondary,
-                Some(is_on),
-            )
+            (&params.button1_config, Index::Btn1Primary, Index::Btn1Status, Index::Btn1Secondary, Some(is_on))
         }
         ButtonsMode::TwoFunction => {
             // Each button is independent with its own config and objects.
             match button {
-                ButtonId::Btn1 => (
-                    &params.button1_config,
-                    Index::Btn1Primary,
-                    Index::Btn1Status,
-                    Index::Btn1Secondary,
-                    None,
-                ),
-                ButtonId::Btn2 => (
-                    &params.button2_config,
-                    Index::Btn2Primary,
-                    Index::Btn2Status,
-                    Index::Btn2Secondary,
-                    None,
-                ),
+                ButtonId::Btn1 => {
+                    (&params.button1_config, Index::Btn1Primary, Index::Btn1Status, Index::Btn1Secondary, None)
+                }
+                ButtonId::Btn2 => {
+                    (&params.button2_config, Index::Btn2Primary, Index::Btn2Status, Index::Btn2Secondary, None)
+                }
             }
         }
     }
@@ -317,16 +303,12 @@ pub async fn handle_blind<D, R>(
 /// - Long press: store scene (learn).
 ///
 /// DPT 18.001 format: bit 7 = learn flag, bits 0-5 = scene number (0-63).
-pub async fn handle_scene<D>(
-    knx: &Stack<'_, D>,
-    event: ButtonEvent,
-    primary: Index,
-    scene_number: u8,
-) where
+pub async fn handle_scene<D>(knx: &Stack<'_, D>, event: ButtonEvent, primary: Index, scene_number: u8)
+where
     D: StackDefinition<CO = LightSwitchComObjects>,
 {
     let value = match event {
-        ButtonEvent::ShortPress => scene_number & 0x3F,          // Recall
+        ButtonEvent::ShortPress => scene_number & 0x3F,         // Recall
         ButtonEvent::LongPress => (scene_number & 0x3F) | 0x80, // Store
     };
     let dpt = DPT_SceneControl::new(value.into());

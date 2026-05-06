@@ -25,10 +25,13 @@ use embassy_sync::channel::Channel;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use crate::IpPlatform;
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, SystemBDeviceState};
+use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
 use crate::layers::linklayers::knxip::features::{FeatureSet, TunnelingFeature};
+use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::HasDomainAddress;
+use crate::restart::EraseCode;
 use crate::{HasRoutingMulticastRebind, IpConfig, IpPlatformConfig, IpStackState};
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -337,7 +340,7 @@ impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
 // Plain KNX/IP has no Data Secure layer at this level — security on IP
 // stacks is added by wrapping `IpExtensionState` in `SecureExtensionState`.
 // The bare extension's `Plain` defaults are correct.
-impl<const N: usize, const CAPS: u16> crate::objects::comm::HasGoSecurityView for IpExtensionState<N, CAPS> {}
+impl<const N: usize, const CAPS: u16> HasGoSecurityView for IpExtensionState<N, CAPS> {}
 
 impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAPS> {
     type Config = PersistedIpConfig<N>;
@@ -380,8 +383,7 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
         self.build_ip_config()
     }
 
-    fn on_erase(&self, code: crate::restart::EraseCode) {
-        use crate::restart::EraseCode;
+    fn on_erase(&self, code: EraseCode) {
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
             let defaults: PersistedIpConfig<N> = PersistedIpConfig::default();
             self.friendly_name.set(defaults.friendly_name);
@@ -402,7 +404,7 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
     }
 }
 
-impl<const N: usize, const CAPS: u16> crate::bcus::system_b::HasSecurityMode for IpExtensionState<N, CAPS> {}
+impl<const N: usize, const CAPS: u16> HasSecurityMode for IpExtensionState<N, CAPS> {}
 
 impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpExtensionState<N, CAPS> {
     fn routing_multicast_rebind_channel(&self) -> &RoutingMulticastRebindChannel {
@@ -414,7 +416,7 @@ impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpExtensionS
 // Extension — unified persistence + augmentation
 // ============================================================================
 
-impl<P: crate::IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpExtensionState<N, CAPS> {
+impl<P: IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpExtensionState<N, CAPS> {
     type Augment<'a, D: StackDefinition>
         = IpAugment<'a, P, N, CAPS>
     where

@@ -16,9 +16,9 @@
 //! - 5.2.2-5.2.4 — require connection-oriented auth or extended frames with
 //!   huge payloads.
 
-use crate::{TestCase, TestSuite};
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
+use crate::{TestCase, TestSuite};
 
 /// Default response timeout.
 const TIMEOUT: u32 = 3000;
@@ -33,29 +33,19 @@ pub fn create_section_5_suite() -> TestSuite {
     // LINEAR_MEMORY_BASE = 0x0200 from the conformance stack.
     // A_MemoryExtended uses a 3-byte address: high byte 0x00, then the
     // 16-bit base as two bytes.
-    variables.insert(
-        "READWRITE_MEM_START".into(),
-        crate::TestVariable::Bytes(vec![0x00, 0x02, 0x00]),
-    );
+    variables.insert("READWRITE_MEM_START".into(), crate::TestVariable::Bytes(vec![0x00, 0x02, 0x00]));
 
     TestSuite::new("5 MemoryExtended_Write / Read PDUs", variables)
         .secure()
         .with_preparation(vec![
             // Set the DUT individual address.
             comment("Set BDUT individual address via A_IndividualAddressSerialNumber_Write"),
-            inject(
-                "BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00",
-            ),
+            inject("BC #EDI 00 00 ED 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00"),
             wait(1000),
             // Seed 6 bytes so that later read tests have known data.
             comment("Write 6 bytes (01..06) to READWRITE_MEM_START for read tests"),
-            inject(
-                "BC #EDI #BDUT_ADDR 6B 01 FB 06 #READWRITE_MEM_START 01 02 03 04 05 06",
-            ),
-            expect(
-                "BC #BDUT_ADDR #EDI 65 01 FC 00 #READWRITE_MEM_START",
-                TIMEOUT,
-            ),
+            inject("BC #EDI #BDUT_ADDR 6B 01 FB 06 #READWRITE_MEM_START 01 02 03 04 05 06"),
+            expect("BC #BDUT_ADDR #EDI 65 01 FC 00 #READWRITE_MEM_START", TIMEOUT),
         ])
         .with_cases(vec![
             test_5_1_1(),
@@ -94,13 +84,8 @@ fn test_5_1_4() -> TestCase {
     // address.
     TestCase::new("5.1.4 MemoryExtended_Write – read only memory").with_steps(vec![
         comment("Write 6 bytes to READONLY_MEM_START → expect E_READ_ONLY (0xFB)"),
-        inject(
-            "BC #EDI #BDUT_ADDR 6B 01 FB 06 #READONLY_MEM_START 01 02 03 04 05 06",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC FB #READONLY_MEM_START",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 6B 01 FB 06 #READONLY_MEM_START 01 02 03 04 05 06"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC FB #READONLY_MEM_START", TIMEOUT),
     ])
 }
 
@@ -134,13 +119,8 @@ fn test_5_2_3() -> TestCase {
     // refuses to read a write-only region with a recognisable error.
     TestCase::new("5.2.3 MemoryExtended_Read – write only memory").with_steps(vec![
         comment("Read 6 bytes from WRITEONLY_MEM_START → expect E_WRITE_ONLY (0xFA)"),
-        inject(
-            "BC #EDI #BDUT_ADDR 65 01 FD 06 #WRITEONLY_MEM_START",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FE FA #WRITEONLY_MEM_START",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD 06 #WRITEONLY_MEM_START"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FE FA #WRITEONLY_MEM_START", TIMEOUT),
     ])
 }
 
@@ -158,21 +138,11 @@ fn test_5_2_4() -> TestCase {
 fn test_5_1_1() -> TestCase {
     TestCase::new("5.1.1 correct MemoryExtended_Write").with_steps(vec![
         comment("Write 6 bytes to READWRITE_MEM_START"),
-        inject(
-            "BC #EDI #BDUT_ADDR 6B 01 FB 06 #READWRITE_MEM_START 01 02 03 04 05 06",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC 00 #READWRITE_MEM_START",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 6B 01 FB 06 #READWRITE_MEM_START 01 02 03 04 05 06"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC 00 #READWRITE_MEM_START", TIMEOUT),
         comment("Read back to verify written data"),
-        inject(
-            "BC #EDI #BDUT_ADDR 65 01 FD 06 #READWRITE_MEM_START",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 6B 01 FE 00 #READWRITE_MEM_START 01 02 03 04 05 06",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD 06 #READWRITE_MEM_START"),
+        expect("BC #BDUT_ADDR #EDI 6B 01 FE 00 #READWRITE_MEM_START 01 02 03 04 05 06", TIMEOUT),
     ])
 }
 
@@ -186,32 +156,18 @@ fn test_5_1_1() -> TestCase {
 
 fn test_5_1_2() -> TestCase {
     // 249 bytes: 01 02 03 ... F9
-    let data_bytes: String = (1..=0xF9u8)
-        .map(|b| format!("{:02X}", b))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let data_bytes: String = (1..=0xF9u8).map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
 
-    let write_template = format!(
-        "3C 60 #EDI #BDUT_ADDR FE 01 FB F9 #READWRITE_MEM_START {}",
-        data_bytes
-    );
+    let write_template = format!("3C 60 #EDI #BDUT_ADDR FE 01 FB F9 #READWRITE_MEM_START {}", data_bytes);
 
-    let read_response = format!(
-        "3C 60 #BDUT_ADDR #EDI FE 01 FE 00 #READWRITE_MEM_START {}",
-        data_bytes
-    );
+    let read_response = format!("3C 60 #BDUT_ADDR #EDI FE 01 FE 00 #READWRITE_MEM_START {}", data_bytes);
 
     TestCase::new("5.1.2 MemoryExtended_Write up to MAX_APDU_LENGTH").with_steps(vec![
         comment("Write 249 bytes (01..F9) to READWRITE_MEM_START"),
         inject(&write_template),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC 00 #READWRITE_MEM_START",
-            TIMEOUT,
-        ),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC 00 #READWRITE_MEM_START", TIMEOUT),
         comment("Read back 249 bytes to verify"),
-        inject(
-            "BC #EDI #BDUT_ADDR 65 01 FD F9 #READWRITE_MEM_START",
-        ),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD F9 #READWRITE_MEM_START"),
         expect(&read_response, TIMEOUT),
     ])
 }
@@ -224,31 +180,16 @@ fn test_5_1_6() -> TestCase {
     TestCase::new("5.1.6 MemoryExtended_Write invalid size").with_steps(vec![
         // Count = 0 with 1 data byte.
         comment("Count=0 with 1 data byte -> error 0xFD"),
-        inject(
-            "BC #EDI #BDUT_ADDR 66 01 FB 00 #READWRITE_MEM_START 01",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC FD #READWRITE_MEM_START",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 66 01 FB 00 #READWRITE_MEM_START 01"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC FD #READWRITE_MEM_START", TIMEOUT),
         // Count = 5 but 6 data bytes (mismatch).
         comment("Count=5 with 6 data bytes (size mismatch) -> error 0xFE"),
-        inject(
-            "BC #EDI #BDUT_ADDR 6B 01 FB 05 #READWRITE_MEM_START 01 02 03 04 05 06",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC FE #READWRITE_MEM_START",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 6B 01 FB 05 #READWRITE_MEM_START 01 02 03 04 05 06"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC FE #READWRITE_MEM_START", TIMEOUT),
         // Count = 7 but 6 data bytes (mismatch).
         comment("Count=7 with 6 data bytes (size mismatch) -> error 0xFE"),
-        inject(
-            "BC #EDI #BDUT_ADDR 6B 01 FB 07 #READWRITE_MEM_START 01 02 03 04 05 06",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC FE #READWRITE_MEM_START",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 6B 01 FB 07 #READWRITE_MEM_START 01 02 03 04 05 06"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC FE #READWRITE_MEM_START", TIMEOUT),
     ])
 }
 
@@ -259,21 +200,11 @@ fn test_5_1_6() -> TestCase {
 fn test_5_1_7() -> TestCase {
     TestCase::new("5.1.7 MemoryExtended_Write invalid memory address").with_steps(vec![
         comment("Address 0x000000 (not accessible) -> error 0xFD"),
-        inject(
-            "BC #EDI #BDUT_ADDR 6B 01 FB 06 00 00 00 01 02 03 04 05 06",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC FD 00 00 00",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 6B 01 FB 06 00 00 00 01 02 03 04 05 06"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC FD 00 00 00", TIMEOUT),
         comment("Address 0x0FA000 (not accessible) -> error 0xFD"),
-        inject(
-            "BC #EDI #BDUT_ADDR 6B 01 FB 06 0F A0 00 01 02 03 04 05 06",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FC FD 0F A0 00",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 6B 01 FB 06 0F A0 00 01 02 03 04 05 06"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FC FD 0F A0 00", TIMEOUT),
     ])
 }
 
@@ -284,13 +215,8 @@ fn test_5_1_7() -> TestCase {
 fn test_5_2_1() -> TestCase {
     TestCase::new("5.2.1 correct MemoryExtended_Read").with_steps(vec![
         comment("Read 6 bytes from READWRITE_MEM_START (seeded in preparation)"),
-        inject(
-            "BC #EDI #BDUT_ADDR 65 01 FD 06 #READWRITE_MEM_START",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 6B 01 FE 00 #READWRITE_MEM_START 01 02 03 04 05 06",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD 06 #READWRITE_MEM_START"),
+        expect("BC #BDUT_ADDR #EDI 6B 01 FE 00 #READWRITE_MEM_START 01 02 03 04 05 06", TIMEOUT),
     ])
 }
 
@@ -301,13 +227,8 @@ fn test_5_2_1() -> TestCase {
 fn test_5_2_5() -> TestCase {
     TestCase::new("5.2.5 MemoryExtended_Read invalid size").with_steps(vec![
         comment("Count=0 -> error 0xFD"),
-        inject(
-            "BC #EDI #BDUT_ADDR 65 01 FD 00 #READWRITE_MEM_START",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FE FD #READWRITE_MEM_START",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD 00 #READWRITE_MEM_START"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FE FD #READWRITE_MEM_START", TIMEOUT),
     ])
 }
 
@@ -318,20 +239,10 @@ fn test_5_2_5() -> TestCase {
 fn test_5_2_6() -> TestCase {
     TestCase::new("5.2.6 MemoryExtended_Read invalid memory address").with_steps(vec![
         comment("Address 0x000000 (not accessible) -> error 0xFD"),
-        inject(
-            "BC #EDI #BDUT_ADDR 65 01 FD 06 00 00 00",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FE FD 00 00 00",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD 06 00 00 00"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FE FD 00 00 00", TIMEOUT),
         comment("Address 0x0FA000 (not accessible) -> error 0xFD"),
-        inject(
-            "BC #EDI #BDUT_ADDR 65 01 FD 06 0F A0 00",
-        ),
-        expect(
-            "BC #BDUT_ADDR #EDI 65 01 FE FD 0F A0 00",
-            TIMEOUT,
-        ),
+        inject("BC #EDI #BDUT_ADDR 65 01 FD 06 0F A0 00"),
+        expect("BC #BDUT_ADDR #EDI 65 01 FE FD 0F A0 00", TIMEOUT),
     ])
 }

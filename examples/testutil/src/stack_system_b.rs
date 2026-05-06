@@ -179,8 +179,7 @@ async fn main(spawner: Spawner) {
             None
         }
     };
-    let state_init =
-        SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
+    let state_init = SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
 
     // Create KNX/IP link layer
     let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);

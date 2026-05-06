@@ -36,10 +36,10 @@
 
 mod canonical;
 mod comparison;
-mod visibility;
 mod memory;
+mod visibility;
 
 pub use canonical::*;
 pub use comparison::*;
-pub use visibility::*;
 pub use memory::*;
+pub use visibility::*;

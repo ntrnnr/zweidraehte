@@ -150,10 +150,7 @@ fn main() {
     println!();
 
     // Create checker
-    let checker = match EquivalenceChecker::from_xml_files(
-        Path::new(&reference_path),
-        Path::new(&generated_path),
-    ) {
+    let checker = match EquivalenceChecker::from_xml_files(Path::new(&reference_path), Path::new(&generated_path)) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Error loading XML files: {}", e);
@@ -162,18 +159,14 @@ fn main() {
     };
 
     // Print some metadata
-    println!("Reference program: {} ({})",
-             checker.reference.metadata.name,
-             checker.reference.metadata.id);
+    println!("Reference program: {} ({})", checker.reference.metadata.name, checker.reference.metadata.id);
     println!("  Parameters: {}", checker.reference.parameters.len());
     println!("  Communication objects: {}", checker.reference.com_objects.len());
     println!("  Parameter refs: {}", checker.reference.param_refs.len());
     println!("  ComObject refs: {}", checker.reference.com_object_refs.len());
     println!();
 
-    println!("Generated program: {} ({})",
-             checker.generated.metadata.name,
-             checker.generated.metadata.id);
+    println!("Generated program: {} ({})", checker.generated.metadata.name, checker.generated.metadata.id);
     println!("  Parameters: {}", checker.generated.parameters.len());
     println!("  Communication objects: {}", checker.generated.com_objects.len());
     println!("  Parameter refs: {}", checker.generated.param_refs.len());

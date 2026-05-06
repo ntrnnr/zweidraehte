@@ -91,21 +91,41 @@ pub fn create_section_3_7_suite() -> TestSuite {
 // the reference XML.
 
 fn placeholder(name: &'static str) -> TestCase {
-    TestCase::new(name).with_steps(vec![
-        comment("Placeholder: DomainAddress services require PL/RF/IP media — not supported on TP1 conformance DUT."),
-    ])
+    TestCase::new(name).with_steps(vec![comment(
+        "Placeholder: DomainAddress services require PL/RF/IP media — not supported on TP1 conformance DUT.",
+    )])
 }
 
-fn test_3_7_2_3() -> TestCase { placeholder("3.7.2.3 A_DomainAddress_SerialNumber_Read") }
-fn test_3_7_2_3_1() -> TestCase { placeholder("3.7.2.3.1 For 2 octet (PL) and 6 octet (RF) (3FF/3FF)") }
-fn test_3_7_2_3_2() -> TestCase { placeholder("3.7.2.3.2 For 4 octet (IP) and 21 octet (IP)") }
-fn test_3_7_2_4() -> TestCase { placeholder("3.7.2.4 A_DomainAddress_Read (3FF/3FF) — Plain/A/A+C") }
-fn test_3_7_2_5() -> TestCase { placeholder("3.7.2.5 A_DomainAddress_Selective_Read (3FF/3FF)") }
-fn test_3_7_2_11() -> TestCase { placeholder("3.7.2.11 A_DomainAddress_Write (3FF/00C) [open media]") }
-fn test_3_7_2_12() -> TestCase { placeholder("3.7.2.12 A_DomainAddressSerialNumber_Write") }
-fn test_3_7_2_12_1() -> TestCase { placeholder("3.7.2.12.1 For 4 octet (IP) (3FF/00C)") }
-fn test_3_7_2_12_2() -> TestCase { placeholder("3.7.2.12.2 For 6 octet (RF) (3FF/00C)") }
-fn test_3_7_2_12_3() -> TestCase { placeholder("3.7.2.12.3 For 21 octet (IP) (00C/00C)") }
+fn test_3_7_2_3() -> TestCase {
+    placeholder("3.7.2.3 A_DomainAddress_SerialNumber_Read")
+}
+fn test_3_7_2_3_1() -> TestCase {
+    placeholder("3.7.2.3.1 For 2 octet (PL) and 6 octet (RF) (3FF/3FF)")
+}
+fn test_3_7_2_3_2() -> TestCase {
+    placeholder("3.7.2.3.2 For 4 octet (IP) and 21 octet (IP)")
+}
+fn test_3_7_2_4() -> TestCase {
+    placeholder("3.7.2.4 A_DomainAddress_Read (3FF/3FF) — Plain/A/A+C")
+}
+fn test_3_7_2_5() -> TestCase {
+    placeholder("3.7.2.5 A_DomainAddress_Selective_Read (3FF/3FF)")
+}
+fn test_3_7_2_11() -> TestCase {
+    placeholder("3.7.2.11 A_DomainAddress_Write (3FF/00C) [open media]")
+}
+fn test_3_7_2_12() -> TestCase {
+    placeholder("3.7.2.12 A_DomainAddressSerialNumber_Write")
+}
+fn test_3_7_2_12_1() -> TestCase {
+    placeholder("3.7.2.12.1 For 4 octet (IP) (3FF/00C)")
+}
+fn test_3_7_2_12_2() -> TestCase {
+    placeholder("3.7.2.12.2 For 6 octet (RF) (3FF/00C)")
+}
+fn test_3_7_2_12_3() -> TestCase {
+    placeholder("3.7.2.12.3 For 21 octet (IP) (00C/00C)")
+}
 
 // ============================================================================
 // 3.7.2.1 A_IndividualAddress_Read (3FF/3FF) -- Plain/A/A+C -- Security Mode on

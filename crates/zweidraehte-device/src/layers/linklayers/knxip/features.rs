@@ -28,6 +28,9 @@ use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 use zweidraehte_proto::messages::knxip::KNXnetIPServiceType;
 use zweidraehte_proto::messages::knxip::substructs::{self, SupportedService};
 
+use crate::layers::transport::cemi::CemiEvent;
+use crate::{KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS};
+
 use super::services::remote_config::RemoteConfigurationServer;
 use super::services::routing::RoutingServer;
 use super::{EndpointType, PendingResponse, ServerContext, ServerError};
@@ -177,7 +180,7 @@ impl RoutingFeature for WithRouting {
 
     fn endpoints(multicast_addr: Ipv4Addr) -> Vec<EndpointType, 4> {
         let mut eps = Vec::new();
-        let _ = eps.push(EndpointType::new(multicast_addr, crate::KNX_PORT));
+        let _ = eps.push(EndpointType::new(multicast_addr, KNX_PORT));
         eps
     }
 
@@ -314,7 +317,7 @@ impl RemoteConfigFeature for WithRemoteConfig {
         // Remote Config listens on the spec-fixed System Setup
         // multicast — independent of PID_ROUTING_MULTICAST_ADDRESS.
         let mut eps = Vec::new();
-        let _ = eps.push(EndpointType::new(crate::SYSTEM_SETUP_MULTICAST_ADDRESS, crate::KNX_PORT));
+        let _ = eps.push(EndpointType::new(SYSTEM_SETUP_MULTICAST_ADDRESS, KNX_PORT));
         eps
     }
 
@@ -416,7 +419,7 @@ pub trait TunnelingFeature: 'static {
     /// events to the [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer).
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
-        cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
+        cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel>;
 }
 
@@ -438,7 +441,7 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
 
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
-        cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
+        cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
@@ -475,7 +478,7 @@ impl TunnelingFeature for NoTunneling {
 
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
-        cemi_sender: embassy_sync::channel::DynamicSender<'a, crate::layers::transport::cemi::CemiEvent>,
+        cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),

@@ -41,7 +41,9 @@ use embassy_time::{Duration, Instant};
 use crate::{
     HasAuthorization, StackDefinition,
     context::StackContext,
+    context::layer::LayerContext,
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
+    service::{Layer, ServiceCtx},
 };
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
@@ -119,7 +121,7 @@ pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1,
     /// Unified device state (contains tables and runtime state)
     state: &'a D::State,
 
-    lctx: &'a crate::context::layer::LayerContext<D>,
+    lctx: &'a LayerContext<D>,
 
     /// Connection table for stateful connections
     connections: ConnectionTable<MAX_INCOMING, MAX_OUTGOING>,
@@ -188,7 +190,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     }
 
     /// Access to the layer context.
-    pub(crate) fn lctx(&self) -> &'a crate::context::layer::LayerContext<D> {
+    pub(crate) fn lctx(&self) -> &'a LayerContext<D> {
         self.lctx
     }
 
@@ -228,7 +230,7 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     }
 }
 
-impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> crate::service::Layer<D>
+impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Layer<D>
     for TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING>
 {
     const HANDLES: &'static [ServiceType] = &[
@@ -254,11 +256,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> c
         ServiceType::T_Data_Req,
     ];
 
-    fn process(
-        &mut self,
-        msg: KnxMessageBuffer<Buffer<'static>>,
-        _ctx: &crate::service::ServiceCtx<'_, D>,
-    ) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &ServiceCtx<'_, D>) {
         match msg.service_type() {
             // =================================================================
             // Indications from Network Layer (upward)
@@ -302,7 +300,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> c
         self.connections.next_timeout_deadline()
     }
 
-    fn poll(&mut self, _ctx: &crate::service::ServiceCtx<'_, D>) {
+    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {
         self.check_timeouts();
     }
 }

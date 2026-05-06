@@ -22,8 +22,9 @@ use embassy_futures::select::{Either3, select3};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 
+use crate::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use crate::context::LinkLayerBufferContext;
-use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase};
+use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::encoding::cemi::CemiMessageCode; // Still needed for RX path
 use zweidraehte_proto::messages::buffers::{Buffer, DynBufferManager, MessageBuffer};
@@ -98,7 +99,7 @@ impl Default for UsbLinkLayerBuilder {
 
 /// Default max APDU length if the interface doesn't report one
 /// (standard TP1 without extended frame format)
-const DEFAULT_MAX_APDU_LENGTH: u16 = crate::config::MAX_APDU_LENGTH_TP1_STANDARD;
+const DEFAULT_MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_TP1_STANDARD;
 
 impl UsbLinkLayerBuilder {
     /// Read the interface's individual address from the Device Object.
@@ -161,7 +162,7 @@ impl LinkLayerBuilderBase for UsbLinkLayerBuilder {
     }
 }
 
-impl crate::layers::LinkLayerCapabilities for UsbLinkLayerBuilder {}
+impl LinkLayerCapabilities for UsbLinkLayerBuilder {}
 
 impl UsbLinkLayerBuilder {
     /// Open the USB device and negotiate cEMI mode.

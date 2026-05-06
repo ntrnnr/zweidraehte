@@ -375,4 +375,3 @@ pub(crate) fn collect_union_variant_texts(layout: &PageStructure) -> HashMap<(St
     walk_page_structure(layout, &mut collector);
     texts
 }
-

@@ -30,12 +30,7 @@ use crate::logging::{debug, warn};
 pub struct UserManufacturerInfoService;
 
 impl<D: StackDefinition> ApciHandler<D> for UserManufacturerInfoService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::UserManufacturerInfoRead => {
                 handle_read::<D>(msg, ctx);
@@ -49,7 +44,6 @@ impl<D: StackDefinition> ApciHandler<D> for UserManufacturerInfoService {
         }
     }
 }
-
 
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     let Some(info) = D::USER_MANUFACTURER_INFO else {

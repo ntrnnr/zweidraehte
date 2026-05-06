@@ -14,12 +14,7 @@ use crate::service::{AlCtx, ApciHandler};
 /// Empty extension set — handles nothing, returns `false` always.
 impl<D: StackDefinition> ApciHandler<D> for () {
     #[inline(always)]
-    fn try_handle_apci(
-        &self,
-        _apci: ApciCode,
-        _msg: &KnxMessageBuffer<Buffer<'static>>,
-        _ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, _apci: ApciCode, _msg: &KnxMessageBuffer<Buffer<'static>>, _ctx: &AlCtx<'_, D>) -> bool {
         false
     }
 }

@@ -13,9 +13,9 @@
 use crate::{
     HasPersistence,
     definition::StackDefinition,
-    service::{AlCtx, ApciHandler},
     memory::MemoryMap,
     objects::interface::HasDeviceObject,
+    service::{AlCtx, ApciHandler},
 };
 use zweidraehte_proto::messages::{
     apdu::memory::{UserMemoryAccess, UserMemoryResponse},
@@ -40,12 +40,7 @@ use crate::logging::{debug, error, warn};
 pub struct UserMemoryService;
 
 impl<D: StackDefinition> ApciHandler<D> for UserMemoryService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::UserMemoryRead => {
                 handle_user_memory_read::<D>(msg, ctx);
@@ -63,7 +58,6 @@ impl<D: StackDefinition> ApciHandler<D> for UserMemoryService {
         }
     }
 }
-
 
 // ============================================================================
 // Handlers
@@ -119,10 +113,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
 }
 
 /// Handle `A_UserMemory_Write.ind`
-fn handle_user_memory_write<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlCtx<'_, D>,
-) {
+fn handle_user_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Data_Ind {
         warn!("AL UserMemory_Write rejected: connection-oriented only");
         return;

@@ -18,8 +18,13 @@ impl CatalogGenerator {
         application_programs: &[&ApplicationProgramDef],
         schema_version: Option<KnxSchemaVersion>,
     ) -> Result<String, GeneratorError> {
-        let knx =
-            Self::build_catalog_knx_multi(manufacturer_id, sections, hardware_defs, application_programs, schema_version);
+        let knx = Self::build_catalog_knx_multi(
+            manufacturer_id,
+            sections,
+            hardware_defs,
+            application_programs,
+            schema_version,
+        );
         Self::serialize(&knx)
     }
 
@@ -123,7 +128,9 @@ impl CatalogGenerator {
         let subsections: Vec<CatalogSection> = def
             .subsections
             .iter()
-            .map(|sub| Self::build_section(sub, manuf_str, hardware_defs, application_programs, section_counter, item_counter))
+            .map(|sub| {
+                Self::build_section(sub, manuf_str, hardware_defs, application_programs, section_counter, item_counter)
+            })
             .collect();
 
         CatalogSection {

@@ -13,8 +13,8 @@ use crate::util::packets::{
 use crate::messages::knxip::error::{ParseError, ParseResult};
 use crate::messages::knxip::messages::KNXnetIPServiceFamily;
 
-use zweidraehte_platform::address::EthernetAddress;
 use zerocopy::big_endian::U16;
+use zweidraehte_platform::address::EthernetAddress;
 
 macro_rules! debug_err {
     ($err:expr, $($arg:tt)*) => (

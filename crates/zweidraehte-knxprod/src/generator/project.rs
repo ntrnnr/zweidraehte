@@ -7,8 +7,8 @@
 //! - `0.xml` — topology with device instances placed in `UnassignedDevices`
 
 use crate::schema::{
-    Area, GroupAddresses, GroupRanges, Installation, Installations, Line, Locations, Project,
-    ProjectDeviceInstance, ProjectInformation, ProjectKnx, Topology, UnassignedDevices,
+    Area, GroupAddresses, GroupRanges, Installation, Installations, Line, Locations, Project, ProjectDeviceInstance,
+    ProjectInformation, ProjectKnx, Topology, UnassignedDevices,
 };
 use crate::signing::KnxSchemaVersion;
 
@@ -98,29 +98,16 @@ impl ProjectGenerator {
                 let hw = &hardware_defs[hw_idx];
                 let app = application_programs[app_idx];
 
-                let serial_hex = hw
-                    .serial_number
-                    .iter()
-                    .map(|b| format!("{:02X}", b))
-                    .collect::<String>();
-                let hardware_id = format!(
-                    "{}_H-{}-{}",
-                    manuf_str, serial_hex, hw.hardware_version
-                );
+                let serial_hex = hw.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
+                let hardware_id = format!("{}_H-{}-{}", manuf_str, serial_hex, hw.hardware_version);
 
-                let product_ref_id = format!(
-                    "{}_P-{}",
-                    hardware_id,
-                    MtxmlGenerator::encode_id(def.product_order_number)
-                );
+                let product_ref_id =
+                    format!("{}_P-{}", hardware_id, MtxmlGenerator::encode_id(def.product_order_number));
 
                 let app_hash = app.application_hash.unwrap_or("0000");
                 let h2p_ref_id = format!(
                     "{}_HP-{:04X}-{:02X}-{}",
-                    hardware_id,
-                    app.device.application_id,
-                    app.device.application_version,
-                    app_hash
+                    hardware_id, app.device.application_id, app.device.application_version, app_hash
                 );
 
                 let puid = PUID_BASE + i as u32;
@@ -163,14 +150,10 @@ impl ProjectGenerator {
                                 puid: 2,
                             },
                         },
-                        unassigned_devices: UnassignedDevices {
-                            device_instances: instances,
-                        },
+                        unassigned_devices: UnassignedDevices { device_instances: instances },
                     },
                     locations: Locations,
-                    group_addresses: GroupAddresses {
-                        group_ranges: GroupRanges,
-                    },
+                    group_addresses: GroupAddresses { group_ranges: GroupRanges },
                 }],
             }),
         };
@@ -185,8 +168,7 @@ impl ProjectGenerator {
         let mut serializer = quick_xml::se::Serializer::new(&mut buffer);
         serializer.indent(' ', 2);
 
-        serde::Serialize::serialize(knx, serializer)
-            .map_err(|e| GeneratorError::Serialization(e.to_string()))?;
+        serde::Serialize::serialize(knx, serializer).map_err(|e| GeneratorError::Serialization(e.to_string()))?;
 
         Ok(buffer)
     }

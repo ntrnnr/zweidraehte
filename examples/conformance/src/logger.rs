@@ -110,11 +110,7 @@ fn print_entry(entry: &LogEntry) {
 fn shorten_target(target: &str) -> String {
     // Keep last 2 parts of the module path
     let parts: Vec<&str> = target.split("::").collect();
-    if parts.len() <= 2 {
-        target.to_string()
-    } else {
-        parts[parts.len() - 2..].join("::")
-    }
+    if parts.len() <= 2 { target.to_string() } else { parts[parts.len() - 2..].join("::") }
 }
 
 /// Initialize the conformance logger
@@ -237,7 +233,13 @@ pub fn print_log_summary(logs: &[LogEntry], indent: &str) {
 
     eprintln!(
         "{}📊 Logs: {} total (\x1b[31m{} errors\x1b[0m, \x1b[33m{} warns\x1b[0m, \x1b[32m{} info\x1b[0m, \x1b[34m{} debug\x1b[0m, \x1b[35m{} trace\x1b[0m)",
-        indent, logs.len(), errors, warns, infos, debugs, traces
+        indent,
+        logs.len(),
+        errors,
+        warns,
+        infos,
+        debugs,
+        traces
     );
 }
 

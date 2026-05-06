@@ -19,11 +19,7 @@ use crate::tunnel::codec::{self, CemiMode};
 ///
 /// Used for T_Connect, T_Disconnect, T_ACK — messages that carry only a TPCI
 /// byte with no APCI payload.
-fn build_transport_cemi(
-    source: IndividualAddress,
-    dest: IndividualAddress,
-    tpci: Tpci,
-) -> Vec<u8> {
+fn build_transport_cemi(source: IndividualAddress, dest: IndividualAddress, tpci: Tpci) -> Vec<u8> {
     // Internal format: ctrl(1) + src(2) + dst(2) + npdu(1) + tpci(1) = 7 bytes
     let mut msg = KnxMessageBuffer::new(vec![0u8; offsets::MSG_TPCI + 1], ServiceType::L_Data_Req);
     msg.ctrl_field_mut().set_priority(Priority::System);
@@ -74,18 +70,12 @@ pub fn build_unconnected_cemi(
 }
 
 /// Build a cEMI frame for T_Connect (open transport connection).
-pub fn build_connect_cemi(
-    source: IndividualAddress,
-    dest: IndividualAddress,
-) -> Vec<u8> {
+pub fn build_connect_cemi(source: IndividualAddress, dest: IndividualAddress) -> Vec<u8> {
     build_transport_cemi(source, dest, Tpci::Connect)
 }
 
 /// Build a cEMI frame for T_Disconnect (close transport connection).
-pub fn build_disconnect_cemi(
-    source: IndividualAddress,
-    dest: IndividualAddress,
-) -> Vec<u8> {
+pub fn build_disconnect_cemi(source: IndividualAddress, dest: IndividualAddress) -> Vec<u8> {
     build_transport_cemi(source, dest, Tpci::Disconnect)
 }
 

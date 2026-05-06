@@ -37,12 +37,7 @@ use crate::logging::{debug, error, trace, warn};
 pub struct IndividualAddressSerialNumberService;
 
 impl<D: StackDefinition> ApciHandler<D> for IndividualAddressSerialNumberService {
-    fn try_handle_apci(
-        &self,
-        apci: ApciCode,
-        msg: &KnxMessageBuffer<Buffer<'static>>,
-        ctx: &AlCtx<'_, D>,
-    ) -> bool {
+    fn try_handle_apci(&self, apci: ApciCode, msg: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) -> bool {
         match apci {
             ApciCode::IndividualAddressSerialNumberRead => {
                 handle_read::<D>(msg, ctx);
@@ -60,7 +55,6 @@ impl<D: StackDefinition> ApciHandler<D> for IndividualAddressSerialNumberService
         }
     }
 }
-
 
 fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
     if ind.service_type() != ServiceType::T_Broadcast_Ind {

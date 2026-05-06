@@ -45,7 +45,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
         // ====================================================================
         // Test Suite 2: General Transport Layer Tests
         // ====================================================================
-        
+
         // --------------------------------------------------------------------
         // Test 2.1: Transport Layer tests for multicast communication
         // --------------------------------------------------------------------
@@ -54,8 +54,12 @@ pub fn create_transport_layer_suite() -> TestSuite {
             steps: vec![
                 comment("Testcase 2.1 Transport Layer tests for multicast communication"),
                 comment("Multicast-addressed frames with incorrect TPCI coding for multicast communication."),
-                comment("Test purpose: Check whether the DUT does not change the value of a communication object with a Group Value write/response command with the Transport Control field set to the value \"40h\", which indicates the frame as \"T_Data_Connected-PDU\" with SeqNo == 0 in the Transport Control field."),
-                comment("Test Precondition: Ensure that GA has been assigned to a 1 bit Group Object of the BDUT – Ensure that the update on response flag is set. Set the current Individual Address of the BDUT to be 1001."),
+                comment(
+                    "Test purpose: Check whether the DUT does not change the value of a communication object with a Group Value write/response command with the Transport Control field set to the value \"40h\", which indicates the frame as \"T_Data_Connected-PDU\" with SeqNo == 0 in the Transport Control field.",
+                ),
+                comment(
+                    "Test Precondition: Ensure that GA has been assigned to a 1 bit Group Object of the BDUT – Ensure that the update on response flag is set. Set the current Individual Address of the BDUT to be 1001.",
+                ),
                 comment("Assigning individual address to BDUT."),
                 // IndividualAddressWrite to set programming mode
                 inject_delay("BC #IFACE_A_ADDR 00 00 8D 03 DE #SER_NUM #BDUT_ADDR 00 00 00 00", 200),
@@ -78,13 +82,19 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject("BC #IFACE_A_ADDR #GO_ADDR E1 00 00"),
                 // Expect GroupValueResponse with value 1 (41 = response value 1)
                 expect("BC #BDUT_ADDR #GO_ADDR E1 00 41", 200),
-                comment("Test purpose: Check whether the DUT does not react to the reading of the value of a communication object with a Group Value Read command with an undefined Transport Control field."),
+                comment(
+                    "Test purpose: Check whether the DUT does not react to the reading of the value of a communication object with a Group Value Read command with an undefined Transport Control field.",
+                ),
                 comment("Group Value Read with undefined TPCI."),
                 // Faulty: GroupValueRead with TPCI=C0 (undefined) - should be ignored
                 inject_delay("BC #IFACE_A_ADDR #GO_ADDR E1 C0 00", 200),
                 comment("BDUT does not react"),
-                comment("Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams."),
-                comment("Test purpose: Check whether the DUT does not change the value of a communication object with a Group Value write command with TPCI coding 00xxxxb, where x is different from 0."),
+                comment(
+                    "Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams.",
+                ),
+                comment(
+                    "Test purpose: Check whether the DUT does not change the value of a communication object with a Group Value write command with TPCI coding 00xxxxb, where x is different from 0.",
+                ),
                 comment("Group Value Write with Sequence number 4."),
                 // Faulty: GroupValueWrite with TPCI=10 (seq num 4) - should be ignored
                 inject_delay("BC #IFACE_A_ADDR #GO_ADDR E1 10 80", 200),
@@ -93,11 +103,12 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject("BC #IFACE_A_ADDR #GO_ADDR E1 00 00"),
                 // Expect GroupValueResponse with value 1
                 expect("BC #BDUT_ADDR #GO_ADDR E1 00 41", 200),
-                comment("Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams."),
+                comment(
+                    "Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams.",
+                ),
             ],
             ..Default::default()
         },
-        
         // --------------------------------------------------------------------
         // Test 2.2: Transport Layer test for broadcast communication
         // --------------------------------------------------------------------
@@ -106,8 +117,12 @@ pub fn create_transport_layer_suite() -> TestSuite {
             steps: vec![
                 comment("Testcase 2.2 Transport Layer test for broadcast communication"),
                 comment("Broadcast-addressed frames with incorrect TPCI coding for broadcast communication."),
-                comment("Test purpose: Check whether the DUT does not change the value of its individual address with an Individual Address Write command with the Transport Control field set to the value \"40h\", which indicates the frame as \"T_Data_Connected-PDU\" with SeqNo == 0 in the Transport Control field."),
-                comment("Test Precondition: Activate Programming Mode and (indirectly) check IA. Other settings same as clause 2.1"),
+                comment(
+                    "Test purpose: Check whether the DUT does not change the value of its individual address with an Individual Address Write command with the Transport Control field set to the value \"40h\", which indicates the frame as \"T_Data_Connected-PDU\" with SeqNo == 0 in the Transport Control field.",
+                ),
+                comment(
+                    "Test Precondition: Activate Programming Mode and (indirectly) check IA. Other settings same as clause 2.1",
+                ),
                 set_programming_mode(true),
                 // Activate programming mode via PropertyWrite
                 inject("BC #IFACE_A_ADDR #BDUT_ADDR 66 03 D7 00 36 10 01 01"),
@@ -131,7 +146,9 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 // Faulty: IndividualAddressRead with TPCI=C1 (undefined) - should be ignored
                 inject_delay("BC #IFACE_A_ADDR 00 00 E1 C1 00", 200),
                 comment("BDUT shows no reaction"),
-                comment("Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams."),
+                comment(
+                    "Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams.",
+                ),
                 comment("Broadcast-addressed frames with TPCI coding 00xxxxb, where x is different from 0."),
                 comment("IndAddrWrite(Addr=1234) with Sequence number 4."),
                 // Faulty: IndividualAddressWrite with TPCI=10 (seq num 4) - should be ignored
@@ -144,11 +161,12 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 // Deactivate programming mode via PropertyWrite
                 inject("BC #IFACE_A_ADDR #BDUT_ADDR 66 03 D7 00 36 10 01 00"),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 03 D6 00 36 10 01 00", 200),
-                comment("Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams."),
+                comment(
+                    "Acceptance: BDUT does not accept the frames. Check BDUT's behaviour, e.g. by reading back the values respectively checking that the BDUT does not generate any responses to read telegrams.",
+                ),
             ],
             ..Default::default()
         },
-        
         // --------------------------------------------------------------------
         // Test 2.3: Transport Layer tests point-to-point connection oriented communication
         // --------------------------------------------------------------------
@@ -156,7 +174,9 @@ pub fn create_transport_layer_suite() -> TestSuite {
             name: "2.3 Transport Layer tests point-to-point connection oriented communication",
             steps: vec![
                 comment("Testcase 2.3 Transport Layer tests point-to-point connection oriented communication"),
-                comment("Test purpose: Check whether the DUT does not react to a Mask Version Read with the Transport Control field set to the value '00h' and AT type = 1 which indicates the frame as 'T_Data_Group-PDU'."),
+                comment(
+                    "Test purpose: Check whether the DUT does not react to a Mask Version Read with the Transport Control field set to the value '00h' and AT type = 1 which indicates the frame as 'T_Data_Group-PDU'.",
+                ),
                 comment("Test Precondition: Other settings same as clause 2.1."),
                 // T_Connect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
@@ -165,8 +185,9 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 // T_Disconnect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("BDUT does not react."),
-                
-                comment("Test purpose: Check whether the DUT either ignores during a connection a connectionless Mask Version Read (Transport Control field set to the value '00h' and AT type = 0 which indicates the frame as 'T_Data_Individual-PDU') or optionally sends a correct Mask Version response"),
+                comment(
+                    "Test purpose: Check whether the DUT either ignores during a connection a connectionless Mask Version Read (Transport Control field set to the value '00h' and AT type = 0 which indicates the frame as 'T_Data_Individual-PDU') or optionally sends a correct Mask Version response",
+                ),
                 // T_Connect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 // Connectionless MaskVersionRead (AT=0, TPCI=03) - may be answered
@@ -176,8 +197,9 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 // T_Disconnect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("BDUT does not react or optionally sends a connectionless mask version response."),
-                
-                comment("Test purpose: Check whether the DUT does not react to a Mask Version Read with the Transport Control field set to the value '10h' and AT type = 0 which indicates the frame as 'T_Connect-PDU'"),
+                comment(
+                    "Test purpose: Check whether the DUT does not react to a Mask Version Read with the Transport Control field set to the value '10h' and AT type = 0 which indicates the frame as 'T_Connect-PDU'",
+                ),
                 // T_Connect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 // Faulty: MaskVersionRead with TPCI=83 (T_Connect bit set) - should be ignored
@@ -185,8 +207,9 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 // T_Disconnect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("BDUT does not react."),
-                
-                comment("Test purpose: Check whether the DUT does not react to a Mask Version Read with the Transport Control field set to the value '43h' and AT type = 0 which indicates an undefined TPCI coding"),
+                comment(
+                    "Test purpose: Check whether the DUT does not react to a Mask Version Read with the Transport Control field set to the value '43h' and AT type = 0 which indicates an undefined TPCI coding",
+                ),
                 // T_Connect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 // Faulty: MaskVersionRead with TPCI=04 (undefined) - should be ignored
@@ -194,9 +217,12 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 // T_Disconnect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("BDUT does not react."),
-                comment("Acceptance: BDUT does not accept the frames. Check that the BDUT does not return a T-Ack or a Mask Version response."),
-                
-                comment("Test purpose: Telegram sequence with connection oriented communication interrupted by broadcast or group telegrams."),
+                comment(
+                    "Acceptance: BDUT does not accept the frames. Check that the BDUT does not return a T-Ack or a Mask Version response.",
+                ),
+                comment(
+                    "Test purpose: Telegram sequence with connection oriented communication interrupted by broadcast or group telegrams.",
+                ),
                 // T_Connect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 // DeviceDescriptorRead (seq 0)
@@ -223,11 +249,12 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 C6", 200),
                 // T_Disconnect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                comment("Acceptance: BDUT does not interrupt the established transport connection (it however may write the relevant addressed group object) and shows that the TL connection remains open."),
+                comment(
+                    "Acceptance: BDUT does not interrupt the established transport connection (it however may write the relevant addressed group object) and shows that the TL connection remains open.",
+                ),
             ],
             ..Default::default()
         },
-        
         // --------------------------------------------------------------------
         // Test 2.4: Transport Layer tests point-to-point connectionless communication
         // --------------------------------------------------------------------
@@ -236,8 +263,12 @@ pub fn create_transport_layer_suite() -> TestSuite {
             steps: vec![
                 comment("Testcase 2.4 Transport Layer tests point-to-point connectionless communication"),
                 comment("Purpose: Check BDUT's acceptance of connectionless frames with incorrect TPCI-coding."),
-                comment("Procedure: Use a telegram generator to send connectionless frames with incorrect TPCI coding for connectionless communication:"),
-                comment("PropertyRead(Obj=00, Prop=36, Count=1, Start=001) with TPCI of T_Data_Broadcast/T_Data_Group."),
+                comment(
+                    "Procedure: Use a telegram generator to send connectionless frames with incorrect TPCI coding for connectionless communication:",
+                ),
+                comment(
+                    "PropertyRead(Obj=00, Prop=36, Count=1, Start=001) with TPCI of T_Data_Broadcast/T_Data_Group.",
+                ),
                 // Faulty: PropertyRead with TPCI=03 (group/broadcast) - should be ignored
                 inject_delay("BC #IFACE_A_ADDR #BDUT_ADDR E5 03 D5 00 36 10 01", 200),
                 comment("PropertyRead(Obj=00, Prop=36, Count=1, Start=001) with TPCI of T_Data_Connected."),
@@ -253,7 +284,6 @@ pub fn create_transport_layer_suite() -> TestSuite {
             ],
             ..Default::default()
         },
-        
         // --------------------------------------------------------------------
         // Test 2.5: Additional negative Transport Layer Tests
         // --------------------------------------------------------------------
@@ -261,11 +291,14 @@ pub fn create_transport_layer_suite() -> TestSuite {
             name: "2.5 Additional negative Transport Layer Tests",
             steps: vec![
                 comment("Testcase 2.5 Additional negative Transport Layer Tests"),
-                
                 // === 2.5.1: Ignoring a malformed T_Connect message ===
                 comment("Testcase 2.5.1 Ignoring a malformed T_Connect message"),
-                comment("Purpose: Check that the BDUT ignores a malformed T_Connect message (with increasing number of appended bytes) and does not react to a correct DeviceDescriptorRead"),
-                comment("Procedure: Send a T-Connect with an appended byte(s), wait 1 second, send correct Device Descriptor Read message"),
+                comment(
+                    "Purpose: Check that the BDUT ignores a malformed T_Connect message (with increasing number of appended bytes) and does not react to a correct DeviceDescriptorRead",
+                ),
+                comment(
+                    "Procedure: Send a T-Connect with an appended byte(s), wait 1 second, send correct Device Descriptor Read message",
+                ),
                 // T_Connect with one appended byte - should be ignored
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 80 11", 1000),
                 // DeviceDescriptorRead - should be ignored (no connection)
@@ -284,23 +317,26 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("BC #IFACE_A_ADDR #BDUT_ADDR 61 53 00", 1000),
                 // Clean disconnect
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                comment("Acceptance: BDUT ignores the malformed T-Connect and ignores the Device Description Read (as the transport layer connection is not opened)"),
-                
+                comment(
+                    "Acceptance: BDUT ignores the malformed T-Connect and ignores the Device Description Read (as the transport layer connection is not opened)",
+                ),
                 // === 2.5.2: Ignoring a malformed T_Disconnect message ===
                 comment("Testcase 2.5.2 Ignoring a malformed T_Disconnect message"),
-                comment("Purpose: Check that the BDUT ignores a malformed T_Disconnect message (with increasing number of appended bytes)"),
-                comment("Procedure: Send a T-Connect followed by a malformed T-Disconnect, send DeviceDescriptorRead, check response, send malformed T-Disconnect again, check BDUT stays in OPEN_WAIT"),
-                
+                comment(
+                    "Purpose: Check that the BDUT ignores a malformed T_Disconnect message (with increasing number of appended bytes)",
+                ),
+                comment(
+                    "Procedure: Send a T-Connect followed by a malformed T-Disconnect, send DeviceDescriptorRead, check response, send malformed T-Disconnect again, check BDUT stays in OPEN_WAIT",
+                ),
                 // Test with one appended byte
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
-                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 81 11", 1000),  // Malformed T_Disconnect
+                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 81 11", 1000), // Malformed T_Disconnect
                 inject("BC #IFACE_A_ADDR #BDUT_ADDR 61 43 00"),
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 C2", 200),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 1000),
-                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 81 11", 1000),  // Malformed T_Disconnect again
-                expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),  // BDUT repeats response
-                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),  // Clean disconnect
-                
+                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 81 11", 1000), // Malformed T_Disconnect again
+                expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000), // BDUT repeats response
+                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),     // Clean disconnect
                 // Test with two appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 62 81 11 22", 1000),
@@ -310,7 +346,6 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 62 81 11 22", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with three appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 63 81 11 22 33", 1000),
@@ -320,7 +355,6 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 63 81 11 22 33", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with four appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 64 81 11 22 33 44", 1000),
@@ -331,21 +365,20 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("Acceptance: BDUT ignores the malformed T-Disconnect messages"),
-                
                 // === 2.5.3: Ignoring a malformed T_Ack message ===
                 comment("Testcase 2.5.3 Ignoring a malformed T_Ack message"),
-                comment("Purpose: Check that the BDUT ignores a malformed T_Ack message (with increasing number of appended bytes)"),
-                
+                comment(
+                    "Purpose: Check that the BDUT ignores a malformed T_Ack message (with increasing number of appended bytes)",
+                ),
                 // Test with one appended byte
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
-                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 C2 11", 1000),  // Malformed T_Ack
+                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 C2 11", 1000), // Malformed T_Ack
                 inject("BC #IFACE_A_ADDR #BDUT_ADDR 61 43 00"),
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 C2", 200),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 1000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 C2 11", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with two appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 62 C2 11 22", 1000),
@@ -355,7 +388,6 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 62 C2 11 22", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with three appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 63 C2 11 22 33", 1000),
@@ -365,7 +397,6 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 63 C2 11 22 33", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with four appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 64 C2 11 22 33 44", 1000),
@@ -376,21 +407,20 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
                 comment("Acceptance: BDUT ignores the malformed T-Ack messages"),
-                
                 // === 2.5.4: Ignoring a malformed T_Nack message ===
                 comment("Testcase 2.5.4 Ignoring a malformed T_Nack message"),
-                comment("Purpose: Check that the BDUT ignores a malformed T_Nack message (with increasing number of appended bytes)"),
-                
+                comment(
+                    "Purpose: Check that the BDUT ignores a malformed T_Nack message (with increasing number of appended bytes)",
+                ),
                 // Test with one appended byte
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
-                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 C3 11", 1000),  // Malformed T_Nack
+                inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 C3 11", 1000), // Malformed T_Nack
                 inject("BC #IFACE_A_ADDR #BDUT_ADDR 61 43 00"),
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 C2", 200),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 1000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 61 C3 11", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with two appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 62 C3 11 22", 1000),
@@ -400,7 +430,6 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 62 C3 11 22", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with three appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 63 C3 11 22 33", 1000),
@@ -410,7 +439,6 @@ pub fn create_transport_layer_suite() -> TestSuite {
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 63 C3 11 22 33", 1000),
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3000),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 81", 200),
-                
                 // Test with four appended bytes
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 60 80", 200),
                 inject_delay("B0 #IFACE_A_ADDR #BDUT_ADDR 64 C3 11 22 33 44", 1000),
@@ -446,10 +474,7 @@ mod tests {
         assert_eq!(vars["IFACE_A_ADDR"].as_bytes(), &[0xAF, 0xFE]);
         assert_eq!(vars["IFACE_B_ADDR"].as_bytes(), &[0xAF, 0x01]);
         assert_eq!(vars["BDUT_ADDR"].as_bytes(), &[0x10, 0x01]);
-        assert_eq!(
-            vars["SER_NUM"].as_bytes(),
-            &[0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]
-        );
+        assert_eq!(vars["SER_NUM"].as_bytes(), &[0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE]);
     }
 
     #[test]
@@ -459,25 +484,10 @@ mod tests {
         assert_eq!(tests.len(), 5);
 
         // Verify test names
-        assert_eq!(
-            tests[0].name,
-            "2.1 Transport Layer tests for multicast communication"
-        );
-        assert_eq!(
-            tests[1].name,
-            "2.2 Transport Layer test for broadcast communication"
-        );
-        assert_eq!(
-            tests[2].name,
-            "2.3 Transport Layer tests point-to-point connection oriented communication"
-        );
-        assert_eq!(
-            tests[3].name,
-            "2.4 Transport Layer tests point-to-point connectionless communication"
-        );
-        assert_eq!(
-            tests[4].name,
-            "2.5 Additional negative Transport Layer Tests"
-        );
+        assert_eq!(tests[0].name, "2.1 Transport Layer tests for multicast communication");
+        assert_eq!(tests[1].name, "2.2 Transport Layer test for broadcast communication");
+        assert_eq!(tests[2].name, "2.3 Transport Layer tests point-to-point connection oriented communication");
+        assert_eq!(tests[3].name, "2.4 Transport Layer tests point-to-point connectionless communication");
+        assert_eq!(tests[4].name, "2.5 Additional negative Transport Layer Tests");
     }
 }
