@@ -24,7 +24,7 @@ use devices::light_switch::{
 };
 use zweidraehte_device::{
     bcus::system_b::{
-        Extension, HasDeviceConfig, IpAugmentFor, IpExtension, IpStateFor, SystemBInterfaceObjectsFor,
+        Extension, HasDeviceConfig, IpAugmentFor, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor,
         SystemBMemoryMap, SystemBStackDefinition, SystemBStateInit,
     },
     layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
@@ -76,7 +76,7 @@ impl StackDefinition for PicoWLightSwitch {
     type CO = LightSwitchComObjects;
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = EmbassyNetworkInfo;
-    type ES = IpExtension<KnxIpDeviceUdp>;
+    type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type Identity = rp_common::FlashIdentityData;
     type State = PicoWState;
     type StateInit =

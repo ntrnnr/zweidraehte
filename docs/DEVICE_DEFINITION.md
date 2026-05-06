@@ -101,18 +101,18 @@ type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyStack, KnxIpInterfa
 type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyStack>;
 ```
 
-Under the hood, `IpDeviceState` uses `IpExtension<F>` as the extension
+Under the hood, `IpDeviceState` uses `IpExtensionFor<F>` as the extension
 state, which is a type alias for `IpExtensionState<N, CAPS>` with both
 const generics derived from `F`:
 
 ```rust
-pub type IpExtension<F: FeatureSet> = IpExtensionState<
+pub type IpExtensionFor<F: FeatureSet> = IpExtensionState<
     { <F::Tunneling as TunnelingFeature>::CAPACITY },  // N
     { F::KNXNETIP_DEVICE_CAPABILITIES },               // CAPS (PID 68)
 >;
 
 pub type IpDeviceState<..., D: StackDefinition, F: FeatureSet> =
-    SystemBDeviceState<..., D, IpExtension<F>>;
+    SystemBDeviceState<..., D, IpExtensionFor<F>>;
 ```
 
 The low-level aliases `IpExtensionState<N, CAPS>` and
@@ -216,13 +216,13 @@ pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
   constant derived from the link layer's `FeatureSet`
 
 You typically don't specify `N` or `CAPS` directly. Use
-`IpExtension<F>` which derives both from a `FeatureSet` type.
+`IpExtensionFor<F>` which derives both from a `FeatureSet` type.
 `IpAugmentFor<'a, P, F>` does the same for the augment type (needed
 when spelling out `InterfaceObjects` for devices with extra augments):
 
 ```rust
 // These are equivalent:
-type ES = IpExtension<KnxIpDeviceUdp>;
+type ES = IpExtensionFor<KnxIpDeviceUdp>;
 type ES = IpExtensionState<0, 0x0015>;  // N=0, CAPS=routing+devmgmt+remoteconfig
 ```
 
@@ -592,7 +592,7 @@ boilerplate. For System B devices, `type ES` determines the augment type
 automatically, and `SystemBInterfaceObjectsFor` derives the
 `InterfaceObjects` type from it.
 
-For KNX/IP devices, `IpExtension<F>` derives both the tunneling
+For KNX/IP devices, `IpExtensionFor<F>` derives both the tunneling
 capacity and the PID 68 capabilities bitfield from the same `FeatureSet`
 type used for the link layer builder:
 
@@ -612,7 +612,7 @@ impl StackDefinition for MyDevice {
     type CO = MyComObjects;
     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = MyPlatform;
-    type ES = IpExtension<KnxIpDeviceUdp>;
+    type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type State = MyState;
     type Mem = SystemBMemoryMap;
 
@@ -795,7 +795,7 @@ context the layers need is reached through `D::Augments<'a>` and
      +-- individual_address
      +-- tables (ADT, AST, COT, APP)
      +-- extension_state: ES
-     |    +-- IpExtension<F> (KNX/IP — N and CAPS from FeatureSet)
+     |    +-- IpExtensionFor<F> (KNX/IP — N and CAPS from FeatureSet)
      |    +-- Tp1ExtensionState (TP1 devices)
      |    +-- () (test/mock only)
      |

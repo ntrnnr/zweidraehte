@@ -87,7 +87,7 @@ impl StackDefinition for PicoEthLightSwitch {
     type CO = LightSwitchComObjects;
     type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = EmbassyNetworkInfo;
-    type ES = IpExtension<KnxIpDeviceUdp>;
+    type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type Identity = FlashIdentityData;
     type State = PicoEthState;
     type StateInit =

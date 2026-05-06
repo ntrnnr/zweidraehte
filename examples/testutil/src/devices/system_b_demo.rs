@@ -58,7 +58,7 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    Extension, HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+    Extension, HasDeviceConfig, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
     SystemBStackDefinition, SystemBStateInit,
 };
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
@@ -554,7 +554,7 @@ impl StackDefinition for DemoStack {
     type CO = comm_objs::DemoComObjects;
     type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceTcp, 2>;
     type Platform = MockIpPlatform;
-    type ES = IpExtension<KnxIpDeviceTcp>;
+    type ES = IpExtensionFor<KnxIpDeviceTcp>;
     type State = DemoState;
     type StateInit = SystemBStateInit<Self::Identity, DemoDeviceConfig>;
     type Mem = SystemBMemoryMap;

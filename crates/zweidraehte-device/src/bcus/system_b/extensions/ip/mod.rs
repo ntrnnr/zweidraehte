@@ -432,13 +432,13 @@ pub type IpSystemBDeviceState<
 /// same feature type used for the link layer builder:
 ///
 /// ```rust,ignore
-/// type ES = IpExtension<KnxIpDeviceUdp>;            // routing-only
+/// type ES = IpExtensionFor<KnxIpDeviceUdp>;            // routing-only
 /// type ES = IpInterfaceExtensionFor<KnxIpInterfaceUdp<4>>; // tunnelling
 /// ```
 ///
 /// Tunnelling-capable devices use [`IpInterfaceExtensionFor`] instead
 /// — this typedef carries no tunnelling slot count.
-pub type IpExtension<F: FeatureSet> = IpExtensionState<{ <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES }>;
+pub type IpExtensionFor<F: FeatureSet> = IpExtensionState<{ <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES }>;
 
 /// [`IpAugment`] with `CAPS` derived from a
 /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
@@ -465,7 +465,7 @@ pub type IpDeviceState<
     const COT_SIZE: usize,
     D: StackDefinition,
     F: FeatureSet,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpExtension<F>>;
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpExtensionFor<F>>;
 
 // ============================================================================
 // IpInterfaceExtension — IP + tunnelling aggregator
@@ -651,7 +651,7 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpInterfac
 /// [`IpInterfaceExtension`] with `N` and `CAPS` derived from a
 /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
 ///
-/// Mirror of [`IpExtension`] for tunnelling-capable devices.
+/// Mirror of [`IpExtensionFor`] for tunnelling-capable devices.
 ///
 /// ```rust,ignore
 /// type ES = IpInterfaceExtensionFor<KnxIpInterfaceUdp<4>>;

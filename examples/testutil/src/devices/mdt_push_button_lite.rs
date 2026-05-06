@@ -14,7 +14,7 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    Extension, HasDeviceConfig, IpExtension, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
+    Extension, HasDeviceConfig, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
     SystemBStackDefinition, SystemBStateInit,
 };
 use zweidraehte_device::ets::ets_range_enum;
@@ -3225,7 +3225,7 @@ impl StackDefinition for MdtStack {
     type CO = comm_objs::MdtComObjects;
     type LLB = KnxNetIpBuilder<zweidraehte_platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
     type Platform = MockIpPlatform;
-    type ES = IpExtension<KnxIpDeviceUdp>;
+    type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type State = MdtState;
     type StateInit = SystemBStateInit<Self::Identity, MdtDeviceConfig>;
     type Mem = SystemBMemoryMap;
