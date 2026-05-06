@@ -2,7 +2,7 @@
 //!
 //! Everything related to KNX/IP extension state lives here:
 //!
-//! - [`PersistedIpConfig`] — serializable IP configuration
+//! - [`IpExtensionConfig`] — serializable IP configuration
 //! - [`IpExtensionState`] — runtime state with interior mutability
 //! - [`ExtensionState`] + [`Extension<P>`](crate::bcus::system_b::Extension) impls
 //! - [`IpStackState`] impl — IP config property accessors
@@ -46,7 +46,7 @@ use zweidraehte_proto::address::IndividualAddress;
 pub(crate) type RoutingMulticastRebindChannel = Channel<NoopRawMutex, Ipv4Addr, 2>;
 
 // ============================================================================
-// Persisted IP Config
+// IP Extension Config
 // ============================================================================
 
 /// Persisted IP configuration (for KNX/IP devices).
@@ -61,17 +61,8 @@ pub(crate) type RoutingMulticastRebindChannel = Channel<NoopRawMutex, Ipv4Addr, 
 /// — paired with this config inside
 /// [`IpInterfaceExtension`](super::IpInterfaceExtension) on
 /// tunnelling-capable devices.
-///
-/// # Naming
-///
-/// The `Persisted` prefix (rather than the conventional `*ExtensionConfig`
-/// suffix used by [`Tp1ExtensionConfig`](super::super::tp1::Tp1ExtensionConfig)
-/// or [`SecurityExtensionConfig`](super::security::SecurityExtensionConfig))
-/// disambiguates this struct from the `IpConfig` DIB type in
-/// `zweidraehte-proto`, which represents a parsed KNXnet/IP protocol
-/// frame, not a persisted device configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedIpConfig {
+pub struct IpExtensionConfig {
     /// Friendly name for discovery (up to 30 bytes).
     pub friendly_name: [u8; 30],
 
@@ -100,7 +91,7 @@ pub struct PersistedIpConfig {
     pub project_installation_id: u16,
 }
 
-impl Default for PersistedIpConfig {
+impl Default for IpExtensionConfig {
     fn default() -> Self {
         Self {
             friendly_name: [0; 30],
@@ -116,9 +107,9 @@ impl Default for PersistedIpConfig {
     }
 }
 
-impl ExtensionConfig for PersistedIpConfig {}
+impl ExtensionConfig for IpExtensionConfig {}
 
-impl PersistedIpConfig {
+impl IpExtensionConfig {
     /// Get the configured IP address as an `Ipv4Addr`.
     pub fn configured_ip_addr(&self) -> Ipv4Addr {
         Ipv4Addr::from(self.configured_ip)
@@ -164,7 +155,7 @@ pub enum IpAssignmentResult {
 ///
 /// This struct provides interior-mutable access to all IP parameters
 /// that are persisted and configurable via ETS / the IP Parameter Object.
-/// It bridges the serializable [`PersistedIpConfig`] and the runtime
+/// It bridges the serializable [`IpExtensionConfig`] and the runtime
 /// representation with `Cell`/`RefCell` fields.
 ///
 /// The platform is NOT stored here — current network values (actual IP,
@@ -221,8 +212,8 @@ impl<const CAPS: u16> IpExtensionState<CAPS> {
     }
 
     /// Build the IP config for persistence.
-    pub fn build_ip_config(&self) -> PersistedIpConfig {
-        PersistedIpConfig {
+    pub fn build_ip_config(&self) -> IpExtensionConfig {
+        IpExtensionConfig {
             friendly_name: self.friendly_name.get(),
             friendly_name_len: self.friendly_name_len.get() as u8,
             configured_ip: self.configured_ip.get().octets(),
@@ -334,10 +325,10 @@ impl<const CAPS: u16> IpExtensionState<CAPS> {
 impl<const CAPS: u16> HasGoSecurityView for IpExtensionState<CAPS> {}
 
 impl<const CAPS: u16> ExtensionState for IpExtensionState<CAPS> {
-    type Config = PersistedIpConfig;
+    type Config = IpExtensionConfig;
     type Resources = ();
 
-    fn from_config(config: PersistedIpConfig, _resources: ()) -> Self {
+    fn from_config(config: IpExtensionConfig, _resources: ()) -> Self {
         // Restore field values from the persisted config but do NOT call
         // apply_current_config() here. The caller is responsible for applying
         // the IP config to the platform at the appropriate time — typically
@@ -360,13 +351,13 @@ impl<const CAPS: u16> ExtensionState for IpExtensionState<CAPS> {
         }
     }
 
-    fn to_config(&self) -> PersistedIpConfig {
+    fn to_config(&self) -> IpExtensionConfig {
         self.build_ip_config()
     }
 
     fn on_erase(&self, code: EraseCode) {
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
-            let defaults: PersistedIpConfig = PersistedIpConfig::default();
+            let defaults: IpExtensionConfig = IpExtensionConfig::default();
             self.friendly_name.set(defaults.friendly_name);
             self.friendly_name_len.set(defaults.friendly_name_len as usize);
             self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
@@ -498,7 +489,7 @@ pub type IpDeviceState<
 /// land on the new dispatch path; PIDs the inner `IpAugment` owns
 /// (the routing-only IP PIDs) fall through to it.
 ///
-/// `Config` round-trips as a `(PersistedIpConfig<0>,
+/// `Config` round-trips as a `(IpExtensionConfig,
 /// TunnellingExtensionConfig<N>)` tuple — flash payloads grown in
 /// previous releases are migrated by the device's storage layer when
 /// it picks up this struct as the new `ES`.
@@ -520,7 +511,7 @@ impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpInterfaceE
 }
 
 impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N, CAPS> {
-    type Config = (PersistedIpConfig, TunnellingExtensionConfig<N>);
+    type Config = (IpExtensionConfig, TunnellingExtensionConfig<N>);
     type Resources = ();
 
     fn from_config((ip_cfg, tun_cfg): Self::Config, _resources: ()) -> Self {

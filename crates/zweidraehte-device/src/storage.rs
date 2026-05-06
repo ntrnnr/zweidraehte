@@ -12,7 +12,7 @@
 //! - [`NoStorage`] — null implementation for devices without persistence
 //!
 //! BCU-specific types like [`PersistedState`](crate::bcus::system_b::PersistedState)
-//! and [`PersistedIpConfig`](crate::bcus::system_b::PersistedIpConfig) remain
+//! and [`IpExtensionConfig`](crate::bcus::system_b::IpExtensionConfig) remain
 //! in their respective BCU modules.
 
 use crate::bcus::system_b::HasDeviceConfig;

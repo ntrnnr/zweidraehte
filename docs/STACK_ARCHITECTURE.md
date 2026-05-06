@@ -832,7 +832,7 @@ that you don't want to hand-write.
 |---|---|---|---|---|---|
 | `()` | any/none | `()` | `()` | `()` | — |
 | `Tp1ExtensionState` | TP1 | `Tp1ExtensionConfig` | `()` | `&'a Tp1ExtensionState` (self) | — |
-| `IpExtensionState<N, CAPS>` | KNX/IP | `PersistedIpConfig<N>` | `()` | `IpAugment<'a, P, N, CAPS>` | `knxip` |
+| `IpExtensionState<CAPS>` | KNX/IP | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
 | `SecureExtensionState<Inner, SEQ, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<InnerResources, SEQ>` | `(InnerAugment, SecurityAugment)` | — (needs `HasSequenceStorage`) |
 | `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment` | — |
 
@@ -1005,7 +1005,7 @@ These suffixes carry stable meaning across the entire codebase:
 
 | Suffix | Meaning | Serialised? | Mutability | Examples |
 |---|---|---|---|---|
-| `*Config` | Persisted form. Round-trips through `serde`. | Yes | Owned, rebuilt wholesale | `DeviceConfig`, `Tp1ExtensionConfig`, `PersistedIpConfig<N>`, `SecurityExtensionConfig<…>` |
+| `*Config` | Persisted form. Round-trips through `serde`. | Yes | Owned, rebuilt wholesale | `DeviceConfig`, `Tp1ExtensionConfig`, `IpExtensionConfig`, `SecurityExtensionConfig<…>` |
 | `*State` | Runtime form with interior mutability (`Cell`, `RefCell`). Converts to/from `Config`. | No | `&self` mutation via accessors | `SystemBDeviceState`, `Tp1ExtensionState`, `IpExtensionState`, `SecurityState` |
 | `*Resources` | Non-persistent construction-time inputs: pre-allocated buffers, handles, factory-programmed keys (FDSK), platform references. | No | Moved in once at build time | `StackResources<D, BUF_SZ, NUM_BUFS>`, `SecureResources<Inner, SEQ>` |
 | `*StateInit` | Envelope passed to `StackDefinition::create_state`. Not serialisable; bundles optional loaded `Config` + identity data. | No | Consumed by `create_state` | `DemoStateInit`, `MdtStateInit` |
@@ -1034,11 +1034,6 @@ ExtensionResources ┼──> ExtensionConfig ─────┼─> ExtensionSt
   or `::new` (fresh).
 - `ExtensionState::from_config(extension_config, resources)` builds
   the runtime extension state.
-
-Note on naming: the KNX/IP persisted extension config is called
-`PersistedIpConfig`, not `IpExtensionConfig`. The prefix
-disambiguates from `IpConfig`, which is a spec-defined KNXnet/IP
-DIB frame type (see `ip/mod.rs`).
 
 ---
 

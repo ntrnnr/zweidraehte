@@ -1,7 +1,7 @@
 //! Persistence infrastructure and extension composition for System B devices.
 //!
 //! This module provides System B-specific persistence types
-//! ([`DeviceConfig`], [`PersistedIpConfig`], [`ExtensionConfig`],
+//! ([`DeviceConfig`], [`IpExtensionConfig`], [`ExtensionConfig`],
 //! [`ExtensionState`]) and the [`Extension`] trait that unifies persistence
 //! with interface object augmentation.
 //!
@@ -10,7 +10,7 @@
 //! The three suffixes carry stable meaning across the stack:
 //!
 //! - `*Config` — serialisable persisted form. Round-trips through `serde`.
-//!   Examples: [`DeviceConfig`] (the whole-device config), [`PersistedIpConfig`],
+//!   Examples: [`DeviceConfig`] (the whole-device config), [`IpExtensionConfig`],
 //!   and every `*ExtensionConfig`.
 //! - `*State` — runtime in-memory form with interior mutability
 //!   (`Cell`/`RefCell`). Converts to/from `Config` via
@@ -356,7 +356,7 @@ impl Extension<()> for () {
 /// - `AST_SIZE`: Association table size (typically 2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size (typically 2 + MAX_CO * 2)
 /// - `P`: Application parameters type
-/// - `E`: Extension-specific persistent config (e.g., [`PersistedIpConfig`]
+/// - `E`: Extension-specific persistent config (e.g., [`IpExtensionConfig`]
 ///   for KNX/IP devices, `()` for plain TP1 devices)
 ///
 /// Use [`table_sizes`] to calculate the const generics from max entry counts.
@@ -410,7 +410,7 @@ pub struct DeviceConfig<
     /// Extension-specific persistent configuration.
     ///
     /// The type depends on the device's extension state (`E` parameter).
-    /// Examples: [`PersistedIpConfig`] for KNX/IP, [`Tp1ExtensionConfig`]
+    /// Examples: [`IpExtensionConfig`] for KNX/IP, [`Tp1ExtensionConfig`]
     /// for TP1 with retry count, `()` for no extensions, or a tuple of
     /// configs for composed extension states.
     pub extension_config: E,
