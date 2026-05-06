@@ -70,6 +70,22 @@ pub mod busmon;
 mod chip;
 mod state_machine;
 
+/// Type-erased context for the TPUART link layer's
+/// `AutoAddressChecker` builder path.
+///
+/// Bundles the four context traits the builder needs to construct
+/// a `DeviceAddressChecker` from the device state and to apply
+/// PID 52 (`MAX_RETRY_COUNT`) to the chip.
+pub(crate) trait TpuartContext:
+    LinkLayerBufferContext + KnxIndividualAddressContext + AddressTableContext + MaxRetryCountContext
+{
+}
+
+impl<T> TpuartContext for T where
+    T: LinkLayerBufferContext + KnxIndividualAddressContext + AddressTableContext + MaxRetryCountContext
+{
+}
+
 use chip::{ChipType, RetryConfig};
 use state_machine::*;
 use zweidraehte_proto::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message_no_checksum, validate_tp1_checksum};
@@ -365,7 +381,7 @@ impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerCapabilities
 
 impl<CTX, W, R> super::super::LinkLayerBuilder<CTX> for TpUartLinkLayerBuilder<W, R, AutoAddressChecker>
 where
-    CTX: LinkLayerBufferContext + KnxIndividualAddressContext + AddressTableContext + MaxRetryCountContext,
+    CTX: TpuartContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
 {
