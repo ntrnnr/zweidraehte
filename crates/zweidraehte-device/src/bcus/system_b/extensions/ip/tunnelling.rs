@@ -204,7 +204,7 @@ pub struct TunnellingAugment<'a, const N: usize> {
     // `N`; `manual` skips arm generation for the value read/write
     // path, which is implemented in `handle_extra_pid_read` /
     // `handle_extra_pid_write` below.
-    #[io(pid = pid::ADDITIONAL_INDIVIDUAL_ADDRESSES, pdt = PDT_UnsignedInt, access = RW,
+    #[io(pid = pid::ip::ADDITIONAL_INDIVIDUAL_ADDRESSES, pdt = PDT_UnsignedInt, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          array(max = N as u16), manual)]
     _additional_individual_addresses_io: (),
@@ -213,7 +213,7 @@ pub struct TunnellingAugment<'a, const N: usize> {
     // lists `15F/04C` (RESTRICTED): the tunnelling-client list is
     // security-sensitive, so plain unlisted reads are forbidden once
     // Security Mode is on.
-    #[io(pid = pid::TUNNELLING_ADDRESSES, pdt = PDT_UnsignedChar, access = RO,
+    #[io(pid = pid::ip::TUNNELLING_ADDRESSES, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::RESTRICTED, rl = 3, wl = 3,
          array(max = N as u16), manual)]
     _tunnelling_addresses_io: (),
@@ -359,8 +359,8 @@ impl<const N: usize> TunnellingAugment<'_, N> {
         buf: &mut [u8],
     ) -> Option<Result<usize, PropertyError>> {
         Some(match req.pid {
-            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => self.read_additional_addrs(req.start_idx, req.count, buf),
-            pid::TUNNELLING_ADDRESSES => self.read_tunnelling_devices(req.start_idx, req.count, buf),
+            pid::ip::ADDITIONAL_INDIVIDUAL_ADDRESSES => self.read_additional_addrs(req.start_idx, req.count, buf),
+            pid::ip::TUNNELLING_ADDRESSES => self.read_tunnelling_devices(req.start_idx, req.count, buf),
             _ => return None,
         })
     }
@@ -372,8 +372,8 @@ impl<const N: usize> TunnellingAugment<'_, N> {
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         Some(match req.pid {
-            pid::ADDITIONAL_INDIVIDUAL_ADDRESSES => self.write_additional_addrs(req.start_idx, req.data),
-            pid::TUNNELLING_ADDRESSES => Err(PropertyError::WriteNotAllowed),
+            pid::ip::ADDITIONAL_INDIVIDUAL_ADDRESSES => self.write_additional_addrs(req.start_idx, req.data),
+            pid::ip::TUNNELLING_ADDRESSES => Err(PropertyError::WriteNotAllowed),
             _ => return None,
         })
     }

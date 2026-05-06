@@ -88,7 +88,7 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _object_type_io: (),
 
-    #[io(pid = pid::PROJECT_INSTALLATION_ID, pdt = PDT_UnsignedInt, access = RW,
+    #[io(pid = pid::ip::PROJECT_INSTALLATION_ID, pdt = PDT_UnsignedInt, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| -> [u8; 2] { this.project_installation_id().to_be_bytes() },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -100,7 +100,7 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
 
     // KNX_INDIVIDUAL_ADDRESS lives on the device state, not the IP config,
     // so it needs `ctx.state` access on both sides.
-    #[io(pid = pid::KNX_INDIVIDUAL_ADDRESS, pdt = PDT_UnsignedInt, access = RW,
+    #[io(pid = pid::ip::KNX_INDIVIDUAL_ADDRESS, pdt = PDT_UnsignedInt, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read_with_ctx = |_this: &Self, ctx: &ServiceCtx<'_, D>| -> [u8; 2] {
              ctx.state.individual_address().0
@@ -116,12 +116,12 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _knx_individual_address_io: (),
 
-    #[io(pid = pid::CURRENT_IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RO,
+    #[io(pid = pid::ip::CURRENT_IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |this: &Self| -> [u8; 1] { [this.current_ip_assignment_method()] })]
     _current_ip_assignment_method_io: (),
 
-    #[io(pid = pid::IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RW,
+    #[io(pid = pid::ip::IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| -> [u8; 1] { [this.ip_assignment_method()] },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -131,27 +131,27 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _ip_assignment_method_io: (),
 
-    #[io(pid = pid::IP_CAPABILITIES, pdt = PDT_Bitset8, access = RO,
+    #[io(pid = pid::ip::IP_CAPABILITIES, pdt = PDT_Bitset8, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |this: &Self| -> [u8; 1] { [this.ip_capabilities()] })]
     _ip_capabilities_io: (),
 
-    #[io(pid = pid::CURRENT_IP_ADDRESS, pdt = Ipv4Property, access = RO,
+    #[io(pid = pid::ip::CURRENT_IP_ADDRESS, pdt = Ipv4Property, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.current_ip_address()) })]
     _current_ip_address_io: (),
 
-    #[io(pid = pid::CURRENT_SUBNET_MASK, pdt = Ipv4Property, access = RO,
+    #[io(pid = pid::ip::CURRENT_SUBNET_MASK, pdt = Ipv4Property, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.current_subnet_mask()) })]
     _current_subnet_mask_io: (),
 
-    #[io(pid = pid::CURRENT_DEFAULT_GATEWAY, pdt = Ipv4Property, access = RO,
+    #[io(pid = pid::ip::CURRENT_DEFAULT_GATEWAY, pdt = Ipv4Property, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.current_default_gateway()) })]
     _current_default_gateway_io: (),
 
-    #[io(pid = pid::IP_ADDRESS, pdt = Ipv4Property, access = RW,
+    #[io(pid = pid::ip::IP_ADDRESS, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.configured_ip_address()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -161,7 +161,7 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _ip_address_io: (),
 
-    #[io(pid = pid::SUBNET_MASK, pdt = Ipv4Property, access = RW,
+    #[io(pid = pid::ip::SUBNET_MASK, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.configured_subnet_mask()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -171,7 +171,7 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _subnet_mask_io: (),
 
-    #[io(pid = pid::DEFAULT_GATEWAY, pdt = Ipv4Property, access = RW,
+    #[io(pid = pid::ip::DEFAULT_GATEWAY, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.configured_default_gateway()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -181,17 +181,17 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _default_gateway_io: (),
 
-    #[io(pid = pid::MAC_ADDRESS, pdt = PDT_Generic06, access = RO,
+    #[io(pid = pid::ip::MAC_ADDRESS, pdt = PDT_Generic06, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |this: &Self| -> [u8; 6] { this.mac_address() })]
     _mac_address_io: (),
 
-    #[io(pid = pid::SYSTEM_SETUP_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RO,
+    #[io(pid = pid::ip::SYSTEM_SETUP_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |_this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&SYSTEM_SETUP_MULTICAST) })]
     _system_setup_multicast_address_io: (),
 
-    #[io(pid = pid::ROUTING_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RW,
+    #[io(pid = pid::ip::ROUTING_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.routing_multicast_address()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -201,7 +201,7 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _routing_multicast_address_io: (),
 
-    #[io(pid = pid::TTL, pdt = PDT_UnsignedChar, access = RW,
+    #[io(pid = pid::ip::TTL, pdt = PDT_UnsignedChar, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| -> [u8; 1] { [this.ttl()] },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -211,7 +211,7 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
          })]
     _ttl_io: (),
 
-    #[io(pid = pid::KNXNETIP_DEVICE_CAPABILITIES, pdt = PDT_Bitset16, access = RO,
+    #[io(pid = pid::ip::KNXNETIP_DEVICE_CAPABILITIES, pdt = PDT_Bitset16, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
          read = |this: &Self| -> [u8; 2] { this.knxnetip_device_capabilities().to_be_bytes() })]
     _knxnetip_device_capabilities_io: (),
@@ -220,7 +220,7 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
     // the read/write does its own count-probe + arbitrary-index handling
     // that the generic `PropertyRead` / `PropertyWrite` framing doesn't
     // accommodate.
-    #[io(pid = pid::FRIENDLY_NAME, pdt = PDT_UnsignedChar, access = RW,
+    #[io(pid = pid::ip::FRIENDLY_NAME, pdt = PDT_UnsignedChar, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          array(max = 30), manual)]
     _friendly_name_io: (),
@@ -471,7 +471,7 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
         buf: &mut [u8],
     ) -> Option<Result<usize, PropertyError>> {
         match req.pid {
-            pid::FRIENDLY_NAME => Some(self.read_friendly_name(req, buf)),
+            pid::ip::FRIENDLY_NAME => Some(self.read_friendly_name(req, buf)),
             _ => None,
         }
     }
@@ -483,7 +483,7 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         match req.pid {
-            pid::FRIENDLY_NAME => Some(self.write_friendly_name(req)),
+            pid::ip::FRIENDLY_NAME => Some(self.write_friendly_name(req)),
             _ => None,
         }
     }

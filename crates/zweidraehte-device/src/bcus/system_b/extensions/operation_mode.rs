@@ -270,7 +270,7 @@ pub struct DiagnosticsAugment<'a> {
     // mode is fully open; with Security Mode on, only Tool A+C may
     // read or write. Access level 3/3.
     #[io(
-        pid = pid::OPERATION_MODE,
+        pid = pid::application::OPERATION_MODE,
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::new(0x3FF, 0x00C),
@@ -293,7 +293,7 @@ pub struct DiagnosticsAugment<'a> {
     // permissive than PID_OPERATION_MODE: roles may still trigger GO
     // diagnostics with A or A+C in Security Mode.
     #[io(
-        pid = pid::GO_DIAGNOSTICS,
+        pid = pid::group_object::GO_DIAGNOSTICS,
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,

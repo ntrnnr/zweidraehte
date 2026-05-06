@@ -191,388 +191,381 @@ pub mod pid {
     /// PDT: ?
     pub const DOWNLOAD_COUNTER: u16 = 30;
 
-    //==========================================================================
-    // Device Object Specific (Object Type 0)
-    //==========================================================================
+    /// Device Object PIDs (Object Type 0).
+    pub mod device {
+        /// Routing Count (PID 51)
+        pub const ROUTING_COUNT: u16 = 51;
 
-    /// Routing Count (PID 51)
-    pub const ROUTING_COUNT: u16 = 51;
+        /// Max Retry Count (PID 52)
+        pub const MAX_RETRY_COUNT: u16 = 52;
 
-    /// Max Retry Count (PID 52)
-    pub const MAX_RETRY_COUNT: u16 = 52;
+        /// Error Flags (PID 53)
+        pub const ERROR_FLAGS: u16 = 53;
 
-    /// Error Flags (PID 53)
-    pub const ERROR_FLAGS: u16 = 53;
+        /// Program Mode (PID 54)
+        pub const PROGMODE: u16 = 54;
 
-    /// Program Mode (PID 54)
-    pub const PROGMODE: u16 = 54;
+        /// Product ID (PID 55)
+        pub const PRODUCT_ID: u16 = 55;
 
-    /// Product ID (PID 55)
-    pub const PRODUCT_ID: u16 = 55;
+        /// Max Supported APDU Length (PID 56)
+        pub const MAX_APDU_LENGTH: u16 = 56;
 
-    /// Max Supported APDU Length (PID 56)
-    pub const MAX_APDU_LENGTH: u16 = 56;
+        /// Subnet Address (PID 57)
+        pub const SUBNET_ADDRESS: u16 = 57;
 
-    /// Subnet Address (PID 57)
-    pub const SUBNET_ADDRESS: u16 = 57;
+        /// Device Address (PID 58) - Individual address component
+        pub const DEVICE_ADDRESS: u16 = 58;
 
-    /// Device Address (PID 58) - Individual address component
-    pub const DEVICE_ADDRESS: u16 = 58;
+        /// Config Link (PID 59)
+        /// Also known as PB_CONFIG
+        pub const CONFIG_LINK: u16 = 59;
 
-    /// Config Link (PID 59)
-    /// Also known as PB_CONFIG
-    pub const CONFIG_LINK: u16 = 59;
+        /// Address Report (PID 60)
+        pub const ADDR_REPORT: u16 = 60;
 
-    /// Address Report (PID 60)
-    pub const ADDR_REPORT: u16 = 60;
+        /// Address Check (PID 61)
+        pub const ADDR_CHECK: u16 = 61;
 
-    /// Address Check (PID 61)
-    pub const ADDR_CHECK: u16 = 61;
+        /// Object Value (PID 62)
+        pub const OBJECT_VALUE: u16 = 62;
 
-    /// Object Value (PID 62)
-    pub const OBJECT_VALUE: u16 = 62;
+        /// Object Link (PID 63)
+        pub const OBJECT_LINK: u16 = 63;
 
-    /// Object Link (PID 63)
-    pub const OBJECT_LINK: u16 = 63;
+        /// Application (PID 64)
+        pub const APPLICATION: u16 = 64;
 
-    /// Application (PID 64)
-    pub const APPLICATION: u16 = 64;
+        /// Parameter (PID 65)
+        pub const PARAMETER: u16 = 65;
 
-    /// Parameter (PID 65)
-    pub const PARAMETER: u16 = 65;
+        /// Object Address (PID 66)
+        pub const OBJECT_ADDRESS: u16 = 66;
 
-    /// Object Address (PID 66)
-    pub const OBJECT_ADDRESS: u16 = 66;
+        /// PSU Type (PID 67)
+        pub const PSU_TYPE: u16 = 67;
 
-    /// PSU Type (PID 67)
-    pub const PSU_TYPE: u16 = 67;
+        /// PSU Status (PID 68)
+        pub const PSU_STATUS: u16 = 68;
 
-    /// PSU Status (PID 68)
-    pub const PSU_STATUS: u16 = 68;
+        /// PSU Enable (PID 69)
+        pub const PSU_ENABLE: u16 = 69;
 
-    /// PSU Enable (PID 69)
-    pub const PSU_ENABLE: u16 = 69;
+        /// Domain Address (PID 70)
+        pub const DOMAIN_ADDRESS: u16 = 70;
 
-    /// Domain Address (PID 70)
-    pub const DOMAIN_ADDRESS: u16 = 70;
+        /// Interface Object List (PID 71)
+        pub const IO_LIST: u16 = 71;
 
-    /// Interface Object List (PID 71)
-    pub const IO_LIST: u16 = 71;
+        /// Management Descriptor (PID 72)
+        pub const MGT_DESCRIPTOR: u16 = 72;
 
-    /// Management Descriptor (PID 72)
-    pub const MGT_DESCRIPTOR: u16 = 72;
+        /// PL110 Parameter (PID 73)
+        pub const PL110_PARAM: u16 = 73;
 
-    /// PL110 Parameter (PID 73)
-    pub const PL110_PARAM: u16 = 73;
+        /// RF Repetition Counter (PID 74)
+        pub const RF_REPEAT_COUNTER: u16 = 74;
 
-    /// RF Repetition Counter (PID 74)
-    pub const RF_REPEAT_COUNTER: u16 = 74;
+        /// Receive Block Table (PID 75)
+        pub const RECEIVE_BLOCK_TABLE: u16 = 75;
 
-    /// Receive Block Table (PID 75)
-    pub const RECEIVE_BLOCK_TABLE: u16 = 75;
+        /// Random Pause Table (PID 76)
+        pub const RANDOM_PAUSE_TABLE: u16 = 76;
 
-    /// Random Pause Table (PID 76)
-    pub const RANDOM_PAUSE_TABLE: u16 = 76;
+        /// Receive Block Number (PID 77)
+        pub const RECEIVE_BLOCK_NR: u16 = 77;
 
-    /// Receive Block Number (PID 77)
-    pub const RECEIVE_BLOCK_NR: u16 = 77;
+        /// Hardware Type (PID 78)
+        pub const HARDWARE_TYPE: u16 = 78;
 
-    /// Hardware Type (PID 78)
-    pub const HARDWARE_TYPE: u16 = 78;
+        /// Retransmitter Number (PID 79)
+        pub const RETRANSMITTER_NUMBER: u16 = 79;
 
-    /// Retransmitter Number (PID 79)
-    pub const RETRANSMITTER_NUMBER: u16 = 79;
+        /// Serial Number Table (PID 80)
+        pub const SERIAL_NR_TABLE: u16 = 80;
 
-    /// Serial Number Table (PID 80)
-    pub const SERIAL_NR_TABLE: u16 = 80;
+        /// BiBat Master Address (PID 81)
+        pub const BIBAT_MASTER_ADDRESS: u16 = 81;
 
-    /// BiBat Master Address (PID 81)
-    pub const BIBAT_MASTER_ADDRESS: u16 = 81;
+        /// RF Domain Address (Legacy) (PID 82)
+        pub const RF_DOMAIN_ADDRESS_LEGACY: u16 = 82;
 
-    /// RF Domain Address (Legacy) (PID 82)
-    pub const RF_DOMAIN_ADDRESS_LEGACY: u16 = 82;
+        /// Device Descriptor (PID 83)
+        pub const DEVICE_DESCRIPTOR: u16 = 83;
 
-    /// Device Descriptor (PID 83)
-    pub const DEVICE_DESCRIPTOR: u16 = 83;
+        /// Metering Filter Table (PID 84)
+        pub const METERING_FILTER_TABLE: u16 = 84;
 
-    /// Metering Filter Table (PID 84)
-    pub const METERING_FILTER_TABLE: u16 = 84;
+        /// Group Telegram Rate Limitation: Time Base (PID 85)
+        pub const GROUP_TELEGR_RATE_LIMIT_TIME_BASE: u16 = 85;
 
-    /// Group Telegram Rate Limitation: Time Base (PID 85)
-    pub const GROUP_TELEGR_RATE_LIMIT_TIME_BASE: u16 = 85;
+        /// Group Telegram Rate Limitation: Number of Telegrams (PID 86)
+        pub const GROUP_TELEGR_RATE_LIMIT_NO_OF_TELEGR: u16 = 86;
 
-    /// Group Telegram Rate Limitation: Number of Telegrams (PID 86)
-    pub const GROUP_TELEGR_RATE_LIMIT_NO_OF_TELEGR: u16 = 86;
+        /// Easy Configuration: Parameter of Channel 1 (PID 101)
+        pub const CHANNEL_01_PARAM: u16 = 101;
 
-    /// Easy Configuration: Parameter of Channel 1 (PID 101)
-    pub const CHANNEL_01_PARAM: u16 = 101;
+        /// Easy Configuration: Parameter of Channel 32 (PID 132)
+        pub const CHANNEL_32_PARAM: u16 = 132;
 
-    /// Easy Configuration: Parameter of Channel 32 (PID 132)
-    pub const CHANNEL_32_PARAM: u16 = 132;
+        // /// Compile Time Stack (PID 240)
+        // pub const COMPILE_TIME_STACK: u16 = 240;
 
-    // /// Compile Time Stack (PID 240)
-    // pub const COMPILE_TIME_STACK: u16 = 240;
+        // /// Compile Time App (PID 241)
+        // pub const COMPILE_TIME_APP: u16 = 241;
 
-    // /// Compile Time App (PID 241)
-    // pub const COMPILE_TIME_APP: u16 = 241;
+        // /// Bootloader Function (PID 242)
+        // pub const BOOTLOADER_FUNC: u16 = 242;
+    }
 
-    // /// Bootloader Function (PID 242)
-    // pub const BOOTLOADER_FUNC: u16 = 242;
+    /// Address Table Object PIDs (Object Type 1).
+    pub mod address_table {
+        /// Extended Frame Format (PID 51)
+        pub const EXT_FRAMEFORMAT: u16 = 51;
 
-    //==========================================================================
-    // Address Table Object Specific (Object Type 1)
-    //==========================================================================
+        /// Max Address Table 1 (PID 52)
+        pub const MAX_ADDRTAB1: u16 = 52;
 
-    /// Extended Frame Format (PID 51)
-    pub const EXT_FRAMEFORMAT: u16 = 51;
+        /// Group Responser Table (PID 53) - PL specific
+        pub const GROUP_RESPONSER_TABLE: u16 = 53;
+    }
 
-    /// Max Address Table 1 (PID 52)
-    pub const MAX_ADDRTAB1: u16 = 52;
+    /// Application Program Object PIDs (Object Type 3).
+    pub mod application {
+        /// Parameter Reference (PID 51)
+        pub const PARAM_REFERENCE: u16 = 51;
 
-    /// Group Responser Table (PID 53) - PL specific
-    pub const GROUP_RESPONSER_TABLE: u16 = 53;
+        /// Operation Mode (PID 52) - Normal / Diagnostic
+        pub const OPERATION_MODE: u16 = 52;
+    }
 
-    //==========================================================================
-    // Application Program Object Specific (Object Type 3)
-    //==========================================================================
+    /// Group Object Table PIDs (Object Type 9).
+    pub mod group_object {
+        /// GO Diagnostics (PID 66) - Diagnostic control of group objects
+        pub const GO_DIAGNOSTICS: u16 = 66;
+    }
 
-    /// Parameter Reference (PID 51)
-    pub const PARAM_REFERENCE: u16 = 51;
+    /// Router Object PIDs (Object Type 6).
+    pub mod router {
+        /// Line Status / Medium Status (PID 51) - State of bus line
+        pub const LINE_STATUS: u16 = 51;
 
-    /// Operation Mode (PID 52) - Normal / Diagnostic
-    pub const OPERATION_MODE: u16 = 52;
+        /// Main Line Coupler Configuration (PID 52)
+        pub const MAIN_LCCONFIG: u16 = 52;
 
-    //==========================================================================
-    // Group Object Table Specific (Object Type 9)
-    //==========================================================================
+        /// Sub Line Coupler Configuration (PID 53)
+        pub const SUB_LCCONFIG: u16 = 53;
 
-    /// GO Diagnostics (PID 66) - Diagnostic control of group objects
-    pub const GO_DIAGNOSTICS: u16 = 66;
+        /// Main Line Coupler Group Configuration (PID 54)
+        pub const MAIN_LCGRPCONFIG: u16 = 54;
 
-    //==========================================================================
-    // Router Object Specific (Object Type 6)
-    //==========================================================================
+        /// Sub Line Coupler Group Configuration (PID 55)
+        pub const SUB_LCGRPCONFIG: u16 = 55;
 
-    /// Line Status / Medium Status (PID 51) - State of bus line
-    pub const LINE_STATUS: u16 = 51;
+        /// Route Table Control (PID 56)
+        pub const ROUTE_TABLE_CONTROL: u16 = 56;
 
-    /// Main Line Coupler Configuration (PID 52)
-    pub const MAIN_LCCONFIG: u16 = 52;
+        /// Coupler Services Control (PID 57)
+        pub const COUPLER_SERVICES_CONTROL: u16 = 57;
 
-    /// Sub Line Coupler Configuration (PID 53)
-    pub const SUB_LCCONFIG: u16 = 53;
+        /// Max APDU Length Router (PID 58) - Max APDU length for routing
+        pub const MAX_APDU_LENGTH_ROUTER: u16 = 58;
 
-    /// Main Line Coupler Group Configuration (PID 54)
-    pub const MAIN_LCGRPCONFIG: u16 = 54;
+        /// L2 Coupler Type (PID 59)
+        pub const L2_COUPLER_TYPE: u16 = 59;
 
-    /// Sub Line Coupler Group Configuration (PID 55)
-    pub const SUB_LCGRPCONFIG: u16 = 55;
+        /// Hop Count (PID 61) - Hop count for router
+        pub const HOP_COUNT: u16 = 61;
 
-    /// Route Table Control (PID 56)
-    pub const ROUTE_TABLE_CONTROL: u16 = 56;
+        /// Medium Type (PID 63)
+        pub const MEDIUM: u16 = 63;
 
-    /// Coupler Services Control (PID 57)
-    pub const COUPLER_SERVICES_CONTROL: u16 = 57;
+        /// Filter Table Use (PID 67) - Flag if filter table is in use
+        pub const FILTER_TABLE_USE: u16 = 67;
 
-    /// Max APDU Length Router (PID 58) - Max APDU length for routing
-    pub const MAX_APDU_LENGTH_ROUTER: u16 = 58;
+        /// PL110 System Broadcast Control (PID 104)
+        pub const PL110_SBC_CONTROL: u16 = 104;
 
-    /// L2 Coupler Type (PID 59)
-    pub const L2_COUPLER_TYPE: u16 = 59;
+        /// PL110 DOA (PID 105)
+        pub const PL110_DOA: u16 = 105;
 
-    /// Hop Count (PID 61) - Hop count for router
-    pub const HOP_COUNT: u16 = 61;
+        /// RF System Broadcast Control (PID 112)
+        pub const RF_SBC_CONTROL: u16 = 112;
 
-    /// Medium Type (PID 63)
-    pub const MEDIUM: u16 = 63;
+        /// IP System Broadcast Control (PID 120)
+        pub const IP_SBC_CONTROL: u16 = 120;
 
-    /// Filter Table Use (PID 67) - Flag if filter table is in use
-    pub const FILTER_TABLE_USE: u16 = 67;
+        /// LK1 Sub Lock Config (PID 200) - Block configuration from subline
+        pub const LK1_SUB_LOCK_CONFIG: u16 = 200;
+    }
 
-    /// PL110 System Broadcast Control (PID 104)
-    pub const PL110_SBC_CONTROL: u16 = 104;
+    /// IP Parameter Object PIDs (Object Type 11 / 0x0B).
+    pub mod ip {
+        /// Project Installation ID (PID 51)
+        pub const PROJECT_INSTALLATION_ID: u16 = 51;
 
-    /// PL110 DOA (PID 105)
-    pub const PL110_DOA: u16 = 105;
+        /// KNX Individual Address (PID 52)
+        pub const KNX_INDIVIDUAL_ADDRESS: u16 = 52;
 
-    /// RF System Broadcast Control (PID 112)
-    pub const RF_SBC_CONTROL: u16 = 112;
+        /// Additional Individual Addresses (PID 53)
+        pub const ADDITIONAL_INDIVIDUAL_ADDRESSES: u16 = 53;
 
-    /// IP System Broadcast Control (PID 120)
-    pub const IP_SBC_CONTROL: u16 = 120;
+        /// Current IP Assignment Method (PID 54)
+        pub const CURRENT_IP_ASSIGNMENT_METHOD: u16 = 54;
 
-    /// LK1 Sub Lock Config (PID 200) - Block configuration from subline
-    pub const LK1_SUB_LOCK_CONFIG: u16 = 200;
+        /// IP Assignment Method (PID 55)
+        pub const IP_ASSIGNMENT_METHOD: u16 = 55;
 
-    //==========================================================================
-    // IP Parameter Object Specific (Object Type 11 / 0x0B)
-    //==========================================================================
+        /// IP Capabilities (PID 56)
+        pub const IP_CAPABILITIES: u16 = 56;
 
-    /// Project Installation ID (PID 51)
-    pub const PROJECT_INSTALLATION_ID: u16 = 51;
+        /// Current IP Address (PID 57)
+        pub const CURRENT_IP_ADDRESS: u16 = 57;
 
-    /// KNX Individual Address (PID 52)
-    pub const KNX_INDIVIDUAL_ADDRESS: u16 = 52;
+        /// Current Subnet Mask (PID 58)
+        pub const CURRENT_SUBNET_MASK: u16 = 58;
 
-    /// Additional Individual Addresses (PID 53)
-    pub const ADDITIONAL_INDIVIDUAL_ADDRESSES: u16 = 53;
+        /// Current Default Gateway (PID 59)
+        pub const CURRENT_DEFAULT_GATEWAY: u16 = 59;
 
-    /// Current IP Assignment Method (PID 54)
-    pub const CURRENT_IP_ASSIGNMENT_METHOD: u16 = 54;
+        /// IP Address (PID 60)
+        pub const IP_ADDRESS: u16 = 60;
 
-    /// IP Assignment Method (PID 55)
-    pub const IP_ASSIGNMENT_METHOD: u16 = 55;
+        /// Subnet Mask (PID 61)
+        pub const SUBNET_MASK: u16 = 61;
 
-    /// IP Capabilities (PID 56)
-    pub const IP_CAPABILITIES: u16 = 56;
+        /// Default Gateway (PID 62)
+        pub const DEFAULT_GATEWAY: u16 = 62;
 
-    /// Current IP Address (PID 57)
-    pub const CURRENT_IP_ADDRESS: u16 = 57;
+        /// DHCP/BootP Server (PID 63)
+        pub const DHCP_BOOTP_SERVER: u16 = 63;
 
-    /// Current Subnet Mask (PID 58)
-    pub const CURRENT_SUBNET_MASK: u16 = 58;
+        /// MAC Address (PID 64)
+        pub const MAC_ADDRESS: u16 = 64;
 
-    /// Current Default Gateway (PID 59)
-    pub const CURRENT_DEFAULT_GATEWAY: u16 = 59;
+        /// System Setup Multicast Address (PID 65)
+        pub const SYSTEM_SETUP_MULTICAST_ADDRESS: u16 = 65;
 
-    /// IP Address (PID 60)
-    pub const IP_ADDRESS: u16 = 60;
+        /// Routing Multicast Address (PID 66)
+        pub const ROUTING_MULTICAST_ADDRESS: u16 = 66;
 
-    /// Subnet Mask (PID 61)
-    pub const SUBNET_MASK: u16 = 61;
+        /// TTL (PID 67)
+        pub const TTL: u16 = 67;
 
-    /// Default Gateway (PID 62)
-    pub const DEFAULT_GATEWAY: u16 = 62;
+        /// KNXnet/IP Device Capabilities (PID 68)
+        pub const KNXNETIP_DEVICE_CAPABILITIES: u16 = 68;
 
-    /// DHCP/BootP Server (PID 63)
-    pub const DHCP_BOOTP_SERVER: u16 = 63;
+        /// KNXnet/IP Device State (PID 69)
+        pub const KNXNETIP_DEVICE_STATE: u16 = 69;
 
-    /// MAC Address (PID 64)
-    pub const MAC_ADDRESS: u16 = 64;
+        /// KNXnet/IP Routing Capabilities (PID 70)
+        pub const KNXNETIP_ROUTING_CAPABILITIES: u16 = 70;
 
-    /// System Setup Multicast Address (PID 65)
-    pub const SYSTEM_SETUP_MULTICAST_ADDRESS: u16 = 65;
+        /// Priority FIFO Enabled (PID 71)
+        pub const PRIORITY_FIFO_ENABLED: u16 = 71;
 
-    /// Routing Multicast Address (PID 66)
-    pub const ROUTING_MULTICAST_ADDRESS: u16 = 66;
+        /// Queue Overflow to IP (PID 72)
+        pub const QUEUE_OVERFLOW_TO_IP: u16 = 72;
 
-    /// TTL (PID 67)
-    pub const TTL: u16 = 67;
+        /// Queue Overflow to KNX (PID 73)
+        pub const QUEUE_OVERFLOW_TO_KNX: u16 = 73;
 
-    /// KNXnet/IP Device Capabilities (PID 68)
-    pub const KNXNETIP_DEVICE_CAPABILITIES: u16 = 68;
+        /// Message Transmitted to IP (PID 74)
+        pub const MSG_TRANSMIT_TO_IP: u16 = 74;
 
-    /// KNXnet/IP Device State (PID 69)
-    pub const KNXNETIP_DEVICE_STATE: u16 = 69;
+        /// Message Transmitted to KNX (PID 75)
+        pub const MSG_TRANSMIT_TO_KNX: u16 = 75;
 
-    /// KNXnet/IP Routing Capabilities (PID 70)
-    pub const KNXNETIP_ROUTING_CAPABILITIES: u16 = 70;
+        /// Friendly Name (PID 76)
+        pub const FRIENDLY_NAME: u16 = 76;
 
-    /// Priority FIFO Enabled (PID 71)
-    pub const PRIORITY_FIFO_ENABLED: u16 = 71;
+        /// Routing Busy Wait Time (PID 78)
+        pub const ROUTING_BUSY_WAIT_TIME: u16 = 78;
 
-    /// Queue Overflow to IP (PID 72)
-    pub const QUEUE_OVERFLOW_TO_IP: u16 = 72;
+        /// Tunnelling Addresses (PID 79) - Reference to tunneling addresses
+        pub const TUNNELLING_ADDRESSES: u16 = 79;
 
-    /// Queue Overflow to KNX (PID 73)
-    pub const QUEUE_OVERFLOW_TO_KNX: u16 = 73;
+        /// Backbone Key (PID 91) - IP Security: Secure backbone key
+        pub const BACKBONE_KEY: u16 = 91;
 
-    /// Message Transmitted to IP (PID 74)
-    pub const MSG_TRANSMIT_TO_IP: u16 = 74;
+        /// Device Authentication Code (PID 92) - IP Security
+        pub const DEVICE_AUTHENTICATION_CODE: u16 = 92;
 
-    /// Message Transmitted to KNX (PID 75)
-    pub const MSG_TRANSMIT_TO_KNX: u16 = 75;
+        /// Password Hashes (PID 93) - IP Security
+        pub const PASSWORD_HASHES: u16 = 93;
 
-    /// Friendly Name (PID 76)
-    pub const FRIENDLY_NAME: u16 = 76;
+        /// Secured Service Families (PID 94) - IP Security
+        pub const SECURED_SERVICE_FAMILIES: u16 = 94;
 
-    /// Routing Busy Wait Time (PID 78)
-    pub const ROUTING_BUSY_WAIT_TIME: u16 = 78;
+        /// Multicast Latency Tolerance (PID 95) - IP Security
+        pub const MULTICAST_LATENCY_TOLERANCE: u16 = 95;
 
-    /// Tunnelling Addresses (PID 79) - Reference to tunneling addresses
-    pub const TUNNELLING_ADDRESSES: u16 = 79;
+        /// Sync Latency Fraction (PID 96) - IP Security
+        pub const SYNC_LATENCY_FRACTION: u16 = 96;
 
-    /// Backbone Key (PID 91) - IP Security: Secure backbone key
-    pub const BACKBONE_KEY: u16 = 91;
+        /// Tunneling Users (PID 97) - IP Security
+        pub const TUNNELING_USERS: u16 = 97;
+    }
 
-    /// Device Authentication Code (PID 92) - IP Security
-    pub const DEVICE_AUTHENTICATION_CODE: u16 = 92;
+    /// Security Object PIDs (Object Type 17 / 0x11).
+    pub mod security {
+        /// Security Mode (PID 51)
+        pub const SECURITY_MODE: u16 = 51;
 
-    /// Password Hashes (PID 93) - IP Security
-    pub const PASSWORD_HASHES: u16 = 93;
+        /// P2P Key Table (PID 52)
+        pub const P2P_KEY_TABLE: u16 = 52;
 
-    /// Secured Service Families (PID 94) - IP Security
-    pub const SECURED_SERVICE_FAMILIES: u16 = 94;
+        /// Group Key Table (PID 53)
+        pub const GROUP_KEY_TABLE: u16 = 53;
 
-    /// Multicast Latency Tolerance (PID 95) - IP Security
-    pub const MULTICAST_LATENCY_TOLERANCE: u16 = 95;
+        /// Security Individual Address Table (PID 54)
+        pub const SECURITY_INDIVIDUAL_ADDRESS_TABLE: u16 = 54;
 
-    /// Sync Latency Fraction (PID 96) - IP Security
-    pub const SYNC_LATENCY_FRACTION: u16 = 96;
+        /// Security Failures Log (PID 55)
+        pub const SECURITY_FAILURES_LOG: u16 = 55;
 
-    /// Tunneling Users (PID 97) - IP Security
-    pub const TUNNELING_USERS: u16 = 97;
+        /// Tool Key (PID 56)
+        pub const TOOL_KEY: u16 = 56;
 
-    //==========================================================================
-    // Security Object Specific (Object Type 17 / 0x11)
-    //==========================================================================
+        /// Security Report (PID 57)
+        pub const SECURITY_REPORT: u16 = 57;
 
-    /// Security Mode (PID 51)
-    pub const SECURITY_MODE: u16 = 51;
+        /// Security Report Control (PID 58)
+        pub const SECURITY_REPORT_CONTROL: u16 = 58;
 
-    /// P2P Key Table (PID 52)
-    pub const P2P_KEY_TABLE: u16 = 52;
+        /// Sequence Number Sending (PID 59)
+        pub const SEQUENCE_NUMBER_SENDING: u16 = 59;
 
-    /// Group Key Table (PID 53)
-    pub const GROUP_KEY_TABLE: u16 = 53;
+        /// Zone Key Table (PID 60)
+        pub const ZONE_KEY_TABLE: u16 = 60;
 
-    /// Security Individual Address Table (PID 54)
-    pub const SECURITY_INDIVIDUAL_ADDRESS_TABLE: u16 = 54;
+        /// GO Security Flags (PID 61)
+        pub const GO_SECURITY_FLAGS: u16 = 61;
 
-    /// Security Failures Log (PID 55)
-    pub const SECURITY_FAILURES_LOG: u16 = 55;
+        /// Test-only manufacturer-specific PID exposing the four 16-bit
+        /// `PID_SECURITY_FAILURES_LOG` counters as a writable array, used by
+        /// the Data Security conformance test 3.8.12.6 to set them to FFFFh
+        /// before provoking errors and observing saturation.
+        ///
+        /// PDT_GENERIC_02, four elements (one per failure-type counter), R/W.
+        /// Spec TSS J §3.8.12.6 says: "Set error counters to FFFFh (e.g. use
+        /// manufacturer specific PID – e.g. PID = 203 in the KNX Secure
+        /// Object with 4 Elements, each 16 Bits wide)".
+        pub const TEST_FAILURE_COUNTERS: u16 = 203;
 
-    /// Tool Key (PID 56)
-    pub const TOOL_KEY: u16 = 56;
+        /// Role Table (PID 62)
+        pub const ROLE_TABLE: u16 = 62;
 
-    /// Security Report (PID 57)
-    pub const SECURITY_REPORT: u16 = 57;
+        /// Reconstruction Mode (PID 63)
+        pub const RECONSTRUCTION_MODE: u16 = 63;
 
-    /// Security Report Control (PID 58)
-    pub const SECURITY_REPORT_CONTROL: u16 = 58;
+        /// PB Key Establish Request (PID 70)
+        pub const PB_KEY_ESTABLISH_REQUEST: u16 = 70;
 
-    /// Sequence Number Sending (PID 59)
-    pub const SEQUENCE_NUMBER_SENDING: u16 = 59;
+        /// PB Key Establish Response (PID 71)
+        pub const PB_KEY_ESTABLISH_RESPONSE: u16 = 71;
 
-    /// Zone Key Table (PID 60)
-    pub const ZONE_KEY_TABLE: u16 = 60;
-
-    /// GO Security Flags (PID 61)
-    pub const GO_SECURITY_FLAGS: u16 = 61;
-
-    /// Test-only manufacturer-specific PID exposing the four 16-bit
-    /// `PID_SECURITY_FAILURES_LOG` counters as a writable array, used by
-    /// the Data Security conformance test 3.8.12.6 to set them to FFFFh
-    /// before provoking errors and observing saturation.
-    ///
-    /// PDT_GENERIC_02, four elements (one per failure-type counter), R/W.
-    /// Spec TSS J §3.8.12.6 says: "Set error counters to FFFFh (e.g. use
-    /// manufacturer specific PID – e.g. PID = 203 in the KNX Secure
-    /// Object with 4 Elements, each 16 Bits wide)".
-    pub const TEST_FAILURE_COUNTERS: u16 = 203;
-
-    /// Role Table (PID 62)
-    pub const ROLE_TABLE: u16 = 62;
-
-    /// Reconstruction Mode (PID 63)
-    pub const RECONSTRUCTION_MODE: u16 = 63;
-
-    /// PB Key Establish Request (PID 70)
-    pub const PB_KEY_ESTABLISH_REQUEST: u16 = 70;
-
-    /// PB Key Establish Response (PID 71)
-    pub const PB_KEY_ESTABLISH_RESPONSE: u16 = 71;
-
-    /// PB Security Confirm (PID 72)
-    pub const PB_SECURITY_CONFIRM: u16 = 72;
+        /// PB Security Confirm (PID 72)
+        pub const PB_SECURITY_CONFIRM: u16 = 72;
+    }
 }

@@ -92,7 +92,7 @@ pub struct SecurityAugment<
 
     // PID 51 SECURITY_MODE — PDT_Function, dispatched via FunctionPropertyCommand.
     #[io(
-        pid = pid::SECURITY_MODE,
+        pid = pid::security::SECURITY_MODE,
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::RESTRICTED, // 15F/04C
@@ -103,7 +103,7 @@ pub struct SecurityAugment<
 
     // PID 52 P2P_KEY_TABLE — PDT_GENERIC_20 array.
     #[io(
-        pid = pid::P2P_KEY_TABLE,
+        pid = pid::security::P2P_KEY_TABLE,
         pdt = PDT_Generic20,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY, // 00C/00C
@@ -115,7 +115,7 @@ pub struct SecurityAugment<
 
     // PID 53 GROUP_KEY_TABLE — PDT_GENERIC_18 array.
     #[io(
-        pid = pid::GROUP_KEY_TABLE,
+        pid = pid::security::GROUP_KEY_TABLE,
         pdt = PDT_Generic18,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
@@ -127,7 +127,7 @@ pub struct SecurityAugment<
 
     // PID 54 SECURITY_INDIVIDUAL_ADDRESS_TABLE — PDT_GENERIC_08 array.
     #[io(
-        pid = pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+        pid = pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
         pdt = PDT_Generic08,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
@@ -142,7 +142,7 @@ pub struct SecurityAugment<
     // ReadOnly per descriptor, but FunctionPropertyCommand is allowed
     // (the dispatch layer treats function commands separately from value writes).
     #[io(
-        pid = pid::SECURITY_FAILURES_LOG,
+        pid = pid::security::SECURITY_FAILURES_LOG,
         pdt = PDT_Function,
         access = RO,
         policy = AccessPolicy::new(0x1FF, 0x0CC),
@@ -154,7 +154,7 @@ pub struct SecurityAugment<
 
     // PID 56 TOOL_KEY — write-only 16-byte key.
     #[io(
-        pid = pid::TOOL_KEY,
+        pid = pid::security::TOOL_KEY,
         pdt = PDT_Generic16,
         access = WO,
         policy = AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
@@ -174,7 +174,7 @@ pub struct SecurityAugment<
     // PID 57 SECURITY_REPORT — single-byte report flags
     // (DPT_Security_Report 21.1002, b0 = Security Failure).
     #[io(
-        pid = pid::SECURITY_REPORT,
+        pid = pid::security::SECURITY_REPORT,
         pdt = PDT_Generic01,
         access = RW,
         policy = AccessPolicy::new(0x1FF, 0x0CC),
@@ -193,7 +193,7 @@ pub struct SecurityAugment<
     // PID 58 SECURITY_REPORT_CONTROL — DPT_Enable 1.003 (single bit, 1
     // byte on the wire).
     #[io(
-        pid = pid::SECURITY_REPORT_CONTROL,
+        pid = pid::security::SECURITY_REPORT_CONTROL,
         pdt = PDT_BinaryInformation,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY, // 00C/00C
@@ -213,7 +213,7 @@ pub struct SecurityAugment<
 
     // PID 59 SEQUENCE_NUMBER_SENDING — 6-byte tool counter behind seq_storage RefCell.
     #[io(
-        pid = pid::SEQUENCE_NUMBER_SENDING,
+        pid = pid::security::SEQUENCE_NUMBER_SENDING,
         pdt = PDT_Generic06,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY, // 00C/00C
@@ -224,7 +224,7 @@ pub struct SecurityAugment<
 
     // PID 61 GO_SECURITY_FLAGS — per-GO security requirements (1 byte/entry).
     #[io(
-        pid = pid::GO_SECURITY_FLAGS,
+        pid = pid::security::GO_SECURITY_FLAGS,
         pdt = PDT_UnsignedChar,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
@@ -237,7 +237,7 @@ pub struct SecurityAugment<
     // PID 203 TEST_FAILURE_COUNTERS — manufacturer-specific direct view of the
     // four 16-bit failure counters. Used only by conformance test 3.8.12.6.
     #[io(
-        pid = pid::TEST_FAILURE_COUNTERS,
+        pid = pid::security::TEST_FAILURE_COUNTERS,
         pdt = PDT_Generic02,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
@@ -294,23 +294,23 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
             // PID 51 SECURITY_MODE — exposed through both regular reads and
             // function-property state reads. The regular read returns the
             // raw mode byte.
-            pid::SECURITY_MODE => {
+            pid::security::SECURITY_MODE => {
                 let val: u8 = if self.state.security_mode_enabled() { 1 } else { 0 };
                 [val].read_property(req.start_idx, req.count, buf)
             }
             // PID 52 P2P_KEY_TABLE — array (20 bytes/entry).
-            pid::P2P_KEY_TABLE => read_table_with_count_probe(&self.state.p2p_keys().borrow(), req, buf),
+            pid::security::P2P_KEY_TABLE => read_table_with_count_probe(&self.state.p2p_keys().borrow(), req, buf),
             // PID 53 GROUP_KEY_TABLE — array (18 bytes/entry).
-            pid::GROUP_KEY_TABLE => read_table_with_count_probe(&self.state.grp_keys().borrow(), req, buf),
+            pid::security::GROUP_KEY_TABLE => read_table_with_count_probe(&self.state.grp_keys().borrow(), req, buf),
             // PID 54 SECURITY_INDIVIDUAL_ADDRESS_TABLE — array (8 bytes/entry).
-            pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
+            pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
                 read_table_with_count_probe(&self.state.siat().borrow(), req, buf)
             }
             // PID 55 SECURITY_FAILURES_LOG — read-only at the value level;
             // accessed via FunctionPropertyStateRead.
-            pid::SECURITY_FAILURES_LOG => Err(PropertyError::InvalidPropertyId),
+            pid::security::SECURITY_FAILURES_LOG => Err(PropertyError::InvalidPropertyId),
             // PID 59 SEQUENCE_NUMBER_SENDING — 6-byte tool counter.
-            pid::SEQUENCE_NUMBER_SENDING => {
+            pid::security::SEQUENCE_NUMBER_SENDING => {
                 if req.start_idx == 0 {
                     buf[0..2].copy_from_slice(&1u16.to_be_bytes());
                     Ok(2)
@@ -327,10 +327,10 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                 }
             }
             // PID 61 GO_SECURITY_FLAGS — array (1 byte/entry).
-            pid::GO_SECURITY_FLAGS => read_table_with_count_probe(&self.state.go_flags().borrow(), req, buf),
+            pid::security::GO_SECURITY_FLAGS => read_table_with_count_probe(&self.state.go_flags().borrow(), req, buf),
             // PID 203 TEST_FAILURE_COUNTERS — manufacturer-specific direct
             // view of the four 16-bit failure counters.
-            pid::TEST_FAILURE_COUNTERS => {
+            pid::security::TEST_FAILURE_COUNTERS => {
                 let counters = self.state.failures_log().borrow().counters_as_bytes();
                 if req.start_idx == 0 {
                     if buf.len() < 2 {
@@ -392,31 +392,31 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
             }
             // PID 51 SECURITY_MODE — also writeable via plain value writes
             // (in addition to the FunctionPropertyCommand path).
-            pid::SECURITY_MODE => {
+            pid::security::SECURITY_MODE => {
                 if req.data.is_empty() {
                     return Some(Err(PropertyError::BufferTooSmall));
                 }
                 self.state.set_security_mode_enabled(req.data[0] != 0);
                 Ok(WriteResponse::Echo)
             }
-            pid::P2P_KEY_TABLE => {
+            pid::security::P2P_KEY_TABLE => {
                 let mut table = self.state.p2p_keys().borrow_mut();
                 write_security_table(&mut table, req)
             }
-            pid::GROUP_KEY_TABLE => {
+            pid::security::GROUP_KEY_TABLE => {
                 let mut table = self.state.grp_keys().borrow_mut();
                 write_security_table(&mut table, req)
             }
-            pid::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
+            pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
                 let mut table = self.state.siat().borrow_mut();
                 write_security_table(&mut table, req)
             }
-            pid::GO_SECURITY_FLAGS => {
+            pid::security::GO_SECURITY_FLAGS => {
                 let mut table = self.state.go_flags().borrow_mut();
                 write_security_table(&mut table, req)
             }
             // PID 59 SEQUENCE_NUMBER_SENDING — write tool counter (must be non-zero).
-            pid::SEQUENCE_NUMBER_SENDING => {
+            pid::security::SEQUENCE_NUMBER_SENDING => {
                 if req.start_idx == 0 {
                     Ok(WriteResponse::Echo)
                 } else {
@@ -435,7 +435,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                 }
             }
             // PID 203 TEST_FAILURE_COUNTERS — replace counters wholesale.
-            pid::TEST_FAILURE_COUNTERS => {
+            pid::security::TEST_FAILURE_COUNTERS => {
                 if req.start_idx == 0 {
                     return Some(Ok(WriteResponse::Echo));
                 }
@@ -464,8 +464,8 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
         match req.prop_id {
-            pid::SECURITY_MODE => return Some(self.handle_security_mode_command(req)),
-            pid::SECURITY_FAILURES_LOG => {}
+            pid::security::SECURITY_MODE => return Some(self.handle_security_mode_command(req)),
+            pid::security::SECURITY_FAILURES_LOG => {}
             _ => return None,
         }
 
@@ -496,11 +496,11 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
         _object_type: InterfaceObjectType,
         req: &FunctionPropertyRequest<'_>,
     ) -> Option<FunctionPropertyResult> {
-        if req.prop_id == pid::SECURITY_MODE {
+        if req.prop_id == pid::security::SECURITY_MODE {
             return Some(self.handle_security_mode_state_read(req));
         }
 
-        if req.prop_id != pid::SECURITY_FAILURES_LOG {
+        if req.prop_id != pid::security::SECURITY_FAILURES_LOG {
             return None;
         }
 

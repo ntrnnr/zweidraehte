@@ -403,7 +403,7 @@ impl StatePropertyValue for PDT_Generic06 {
 ///
 /// ```rust,ignore
 /// state_ro {
-///     pid::CURRENT_IP_ADDRESS => current_ip_address: Ipv4Property
+///     pid::ip::CURRENT_IP_ADDRESS => current_ip_address: Ipv4Property
 /// }
 /// ```
 ///

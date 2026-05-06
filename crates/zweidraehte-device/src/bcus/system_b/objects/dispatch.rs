@@ -59,7 +59,7 @@ where
         if prop_id != 0 {
             // PID_IO_LIST on the Device Object is handled at the container
             // level, before the augment or base object.
-            if object_idx == 0 && prop_id == pid::IO_LIST {
+            if object_idx == 0 && prop_id == pid::device::IO_LIST {
                 return Ok(PropertyDescriptionResponse::from_descriptor(object_idx, 0, &self.io_list_descriptor()));
             }
 
@@ -203,7 +203,7 @@ where
         // PID_IO_LIST on the Device Object is handled at the container level
         // because only the container knows all interface object types present
         // in the device (including augment-provided objects).
-        if req.object_idx == 0 && req.pid == pid::IO_LIST {
+        if req.object_idx == 0 && req.pid == pid::device::IO_LIST {
             return self.read_io_list(req.start_idx, req.count, buf);
         }
 
@@ -287,7 +287,7 @@ where
             let volatile = matches!(
                 (req.object_idx, req.pid),
                 (0, pid::DEVICE_CONTROL)
-                    | (0, pid::PROGMODE)
+                    | (0, pid::device::PROGMODE)
                     | (4, pid::RUN_STATE_CONTROL)
                     | (5, pid::RUN_STATE_CONTROL)
             );

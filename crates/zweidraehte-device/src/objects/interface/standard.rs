@@ -111,15 +111,15 @@ pub struct DeviceObject<'a, S: StackState> {
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
     pub version: PDT_Version,
 
-    #[io(pid = pid::HARDWARE_TYPE, pdt = PDT_Generic06, access = RW,
+    #[io(pid = pid::device::HARDWARE_TYPE, pdt = PDT_Generic06, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 1)]
     pub hardware_type: PDT_Generic06,
 
-    #[io(pid = pid::DEVICE_DESCRIPTOR, pdt = PDT_UnsignedInt, access = RO,
+    #[io(pid = pid::device::DEVICE_DESCRIPTOR, pdt = PDT_UnsignedInt, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
     pub device_descriptor: PDT_UnsignedInt,
 
-    #[io(pid = pid::ROUTING_COUNT, pdt = RoutingCount, access = RW,
+    #[io(pid = pid::device::ROUTING_COUNT, pdt = RoutingCount, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
     pub routing_count: RoutingCount,
 
@@ -128,7 +128,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // Programming mode is backed by StackState so both the application
     // layer (via property read/write) and the link layer (for discovery
     // responses) see the same value.
-    #[io(pid = pid::PROGMODE, pdt = ProgrammingMode, access = RW,
+    #[io(pid = pid::device::PROGMODE, pdt = ProgrammingMode, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| [if this.state.is_programming_mode() { 0x01u8 } else { 0x00u8 }],
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -159,7 +159,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // commissioning. The property is already `ReadOnly` at the
     // PropertyAccess level, so the `1FF` write bit for unlisted
     // sec-off is not exploitable.
-    #[io(pid = pid::MAX_APDU_LENGTH, pdt = PDT_UnsignedInt, access = RO,
+    #[io(pid = pid::device::MAX_APDU_LENGTH, pdt = PDT_UnsignedInt, access = RO,
          policy = AccessPolicy::OPEN, rl = 3, wl = 0,
          read = |this: &Self| this.state.max_apdu_length().to_be_bytes())]
     max_apdu_length: (),
@@ -171,7 +171,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // policy's write bits don't matter; what differs from the
     // workspace default `3FF/0CC` is that role-authenticated clients
     // are denied even read access in Security Mode.
-    #[io(pid = pid::SUBNET_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
+    #[io(pid = pid::device::SUBNET_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = 3, wl = 0,
          read = |this: &Self| {
              let addr = this.state.individual_address();
@@ -182,7 +182,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // PID_DEVICE_ADDR — same `3FF/00C` policy as PID_SUBNET_ADDR per
     // AN193; together they form the device's individual address and
     // share the same security profile.
-    #[io(pid = pid::DEVICE_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
+    #[io(pid = pid::device::DEVICE_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = 3, wl = 0,
          read = |this: &Self| [this.state.individual_address().device()])]
     device_address: (),
@@ -541,11 +541,11 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> PeiProgramObject<'a, T> {
 //     /// | 52 | Main LC Config | PDT_GENERIC_01 | RW |
 //     /// | 53 | Sub LC Config | PDT_GENERIC_01 | RW |
 //     pub struct RouterObject: InterfaceObjectType::Router {
-//         pid::LINE_STATUS => line_status: PDT_Generic01, ReadOnly;
-//         pid::MAIN_LCCONFIG => main_lc_config: PDT_Generic01, ReadWrite;
-//         pid::SUB_LCCONFIG => sub_lc_config: PDT_Generic01, ReadWrite;
-//         pid::MAIN_LCGRPCONFIG => main_lc_grp_config: PDT_Generic01, ReadWrite;
-//         pid::SUB_LCGRPCONFIG => sub_lc_grp_config: PDT_Generic01, ReadWrite
+//         pid::router::LINE_STATUS => line_status: PDT_Generic01, ReadOnly;
+//         pid::router::MAIN_LCCONFIG => main_lc_config: PDT_Generic01, ReadWrite;
+//         pid::router::SUB_LCCONFIG => sub_lc_config: PDT_Generic01, ReadWrite;
+//         pid::router::MAIN_LCGRPCONFIG => main_lc_grp_config: PDT_Generic01, ReadWrite;
+//         pid::router::SUB_LCGRPCONFIG => sub_lc_grp_config: PDT_Generic01, ReadWrite
 //     }
 // }
 

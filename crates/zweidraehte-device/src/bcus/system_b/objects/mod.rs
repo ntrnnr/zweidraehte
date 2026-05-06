@@ -212,7 +212,7 @@ where
     fn io_list_descriptor(&self) -> PropertyDescriptor {
         use zweidraehte_proto::access::AccessPolicy;
         PropertyDescriptor::array::<PDT_UnsignedInt>(
-            pid::IO_LIST,
+            pid::device::IO_LIST,
             self.io_list_len(),
             PropertyAccess::ReadOnly,
             3, // read_level: anyone can read
@@ -271,7 +271,7 @@ where
     /// Get a property descriptor for a base object's property.
     fn get_descriptor(&self, obj_idx: u16, prop_id: u16) -> Option<PropertyDescriptor> {
         // PID_IO_LIST is served by the container, not the DeviceObject.
-        if obj_idx == 0 && prop_id == pid::IO_LIST {
+        if obj_idx == 0 && prop_id == pid::device::IO_LIST {
             return Some(self.io_list_descriptor());
         }
 

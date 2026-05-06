@@ -87,7 +87,7 @@ pub struct Tp1ExtensionState {
     max_retry_count: Cell<u8>,
 
     #[io(
-        pid = pid::MAX_RETRY_COUNT,
+        pid = pid::device::MAX_RETRY_COUNT,
         pdt = PDT_Generic01,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
