@@ -191,7 +191,7 @@ pub trait StackDefinition: Copy + 'static {
     /// Common choices:
     /// - `()` — no extension (mock/test devices)
     /// - [`Tp1ExtensionState`](crate::bcus::system_b::Tp1ExtensionState) — TP1 devices
-    /// - [`IpExtensionState<N>`](crate::bcus::system_b::IpExtensionState) — KNX/IP devices
+    /// - [`IpExtensionState`](crate::bcus::system_b::IpExtensionState) — KNX/IP devices
     type ES: Extension<Self::Platform>;
 
     /// Unified device state containing both runtime state and tables.

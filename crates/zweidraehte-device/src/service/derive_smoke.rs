@@ -322,6 +322,6 @@ where
     D: StackDefinition,
     P: IpPlatform + 'a,
     D::State: StackState,
-    IpAugment<'a, P, 0, 0>: Augment<D>,
+    IpAugment<'a, P, 0>: Augment<D>,
 {
 }

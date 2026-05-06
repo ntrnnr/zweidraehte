@@ -19,13 +19,12 @@ mod tunnelling;
 pub use augment::IpAugment;
 pub use tunnelling::{TunnellingAugment, TunnellingExtension, TunnellingExtensionConfig};
 
-use core::cell::{Cell, RefCell};
+use core::cell::Cell;
 use core::net::Ipv4Addr;
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
 use serde::{Deserialize, Serialize};
-use serde_with::serde_as;
 
 use crate::IpPlatform;
 use crate::StackDefinition;
@@ -57,9 +56,11 @@ pub(crate) type RoutingMulticastRebindChannel = Channel<NoopRawMutex, Ipv4Addr, 
 /// can be used as the `E` parameter of
 /// [`DeviceConfig`](crate::bcus::system_b::DeviceConfig).
 ///
-/// The const generic `N` is the maximum number of additional individual
-/// addresses (tunneling slots). Non-tunneling devices use the default
-/// `N = 0`, paying zero storage for addresses they never use.
+/// Tunnelling-only state (the additional individual address list)
+/// lives on [`TunnellingExtensionConfig`](super::TunnellingExtensionConfig)
+/// — paired with this config inside
+/// [`IpInterfaceExtension`](super::IpInterfaceExtension) on
+/// tunnelling-capable devices.
 ///
 /// # Naming
 ///
@@ -69,9 +70,8 @@ pub(crate) type RoutingMulticastRebindChannel = Channel<NoopRawMutex, Ipv4Addr, 
 /// disambiguates this struct from the `IpConfig` DIB type in
 /// `zweidraehte-proto`, which represents a parsed KNXnet/IP protocol
 /// frame, not a persisted device configuration.
-#[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PersistedIpConfig<const N: usize = 0> {
+pub struct PersistedIpConfig {
     /// Friendly name for discovery (up to 30 bytes).
     pub friendly_name: [u8; 30],
 
@@ -98,16 +98,9 @@ pub struct PersistedIpConfig<const N: usize = 0> {
 
     /// Project installation ID.
     pub project_installation_id: u16,
-
-    /// Additional individual addresses for tunneling-capable profiles.
-    #[serde_as(as = "[[_; 2]; N]")]
-    pub additional_individual_addresses: [[u8; 2]; N],
-
-    /// Number of valid entries in `additional_individual_addresses`.
-    pub additional_individual_addresses_len: u8,
 }
 
-impl<const N: usize> Default for PersistedIpConfig<N> {
+impl Default for PersistedIpConfig {
     fn default() -> Self {
         Self {
             friendly_name: [0; 30],
@@ -119,15 +112,13 @@ impl<const N: usize> Default for PersistedIpConfig<N> {
             routing_multicast: [224, 0, 23, 12],
             ttl: 16,
             project_installation_id: 0,
-            additional_individual_addresses: [[0; 2]; N],
-            additional_individual_addresses_len: 0,
         }
     }
 }
 
-impl<const N: usize> ExtensionConfig for PersistedIpConfig<N> {}
+impl ExtensionConfig for PersistedIpConfig {}
 
-impl<const N: usize> PersistedIpConfig<N> {
+impl PersistedIpConfig {
     /// Get the configured IP address as an `Ipv4Addr`.
     pub fn configured_ip_addr(&self) -> Ipv4Addr {
         Ipv4Addr::from(self.configured_ip)
@@ -187,13 +178,20 @@ pub enum IpAssignmentResult {
 /// `IpExtensionState` implements:
 /// - [`ExtensionState`] — persistence (serialize/deserialize/factory reset)
 /// - [`IpStackState`] — IP config property accessors
+///
 /// The const generic `CAPS` is the PID\_KNXNETIP\_DEVICE\_CAPABILITIES
 /// bitfield (PID 68). Set it to
 /// [`FeatureSet::KNXNETIP_DEVICE_CAPABILITIES`](crate::layers::linklayers::knxip::features::FeatureSet::KNXNETIP_DEVICE_CAPABILITIES)
 /// from your link layer's feature type (e.g.,
 /// `{ KnxIpDeviceUdp::KNXNETIP_DEVICE_CAPABILITIES }`). The value is
 /// baked into the type at compile time — no runtime setter needed.
-pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
+///
+/// Tunnelling-only state (the additional individual address list)
+/// lives on [`TunnellingExtension`](super::TunnellingExtension), composed
+/// alongside `IpExtensionState` inside
+/// [`IpInterfaceExtension`](super::IpInterfaceExtension) on
+/// tunnelling-capable devices.
+pub struct IpExtensionState<const CAPS: u16 = 0> {
     friendly_name: Cell<[u8; 30]>,
     friendly_name_len: Cell<usize>,
     configured_ip: Cell<Ipv4Addr>,
@@ -203,7 +201,6 @@ pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
     routing_multicast: Cell<Ipv4Addr>,
     ttl: Cell<u8>,
     project_installation_id: Cell<u16>,
-    additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
     /// Pushes target routing-multicast group changes to the KNX/IP
     /// link-layer runtime so it can issue the live IGMP rebind within
     /// the 1 s deadline of 03/02/06 §4.3.5.3.5.1. Receiver is drained
@@ -214,7 +211,7 @@ pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
     rebind_channel: RoutingMulticastRebindChannel,
 }
 
-impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
+impl<const CAPS: u16> IpExtensionState<CAPS> {
     /// KNXnet/IP device capabilities bitfield (PID 68).
     ///
     /// Compile-time constant derived from the link layer's
@@ -224,13 +221,7 @@ impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
     }
 
     /// Build the IP config for persistence.
-    pub fn build_ip_config(&self) -> PersistedIpConfig<N> {
-        let additional = self.additional_individual_addresses.borrow();
-        let mut additional_raw = [[0u8; 2]; N];
-        for (idx, addr) in additional.iter().enumerate() {
-            additional_raw[idx].copy_from_slice(addr.as_bytes());
-        }
-
+    pub fn build_ip_config(&self) -> PersistedIpConfig {
         PersistedIpConfig {
             friendly_name: self.friendly_name.get(),
             friendly_name_len: self.friendly_name_len.get() as u8,
@@ -241,8 +232,6 @@ impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
             routing_multicast: self.routing_multicast.get().octets(),
             ttl: self.ttl.get(),
             project_installation_id: self.project_installation_id.get(),
-            additional_individual_addresses: additional_raw,
-            additional_individual_addresses_len: additional.len() as u8,
         }
     }
 
@@ -342,22 +331,13 @@ impl<const N: usize, const CAPS: u16> IpExtensionState<N, CAPS> {
 // Plain KNX/IP has no Data Secure layer at this level — security on IP
 // stacks is added by wrapping `IpExtensionState` in `SecureExtensionState`.
 // The bare extension's `Plain` defaults are correct.
-impl<const N: usize, const CAPS: u16> HasGoSecurityView for IpExtensionState<N, CAPS> {}
+impl<const CAPS: u16> HasGoSecurityView for IpExtensionState<CAPS> {}
 
-impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAPS> {
-    type Config = PersistedIpConfig<N>;
+impl<const CAPS: u16> ExtensionState for IpExtensionState<CAPS> {
+    type Config = PersistedIpConfig;
     type Resources = ();
 
-    fn from_config(config: PersistedIpConfig<N>, _resources: ()) -> Self {
-        let mut additional = heapless::Vec::<IndividualAddress, N>::new();
-        for raw in config
-            .additional_individual_addresses
-            .iter()
-            .take((config.additional_individual_addresses_len as usize).min(N))
-        {
-            let _ = additional.push(IndividualAddress::from_bytes(raw));
-        }
-
+    fn from_config(config: PersistedIpConfig, _resources: ()) -> Self {
         // Restore field values from the persisted config but do NOT call
         // apply_current_config() here. The caller is responsible for applying
         // the IP config to the platform at the appropriate time — typically
@@ -376,18 +356,17 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
             routing_multicast: Cell::new(Ipv4Addr::from(config.routing_multicast)),
             ttl: Cell::new(config.ttl),
             project_installation_id: Cell::new(config.project_installation_id),
-            additional_individual_addresses: RefCell::new(additional),
             rebind_channel: Channel::new(),
         }
     }
 
-    fn to_config(&self) -> PersistedIpConfig<N> {
+    fn to_config(&self) -> PersistedIpConfig {
         self.build_ip_config()
     }
 
     fn on_erase(&self, code: EraseCode) {
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
-            let defaults: PersistedIpConfig<N> = PersistedIpConfig::default();
+            let defaults: PersistedIpConfig = PersistedIpConfig::default();
             self.friendly_name.set(defaults.friendly_name);
             self.friendly_name_len.set(defaults.friendly_name_len as usize);
             self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
@@ -401,14 +380,13 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpExtensionState<N, CAP
             let _ = self.rebind_channel.try_send(default_mcast);
             self.ttl.set(defaults.ttl);
             self.project_installation_id.set(defaults.project_installation_id);
-            self.additional_individual_addresses.borrow_mut().clear();
         }
     }
 }
 
-impl<const N: usize, const CAPS: u16> HasSecurityMode for IpExtensionState<N, CAPS> {}
+impl<const CAPS: u16> HasSecurityMode for IpExtensionState<CAPS> {}
 
-impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpExtensionState<N, CAPS> {
+impl<const CAPS: u16> HasRoutingMulticastRebind for IpExtensionState<CAPS> {
     fn routing_multicast_rebind_channel(&self) -> &RoutingMulticastRebindChannel {
         &self.rebind_channel
     }
@@ -418,9 +396,9 @@ impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpExtensionS
 // Extension — unified persistence + augmentation
 // ============================================================================
 
-impl<P: IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpExtensionState<N, CAPS> {
+impl<P: IpPlatform, const CAPS: u16> Extension<P> for IpExtensionState<CAPS> {
     type Augment<'a, D: StackDefinition>
-        = IpAugment<'a, P, N, CAPS>
+        = IpAugment<'a, P, CAPS>
     where
         Self: 'a,
         P: 'a;
@@ -446,8 +424,6 @@ impl<P: IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpExtensio
 ///
 /// - `ADT_SIZE`, `AST_SIZE`, `COT_SIZE`: Table sizes (see [`SystemBDeviceState`])
 /// - `P`: Application parameters type
-/// - `N`: Maximum number of additional individual addresses (tunneling slots).
-///   Non-tunneling devices use the default `N = 0`.
 /// - `CAPS`: KNXnet/IP device capabilities bitfield (PID 68). Set to
 ///   `{ YourFeatureSet::KNXNETIP_DEVICE_CAPABILITIES }`.
 pub type IpSystemBDeviceState<
@@ -455,27 +431,25 @@ pub type IpSystemBDeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     D,
-    const N: usize = 0,
     const CAPS: u16 = 0,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpExtensionState<N, CAPS>>;
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpExtensionState<CAPS>>;
 
-/// [`IpExtensionState`] with `N` and `CAPS` derived from a
+/// [`IpExtensionState`] with `CAPS` derived from a
 /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
 ///
-/// Tunneling capacity and device capabilities are inferred from `F`,
-/// so the user only passes the same feature type used for the link
-/// layer builder:
+/// Device capabilities are inferred from `F`, so the user passes the
+/// same feature type used for the link layer builder:
 ///
 /// ```rust,ignore
-/// type ES = IpExtension<KnxIpDeviceUdp>;            // N=0, CAPS derived
-/// type ES = IpExtension<KnxIpInterfaceUdp<4>>;      // N=4, CAPS derived
+/// type ES = IpExtension<KnxIpDeviceUdp>;            // routing-only
+/// type ES = IpInterfaceExtensionFor<KnxIpInterfaceUdp<4>>; // tunnelling
 /// ```
-pub type IpExtension<F: FeatureSet> = IpExtensionState<
-    { <<F as FeatureSet>::Tunneling as TunnelingFeature>::CAPACITY },
-    { <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
->;
+///
+/// Tunnelling-capable devices use [`IpInterfaceExtensionFor`] instead
+/// — this typedef carries no tunnelling slot count.
+pub type IpExtension<F: FeatureSet> = IpExtensionState<{ <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES }>;
 
-/// [`IpAugment`] with `N` and `CAPS` derived from a
+/// [`IpAugment`] with `CAPS` derived from a
 /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
 ///
 /// Use this when spelling out the augment type for devices with extra
@@ -486,12 +460,7 @@ pub type IpExtension<F: FeatureSet> = IpExtensionState<
 ///     'a, MyState, (IpAugmentFor<'a, MyPlatform, KnxIpDeviceUdp>, EasterEggAugment),
 /// >;
 /// ```
-pub type IpAugmentFor<'a, P, F: FeatureSet> = IpAugment<
-    'a,
-    P,
-    { <<F as FeatureSet>::Tunneling as TunnelingFeature>::CAPACITY },
-    { <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES },
->;
+pub type IpAugmentFor<'a, P, F: FeatureSet> = IpAugment<'a, P, { <F as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES }>;
 
 /// Like [`IpSystemBDeviceState`], but derives `N` and `CAPS` from a
 /// [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet).
@@ -534,8 +503,8 @@ pub type IpDeviceState<
 /// previous releases are migrated by the device's storage layer when
 /// it picks up this struct as the new `ES`.
 pub struct IpInterfaceExtension<const N: usize, const CAPS: u16> {
-    /// IP-side state (no tunnelling slots here — `N = 0`).
-    pub ip: IpExtensionState<0, CAPS>,
+    /// IP-side state.
+    pub ip: IpExtensionState<CAPS>,
     /// Tunnelling-side state (`N` slots).
     pub tunnelling: TunnellingExtension<N>,
 }
@@ -551,12 +520,12 @@ impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpInterfaceE
 }
 
 impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N, CAPS> {
-    type Config = (PersistedIpConfig<0>, TunnellingExtensionConfig<N>);
+    type Config = (PersistedIpConfig, TunnellingExtensionConfig<N>);
     type Resources = ();
 
     fn from_config((ip_cfg, tun_cfg): Self::Config, _resources: ()) -> Self {
         Self {
-            ip: IpExtensionState::<0, CAPS>::from_config(ip_cfg, ()),
+            ip: IpExtensionState::<CAPS>::from_config(ip_cfg, ()),
             tunnelling: TunnellingExtension::<N>::from_config(tun_cfg, ()),
         }
     }
@@ -643,7 +612,7 @@ impl<const N: usize, const CAPS: u16> IpStackState for IpInterfaceExtension<N, C
 }
 
 impl<const N: usize, const CAPS: u16> HasDomainAddress for IpInterfaceExtension<N, CAPS> {
-    const DOMAIN_ADDRESS_LENGTH: usize = IpExtensionState::<0, CAPS>::DOMAIN_ADDRESS_LENGTH;
+    const DOMAIN_ADDRESS_LENGTH: usize = IpExtensionState::<CAPS>::DOMAIN_ADDRESS_LENGTH;
 
     fn domain_address(&self, buf: &mut [u8]) {
         self.ip.domain_address(buf);
@@ -656,16 +625,18 @@ impl<const N: usize, const CAPS: u16> HasDomainAddress for IpInterfaceExtension<
 
 /// `Augment<D>` bundle for [`IpInterfaceExtension`].
 ///
-/// `TunnellingAugment` is listed *before* `IpAugment` so that PIDs 53
-/// and 79 are claimed by the new tunnelling dispatch — `IpAugment`'s
-/// own (now empty / `N = 0`) handling falls through. Other IP
-/// Parameter Object PIDs route to `IpAugment` as before.
+/// Both peer augments target the IP Parameter Object (Type 11) but
+/// own disjoint PIDs — `TunnellingAugment` claims 53 and 79,
+/// `IpAugment` owns the rest — so the chain order doesn't affect
+/// correctness. `TunnellingAugment` is listed first so its
+/// const-generic-`N` descriptor lookup runs before any future IP-side
+/// addition for the same PID space.
 #[derive(crate::service::ServiceRegistry)]
 pub struct IpInterfaceAugmentBundle<'a, P: IpPlatform, const N: usize, const CAPS: u16> {
     #[service(augment)]
     pub tunnelling: TunnellingAugment<'a, N>,
     #[service(augment)]
-    pub ip: IpAugment<'a, P, 0, CAPS>,
+    pub ip: IpAugment<'a, P, CAPS>,
 }
 
 impl<P: IpPlatform, const N: usize, const CAPS: u16> Extension<P> for IpInterfaceExtension<N, CAPS> {
@@ -714,7 +685,7 @@ pub type IpInterfaceDeviceState<
 // IpStackState — persisted config accessors
 // ============================================================================
 
-impl<const N: usize, const CAPS: u16> IpStackState for IpExtensionState<N, CAPS> {
+impl<const CAPS: u16> IpStackState for IpExtensionState<CAPS> {
     fn configured_ip_address(&self) -> Ipv4Addr {
         self.configured_ip.get()
     }
@@ -792,35 +763,18 @@ impl<const N: usize, const CAPS: u16> IpStackState for IpExtensionState<N, CAPS>
         self.project_installation_id.set(id);
     }
 
-    fn additional_individual_address_capacity(&self) -> usize {
-        N
-    }
-
-    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
-        let stored = self.additional_individual_addresses.borrow();
-        let count = stored.len().min(buf.len());
-        buf[..count].copy_from_slice(&stored[..count]);
-        count
-    }
-
-    fn set_additional_individual_addresses(&self, addresses: &[IndividualAddress]) -> Result<(), ()> {
-        if addresses.len() > N {
-            return Err(());
-        }
-        let mut vec = heapless::Vec::<IndividualAddress, N>::new();
-        for &addr in addresses {
-            vec.push(addr).map_err(|_| ())?;
-        }
-        *self.additional_individual_addresses.borrow_mut() = vec;
-        Ok(())
-    }
+    // The additional-individual-address methods come from
+    // `IpStackState`'s defaults: capacity = 0, write returns 0,
+    // set returns Err(()). Tunnelling-capable devices use
+    // `IpInterfaceExtension` (which delegates these to a paired
+    // `TunnellingExtension`), not bare `IpExtensionState`.
 }
 
 // ============================================================================
 // HasDomainAddress — IP domain address is the routing multicast address
 // ============================================================================
 
-impl<const N: usize, const CAPS: u16> HasDomainAddress for IpExtensionState<N, CAPS> {
+impl<const CAPS: u16> HasDomainAddress for IpExtensionState<CAPS> {
     /// KNX/IP domain address is 4 bytes (IPv4 routing multicast address).
     ///
     /// Per the KNX IP Communication Medium spec (03_02_06, section

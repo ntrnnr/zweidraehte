@@ -292,7 +292,7 @@ impl ExtensionState for () {
 ///
 /// - [`()`] — no extension, no augment
 /// - [`Tp1ExtensionState`](super::extensions::tp1::Tp1ExtensionState) — self-contained, IS its own augment
-/// - [`IpExtensionState<N>`](super::extensions::ip::IpExtensionState) — creates an
+/// - [`IpExtensionState`](super::extensions::ip::IpExtensionState) — creates an
 ///   [`IpAugment`](super::extensions::ip::IpAugment) from self + platform
 pub trait Extension<Platform = ()>: ExtensionState {
     /// The augment type this extension creates.
@@ -306,7 +306,7 @@ pub trait Extension<Platform = ()>: ExtensionState {
     /// trivial cases.
     ///
     /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
-    /// For IP: `IpAugment<'a, P, N, CAPS>` (wraps extension + platform).
+    /// For IP: `IpAugment<'a, P, CAPS>` (wraps extension + platform).
     /// For `Secure(Inner)`: `SecureAugmentBundle<'a, Inner::Augment, …>`
     ///   (a `#[derive(ServiceRegistry)]` struct holding the inner
     ///   augment plus `SecurityAugment`).

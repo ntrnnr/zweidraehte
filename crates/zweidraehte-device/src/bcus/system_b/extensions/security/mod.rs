@@ -1303,24 +1303,27 @@ pub type SecureTp1DeviceState<
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.
+///
+/// Tunnelling-capable secure devices wrap
+/// [`IpInterfaceExtension`](super::IpInterfaceExtension) instead, so
+/// this typedef carries no tunnelling slot count.
 pub type SecureIpExtensionState<
     SEQ,
-    const N: usize,
     const CAPS: u16,
     const GRP: usize,
     const P2P: usize,
     const SIAT: usize,
     const GO: usize,
-> = SecureExtensionState<IpExtensionState<N, CAPS>, SEQ, GRP, P2P, SIAT, GO>;
+> = SecureExtensionState<IpExtensionState<CAPS>, SEQ, GRP, P2P, SIAT, GO>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP device state with Data Secure support.
 ///
 /// Like [`SecureTp1DeviceState`], `GRP` and `GO` are derived from
-/// `ADT_SIZE` and `COT_SIZE`. `P2P`, `SIAT`, and the IP-specific `N`
-/// (max tunnelling connections) and `CAPS` (capability flags) remain
-/// as independent parameters. See the `SecureTp1DeviceState` docs
-/// for the SIAT vs. P2P sizing rationale (03/03/07 §5.3).
+/// `ADT_SIZE` and `COT_SIZE`. `P2P`, `SIAT`, and the IP-specific
+/// `CAPS` (capability flags) remain as independent parameters. See
+/// the `SecureTp1DeviceState` docs for the SIAT vs. P2P sizing
+/// rationale (03/03/07 §5.3).
 pub type SecureIpDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -1329,12 +1332,11 @@ pub type SecureIpDeviceState<
     SEQ,
     const P2P: usize,
     const SIAT: usize,
-    const N: usize,
     const CAPS: u16,
 > = SystemBDeviceState<
     ADT_SIZE,
     AST_SIZE,
     COT_SIZE,
     D,
-    SecureIpExtensionState<SEQ, N, CAPS, ADT_SIZE, P2P, SIAT, COT_SIZE>,
+    SecureIpExtensionState<SEQ, CAPS, ADT_SIZE, P2P, SIAT, COT_SIZE>,
 >;
