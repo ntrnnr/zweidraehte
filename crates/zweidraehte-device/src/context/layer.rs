@@ -78,13 +78,6 @@ impl<D: StackDefinition> LayerContext<D> {
     pub fn push_outbox(&self, msg: KnxMessageBuffer<Buffer<'static>>) {
         self.outbox.borrow_mut().push(msg);
     }
-
-    /// Push a wire message onto the deferred queue, dispatched after the
-    /// main outbox drain (e.g. GO diagnostics bus telegrams that must
-    /// follow the management response on the wire).
-    pub fn push_outbox_deferred(&self, msg: KnxMessageBuffer<Buffer<'static>>) {
-        self.outbox.borrow_mut().push_deferred(msg);
-    }
 }
 
 // ============================================================================

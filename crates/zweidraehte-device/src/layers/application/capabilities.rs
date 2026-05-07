@@ -64,8 +64,10 @@ pub use zweidraehte_proto::messages::apdu::group_value::GroupValueEncoding;
 /// the normal status-gated send flow would be wrong: either the target
 /// is a bare group address rather than a local communication object, or
 /// the transmission must bypass the `ComObjectStatus::WriteRequest`
-/// check. Sends are deferred (`push_deferred`) so any response telegram
-/// produced by the same handler goes out first.
+/// check. Sends go on the immediate outbox in handler-call order; per
+/// EITT semantics (manual §11.2.3.6) the management response and the
+/// resulting bus telegram form an unordered block within the test
+/// window, so wire-order between them is not constrained.
 pub trait GroupValueAddressedSender {
     /// Build and queue a `A_GroupValue_Write` to `tsap` carrying `data`
     /// encoded as `encoding`, at `priority`.

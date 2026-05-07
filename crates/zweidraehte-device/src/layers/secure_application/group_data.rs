@@ -195,7 +195,7 @@ where
 
         match outgoing::wrap_outgoing(&mut msg, inputs) {
             Ok(()) => {
-                self.lctx.outbox.borrow_mut().push_deferred(msg.into_inner());
+                self.lctx.outbox.borrow_mut().push(msg.into_inner());
             }
             Err(outgoing::WrapError::BufferTooSmall) => {
                 // Dropped; `wrap_outgoing` already logged the size mismatch.

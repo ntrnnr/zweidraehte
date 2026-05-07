@@ -26,19 +26,11 @@ use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 /// data indication simultaneously).
 const OUTBOX_CAPACITY: usize = 8;
 
-/// Maximum number of deferred messages (sent at end of dispatch cycle).
-const DEFERRED_CAPACITY: usize = 2;
-
 /// Collects output messages from layers.
 ///
 /// Messages pushed here are dispatched by the router after the current
-/// layer returns. Each message carries its own ServiceType, which
+/// layer returns. Each message carries its own `ServiceType`, which
 /// determines where it goes next.
-///
-/// **Deferred messages** are held separately and only moved into the
-/// main queue when [`flush_deferred`](Self::flush_deferred) is called
-/// (typically at the end of a dispatch cycle). This lets augments
-/// schedule bus telegrams that must follow the management response.
 pub struct Outbox {
     // Simple inline ring buffer to avoid heapless dependency for this.
     // Messages are pushed to the back and taken from the front.
@@ -47,9 +39,6 @@ pub struct Outbox {
     head: usize,
     /// Number of messages currently in the outbox.
     count: usize,
-    /// Deferred messages — flushed into the main queue at end of cycle.
-    deferred: [Option<KnxMessageBuffer<Buffer<'static>>>; DEFERRED_CAPACITY],
-    deferred_count: usize,
 }
 
 impl Default for Outbox {
@@ -61,13 +50,7 @@ impl Default for Outbox {
 impl Outbox {
     /// Create a new empty outbox.
     pub fn new() -> Self {
-        Self {
-            messages: [const { None }; OUTBOX_CAPACITY],
-            head: 0,
-            count: 0,
-            deferred: [const { None }; DEFERRED_CAPACITY],
-            deferred_count: 0,
-        }
+        Self { messages: [const { None }; OUTBOX_CAPACITY], head: 0, count: 0 }
     }
 
     /// Push a message to the outbox.
@@ -92,7 +75,7 @@ impl Outbox {
         self.messages[self.head].as_ref().map(|m| m.service_type())
     }
 
-    /// Return `true` when the outbox has no messages queued (main or deferred).
+    /// Return `true` when the outbox has no messages queued.
     ///
     /// Used by async callers that need to wait for the stack to finish
     /// processing before mutating state — e.g., the conformance DUT's
@@ -100,7 +83,7 @@ impl Outbox {
     /// `A_Restart_Response` to the link layer before it wipes the
     /// individual address.
     pub fn is_fully_empty(&self) -> bool {
-        self.count == 0 && self.deferred_count == 0
+        self.count == 0
     }
 
     /// Take the next message from the outbox, if any.
@@ -112,32 +95,6 @@ impl Outbox {
         self.head = (self.head + 1) % OUTBOX_CAPACITY;
         self.count -= 1;
         msg
-    }
-
-    /// Push a deferred message.
-    ///
-    /// Deferred messages are not dispatched immediately. They are held
-    /// until [`flush_deferred`](Self::flush_deferred) moves them into
-    /// the main queue. Use this for bus telegrams that must follow the
-    /// management response (e.g., GO diagnostics GroupValue_Write after
-    /// the FunctionPropertyExtStateResponse).
-    pub fn push_deferred(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
-        assert!(self.deferred_count < DEFERRED_CAPACITY, "Deferred outbox overflow");
-        self.deferred[self.deferred_count] = Some(msg);
-        self.deferred_count += 1;
-    }
-
-    /// Move all deferred messages into the main queue.
-    ///
-    /// Called by the router at the end of each dispatch cycle, after
-    /// the main queue has been fully drained.
-    pub fn flush_deferred(&mut self) {
-        for i in 0..self.deferred_count {
-            if let Some(msg) = self.deferred[i].take() {
-                self.push(msg);
-            }
-        }
-        self.deferred_count = 0;
     }
 }
 
