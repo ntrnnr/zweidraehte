@@ -2,7 +2,9 @@
 //!
 //! These helpers provide a concise DSL for defining test steps in EITT-style tests.
 
-use crate::{InvalidSecurityParam, SecureParams, SeqSource, SyncReqParams, SyncResExpect, TestStep};
+use crate::{
+    BlockExpectTemplate, InvalidSecurityParam, SecureParams, SeqSource, SyncReqParams, SyncResExpect, TestStep,
+};
 
 /// Helper to create an inject step from a template string
 pub fn inject(template: &str) -> TestStep {
@@ -17,6 +19,36 @@ pub fn inject_delay(template: &str, delay_ms: u32) -> TestStep {
 /// Helper to create an expect step from a template string
 pub fn expect(template: &str, timeout_ms: u32) -> TestStep {
     TestStep::ExpectTemplate { template: template.to_string(), timeout_ms }
+}
+
+/// Build an `ExpectBlockTemplate::Plain` element for use with
+/// [`expect_block`].
+pub fn block_plain(template: &str) -> BlockExpectTemplate {
+    BlockExpectTemplate::Plain { template: template.to_string() }
+}
+
+/// Build an `ExpectBlockTemplate::Secure` element with group-key
+/// auth-only semantics.
+pub fn block_group_ao(template: &str, key: &str) -> BlockExpectTemplate {
+    BlockExpectTemplate::Secure { template: template.to_string(), sec_params: SecureParams::group_auth_only(key) }
+}
+
+/// Build an `ExpectBlockTemplate::Secure` element with group-key
+/// auth+conf semantics.
+pub fn block_group_ac(template: &str, key: &str) -> BlockExpectTemplate {
+    BlockExpectTemplate::Secure { template: template.to_string(), sec_params: SecureParams::group_auth_conf(key) }
+}
+
+/// Expect a set of telegrams in any order within `timeout_ms`.
+///
+/// EITT manual §11.2.3.6: consecutive `OUT` telegrams with
+/// `TimeToNext = 0` form a block accepted in any order during the
+/// time interval after the last telegram of the block. Use this for
+/// the rare spec tests where the order of two outbound telegrams is
+/// not constrained — today only GO-diagnostics tests 6.2.7 / 6.2.11
+/// / 6.2.15. Ordinary sequencing should keep using [`expect`].
+pub fn expect_block(elements: Vec<BlockExpectTemplate>, timeout_ms: u32) -> TestStep {
+    TestStep::ExpectBlockTemplate { templates: elements, timeout_ms }
 }
 
 /// Helper to create a comment step

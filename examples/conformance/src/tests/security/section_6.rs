@@ -481,56 +481,98 @@ fn test_6_2_6() -> TestCase {
 // Data format: [reserved=0x00, serviceID=0x01, flags, GA_hi, GA_lo, value...]
 // Flags: bit 7 = full octet format, bit 0 = auth, bit 1 = conf
 //
-// For each sub-case: first expect the FunctionProperty success response,
-// then expect the GroupValue_Write telegram on the bus.
+// For each sub-case: the DUT emits the FunctionProperty success response
+// AND the resulting GroupValue_Write telegram on the bus. Per EITT
+// manual §11.2.3.6 the two outbound telegrams form an unordered block,
+// so we use `expect_block` to accept them in either order.
 
 fn test_6_2_7() -> TestCase {
     TestCase::new("6.2.7 Direct GroupValue_Write positive").with_steps(vec![
         // Sub-case 1: full octet, no security, GA=#GO_1, value=0x0A.
         comment("Full octet, no sec, GA=#GO_1, val=0x0A"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 80 #GO_1 0A"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect("BC #BDUT_ADDR #GO_1 E2 00 80 0A", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_plain("BC #BDUT_ADDR #GO_1 E2 00 80 0A"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 2: 6-bit format, no security, GA=#GO_1, value=0x0A.
         // Value ≤ 63 → uses compact 6-bit APDU format.
         comment("6-bit, no sec, GA=#GO_1, val=0x0A"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 00 #GO_1 0A"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect("BC #BDUT_ADDR #GO_1 E1 00 8A", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_plain("BC #BDUT_ADDR #GO_1 E1 00 8A"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 3: full octet, no security, GA=#GO_1, value=0x55.
         comment("Full octet, no sec, GA=#GO_1, val=0x55"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 80 #GO_1 55"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect("BC #BDUT_ADDR #GO_1 E2 00 80 55", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_plain("BC #BDUT_ADDR #GO_1 E2 00 80 55"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 4: 6-bit flag, no security, GA=#GO_1, value=0x55.
         // Value > 63 → even with 6-bit flag, DUT must use full octet format.
         comment("6-bit flag but val=0x55 > 63 → full octet on bus"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 00 #GO_1 55"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect("BC #BDUT_ADDR #GO_1 E2 00 80 55", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_plain("BC #BDUT_ADDR #GO_1 E2 00 80 55"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 5: 6-bit flag, no security, GA=#GO_1, value=0x12 0x34 0x56.
         // Multi-byte value always uses full octet format.
         comment("6-bit flag, multi-byte val=0x123456 → full octet on bus"),
         inject("BC #EDI #BDUT_ADDR 6E 01 D4 00 09 00 10 42 00 01 00 #GO_1 12 34 56"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect("BC #BDUT_ADDR #GO_1 E4 00 80 12 34 56", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_plain("BC #BDUT_ADDR #GO_1 E4 00 80 12 34 56"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 6: full octet, no security, GA=#GO_1, value=0x12 0x34 0x56.
         comment("Full octet, multi-byte val=0x123456"),
         inject("BC #EDI #BDUT_ADDR 6E 01 D4 00 09 00 10 42 00 01 80 #GO_1 12 34 56"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect("BC #BDUT_ADDR #GO_1 E4 00 80 12 34 56", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_plain("BC #BDUT_ADDR #GO_1 E4 00 80 12 34 56"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 7: full octet, auth only (0x81), GA=#GO_2, val=0x55.
         // The bus-side GroupValue_Write is an S-frame with auth-only using GK6.
         comment("Full octet, auth-only (0x81), GA=#GO_2, val=0x55"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 81 #GO_2 55"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect_group_ao("BC #BDUT_ADDR #GO_2 E2 00 80 55", "GK6", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_group_ao("BC #BDUT_ADDR #GO_2 E2 00 80 55", "GK6"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 8: full octet, auth+conf (0x83), GA=#GO_2, val=0x55.
         // The bus-side GroupValue_Write is an S-frame with auth+conf using GK6.
         comment("Full octet, auth+conf (0x83), GA=#GO_2, val=0x55"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 83 #GO_2 55"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01", TIMEOUT),
-        expect_group_ac("BC #BDUT_ADDR #GO_2 E2 00 80 55", "GK6", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 01"),
+                block_group_ac("BC #BDUT_ADDR #GO_2 E2 00 80 55", "GK6"),
+            ],
+            BUS_TIMEOUT,
+        ),
     ])
 }
 
@@ -617,11 +659,17 @@ fn test_6_2_11() -> TestCase {
         // WriteServiceID=0x02, GO number=0x0007.
         inject("BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 07"),
         // Response: [rc=0x21, serviceID=0x02, GO_hi, GO_lo, status, value]
-        // Status and value depend on prior GO state; wildcard both.
-        expect("BC #BDUT_ADDR #EDI 6C 01 D6 00 09 00 10 42 21 02 00 07 ?? ??", TIMEOUT),
-        // Expect the GroupValue_Write on the bus with the GO's value.
-        // The exact value depends on prior writes; use wildcards.
-        expect("BC #BDUT_ADDR #GO_1 E2 00 80 ??", BUS_TIMEOUT),
+        // GroupValue_Write on the bus carries the GO's current value.
+        // Status and on-bus value depend on prior GO state; wildcard them.
+        // Per EITT §11.2.3.6 these two outbound telegrams form an
+        // unordered block.
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 6C 01 D6 00 09 00 10 42 21 02 00 07 ?? ??"),
+                block_plain("BC #BDUT_ADDR #GO_1 E2 00 80 ??"),
+            ],
+            BUS_TIMEOUT,
+        ),
     ])
 }
 
@@ -681,23 +729,41 @@ fn test_6_2_14() -> TestCase {
 
 fn test_6_2_15() -> TestCase {
     TestCase::new("6.2.15 Direct GroupValue_Read positive").with_steps(vec![
+        // Each sub-case: response and GroupValue_Read on bus form an
+        // unordered block per EITT §11.2.3.6.
+        //
         // Sub-case 1: no security, GA=#GO_1.
         comment("No sec, GA=#GO_1 → GroupValue_Read on bus"),
         inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 03 00 #GO_1"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03", TIMEOUT),
-        expect("BC #BDUT_ADDR #GO_1 E1 00 00", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03"),
+                block_plain("BC #BDUT_ADDR #GO_1 E1 00 00"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 2: auth only (0x01), GA=#GO_2.
         // The bus-side GroupValue_Read is an S-frame with auth-only using GK6.
         comment("Auth-only (0x01), GA=#GO_2"),
         inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 03 01 #GO_2"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03", TIMEOUT),
-        expect_group_ao("BC #BDUT_ADDR #GO_2 E1 00 00", "GK6", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03"),
+                block_group_ao("BC #BDUT_ADDR #GO_2 E1 00 00", "GK6"),
+            ],
+            BUS_TIMEOUT,
+        ),
         // Sub-case 3: auth+conf (0x03), GA=#GO_2.
         // The bus-side GroupValue_Read is an S-frame with auth+conf using GK6.
         comment("Auth+conf (0x03), GA=#GO_2"),
         inject("BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 03 03 #GO_2"),
-        expect("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03", TIMEOUT),
-        expect_group_ac("BC #BDUT_ADDR #GO_2 E1 00 00", "GK6", BUS_TIMEOUT),
+        expect_block(
+            vec![
+                block_plain("BC #BDUT_ADDR #EDI 68 01 D6 00 09 00 10 42 00 03"),
+                block_group_ac("BC #BDUT_ADDR #GO_2 E1 00 00", "GK6"),
+            ],
+            BUS_TIMEOUT,
+        ),
     ])
 }
 

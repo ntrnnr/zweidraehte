@@ -205,6 +205,9 @@ async fn execute_step(
         TestStep::Expect { matcher, timeout_ms } => {
             step_expect(harness, index, matcher, *timeout_ms, ctx.divisor).await
         }
+        TestStep::ExpectBlock { matchers, timeout_ms } => {
+            step_expect_block(harness, index, matchers, *timeout_ms, ctx).await
+        }
         TestStep::ExpectNone { timeout_ms } => step_expect_none(harness, index, *timeout_ms, ctx.divisor).await,
         TestStep::Wait { duration_ms } => step_wait(index, *duration_ms, ctx.divisor).await,
         TestStep::WallClockWait { duration_ms } => step_wall_clock_wait(index, *duration_ms).await,
@@ -225,7 +228,7 @@ async fn execute_step(
             let divisor = ctx.divisor;
             step_full_reset(harness, ctx.sec_mut(), index, *timeout_ms, divisor).await
         }
-        TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } => {
+        TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } | TestStep::ExpectBlockTemplate { .. } => {
             println!("  [{}] ❌ Unresolved template", index);
             false
         }
@@ -375,6 +378,144 @@ async fn step_expect(
             println!("        ⚠️  Socket error: {}", e);
             false
         }
+    }
+}
+
+/// Match a block of telegrams in any order within a single window.
+///
+/// Mirrors EITT's "block of OUT telegrams" semantics (see
+/// EITT manual §11.2.3.6) for spec tests where the order of two or
+/// more outbound telegrams is not constrained — today only the
+/// GO-diagnostics tests 6.2.7 / 6.2.11 / 6.2.15.
+///
+/// Algorithm: read frames sequentially up to `timeout_ms`. For each
+/// frame, try every still-unmatched block element; secure elements
+/// attempt to decrypt with their `sec_params` first, plain elements
+/// match raw bytes. The first matching element claims the frame.
+/// A frame that matches no remaining element fails the step. Success
+/// when every element is matched.
+async fn step_expect_block(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    matchers: &[BlockExpect],
+    timeout_ms: u32,
+    ctx: &mut StepContext<'_>,
+) -> StepOk {
+    let time_divisor = ctx.divisor;
+    let ms = if timeout_ms == 0 { scale_ms(1000, time_divisor) } else { scale_ms(timeout_ms, time_divisor) };
+    println!("  [{}] ⬆️⬆️  ExpectBlock ({} elements, total window {}ms)", index, matchers.len(), ms);
+
+    let needs_secure = matchers.iter().any(|m| matches!(m, BlockExpect::Secure { .. }));
+    if needs_secure && ctx.sec_mut().is_none() {
+        println!("        ❌ ExpectBlock with Secure element used without SecurityTestContext");
+        return false;
+    }
+
+    let mut claimed = vec![false; matchers.len()];
+    let deadline = embassy_time::Instant::now() + Duration::from_millis(ms);
+
+    'frames: while claimed.iter().any(|c| !c) {
+        let now = embassy_time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        let remaining = deadline - now;
+        let tagged = match harness.next_frame(remaining).await {
+            Ok(Some(t)) => t,
+            Ok(None) => break,
+            Err(e) => {
+                println!("        ⚠️  Socket error: {}", e);
+                return false;
+            }
+        };
+
+        let raw = tagged.message.data.as_slice().to_vec();
+        let internal = tp1_to_internal(&raw);
+
+        // Try secure elements first — only they have a chance to
+        // unwrap a wrapped frame; plain elements would never match
+        // a secure-on-the-wire payload.
+        for (i, expect) in matchers.iter().enumerate() {
+            if claimed[i] {
+                continue;
+            }
+            if let BlockExpect::Secure { matcher, sec_params } = expect {
+                let Some(sec) = ctx.sec_mut() else { continue };
+                if let Some(plaintext_apdu) = crypto::unwrap_secure(&internal, sec_params, sec) {
+                    let mut plain_internal = internal[..6].to_vec();
+                    plain_internal.extend_from_slice(&plaintext_apdu);
+                    let expected_internal = tp1_to_internal(&matcher.expected);
+                    let masks_internal = tp1_shrink_per_byte(&matcher.masks, &matcher.expected);
+                    let wildcards_internal = tp1_shrink_per_byte(&matcher.wildcards, &matcher.expected);
+                    let internal_matcher = TelegramMatcher {
+                        expected: expected_internal,
+                        masks: masks_internal,
+                        wildcards: wildcards_internal,
+                    };
+                    if internal_matcher.matches(&plain_internal) {
+                        println!("        ✅ Secure element {} matched (key={})", i, sec_params.key_name);
+                        claimed[i] = true;
+                        continue 'frames;
+                    }
+                }
+            }
+        }
+
+        // Plain elements match the raw on-wire bytes.
+        for (i, expect) in matchers.iter().enumerate() {
+            if claimed[i] {
+                continue;
+            }
+            if let BlockExpect::Plain { matcher } = expect {
+                if matcher.matches(&raw) {
+                    println!("        ✅ Plain element {} matched: {:02X?}", i, raw);
+                    claimed[i] = true;
+                    continue 'frames;
+                }
+            }
+        }
+
+        println!("        ❌ Frame matched no remaining block element (source: {})", tagged.source.label());
+        println!("           Got: {:02X?}", raw);
+        for (i, expect) in matchers.iter().enumerate() {
+            if claimed[i] {
+                continue;
+            }
+            match expect {
+                BlockExpect::Plain { matcher } => {
+                    println!("           Pending plain[{}]: {:02X?}", i, matcher.expected);
+                }
+                BlockExpect::Secure { matcher, sec_params } => {
+                    println!(
+                        "           Pending secure[{}] (key={}): {:02X?}",
+                        i, sec_params.key_name, matcher.expected
+                    );
+                }
+            }
+        }
+        return false;
+    }
+
+    if claimed.iter().all(|c| *c) {
+        true
+    } else {
+        println!("        ⏰ Timeout: block window expired with unmatched elements");
+        for (i, expect) in matchers.iter().enumerate() {
+            if !claimed[i] {
+                match expect {
+                    BlockExpect::Plain { matcher } => {
+                        println!("           Missing plain[{}]: {:02X?}", i, matcher.expected);
+                    }
+                    BlockExpect::Secure { matcher, sec_params } => {
+                        println!(
+                            "           Missing secure[{}] (key={}): {:02X?}",
+                            i, sec_params.key_name, matcher.expected
+                        );
+                    }
+                }
+            }
+        }
+        false
     }
 }
 

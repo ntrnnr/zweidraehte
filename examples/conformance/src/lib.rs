@@ -123,6 +123,26 @@ pub enum TestStep {
     /// Format: "BC #BDUT #GO_ADDR E2 00 40 ??"
     ExpectTemplate { template: String, timeout_ms: u32 },
 
+    /// Expect a set of telegrams (plain and/or secure) within a single
+    /// time window, **in any order**. Mirrors the EITT
+    /// "block of OUT telegrams" semantics (manual §11.2.3.6):
+    /// consecutive OUT telegrams with `TimeToNext = 0` are accepted in
+    /// any order during the time interval after the last telegram of
+    /// the block.
+    ///
+    /// Use this *only* for telegram pairs the spec explicitly treats
+    /// as unordered — today: GO-diagnostics function-property tests
+    /// 6.2.7 / 6.2.11 / 6.2.15, where the management response and the
+    /// resulting bus telegram form one block. Ordinary sequencing
+    /// should keep using [`Expect`](Self::Expect).
+    ///
+    /// Already resolved.
+    ExpectBlock { matchers: Vec<BlockExpect>, timeout_ms: u32 },
+
+    /// Template form of [`ExpectBlock`](Self::ExpectBlock); resolved at
+    /// suite expansion time.
+    ExpectBlockTemplate { templates: Vec<BlockExpectTemplate>, timeout_ms: u32 },
+
     /// Wait for a specific duration (scaled by `KNX_TIME_DIVISOR`).
     Wait { duration_ms: u32 },
 
@@ -284,6 +304,28 @@ pub enum TestStep {
     /// 3. Build a sync response with the given sequence numbers
     /// 4. Inject the response
     ExpectSyncReqThenRespond { params: SyncResponseParams, timeout_ms: u32 },
+}
+
+// ============================================================================
+// ExpectBlock element types
+// ============================================================================
+
+/// One element of an [`ExpectBlock`](TestStep::ExpectBlock) — a
+/// telegram pattern the runner must match against one of the
+/// frames it captures inside the block window. Either plain
+/// (matched directly) or secure (decrypted with `sec_params`
+/// before matching).
+#[derive(Debug, Clone)]
+pub enum BlockExpect {
+    Plain { matcher: TelegramMatcher },
+    Secure { matcher: TelegramMatcher, sec_params: SecureParams },
+}
+
+/// Template form of [`BlockExpect`]. Resolved at suite expansion.
+#[derive(Debug, Clone)]
+pub enum BlockExpectTemplate {
+    Plain { template: String },
+    Secure { template: String, sec_params: SecureParams },
 }
 
 // ============================================================================
@@ -497,6 +539,21 @@ impl TestStep {
             TestStep::ExpectTemplate { template, timeout_ms } => {
                 let matcher = TelegramMatcher::parse(template, variables)?;
                 Ok(TestStep::Expect { matcher, timeout_ms: *timeout_ms })
+            }
+            TestStep::ExpectBlockTemplate { templates, timeout_ms } => {
+                let mut matchers = Vec::with_capacity(templates.len());
+                for tpl in templates {
+                    matchers.push(match tpl {
+                        BlockExpectTemplate::Plain { template } => {
+                            BlockExpect::Plain { matcher: TelegramMatcher::parse(template, variables)? }
+                        }
+                        BlockExpectTemplate::Secure { template, sec_params } => BlockExpect::Secure {
+                            matcher: TelegramMatcher::parse(template, variables)?,
+                            sec_params: sec_params.clone(),
+                        },
+                    });
+                }
+                Ok(TestStep::ExpectBlock { matchers, timeout_ms: *timeout_ms })
             }
             // Already resolved or doesn't need resolution
             other => Ok(other.clone()),
