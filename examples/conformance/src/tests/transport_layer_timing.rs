@@ -68,15 +68,18 @@ pub fn create_transport_layer_timing_suite() -> TestSuite {
                 // Expect DeviceDescriptorResponse
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 500),
                 comment("BDUT repeats sent response every 3 seconds."),
-                // First repetition after ~3 seconds (wait 2.8s + 0.4s tolerance)
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
+                // 4000ms (vs. spec 3000ms) per consecutive retrans — see
+                // transport_layer_state_machine.rs test 6.2.6.1 for rationale
+                // (4ms slack at /50× scaling exhausts under macOS jitter).
+                // First repetition
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
                 // Second repetition
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
                 // Third repetition
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
                 comment("BDUT breaks down connection because of maximum repetitions reached."),
                 // T_Disconnect after max repetitions
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 4000),
                 comment("================================================================================"),
             ],
             ..Default::default()

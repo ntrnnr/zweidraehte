@@ -309,15 +309,21 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment("BCU is in state OPEN_WAIT."),
                 comment("-------------------------------------------"),
                 comment("---> BDUT sends repetition every 3 seconds after ACK-timeout."),
+                // Each window is 3000ms (spec ACK timeout) + 1000ms slack. The
+                // generous 1000ms keeps the fast-mode scaled window (3200/50 =
+                // 64ms vs. 4000/50 = 80ms) above the cumulative jitter that
+                // builds up across consecutive timer-driven retransmissions on
+                // less deterministic schedulers (notably macOS), where the
+                // tighter ~4ms slack at /50× exhausts after two cycles.
                 // First repetition
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
                 // Second repetition
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
                 // Third repetition
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
                 comment("---> BDUT sends Disconnect to USB A after ACK-timeout."),
                 // Disconnect after max retries
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 4000),
                 comment("================================================================================"),
             ],
             ..Default::default()
@@ -378,13 +384,14 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 // Send T_Ack for the DeviceDescriptorResponse (seq 0)
                 inject("B0 #IFACE_A_ADDR #BDUT_ADDR 60 C2"),
                 comment("BDUT is now in OPEN_IDLE and sends the Property-Responses."),
-                // PropertyValueResponse (seq 1) - multiple repetitions expected
+                // PropertyValueResponse (seq 1) - multiple repetitions expected.
+                // 4000ms (vs. spec 3000ms) per consecutive retrans — see 6.2.6.1 for rationale.
                 expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 500),
-                expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 3200),
-                expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 3200),
-                expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 3200),
+                expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 4000),
+                expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 4000),
+                expect("BC #BDUT_ADDR #IFACE_A_ADDR 66 47 D6 00 36 10 01 01", 4000),
                 // Finally disconnect after max retries
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", 4000),
                 comment("Cleanup: Disable programming mode that was enabled by PropertyValueWrite"),
                 set_programming_mode(false),
                 comment("================================================================================"),
@@ -558,13 +565,14 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 // TPCI 47 = numbered data seq 1
                 inject("B0 #IFACE_A_ADDR #BDUT_ADDR 61 47 00"),
                 comment("BDUT sends repetition of DeviceData after ACK-timeout."),
-                // BDUT repeats the response to B (ignores A's message)
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
+                // BDUT repeats the response to B (ignores A's message).
+                // 4000ms (vs. spec 3000ms) per consecutive retrans — see 6.2.6.1 for rationale.
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
                 comment("BDUT disconnects from USB B."),
                 // Disconnect after max retries
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 3200),
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 4000),
                 comment("================================================================================"),
             ],
             ..Default::default()
@@ -688,10 +696,11 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 comment(
                     "---> BDUT sends repetition of Device Data after ACK-timeout and disconnects after connection timeout.",
                 ),
-                // BDUT repeats the response to B
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
+                // BDUT repeats the response to B.
+                // 4000ms (vs. spec 3000ms) per consecutive retrans — see 6.2.6.1 for rationale.
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
                 // Disconnect from B after max retries
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 12200),
                 comment("================================================================================"),
@@ -823,9 +832,10 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 500),
                 comment("BDUT is in state OPEN_WAIT."),
                 comment("BDUT sends repetitions to USB A for 3 times."),
-                // BDUT repeats the response 3 times (timeout retries)
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
-                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 3200),
+                // BDUT repeats the response 3 times (timeout retries).
+                // 4000ms (vs. spec 3000ms) per consecutive retrans — see 6.2.6.1 for rationale.
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
+                expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 4000),
                 expect("B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", 9500),
                 comment("Send T-NACK from USB A to BDUT."),
                 // T_NAck after max retries - this triggers disconnect
@@ -879,10 +889,11 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
                 // T_NAck from A (wrong source - connected to B)
                 inject("B0 #IFACE_A_ADDR #BDUT_ADDR 60 C3"),
                 comment("---> BDUT sends repetition of DeviceData after ACK-timeout."),
-                // BDUT repeats the response to B
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
-                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 3200),
+                // BDUT repeats the response to B.
+                // 4000ms (vs. spec 3000ms) per consecutive retrans — see 6.2.6.1 for rationale.
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
+                expect("B0 #BDUT_ADDR #IFACE_B_ADDR 63 43 40 ?? ??", 4000),
                 comment("BDUT sends disconnect to USB B."),
                 // Disconnect from B after max retries
                 expect("B0 #BDUT_ADDR #IFACE_B_ADDR 60 81", 12200),
