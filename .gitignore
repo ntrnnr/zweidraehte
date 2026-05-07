@@ -6,3 +6,6 @@ out/
 
 # Captured logs
 *.log
+
+# mac OS metadata files
+.DS_Store
