@@ -418,13 +418,11 @@ impl<'a> IpcLinkLayer<'a> {
             }
             RunnerMessage::PowerCycle => {
                 self.command_tx.send(IpcCommand::PowerCycle).await;
-                // No StepComplete: the handler writes Exiting + exits.
-                // The main loop stays alive to forward unsolicited frames
-                // that may slip in before the handler is scheduled; it
-                // will observe EOF and exit naturally.
+                self.flush_lifecycle_exit().await;
             }
             RunnerMessage::MasterReset { erase_code } => {
                 self.command_tx.send(IpcCommand::MasterReset { erase_code }).await;
+                self.flush_lifecycle_exit().await;
             }
         }
     }
@@ -540,6 +538,37 @@ impl<'a> IpcLinkLayer<'a> {
         // Release the barrier — `emit_exiting_and_shutdown` now only
         // needs to half-close the socket; the `Exiting` frame is
         // already on the wire.
+        BARRIER.step_settled.signal(());
+    }
+
+    /// Write `DutMessage::Exiting` for `PowerCycle` / `MasterReset`,
+    /// which dispatch their work on `command_tx` and never produce a
+    /// `StepComplete`. The lifecycle handler task in `dut_common`
+    /// calls `emit_exiting_and_shutdown` → `mark_pending_exit(reason)`
+    /// shortly after it picks the command up. Wait for that signal,
+    /// write `Exiting` from this same async task (preserving the
+    /// contiguous-write invariant that `emit_step_complete` relies on
+    /// for macOS), then release `step_settled` so the lifecycle
+    /// handler's wait unblocks and `process::exit` can proceed.
+    ///
+    /// The 50 ms cap matches the safety timeout used inside
+    /// `emit_exiting_and_shutdown`; if the handler never fires the
+    /// signal the DUT is wedged anyway and we'd rather race to EOF
+    /// than deadlock.
+    async fn flush_lifecycle_exit(&mut self) {
+        use embassy_time::{Duration, Timer};
+
+        let reason = match select(BARRIER.pending_exit.wait(), Timer::after(Duration::from_millis(50))).await {
+            Either::First(reason) => reason,
+            Either::Second(_) => {
+                log::error!("IPC LL: timed out waiting for lifecycle exit reason; closing socket without Exiting");
+                BARRIER.step_settled.signal(());
+                return;
+            }
+        };
+        if let Err(e) = write_msg_async(&self.socket, &DutMessage::Exiting { reason }).await {
+            log::error!("IPC LL: failed to write Exiting: {}", e);
+        }
         BARRIER.step_settled.signal(());
     }
 }

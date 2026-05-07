@@ -722,49 +722,64 @@ async fn step_expect_secure(
         index, sec_params.sec_type, sec_params.key_name, ms
     );
 
-    let tagged = match harness.next_frame(Duration::from_millis(ms)).await {
-        Ok(Some(t)) => t,
-        Ok(None) => {
+    // Skip stray plain control frames (most often a `T_Disconnect`
+    // emitted when the DUT's TL connection-idle timer fires after the
+    // last legitimate response) until we either consume the genuine
+    // secure response or exhaust the budget. The deadline spans the
+    // whole loop, so a flood of plain frames cannot extend the
+    // effective timeout — same shape as `step_expect_block` above.
+    let deadline = embassy_time::Instant::now() + Duration::from_millis(ms);
+    loop {
+        let now = embassy_time::Instant::now();
+        if now >= deadline {
             println!("        ❌ Timeout (no secure response)");
             return false;
         }
-        Err(e) => {
-            println!("        ❌ Socket error: {}", e);
-            return false;
-        }
-    };
-
-    let internal = tp1_to_internal(&tagged.message.data);
-    match crypto::unwrap_secure(&internal, sec_params, sec) {
-        Some(plaintext_apdu) => {
-            let mut plain_internal = internal[..6].to_vec();
-            plain_internal.extend_from_slice(&plaintext_apdu);
-            let matcher = match TelegramMatcher::parse(template, variables) {
-                Ok(m) => m,
-                Err(e) => {
-                    println!("        ❌ Template error: {}", e);
-                    return false;
-                }
-            };
-            let expected_internal = tp1_to_internal(&matcher.expected);
-            let masks_internal = tp1_shrink_per_byte(&matcher.masks, &matcher.expected);
-            let wildcards_internal = tp1_shrink_per_byte(&matcher.wildcards, &matcher.expected);
-            let internal_matcher =
-                TelegramMatcher { expected: expected_internal, masks: masks_internal, wildcards: wildcards_internal };
-            if internal_matcher.matches(&plain_internal) {
-                println!("        ✅ Secure response matches");
-                true
-            } else {
-                println!("        ❌ Plaintext mismatch (source: {}):", tagged.source.label());
-                println!("           {}", internal_matcher.diff(&plain_internal));
-                false
+        let remaining = deadline - now;
+        let tagged = match harness.next_frame(remaining).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                println!("        ❌ Timeout (no secure response)");
+                return false;
             }
-        }
-        None => {
-            println!("        ❌ Decryption/verification failed (source: {})", tagged.source.label());
-            println!("           Raw: {:02X?}", tagged.message.data);
+            Err(e) => {
+                println!("        ❌ Socket error: {}", e);
+                return false;
+            }
+        };
+
+        let internal = tp1_to_internal(&tagged.message.data);
+        let Some(plaintext_apdu) = crypto::unwrap_secure(&internal, sec_params, sec) else {
+            log::debug!(
+                "step_expect_secure: skipping non-Secure frame from {}: {:02X?}",
+                tagged.source.label(),
+                tagged.message.data
+            );
+            continue;
+        };
+
+        let mut plain_internal = internal[..6].to_vec();
+        plain_internal.extend_from_slice(&plaintext_apdu);
+        let matcher = match TelegramMatcher::parse(template, variables) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("        ❌ Template error: {}", e);
+                return false;
+            }
+        };
+        let expected_internal = tp1_to_internal(&matcher.expected);
+        let masks_internal = tp1_shrink_per_byte(&matcher.masks, &matcher.expected);
+        let wildcards_internal = tp1_shrink_per_byte(&matcher.wildcards, &matcher.expected);
+        let internal_matcher =
+            TelegramMatcher { expected: expected_internal, masks: masks_internal, wildcards: wildcards_internal };
+        return if internal_matcher.matches(&plain_internal) {
+            println!("        ✅ Secure response matches");
+            true
+        } else {
+            println!("        ❌ Plaintext mismatch (source: {}):", tagged.source.label());
+            println!("           {}", internal_matcher.diff(&plain_internal));
             false
-        }
+        };
     }
 }
 
