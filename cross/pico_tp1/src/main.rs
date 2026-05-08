@@ -95,10 +95,7 @@ impl StackDefinition for PicoTp1LightSwitch {
     type ES = Tp1ExtensionState;
     type Identity = FlashIdentityData;
     type State = PicoTp1State;
-    type StateInit = SystemBStateInit<
-        Self::Identity,
-        <PicoTp1State as HasDeviceConfig>::Config,
-    >;
+    type StateInit = SystemBStateInit<Self::Identity, <PicoTp1State as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = PicoTp1Augments<'a>;
@@ -343,6 +340,42 @@ async fn app_task(knx: Stack<'static, PicoTp1LightSwitch>, btn1_pin: Input<'stat
 }
 
 // ================================================================================
+// Identity load
+// ================================================================================
+
+#[cfg(feature = "provision-on-boot")]
+mod dev_provisioning {
+    include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
+}
+
+fn load_identity(
+    flash: &mut embassy_rp::flash::Flash<
+        'static,
+        embassy_rp::peripherals::FLASH,
+        embassy_rp::flash::Blocking,
+        { 2 * 1024 * 1024 },
+    >,
+) -> FlashIdentityData {
+    let mut unique_id = [0u8; 8];
+    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
+
+    match rp_common::read_provisioning(flash) {
+        Ok(rec) => rp_common::identity_from_record(&rec, unique_id),
+
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            rp_common::synthesize_and_write(flash, dev_provisioning::DEV_SERIAL, None, None).expect("write dev KNXP");
+            let rec = rp_common::read_provisioning(flash).expect("re-read freshly written KNXP");
+            rp_common::identity_from_record(&rec, unique_id)
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}
+
+// ================================================================================
 // Button Release Adapter
 // ================================================================================
 
@@ -373,8 +406,7 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data =
-        rp_common::read_or_provision_identity(&mut flash, LightSwitchDevice::MANUFACTURER_ID.to_be_bytes());
+    let identity_data = load_identity(&mut flash);
 
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
 
@@ -423,8 +455,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init =
-        SystemBStateInit::new(storage.identity().clone(), loaded_config);
+    let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     // Put storage in a static RefCell so both the restart handler and the
     // main loop can access it. Both run on the same single-threaded

@@ -1,0 +1,20 @@
+[package]
+name = "knx-provision"
+version = "0.1.0"
+edition = "2024"
+authors = ["Andreas Galauner <andreas@galauner.de>"]
+license = "Proprietary"
+description = "Host-side tool that writes a KNXP factory-provisioning record into a KNX device's flash over SWD."
+
+[dependencies]
+zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["std"] }
+
+clap = { workspace = true }
+probe-rs = "0.31"
+csv = "1"
+rand = "0.8"
+hex = "0.4"
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true }
+anyhow = "1"
+qrcode = { version = "0.14", default-features = false }

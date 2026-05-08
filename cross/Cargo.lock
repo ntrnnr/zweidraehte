@@ -477,6 +477,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dev-provisioning-build"
+version = "0.1.0"
+
+[[package]]
 name = "devices"
 version = "0.1.0"
 dependencies = [
@@ -1393,6 +1397,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.0.1",
  "defmt-rtt",
+ "dev-provisioning-build",
  "devices",
  "embassy-executor",
  "embassy-futures",
@@ -1419,6 +1424,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.0.1",
  "defmt-rtt",
+ "dev-provisioning-build",
  "devices",
  "embassy-executor",
  "embassy-futures",
@@ -1445,6 +1451,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.0.1",
  "defmt-rtt",
+ "dev-provisioning-build",
  "devices",
  "embassy-executor",
  "embassy-futures",
@@ -1470,6 +1477,7 @@ dependencies = [
  "cyw43-pio",
  "defmt 1.0.1",
  "defmt-rtt",
+ "dev-provisioning-build",
  "devices",
  "embassy-executor",
  "embassy-futures",
@@ -1973,6 +1981,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.0.1",
  "defmt-rtt",
+ "dev-provisioning-build",
  "devices",
  "embassy-executor",
  "embassy-futures",
@@ -1997,6 +2006,7 @@ dependencies = [
  "cortex-m-rt",
  "defmt 1.0.1",
  "defmt-rtt",
+ "dev-provisioning-build",
  "devices",
  "embassy-executor",
  "embassy-futures",

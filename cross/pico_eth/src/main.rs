@@ -47,10 +47,6 @@ use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, FlashIdentityData, RpFla
 /// Device descriptor from the light switch device definition (KNX/IP variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 
-/// MAC vendor prefix for locally-administered MAC addresses.
-/// Bit 1 (locally administered) is forced set by `derive_mac_address`.
-const MAC_OUI: [u8; 3] = [0x02, 0x00, 0xFA];
-
 /// Device state combining System B tables with IP link-layer state.
 /// Table sizes derive from `DEVICE_DESCRIPTOR` via the
 /// `SystemBStackDefinition` associated consts.
@@ -90,8 +86,7 @@ impl StackDefinition for PicoEthLightSwitch {
     type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type Identity = FlashIdentityData;
     type State = PicoEthState;
-    type StateInit =
-        SystemBStateInit<Self::Identity, <PicoEthState as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, <PicoEthState as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
@@ -354,6 +349,39 @@ async fn app_task(knx: Stack<'static, PicoEthLightSwitch>, btn1_pin: Input<'stat
 }
 
 // ================================================================================
+// Identity load
+// ================================================================================
+
+#[cfg(feature = "provision-on-boot")]
+mod dev_provisioning {
+    include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
+}
+
+fn load_identity(
+    flash: &mut embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, flash::Blocking, { 2 * 1024 * 1024 }>,
+) -> FlashIdentityData {
+    let mut unique_id = [0u8; 8];
+    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
+
+    match rp_common::read_provisioning(flash) {
+        Ok(rec) => rp_common::identity_from_record(&rec, unique_id),
+
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            rp_common::synthesize_and_write(flash, dev_provisioning::DEV_SERIAL, None, Some(dev_provisioning::DEV_MAC))
+                .expect("write dev KNXP");
+
+            let rec = rp_common::read_provisioning(flash).expect("re-read freshly written KNXP");
+            rp_common::identity_from_record(&rec, unique_id)
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}
+
+// ================================================================================
 // Button Release Adapter
 // ================================================================================
 
@@ -384,10 +412,9 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data =
-        rp_common::read_or_provision_identity(&mut flash, LightSwitchDevice::MANUFACTURER_ID.to_be_bytes());
+    let identity_data = load_identity(&mut flash);
 
-    let mac_addr = identity_data.derive_mac_address(MAC_OUI);
+    let mac_addr = identity_data.mac_address();
     let seed = identity_data.derive_seed();
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
     info!("MAC:    {=[u8]:02x}", mac_addr);
@@ -510,8 +537,7 @@ async fn main(spawner: Spawner) {
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
     // Build state init from the device config loaded earlier (line 430).
-    let state_init =
-        SystemBStateInit::new(storage.identity().clone(), loaded_config);
+    let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.

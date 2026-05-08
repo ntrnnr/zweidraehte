@@ -29,6 +29,7 @@
 
 pub mod fram;
 pub mod fram_seq;
+pub mod prov_storage;
 pub mod ram_seq;
 pub mod rng;
 pub mod storage;
@@ -36,9 +37,9 @@ pub mod uart;
 
 pub use fram::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
 pub use fram_seq::FramSeqStorage;
+#[cfg(feature = "provision-on-boot")]
+pub use prov_storage::synthesize_and_write;
+pub use prov_storage::{identity_from_record, read_provisioning, secure_identity_from_record, write_provisioning};
 pub use ram_seq::RamSeqStorage;
 pub use rng::Stm32CommonRng;
-pub use storage::{
-    FlashError, FlashIdentityData, FlashSecureIdentityData, StmFlashStorage, read_or_provision_identity,
-    read_or_provision_secure_identity,
-};
+pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, StmFlashStorage};

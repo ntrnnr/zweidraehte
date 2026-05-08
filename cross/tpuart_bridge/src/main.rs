@@ -3,12 +3,12 @@
 
 use defmt::*;
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
-use embassy_stm32::peripherals::{USART1, USART2};
-use embassy_stm32::gpio::{Level, Output, Speed};
-use embassy_stm32::usart::{self, Config as UartConfig, Parity, BufferedUart, BufferedUartTx, BufferedUartRx};
-use embassy_stm32::bind_interrupts;
 use embassy_stm32::Config;
+use embassy_stm32::bind_interrupts;
+use embassy_stm32::gpio::{Level, Output, Speed};
+use embassy_stm32::peripherals::{USART1, USART2};
+use embassy_stm32::usart::{self, BufferedUart, BufferedUartRx, BufferedUartTx, Config as UartConfig, Parity};
+use embassy_time::{Duration, Timer};
 use embedded_io_async::{Read, Write};
 use static_alloc::Bump;
 use {defmt_rtt as _, panic_probe as _};
@@ -34,7 +34,7 @@ async fn main(spawner: Spawner) {
     // FIXME: do we need this?
     //config.rcc.sys_ck = Some(Hertz(36_000_000));
     let p = embassy_stm32::init(config);
-    
+
     // GPIOs
     let _tpuart_res_n = Output::new(p.PA8, Level::High, Speed::Low);
     let mut led = Output::new(p.PB5, Level::High, Speed::Low);
@@ -45,7 +45,8 @@ async fn main(spawner: Spawner) {
     uart_config.parity = Parity::ParityEven;
     let uart_tx_buf = Box::leak(Box::new([0u8; 256]));
     let uart_rx_buf = Box::leak(Box::new([0u8; 256]));
-    let uart = BufferedUart::new(p.USART2, p.PA3, p.PA2, uart_tx_buf.as_mut(), uart_rx_buf.as_mut(), Irqs, uart_config).unwrap();
+    let uart = BufferedUart::new(p.USART2, p.PA3, p.PA2, uart_tx_buf.as_mut(), uart_rx_buf.as_mut(), Irqs, uart_config)
+        .unwrap();
 
     // TPUART
     let mut tpuart_config = UartConfig::default();
@@ -53,7 +54,9 @@ async fn main(spawner: Spawner) {
     tpuart_config.parity = Parity::ParityEven;
     let tpuart_tx_buf = Box::leak(Box::new([0u8; 256]));
     let tpuart_rx_buf = Box::leak(Box::new([0u8; 256]));
-    let mut tpuart = BufferedUart::new(p.USART1, p.PA10, p.PA9, tpuart_tx_buf.as_mut(), tpuart_rx_buf.as_mut(), Irqs, tpuart_config).unwrap();
+    let mut tpuart =
+        BufferedUart::new(p.USART1, p.PA10, p.PA9, tpuart_tx_buf.as_mut(), tpuart_rx_buf.as_mut(), Irqs, tpuart_config)
+            .unwrap();
 
     // Reset TPUART
     info!("Resetting TPUART");
@@ -68,7 +71,7 @@ async fn main(spawner: Spawner) {
     info!("ID: 0x{:02x}", rdbuf[0]);
 
     // Split the uarts and spawn bridge tasks
-    let (uart_tx,   uart_rx  ) = uart.split();
+    let (uart_tx, uart_rx) = uart.split();
     let (tpuart_tx, tpuart_rx) = tpuart.split();
 
     spawner.spawn(tpuart_to_uart(tpuart_rx, uart_tx)).unwrap();
@@ -110,7 +113,7 @@ async fn tpuart_reset(uart: &mut BufferedUart<'_>) {
     let mut rdbuf = [0u8];
     loop {
         uart.read_exact(&mut rdbuf).await.unwrap();
-        
+
         if rdbuf[0] == 0x03 {
             break;
         }

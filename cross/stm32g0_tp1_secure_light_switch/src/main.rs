@@ -63,10 +63,7 @@ use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
 use stm32_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
-use stm32_common::{
-    FlashSecureIdentityData, Fm25l16b, FramSeqStorage, Stm32CommonRng, StmFlashStorage,
-    read_or_provision_secure_identity,
-};
+use stm32_common::{FlashSecureIdentityData, Fm25l16b, FramSeqStorage, Stm32CommonRng, StmFlashStorage};
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -82,9 +79,14 @@ use zweidraehte_device::{
     prelude::*, storage::HasSequenceStorage,
 };
 
-// `build.rs` renders `pub const FDSK_BYTES: [u8; 16] = [...]` from the
-// ZZ_FDSK_HEX env var. See that file for validation rules.
-include!(concat!(env!("OUT_DIR"), "/fdsk.rs"));
+// Under `provision-on-boot`, `build.rs` renders dev-default constants
+// into `$OUT_DIR/dev_provisioning.rs`. The file is only present when
+// the feature is on; production builds rely on the SWD-written `KNXP`
+// page and never read these constants.
+#[cfg(feature = "provision-on-boot")]
+mod dev_provisioning {
+    include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
+}
 
 // ================================================================================
 // Interrupt Bindings
@@ -499,6 +501,45 @@ impl<P: InputPin + Wait> WaitForRelease for ReleaseWaiter<'_, P> {
 }
 
 // ================================================================================
+// Identity load
+// ================================================================================
+//
+// Production builds: read the `KNXP` page; panic on any error. The
+// provisioning page is written once by `tools/knx-provision` over SWD,
+// so a missing record means the chip slipped past production
+// provisioning and must not run anything that exposes the FDSK.
+//
+// `provision-on-boot` builds: on a missing/corrupt record, write the
+// dev defaults from `dev_provisioning::DEV_*` and re-read. After the
+// first boot the unit looks identical to a factory-provisioned one.
+
+fn load_secure_identity(flash: &mut flash::Flash<'static, flash::Blocking>) -> FlashSecureIdentityData {
+    match stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash) {
+        Ok(rec) => stm32_common::secure_identity_from_record(&rec)
+            .unwrap_or_else(|e| defmt::panic!("KNXP missing FDSK: {:?}", e)),
+
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            stm32_common::synthesize_and_write::<FLASH_SIZE, FLASH_PAGE_SIZE>(
+                flash,
+                dev_provisioning::DEV_SERIAL,
+                Some(dev_provisioning::DEV_FDSK),
+                Some(dev_provisioning::DEV_MAC),
+            )
+            .expect("write dev KNXP");
+            let rec = stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash)
+                .expect("re-read freshly written KNXP");
+            stm32_common::secure_identity_from_record(&rec)
+                .unwrap_or_else(|e| defmt::panic!("KNXP missing FDSK after dev synth: {:?}", e))
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}
+
+// ================================================================================
 // Entry point
 // ================================================================================
 
@@ -513,13 +554,9 @@ async fn main(spawner: Spawner) {
     // pull, no trace — so the ADC samples only thermal / EMI noise.
     stm32_common::rng::seed_from_adc(p.ADC1, p.PA0);
 
-    // --- Identity (from flash, provisioned on first boot) --------------------
+    // --- Identity (from the KNXP provisioning page) --------------------------
     let mut flash_hw = flash::Flash::new_blocking(p.FLASH);
-    let identity_data = read_or_provision_secure_identity::<FLASH_SIZE, FLASH_PAGE_SIZE>(
-        &mut flash_hw,
-        LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
-        FDSK_BYTES,
-    );
+    let identity_data = load_secure_identity(&mut flash_hw);
     info!("Serial: {=[u8]:02x}  FDSK: {=[u8]:02x}", identity_data.serial_number, identity_data.fdsk);
     // Hyphenated Base32 encoding — this is what ETS prompts for when
     // commissioning the device. Not specified normatively in the spec
@@ -583,11 +620,7 @@ async fn main(spawner: Spawner) {
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
     let resources = SecureResources { inner: (), seq_storage, fdsk };
-    let state_init = SystemBStateInit {
-        identity: identity_data,
-        loaded_config,
-        resources,
-    };
+    let state_init = SystemBStateInit { identity: identity_data, loaded_config, resources };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

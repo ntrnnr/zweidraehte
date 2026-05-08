@@ -13,6 +13,7 @@ members = [
     "examples/testutil",
     "examples/conformance",
     "tools/knxprod-tui",
+    "tools/knx-provision",
 ]
 
 [workspace.package]

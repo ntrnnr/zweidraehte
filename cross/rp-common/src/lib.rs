@@ -10,11 +10,15 @@
 
 mod net;
 mod network_info;
-mod storage;
+pub mod prov_storage;
+pub mod storage;
 pub mod uart;
 
 pub use net::{EmbassyIpTransport, EmbassyUdpSocket, UdpError};
 pub use network_info::{EmbassyNetworkInfo, IP_ASSIGN_DHCP, IP_ASSIGN_MANUAL, NetworkConfigError, mask_to_prefix};
+pub use prov_storage::identity_from_record;
+#[cfg(all(feature = "rp2040", feature = "provision-on-boot"))]
+pub use prov_storage::synthesize_and_write;
 #[cfg(feature = "rp2040")]
-pub use storage::read_or_provision_identity;
+pub use prov_storage::{read_provisioning, write_provisioning};
 pub use storage::{FlashError, FlashIdentityData, RpFlashStorage};

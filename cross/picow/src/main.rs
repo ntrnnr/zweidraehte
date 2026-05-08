@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(never_type)]
 
 use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
@@ -79,8 +78,7 @@ impl StackDefinition for PicoWLightSwitch {
     type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type Identity = rp_common::FlashIdentityData;
     type State = PicoWState;
-    type StateInit =
-        SystemBStateInit<Self::Identity, <PicoWState as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, <PicoWState as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
@@ -230,6 +228,50 @@ fn save_state(state: &PicoWState, storage: &RefCell<Storage>) {
 }
 
 // ================================================================================
+// Identity load
+// ================================================================================
+//
+// Production builds: read the `KNXP` page; panic on any error.
+// `provision-on-boot` builds: write the dev defaults from
+// `dev_provisioning::DEV_*` and re-read.
+//
+// Pico W is special: the WiFi MAC comes from the cyw43 chip directly,
+// so the KNXP `MAC` tag is ignored on this target. We still consume
+// `SERIAL`; the Pico W has no Data Secure variant today, so `FDSK` is
+// also ignored.
+
+#[cfg(feature = "provision-on-boot")]
+mod dev_provisioning {
+    include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
+}
+
+fn load_identity(
+    flash: &mut embassy_rp::flash::Flash<
+        'static,
+        embassy_rp::peripherals::FLASH,
+        embassy_rp::flash::Blocking,
+        { 2 * 1024 * 1024 },
+    >,
+) -> rp_common::FlashIdentityData {
+    let mut unique_id = [0u8; 8];
+    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
+
+    match rp_common::read_provisioning(flash) {
+        Ok(rec) => rp_common::identity_from_record(&rec, unique_id),
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            rp_common::synthesize_and_write(flash, dev_provisioning::DEV_SERIAL, None, None).expect("write dev KNXP");
+            let rec = rp_common::read_provisioning(flash).expect("re-read freshly written KNXP");
+            rp_common::identity_from_record(&rec, unique_id)
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}
+
+// ================================================================================
 // Firmware blobs
 // ================================================================================
 
@@ -262,8 +304,7 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data =
-        rp_common::read_or_provision_identity(&mut flash, LightSwitchDevice::MANUFACTURER_ID.to_be_bytes());
+    let identity_data = load_identity(&mut flash);
 
     let seed = identity_data.derive_seed();
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);

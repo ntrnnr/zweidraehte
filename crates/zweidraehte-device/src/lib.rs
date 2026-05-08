@@ -89,6 +89,7 @@ pub mod lifecycle;
 pub mod memory;
 pub mod objects;
 pub mod prelude;
+pub mod provisioning;
 pub mod restart;
 pub mod router;
 pub mod service;

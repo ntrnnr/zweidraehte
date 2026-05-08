@@ -58,9 +58,6 @@ bind_interrupts!(struct Irqs {
 // Device Definition
 // ================================================================================
 
-/// MAC vendor prefix for locally-administered MAC addresses.
-const MAC_OUI: [u8; 3] = [0x02, 0x00, 0xFA];
-
 /// Device state: System B tables + IP link-layer state (additional IAs, IP config).
 ///
 /// Uses `IpSystemBDeviceState` even though the mask is TP1 (07B0) — the state
@@ -108,8 +105,7 @@ impl StackDefinition for PicoIpInterface {
     type ES = IpInterfaceExtensionFor<KnxIpInterfaceUdp<MAX_TUNNEL_CONNECTIONS>>;
     type Identity = FlashIdentityData;
     type State = IpIfState;
-    type StateInit =
-        SystemBStateInit<Self::Identity, <IpIfState as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, <IpIfState as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
 
     fn create_state(init: Self::StateInit) -> Self::State {
@@ -287,6 +283,38 @@ async fn lifecycle_task(knx: Stack<'static, PicoIpInterface>) -> ! {
 }
 
 // ================================================================================
+// Identity load
+// ================================================================================
+
+#[cfg(feature = "provision-on-boot")]
+mod dev_provisioning {
+    include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
+}
+
+fn load_identity(
+    flash: &mut embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, flash::Blocking, { 2 * 1024 * 1024 }>,
+) -> FlashIdentityData {
+    let mut unique_id = [0u8; 8];
+    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
+
+    match rp_common::read_provisioning(flash) {
+        Ok(rec) => rp_common::identity_from_record(&rec, unique_id),
+
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            rp_common::synthesize_and_write(flash, dev_provisioning::DEV_SERIAL, None, Some(dev_provisioning::DEV_MAC))
+                .expect("write dev KNXP");
+            let rec = rp_common::read_provisioning(flash).expect("re-read freshly written KNXP");
+            rp_common::identity_from_record(&rec, unique_id)
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}
+
+// ================================================================================
 // Entry Point
 // ================================================================================
 
@@ -300,10 +328,9 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data =
-        rp_common::read_or_provision_identity(&mut flash, IpInterfaceDevice::MANUFACTURER_ID.to_be_bytes());
+    let identity_data = load_identity(&mut flash);
 
-    let mac_addr = identity_data.derive_mac_address(MAC_OUI);
+    let mac_addr = identity_data.mac_address();
     let seed = identity_data.derive_seed();
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
     info!("MAC:    {=[u8]:02x}", mac_addr);
@@ -404,8 +431,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init =
-        SystemBStateInit::new(storage.identity().clone(), loaded_config);
+    let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

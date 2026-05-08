@@ -36,3 +36,9 @@ serde = { workspace = true }
 default = ["rp2040"]
 rp2040 = ["embassy-rp/rp2040"]
 rp235xa = ["embassy-rp/rp235xa"]
+
+# When enabled, missing or corrupt KNXP records on first boot are
+# silently filled in from compile-time constants emitted by the
+# firmware's `build.rs` (see ZZ_SERIAL_HEX / ZZ_FDSK_HEX / ZZ_MAC_HEX).
+# Off by default — production firmware refuses to boot without a record.
+provision-on-boot = []

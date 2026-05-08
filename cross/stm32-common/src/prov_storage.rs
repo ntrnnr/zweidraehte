@@ -1,0 +1,126 @@
+//! STM32 flash IO for the `KNXP` factory-provisioning record.
+//!
+//! The provisioning record carries the device's KNX serial, optional
+//! FDSK (Data Secure devices), and optional MAC (IP devices). Format
+//! and codec live in
+//! [`zweidraehte_device::provisioning`]; this module is the thin
+//! flash-side wrapper that knows where on the chip the record lives
+//! and how to map it to the existing `FlashIdentityData` /
+//! `FlashSecureIdentityData` struct shapes the rest of the firmware
+//! consumes.
+//!
+//! # Flash slot
+//!
+//! Last page on the chip (`FLASH_END - PAGE_SIZE .. FLASH_END`).
+//! Pinning provisioning at the very top means the config region below
+//! it can grow freely without colliding with the (write-once)
+//! provisioning data.
+//!
+//! # Boot path
+//!
+//! Production firmware calls [`read_provisioning`] and either succeeds
+//! or panics. With the `provision-on-boot` feature, missing / corrupt
+//! records are replaced by [`synthesize_and_write`] using fields
+//! supplied at compile time by the dev `build.rs`.
+
+use embassy_stm32::flash::{Blocking, Flash};
+
+use zweidraehte_device::provisioning::{self, PROV_BUF_LEN, ProvisioningError, ProvisioningRecord, tag};
+
+use crate::storage::{FlashError, FlashIdentityData, FlashSecureIdentityData};
+
+/// Doubleword alignment required by STM32 flash writes.
+const WRITE_ALIGN: usize = 8;
+
+/// Offset of the provisioning page from the flash base.
+///
+/// Last page on the chip (`FLASH_SIZE - PAGE_SIZE`).
+/// `embassy-stm32`'s `Flash::blocking_*` API takes offsets relative to
+/// the flash base (`0x0800_0000` on STM32G0).
+pub const fn provisioning_offset<const FLASH_SIZE: u32, const PAGE_SIZE: u32>() -> u32 {
+    FLASH_SIZE - PAGE_SIZE
+}
+
+/// Read and parse the `KNXP` page.
+///
+/// On `Ok` the returned record is integrity-checked (CRC matches) and
+/// carries at minimum a serial number. `Err` covers every kind of
+/// missing or malformed record — the caller decides whether to panic
+/// (production) or fall back to the dev synthesizer
+/// (`provision-on-boot`).
+///
+/// # Panics
+/// Panics on flash I/O failure. Reading flash that is mapped into the
+/// CPU's address space cannot fail under normal operation, so a panic
+/// here means the chip itself is in an unexpected state and there is
+/// no meaningful recovery at boot time.
+pub fn read_provisioning<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
+    flash: &mut Flash<'static, Blocking>,
+) -> Result<ProvisioningRecord, ProvisioningError> {
+    let offset = provisioning_offset::<FLASH_SIZE, PAGE_SIZE>();
+    let mut buf = [0u8; PROV_BUF_LEN];
+    flash.blocking_read(offset, &mut buf).expect("provisioning page read");
+    provisioning::parse(&buf)
+}
+
+/// Encode `record` and write it to the provisioning page.
+///
+/// Erases the page first, then writes the encoded record padded up to
+/// a doubleword boundary with `0xFF` (the STM32 G0 flash write unit is
+/// 8 bytes). Any pre-existing record is overwritten.
+pub fn write_provisioning<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
+    flash: &mut Flash<'static, Blocking>,
+    record: &ProvisioningRecord,
+) -> Result<(), FlashError> {
+    let mut buf = [0xFFu8; PROV_BUF_LEN];
+    let n = provisioning::write(record, &mut buf).map_err(|_| FlashError::WriteFailed)?;
+    // Pad up to doubleword for the flash write API.
+    let padded = (n + WRITE_ALIGN - 1) & !(WRITE_ALIGN - 1);
+    debug_assert!(padded <= PROV_BUF_LEN);
+
+    let offset = provisioning_offset::<FLASH_SIZE, PAGE_SIZE>();
+    flash.blocking_erase(offset, offset + PAGE_SIZE).map_err(|_| FlashError::EraseFailed)?;
+    flash.blocking_write(offset, &buf[..padded]).map_err(|_| FlashError::WriteFailed)?;
+    Ok(())
+}
+
+/// Build a [`FlashIdentityData`] from a parsed record.
+///
+/// Plain devices need only the serial; any FDSK / MAC tags in the
+/// record are ignored here.
+pub fn identity_from_record(rec: &ProvisioningRecord) -> FlashIdentityData {
+    FlashIdentityData { serial_number: rec.serial }
+}
+
+/// Build a [`FlashSecureIdentityData`] from a parsed record.
+///
+/// Errors with [`ProvisioningError::MissingRequiredTag`] if the record
+/// has no FDSK — secure firmware cannot operate without one.
+pub fn secure_identity_from_record(rec: &ProvisioningRecord) -> Result<FlashSecureIdentityData, ProvisioningError> {
+    let fdsk = rec.fdsk.ok_or(ProvisioningError::MissingRequiredTag(tag::FDSK))?;
+    Ok(FlashSecureIdentityData { serial_number: rec.serial, fdsk })
+}
+
+// ================================================================================
+// Dev `provision-on-boot` synthesizer
+// ================================================================================
+//
+// Off in production builds. When on, the firmware calls
+// `synthesize_and_write` if `read_provisioning` fails — typical on a
+// freshly flashed chip. The serial / FDSK / MAC come from the
+// firmware's `build.rs` (env-overridable, with hardcoded fallbacks
+// chosen to be obviously-not-production).
+
+/// Write a freshly-built `KNXP` record using the supplied identity
+/// fields. Used only by the `provision-on-boot` dev path; the
+/// production firmware never calls this.
+#[cfg(feature = "provision-on-boot")]
+pub fn synthesize_and_write<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
+    flash: &mut Flash<'static, Blocking>,
+    serial: [u8; 6],
+    fdsk: Option<[u8; 16]>,
+    mac: Option<[u8; 6]>,
+) -> Result<(), FlashError> {
+    let record = ProvisioningRecord { serial, fdsk, mac };
+    write_provisioning::<FLASH_SIZE, PAGE_SIZE>(flash, &record)
+}

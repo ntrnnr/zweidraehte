@@ -115,8 +115,7 @@ impl StackDefinition for Stm32G0LightSwitch {
     type ES = Tp1ExtensionState;
     type Identity = FlashIdentityData;
     type State = Stm32G0State;
-    type StateInit =
-        SystemBStateInit<Self::Identity, <Stm32G0State as HasDeviceConfig>::Config>;
+    type StateInit = SystemBStateInit<Self::Identity, <Stm32G0State as HasDeviceConfig>::Config>;
     type Mem = SystemBMemoryMap;
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = Stm32G0LightSwitchAugments<'a>;
@@ -492,6 +491,43 @@ impl<P: InputPin + Wait> WaitForRelease for ReleaseWaiter<'_, P> {
 }
 
 // ================================================================================
+// Identity load
+// ================================================================================
+//
+// Production builds: read the `KNXP` page; panic on any error.
+// `provision-on-boot` builds: write the dev defaults from
+// `dev_provisioning::DEV_*` and re-read.
+
+#[cfg(feature = "provision-on-boot")]
+mod dev_provisioning {
+    include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
+}
+
+fn load_identity(flash: &mut flash::Flash<'static, flash::Blocking>) -> FlashIdentityData {
+    match stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash) {
+        Ok(rec) => stm32_common::identity_from_record(&rec),
+
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            stm32_common::synthesize_and_write::<FLASH_SIZE, FLASH_PAGE_SIZE>(
+                flash,
+                dev_provisioning::DEV_SERIAL,
+                None,
+                None,
+            )
+            .expect("write dev KNXP");
+            let rec = stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash)
+                .expect("re-read freshly written KNXP");
+            stm32_common::identity_from_record(&rec)
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}
+
+// ================================================================================
 // Entry point
 // ================================================================================
 
@@ -503,12 +539,9 @@ async fn main(spawner: Spawner) {
     let p = embassy_stm32::init(Config::default());
     info!("STM32G0 TP1 light switch (NCN5120) initializing");
 
-    // --- Identity (from flash) ----------------------------------------------
+    // --- Identity (from the KNXP provisioning page) -------------------------
     let mut flash_hw = flash::Flash::new_blocking(p.FLASH);
-    let identity_data = stm32_common::read_or_provision_identity::<FLASH_SIZE, FLASH_PAGE_SIZE>(
-        &mut flash_hw,
-        LightSwitchDevice::MANUFACTURER_ID.to_be_bytes(),
-    );
+    let identity_data = load_identity(&mut flash_hw);
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
 
     // --- USART1 — NCN5120 TPUART at 19200 8E1 -------------------------------
@@ -566,8 +599,7 @@ async fn main(spawner: Spawner) {
         }
     };
 
-    let state_init =
-        SystemBStateInit::new(storage.identity().clone(), loaded_config);
+    let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
     let storage = &*STORAGE.init(RefCell::new(storage));

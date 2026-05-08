@@ -34,3 +34,9 @@ devices = { path = "../../examples/devices", default-features = false, features 
 rp-common = { path = "../rp-common", features = ["rp2040"] }
 # HAL-agnostic helpers (CortexMSystem)
 embedded-common = { path = "../embedded-common" }
+
+[build-dependencies]
+dev-provisioning-build = { path = "../dev-provisioning-build" }
+
+[features]
+provision-on-boot = ["rp-common/provision-on-boot"]

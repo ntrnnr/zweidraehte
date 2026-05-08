@@ -42,11 +42,7 @@ impl<P: InputPin + Wait> DebouncedButton<P> {
     /// After [`ButtonEvent::ShortPress`], the button has already been
     /// released. After [`ButtonEvent::LongPress`], it is still held —
     /// call [`wait_for_release`](Self::wait_for_release) when done.
-    pub async fn wait_for_press(
-        &mut self,
-        debounce: Duration,
-        long_press: Option<Duration>,
-    ) -> ButtonEvent {
+    pub async fn wait_for_press(&mut self, debounce: Duration, long_press: Option<Duration>) -> ButtonEvent {
         loop {
             // Wait for button to be pressed (falling edge).
             let _ = self.pin.wait_for_falling_edge().await;

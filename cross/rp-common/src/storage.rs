@@ -2,22 +2,24 @@
 //!
 //! # Flash Layout
 //!
-//! The last two 4 KiB sectors of the 2 MB flash are reserved:
+//! The provisioning sector lives at the very top of flash; config
+//! storage occupies the sectors immediately below it. With the default
+//! 4 KiB `STORAGE_SIZE` the layout for a 2 MB chip is:
 //!
 //! ```text
-//! 0x1FE000 .. 0x1FF000  — Identity sector (serial number, unique ID)
-//! 0x1FF000 .. 0x200000  — Config storage sector (device state)
+//! 0x1FE000 .. 0x1FF000  — Config storage (KNXS)            [grows backward]
+//! 0x1FF000 .. 0x200000  — Provisioning sector (KNXP)       [last sector, fixed]
 //! ```
 //!
-//! The identity sector is written once on first boot and survives both
-//! firmware updates and factory resets. The config sector stores
-//! ETS-programmed device state via [`RpFlashStorage`].
+//! Putting provisioning last and config below it means bumping
+//! `STORAGE_SIZE` to fit a larger config grows the region toward lower
+//! addresses without ever touching the (write-once) provisioning data.
 //!
-//! # Identity Sector Format
-//!
-//! ```text
-//! [magic: 4B "KNXI"][serial_number: 6B][unique_id: 8B]
-//! ```
+//! The provisioning sector is written once on the production line by
+//! the host-side `knx-provision` tool over SWD. Format and codec live
+//! in [`zweidraehte_device::provisioning`]; the read/write helpers and
+//! struct conversions live in [`crate::prov_storage`]. The config
+//! sector stores ETS-programmed device state via [`RpFlashStorage`].
 //!
 //! # Config Sector Format
 //!
@@ -51,22 +53,14 @@ use zweidraehte_device::storage::DeviceIdentity;
 // Constants
 // ================================================================================
 
-const FLASH_SIZE: usize = 2 * 1024 * 1024; // 2MB
-const SECTOR_SIZE: usize = 4096;
+pub(crate) const FLASH_SIZE: usize = 2 * 1024 * 1024; // 2MB
+pub(crate) const SECTOR_SIZE: usize = 4096;
 
 // -- Config sector constants --------------------------------------------------
 
 const CONFIG_MAGIC: [u8; 4] = *b"KNXS";
 /// Header: 4 bytes magic + 2 bytes payload length.
 const CONFIG_HEADER_SIZE: usize = 6;
-
-// -- Identity sector constants ------------------------------------------------
-
-/// Offset of the identity sector from the start of flash (second-to-last sector).
-const IDENTITY_SECTOR_OFFSET: u32 = (FLASH_SIZE - 2 * SECTOR_SIZE) as u32;
-const IDENTITY_MAGIC: [u8; 4] = *b"KNXI";
-/// Total size of the identity record: 4B magic + 6B serial + 8B unique ID.
-const IDENTITY_RECORD_SIZE: usize = 4 + 6 + 8;
 
 // ================================================================================
 // RpFlashStorage
@@ -91,16 +85,23 @@ pub struct RpFlashStorage<S, I, const STORAGE_SIZE: usize = 4096> {
 
 impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
     /// Offset of the storage region from the start of flash.
-    const STORAGE_OFFSET: u32 = (FLASH_SIZE - STORAGE_SIZE) as u32;
+    ///
+    /// The provisioning sector occupies the last `SECTOR_SIZE` bytes,
+    /// so config storage starts `SECTOR_SIZE + STORAGE_SIZE` from the
+    /// flash end and grows toward lower addresses as `STORAGE_SIZE`
+    /// increases.
+    const STORAGE_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE - STORAGE_SIZE) as u32;
 
     // Compile-time validation of the storage region size.
     const _VALIDATE: () = {
         assert!(STORAGE_SIZE > 0, "STORAGE_SIZE must be non-zero");
         assert!(STORAGE_SIZE % SECTOR_SIZE == 0, "STORAGE_SIZE must be a multiple of the 4 KiB flash sector size",);
-        assert!(STORAGE_SIZE <= FLASH_SIZE, "STORAGE_SIZE exceeds total flash size",);
-        // The identity sector occupies the second-to-last 4 KiB sector.
-        // Config storage must not overlap it.
-        assert!(STORAGE_SIZE <= SECTOR_SIZE, "STORAGE_SIZE exceeds one sector — would overlap the identity sector",);
+        // Reserve room for both the config region *and* the trailing
+        // provisioning sector at the top of flash.
+        assert!(
+            STORAGE_SIZE + SECTOR_SIZE <= FLASH_SIZE,
+            "STORAGE_SIZE + provisioning sector exceeds total flash size",
+        );
     };
 
     /// Create a new flash storage instance.
@@ -209,20 +210,28 @@ pub enum FlashError {
 }
 
 // ================================================================================
-// Flash Identity Provisioning
+// Device identity (sourced from the KNXP provisioning sector)
 // ================================================================================
 
-/// Data read from (or provisioned into) the flash identity sector.
+/// Identity record built from a parsed `KNXP` provisioning record.
 ///
-/// Contains the KNX serial number and the raw SPI flash unique ID.
-/// The unique ID can be used to derive MAC addresses and entropy seeds.
+/// Carries the KNX serial, an optional MAC address (populated for IP
+/// devices), and the SPI flash chip's unique ID. The unique ID is read
+/// from hardware at boot (not stored in `KNXP`) so that
+/// [`derive_seed`](FlashIdentityData::derive_seed) keeps working without
+/// pulling extra fields into the provisioning record.
 #[derive(Debug, Clone, defmt::Format)]
 pub struct FlashIdentityData {
     /// KNX serial number: 2 bytes manufacturer ID (big-endian) + 4 bytes
-    /// device-specific (XOR-folded from the 8-byte flash unique ID).
+    /// device-specific (assigned at provisioning time).
     pub serial_number: [u8; 6],
-    /// Raw 8-byte SPI flash unique ID. Stored for derivation of MAC
-    /// addresses and entropy seeds beyond the KNX serial number.
+
+    /// Ethernet MAC address from the `KNXP` record. `None` on devices
+    /// that don't need one (TP1-only).
+    pub mac: Option<[u8; 6]>,
+
+    /// Raw 8-byte SPI flash unique ID. Read from hardware at boot for
+    /// per-device entropy seeds.
     pub unique_id: [u8; 8],
 }
 
@@ -233,21 +242,14 @@ impl DeviceIdentity for FlashIdentityData {
 }
 
 impl FlashIdentityData {
-    /// Derive a locally-administered unicast MAC address.
+    /// Return the MAC address sourced from the `KNXP` record.
     ///
-    /// The `oui` parameter provides the 3-byte vendor prefix. Bit 1 of
-    /// the first octet (locally administered) is forced set, and bit 0
-    /// (multicast) is forced clear, regardless of the input value. The
-    /// remaining 3 bytes are taken from the unique ID.
-    pub fn derive_mac_address(&self, oui: [u8; 3]) -> [u8; 6] {
-        [
-            (oui[0] | 0x02) & 0xFE, // locally administered, unicast
-            oui[1],
-            oui[2],
-            self.unique_id[0],
-            self.unique_id[1],
-            self.unique_id[2],
-        ]
+    /// # Panics
+    /// Panics if the record had no MAC tag — wiring an Ethernet device
+    /// with a missing MAC is a configuration error the firmware cannot
+    /// recover from at boot.
+    pub fn mac_address(&self) -> [u8; 6] {
+        self.mac.expect("KNXP record missing MAC tag — re-provision this device")
     }
 
     /// Derive a deterministic `u64` seed from the unique ID.
@@ -257,72 +259,4 @@ impl FlashIdentityData {
     pub fn derive_seed(&self) -> u64 {
         u64::from_le_bytes(self.unique_id)
     }
-}
-
-/// Read the device identity from flash, or provision it on first boot.
-///
-/// On first boot (identity sector erased / all `0xFF`), this function:
-/// 1. Reads the SPI flash chip's unique ID (8 bytes)
-/// 2. XOR-folds it into 4 device-specific bytes (`uid[0..4] ^ uid[4..8]`)
-/// 3. Prepends the `manufacturer_id` to form a 6-byte KNX serial number
-/// 4. Writes the identity sector to flash (one-time, brief XIP stall)
-///
-/// On subsequent boots, reads and returns the stored identity.
-///
-/// # Panics
-///
-/// Panics if flash I/O fails. Identity provisioning is critical for device
-/// operation — there is no meaningful fallback at boot time.
-#[cfg(feature = "rp2040")]
-pub fn read_or_provision_identity(
-    flash: &mut Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>,
-    manufacturer_id: [u8; 2],
-) -> FlashIdentityData {
-    // Read just the identity record from the sector.
-    let mut buf = [0u8; IDENTITY_RECORD_SIZE];
-    flash.blocking_read(IDENTITY_SECTOR_OFFSET, &mut buf).expect("identity sector read");
-
-    // If the magic matches, the identity has already been provisioned.
-    if buf[0..4] == IDENTITY_MAGIC {
-        let mut serial_number = [0u8; 6];
-        serial_number.copy_from_slice(&buf[4..10]);
-        let mut unique_id = [0u8; 8];
-        unique_id.copy_from_slice(&buf[10..18]);
-
-        defmt::info!("Identity loaded: serial={=[u8]:02x}", serial_number);
-        return FlashIdentityData { serial_number, unique_id };
-    }
-
-    // First boot — read the SPI flash chip's unique ID and derive the
-    // KNX serial number from it.
-    defmt::info!("Identity sector empty, provisioning from flash unique ID...");
-
-    let mut unique_id = [0u8; 8];
-    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID read");
-
-    // XOR-fold 8 bytes into 4 for the device-specific portion.
-    let device_bytes = [
-        unique_id[0] ^ unique_id[4],
-        unique_id[1] ^ unique_id[5],
-        unique_id[2] ^ unique_id[6],
-        unique_id[3] ^ unique_id[7],
-    ];
-
-    let serial_number =
-        [manufacturer_id[0], manufacturer_id[1], device_bytes[0], device_bytes[1], device_bytes[2], device_bytes[3]];
-
-    // Write the identity record to flash.
-    let mut write_buf = [0u8; IDENTITY_RECORD_SIZE];
-    write_buf[0..4].copy_from_slice(&IDENTITY_MAGIC);
-    write_buf[4..10].copy_from_slice(&serial_number);
-    write_buf[10..18].copy_from_slice(&unique_id);
-
-    flash
-        .blocking_erase(IDENTITY_SECTOR_OFFSET, IDENTITY_SECTOR_OFFSET + SECTOR_SIZE as u32)
-        .expect("identity sector erase");
-    flash.blocking_write(IDENTITY_SECTOR_OFFSET, &write_buf).expect("identity sector write");
-
-    defmt::info!("Identity provisioned: serial={=[u8]:02x}, uid={=[u8]:02x}", serial_number, unique_id,);
-
-    FlashIdentityData { serial_number, unique_id }
 }

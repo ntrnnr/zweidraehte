@@ -30,3 +30,9 @@ devices = { path = "../../examples/devices", default-features = false, features 
 stm32-common = { path = "../stm32-common" }
 # HAL-agnostic helpers (DebouncedButton, CortexMSystem)
 embedded-common = { path = "../embedded-common" }
+
+[build-dependencies]
+dev-provisioning-build = { path = "../dev-provisioning-build" }
+
+[features]
+provision-on-boot = ["stm32-common/provision-on-boot"]

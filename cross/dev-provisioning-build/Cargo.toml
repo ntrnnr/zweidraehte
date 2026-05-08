@@ -1,0 +1,14 @@
+[package]
+name = "dev-provisioning-build"
+version = "0.1.0"
+edition = "2024"
+
+# Tiny helper used from firmware `build.rs` files when the
+# `provision-on-boot` feature is enabled. Reads ZZ_SERIAL_HEX /
+# ZZ_FDSK_HEX / ZZ_MAC_HEX from the build environment, falls back to
+# obviously-not-production defaults, and emits `$OUT_DIR/dev_provisioning.rs`
+# containing `pub const DEV_SERIAL: [u8; 6] = ...; ...`. The firmware
+# `main.rs` includes that file under `#[cfg(feature = "provision-on-boot")]`
+# and feeds the constants to the in-flash record synthesizer.
+
+[dependencies]

@@ -43,3 +43,10 @@ zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-fea
 postcard = { workspace = true }
 serde = { workspace = true }
 chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
+
+[features]
+# When enabled, missing or corrupt KNXP records on first boot are
+# silently filled in from compile-time constants emitted by the
+# firmware's `build.rs` (see ZZ_SERIAL_HEX / ZZ_FDSK_HEX / ZZ_MAC_HEX).
+# Off by default — production firmware refuses to boot without a record.
+provision-on-boot = []
