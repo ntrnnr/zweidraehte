@@ -15,7 +15,9 @@ use zweidraehte_proto::messages::{buffers::Buffer, builder::IndicationMessage};
 
 pub(crate) mod connections; // Connection-oriented state machines
 pub mod context; // IP-specific context traits
+pub mod definition; // KnxNetIpDefinition trait — link-layer bill of materials
 pub mod features; // Compile-time feature selection
+pub mod secure; // IP Secure feature skeleton (§2.2.1ff., shape only)
 pub(crate) mod services; // Connectionless service handlers
 
 mod builder;
@@ -25,6 +27,7 @@ mod transport; // UDP/TCP socket management
 pub(crate) mod types; // Shared protocol types (ServerError, PendingResponse, etc.)
 
 pub use builder::KnxNetIpBuilder;
+pub use definition::KnxNetIpDefinition;
 pub use runtime::KnxNetIp;
 pub use types::{PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError};
 
@@ -109,6 +112,14 @@ impl Default for EndpointType {
 /// Provides externally-owned storage that must outlive the
 /// [`KnxNetIp`] link layer instance. Currently holds the response
 /// channel through which services queue outbound messages.
+///
+/// **Refactor in progress (see plan
+/// `the-knx-ip-linklayer-in-reactive-seal.md`):** this struct will
+/// become `KnxNetIpResources<D: KnxNetIpDefinition>` carrying TCP
+/// scratch buffers, IP-Secure session slots, and a parameterised
+/// response-channel depth. The cutover requires the `KnxNetIpBuilder`
+/// and `KnxNetIp` runtime to also become parameterised over `D`, which
+/// is the next chunk of work.
 pub struct KnxNetIpResources {
     /// Response channel for queuing outbound messages.
     response_channel: Channel<NoopRawMutex, PendingResponse, 16>,

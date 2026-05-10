@@ -31,6 +31,7 @@ use zweidraehte_proto::messages::knxip::substructs::{self, SupportedService};
 use crate::layers::transport::cemi::CemiEvent;
 use crate::{KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS};
 
+use super::secure::{IpSecureFeature, NoIpSecure};
 use super::services::remote_config::RemoteConfigurationServer;
 use super::services::routing::RoutingServer;
 use super::{EndpointType, PendingResponse, ServerContext, ServerError};
@@ -39,15 +40,18 @@ use super::{EndpointType, PendingResponse, ServerContext, ServerError};
 // Feature Set Trait + Features Bundle
 // ============================================================================
 
-/// Bundles all four feature selections into associated types.
+/// Bundles all five feature selections into associated types.
 ///
-/// Implemented by [`Features<R, RC, TUN, TCP>`] for all valid
-/// combinations of feature markers.
+/// Implemented by [`Features<R, RC, TUN, TCP, IPS>`] for all valid
+/// combinations of feature markers. The fifth slot (`IpSecure`)
+/// defaults to `NoIpSecure` so existing aliases keep compiling without
+/// spelling it out.
 pub trait FeatureSet {
     type Routing: RoutingFeature;
     type RemoteConfig: RemoteConfigFeature;
     type Tunneling: TunnelingFeature;
     type Tcp: TcpFeature;
+    type IpSecure: IpSecureFeature;
 
     /// PID_KNXNETIP_DEVICE_CAPABILITIES bitfield derived from enabled features.
     ///
@@ -59,6 +63,11 @@ pub trait FeatureSet {
     /// |  3  | Remote Logging (not implemented)  |
     /// |  4  | Remote Config & Diagnosis         |
     /// |  5  | Object Server (not implemented)   |
+    ///
+    /// Bit 7 ("Security") is reserved for the IP Secure announcement
+    /// once the dispatch path lands. We do **not** set it from
+    /// `IpSecure::ENABLED` yet — the bit must only be set when the
+    /// device can actually answer secure traffic.
     const KNXNETIP_DEVICE_CAPABILITIES: u16 = 0x0001 // Device Management always present
         | if Self::Routing::ENABLED { 1 << 2 } else { 0 }
         | if Self::Tunneling::ENABLED { 1 << 1 } else { 0 }
@@ -67,28 +76,35 @@ pub trait FeatureSet {
 
 /// Bundle of feature marker types, parameterizing the KNX/IP link layer.
 ///
-/// All four type parameters default to the disabled variant, so
+/// All five type parameters default to the disabled variant, so
 /// `Features` (with no arguments) means "everything off."
 pub struct Features<
     R: RoutingFeature = NoRouting,
     RC: RemoteConfigFeature = NoRemoteConfig,
     TUN: TunnelingFeature = NoTunneling,
     TCP: TcpFeature = NoTcp,
+    IPS: IpSecureFeature = NoIpSecure,
 > {
-    _phantom: PhantomData<(R, RC, TUN, TCP)>,
+    _phantom: PhantomData<(R, RC, TUN, TCP, IPS)>,
 }
 
-impl<R: RoutingFeature, RC: RemoteConfigFeature, TUN: TunnelingFeature, TCP: TcpFeature> FeatureSet
-    for Features<R, RC, TUN, TCP>
+impl<R, RC, TUN, TCP, IPS> FeatureSet for Features<R, RC, TUN, TCP, IPS>
+where
+    R: RoutingFeature,
+    RC: RemoteConfigFeature,
+    TUN: TunnelingFeature,
+    TCP: TcpFeature,
+    IPS: IpSecureFeature,
 {
     type Routing = R;
     type RemoteConfig = RC;
     type Tunneling = TUN;
     type Tcp = TCP;
+    type IpSecure = IPS;
 }
 
 /// All features disabled.
-pub type DefaultFeatures = Features<NoRouting, NoRemoteConfig, NoTunneling, NoTcp>;
+pub type DefaultFeatures = Features<NoRouting, NoRemoteConfig, NoTunneling, NoTcp, NoIpSecure>;
 
 // ============================================================================
 // Common Feature Configurations
@@ -97,26 +113,41 @@ pub type DefaultFeatures = Features<NoRouting, NoRemoteConfig, NoTunneling, NoTc
 /// KNX/IP Device (UDP only): routing + remote config.
 ///
 /// Standard feature set for a KNX/IP routing device without TCP support.
-pub type KnxIpDeviceUdp = Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp>;
+pub type KnxIpDeviceUdp = Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp, NoIpSecure>;
 
 /// KNX/IP Device (UDP + TCP): routing + remote config + TCP.
 ///
 /// Standard feature set for a KNX/IP routing device with TCP support
 /// (Core service family v2).
-pub type KnxIpDeviceTcp = Features<WithRouting, WithRemoteConfig, NoTunneling, WithTcp>;
+pub type KnxIpDeviceTcp = Features<WithRouting, WithRemoteConfig, NoTunneling, WithTcp, NoIpSecure>;
 
 /// KNX/IP Interface (UDP only): tunneling + remote config.
 ///
 /// Standard feature set for a KNX/IP tunneling interface without TCP.
 /// `N` is the maximum number of tunneling slots (additional individual addresses).
-pub type KnxIpInterfaceUdp<const N: usize> = Features<NoRouting, WithRemoteConfig, WithTunneling<N>, NoTcp>;
+pub type KnxIpInterfaceUdp<const N: usize> = Features<NoRouting, WithRemoteConfig, WithTunneling<N>, NoTcp, NoIpSecure>;
 
 /// KNX/IP Interface (UDP + TCP): tunneling + remote config + TCP.
 ///
 /// Standard feature set for a KNX/IP tunneling interface with TCP support
 /// (Core service family v2).
 /// `N` is the maximum number of tunneling slots (additional individual addresses).
-pub type KnxIpInterfaceTcp<const N: usize> = Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp>;
+pub type KnxIpInterfaceTcp<const N: usize> =
+    Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, NoIpSecure>;
+
+// IP Secure variants — placeholder aliases. The dispatch path is not
+// implemented yet; instantiating one of these enables the per-session
+// storage in `KnxNetIpResources` and the buffer-size bump for
+// SECURE_WRAPPER, but the device cannot answer secure traffic until
+// the crypto layer lands. See [`super::secure`].
+
+/// KNX IP Secure Interface (TCP, with IP Secure session pool).
+///
+/// Same shape as [`KnxIpInterfaceTcp<N>`] plus an IP Secure session pool
+/// of size `N` (sessions are TCP-only per spec §2.2.3.3, so they share
+/// the tunnel slot count).
+pub type KnxIpSecureInterfaceTcp<const N: usize> =
+    Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
 
 // ============================================================================
 // Routing Feature

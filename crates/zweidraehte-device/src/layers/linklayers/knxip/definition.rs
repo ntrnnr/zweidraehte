@@ -1,0 +1,139 @@
+//! Compile-time bill-of-materials for the KNX/IP link layer.
+//!
+//! Mirrors [`StackDefinition`](crate::definition::StackDefinition) at the
+//! link-layer level: a single `Copy + 'static` ZST trait that pins the
+//! transport, the feature set, and every numeric sizing knob the link
+//! layer needs. The downstream user implements it once per binary and
+//! every const-generic sizing follows from that single impl.
+//!
+//! ## Why a separate trait, not just associated types on `StackDefinition`
+//!
+//! [`StackDefinition`](crate::definition::StackDefinition) is medium-
+//! agnostic. A TP1-only device or a USB interface device must not be
+//! forced to spell out IP-specific sizing knobs. The IP-specific
+//! definition lives in this trait and only matters once `StackDefinition::LLB`
+//! is `KnxNetIpBuilder<D>`.
+//!
+//! ## Sizing defaults — single source of truth
+//!
+//! Almost every numeric is defaulted off the tunneling capacity (which
+//! the user already had to spell out via the chosen `Features` alias),
+//! so the typical impl looks like:
+//!
+//! ```ignore
+//! impl KnxNetIpDefinition for MyIpInterface {
+//!     type Transport = EmbassyIpTransportTcp<2, 4>;
+//!     type Features  = KnxIpInterfaceTcp<4>;
+//!     // MAX_TCP_STREAMS, MAX_TCP_CHANNELS, MAX_SECURE_SESSIONS
+//!     // all default to 4 (TUNNEL_CAPACITY); MAX_UDP_SOCKETS to 2.
+//! }
+//! ```
+//!
+//! Override a const only when the default is wrong for your build —
+//! e.g. when accepting more TCP clients than you have tunnel slots, or
+//! when an exotic port layout demands a deeper UDP socket pool.
+
+use zweidraehte_platform::IpTransport;
+
+use super::features::FeatureSet;
+use super::secure::IpSecureFeature;
+
+/// Compile-time configuration for the KNX/IP link layer.
+///
+/// Implemented as a `Copy + 'static` ZST per the
+/// [`StackDefinition`](crate::definition::StackDefinition) pattern —
+/// the trait is never instantiated, only used as a type-level handle.
+pub trait KnxNetIpDefinition: Copy + 'static {
+    /// Platform IP transport (e.g. `EmbassyIpTransport`,
+    /// `EmbassyIpTransportTcp`, `LinuxIpTransport`).
+    type Transport: IpTransport;
+
+    /// Compile-time feature set: routing / remote-config / tunneling /
+    /// TCP / IP-Secure. Pick one of the aliases in
+    /// [`super::features`] or roll your own
+    /// [`Features<...>`](super::features::Features).
+    type Features: FeatureSet;
+
+    // ------------------------------------------------------------------
+    // Derived sizing constants
+    // ------------------------------------------------------------------
+
+    /// Maximum concurrent tunneling slots.
+    ///
+    /// Mirrored from `<Self::Features::Tunneling as TunnelingFeature>::CAPACITY`
+    /// for ergonomic access — write `D::TUNNEL_CAPACITY` instead of
+    /// the long projection.
+    const TUNNEL_CAPACITY: usize =
+        <<Self::Features as FeatureSet>::Tunneling as super::features::TunnelingFeature>::CAPACITY;
+
+    /// Maximum concurrent TCP connections accepted by the listener.
+    ///
+    /// Default: [`TUNNEL_CAPACITY`](Self::TUNNEL_CAPACITY) — worst case
+    /// every tunnel comes in over a different TCP connection. Override
+    /// when you accept more management/discovery TCP clients than you
+    /// have tunnel slots.
+    const MAX_TCP_STREAMS: usize = Self::TUNNEL_CAPACITY;
+
+    /// Maximum KNX/IP channel IDs tracked per TCP stream.
+    ///
+    /// Default: [`TUNNEL_CAPACITY`](Self::TUNNEL_CAPACITY) — worst case
+    /// one client multiplexes every tunnel over a single TCP stream.
+    /// Override (downward) to save per-stream RAM if your deployment
+    /// caps multiplexing per client.
+    const MAX_TCP_CHANNELS: usize = Self::TUNNEL_CAPACITY;
+
+    /// Deduped UDP socket pool size.
+    ///
+    /// The builder collects every UDP endpoint each enabled feature
+    /// needs (discovery on KNX_PORT × {multicast, any}, routing
+    /// multicast, remote-config multicast …) and collapses them by
+    /// port. Default `2` covers a typical configuration: one socket on
+    /// the System Setup multicast / KNX port for discovery + routing
+    /// joined as a multicast group; one wildcard socket on KNX_PORT
+    /// for unicast control. Override only when you mix in non-standard
+    /// ports.
+    const MAX_UDP_SOCKETS: usize = 2;
+
+    /// Outbound `PendingResponse` queue depth.
+    ///
+    /// Replaces the previously hard-coded `16` in [`KnxNetIpResources`]
+    /// (super::KnxNetIpResources). Servers push pending responses here
+    /// when a request can't be serviced inline (rate-limit, cross-task
+    /// reply, etc.).
+    const RESPONSE_CHANNEL_DEPTH: usize = 16;
+
+    /// Per-TCP-connection read/frame scratch buffer size in bytes.
+    ///
+    /// Sized to fit the largest expected KNX/IP frame on TCP. Default
+    /// `512` covers all current frames; bump to `560` (= 512 +
+    /// [`SECURE_WRAPPER_OVERHEAD`](super::secure::SECURE_WRAPPER_OVERHEAD))
+    /// when you enable IP Secure so a SECURE_WRAPPER around a 512-byte
+    /// inner frame still fits.
+    const TCP_SCRATCH_BUF_SIZE: usize = 512;
+
+    /// Maximum concurrent IP Secure sessions.
+    ///
+    /// Default: [`MAX_TCP_STREAMS`](Self::MAX_TCP_STREAMS) — secure
+    /// sessions are TCP-only per spec §2.2.3.3, so each session pins a
+    /// TCP stream. Effective storage is zero when
+    /// `Features::IpSecure = NoIpSecure` because the slot type is `()`.
+    const MAX_SECURE_SESSIONS: usize = Self::MAX_TCP_STREAMS;
+
+    // ------------------------------------------------------------------
+    // Derived helpers
+    // ------------------------------------------------------------------
+
+    /// Total embassy-net socket count for this definition.
+    ///
+    /// The embassy-net stack needs one socket per UDP socket plus one
+    /// per concurrent TCP connection plus one for DHCP. Currently
+    /// computed by hand at every call site — `1 + MAX_UDP_SOCKETS +
+    /// MAX_TCP_STREAMS` — and now centralised here so a binary writes
+    /// `NetStackResources::<{ MyDef::EMBASSY_NET_SOCKETS }>::new()`.
+    const EMBASSY_NET_SOCKETS: usize = 1 + Self::MAX_UDP_SOCKETS + Self::MAX_TCP_STREAMS;
+
+    /// Convenience marker: does the chosen feature set imply IP Secure
+    /// support? Used by downstream sanity-checks that want to refuse
+    /// running secure traffic on a non-secure build.
+    const IP_SECURE_ENABLED: bool = <<Self::Features as FeatureSet>::IpSecure as IpSecureFeature>::ENABLED;
+}
