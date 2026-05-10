@@ -61,7 +61,7 @@ use zweidraehte_device::bcus::system_b::{
     Extension, HasDeviceConfig, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
     SystemBStackDefinition, SystemBStateInit,
 };
-use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceTcp};
+use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
 use zweidraehte_platform::LinuxIpTransport;
@@ -546,13 +546,23 @@ pub struct DemoStack;
 
 impl SystemBStackDefinition for DemoStack {}
 
+// IP-specific link-layer bill of materials. `KnxIpDeviceTcp` is a
+// routing device with no tunneling, so `TUNNEL_CAPACITY = 0` and the
+// derived defaults for `MAX_TCP_*` collapse to 0. `MAX_UDP_SOCKETS`
+// stays at the trait default of 2 (discovery + routing share one
+// multicast socket; unicast control wants the second).
+impl KnxNetIpDefinition for DemoStack {
+    type Transport = LinuxIpTransport;
+    type Features = KnxIpDeviceTcp;
+}
+
 impl StackDefinition for DemoStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = DemoParams;
     type CO = comm_objs::DemoComObjects;
-    type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceTcp, 2>;
+    type LLB = KnxNetIpBuilder<DemoStack>;
     type Platform = MockIpPlatform;
     type ES = IpExtensionFor<KnxIpDeviceTcp>;
     type State = DemoState;

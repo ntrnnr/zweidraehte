@@ -186,15 +186,11 @@ async fn main(spawner: Spawner) {
 
     let interface_addr =
         zweidraehte_platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
-    let link_layer_builder = KnxNetIpBuilder::<zweidraehte_platform::LinuxIpTransport, _, 2>::new(
-        INTERFACE_NAME,
-        interface_addr,
-        control_endpoint,
-        (),
-    )
-    .enable_routing_server()
-    .enable_remote_config_server()
-    .enable_tcp();
+    // Features (routing + remote-config + TCP) and sizing (UDP socket
+    // pool, TCP stream count, etc.) all flow from `DemoStack`'s
+    // `KnxNetIpDefinition` impl. No more enable_*() chain — features
+    // are pinned by `Definition::Features = KnxIpDeviceTcp`.
+    let link_layer_builder = KnxNetIpBuilder::<DemoStack>::new(INTERFACE_NAME, interface_addr, control_endpoint, ());
 
     // Create stack resources and initialize the stack
     static RESOURCES: StaticCell<

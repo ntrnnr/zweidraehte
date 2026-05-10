@@ -93,15 +93,15 @@ impl<
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
-> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+    const TUNNEL_CAPACITY: usize,
+> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
 where
-    <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
     connections::CompositeHandlers<
         'res,
         connections::WithDevMgmt,
         <F::Tunneling as features::TunnelingFeature>::Tunnel,
-    >: connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    >: connections::ConnectionHandlers<TUNNEL_CAPACITY>,
 {
     /// Process expired retry requests.
     ///
@@ -125,8 +125,7 @@ where
 
                 debug!("Retrying message (attempt {}/{})", pending.retry_count + 1, MAX_RETRY_ATTEMPTS);
 
-                let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default();
-                    <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+                let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
                 let addr_count = IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
                     self.context,
                     &mut addr_buf,
@@ -298,8 +297,7 @@ where
         socket_idx: usize,
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
-        let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default();
-            <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+        let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
         let addr_count =
             IpAdditionalIndividualAddressContext::write_additional_individual_addresses(self.context, &mut addr_buf);
         let additional_addresses = &addr_buf[..addr_count];

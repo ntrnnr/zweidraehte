@@ -1,3 +1,4 @@
+use core::marker::PhantomData;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use embassy_sync::channel::DynamicSender;
@@ -17,67 +18,87 @@ use zweidraehte_proto::messages::{
     knxip::substructs,
 };
 
+use super::definition::KnxNetIpDefinition;
 use super::runtime::KnxNetIp;
 use super::{
     EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink, connections, features, services,
     transport::{SocketDescriptor, TcpManager, UdpManager},
 };
-use features::{RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
+use features::{FeatureSet, RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
 
-/// Builder for KnxNetIp link layer.
+/// Builder for the KNX/IP link layer, parameterised by a single
+/// [`KnxNetIpDefinition`].
 ///
-/// The discovery server (Core service family) and device management
-/// (connection type 0x03) are always enabled — both are mandatory for
-/// every KNXnet/IP device per KNX spec 3/8/1 Table 2.
+/// `D` carries only the *type* projections — `D::Transport` and
+/// `D::Features`. Numeric sizing flows through plain `const N: usize`
+/// generics on the struct, with literal defaults that downstream
+/// callers override either explicitly or via the
+/// [`KnxNetIpBuilderFor<D>`](super::KnxNetIpBuilderFor) type alias
+/// (which resolves them from `D::*`).
 ///
-/// Configure optional features using type-state builder methods:
-/// - [`enable_routing_server()`](Self::enable_routing_server) — KNX/IP routing multicast
-/// - [`enable_remote_config_server()`](Self::enable_remote_config_server) — Remote diagnostics
-/// - [`enable_tunneling()`](Self::enable_tunneling) — KNX/IP tunneling connections
-/// - [`enable_tcp()`](Self::enable_tcp) — TCP transport
+/// The discovery server (Core) and device management (connection type
+/// 0x03) are always enabled — both are mandatory per KNX 3/8/1
+/// Table 2. Every other optional feature comes from
+/// `D::Features` (routing, tunneling, remote-config, TCP, IP Secure).
 ///
-/// Each `enable_*()` method is a compile-time type-state transition that
-/// changes the `F` parameter. Disabled features use zero-size types and
-/// their code is eliminated entirely by LLVM.
+/// **Why plain const generics rather than `D::CONST` projections:**
+/// using `D::MAX_TCP_STREAMS` directly as an array length would
+/// require `[(); D::MAX_TCP_STREAMS]:,` well-formedness clauses on
+/// the impls; those clauses don't propagate through the `for<'a>
+/// LinkLayerBuilder<…>` HRTB on
+/// [`StackDefinition::LLB`](crate::definition::StackDefinition::LLB)
+/// and trigger `error[E0275]` overflow at every device-stack
+/// definition site. Plain const generics carry no such obligations
+/// and propagate through the HRTB cleanly.
 ///
 /// # Example
 ///
 /// ```ignore
-/// let builder = KnxNetIpBuilder::<LinuxIpTransport, _, 2>::new("eth0", interface_addr, endpoint, ())
-///     .enable_routing_server()
-///     .enable_remote_config_server();
+/// #[derive(Copy, Clone)]
+/// struct MyDevice;
+/// impl KnxNetIpDefinition for MyDevice {
+///     type Transport = LinuxIpTransport;
+///     type Features  = KnxIpDeviceTcp;
+/// }
+///
+/// // Single-arg form: const generics default-resolve from D::*
+/// let builder = KnxNetIpBuilder::<MyDevice>::new(
+///     "eth0", local_ipv4, control_endpoint, ());
 /// ```
 pub struct KnxNetIpBuilder<
-    T: IpTransport,
-    F: features::FeatureSet = features::DefaultFeatures,
-    const MAX_SOCKETS: usize = 4,
-    const MAX_TCP_STREAMS: usize = 1,
-    const MAX_CHANNELS: usize = 1,
+    D: KnxNetIpDefinition,
+    const MAX_SOCKETS: usize = { <D as KnxNetIpDefinition>::MAX_UDP_SOCKETS },
+    const MAX_TCP_STREAMS: usize = { <D as KnxNetIpDefinition>::MAX_TCP_STREAMS },
+    const MAX_CHANNELS: usize = { <D as KnxNetIpDefinition>::MAX_TCP_CHANNELS },
+    const TUNNEL_CAPACITY: usize = { <D as KnxNetIpDefinition>::TUNNEL_CAPACITY },
 > {
     interface_name: &'static str,
     local_addr: Ipv4Addr,
     control_endpoint: SocketAddrV4,
     routing_multicast_addr: Ipv4Addr,
-    socket_ctx: <T::UdpSocket as zweidraehte_platform::AsyncUdpSocket>::Context,
-    _features: core::marker::PhantomData<F>,
+    socket_ctx: <<D::Transport as IpTransport>::UdpSocket as zweidraehte_platform::AsyncUdpSocket>::Context,
+    _def: PhantomData<D>,
 }
 
-impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
-    KnxNetIpBuilder<T, features::DefaultFeatures, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+impl<
+    D: KnxNetIpDefinition,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize,
+    const MAX_CHANNELS: usize,
+    const TUNNEL_CAPACITY: usize,
+> KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
 {
     /// Create a new builder with the network interface to bind to.
     ///
-    /// Starts with all optional features disabled. Use `enable_*()` methods
-    /// to enable features at compile time.
-    ///
-    /// The discovery server is always enabled (mandatory per KNX spec 3/8/2
-    /// §4.2). The `control_endpoint` HPAI is advertised in search and
-    /// description responses.
+    /// The discovery server is always enabled (mandatory per KNX spec
+    /// 3/8/2 §4.2). The `control_endpoint` HPAI is advertised in
+    /// search and description responses. Routing multicast defaults to
+    /// `224.0.23.12`; override with [`routing_multicast_addr`](Self::routing_multicast_addr).
     pub fn new(
         interface_name: &'static str,
         local_addr: Ipv4Addr,
         control_endpoint: SocketAddrV4,
-        socket_ctx: <T::UdpSocket as zweidraehte_platform::AsyncUdpSocket>::Context,
+        socket_ctx: <<D::Transport as IpTransport>::UdpSocket as zweidraehte_platform::AsyncUdpSocket>::Context,
     ) -> Self {
         Self {
             interface_name,
@@ -85,168 +106,19 @@ impl<T: IpTransport, const MAX_SOCKETS: usize, const MAX_TCP_STREAMS: usize, con
             control_endpoint,
             routing_multicast_addr: DEFAULT_MULTICAST_ADDR,
             socket_ctx,
-            _features: core::marker::PhantomData,
+            _def: PhantomData,
         }
     }
-}
 
-impl<
-    T: IpTransport,
-    F: features::FeatureSet,
-    const MAX_SOCKETS: usize,
-    const MAX_TCP_STREAMS: usize,
-    const MAX_CHANNELS: usize,
-> KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
-{
     /// Override the routing multicast address.
     ///
     /// Defaults to `224.0.23.12` (the standard KNX multicast address).
-    /// Custom addresses are used in some installations to separate routing
-    /// domains or avoid conflicts with other KNX/IP routers on the same
-    /// network segment.
+    /// Custom addresses are used in some installations to separate
+    /// routing domains or avoid conflicts with other KNX/IP routers on
+    /// the same network segment.
     pub fn routing_multicast_addr(mut self, addr: Ipv4Addr) -> Self {
         self.routing_multicast_addr = addr;
         self
-    }
-}
-
-// ============================================================================
-// Type-state enable methods
-// ============================================================================
-//
-// Each method consumes the builder and returns a new one with the
-// corresponding feature marker changed from No* to With*. The method
-// only exists on the No* variant, preventing double-enable.
-
-impl<
-    T: IpTransport,
-    RC: features::RemoteConfigFeature,
-    TUN: features::TunnelingFeature,
-    TCP: features::TcpFeature,
-    const MS: usize,
-    const MTS: usize,
-    const MC: usize,
-> KnxNetIpBuilder<T, features::Features<features::NoRouting, RC, TUN, TCP>, MS, MTS, MC>
-{
-    /// Enable the routing server (RoutingIndication / RoutingBusy / RoutingLostMessage).
-    ///
-    /// The routing server listens on the KNX multicast address for routing
-    /// messages and implements congestion control per KNX Specification
-    /// 3/8/2. Uses the default multicast address (`224.0.23.12`) unless
-    /// overridden with [`routing_multicast_addr`](Self::routing_multicast_addr).
-    pub fn enable_routing_server(
-        self,
-    ) -> KnxNetIpBuilder<T, features::Features<features::WithRouting, RC, TUN, TCP>, MS, MTS, MC> {
-        KnxNetIpBuilder {
-            interface_name: self.interface_name,
-            local_addr: self.local_addr,
-            control_endpoint: self.control_endpoint,
-            routing_multicast_addr: self.routing_multicast_addr,
-            socket_ctx: self.socket_ctx,
-            _features: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<
-    T: IpTransport,
-    R: features::RoutingFeature,
-    TUN: features::TunnelingFeature,
-    TCP: features::TcpFeature,
-    const MS: usize,
-    const MTS: usize,
-    const MC: usize,
-> KnxNetIpBuilder<T, features::Features<R, features::NoRemoteConfig, TUN, TCP>, MS, MTS, MC>
-{
-    /// Enable the Remote Diagnostic and Configuration server (KNX 3/8/7).
-    ///
-    /// Handles connectionless remote diagnostics on multicast/broadcast:
-    /// `RemoteDiagnosticRequest` (0x0740), `RemoteBasicConfigurationRequest`
-    /// (0x0742), and `RemoteResetRequest` (0x0743).
-    ///
-    /// All three services are mandatory for KNX/IP certification (§6.2).
-    /// The server listens on the KNX multicast address (`224.0.23.12:3671`).
-    pub fn enable_remote_config_server(
-        self,
-    ) -> KnxNetIpBuilder<T, features::Features<R, features::WithRemoteConfig, TUN, TCP>, MS, MTS, MC> {
-        KnxNetIpBuilder {
-            interface_name: self.interface_name,
-            local_addr: self.local_addr,
-            control_endpoint: self.control_endpoint,
-            routing_multicast_addr: self.routing_multicast_addr,
-            socket_ctx: self.socket_ctx,
-            _features: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<
-    T: IpTransport,
-    R: features::RoutingFeature,
-    RC: features::RemoteConfigFeature,
-    TCP: features::TcpFeature,
-    const MS: usize,
-    const MTS: usize,
-    const MC: usize,
-> KnxNetIpBuilder<T, features::Features<R, RC, features::NoTunneling, TCP>, MS, MTS, MC>
-{
-    /// Enable tunneling connections (ConnectionType 0x04).
-    ///
-    /// When enabled, KNX/IP clients can establish tunneling connections
-    /// to transparently access the KNX bus. Each connection is assigned
-    /// one of the device's additional individual addresses (from
-    /// `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`). The number of concurrent
-    /// tunneling connections equals the number of configured additional
-    /// addresses.
-    ///
-    /// The const generic `N` sets the maximum number of tunneling slots.
-    /// This must match the `N` on `IpExtensionState` / `IpSystemBDeviceState`.
-    ///
-    /// # Example
-    ///
-    /// ```rust,ignore
-    /// builder.enable_tunneling::<4>()
-    /// ```
-    pub fn enable_tunneling<const N: usize>(
-        self,
-    ) -> KnxNetIpBuilder<T, features::Features<R, RC, features::WithTunneling<N>, TCP>, MS, MTS, MC> {
-        KnxNetIpBuilder {
-            interface_name: self.interface_name,
-            local_addr: self.local_addr,
-            control_endpoint: self.control_endpoint,
-            routing_multicast_addr: self.routing_multicast_addr,
-            socket_ctx: self.socket_ctx,
-            _features: core::marker::PhantomData,
-        }
-    }
-}
-
-impl<
-    T: IpTransport,
-    R: features::RoutingFeature,
-    RC: features::RemoteConfigFeature,
-    TUN: features::TunnelingFeature,
-    const MS: usize,
-    const MTS: usize,
-    const MC: usize,
-> KnxNetIpBuilder<T, features::Features<R, RC, TUN, features::NoTcp>, MS, MTS, MC>
-{
-    /// Enable TCP support for connection-oriented services.
-    ///
-    /// When enabled, a TCP listener is bound on the same port as the
-    /// control endpoint. Clients (e.g., ETS) can establish TCP connections
-    /// for Device Management and Tunneling. The Core service family
-    /// version is bumped to v2 to indicate TCP support (KNX spec 3/8/2
-    /// §9.2).
-    pub fn enable_tcp(self) -> KnxNetIpBuilder<T, features::Features<R, RC, TUN, features::WithTcp>, MS, MTS, MC> {
-        KnxNetIpBuilder {
-            interface_name: self.interface_name,
-            local_addr: self.local_addr,
-            control_endpoint: self.control_endpoint,
-            routing_multicast_addr: self.routing_multicast_addr,
-            socket_ctx: self.socket_ctx,
-            _features: core::marker::PhantomData,
-        }
     }
 }
 
@@ -255,24 +127,23 @@ impl<
 // ============================================================================
 
 impl<
-    T: IpTransport,
-    F: features::FeatureSet,
+    D: KnxNetIpDefinition,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
-> KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+    const TUNNEL_CAPACITY: usize,
+> KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
 where
-    <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
+        connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
     /// Build the KnxNetIp link layer.
     ///
-    /// This method:
-    /// 1. Auto-derives supported services from enabled feature traits
-    /// 2. Creates typed server instances (zero-size when disabled)
-    /// 3. Deduplicates and creates UDP sockets
-    /// 4. Creates the connection manager with compile-time handler selection
-    /// 5. Returns the final `KnxNetIp` instance
+    /// 1. Auto-derives supported services from the feature set.
+    /// 2. Creates typed server instances (zero-size when disabled).
+    /// 3. Deduplicates and creates UDP sockets.
+    /// 4. Creates the connection manager with compile-time handler selection.
+    /// 5. Returns the final `KnxNetIp` instance.
     pub(crate) fn build<'res>(
         self,
         resources: &'res KnxNetIpResources,
@@ -282,7 +153,7 @@ where
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
         subnet_link: Option<SubnetLink<'res>>,
         address_filter: Option<&'res dyn super::types::AddressFilter>,
-    ) -> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS> {
+    ) -> KnxNetIp<'res, D::Transport, D::Features, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY> {
         // ====================================================================
         // Auto-derive supported services from feature traits
         // ====================================================================
@@ -291,7 +162,7 @@ where
 
         // Core v1: discovery, description, connection management over UDP.
         // Core v2 additionally requires TCP support (§9.2).
-        let core_version = if F::Tcp::is_enabled() { 2 } else { 1 };
+        let core_version = if <D::Features as FeatureSet>::Tcp::is_enabled() { 2 } else { 1 };
         let _ = supported_services
             .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: core_version });
 
@@ -299,23 +170,19 @@ where
         let _ = supported_services
             .push(substructs::SupportedService { family: substructs::ServiceFamily::DeviceManagement, version: 2 });
 
-        if let Some(svc) = F::Routing::supported_service() {
+        if let Some(svc) = <<D::Features as FeatureSet>::Routing as RoutingFeature>::supported_service() {
             let _ = supported_services.push(svc);
         }
-        if let Some(svc) = F::Tunneling::supported_service() {
+        if let Some(svc) = <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::supported_service() {
             let _ = supported_services.push(svc);
         }
-        if let Some(svc) = F::RemoteConfig::supported_service() {
+        if let Some(svc) = <<D::Features as FeatureSet>::RemoteConfig as RemoteConfigFeature>::supported_service() {
             let _ = supported_services.push(svc);
         }
 
         // ====================================================================
         // Collect endpoints for socket deduplication
         // ====================================================================
-        //
-        // Each feature contributes its required endpoints. The discovery
-        // server always needs multicast + unicast on KNX_PORT. Routing and
-        // remote config may share the multicast socket.
 
         let mut all_endpoints = Vec::<EndpointType, 8>::new();
 
@@ -326,12 +193,12 @@ where
         let _ = all_endpoints.push(EndpointType::new_any(KNX_PORT));
 
         // Routing endpoints (empty vec when disabled)
-        for ep in F::Routing::endpoints(self.routing_multicast_addr) {
+        for ep in <<D::Features as FeatureSet>::Routing as RoutingFeature>::endpoints(self.routing_multicast_addr) {
             let _ = all_endpoints.push(ep);
         }
 
         // Remote config endpoints (empty vec when disabled)
-        for ep in F::RemoteConfig::endpoints() {
+        for ep in <<D::Features as FeatureSet>::RemoteConfig as RemoteConfigFeature>::endpoints() {
             let _ = all_endpoints.push(ep);
         }
 
@@ -371,7 +238,6 @@ where
         // "owns" the sockets whose ports match its registered endpoints.
         let discovery_socket_indices = {
             let mut indices = Vec::<usize, 4>::new();
-            // Discovery listens on multicast + unicast on KNX_PORT
             for desc_idx in 0..socket_descriptors.len() {
                 if socket_descriptors[desc_idx].port() == KNX_PORT && !indices.contains(&desc_idx) {
                     let _ = indices.push(desc_idx);
@@ -382,7 +248,7 @@ where
 
         let routing_socket_indices = {
             let mut indices = Vec::<usize, 4>::new();
-            for ep in F::Routing::endpoints(self.routing_multicast_addr) {
+            for ep in <<D::Features as FeatureSet>::Routing as RoutingFeature>::endpoints(self.routing_multicast_addr) {
                 if let Some(idx) = socket_descriptors.iter().position(|d| d.port() == ep.port())
                     && !indices.contains(&idx)
                 {
@@ -394,7 +260,7 @@ where
 
         let remote_config_socket_indices = {
             let mut indices = Vec::<usize, 4>::new();
-            for ep in F::RemoteConfig::endpoints() {
+            for ep in <<D::Features as FeatureSet>::RemoteConfig as RemoteConfigFeature>::endpoints() {
                 if let Some(idx) = socket_descriptors.iter().position(|d| d.port() == ep.port())
                     && !indices.contains(&idx)
                 {
@@ -412,7 +278,7 @@ where
         // UDP manager — owns sockets and their descriptors
         // ====================================================================
 
-        let mut udp_manager = UdpManager::new(interface_addr, socket_descriptors);
+        let mut udp_manager = UdpManager::<D::Transport, MAX_SOCKETS>::new(interface_addr, socket_descriptors);
         udp_manager.bind_all(&self.socket_ctx, self.interface_name, interface_addr);
 
         // ====================================================================
@@ -422,23 +288,27 @@ where
         let control_hpai = substructs::HPAI::ipv4_udp(*self.control_endpoint.ip(), self.control_endpoint.port());
         let discovery = services::DiscoveryServer::new(control_hpai, supported_services);
 
-        let routing = F::Routing::create_server(self.routing_multicast_addr, KNX_PORT);
-        let remote_config = F::RemoteConfig::create_server();
+        let routing = <<D::Features as FeatureSet>::Routing as RoutingFeature>::create_server(
+            self.routing_multicast_addr,
+            KNX_PORT,
+        );
+        let remote_config = <<D::Features as FeatureSet>::RemoteConfig as RemoteConfigFeature>::create_server();
 
         // ====================================================================
         // Connection manager — handler type selected by TunnelingFeature
         // ====================================================================
 
-        let handlers = F::Tunneling::build_handlers(context, cemi_ll.event_sender);
+        let handlers =
+            <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::build_handlers(context, cemi_ll.event_sender);
         let connection_manager = connections::ConnectionManager::new(handlers);
 
         // ====================================================================
         // TCP manager
         // ====================================================================
 
-        let mut tcp_manager = TcpManager::new();
+        let mut tcp_manager = TcpManager::<D::Transport, MAX_TCP_STREAMS, MAX_CHANNELS>::new();
 
-        if F::Tcp::is_enabled() {
+        if <D::Features as FeatureSet>::Tcp::is_enabled() {
             let tcp_options =
                 TcpListenerOptions { bind_addr: self.control_endpoint, interface: Some(self.interface_name) };
             match tcp_manager.bind(&self.socket_ctx, tcp_options) {
@@ -474,13 +344,24 @@ where
     }
 }
 
+// ============================================================================
+// LinkLayerBuilder integration
+// ============================================================================
+//
+// **Critical:** the where-clauses on these impls MUST NOT include
+// `[(); D::CONST]:,` clauses. Such clauses don't propagate through
+// the `for<'a> LinkLayerBuilder<…>` HRTB on `StackDefinition::LLB`,
+// causing `error[E0275]: overflow evaluating ...` at every device-
+// stack definition site. The only allowed where-clauses here are
+// trait bounds on concrete types — those discharge cleanly under HRTB.
+
 impl<
-    T: IpTransport + 'static,
-    F: features::FeatureSet,
+    D: KnxNetIpDefinition + 'static,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
-> LinkLayerBuilderBase for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+    const TUNNEL_CAPACITY: usize,
+> LinkLayerBuilderBase for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
 {
     type Resources = KnxNetIpResources;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
@@ -491,27 +372,27 @@ impl<
 }
 
 impl<
-    T: IpTransport + 'static,
-    F: features::FeatureSet,
+    D: KnxNetIpDefinition + 'static,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
-> LinkLayerCapabilities for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+    const TUNNEL_CAPACITY: usize,
+> LinkLayerCapabilities for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
 {
-    const KNXNETIP_DEVICE_CAPABILITIES: u16 = F::KNXNETIP_DEVICE_CAPABILITIES;
+    const KNXNETIP_DEVICE_CAPABILITIES: u16 = <D::Features as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES;
 }
 
 impl<
     CTX: KnxNetIpContext + AddressTableContext,
-    T: IpTransport + 'static,
-    F: features::FeatureSet + 'static,
+    D: KnxNetIpDefinition + 'static,
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
-> LinkLayerBuilder<CTX> for KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+    const TUNNEL_CAPACITY: usize,
+> LinkLayerBuilder<CTX> for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
 where
-    <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
+        connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
     fn build_and_run<'a>(
         self,

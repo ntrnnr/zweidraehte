@@ -18,7 +18,7 @@ use zweidraehte_device::bcus::system_b::{
     SystemBStackDefinition, SystemBStateInit,
 };
 use zweidraehte_device::ets::ets_range_enum;
-use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp};
+use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
 use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
@@ -3217,13 +3217,19 @@ pub struct MdtStack;
 
 impl SystemBStackDefinition for MdtStack {}
 
+// IP-specific link-layer bill of materials. UDP-only routing device.
+impl KnxNetIpDefinition for MdtStack {
+    type Transport = zweidraehte_platform::LinuxIpTransport;
+    type Features = KnxIpDeviceUdp;
+}
+
 impl StackDefinition for MdtStack {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = MdtParams;
     type CO = comm_objs::MdtComObjects;
-    type LLB = KnxNetIpBuilder<zweidraehte_platform::LinuxIpTransport, KnxIpDeviceUdp, 2>;
+    type LLB = KnxNetIpBuilder<MdtStack>;
     type Platform = MockIpPlatform;
     type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type State = MdtState;

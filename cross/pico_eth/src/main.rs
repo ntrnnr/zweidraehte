@@ -33,7 +33,7 @@ use devices::light_switch::{
 
 use zweidraehte_device::{
     bcus::system_b::*,
-    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
+    layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp},
     prelude::*,
 };
 
@@ -54,23 +54,12 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 // All sizes the KNX/IP and embassy-net stacks need, named once so the
 // numbers don't drift apart. UDP-only routing device — no TCP.
 
-/// UDP sockets the link-layer binds. Discovery + control + routing
-/// after the builder's port dedup; the link-layer also reserves one
-/// slack slot for future endpoints (`MAX_LL_SOCKETS = 2` below).
-const MAX_UDP_SOCKETS: usize = 3;
-
-/// Slack-allowing bound passed to `KnxNetIpBuilder` as `MAX_SOCKETS`.
-/// Smaller than `MAX_UDP_SOCKETS` because the builder dedupes
-/// endpoints by port before allocating a `SocketDescriptor`.
-const MAX_LL_SOCKETS: usize = 2;
-
-/// embassy-net socket pool size. Holds the always-present DHCPv4
-/// client plus our UDP sockets.
-const NET_SOCKETS: usize = 1 + MAX_UDP_SOCKETS;
+/// UDP buffer pool size — must match `<PicoEthLightSwitch as
+/// KnxNetIpDefinition>::MAX_UDP_SOCKETS`. Three sockets cover
+/// discovery + control + routing on this UDP-only routing device.
+const UDP_POOL_SIZE: usize = 3;
 
 /// Device state combining System B tables with IP link-layer state.
-/// Table sizes derive from `DEVICE_DESCRIPTOR` via the
-/// `SystemBStackDefinition` associated consts.
 type PicoEthState = IpStateFor<PicoEthLightSwitch, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
@@ -96,13 +85,21 @@ struct PicoEthAugments<'a> {
 
 impl SystemBStackDefinition for PicoEthLightSwitch {}
 
+// IP-specific link-layer bill of materials. Routing-only UDP device
+// with three UDP sockets (discovery + control + routing).
+impl KnxNetIpDefinition for PicoEthLightSwitch {
+    type Transport = EmbassyIpTransport<{ <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS }>;
+    type Features = KnxIpDeviceUdp;
+    const MAX_UDP_SOCKETS: usize = 3;
+}
+
 impl StackDefinition for PicoEthLightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<EmbassyIpTransport<MAX_UDP_SOCKETS>, KnxIpDeviceUdp, MAX_LL_SOCKETS>;
+    type LLB = KnxNetIpBuilder<PicoEthLightSwitch>;
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type Identity = FlashIdentityData;
@@ -545,7 +542,7 @@ async fn main(spawner: Spawner) {
     // Embassy-net stack init
     // ========================================================================
 
-    static NET_RESOURCES: StaticCell<NetStackResources<NET_SOCKETS>> = StaticCell::new();
+    static NET_RESOURCES: StaticCell<NetStackResources<{ PicoEthLightSwitch::EMBASSY_NET_SOCKETS }>> = StaticCell::new();
     let (stack, net_runner) =
         embassy_net::new(net_device, net_config, NET_RESOURCES.init(NetStackResources::new()), seed);
 
@@ -590,23 +587,21 @@ async fn main(spawner: Spawner) {
 
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
-    // Static UDP buffer pool — sized to match the `LLB` const generic
-    // above, owned by the binary so the device pays for exactly the
-    // sockets it uses.
-    static UDP_POOL: UdpPool<MAX_UDP_SOCKETS> = UdpPool::new();
+    // Static UDP buffer pool — sized via the `KnxNetIpDefinition`
+    // impl on `PicoEthLightSwitch`.
+    static UDP_POOL: UdpPool<UDP_POOL_SIZE> = UdpPool::new();
 
     let socket_ctx = EmbassyUdpContext { stack, udp_pool: &UDP_POOL };
 
-    // The embassy-net stack handle plus the UDP buffer pool are passed
-    // as socket context — when the KNX/IP servers call
-    // EmbassyUdpSocket::bind(), they receive both.
-    let link_layer_builder = KnxNetIpBuilder::<
-        EmbassyIpTransport<MAX_UDP_SOCKETS>,
-        _,
-        MAX_LL_SOCKETS,
-    >::new("eth0", local_ip, control_endpoint, socket_ctx)
-    .enable_routing_server()
-    .enable_remote_config_server();
+    // Features (routing + remote-config) and every numeric sizing knob
+    // come from `PicoEthLightSwitch`'s `KnxNetIpDefinition` impl. No
+    // more `enable_*()` chain, no manually matched const generics.
+    let link_layer_builder = KnxNetIpBuilder::<PicoEthLightSwitch>::new(
+        "eth0",
+        local_ip,
+        control_endpoint,
+        socket_ctx,
+    );
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<

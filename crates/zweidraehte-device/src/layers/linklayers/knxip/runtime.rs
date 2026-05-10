@@ -33,10 +33,18 @@ pub struct KnxNetIp<
     const MAX_SOCKETS: usize = 4,
     const MAX_TCP_STREAMS: usize = 1,
     const MAX_CHANNELS: usize = 1,
+    // Tunneling slot count promoted to a plain const generic. This used to
+    // live as `<F::Tunneling as TunnelingFeature>::CAPACITY` projected at
+    // every use site, which forced a `[(); CAPACITY]:,` well-formedness
+    // clause on the struct that broke `for<'a>` HRTB elaboration on
+    // `StackDefinition::LLB`. Plain const generic + trait-bound on `Tunnel`
+    // gives the same compile-time guarantee with no const-eval obligations
+    // visible to the HRTB. Concrete callers spell it via the
+    // `KnxNetIpBuilderFor<D>` alias which sets it from
+    // `D::TUNNEL_CAPACITY`.
+    const TUNNEL_CAPACITY: usize = 0,
 > where
-    [(); <F::Tunneling as features::TunnelingFeature>::CAPACITY]:,
-    <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
     /// Reference to externally-owned resources (response channel).
     pub(super) resources: &'res KnxNetIpResources,
@@ -74,7 +82,7 @@ pub struct KnxNetIp<
             connections::WithDevMgmt,
             <F::Tunneling as features::TunnelingFeature>::Tunnel,
         >,
-        { <F::Tunneling as features::TunnelingFeature>::CAPACITY },
+        TUNNEL_CAPACITY,
         MAX_CHANNELS,
     >,
     /// Type-erased stack context providing buffer management, device info,
@@ -114,15 +122,15 @@ impl<
     const MAX_SOCKETS: usize,
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
-> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
+    const TUNNEL_CAPACITY: usize,
+> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
 where
-    <F::Tunneling as features::TunnelingFeature>::Tunnel:
-        connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
     connections::CompositeHandlers<
         'res,
         connections::WithDevMgmt,
         <F::Tunneling as features::TunnelingFeature>::Tunnel,
-    >: connections::ConnectionHandlers<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    >: connections::ConnectionHandlers<TUNNEL_CAPACITY>,
 {
     /// Run the KNX/IP link layer event loop.
     ///
@@ -338,8 +346,8 @@ where
                         ServiceType::L_Data_Req if F::Routing::supports_requests() => {
                             debug!("KnxNetIp Link Layer sending L_Data_Req: {:?}", msg);
 
-                            let mut addr_buf2 = [zweidraehte_proto::address::IndividualAddress::default();
-                                <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+                            let mut addr_buf2 =
+                                [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
                             let addr_count2 =
                                 IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
                                     self.context,

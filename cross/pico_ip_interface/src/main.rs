@@ -37,7 +37,7 @@ use zweidraehte_device::{
     config::MAX_APDU_LENGTH_EXTENDED,
     layers::linklayers::{
         ip_interface::IpInterfaceLinkLayerBuilder,
-        knxip::{KnxNetIpBuilder, features::KnxIpInterfaceTcp},
+        knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpInterfaceTcp},
     },
     prelude::*,
 };
@@ -82,26 +82,11 @@ bind_interrupts!(struct Irqs {
 
 /// Maximum number of concurrent tunneling connections (additional
 /// individual addresses).
+/// Maximum concurrent tunneling connections. Drives every other
+/// link-layer sizing through `KnxNetIpDefinition`'s defaults
+/// (`MAX_TCP_STREAMS`, `MAX_TCP_CHANNELS`, `MAX_SECURE_SESSIONS` all
+/// default to `TUNNEL_CAPACITY`). One number, one place.
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
-
-/// UDP sockets the link-layer binds. Discovery + remote-config
-/// collapse to a single port-3671 socket after the builder's port
-/// dedup; one slack slot covers future endpoints.
-const MAX_UDP_SOCKETS: usize = 2;
-
-/// Concurrent TCP streams (worst case: every tunnel from a different
-/// client, each on its own stream — no multiplexing).
-const MAX_TCP_STREAMS: usize = MAX_TUNNEL_CONNECTIONS;
-
-/// KNX channels multiplexable onto one TCP stream (worst case: one
-/// client carrying all tunnels on a single stream per 03/08/02 §4.x).
-const MAX_TCP_CHANNELS: usize = MAX_TUNNEL_CONNECTIONS;
-
-/// embassy-net socket pool size. Holds:
-///   - 1 DHCP client socket (always present when `dhcpv4` is configured).
-///   - `MAX_UDP_SOCKETS` UDP sockets we bind ourselves.
-///   - `MAX_TCP_STREAMS` TCP sockets accepted by the listener.
-const NET_SOCKETS: usize = 1 + MAX_UDP_SOCKETS + MAX_TCP_STREAMS;
 
 type IpIfState = IpInterfaceStateFor<PicoIpInterface, KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>>;
 
@@ -120,6 +105,19 @@ struct PicoIpInterface;
 
 impl SystemBStackDefinition for PicoIpInterface {}
 
+// IP-specific link-layer bill of materials. `KnxIpInterfaceTcp<N>`
+// pins routing+remote-config+tunneling+TCP. Every numeric sizing knob
+// derives from `TUNNEL_CAPACITY = N` via the trait's defaults; only
+// `MAX_UDP_SOCKETS = 2` (one for the System Setup multicast, one for
+// unicast control on KNX_PORT) overrides the trait default.
+impl KnxNetIpDefinition for PicoIpInterface {
+    type Transport = EmbassyIpTransportTcp<
+        { <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS },
+        { <Self as KnxNetIpDefinition>::MAX_TCP_STREAMS },
+    >;
+    type Features = KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>;
+}
+
 impl StackDefinition for PicoIpInterface {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
@@ -127,15 +125,7 @@ impl StackDefinition for PicoIpInterface {
 
     type P = IpInterfaceParams;
     type CO = IpInterfaceComObjects;
-    type LLB = IpInterfaceLinkLayerBuilder<
-        DirectUartTx,
-        DirectUartRx,
-        EmbassyIpTransportTcp<MAX_UDP_SOCKETS, MAX_TCP_STREAMS>,
-        KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>,
-        MAX_UDP_SOCKETS,
-        MAX_TCP_STREAMS,
-        MAX_TCP_CHANNELS,
-    >;
+    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, PicoIpInterface>;
     type Platform = EmbassyNetworkInfo;
     type ES = IpInterfaceExtensionFor<KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>>;
     type Identity = FlashIdentityData;
@@ -420,7 +410,11 @@ async fn main(spawner: Spawner) {
     // Embassy-net stack init (DHCP)
     // ========================================================================
 
-    static NET_RESOURCES: StaticCell<NetStackResources<NET_SOCKETS>> = StaticCell::new();
+    // Embassy-net socket pool: DHCP + every UDP socket the link-layer
+    // binds + every TCP stream it accepts. Centralised on the
+    // `KnxNetIpDefinition` impl as `EMBASSY_NET_SOCKETS`; no more
+    // hand-coordinated arithmetic.
+    static NET_RESOURCES: StaticCell<NetStackResources<{ PicoIpInterface::EMBASSY_NET_SOCKETS }>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
         net_device,
         embassy_net::Config::dhcpv4(DhcpConfig::default()),
@@ -480,25 +474,17 @@ async fn main(spawner: Spawner) {
 
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
-    static UDP_POOL: UdpPool<MAX_UDP_SOCKETS> = UdpPool::new();
-    static TCP_POOL: TcpPool<MAX_TCP_STREAMS> = TcpPool::new();
+    static UDP_POOL: UdpPool<{ PicoIpInterface::MAX_UDP_SOCKETS }> = UdpPool::new();
+    static TCP_POOL: TcpPool<{ PicoIpInterface::MAX_TCP_STREAMS }> = TcpPool::new();
 
     let socket_ctx = EmbassyTcpContext { stack, udp_pool: &UDP_POOL, tcp_pool: &TCP_POOL };
 
-    // Build the KNX/IP part — tunneling + remote config + TCP (no routing).
-    // Const generics on `KnxNetIpBuilder`:
-    //     <T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>
-    // — must match the `LLB` alias above so type inference closes.
-    let knxip_builder = KnxNetIpBuilder::<
-        EmbassyIpTransportTcp<MAX_UDP_SOCKETS, MAX_TCP_STREAMS>,
-        _,
-        MAX_UDP_SOCKETS,
-        MAX_TCP_STREAMS,
-        MAX_TCP_CHANNELS,
-    >::new("eth0", local_ip, control_endpoint, socket_ctx)
-    .enable_tunneling::<MAX_TUNNEL_CONNECTIONS>()
-    .enable_remote_config_server()
-    .enable_tcp();
+    // Build the KNX/IP part. Features (tunneling + remote-config + TCP)
+    // and every numeric sizing knob come from `PicoIpInterface`'s
+    // `KnxNetIpDefinition` impl. No `enable_*()` chain, no manually
+    // matched const generics.
+    let knxip_builder =
+        KnxNetIpBuilder::<PicoIpInterface>::new("eth0", local_ip, control_endpoint, socket_ctx);
 
     // Wrap TPUART + KNX/IP into a single composite link layer.
     let link_layer_builder = IpInterfaceLinkLayerBuilder::new(uart_tx, uart_rx, knxip_builder);

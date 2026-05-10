@@ -44,8 +44,6 @@ use embassy_sync::{
     channel::{Channel, DynamicSender},
 };
 
-use zweidraehte_platform::IpTransport;
-
 use crate::{
     context::CemiTransportLayerEndpoints,
     context::{AddressTableContext, IpAdditionalIndividualAddressContext},
@@ -142,24 +140,29 @@ impl<M> Inbox<M> for NeverInbox {
 /// Wraps a TPUART builder (for bus access) and a KNX/IP builder (for
 /// tunneling, discovery, device management) behind a single
 /// [`LinkLayerBuilder`] implementation.
+///
+/// Parameterised by `D: KnxNetIpDefinition` — the same definition the
+/// inner `KnxNetIpBuilder<D>` uses. Numeric sizing flows through plain
+/// const generics with defaults projected from `D::*`, exactly like
+/// `KnxNetIpBuilder`.
 pub struct IpInterfaceLinkLayerBuilder<
     W,
     R,
-    T: IpTransport,
-    F: features::FeatureSet = features::DefaultFeatures,
-    const MAX_SOCKETS: usize = 4,
-    const MAX_TCP_STREAMS: usize = 1,
-    const MAX_CHANNELS: usize = 1,
+    D: super::knxip::KnxNetIpDefinition,
+    const MAX_SOCKETS: usize = { <D as super::knxip::KnxNetIpDefinition>::MAX_UDP_SOCKETS },
+    const MAX_TCP_STREAMS: usize = { <D as super::knxip::KnxNetIpDefinition>::MAX_TCP_STREAMS },
+    const MAX_CHANNELS: usize = { <D as super::knxip::KnxNetIpDefinition>::MAX_TCP_CHANNELS },
+    const TUNNEL_CAPACITY: usize = { <D as super::knxip::KnxNetIpDefinition>::TUNNEL_CAPACITY },
 > {
     tpuart_tx: W,
     tpuart_rx: R,
-    knxip_builder: KnxNetIpBuilder<T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS>,
+    knxip_builder: KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>,
 }
 
-impl<W, R, T: IpTransport, F: features::FeatureSet, const MS: usize, const MTS: usize, const MC: usize>
-    IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
+impl<W, R, D: super::knxip::KnxNetIpDefinition, const MS: usize, const MTS: usize, const MC: usize, const TC: usize>
+    IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC>
 {
-    pub fn new(tpuart_tx: W, tpuart_rx: R, knxip_builder: KnxNetIpBuilder<T, F, MS, MTS, MC>) -> Self {
+    pub fn new(tpuart_tx: W, tpuart_rx: R, knxip_builder: KnxNetIpBuilder<D, MS, MTS, MC, TC>) -> Self {
         Self { tpuart_tx, tpuart_rx, knxip_builder }
     }
 }
@@ -181,12 +184,12 @@ impl IpInterfaceResources {
 impl<
     W: Send + 'static,
     R: Send + 'static,
-    T: IpTransport + 'static,
-    F: features::FeatureSet + 'static,
+    D: super::knxip::KnxNetIpDefinition + 'static,
     const MS: usize,
     const MTS: usize,
     const MC: usize,
-> LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
+    const TC: usize,
+> LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC>
 {
     type Resources = IpInterfaceResources;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
@@ -199,14 +202,14 @@ impl<
 impl<
     W: Send + 'static,
     R: Send + 'static,
-    T: IpTransport + 'static,
-    F: features::FeatureSet + 'static,
+    D: super::knxip::KnxNetIpDefinition + 'static,
     const MS: usize,
     const MTS: usize,
     const MC: usize,
-> LinkLayerCapabilities for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
+    const TC: usize,
+> LinkLayerCapabilities for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC>
 {
-    const KNXNETIP_DEVICE_CAPABILITIES: u16 = F::KNXNETIP_DEVICE_CAPABILITIES;
+    const KNXNETIP_DEVICE_CAPABILITIES: u16 = <D::Features as features::FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES;
 }
 
 // -- LinkLayerBuilder ---------------------------------------------------------
@@ -215,15 +218,15 @@ impl<
 // - `KnxNetIpContext` for the KNX/IP server
 // - `AddressTableContext` for the address checker (group ACK decisions)
 
-impl<CTX, W, R, T, F, const MS: usize, const MTS: usize, const MC: usize> LinkLayerBuilder<CTX>
-    for IpInterfaceLinkLayerBuilder<W, R, T, F, MS, MTS, MC>
+impl<CTX, W, R, D, const MS: usize, const MTS: usize, const MC: usize, const TC: usize> LinkLayerBuilder<CTX>
+    for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC>
 where
     CTX: KnxNetIpContext + AddressTableContext,
     W: embedded_io_async::Write + Send + 'static,
     R: embedded_io_async::Read + Send + 'static,
-    T: IpTransport + 'static,
-    F: features::FeatureSet + 'static,
-    <F::Tunneling as features::TunnelingFeature>::Tunnel: super::knxip::connections::TunnelingConnectedHandler<{ <F::Tunneling as features::TunnelingFeature>::CAPACITY }>,
+    D: super::knxip::KnxNetIpDefinition + 'static,
+    <<D::Features as features::FeatureSet>::Tunneling as features::TunnelingFeature>::Tunnel:
+        super::knxip::connections::TunnelingConnectedHandler<TC>,
 {
     fn build_and_run<'a>(
         self,
@@ -238,11 +241,10 @@ where
             // ==============================================================
             // Snapshot additional IAs and build address checker
             // ==============================================================
-            let mut addr_buf = [IndividualAddress::default(); <F::Tunneling as features::TunnelingFeature>::CAPACITY];
+            let mut addr_buf = [IndividualAddress::default(); TC];
             let addr_count =
                 IpAdditionalIndividualAddressContext::write_additional_individual_addresses(context, &mut addr_buf);
-            let mut additional_ias =
-                heapless::Vec::<IndividualAddress, { <F::Tunneling as features::TunnelingFeature>::CAPACITY }>::new();
+            let mut additional_ias = heapless::Vec::<IndividualAddress, TC>::new();
             for &addr in &addr_buf[..addr_count] {
                 let _ = additional_ias.push(addr);
             }

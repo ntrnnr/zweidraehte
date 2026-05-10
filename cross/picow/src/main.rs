@@ -26,7 +26,7 @@ use zweidraehte_device::{
         Extension, HasDeviceConfig, IpAugmentFor, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor,
         SystemBMemoryMap, SystemBStackDefinition, SystemBStateInit,
     },
-    layers::linklayers::knxip::{KnxNetIpBuilder, features::KnxIpDeviceUdp},
+    layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp},
     prelude::*,
 };
 
@@ -43,26 +43,17 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 // Capacity knobs
 // ================================================================================
 //
-// All sizes the KNX/IP and embassy-net stacks need, named once so the
-// numbers don't drift apart. UDP-only routing device — no TCP.
+// All KNX/IP link-layer sizing flows from `KnxNetIpDefinition` defaults
+// (`MAX_UDP_SOCKETS = 2`, no tunneling so `TUNNEL_CAPACITY = 0`, etc.).
+// The embassy-net pool needs one extra slot for the DHCPv4 client.
 
-/// UDP sockets the link-layer binds. Discovery + control + routing
-/// after the builder's port dedup; the link-layer also reserves one
-/// slack slot for future endpoints (`MAX_SOCKETS = 2` below).
-const MAX_UDP_SOCKETS: usize = 3;
-
-/// Slack-allowing bound passed to `KnxNetIpBuilder` as `MAX_SOCKETS`.
-/// Smaller than `MAX_UDP_SOCKETS` because the builder dedupes
-/// endpoints by port before allocating a `SocketDescriptor`.
-const MAX_LL_SOCKETS: usize = 2;
-
-/// embassy-net socket pool size. Holds the always-present DHCPv4
-/// client plus our UDP sockets.
-const NET_SOCKETS: usize = 1 + MAX_UDP_SOCKETS;
+/// UDP buffer pool size — must match `<PicoWLightSwitch as
+/// KnxNetIpDefinition>::MAX_UDP_SOCKETS` (the trait default of 2).
+/// Plus one slack slot for the always-bound discovery socket on the
+/// System Setup multicast that lives outside the dedup pool.
+const UDP_POOL_SIZE: usize = 3;
 
 /// Device state combining System B tables with IP link-layer state.
-/// Table sizes derive from `DEVICE_DESCRIPTOR` via the
-/// `SystemBStackDefinition` associated consts.
 type PicoWState = IpStateFor<PicoWLightSwitch, KnxIpDeviceUdp>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
@@ -88,13 +79,25 @@ struct PicoWAugments<'a> {
 
 impl SystemBStackDefinition for PicoWLightSwitch {}
 
+// IP-specific link-layer bill of materials. Routing-only UDP device,
+// so `MAX_TCP_STREAMS / MAX_TCP_CHANNELS` default to 0 and produce
+// zero-sized `TcpManager` storage. `MAX_UDP_SOCKETS = 3` covers
+// discovery + control + routing — one slot more than the trait default
+// of 2 because this device's routing multicast lives on a separate
+// socket from the System Setup discovery multicast.
+impl KnxNetIpDefinition for PicoWLightSwitch {
+    type Transport = EmbassyIpTransport<{ <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS }>;
+    type Features = KnxIpDeviceUdp;
+    const MAX_UDP_SOCKETS: usize = 3;
+}
+
 impl StackDefinition for PicoWLightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<EmbassyIpTransport<MAX_UDP_SOCKETS>, KnxIpDeviceUdp, MAX_LL_SOCKETS>;
+    type LLB = KnxNetIpBuilder<PicoWLightSwitch>;
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type Identity = rp_common::FlashIdentityData;
@@ -385,7 +388,7 @@ async fn main(spawner: Spawner) {
     // Embassy-net stack init (DHCP)
     // ========================================================================
 
-    static NET_RESOURCES: StaticCell<NetStackResources<NET_SOCKETS>> = StaticCell::new();
+    static NET_RESOURCES: StaticCell<NetStackResources<{ PicoWLightSwitch::EMBASSY_NET_SOCKETS }>> = StaticCell::new();
     let (stack, net_runner) = embassy_net::new(
         net_device,
         embassy_net::Config::dhcpv4(DhcpConfig::default()),
@@ -456,23 +459,22 @@ async fn main(spawner: Spawner) {
 
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
-    // Static UDP buffer pool — sized to match the `LLB` const generic
-    // above, owned by the binary so the device pays for exactly the
-    // sockets it uses.
-    static UDP_POOL: UdpPool<MAX_UDP_SOCKETS> = UdpPool::new();
+    // Static UDP buffer pool — sized via the `KnxNetIpDefinition`
+    // impl on `PicoWLightSwitch`. Owned by the binary so the device
+    // pays for exactly the sockets it uses.
+    static UDP_POOL: UdpPool<UDP_POOL_SIZE> = UdpPool::new();
 
     let socket_ctx = EmbassyUdpContext { stack, udp_pool: &UDP_POOL };
 
-    // The embassy-net stack handle plus the UDP buffer pool are passed
-    // as socket context — when the KNX/IP servers call
-    // EmbassyUdpSocket::bind(), they receive both.
-    let link_layer_builder = KnxNetIpBuilder::<
-        EmbassyIpTransport<MAX_UDP_SOCKETS>,
-        _,
-        MAX_LL_SOCKETS,
-    >::new("wlan0", local_ip, control_endpoint, socket_ctx)
-    .enable_routing_server()
-    .enable_remote_config_server();
+    // Features (routing + remote-config) and every numeric sizing knob
+    // come from `PicoWLightSwitch`'s `KnxNetIpDefinition` impl. No more
+    // `enable_*()` chain, no manually matched const generics.
+    let link_layer_builder = KnxNetIpBuilder::<PicoWLightSwitch>::new(
+        "wlan0",
+        local_ip,
+        control_endpoint,
+        socket_ctx,
+    );
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<
