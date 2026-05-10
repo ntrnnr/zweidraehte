@@ -151,8 +151,17 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
     ///
     /// Returns an error if binding fails (e.g., port in use). The manager
     /// remains usable without a listener — it just won't accept connections.
-    pub fn bind(&mut self, options: TcpListenerOptions) -> Result<(), <T::TcpListener as AsyncTcpListener>::Error> {
-        match T::TcpListener::bind(options) {
+    ///
+    /// `ctx` is the platform-specific socket context (the same value that
+    /// the UDP manager receives — embassy-net `Stack` on embedded, `()` on
+    /// Linux). The `IpTransport` constraint enforces that UDP and TCP share
+    /// this type so the caller passes one value for both.
+    pub fn bind(
+        &mut self,
+        ctx: &<T::TcpListener as AsyncTcpListener>::Context,
+        options: TcpListenerOptions,
+    ) -> Result<(), <T::TcpListener as AsyncTcpListener>::Error> {
+        match T::TcpListener::bind(ctx, options) {
             Ok(listener) => {
                 self.listener = Some(listener);
                 Ok(())

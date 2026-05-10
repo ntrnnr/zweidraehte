@@ -475,7 +475,7 @@ mod rebind_tests {
 
     impl IpTransport for MockTransport {
         type UdpSocket = MockUdpSocket;
-        type TcpListener = NeverTcpListener;
+        type TcpListener = NeverTcpListener<Rc<RefCell<StdVec<Op>>>>;
         type TcpStream = NeverTcpStream;
     }
 

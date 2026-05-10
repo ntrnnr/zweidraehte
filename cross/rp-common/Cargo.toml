@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # Embassy core
-embassy-net = { workspace = true, features = ["udp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
+embassy-net = { workspace = true, features = ["udp", "tcp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
 embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { workspace = true, features = ["defmt", "unstable-pac"] }
 embassy-sync = { workspace = true }
@@ -36,6 +36,12 @@ serde = { workspace = true }
 default = ["rp2040"]
 rp2040 = ["embassy-rp/rp2040"]
 rp235xa = ["embassy-rp/rp235xa"]
+
+# Enabled by host-side tests only (`cargo test --features test-host`)
+# so the unit tests for `TcpPool` / `UdpPool` can link against a
+# `critical-section` impl. Embedded firmware never sets this — `cortex-m`
+# already provides the impl on hardware.
+test-host = ["critical-section/std"]
 
 # When enabled, missing or corrupt KNXP records on first boot are
 # silently filled in from compile-time constants emitted by the

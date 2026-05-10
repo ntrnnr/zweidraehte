@@ -113,6 +113,11 @@ pub struct TcpListenerOptions {
 /// The listener binds to a local address/port and accepts incoming TCP
 /// connections. Each accepted connection produces a stream (implementing
 /// `embedded_io_async::Read + Write`) and the peer's socket address.
+///
+/// Mirrors the `Context` mechanism on [`AsyncUdpSocket`] so that
+/// platforms which need a stack handle (e.g. embassy-net `Stack`) can
+/// receive it through `bind`. Linux-style platforms whose sockets are
+/// self-contained set `Context = ()`.
 pub trait AsyncTcpListener: Sized {
     #[cfg(not(feature = "defmt"))]
     type Error: Debug;
@@ -127,8 +132,14 @@ pub trait AsyncTcpListener: Sized {
         + embedded_io_async::Write<Error: Debug + defmt::Format>
         + embedded_io_async::ErrorType<Error: defmt::Format>;
 
+    /// Platform-specific state needed to create the listener.
+    ///
+    /// `()` on platforms with self-contained sockets (Linux), or e.g. an
+    /// embassy-net `Stack` handle on embedded targets.
+    type Context;
+
     /// Bind and start listening on the given address/port.
-    fn bind(options: TcpListenerOptions) -> Result<Self, Self::Error>;
+    fn bind(ctx: &Self::Context, options: TcpListenerOptions) -> Result<Self, Self::Error>;
 
     /// Accept a new incoming TCP connection.
     ///
@@ -144,8 +155,13 @@ pub trait AsyncTcpListener: Sized {
 /// For platforms that don't support TCP (e.g., embedded no_std targets),
 /// this type satisfies the `AsyncTcpListener` bound on `IpTransport`
 /// without requiring a real TCP implementation.
-pub struct NeverTcpListener {
+///
+/// The `Ctx` parameter exists purely so that the `IpTransport` constraint
+/// (`TcpListener::Context == UdpSocket::Context`) can be satisfied without
+/// pinning the TCP stub to `()`. The listener never inspects the context.
+pub struct NeverTcpListener<Ctx = ()> {
     _priv: core::convert::Infallible,
+    _ctx: core::marker::PhantomData<fn() -> Ctx>,
 }
 
 /// A TCP stream type that can never be constructed.
@@ -181,11 +197,12 @@ impl embedded_io_async::Write for NeverTcpStream {
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct NeverTcpError;
 
-impl AsyncTcpListener for NeverTcpListener {
+impl<Ctx> AsyncTcpListener for NeverTcpListener<Ctx> {
     type Error = NeverTcpError;
     type Stream = NeverTcpStream;
+    type Context = Ctx;
 
-    fn bind(_options: TcpListenerOptions) -> Result<Self, Self::Error> {
+    fn bind(_ctx: &Self::Context, _options: TcpListenerOptions) -> Result<Self, Self::Error> {
         Err(NeverTcpError)
     }
 
@@ -208,7 +225,7 @@ impl AsyncTcpListener for NeverTcpListener {
 /// so consumers are generic over one type parameter rather than many.
 pub trait IpTransport {
     type UdpSocket: AsyncUdpSocket;
-    type TcpListener: AsyncTcpListener<Stream = Self::TcpStream>;
+    type TcpListener: AsyncTcpListener<Stream = Self::TcpStream, Context = <Self::UdpSocket as AsyncUdpSocket>::Context>;
     type TcpStream: embedded_io_async::Read<Error: Debug>
         + embedded_io_async::Write<Error: Debug>
         + embedded_io_async::ErrorType;

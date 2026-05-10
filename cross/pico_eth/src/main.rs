@@ -38,7 +38,7 @@ use zweidraehte_device::{
 };
 
 use embedded_common::DebouncedButton;
-use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, FlashIdentityData, RpFlashStorage};
+use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashIdentityData, RpFlashStorage, UdpPool};
 
 // ================================================================================
 // Device Definition
@@ -46,6 +46,27 @@ use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, FlashIdentityData, RpFla
 
 /// Device descriptor from the light switch device definition (KNX/IP variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
+
+// ================================================================================
+// Capacity knobs
+// ================================================================================
+//
+// All sizes the KNX/IP and embassy-net stacks need, named once so the
+// numbers don't drift apart. UDP-only routing device — no TCP.
+
+/// UDP sockets the link-layer binds. Discovery + control + routing
+/// after the builder's port dedup; the link-layer also reserves one
+/// slack slot for future endpoints (`MAX_LL_SOCKETS = 2` below).
+const MAX_UDP_SOCKETS: usize = 3;
+
+/// Slack-allowing bound passed to `KnxNetIpBuilder` as `MAX_SOCKETS`.
+/// Smaller than `MAX_UDP_SOCKETS` because the builder dedupes
+/// endpoints by port before allocating a `SocketDescriptor`.
+const MAX_LL_SOCKETS: usize = 2;
+
+/// embassy-net socket pool size. Holds the always-present DHCPv4
+/// client plus our UDP sockets.
+const NET_SOCKETS: usize = 1 + MAX_UDP_SOCKETS;
 
 /// Device state combining System B tables with IP link-layer state.
 /// Table sizes derive from `DEVICE_DESCRIPTOR` via the
@@ -81,7 +102,7 @@ impl StackDefinition for PicoEthLightSwitch {
 
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<EmbassyIpTransport, KnxIpDeviceUdp, 2>;
+    type LLB = KnxNetIpBuilder<EmbassyIpTransport<MAX_UDP_SOCKETS>, KnxIpDeviceUdp, MAX_LL_SOCKETS>;
     type Platform = EmbassyNetworkInfo;
     type ES = IpExtensionFor<KnxIpDeviceUdp>;
     type Identity = FlashIdentityData;
@@ -524,7 +545,7 @@ async fn main(spawner: Spawner) {
     // Embassy-net stack init
     // ========================================================================
 
-    static NET_RESOURCES: StaticCell<NetStackResources<3>> = StaticCell::new();
+    static NET_RESOURCES: StaticCell<NetStackResources<NET_SOCKETS>> = StaticCell::new();
     let (stack, net_runner) =
         embassy_net::new(net_device, net_config, NET_RESOURCES.init(NetStackResources::new()), seed);
 
@@ -569,12 +590,23 @@ async fn main(spawner: Spawner) {
 
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
-    // The embassy-net stack handle is passed as socket context — when the
-    // KNX/IP servers call EmbassyUdpSocket::bind(), they receive it directly.
-    let link_layer_builder =
-        KnxNetIpBuilder::<EmbassyIpTransport, _, 2>::new("eth0", local_ip, control_endpoint, stack)
-            .enable_routing_server()
-            .enable_remote_config_server();
+    // Static UDP buffer pool — sized to match the `LLB` const generic
+    // above, owned by the binary so the device pays for exactly the
+    // sockets it uses.
+    static UDP_POOL: UdpPool<MAX_UDP_SOCKETS> = UdpPool::new();
+
+    let socket_ctx = EmbassyUdpContext { stack, udp_pool: &UDP_POOL };
+
+    // The embassy-net stack handle plus the UDP buffer pool are passed
+    // as socket context — when the KNX/IP servers call
+    // EmbassyUdpSocket::bind(), they receive both.
+    let link_layer_builder = KnxNetIpBuilder::<
+        EmbassyIpTransport<MAX_UDP_SOCKETS>,
+        _,
+        MAX_LL_SOCKETS,
+    >::new("eth0", local_ip, control_endpoint, socket_ctx)
+    .enable_routing_server()
+    .enable_remote_config_server();
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<

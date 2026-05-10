@@ -142,8 +142,9 @@ pub struct AsyncLinuxTcpListener {
 impl AsyncTcpListener for AsyncLinuxTcpListener {
     type Error = crate::Error;
     type Stream = AsyncTcpStream;
+    type Context = ();
 
-    fn bind(options: TcpListenerOptions) -> core::result::Result<Self, crate::Error> {
+    fn bind(_ctx: &Self::Context, options: TcpListenerOptions) -> core::result::Result<Self, crate::Error> {
         let inner = TcpListenerInner::bind(options)?;
         let watcher = Async::new(inner)?;
         Ok(Self { watcher })

@@ -14,7 +14,11 @@ pub mod prov_storage;
 pub mod storage;
 pub mod uart;
 
-pub use net::{EmbassyIpTransport, EmbassyUdpSocket, UdpError};
+pub use net::{
+    EmbassyIpTransport, EmbassyIpTransportTcp, EmbassyTcpContext, EmbassyTcpListener, EmbassyTcpStream,
+    EmbassyTcpStreamError, EmbassyUdpContext, EmbassyUdpSocket, EmbassyUdpSocketTcp, TcpError, TcpPool, UdpPool,
+    UdpError,
+};
 pub use network_info::{EmbassyNetworkInfo, IP_ASSIGN_DHCP, IP_ASSIGN_MANUAL, NetworkConfigError, mask_to_prefix};
 pub use prov_storage::identity_from_record;
 #[cfg(all(feature = "rp2040", feature = "provision-on-boot"))]

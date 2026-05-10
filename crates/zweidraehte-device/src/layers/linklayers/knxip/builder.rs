@@ -441,7 +441,7 @@ where
         if F::Tcp::is_enabled() {
             let tcp_options =
                 TcpListenerOptions { bind_addr: self.control_endpoint, interface: Some(self.interface_name) };
-            match tcp_manager.bind(tcp_options) {
+            match tcp_manager.bind(&self.socket_ctx, tcp_options) {
                 Ok(()) => {
                     info!("TCP listener bound on {} (interface {})", self.control_endpoint, self.interface_name);
                 }
