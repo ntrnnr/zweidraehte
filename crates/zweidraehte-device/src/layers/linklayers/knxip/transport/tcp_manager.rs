@@ -32,18 +32,6 @@ use super::tcp_framing::{FrameEvent, KnxIpFrameReader};
 /// connection after this duration.
 const TCP_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Maximum bytes to read from a TCP stream in one call.
-///
-/// Sized to hold several KNX/IP frames. Actual frame extraction is
-/// handled by `KnxIpFrameReader` which can assemble frames across
-/// multiple reads.
-const TCP_READ_BUF_SIZE: usize = 512;
-
-/// Output buffer for frame reassembly. Must be large enough for the
-/// largest KNX/IP frame we want to handle. Frames exceeding this size
-/// are skipped (not fatal per spec).
-const FRAME_OUTPUT_BUF_SIZE: usize = 512;
-
 // ============================================================================
 // Per-connection state
 // ============================================================================
@@ -51,10 +39,18 @@ const FRAME_OUTPUT_BUF_SIZE: usize = 512;
 /// State of a single active TCP connection.
 ///
 /// Wraps the async stream with a frame reader, peer address, and idle-
-/// timeout tracking. The `channel_ids` field tracks which inner KNX/IP connections
-/// are running over this TCP stream — when the stream closes, the
-/// connection manager uses this to tear down the right channels.
-pub struct TcpConnectionState<S, const MAX_CHANNELS: usize> {
+/// timeout tracking. The `channel_ids` field tracks which inner KNX/IP
+/// connections are running over this TCP stream — when the stream
+/// closes, the connection manager uses this to tear down the right
+/// channels.
+///
+/// Each connection owns its own `read_buf` and `frame_buf` scratch
+/// arrays (`[u8; TCP_BUF_SZ]` each). These used to be per-call stack
+/// allocations inside `read_one_connection`; pulling them into the
+/// per-connection struct removes ~1 KB of stack pressure per TCP read
+/// cycle and lets the buffers be sized via the link-layer
+/// `KnxNetIpDefinition::TCP_SCRATCH_BUF_SIZE` knob.
+pub struct TcpConnectionState<S, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize> {
     stream: S,
     framer: KnxIpFrameReader,
     peer_addr: SocketAddrV4,
@@ -63,9 +59,18 @@ pub struct TcpConnectionState<S, const MAX_CHANNELS: usize> {
     /// Updated by the main loop when connections are created/destroyed.
     #[allow(dead_code)] // Future: not yet used
     channel_ids: Vec<u8, MAX_CHANNELS>,
+    /// Inbound byte scratch. Read into this from the stream, then feed
+    /// to the frame reader. Stable per-connection storage; replaces the
+    /// old per-call `[0u8; 512]` stack alloc in `read_one_connection`.
+    read_buf: [u8; TCP_BUF_SZ],
+    /// Frame-reassembly scratch. The `KnxIpFrameReader` writes
+    /// extracted frames here before they're copied into a
+    /// `BufferManager`-allocated `Buffer<'static>`. Replaces the
+    /// per-call `[0u8; 512]` stack alloc.
+    frame_buf: [u8; TCP_BUF_SZ],
 }
 
-impl<S, const MAX_CHANNELS: usize> TcpConnectionState<S, MAX_CHANNELS> {
+impl<S, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize> TcpConnectionState<S, MAX_CHANNELS, TCP_BUF_SZ> {
     fn new(stream: S, peer_addr: SocketAddrV4) -> Self {
         Self {
             stream,
@@ -73,6 +78,8 @@ impl<S, const MAX_CHANNELS: usize> TcpConnectionState<S, MAX_CHANNELS> {
             peer_addr,
             last_activity: Instant::now(),
             channel_ids: Vec::new(),
+            read_buf: [0u8; TCP_BUF_SZ],
+            frame_buf: [0u8; TCP_BUF_SZ],
         }
     }
 
@@ -132,13 +139,18 @@ pub enum TcpEvent<const MAX_CHANNELS: usize> {
 /// - Reading from all active streams and extracting frames
 /// - Detecting idle timeouts
 /// - Writing responses back on specific connections
-pub struct TcpManager<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize = 1> {
+pub struct TcpManager<
+    T: IpTransport,
+    const MAX_TCP_STREAMS: usize,
+    const MAX_CHANNELS: usize = 1,
+    const TCP_BUF_SZ: usize = 512,
+> {
     listener: Option<T::TcpListener>,
-    connections: [Option<TcpConnectionState<T::TcpStream, MAX_CHANNELS>>; MAX_TCP_STREAMS],
+    connections: [Option<TcpConnectionState<T::TcpStream, MAX_CHANNELS, TCP_BUF_SZ>>; MAX_TCP_STREAMS],
 }
 
-impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
-    TcpManager<T, MAX_TCP_STREAMS, MAX_CHANNELS>
+impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize>
+    TcpManager<T, MAX_TCP_STREAMS, MAX_CHANNELS, TCP_BUF_SZ>
 {
     /// Create a new TCP manager with no listener and no connections.
     ///
@@ -174,7 +186,10 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
     }
 
     /// Find the connection state for a given TCP index.
-    pub fn connection_mut(&mut self, tcp_idx: usize) -> Option<&mut TcpConnectionState<T::TcpStream, MAX_CHANNELS>> {
+    pub fn connection_mut(
+        &mut self,
+        tcp_idx: usize,
+    ) -> Option<&mut TcpConnectionState<T::TcpStream, MAX_CHANNELS, TCP_BUF_SZ>> {
         self.connections.get_mut(tcp_idx).and_then(|slot| slot.as_mut())
     }
 
@@ -378,41 +393,47 @@ impl<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize>
 /// This is a free function (not a method) so the caller can borrow
 /// individual connection slots independently of each other and of the
 /// listener.
-async fn read_one_connection<S, const MAX_CHANNELS: usize>(
-    conn: &mut TcpConnectionState<S, MAX_CHANNELS>,
+async fn read_one_connection<S, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize>(
+    conn: &mut TcpConnectionState<S, MAX_CHANNELS, TCP_BUF_SZ>,
     buffer_manager: &DynBufferManager<'static>,
 ) -> ConnectionReadResult<MAX_CHANNELS>
 where
     S: embedded_io_async::Read<Error: core::fmt::Debug>,
 {
-    let mut read_buf = [0u8; TCP_READ_BUF_SIZE];
+    // Split the per-connection scratch into two disjoint mutable borrows:
+    // `read_buf` is filled by the stream read; `frame_buf` is written by
+    // the frame reader as it consumes from `read_buf`. Both are
+    // per-connection-stable storage — no per-call stack allocation, no
+    // resource indirection.
+    let TcpConnectionState { stream, framer, read_buf, frame_buf, channel_ids, last_activity, .. } = conn;
 
-    let n = match embedded_io_async::Read::read(&mut conn.stream, &mut read_buf).await {
-        Ok(0) => return ConnectionReadResult::Closed(core::mem::take(&mut conn.channel_ids)),
+    let n = match embedded_io_async::Read::read(stream, &mut read_buf[..]).await {
+        Ok(0) => return ConnectionReadResult::Closed(core::mem::take(channel_ids)),
         Ok(n) => n,
         Err(_e) => {
             #[cfg(feature = "log")]
             log::error!("TCP read error: {:?}", _e);
             #[cfg(feature = "defmt")]
             defmt::error!("TCP read error");
-            return ConnectionReadResult::Closed(core::mem::take(&mut conn.channel_ids));
+            return ConnectionReadResult::Closed(core::mem::take(channel_ids));
         }
     };
 
-    conn.last_activity = Instant::now();
+    *last_activity = Instant::now();
 
-    // Process the read data through the frame reader
+    // Process the read data through the frame reader. `read_buf[..n]`
+    // is the valid window of inbound bytes; `frame_buf` receives the
+    // reassembled frame.
     let mut pos = 0;
-    let mut frame_output = [0u8; FRAME_OUTPUT_BUF_SIZE];
 
     while pos < n {
-        let (consumed, event) = conn.framer.feed(&read_buf[pos..n], &mut frame_output);
+        let (consumed, event) = framer.feed(&read_buf[pos..n], &mut frame_buf[..]);
         pos += consumed;
 
         match event {
             FrameEvent::Frame(frame_len) => {
                 let mut buffer = buffer_manager.alloc().await;
-                buffer.push_slice(&frame_output[..frame_len]);
+                buffer.push_slice(&frame_buf[..frame_len]);
                 return ConnectionReadResult::Frame(buffer);
             }
             FrameEvent::NeedMoreData => break,
@@ -421,7 +442,7 @@ where
             }
             FrameEvent::ProtocolError => {
                 error!("TCP: protocol error");
-                return ConnectionReadResult::Closed(core::mem::take(&mut conn.channel_ids));
+                return ConnectionReadResult::Closed(core::mem::take(channel_ids));
             }
         }
     }
@@ -446,8 +467,8 @@ enum ConnectionReadResult<const MAX_CHANNELS: usize> {
 /// every slot in the connections array, regardless of whether the slot
 /// is occupied. Empty slots pend forever and are effectively ignored
 /// by `select_slice`.
-async fn read_slot<S, const MAX_CHANNELS: usize>(
-    slot: &mut Option<TcpConnectionState<S, MAX_CHANNELS>>,
+async fn read_slot<S, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize>(
+    slot: &mut Option<TcpConnectionState<S, MAX_CHANNELS, TCP_BUF_SZ>>,
     buffer_manager: &DynBufferManager<'static>,
 ) -> ConnectionReadResult<MAX_CHANNELS>
 where
