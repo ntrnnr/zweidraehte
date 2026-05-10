@@ -209,16 +209,20 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
                     Ok(responses)
                 }
                 DataFrameAction::AckAndInject { ack, cemi_buffer } => {
-                    // Save cEMI data for cross-client forwarding before
-                    // `from_cemi()` consumes the buffer. The forwarded copy
-                    // has its message code changed from L_Data.req (0x11) to
-                    // L_Data.ind (0x29) since other clients receive it as an
-                    // indication, not a request.
-                    let mut forwarding_cemi = [0u8; 256];
-                    let cemi_len = cemi_buffer.len().min(forwarding_cemi.len());
-                    forwarding_cemi[..cemi_len].copy_from_slice(&cemi_buffer[..cemi_len]);
-                    if cemi_len > 0 {
-                        forwarding_cemi[0] = 0x29; // L_Data.ind
+                    // Take a pool-allocated copy of the cEMI bytes for
+                    // cross-client forwarding before `from_cemi()` consumes
+                    // the original buffer. The forwarded copy has its
+                    // message code changed from L_Data.req (0x11) to
+                    // L_Data.ind (0x29) since other clients receive it as
+                    // an indication, not a request. The pool allocation
+                    // bounds the worst-case footprint at one extra buffer
+                    // per cross-client forward (well within `NUM_BUFS = 8`
+                    // for the tunnel slot counts we ship with).
+                    let mut forwarding_cemi = buffer_manager.try_alloc_from_slice(&cemi_buffer[..]);
+                    if let Some(buf) = forwarding_cemi.as_mut()
+                        && !buf.is_empty()
+                    {
+                        buf[0] = 0x29; // L_Data.ind
                     }
 
                     // Convert cEMI buffer to internal format and inject into
@@ -234,13 +238,17 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
                     let _ = responses.push(ack);
 
                     // Forward to other active tunnel clients so they see
-                    // frames originated by sibling connections. Without this,
-                    // the TPUART echo filter would prevent them from ever
-                    // seeing the frame.
-                    let forwarded =
-                        self.forward_bus_indication_excluding(&forwarding_cemi[..cemi_len], channel_id, buffer_manager);
-                    for response in forwarded {
-                        let _ = responses.push(response);
+                    // frames originated by sibling connections. Without
+                    // this, the TPUART echo filter would prevent them from
+                    // ever seeing the frame. If the pool was empty we
+                    // skip the forward — the originating client still
+                    // gets its ACK and the local network layer still sees
+                    // the indication via `ind_tx.send` above.
+                    if let Some(buf) = forwarding_cemi.as_ref() {
+                        let forwarded = self.forward_bus_indication_excluding(&buf[..], channel_id, buffer_manager);
+                        for response in forwarded {
+                            let _ = responses.push(response);
+                        }
                     }
 
                     Ok(responses)
@@ -428,19 +436,25 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         // Message code: T_Data_Connected.ind (0x89) — the device acts as
         // the "bus" toward the cEMI client, indicating data to it. ETS
         // expects .ind, not .con (which is for bus-level confirmations).
+        //
+        // The scratch used to be a stack `[u8; 256]`. Pool-allocate
+        // instead: the bytes never need to leave this method (we copy
+        // them straight into `resp_buffer`), and the buffer drops at the
+        // end of the function, so the pool footprint is one slot for
+        // the duration of one synchronous call.
         let cemi_builder = CemiTransportBuilder { message_code: CemiMessageCode::TDataConnectedInd, tpdu };
-        let mut cemi_payload = [0u8; 256];
-        let mut cemi_buf: &mut [u8] = &mut cemi_payload;
-        let (cemi_data, _) = cemi_buf.serialize(&cemi_builder);
+        let mut cemi_payload = buffer_manager.try_alloc()?;
+        cemi_payload.serialize(&cemi_builder);
 
         // Build DeviceConfigurationRequest wrapping the cEMI payload.
         let send_seq = conn.send_sequence_counter;
         conn.send_sequence_counter = send_seq.wrapping_add(1);
 
-        let req_builder = DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, cemi_data);
+        let req_builder = DeviceConfigurationRequestBuilder::with_payload(conn.channel_id, send_seq, &cemi_payload[..]);
 
         let mut resp_buffer = buffer_manager.try_alloc()?;
         resp_buffer.serialize(&req_builder);
+        drop(cemi_payload);
         let target = conn.response_target();
 
         // For UDP connections, save a copy for retransmission.
