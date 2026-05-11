@@ -94,7 +94,8 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
-> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
+    const MAX_CONNECTIONS: usize,
+> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
     connections::CompositeHandlers<

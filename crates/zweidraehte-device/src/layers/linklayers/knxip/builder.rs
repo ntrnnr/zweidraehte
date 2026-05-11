@@ -71,6 +71,7 @@ pub struct KnxNetIpBuilder<
     const MAX_TCP_STREAMS: usize = { <D as KnxNetIpDefinition>::MAX_TCP_STREAMS },
     const MAX_CHANNELS: usize = { <D as KnxNetIpDefinition>::MAX_TCP_CHANNELS },
     const TUNNEL_CAPACITY: usize = { <D as KnxNetIpDefinition>::TUNNEL_CAPACITY },
+    const MAX_CONNECTIONS: usize = { <D as KnxNetIpDefinition>::MAX_CONNECTIONS },
 > {
     interface_name: &'static str,
     local_addr: Ipv4Addr,
@@ -86,7 +87,8 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
-> KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
+    const MAX_CONNECTIONS: usize,
+> KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 {
     /// Create a new builder with the network interface to bind to.
     ///
@@ -132,7 +134,8 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
-> KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
+    const MAX_CONNECTIONS: usize,
+> KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 where
     <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
         connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
@@ -153,7 +156,16 @@ where
         conf_tx: DynamicSender<'res, ConfirmationMessage<Buffer<'static>>>,
         subnet_link: Option<SubnetLink<'res>>,
         address_filter: Option<&'res dyn super::types::AddressFilter>,
-    ) -> KnxNetIp<'res, D::Transport, D::Features, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY> {
+    ) -> KnxNetIp<
+        'res,
+        D::Transport,
+        D::Features,
+        MAX_SOCKETS,
+        MAX_TCP_STREAMS,
+        MAX_CHANNELS,
+        TUNNEL_CAPACITY,
+        MAX_CONNECTIONS,
+    > {
         // ====================================================================
         // Auto-derive supported services from feature traits
         // ====================================================================
@@ -361,7 +373,9 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
-> LinkLayerBuilderBase for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
+    const MAX_CONNECTIONS: usize,
+> LinkLayerBuilderBase
+    for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 {
     type Resources = KnxNetIpResources;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
@@ -377,7 +391,9 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
-> LinkLayerCapabilities for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
+    const MAX_CONNECTIONS: usize,
+> LinkLayerCapabilities
+    for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 {
     const KNXNETIP_DEVICE_CAPABILITIES: u16 = <D::Features as FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES;
 }
@@ -389,7 +405,9 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
-> LinkLayerBuilder<CTX> for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
+    const MAX_CONNECTIONS: usize,
+> LinkLayerBuilder<CTX>
+    for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 where
     <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
         connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,

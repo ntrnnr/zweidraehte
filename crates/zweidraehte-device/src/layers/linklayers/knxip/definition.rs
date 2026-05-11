@@ -82,6 +82,24 @@ pub trait KnxNetIpDefinition: Copy + 'static {
     /// caps multiplexing per client.
     const MAX_TCP_CHANNELS: usize = Self::TUNNEL_CAPACITY;
 
+    /// Maximum concurrent KNX/IP connections managed by the connection
+    /// manager (Device Management + tunneling slots combined).
+    ///
+    /// Default: `TUNNEL_CAPACITY + 1` — one slot for the Device
+    /// Management connection ETS uses for programming, plus one slot
+    /// per tunneling client. A UDP-only routing device with no
+    /// tunneling (e.g. `KnxIpDeviceUdp`) still needs the `+ 1` so ETS
+    /// can open a management connection to upload the device's
+    /// configuration; without it every `CONNECT_REQUEST` would get
+    /// `E_NO_MORE_CONNECTIONS`.
+    ///
+    /// This is independent of [`MAX_TCP_CHANNELS`](Self::MAX_TCP_CHANNELS):
+    /// `MAX_TCP_CHANNELS` is the per-TCP-stream channel multiplexing
+    /// bound (relevant only when a single TCP client opens multiple
+    /// inner KNX/IP channels); `MAX_CONNECTIONS` is the link-layer-wide
+    /// connection lifecycle slot count.
+    const MAX_CONNECTIONS: usize = Self::TUNNEL_CAPACITY + 1;
+
     /// Deduped UDP socket pool size.
     ///
     /// The builder collects every UDP endpoint each enabled feature

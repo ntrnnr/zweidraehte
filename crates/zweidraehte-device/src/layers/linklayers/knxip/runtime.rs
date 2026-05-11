@@ -43,6 +43,13 @@ pub struct KnxNetIp<
     // `KnxNetIpBuilderFor<D>` alias which sets it from
     // `D::TUNNEL_CAPACITY`.
     const TUNNEL_CAPACITY: usize = 0,
+    // Connection-manager lifecycle slot count (Device Management +
+    // tunneling combined). Independent of `MAX_CHANNELS`: even a
+    // tunneling-free device needs at least one slot for the management
+    // connection ETS opens for programming. Default `TUNNEL_CAPACITY +
+    // 1` covers the common case; downstream callers spell it via
+    // `D::MAX_CONNECTIONS`.
+    const MAX_CONNECTIONS: usize = 1,
 > where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
@@ -83,7 +90,7 @@ pub struct KnxNetIp<
             <F::Tunneling as features::TunnelingFeature>::Tunnel,
         >,
         TUNNEL_CAPACITY,
-        MAX_CHANNELS,
+        MAX_CONNECTIONS,
     >,
     /// Type-erased stack context providing buffer management, device info,
     /// IP diagnostics, KNX addresses, and property service access.
@@ -123,7 +130,8 @@ impl<
     const MAX_TCP_STREAMS: usize,
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
-> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY>
+    const MAX_CONNECTIONS: usize,
+> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
     connections::CompositeHandlers<
