@@ -432,6 +432,14 @@ pub trait TunnelingFeature: 'static {
 
     type Tunnel: super::connections::ConnectedHandler;
 
+    /// Per-feature static storage carried inside [`KnxNetIpResources`](super::KnxNetIpResources).
+    ///
+    /// `()` for `NoTunneling` (zero bytes), [`TunnelOccupancy`](super::connections::TunnelOccupancy)
+    /// for `WithTunneling<N>`. Stored once at the resource level so it
+    /// outlives the runtime and can be shared by reference with a
+    /// composite address checker (see `IpInterfaceAddressChecker`).
+    type Resources: Default + 'static;
+
     fn supported_service() -> Option<SupportedService>;
 
     /// Build the composite handler collection for the connection manager.
@@ -441,9 +449,14 @@ pub trait TunnelingFeature: 'static {
     ///
     /// The `cemi_sender` is the link-layer-side endpoint for sending cEMI
     /// events to the [`CemiTransportLayer`](crate::layers::transport::cemi::CemiTransportLayer).
+    ///
+    /// `resources` is `&Self::Resources` — `WithTunneling` borrows the
+    /// occupancy counter from it for the tunnel handler to publish into;
+    /// `NoTunneling` ignores it.
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
+        resources: &'a Self::Resources,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel>;
 }
 
@@ -458,6 +471,7 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
     const ENABLED: bool = true;
     const CAPACITY: usize = N;
     type Tunnel = super::connections::WithTunnel<N>;
+    type Resources = super::connections::TunnelOccupancy;
 
     fn supported_service() -> Option<SupportedService> {
         Some(SupportedService { family: substructs::ServiceFamily::Tunneling, version: 1 })
@@ -466,6 +480,7 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
+        resources: &'a Self::Resources,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),
@@ -481,6 +496,7 @@ impl<const N: usize> TunnelingFeature for WithTunneling<N> {
             ext_info.device_descriptor_type0,
             context.manufacturer_code(),
             ext_info.max_local_apdu_len,
+            resources,
         );
 
         super::connections::CompositeHandlers::new(dev_mgmt, tunnel)
@@ -495,6 +511,7 @@ impl TunnelingFeature for NoTunneling {
     const ENABLED: bool = false;
     const CAPACITY: usize = 0;
     type Tunnel = super::connections::NoTunnel;
+    type Resources = ();
 
     fn supported_service() -> Option<SupportedService> {
         None
@@ -503,6 +520,7 @@ impl TunnelingFeature for NoTunneling {
     fn build_handlers<'a>(
         context: &'a dyn super::KnxNetIpContext,
         cemi_sender: embassy_sync::channel::DynamicSender<'a, CemiEvent>,
+        _resources: &'a Self::Resources,
     ) -> super::connections::CompositeHandlers<'a, super::connections::WithDevMgmt, Self::Tunnel> {
         let dev_mgmt = super::connections::DeviceMgmtConnectionHandler::new(
             context.property_handler(),

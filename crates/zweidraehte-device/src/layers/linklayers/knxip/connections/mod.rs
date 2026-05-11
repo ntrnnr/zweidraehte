@@ -31,6 +31,7 @@
 pub(crate) mod context;
 mod device_mgmt;
 mod handlers;
+mod occupancy;
 pub(crate) mod traits;
 mod tunnel;
 
@@ -39,6 +40,7 @@ pub(crate) use device_mgmt::DeviceMgmtConnectionHandler;
 pub(crate) use handlers::{
     CompositeHandlers, ConnectedHandler, NoTunnel, TunnelingConnectedHandler, WithDevMgmt, WithTunnel,
 };
+pub use occupancy::TunnelOccupancy;
 pub(crate) use traits::{
     AcceptedConnection, AckTimeoutResult, ConnectionHandlers, ConnectionManagerResult, ConnectionTypeHandler,
     DataFrameAction, TcpChannelEvent,

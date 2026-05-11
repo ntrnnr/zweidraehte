@@ -111,27 +111,36 @@ impl Default for EndpointType {
 ///
 /// Externally-owned storage that must outlive the [`KnxNetIp`] runtime.
 /// Holds the response channel through which services queue outbound
-/// messages.
-pub struct KnxNetIpResources {
+/// messages, plus per-feature storage like the tunnel-occupancy counter
+/// (size zero for `NoTunneling`).
+pub struct KnxNetIpResources<F: features::FeatureSet = features::DefaultFeatures> {
     /// Response channel for queuing outbound messages.
     response_channel: Channel<NoopRawMutex, PendingResponse, 16>,
+    /// Per-feature storage for the tunneling slot. `()` when tunneling is
+    /// disabled; [`connections::TunnelOccupancy`] when enabled.
+    tunneling: <F::Tunneling as features::TunnelingFeature>::Resources,
 }
 
-impl Default for KnxNetIpResources {
+impl<F: features::FeatureSet> Default for KnxNetIpResources<F> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl KnxNetIpResources {
+impl<F: features::FeatureSet> KnxNetIpResources<F> {
     /// Create a new resource container.
-    pub const fn new() -> Self {
-        Self { response_channel: Channel::new() }
+    pub fn new() -> Self {
+        Self { response_channel: Channel::new(), tunneling: Default::default() }
     }
 
     /// Get a reference to the response channel.
     pub(super) fn response_channel(&self) -> &Channel<NoopRawMutex, PendingResponse, 16> {
         &self.response_channel
+    }
+
+    /// Get a reference to the tunneling feature's per-resource storage.
+    pub(super) fn tunneling_resources(&self) -> &<F::Tunneling as features::TunnelingFeature>::Resources {
+        &self.tunneling
     }
 }
 

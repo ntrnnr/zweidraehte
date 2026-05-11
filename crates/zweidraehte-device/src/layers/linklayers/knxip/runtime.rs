@@ -37,8 +37,9 @@ pub struct KnxNetIp<
 > where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
-    /// Reference to externally-owned resources (response channel).
-    pub(super) resources: &'res KnxNetIpResources,
+    /// Reference to externally-owned resources (response channel,
+    /// tunnel-occupancy counter).
+    pub(super) resources: &'res KnxNetIpResources<F>,
     /// UDP socket manager. Owns sockets and their descriptors.
     pub(super) udp_manager: UdpManager<T, MAX_SOCKETS>,
 

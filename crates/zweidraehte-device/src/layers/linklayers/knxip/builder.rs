@@ -150,7 +150,7 @@ where
     /// 5. Returns the final `KnxNetIp` instance.
     pub(crate) fn build<'res>(
         self,
-        resources: &'res KnxNetIpResources,
+        resources: &'res KnxNetIpResources<D::Features>,
         context: &'res dyn KnxNetIpContext,
         cemi_ll: CemiTransportLayerEndpoints<'res>,
         ind_tx: DynamicSender<'res, IndicationMessage<Buffer<'static>>>,
@@ -300,8 +300,11 @@ where
         // Connection manager — handler type selected by TunnelingFeature
         // ====================================================================
 
-        let handlers =
-            <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::build_handlers(context, cemi_ll.event_sender);
+        let handlers = <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::build_handlers(
+            context,
+            cemi_ll.event_sender,
+            resources.tunneling_resources(),
+        );
         let connection_manager = connections::ConnectionManager::new(handlers);
 
         // ====================================================================
@@ -358,7 +361,7 @@ impl<
 > LinkLayerBuilderBase
     for KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
 {
-    type Resources = KnxNetIpResources;
+    type Resources = KnxNetIpResources<D::Features>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 
     fn create_resources(&self) -> Self::Resources {

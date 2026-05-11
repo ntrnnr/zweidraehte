@@ -31,6 +31,12 @@ replace_with = { workspace = true }
 # provide the platform implementation. On embedded targets, the HAL
 # provides it (e.g. embassy-rp's `critical-section-impl` feature).
 critical-section = { version = "1.2.0", optional = true }
+# portable-atomic provides AtomicU8 with CAS on targets without native CAS
+# (e.g. thumbv6m). On targets with native CAS (thumbv7em, x86_64) it
+# transparently delegates to core::sync::atomic. The `critical-section`
+# feature is the fallback path used on thumbv6m; embassy-rp already
+# wires up the implementation via `critical-section-impl`.
+portable-atomic = { version = "1.13.1", default-features = false, features = ["critical-section"] }
 
 [dev-dependencies]
 test-case = "3.3"

@@ -78,7 +78,7 @@ use zweidraehte_proto::messages::knxip::tunneling_feature_id as feature_id;
 ///
 /// The const generic `N` is the maximum number of tunneling slots
 /// (additional individual addresses).
-pub struct TunnelConnectionHandler<const N: usize> {
+pub struct TunnelConnectionHandler<'a, const N: usize> {
     /// Fixed array of tunnel slots, one per additional IA.
     /// Allocated at construction time from the device's additional addresses.
     slots: heapless::Vec<TunnelSlot, N>,
@@ -101,9 +101,14 @@ pub struct TunnelConnectionHandler<const N: usize> {
     /// This would be updated by the composite link layer when the bus
     /// link goes up/down.
     bus_connected: bool,
+
+    /// Live count of currently-open tunnel connections, kept in sync
+    /// with `slots[..].active_channel`. Read by the composite IP-Interface
+    /// address checker to decide whether to over-ACK group frames.
+    tunnel_occupancy: &'a super::TunnelOccupancy,
 }
 
-impl<const N: usize> TunnelConnectionHandler<N> {
+impl<'a, const N: usize> TunnelConnectionHandler<'a, N> {
     /// Create a new tunneling handler for the given set of additional
     /// individual addresses.
     ///
@@ -115,6 +120,7 @@ impl<const N: usize> TunnelConnectionHandler<N> {
         device_descriptor_type_0: u16,
         manufacturer_code: u16,
         max_apdu_length: u16,
+        tunnel_occupancy: &'a super::TunnelOccupancy,
     ) -> Self {
         let mut slots = heapless::Vec::new();
         for &addr in additional_addresses {
@@ -128,6 +134,7 @@ impl<const N: usize> TunnelConnectionHandler<N> {
             max_apdu_length,
             feature_info_enable: [0u8; N],
             bus_connected: true,
+            tunnel_occupancy,
         }
     }
 
@@ -367,7 +374,7 @@ impl<const N: usize> TunnelConnectionHandler<N> {
     }
 }
 
-impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<N> {
+impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<'_, N> {
     fn accept_connection(&mut self, channel_id: u8, cri: &CRI) -> Result<AcceptedConnection, ConnectionStatus> {
         let CRI::Tunnel(tunnel_cri) = cri else {
             return Err(ConnectionStatus::ConnectionTypeNotSupported);
@@ -411,6 +418,7 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<N> {
         let assigned_addr = self.slots[slot_idx].individual_address;
         self.slots[slot_idx].active_channel = Some(channel_id);
         self.feature_info_enable[slot_idx] = 0;
+        self.tunnel_occupancy.on_connect();
 
         info!("Accepted tunneling connection: channel={}, IA={}, slot={}", channel_id, assigned_addr, slot_idx);
 
@@ -420,8 +428,16 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<N> {
     fn close_connection(&mut self, channel_id: u8) {
         if let Some(slot_idx) = self.slot_index_for_channel(channel_id) {
             let addr = self.slots[slot_idx].individual_address;
+            // Only decrement on an occupied→free transition. `close_connection`
+            // can race against itself (DISCONNECT_REQUEST + TCP-close +
+            // heartbeat timeout); `TunnelOccupancy::on_disconnect` is
+            // saturating but we still want to avoid double-counting.
+            let was_occupied = self.slots[slot_idx].active_channel.is_some();
             self.slots[slot_idx].active_channel = None;
             self.feature_info_enable[slot_idx] = 0;
+            if was_occupied {
+                self.tunnel_occupancy.on_disconnect();
+            }
             info!("Closed tunneling connection: channel={}, IA={}", channel_id, addr);
         }
     }
@@ -506,7 +522,7 @@ impl<const N: usize> ConnectionTypeHandler for TunnelConnectionHandler<N> {
 // Private: Frame Handling
 // ============================================================================
 
-impl<const N: usize> TunnelConnectionHandler<N> {
+impl<const N: usize> TunnelConnectionHandler<'_, N> {
     /// Handle a `TunnelingRequest` containing a cEMI L_Data frame.
     ///
     /// The cEMI frame is extracted, source address substitution is applied

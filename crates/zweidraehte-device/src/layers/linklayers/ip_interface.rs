@@ -65,47 +65,61 @@ use super::{
 // IpInterfaceAddressChecker
 // ============================================================================
 
-// FIXME: I think we have to ACK all group address and other broadcast traffic, at least if at least one tunnel connection is established
 /// Address checker for IP Interface devices.
 ///
-/// Extends [`DeviceAddressChecker`] to also ACK frames addressed to
-/// additional individual addresses assigned to tunneling connections.
-/// This ensures the TPUART transceiver acknowledges bus frames destined
-/// for any tunneling endpoint, not just the device's primary IA.
+/// Extends [`DeviceAddressChecker`] in two ways:
+///
+/// - ACKs frames addressed to additional individual addresses assigned
+///   to tunneling connections — so the TPUART transceiver acknowledges
+///   bus frames destined for any tunneling endpoint, not just the
+///   device's primary IA.
+/// - While at least one tunneling connection is open, ACKs *every*
+///   group frame regardless of the device's own group-address table.
+///   A pure IP interface usually has no GA table of its own; without
+///   this over-ACK the TP1 sender retransmits 3× and gives up on every
+///   group frame the tunnel client wants to receive.
 ///
 /// The additional addresses are snapshotted at build time — they only
 /// change during ETS programming (which requires a device restart).
+/// The tunnel-occupancy counter is live state owned by [`KnxNetIpResources`].
 pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine, const N: usize> {
     inner: DeviceAddressChecker<'a, ADT>,
     additional_addresses: heapless::Vec<IndividualAddress, N>,
+    tunnel_occupancy: &'a super::knxip::connections::TunnelOccupancy,
 }
 
 impl<'a, ADT: AddressTable + HasLoadStateMachine, const N: usize> IpInterfaceAddressChecker<'a, ADT, N> {
     pub fn new(
         inner: DeviceAddressChecker<'a, ADT>,
         additional_addresses: heapless::Vec<IndividualAddress, N>,
+        tunnel_occupancy: &'a super::knxip::connections::TunnelOccupancy,
     ) -> Self {
-        Self { inner, additional_addresses }
+        Self { inner, additional_addresses, tunnel_occupancy }
     }
 }
 
 impl<ADT: AddressTable + HasLoadStateMachine, const N: usize> AddressChecker for IpInterfaceAddressChecker<'_, ADT, N> {
     fn should_ack(&self, header: &[u8; 6]) -> bool {
-        // Delegate to inner checker first (primary IA, group, broadcast).
+        // Delegate to inner checker first (primary IA, group via local
+        // table, broadcast).
         if self.inner.should_ack(header) {
             return true;
         }
 
-        // For individually-addressed frames that the inner checker didn't
-        // match, check against the additional tunneling addresses.
         let at_npci = header[5];
         let is_group_address = (at_npci & 0x80) != 0;
 
-        if !is_group_address {
+        if is_group_address {
+            // Over-ACK group frames whenever any tunnel is open — the
+            // tunnel client is the "interested party" the bus sender
+            // wouldn't otherwise hear from.
+            self.tunnel_occupancy.any_open()
+        } else {
+            // Individually-addressed frames the inner checker didn't
+            // match: ACK if the destination is one of our additional
+            // tunneling IAs.
             let dst = IndividualAddress::from_bytes(&[header[3], header[4]]);
             self.additional_addresses.contains(&dst)
-        } else {
-            false
         }
     }
 }
@@ -177,14 +191,25 @@ impl<
 }
 
 /// Resources for the composite IP Interface link layer.
-pub struct IpInterfaceResources {
-    pub knxip: KnxNetIpResources,
+///
+/// Parameterised by the same definition used for the inner
+/// `KnxNetIpBuilder<D>` so that
+/// [`KnxNetIpResources`] can carry feature-specific storage (e.g. the
+/// tunnel-occupancy counter).
+pub struct IpInterfaceResources<D: super::knxip::KnxNetIpDefinition> {
+    pub knxip: KnxNetIpResources<D::Features>,
     // TPUART resources are a ZST (TpUartResources), no storage needed.
 }
 
-impl IpInterfaceResources {
-    pub const fn new() -> Self {
+impl<D: super::knxip::KnxNetIpDefinition> IpInterfaceResources<D> {
+    pub fn new() -> Self {
         Self { knxip: KnxNetIpResources::new() }
+    }
+}
+
+impl<D: super::knxip::KnxNetIpDefinition> Default for IpInterfaceResources<D> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -201,7 +226,7 @@ impl<
     const MX: usize,
 > LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX>
 {
-    type Resources = IpInterfaceResources;
+    type Resources = IpInterfaceResources<D>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
 
     fn create_resources(&self) -> Self::Resources {
@@ -238,6 +263,10 @@ where
     D: super::knxip::KnxNetIpDefinition + 'static,
     <<D::Features as features::FeatureSet>::Tunneling as features::TunnelingFeature>::Tunnel:
         super::knxip::connections::TunnelingConnectedHandler<TC>,
+    // The composite mode only makes sense when tunneling is enabled, so
+    // the resource type must be the real occupancy counter (not `()`).
+    <D::Features as features::FeatureSet>::Tunneling:
+        features::TunnelingFeature<Resources = super::knxip::connections::TunnelOccupancy>,
 {
     fn build_and_run<'a>(
         self,
@@ -260,7 +289,8 @@ where
                 let _ = additional_ias.push(addr);
             }
             let inner_checker = DeviceAddressChecker::new(context, context.address_table());
-            let address_checker = IpInterfaceAddressChecker::new(inner_checker, additional_ias);
+            let address_checker =
+                IpInterfaceAddressChecker::new(inner_checker, additional_ias, resources.knxip.tunneling_resources());
 
             // ==============================================================
             // Internal channels
@@ -316,7 +346,7 @@ where
                 super::knxip::types::RoutingAddressFilter::new(context.individual_address(), context.address_table());
 
             let mut knxip = self.knxip_builder.build(
-                &mut resources.knxip,
+                &resources.knxip,
                 context,
                 ll_endpoints,
                 knxip_ind_channel.sender().into(),

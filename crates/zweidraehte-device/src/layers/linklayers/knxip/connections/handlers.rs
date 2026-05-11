@@ -140,7 +140,7 @@ impl ConnectedHandler for WithDevMgmt {
 pub struct WithTunnel<const N: usize>;
 
 impl<const N: usize> ConnectedHandler for WithTunnel<N> {
-    type Handler<'a> = TunnelConnectionHandler<N>;
+    type Handler<'a> = TunnelConnectionHandler<'a, N>;
     const CONNECTION_TYPE: ConnectionType = ConnectionType::Tunnel;
 
     fn accept_connection(
