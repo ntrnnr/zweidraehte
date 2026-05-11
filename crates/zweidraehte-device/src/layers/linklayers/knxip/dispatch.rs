@@ -22,7 +22,7 @@ use zweidraehte_proto::messages::{
 
 use super::{
     KnxNetIpContext, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError, connections,
-    features::{self, RemoteConfigFeature, RoutingFeature},
+    features::{self, RemoteConfigFeature, RoutingFeature, TcpFeature},
     services,
 };
 
@@ -373,20 +373,17 @@ where
         }
     }
 
-    /// Apply TCP channel tracking events to the TCP manager.
+    /// Apply TCP channel tracking events to the TCP manager. For
+    /// `NoTcp` builds the dispatch methods fold to no-ops.
     pub(super) fn apply_tcp_channel_events(&mut self, events: &[connections::TcpChannelEvent]) {
         use connections::TcpChannelEvent;
         for event in events {
             match event {
                 TcpChannelEvent::Added { tcp_idx, channel_id } => {
-                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(*tcp_idx) {
-                        tcp_conn.add_channel(*channel_id);
-                    }
+                    <F::Tcp as TcpFeature>::add_channel(&mut self.tcp_manager, *tcp_idx, *channel_id);
                 }
                 TcpChannelEvent::Removed { tcp_idx, channel_id } => {
-                    if let Some(tcp_conn) = self.tcp_manager.connection_mut(*tcp_idx) {
-                        tcp_conn.remove_channel(*channel_id);
-                    }
+                    <F::Tcp as TcpFeature>::remove_channel(&mut self.tcp_manager, *tcp_idx, *channel_id);
                 }
             }
         }
@@ -406,9 +403,9 @@ where
             }
             ResponseTarget::Tcp { tcp_idx } => {
                 debug!("Sending {} byte response on TCP connection {}", data.len(), tcp_idx);
-                if self.tcp_manager.write_to(tcp_idx, data).await.is_err() {
+                if <F::Tcp as TcpFeature>::write_to(&mut self.tcp_manager, tcp_idx, data).await.is_err() {
                     warn!("TCP write failed on connection {}, closing", tcp_idx);
-                    self.tcp_manager.close(tcp_idx);
+                    let _ = <F::Tcp as TcpFeature>::close(&mut self.tcp_manager, tcp_idx);
                     self.connection_manager.on_tcp_closed(tcp_idx);
                 }
             }

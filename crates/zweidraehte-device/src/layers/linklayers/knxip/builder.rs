@@ -22,34 +22,21 @@ use super::definition::KnxNetIpDefinition;
 use super::runtime::KnxNetIp;
 use super::{
     EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink, connections, features, services,
-    transport::{SocketDescriptor, TcpManager, UdpManager},
+    transport::{SocketDescriptor, UdpManager},
 };
 use features::{FeatureSet, RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
 
-/// Builder for the KNX/IP link layer, parameterised by a single
-/// [`KnxNetIpDefinition`].
+/// Builder for the KNX/IP link layer.
 ///
-/// `D` carries only the *type* projections — `D::Transport` and
-/// `D::Features`. Numeric sizing flows through plain `const N: usize`
-/// generics on the struct, with literal defaults that downstream
-/// callers override either explicitly or via the
-/// [`KnxNetIpBuilderFor<D>`](super::KnxNetIpBuilderFor) type alias
-/// (which resolves them from `D::*`).
+/// Parameterised by a single [`KnxNetIpDefinition`] `D`. The
+/// numeric `const` parameters default off `D::*` so the typical
+/// call site is just `KnxNetIpBuilder::<MyDevice>`; override
+/// individual consts only when the trait defaults don't fit.
 ///
-/// The discovery server (Core) and device management (connection type
+/// The discovery server (Core) and Device Management (connection type
 /// 0x03) are always enabled — both are mandatory per KNX 3/8/1
 /// Table 2. Every other optional feature comes from
 /// `D::Features` (routing, tunneling, remote-config, TCP, IP Secure).
-///
-/// **Why plain const generics rather than `D::CONST` projections:**
-/// using `D::MAX_TCP_STREAMS` directly as an array length would
-/// require `[(); D::MAX_TCP_STREAMS]:,` well-formedness clauses on
-/// the impls; those clauses don't propagate through the `for<'a>
-/// LinkLayerBuilder<…>` HRTB on
-/// [`StackDefinition::LLB`](crate::definition::StackDefinition::LLB)
-/// and trigger `error[E0275]` overflow at every device-stack
-/// definition site. Plain const generics carry no such obligations
-/// and propagate through the HRTB cleanly.
 ///
 /// # Example
 ///
@@ -61,7 +48,6 @@ use features::{FeatureSet, RemoteConfigFeature, RoutingFeature, TcpFeature, Tunn
 ///     type Features  = KnxIpDeviceTcp;
 /// }
 ///
-/// // Single-arg form: const generics default-resolve from D::*
 /// let builder = KnxNetIpBuilder::<MyDevice>::new(
 ///     "eth0", local_ipv4, control_endpoint, ());
 /// ```
@@ -315,22 +301,20 @@ where
         let connection_manager = connections::ConnectionManager::new(handlers);
 
         // ====================================================================
-        // TCP manager
+        // TCP manager — `Manager` associated type on `TcpFeature` is
+        // `TcpManager<...>` for `WithTcp` and the zero-sized
+        // `NoTcpManager` for `NoTcp`. The bind call also goes through
+        // the trait so it folds to a no-op in the disabled case.
         // ====================================================================
 
-        let mut tcp_manager = TcpManager::<D::Transport, MAX_TCP_STREAMS, MAX_CHANNELS>::new();
+        let mut tcp_manager =
+            <<D::Features as FeatureSet>::Tcp as TcpFeature>::new::<D::Transport, MAX_TCP_STREAMS, MAX_CHANNELS, 512>();
 
-        if <D::Features as FeatureSet>::Tcp::is_enabled() {
+        if <D::Features as FeatureSet>::Tcp::ENABLED {
             let tcp_options =
                 TcpListenerOptions { bind_addr: self.control_endpoint, interface: Some(self.interface_name) };
-            match tcp_manager.bind(&self.socket_ctx, tcp_options) {
-                Ok(()) => {
-                    info!("TCP listener bound on {} (interface {})", self.control_endpoint, self.interface_name);
-                }
-                Err(_e) => {
-                    error!("Failed to bind TCP listener on {}: {:?}", self.control_endpoint, _e);
-                }
-            }
+            <<D::Features as FeatureSet>::Tcp as TcpFeature>::bind(&mut tcp_manager, &self.socket_ctx, tcp_options);
+            info!("TCP listener bound on {} (interface {})", self.control_endpoint, self.interface_name);
         }
 
         KnxNetIp {
@@ -359,13 +343,6 @@ where
 // ============================================================================
 // LinkLayerBuilder integration
 // ============================================================================
-//
-// **Critical:** the where-clauses on these impls MUST NOT include
-// `[(); D::CONST]:,` clauses. Such clauses don't propagate through
-// the `for<'a> LinkLayerBuilder<…>` HRTB on `StackDefinition::LLB`,
-// causing `error[E0275]: overflow evaluating ...` at every device-
-// stack definition site. The only allowed where-clauses here are
-// trait bounds on concrete types — those discharge cleanly under HRTB.
 
 impl<
     D: KnxNetIpDefinition + 'static,

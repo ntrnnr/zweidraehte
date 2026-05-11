@@ -21,9 +21,9 @@ use super::{
     KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ServerError, SubnetIndication, SubnetLink,
     connections,
     dispatch::{self, MAX_RETRY_QUEUE_SIZE, PendingRequest},
-    features::{self, RoutingFeature},
+    features::{self, RoutingFeature, TcpFeature},
     services,
-    transport::{TcpEvent, TcpManager, UdpEvent, UdpManager},
+    transport::{TcpEvent, UdpEvent, UdpManager},
 };
 
 pub struct KnxNetIp<
@@ -33,22 +33,13 @@ pub struct KnxNetIp<
     const MAX_SOCKETS: usize = 4,
     const MAX_TCP_STREAMS: usize = 1,
     const MAX_CHANNELS: usize = 1,
-    // Tunneling slot count promoted to a plain const generic. This used to
-    // live as `<F::Tunneling as TunnelingFeature>::CAPACITY` projected at
-    // every use site, which forced a `[(); CAPACITY]:,` well-formedness
-    // clause on the struct that broke `for<'a>` HRTB elaboration on
-    // `StackDefinition::LLB`. Plain const generic + trait-bound on `Tunnel`
-    // gives the same compile-time guarantee with no const-eval obligations
-    // visible to the HRTB. Concrete callers spell it via the
-    // `KnxNetIpBuilderFor<D>` alias which sets it from
-    // `D::TUNNEL_CAPACITY`.
+    // Tunneling slot count. Sized from `D::TUNNEL_CAPACITY`.
     const TUNNEL_CAPACITY: usize = 0,
     // Connection-manager lifecycle slot count (Device Management +
-    // tunneling combined). Independent of `MAX_CHANNELS`: even a
-    // tunneling-free device needs at least one slot for the management
-    // connection ETS opens for programming. Default `TUNNEL_CAPACITY +
-    // 1` covers the common case; downstream callers spell it via
-    // `D::MAX_CONNECTIONS`.
+    // tunneling combined). Sized from `D::MAX_CONNECTIONS`. Independent
+    // of `MAX_CHANNELS` (which is per-TCP-stream channel multiplexing).
+    // Even a tunneling-free device needs ≥ 1 slot for the management
+    // connection ETS opens for programming.
     const MAX_CONNECTIONS: usize = 1,
 > where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
@@ -102,7 +93,7 @@ pub struct KnxNetIp<
     pub(super) cemi_response_receiver: Option<embassy_sync::channel::DynamicReceiver<'res, Buffer<'static>>>,
     /// TCP connection manager. Always present; without a bound listener
     /// it is a no-op.
-    pub(super) tcp_manager: TcpManager<T, MAX_TCP_STREAMS, MAX_CHANNELS>,
+    pub(super) tcp_manager: <F::Tcp as TcpFeature>::Manager<T, MAX_TCP_STREAMS, MAX_CHANNELS, 512>,
     /// Bus bridge for IP Interface composite mode.
     ///
     /// When `Some`, this KNX/IP instance is part of a composite link layer
@@ -199,9 +190,11 @@ where
                 self.apply_tcp_channel_events(&ack_result.tcp_events);
             }
 
-            // Check TCP idle timeouts alongside the heartbeat.
-            if self.tcp_manager.has_active_connections() {
-                let tcp_idle_events = self.tcp_manager.check_idle_timeouts();
+            // Check TCP idle timeouts alongside the heartbeat. For
+            // `NoTcp` builds these calls fold to `false` / empty Vec
+            // and the whole branch dead-codes out.
+            if <F::Tcp as TcpFeature>::has_active_connections(&self.tcp_manager) {
+                let tcp_idle_events = <F::Tcp as TcpFeature>::check_idle_timeouts(&mut self.tcp_manager);
                 for event in tcp_idle_events {
                     if let TcpEvent::Closed { tcp_idx, .. } = &event {
                         self.connection_manager.on_tcp_closed(*tcp_idx);
@@ -220,12 +213,13 @@ where
 
             // Timer: earliest of retry time, heartbeat tick, and TCP
             // idle timeout (10s when idle TCP connections exist).
-            let heartbeat_time =
-                if self.connection_manager.has_active_connections() || self.tcp_manager.has_active_connections() {
-                    Some(Instant::now() + Duration::from_secs(1))
-                } else {
-                    None
-                };
+            let heartbeat_time = if self.connection_manager.has_active_connections()
+                || <F::Tcp as TcpFeature>::has_active_connections(&self.tcp_manager)
+            {
+                Some(Instant::now() + Duration::from_secs(1))
+            } else {
+                None
+            };
 
             let next_timer = match (self.get_next_retry_time(), heartbeat_time) {
                 (Some(a), Some(b)) => Some(if a < b { a } else { b }),
@@ -255,7 +249,7 @@ where
 
             let transport_future = select4(
                 self.udp_manager.next_event(buffer_manager),
-                self.tcp_manager.next_event(buffer_manager),
+                <F::Tcp as TcpFeature>::next_event(&mut self.tcp_manager, buffer_manager),
                 subnet_ind_future,
                 cemi_response_future,
             );

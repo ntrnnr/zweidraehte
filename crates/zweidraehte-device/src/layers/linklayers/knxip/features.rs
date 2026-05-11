@@ -525,30 +525,263 @@ impl TunnelingFeature for NoTunneling {
 // TCP Feature
 // ============================================================================
 
+use super::transport::{TcpEvent, TcpManager};
+use zweidraehte_platform::IpTransport;
+
 /// Compile-time feature slot for TCP transport.
 ///
-/// Controls whether a TCP listener is bound and whether TCP connections
-/// can be accepted. When disabled, the TCP manager type is `()` and the
-/// TCP event loop arm uses `pending()` with `Infallible` events.
+/// The associated `Manager<...>` type is the concrete owner of TCP
+/// state. [`WithTcp`] maps it to the real [`TcpManager`]; [`NoTcp`]
+/// maps it to [`NoTcpManager`] — a ZST whose every dispatch method
+/// returns the empty/idle answer. LLVM monomorphises the `NoTcp` path
+/// down to nothing: the field disappears, the select-arm folds to
+/// `pending::<Infallible>`, and the bind / write / close call sites
+/// inline to no-ops.
+///
+/// All TCP-touching code paths go through these static-dispatch
+/// methods rather than calling `TcpManager::*` directly, so `NoTcp`
+/// users pay zero bytes and zero cycles.
+#[allow(private_interfaces)] // Manager bounds reference internal types
 pub trait TcpFeature: 'static {
     /// Whether TCP is enabled (affects Core service family version).
-    fn is_enabled() -> bool;
+    const ENABLED: bool;
+
+    /// Concrete manager type. `TcpManager<...>` for [`WithTcp`], a
+    /// zero-sized [`NoTcpManager`] for [`NoTcp`].
+    type Manager<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize>;
+
+    /// Compatibility shim. Existing call sites used `Tcp::is_enabled()`;
+    /// keep it working until the cleanup follow-up.
+    fn is_enabled() -> bool {
+        Self::ENABLED
+    }
+
+    /// Construct a new manager. ZST for `NoTcp`.
+    fn new<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>() -> Self::Manager<T, MS, MC, TBS>;
+
+    /// Bind the TCP listener (no-op for `NoTcp`).
+    fn bind<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        ctx: &<T::TcpListener as zweidraehte_platform::AsyncTcpListener>::Context,
+        options: zweidraehte_platform::TcpListenerOptions,
+    );
+
+    /// `true` if any TCP connection slot is occupied.
+    fn has_active_connections<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &Self::Manager<T, MS, MC, TBS>,
+    ) -> bool;
+
+    /// Periodic idle-timeout sweep. Returns the events for the runtime
+    /// to act on (close + channel-id list).
+    fn check_idle_timeouts<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+    ) -> Vec<TcpEvent<MC>, MS>;
+
+    /// Poll for the next TCP event. Pends forever for `NoTcp`.
+    fn next_event<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        buffer_manager: &zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+    ) -> impl core::future::Future<Output = TcpEvent<MC>>;
+
+    /// Add a KNX/IP channel id to the TCP-stream-vs-channel tracking.
+    /// No-op for `NoTcp`.
+    fn add_channel<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+        channel_id: u8,
+    );
+
+    /// Remove a KNX/IP channel id from the TCP-stream tracking.
+    /// No-op for `NoTcp`.
+    fn remove_channel<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+        channel_id: u8,
+    );
+
+    /// Write a response on a specific TCP connection. Returns `Err(())`
+    /// for `NoTcp` so the runtime closes the (non-existent) connection
+    /// — the path is dead-code-eliminated.
+    fn write_to<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+        data: &[u8],
+    ) -> impl core::future::Future<Output = Result<(), ()>>;
+
+    /// Close a TCP connection. Returns the channel-id list active on it.
+    fn close<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+    ) -> Vec<u8, MC>;
 }
 
-/// TCP is enabled.
+/// TCP is enabled — `Manager = TcpManager<...>`.
 pub struct WithTcp;
 
+#[allow(private_interfaces)]
 impl TcpFeature for WithTcp {
-    fn is_enabled() -> bool {
-        true
+    const ENABLED: bool = true;
+
+    type Manager<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize> = TcpManager<T, MS, MC, TBS>;
+
+    fn new<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>() -> Self::Manager<T, MS, MC, TBS> {
+        TcpManager::new()
+    }
+
+    fn bind<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        ctx: &<T::TcpListener as zweidraehte_platform::AsyncTcpListener>::Context,
+        options: zweidraehte_platform::TcpListenerOptions,
+    ) {
+        match manager.bind(ctx, options) {
+            Ok(()) => {}
+            Err(_e) => {
+                error!("Failed to bind TCP listener: {:?}", _e);
+            }
+        }
+    }
+
+    fn has_active_connections<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &Self::Manager<T, MS, MC, TBS>,
+    ) -> bool {
+        manager.has_active_connections()
+    }
+
+    fn check_idle_timeouts<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+    ) -> Vec<TcpEvent<MC>, MS> {
+        manager.check_idle_timeouts()
+    }
+
+    async fn next_event<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        buffer_manager: &zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+    ) -> TcpEvent<MC> {
+        manager.next_event(buffer_manager).await
+    }
+
+    fn add_channel<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+        channel_id: u8,
+    ) {
+        if let Some(conn) = manager.connection_mut(tcp_idx) {
+            conn.add_channel(channel_id);
+        }
+    }
+
+    fn remove_channel<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+        channel_id: u8,
+    ) {
+        if let Some(conn) = manager.connection_mut(tcp_idx) {
+            conn.remove_channel(channel_id);
+        }
+    }
+
+    async fn write_to<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+        data: &[u8],
+    ) -> Result<(), ()> {
+        manager.write_to(tcp_idx, data).await
+    }
+
+    fn close<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        manager: &mut Self::Manager<T, MS, MC, TBS>,
+        tcp_idx: usize,
+    ) -> Vec<u8, MC> {
+        manager.close(tcp_idx)
     }
 }
 
-/// TCP is disabled.
+/// TCP is disabled — `Manager = NoTcpManager`, a ZST. Every dispatch
+/// method folds to a no-op / empty / `pending()` future, so LLVM
+/// eliminates the TCP code entirely from the binary.
 pub struct NoTcp;
 
+/// Zero-sized placeholder for the disabled-TCP case. Owned by the
+/// runtime in place of `TcpManager` when `Tcp = NoTcp`; contains no
+/// state and supports no operations.
+pub struct NoTcpManager;
+
+#[allow(private_interfaces)]
 impl TcpFeature for NoTcp {
-    fn is_enabled() -> bool {
+    const ENABLED: bool = false;
+
+    type Manager<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize> = NoTcpManager;
+
+    // `#[inline]` on every method so LLVM constant-folds the empty-bodied
+    // / `false` / `Err(())` results into their call sites, eliminating
+    // the entire TCP path from `NoTcp` binaries (idle-timeout sweeps,
+    // select arms, channel-id tracking, response writes — all gone).
+
+    #[inline]
+    fn new<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>() -> Self::Manager<T, MS, MC, TBS> {
+        NoTcpManager
+    }
+
+    #[inline]
+    fn bind<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &mut Self::Manager<T, MS, MC, TBS>,
+        _ctx: &<T::TcpListener as zweidraehte_platform::AsyncTcpListener>::Context,
+        _options: zweidraehte_platform::TcpListenerOptions,
+    ) {
+    }
+
+    #[inline]
+    fn has_active_connections<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &Self::Manager<T, MS, MC, TBS>,
+    ) -> bool {
         false
+    }
+
+    #[inline]
+    fn check_idle_timeouts<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &mut Self::Manager<T, MS, MC, TBS>,
+    ) -> Vec<TcpEvent<MC>, MS> {
+        Vec::new()
+    }
+
+    #[inline]
+    async fn next_event<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &mut Self::Manager<T, MS, MC, TBS>,
+        _buffer_manager: &zweidraehte_proto::messages::buffers::DynBufferManager<'static>,
+    ) -> TcpEvent<MC> {
+        core::future::pending::<TcpEvent<MC>>().await
+    }
+
+    #[inline]
+    fn add_channel<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &mut Self::Manager<T, MS, MC, TBS>,
+        _tcp_idx: usize,
+        _channel_id: u8,
+    ) {
+    }
+
+    #[inline]
+    fn remove_channel<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &mut Self::Manager<T, MS, MC, TBS>,
+        _tcp_idx: usize,
+        _channel_id: u8,
+    ) {
+    }
+
+    #[inline]
+    async fn write_to<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &mut Self::Manager<T, MS, MC, TBS>,
+        _tcp_idx: usize,
+        _data: &[u8],
+    ) -> Result<(), ()> {
+        Err(())
+    }
+
+    #[inline]
+    fn close<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>(
+        _manager: &mut Self::Manager<T, MS, MC, TBS>,
+        _tcp_idx: usize,
+    ) -> Vec<u8, MC> {
+        Vec::new()
     }
 }
