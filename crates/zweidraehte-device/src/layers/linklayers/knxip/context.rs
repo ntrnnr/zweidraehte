@@ -69,6 +69,11 @@ pub trait IpAdditionalIndividualAddressContext {
     ///
     /// Returns the number of addresses written (`<= buf.len()`).
     fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize;
+
+    /// Whether `addr` is one of the additional individual addresses
+    /// currently assigned to a tunneling slot. Read on the TPUART
+    /// ACK hot path, so the implementation should avoid copying.
+    fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool;
 }
 
 // ============================================================================

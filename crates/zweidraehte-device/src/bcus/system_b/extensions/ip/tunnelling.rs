@@ -106,6 +106,11 @@ impl<const N: usize> TunnellingExtension<N> {
         n
     }
 
+    /// Whether `addr` is currently in the additional-IA list.
+    pub fn contains(&self, addr: IndividualAddress) -> bool {
+        self.additional_individual_addresses.borrow().contains(&addr)
+    }
+
     /// Replace the entire address list. Returns `Err(())` if `addrs`
     /// exceeds the compile-time capacity.
     pub fn set(&self, addrs: &[IndividualAddress]) -> Result<(), ()> {

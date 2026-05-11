@@ -597,6 +597,10 @@ impl<const N: usize, const CAPS: u16> IpStackState for IpInterfaceExtension<N, C
         self.tunnelling.write_into(buf)
     }
 
+    fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool {
+        self.tunnelling.contains(addr)
+    }
+
     fn set_additional_individual_addresses(&self, addresses: &[IndividualAddress]) -> Result<(), ()> {
         self.tunnelling.set(addresses)
     }

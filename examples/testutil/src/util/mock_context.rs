@@ -217,6 +217,10 @@ impl IpAdditionalIndividualAddressContext for &MockContext {
     ) -> usize {
         0
     }
+
+    fn contains_additional_individual_address(&self, _addr: zweidraehte_proto::address::IndividualAddress) -> bool {
+        false
+    }
 }
 
 impl IpAdditionalIndividualAddressContext for &mut MockContext {
@@ -225,6 +229,10 @@ impl IpAdditionalIndividualAddressContext for &mut MockContext {
         _buf: &mut [zweidraehte_proto::address::IndividualAddress],
     ) -> usize {
         0
+    }
+
+    fn contains_additional_individual_address(&self, _addr: zweidraehte_proto::address::IndividualAddress) -> bool {
+        false
     }
 }
 

@@ -220,6 +220,10 @@ impl<D: IpCapableStack> IpAdditionalIndividualAddressContext for StackContext<'_
     ) -> usize {
         self.inner.state.extension_state().write_additional_individual_addresses(buf)
     }
+
+    fn contains_additional_individual_address(&self, addr: zweidraehte_proto::address::IndividualAddress) -> bool {
+        self.inner.state.extension_state().contains_additional_individual_address(addr)
+    }
 }
 
 /// Forward [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)'s

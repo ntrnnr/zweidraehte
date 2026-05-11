@@ -329,6 +329,10 @@ impl<P: IpPlatform, const CAPS: u16> IpStackState for IpAugment<'_, P, CAPS> {
         self.config.write_additional_individual_addresses(buf)
     }
 
+    fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool {
+        self.config.contains_additional_individual_address(addr)
+    }
+
     fn set_additional_individual_addresses(&self, addrs: &[IndividualAddress]) -> Result<(), ()> {
         self.config.set_additional_individual_addresses(addrs)
     }

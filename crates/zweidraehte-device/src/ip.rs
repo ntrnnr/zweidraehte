@@ -112,6 +112,13 @@ pub trait IpStackState {
         0
     }
 
+    /// Whether `addr` is one of the additional individual addresses
+    /// currently assigned to a tunneling slot. Default `false` for
+    /// devices that don't track additional IAs (no tunneling).
+    fn contains_additional_individual_address(&self, _addr: IndividualAddress) -> bool {
+        false
+    }
+
     /// Replace additional individual addresses.
     fn set_additional_individual_addresses(&self, _addresses: &[IndividualAddress]) -> Result<(), ()> {
         Err(())

@@ -72,33 +72,32 @@ use super::{
 /// - ACKs frames addressed to additional individual addresses assigned
 ///   to tunneling connections — so the TPUART transceiver acknowledges
 ///   bus frames destined for any tunneling endpoint, not just the
-///   device's primary IA.
+///   device's primary IA. The list is read live from
+///   [`IpAdditionalIndividualAddressContext`], so writes to
+///   `PID_ADDITIONAL_INDIVIDUAL_ADDRESSES` take effect on the next
+///   bus frame without a restart.
 /// - While at least one tunneling connection is open, ACKs *every*
 ///   group frame regardless of the device's own group-address table.
 ///   A pure IP interface usually has no GA table of its own; without
 ///   this over-ACK the TP1 sender retransmits 3× and gives up on every
 ///   group frame the tunnel client wants to receive.
-///
-/// The additional addresses are snapshotted at build time — they only
-/// change during ETS programming (which requires a device restart).
-/// The tunnel-occupancy counter is live state owned by [`KnxNetIpResources`].
-pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine, const N: usize> {
+pub struct IpInterfaceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
     inner: DeviceAddressChecker<'a, ADT>,
-    additional_addresses: heapless::Vec<IndividualAddress, N>,
+    additional_ias: &'a dyn IpAdditionalIndividualAddressContext,
     tunnel_occupancy: &'a super::knxip::connections::TunnelOccupancy,
 }
 
-impl<'a, ADT: AddressTable + HasLoadStateMachine, const N: usize> IpInterfaceAddressChecker<'a, ADT, N> {
+impl<'a, ADT: AddressTable + HasLoadStateMachine> IpInterfaceAddressChecker<'a, ADT> {
     pub fn new(
         inner: DeviceAddressChecker<'a, ADT>,
-        additional_addresses: heapless::Vec<IndividualAddress, N>,
+        additional_ias: &'a dyn IpAdditionalIndividualAddressContext,
         tunnel_occupancy: &'a super::knxip::connections::TunnelOccupancy,
     ) -> Self {
-        Self { inner, additional_addresses, tunnel_occupancy }
+        Self { inner, additional_ias, tunnel_occupancy }
     }
 }
 
-impl<ADT: AddressTable + HasLoadStateMachine, const N: usize> AddressChecker for IpInterfaceAddressChecker<'_, ADT, N> {
+impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for IpInterfaceAddressChecker<'_, ADT> {
     fn should_ack(&self, header: &[u8; 6]) -> bool {
         // Delegate to inner checker first (primary IA, group via local
         // table, broadcast).
@@ -119,7 +118,7 @@ impl<ADT: AddressTable + HasLoadStateMachine, const N: usize> AddressChecker for
             // match: ACK if the destination is one of our additional
             // tunneling IAs.
             let dst = IndividualAddress::from_bytes(&[header[3], header[4]]);
-            self.additional_addresses.contains(&dst)
+            self.additional_ias.contains_additional_individual_address(dst)
         }
     }
 }
@@ -279,18 +278,12 @@ where
     ) -> impl core::future::Future<Output = !> + 'a {
         async move {
             // ==============================================================
-            // Snapshot additional IAs and build address checker
+            // Build address checker — reads additional IAs live from
+            // the context, no snapshot.
             // ==============================================================
-            let mut addr_buf = [IndividualAddress::default(); TC];
-            let addr_count =
-                IpAdditionalIndividualAddressContext::write_additional_individual_addresses(context, &mut addr_buf);
-            let mut additional_ias = heapless::Vec::<IndividualAddress, TC>::new();
-            for &addr in &addr_buf[..addr_count] {
-                let _ = additional_ias.push(addr);
-            }
             let inner_checker = DeviceAddressChecker::new(context, context.address_table());
             let address_checker =
-                IpInterfaceAddressChecker::new(inner_checker, additional_ias, resources.knxip.tunneling_resources());
+                IpInterfaceAddressChecker::new(inner_checker, context, resources.knxip.tunneling_resources());
 
             // ==============================================================
             // Internal channels
