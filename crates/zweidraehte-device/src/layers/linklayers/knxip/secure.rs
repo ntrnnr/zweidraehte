@@ -1,34 +1,12 @@
-//! KNX IP Secure: feature trait + skeleton types.
-//!
-//! This module provides only the *shape* needed for IP Secure (Vol 3
-//! Part 8 §9, document `03_08_09 KNX IP Secure v01.01.02 AS.pdf`). No
-//! crypto code lives here yet. The goal is that other parts of the
-//! link-layer refactor can already mention `D::Features::IpSecure`,
-//! `IpSecureSessionSlot`, and the per-session pool sizing without
-//! breaking when the crypto eventually lands.
-//!
-//! ## What goes here vs the device extension
-//!
-//! Persistent IP-Secure secrets (PIDs 91–97 of the KNXnet/IP Parameter
-//! Object: `backbone_key`, `device_authentication_code`,
-//! `password_hashes`, `secured_service_families`,
-//! `multicast_latency_tolerance`, `sync_latency_fraction`,
-//! `tunnelling_users`) are **device state**, not link-layer state —
-//! they belong on the IP extension's persistent config blob in
-//! `bcus/system_b/extensions/ip/storage.rs`. The link layer reaches
-//! them through the [`HasIpSecureConfig`](super::context::HasIpSecureConfig) /
-//! [`HasMcTimer`](super::context::HasMcTimer) context traits. The
-//! per-session pool, on the other hand, is link-layer scratch (one
-//! slot per concurrent secure unicast session) and lives in
-//! [`KnxNetIpResources`](super::KnxNetIpResources).
-//!
-//! ## Sizing
-//!
-//! IP Secure unicast sessions must use TCP per §2.2.3.3 — they cannot
-//! run over UDP because the replay-attack defence relies on TCP
-//! reliability. This means `MAX_SECURE_SESSIONS` is naturally bounded
-//! by `MAX_TCP_STREAMS`; the `KnxNetIpDefinition` trait defaults the
-//! two to the same value.
+//! KNX IP Secure — shape-only skeleton (Vol 3 Part 8 §9). No crypto
+//! code yet; the dispatch path for service types `09xxh` is unwired.
+//! `WithIpSecure<N>` allocates `N` session slots in
+//! [`KnxNetIpResources`](super::KnxNetIpResources) so other parts of the
+//! stack can already mention `D::Features::IpSecure`. Per-device
+//! secrets (PIDs 91–97) belong to the IP extension's persistent config;
+//! per-session scratch is link-layer state and lives here. Sessions are
+//! TCP-only per §2.2.3.3, so `MAX_SECURE_SESSIONS` is bounded by
+//! `MAX_TCP_STREAMS` (and defaults to it in `KnxNetIpDefinition`).
 
 #![allow(dead_code)] // skeleton — used once IP Secure crypto lands
 

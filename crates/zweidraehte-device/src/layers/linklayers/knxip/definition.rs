@@ -112,21 +112,11 @@ pub trait KnxNetIpDefinition: Copy + 'static {
     /// ports.
     const MAX_UDP_SOCKETS: usize = 2;
 
-    /// Outbound `PendingResponse` queue depth.
-    ///
-    /// Replaces the previously hard-coded `16` in [`KnxNetIpResources`]
-    /// (super::KnxNetIpResources). Servers push pending responses here
-    /// when a request can't be serviced inline (rate-limit, cross-task
-    /// reply, etc.).
-    const RESPONSE_CHANNEL_DEPTH: usize = 16;
-
     /// Per-TCP-connection read/frame scratch buffer size in bytes.
     ///
-    /// Sized to fit the largest expected KNX/IP frame on TCP. Default
-    /// `512` covers all current frames; bump to `560` (= 512 +
-    /// [`SECURE_WRAPPER_OVERHEAD`](super::secure::SECURE_WRAPPER_OVERHEAD))
-    /// when you enable IP Secure so a SECURE_WRAPPER around a 512-byte
-    /// inner frame still fits.
+    /// Default `512` fits the largest plain KNX/IP frame on TCP. IP-Secure
+    /// builds need `512 + `[`SECURE_WRAPPER_OVERHEAD`](super::secure::SECURE_WRAPPER_OVERHEAD)
+    /// (= 560) so a SECURE_WRAPPER around a 512-byte inner frame still fits.
     const TCP_SCRATCH_BUF_SIZE: usize = 512;
 
     /// Maximum concurrent IP Secure sessions.
@@ -144,9 +134,7 @@ pub trait KnxNetIpDefinition: Copy + 'static {
     /// Total embassy-net socket count for this definition.
     ///
     /// The embassy-net stack needs one socket per UDP socket plus one
-    /// per concurrent TCP connection plus one for DHCP. Currently
-    /// computed by hand at every call site — `1 + MAX_UDP_SOCKETS +
-    /// MAX_TCP_STREAMS` — and now centralised here so a binary writes
+    /// per concurrent TCP connection plus one for DHCP. Use as
     /// `NetStackResources::<{ MyDef::EMBASSY_NET_SOCKETS }>::new()`.
     const EMBASSY_NET_SOCKETS: usize = 1 + Self::MAX_UDP_SOCKETS + Self::MAX_TCP_STREAMS;
 

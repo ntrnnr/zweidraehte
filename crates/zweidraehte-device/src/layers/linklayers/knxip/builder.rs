@@ -26,6 +26,21 @@ use super::{
 };
 use features::{FeatureSet, RemoteConfigFeature, RoutingFeature, TcpFeature, TunnelingFeature};
 
+/// Map a feature's endpoint list to the indices of the deduplicated
+/// sockets that carry them. A server owns a socket when its port
+/// matches one of the server's registered endpoints.
+fn collect_socket_indices_for(eps: &[EndpointType], descs: &[SocketDescriptor]) -> Vec<usize, 4> {
+    let mut indices = Vec::<usize, 4>::new();
+    for ep in eps {
+        if let Some(idx) = descs.iter().position(|d| d.port() == ep.port())
+            && !indices.contains(&idx)
+        {
+            let _ = indices.push(idx);
+        }
+    }
+    indices
+}
+
 /// Builder for the KNX/IP link layer.
 ///
 /// Parameterised by a single [`KnxNetIpDefinition`] `D`. The
@@ -160,7 +175,7 @@ where
 
         // Core v1: discovery, description, connection management over UDP.
         // Core v2 additionally requires TCP support (§9.2).
-        let core_version = if <D::Features as FeatureSet>::Tcp::is_enabled() { 2 } else { 1 };
+        let core_version = if <D::Features as FeatureSet>::Tcp::ENABLED { 2 } else { 1 };
         let _ = supported_services
             .push(substructs::SupportedService { family: substructs::ServiceFamily::Core, version: core_version });
 
@@ -232,8 +247,11 @@ where
             }
         }
 
-        // Build socket index lists for each feature's server. A server
+        // Build socket-index lists for each feature's server. A server
         // "owns" the sockets whose ports match its registered endpoints.
+        // Discovery is special — it answers on *every* KNX_PORT socket
+        // regardless of multicast address, so we collect by port directly
+        // instead of going through endpoints.
         let discovery_socket_indices = {
             let mut indices = Vec::<usize, 4>::new();
             for desc_idx in 0..socket_descriptors.len() {
@@ -244,29 +262,15 @@ where
             indices
         };
 
-        let routing_socket_indices = {
-            let mut indices = Vec::<usize, 4>::new();
-            for ep in <<D::Features as FeatureSet>::Routing as RoutingFeature>::endpoints(self.routing_multicast_addr) {
-                if let Some(idx) = socket_descriptors.iter().position(|d| d.port() == ep.port())
-                    && !indices.contains(&idx)
-                {
-                    let _ = indices.push(idx);
-                }
-            }
-            indices
-        };
+        let routing_socket_indices = collect_socket_indices_for(
+            &<<D::Features as FeatureSet>::Routing as RoutingFeature>::endpoints(self.routing_multicast_addr),
+            &socket_descriptors,
+        );
 
-        let remote_config_socket_indices = {
-            let mut indices = Vec::<usize, 4>::new();
-            for ep in <<D::Features as FeatureSet>::RemoteConfig as RemoteConfigFeature>::endpoints() {
-                if let Some(idx) = socket_descriptors.iter().position(|d| d.port() == ep.port())
-                    && !indices.contains(&idx)
-                {
-                    let _ = indices.push(idx);
-                }
-            }
-            indices
-        };
+        let remote_config_socket_indices = collect_socket_indices_for(
+            &<<D::Features as FeatureSet>::RemoteConfig as RemoteConfigFeature>::endpoints(),
+            &socket_descriptors,
+        );
 
         info!("KnxNetIp builder: {} unique socket(s)", socket_descriptors.len());
 
@@ -398,9 +402,9 @@ where
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        // Construct address filter while we still have the concrete context
-        // type (before type-erasure to &dyn KnxNetIpContext). Same pattern
-        // as TPUART's AutoAddressChecker → DeviceAddressChecker.
+        // Build the address filter while the concrete context type is
+        // still in scope — `RoutingAddressFilter` needs the typed address
+        // table, which `self.build(...)` erases to `&dyn KnxNetIpContext`.
         let address_filter =
             super::types::RoutingAddressFilter::new(context.individual_address(), context.address_table());
         async move {

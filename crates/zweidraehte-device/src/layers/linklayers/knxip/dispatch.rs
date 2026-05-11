@@ -1,10 +1,6 @@
-//! Frame routing and response dispatch for KNX/IP.
-//!
-//! Contains the inbound frame routing logic (`dispatch_frame`,
-//! `dispatch_to_servers`), outbound response sending (`send_response`),
-//! retry queue management, and TCP channel tracking. These are all
-//! `impl KnxNetIp` methods split out from `runtime.rs` to keep the
-//! event loop focused on `select`-based concurrency.
+//! Frame routing, response dispatch, retry queue, and TCP channel
+//! tracking for KNX/IP. All entries here are `impl KnxNetIp` methods
+//! that the runtime event loop calls into.
 
 use core::net::SocketAddrV4;
 
@@ -104,6 +100,26 @@ where
         <F::Tunneling as features::TunnelingFeature>::Tunnel,
     >: connections::ConnectionHandlers<TUNNEL_CAPACITY>,
 {
+    /// Snapshot the additional individual addresses and tunneling slot
+    /// info needed to build a [`ServerContext`].
+    ///
+    /// Returns owned storage so the caller can borrow disjoint slices
+    /// from it while still mutably borrowing other `self` fields (e.g.
+    /// `self.routing`).
+    pub(super) fn address_and_tunnel_snapshot(
+        &self,
+    ) -> (
+        [zweidraehte_proto::address::IndividualAddress; TUNNEL_CAPACITY],
+        usize,
+        Option<(u16, heapless::Vec<substructs::TunnelingSlotInfo, TUNNEL_CAPACITY>)>,
+    ) {
+        let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
+        let addr_count =
+            IpAdditionalIndividualAddressContext::write_additional_individual_addresses(self.context, &mut addr_buf);
+        let tunnel_slots = self.connection_manager.tunneling_slot_info();
+        (addr_buf, addr_count, tunnel_slots)
+    }
+
     /// Process expired retry requests.
     ///
     /// Only the routing server supports outgoing requests (`on_request`).
@@ -126,12 +142,7 @@ where
 
                 debug!("Retrying message (attempt {}/{})", pending.retry_count + 1, MAX_RETRY_ATTEMPTS);
 
-                let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
-                let addr_count = IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-                    self.context,
-                    &mut addr_buf,
-                );
-                let tunnel_slots = self.connection_manager.tunneling_slot_info();
+                let (addr_buf, addr_count, tunnel_slots) = self.address_and_tunnel_snapshot();
                 let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
                 let context = make_server_context::<F::RemoteConfig>(
                     self.context,
@@ -298,11 +309,8 @@ where
         socket_idx: usize,
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
-        let mut addr_buf = [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
-        let addr_count =
-            IpAdditionalIndividualAddressContext::write_additional_individual_addresses(self.context, &mut addr_buf);
+        let (addr_buf, addr_count, tunnel_slots) = self.address_and_tunnel_snapshot();
         let additional_addresses = &addr_buf[..addr_count];
-        let tunnel_slots = self.connection_manager.tunneling_slot_info();
         let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
 
         // Helper closure to build server context — captures immutable fields

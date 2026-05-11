@@ -135,17 +135,10 @@ pub type KnxIpInterfaceUdp<const N: usize> = Features<NoRouting, WithRemoteConfi
 pub type KnxIpInterfaceTcp<const N: usize> =
     Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, NoIpSecure>;
 
-// IP Secure variants — placeholder aliases. The dispatch path is not
-// implemented yet; instantiating one of these enables the per-session
-// storage in `KnxNetIpResources` and the buffer-size bump for
-// SECURE_WRAPPER, but the device cannot answer secure traffic until
-// the crypto layer lands. See [`super::secure`].
-
 /// KNX IP Secure Interface (TCP, with IP Secure session pool).
 ///
-/// Same shape as [`KnxIpInterfaceTcp<N>`] plus an IP Secure session pool
-/// of size `N` (sessions are TCP-only per spec §2.2.3.3, so they share
-/// the tunnel slot count).
+/// Session storage is allocated; crypto dispatch is not yet implemented
+/// (see [`super::secure`]).
 pub type KnxIpSecureInterfaceTcp<const N: usize> =
     Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
 
@@ -549,12 +542,6 @@ pub trait TcpFeature: 'static {
     /// Concrete manager type. `TcpManager<...>` for [`WithTcp`], a
     /// zero-sized [`NoTcpManager`] for [`NoTcp`].
     type Manager<T: IpTransport, const MAX_TCP_STREAMS: usize, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize>;
-
-    /// Compatibility shim. Existing call sites used `Tcp::is_enabled()`;
-    /// keep it working until the cleanup follow-up.
-    fn is_enabled() -> bool {
-        Self::ENABLED
-    }
 
     /// Construct a new manager. ZST for `NoTcp`.
     fn new<T: IpTransport, const MS: usize, const MC: usize, const TBS: usize>() -> Self::Manager<T, MS, MC, TBS>;

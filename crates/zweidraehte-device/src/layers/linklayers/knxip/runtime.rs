@@ -9,7 +9,6 @@ use heapless::Vec;
 use zweidraehte_platform::IpTransport;
 
 use crate::layers::Inbox;
-use crate::layers::linklayers::knxip::context::IpAdditionalIndividualAddressContext;
 use zweidraehte_proto::messages::{
     buffers::Buffer,
     builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage},
@@ -33,13 +32,7 @@ pub struct KnxNetIp<
     const MAX_SOCKETS: usize = 4,
     const MAX_TCP_STREAMS: usize = 1,
     const MAX_CHANNELS: usize = 1,
-    // Tunneling slot count. Sized from `D::TUNNEL_CAPACITY`.
     const TUNNEL_CAPACITY: usize = 0,
-    // Connection-manager lifecycle slot count (Device Management +
-    // tunneling combined). Sized from `D::MAX_CONNECTIONS`. Independent
-    // of `MAX_CHANNELS` (which is per-TCP-stream channel multiplexing).
-    // Even a tunneling-free device needs ≥ 1 slot for the management
-    // connection ETS opens for programming.
     const MAX_CONNECTIONS: usize = 1,
 > where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
@@ -186,13 +179,12 @@ where
                         self.send_response(PendingResponse { buffer, target }).await;
                     }
                 }
-
-                self.apply_tcp_channel_events(&ack_result.tcp_events);
             }
 
-            // Check TCP idle timeouts alongside the heartbeat. For
-            // `NoTcp` builds these calls fold to `false` / empty Vec
-            // and the whole branch dead-codes out.
+            // TCP idle-timeout sweep (03/08/02 §8.4.3): a TCP connection
+            // with no active inner KNX/IP channel is closed after
+            // `TCP_CONNECTION_TIMEOUT` (10 s default). Runs alongside the
+            // UDP heartbeat. `NoTcp` folds the calls to `false` / empty.
             if <F::Tcp as TcpFeature>::has_active_connections(&self.tcp_manager) {
                 let tcp_idle_events = <F::Tcp as TcpFeature>::check_idle_timeouts(&mut self.tcp_manager);
                 for event in tcp_idle_events {
@@ -340,7 +332,13 @@ where
                     }
                 },
 
-                // Request from the network layer (L_Data.req)
+                // Request from the network layer (L_Data.req).
+                //
+                // Only routing can transmit an L_Data.req to the IP side
+                // — tunneling clients send frames to the bus directly via
+                // DevMgmt's `AckAndInject` path, and DevMgmt frames from
+                // the Application Layer are produced through the cEMI TL
+                // bridge (handled in `Either4::Fourth` above), not here.
                 Either4::Second(msg) => {
                     trace!("KNX/IP received request: {:?}", msg);
 
@@ -348,20 +346,13 @@ where
                         ServiceType::L_Data_Req if F::Routing::supports_requests() => {
                             debug!("KnxNetIp Link Layer sending L_Data_Req: {:?}", msg);
 
-                            let mut addr_buf2 =
-                                [zweidraehte_proto::address::IndividualAddress::default(); TUNNEL_CAPACITY];
-                            let addr_count2 =
-                                IpAdditionalIndividualAddressContext::write_additional_individual_addresses(
-                                    self.context,
-                                    &mut addr_buf2,
-                                );
-                            let tunnel_slots = self.connection_manager.tunneling_slot_info();
-                            let tunnel_ref2 = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
+                            let (addr_buf, addr_count, tunnel_slots) = self.address_and_tunnel_snapshot();
+                            let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
                             let context = dispatch::make_server_context::<F::RemoteConfig>(
                                 self.context,
                                 self.ind_tx,
-                                &addr_buf2[..addr_count2],
-                                tunnel_ref2,
+                                &addr_buf[..addr_count],
+                                tunnel_ref,
                                 self.address_filter,
                             );
 

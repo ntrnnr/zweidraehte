@@ -423,8 +423,4 @@ impl KnxNetIpServer for DiscoveryServer {
         // Discovery server doesn't handle outgoing requests
         Err(ServerError::Unsupported)
     }
-
-    fn supports_requests(&self) -> bool {
-        false
-    }
 }

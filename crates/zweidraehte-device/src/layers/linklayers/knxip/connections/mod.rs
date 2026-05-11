@@ -17,7 +17,7 @@
 //! [`ConnectedHandler`] trait pattern — enabled variants delegate to real
 //! handlers, disabled variants are zero-size no-ops that LLVM eliminates:
 //!
-//! - Device Management: [`WithDevMgmt`] / [`NoDevMgmt`]
+//! - Device Management: [`WithDevMgmt`] (always-on — KNX spec mandates it)
 //! - Tunneling: [`WithTunnel`] / [`NoTunnel`]
 //!
 //! These are composed into [`CompositeHandlers<DM, TUN>`], which implements
@@ -312,9 +312,6 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         let now = Instant::now();
         let mut retransmissions = Vec::new();
         let mut disconnects = Vec::new();
-        // ACK timeouts only affect UDP connections, so no TCP events are
-        // produced here. (TCP connections skip ACKs entirely.)
-        let tcp_events = Vec::new();
 
         for slot in &mut self.connections {
             let Some(ctx) = slot.as_mut() else { continue };
@@ -378,7 +375,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
             }
         }
 
-        AckTimeoutResult { retransmissions, disconnects, tcp_events }
+        AckTimeoutResult { retransmissions, disconnects }
     }
 
     /// Check if there are any active connections (used by main loop to
@@ -436,12 +433,6 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         // Message code: T_Data_Connected.ind (0x89) — the device acts as
         // the "bus" toward the cEMI client, indicating data to it. ETS
         // expects .ind, not .con (which is for bus-level confirmations).
-        //
-        // The scratch used to be a stack `[u8; 256]`. Pool-allocate
-        // instead: the bytes never need to leave this method (we copy
-        // them straight into `resp_buffer`), and the buffer drops at the
-        // end of the function, so the pool footprint is one slot for
-        // the duration of one synchronous call.
         let cemi_builder = CemiTransportBuilder { message_code: CemiMessageCode::TDataConnectedInd, tpdu };
         let mut cemi_payload = buffer_manager.try_alloc()?;
         cemi_payload.serialize(&cemi_builder);

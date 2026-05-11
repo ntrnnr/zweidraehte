@@ -565,8 +565,4 @@ impl KnxNetIpServer for RoutingServer {
 
         Ok(responses)
     }
-
-    fn supports_requests(&self) -> bool {
-        true
-    }
 }

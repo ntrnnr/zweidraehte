@@ -75,31 +75,19 @@ pub trait IpAdditionalIndividualAddressContext {
 // IP Secure context traits — shape only, used once the crypto layer lands
 // ============================================================================
 //
-// These three traits map the spec-required IP Secure runtime surface
-// (Vol 3 Part 8 §9, doc `03_08_09 KNX IP Secure v01.01.02 AS.pdf`)
-// into the link-layer context vocabulary:
+// Three traits map the IP-Secure runtime surface (Vol 3 Part 8 §9) into
+// the link-layer context vocabulary:
 //
-// - [`HasIpSecureConfig`]  — persistent per-device secrets (PIDs 91–97
-//                            of the KNXnet/IP Parameter Object). All
-//                            getters return live state because every
-//                            property is writable via secure
-//                            `A_PropertyValue_Write` at runtime.
-// - [`HasMcTimer`]         — the 48-bit free-running multicast timer
-//                            (§2.2.2.2.2) plus the `mc_timer_authentic`
-//                            flag that gates multicast payload
-//                            forwarding (§2.2.2.3.2.8).
-// - [`HasIpSecureSessions`] — per-session runtime state pool. Sized
-//                             from `KnxNetIpDefinition::MAX_SECURE_SESSIONS`,
-//                             TCP-only per §2.2.3.3.
+// - [`HasIpSecureConfig`]   — persistent per-device secrets (PIDs 91–97).
+// - [`HasMcTimer`]          — 48-bit multicast timer (§2.2.2.2.2) plus the
+//                             `mc_timer_authentic` gate (§2.2.2.3.2.8).
+// - [`HasIpSecureSessions`] — per-session runtime state pool, sized by
+//                             `KnxNetIpDefinition::MAX_SECURE_SESSIONS`.
 //
-// None of them are added to the [`KnxNetIpContext`](super::KnxNetIpContext)
-// supertrait alias yet — that bundle is what every existing call site
-// already implements. Adding the IP-Secure traits unconditionally
-// would force every non-secure device to write empty stubs. Instead,
-// the eventual crypto landing will introduce a parallel
-// [`KnxNetIpSecureContext`] supertrait combining `KnxNetIpContext`
-// with these three; secure-only code paths bound on the combo, plain
-// paths stay on `KnxNetIpContext`.
+// None of them are part of [`KnxNetIpContext`](super::KnxNetIpContext) yet
+// — bundling them unconditionally would force every non-secure device
+// to write empty stubs. The eventual crypto path introduces
+// [`KnxNetIpSecureContext`] (defined below) as the secure-only combo.
 
 /// Per-device persistent IP-Secure secret material (PIDs 91–97 of the
 /// KNXnet/IP Parameter Object).

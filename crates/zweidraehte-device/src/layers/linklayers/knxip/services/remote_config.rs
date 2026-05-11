@@ -277,8 +277,4 @@ impl KnxNetIpServer for RemoteConfigurationServer {
         // Remote config server doesn't handle outgoing requests
         Err(ServerError::Unsupported)
     }
-
-    fn supports_requests(&self) -> bool {
-        false
-    }
 }

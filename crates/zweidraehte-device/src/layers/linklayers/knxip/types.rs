@@ -338,10 +338,4 @@ pub(crate) trait KnxNetIpServer {
         message: &KnxMessageBuffer<Buffer<'static>>,
         context: &ServerContext<'a>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError>;
-
-    /// Can this server handle outgoing messages?
-    #[allow(dead_code)] // Implemented by servers; dispatch uses FeatureSet::supports_requests() instead
-    fn supports_requests(&self) -> bool {
-        false
-    }
 }

@@ -107,19 +107,11 @@ impl Default for EndpointType {
     }
 }
 
-/// Static resources for KNX/IP link layer.
+/// Static resources for the KNX/IP link layer.
 ///
-/// Provides externally-owned storage that must outlive the
-/// [`KnxNetIp`] link layer instance. Currently holds the response
-/// channel through which services queue outbound messages.
-///
-/// **Refactor in progress (see plan
-/// `the-knx-ip-linklayer-in-reactive-seal.md`):** this struct will
-/// become `KnxNetIpResources<D: KnxNetIpDefinition>` carrying TCP
-/// scratch buffers, IP-Secure session slots, and a parameterised
-/// response-channel depth. The cutover requires the `KnxNetIpBuilder`
-/// and `KnxNetIp` runtime to also become parameterised over `D`, which
-/// is the next chunk of work.
+/// Externally-owned storage that must outlive the [`KnxNetIp`] runtime.
+/// Holds the response channel through which services queue outbound
+/// messages.
 pub struct KnxNetIpResources {
     /// Response channel for queuing outbound messages.
     response_channel: Channel<NoopRawMutex, PendingResponse, 16>,

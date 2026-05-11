@@ -131,48 +131,6 @@ impl ConnectedHandler for WithDevMgmt {
     }
 }
 
-/// Device Management is disabled — zero-size no-op.
-#[allow(dead_code)] // Available for configurations without Device Management
-pub struct NoDevMgmt;
-
-impl ConnectedHandler for NoDevMgmt {
-    type Handler<'a> = ();
-    const CONNECTION_TYPE: ConnectionType = ConnectionType::DeviceManagement;
-
-    fn accept_connection(
-        _h: &mut Self::Handler<'_>,
-        _channel_id: u8,
-        _cri: &CRI,
-    ) -> Result<AcceptedConnection, ConnectionStatus> {
-        Err(ConnectionStatus::ConnectionTypeNotSupported)
-    }
-
-    fn close_connection(_h: &mut Self::Handler<'_>, _channel_id: u8) {}
-
-    async fn on_data_frame<'a>(
-        _h: &mut Self::Handler<'a>,
-        _channel_id: u8,
-        _data: &[u8],
-        _conn: &mut ConnectionContext,
-        _buffer_manager: &DynBufferManager<'static>,
-    ) -> Result<DataFrameAction, ServerError> {
-        Err(ServerError::Unsupported)
-    }
-
-    fn on_data_ack(
-        _h: &mut Self::Handler<'_>,
-        _channel_id: u8,
-        _data: &[u8],
-        _conn: &mut ConnectionContext,
-    ) -> Result<(), ServerError> {
-        Err(ServerError::Unsupported)
-    }
-
-    fn handled_service_types<'h>(_h: &'h Self::Handler<'_>) -> &'h [KNXnetIPServiceType] {
-        &[]
-    }
-}
-
 // ---- Tunneling slot --------------------------------------------------------
 
 /// Tunneling is enabled — delegates to [`TunnelConnectionHandler`].

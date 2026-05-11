@@ -195,6 +195,4 @@ pub struct AckTimeoutResult<const MAX_CONNECTIONS: usize> {
     /// Each entry is (channel_id, control_endpoint target for the
     /// DISCONNECT_REQUEST).
     pub disconnects: Vec<(u8, ResponseTarget), MAX_CONNECTIONS>,
-    /// TCP channel tracking events from disconnected connections.
-    pub tcp_events: Vec<TcpChannelEvent, MAX_CONNECTIONS>,
 }
