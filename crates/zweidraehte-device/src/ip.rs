@@ -1,166 +1,81 @@
 //! KNX/IP state extension
 //!
-//! This module contains IP-specific stack state traits, constants, and platform
-//! re-exports used by KNXnet/IP devices.
+//! This module contains IP-specific stack state accessors, constants, and
+//! platform re-exports used by KNXnet/IP devices.
 //!
-//! The IP state is split into two traits:
+//! The IP state surface lives on two distinct types:
 //!
-//! - [`IpStackState`] — persisted/configured values (ETS-programmable, stored in
-//!   [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)). These are
-//!   available anywhere the extension state is accessible.
+//! - The persisted/configured values (ETS-programmable: IP address, subnet,
+//!   friendly name, project installation ID, etc.) live on
+//!   [`IpExtensionState`](crate::bcus::system_b::IpExtensionState) as
+//!   inherent methods. Code reaches them through the
+//!   [`HasIpExtensionState`] accessor, which both `IpExtensionState` itself
+//!   and the tunnelling-aggregating
+//!   [`IpInterfaceExtension`](crate::bcus::system_b::IpInterfaceExtension)
+//!   implement, so generic context impls navigate uniformly via
+//!   `extension_state().ip_state()`.
 //!
-//! - [`IpPlatformState`] — current runtime values queried from the platform/OS
-//!   (actual IP, MAC, capabilities). These require a platform reference and are
-//!   only available in contexts that have one (augment, context traits).
+//! - Current runtime values (actual IP, MAC, link capabilities) live on the
+//!   [`IpPlatform`] trait and are queried directly from the platform
+//!   reference held by augments and context impls.
 
 use core::net::Ipv4Addr;
 
 use zweidraehte_proto::address::IndividualAddress;
 
 // ============================================================================
-// IpStackState — persisted/configured IP parameters
+// HasIpExtensionState — accessor for the canonical persisted IP config
 // ============================================================================
 
-/// Persisted IP configuration state for KNXnet/IP devices.
+/// Persisted IP configuration accessor surface.
 ///
-/// This trait provides access to ETS-programmable IP parameters that are
-/// stored in the device's extension state and survive power cycles.
+/// Only [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)
+/// implements this trait directly — it carries the storage. Wrapper
+/// types like
+/// [`IpInterfaceExtension`](crate::bcus::system_b::IpInterfaceExtension)
+/// expose the inner state via [`HasIpExtensionState`] instead, so
+/// `IpStackState` has exactly one impl and never carries delegation.
 ///
-/// For current runtime values (actual IP from OS/DHCP, MAC address, device
-/// capabilities), see [`IpPlatformState`].
+/// Generic context code that needs to read IP config bounds
+/// `ES: HasIpExtensionState` and calls `.ip_state()` to obtain a
+/// `&dyn IpStackState`.
 pub trait IpStackState {
-    /// Get the configured (static) IP address.
-    ///
-    /// This is the address configured via ETS, used when IP assignment
-    /// method is set to manual/static.
     fn configured_ip_address(&self) -> Ipv4Addr;
-
-    /// Set the configured IP address.
     fn set_configured_ip_address(&self, addr: Ipv4Addr);
-
-    /// Get the configured subnet mask.
     fn configured_subnet_mask(&self) -> Ipv4Addr;
-
-    /// Set the configured subnet mask.
     fn set_configured_subnet_mask(&self, mask: Ipv4Addr);
-
-    /// Get the configured default gateway.
     fn configured_default_gateway(&self) -> Ipv4Addr;
-
-    /// Set the configured default gateway.
     fn set_configured_default_gateway(&self, gateway: Ipv4Addr);
-
-    /// Get the IP assignment method.
-    ///
-    /// - Bit 0: Manual (static IP)
-    /// - Bit 1: BootP
-    /// - Bit 2: DHCP
-    /// - Bit 3: AutoIP
     fn ip_assignment_method(&self) -> u8;
-
-    /// Set the IP assignment method.
     fn set_ip_assignment_method(&self, method: u8);
-
-    /// Get the routing multicast address.
-    ///
-    /// Default is 224.0.23.12 (KNX multicast address).
     fn routing_multicast_address(&self) -> Ipv4Addr;
-
-    /// Set the routing multicast address.
     fn set_routing_multicast_address(&self, addr: Ipv4Addr);
-
-    /// Get the multicast TTL value.
-    ///
-    /// Default is 16 per KNX specification.
     fn ttl(&self) -> u8;
-
-    /// Set the multicast TTL value.
     fn set_ttl(&self, ttl: u8);
-
-    /// Get the friendly name length.
     fn friendly_name_len(&self) -> usize;
-
-    /// Get the friendly name as a fixed-size buffer.
-    ///
-    /// The actual name length is given by [`friendly_name_len`](Self::friendly_name_len).
-    /// Bytes beyond the length are zero-padded.
     fn friendly_name(&self) -> [u8; 30];
-
-    /// Set the friendly name.
     fn set_friendly_name(&self, name: &[u8]);
-
-    /// Get the project installation ID.
-    ///
-    /// 2 bytes: project number (bits 15-4) + installation number (bits 3-0)
     fn project_installation_id(&self) -> u16;
-
-    /// Set the project installation ID.
     fn set_project_installation_id(&self, id: u16);
-
-    /// Maximum number of additional individual addresses this device supports.
-    ///
-    /// Returns 0 for devices that don't support tunneling. Used by property
-    /// descriptors to report the array capacity.
-    fn additional_individual_address_capacity(&self) -> usize {
-        0
-    }
-
-    /// Write additional individual addresses into `buf`.
-    ///
-    /// Returns the number of addresses written (`<= buf.len()`).
-    fn write_additional_individual_addresses(&self, _buf: &mut [IndividualAddress]) -> usize {
-        0
-    }
-
-    /// Whether `addr` is one of the additional individual addresses
-    /// currently assigned to a tunneling slot. Default `false` for
-    /// devices that don't track additional IAs (no tunneling).
-    fn contains_additional_individual_address(&self, _addr: IndividualAddress) -> bool {
-        false
-    }
-
-    /// Replace additional individual addresses.
-    fn set_additional_individual_addresses(&self, _addresses: &[IndividualAddress]) -> Result<(), ()> {
-        Err(())
-    }
 }
 
-// ============================================================================
-// IpPlatformState — current runtime values from the platform/OS
-// ============================================================================
-
-/// Current runtime network state from the platform/OS.
+/// Accessor returning a borrowed `dyn IpStackState`.
 ///
-/// This trait provides read-only access to values that come from the
-/// operating system or network stack (actual IP address, MAC, capabilities).
-/// These are not persisted — they reflect the live state.
+/// Implemented by every extension-state type that fronts a tunnelling
+/// or non-tunnelling IP device — directly by
+/// [`IpExtensionState`](crate::bcus::system_b::IpExtensionState) (which
+/// returns itself) and indirectly by wrappers like
+/// [`IpInterfaceExtension`](crate::bcus::system_b::IpInterfaceExtension)
+/// (which return their inner IP state).
 ///
-/// Implemented by [`IpAugment`](crate::bcus::system_b::IpAugment) which
-/// combines an [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)
-/// reference (for config) with a platform reference (for current values).
-pub trait IpPlatformState: IpStackState {
-    /// Get the current IP address from the platform/OS.
-    ///
-    /// This reflects the actual IP address the device is using, which may
-    /// differ from the configured address if using DHCP.
-    fn current_ip_address(&self) -> Ipv4Addr;
-
-    /// Get the current subnet mask from the platform/OS.
-    fn current_subnet_mask(&self) -> Ipv4Addr;
-
-    /// Get the current default gateway from the platform/OS.
-    fn current_default_gateway(&self) -> Ipv4Addr;
-
-    /// Get the MAC address of the network interface.
-    fn mac_address(&self) -> [u8; 6];
-
-    /// Get the current IP assignment method in use.
-    fn current_ip_assignment_method(&self) -> u8;
-
-    /// Get IP capabilities supported by this device.
-    ///
-    /// Bitfield indicating which assignment methods are supported.
-    fn ip_capabilities(&self) -> u8;
+/// The dyn-typed return keeps the trait non-generic — generic code can
+/// bound `ES: HasIpExtensionState` without threading `CAPS` through
+/// every signature. Cost is one indirection per IP-config read, which
+/// is acceptable on the cold paths (`DeviceInfoContext`,
+/// `IpDiagnosticsContext`) that consume this.
+pub trait HasIpExtensionState {
+    /// Borrow the persisted IP extension state.
+    fn ip_state(&self) -> &dyn IpStackState;
 }
 
 // ============================================================================
@@ -179,6 +94,33 @@ pub trait HasRoutingMulticastRebind {
     fn routing_multicast_rebind_channel(
         &self,
     ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, Ipv4Addr, 2>;
+}
+
+/// Access to a set of additional KNX individual addresses assigned to
+/// KNXnet/IP tunnelling slots.
+///
+/// Implemented by every IP extension state so the KNX/IP link-layer
+/// context impl can be unconditional, but the default methods are
+/// no-ops: only extensions that actually carry a tunnelling address
+/// list (e.g. `IpInterfaceExtension`, which delegates to its
+/// `TunnellingExtension`) override them. Plain `IpExtensionState`
+/// without tunnelling adopts the defaults.
+pub trait HasAdditionalIas {
+    /// Write currently-assigned additional IAs into `buf`.
+    ///
+    /// Returns the number of addresses written (`<= buf.len()` and
+    /// `<=` the populated count). Defaults to none.
+    fn write_additional_ias_into(&self, _buf: &mut [IndividualAddress]) -> usize {
+        0
+    }
+
+    /// Whether `addr` is currently assigned to a tunnelling slot.
+    ///
+    /// Called on the TPUART ACK hot path — keep it allocation-free.
+    /// Defaults to `false`.
+    fn additional_ia_is_assigned(&self, _addr: IndividualAddress) -> bool {
+        false
+    }
 }
 
 // ============================================================================

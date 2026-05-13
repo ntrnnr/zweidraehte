@@ -25,7 +25,7 @@ use crate::bcus::system_b::HasExtensionState;
 use crate::objects::interface::HasMaxRetryCount;
 #[cfg(feature = "knxip")]
 use crate::{
-    HasRoutingMulticastRebind, IpPlatform, IpStackState,
+    HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpPlatform,
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext, RoutingMulticastRebindContext,
     },
@@ -66,14 +66,17 @@ fn set_clamped_apdu_length<D: StackDefinition>(state: &D::State, length: u16) {
 /// Auto-implemented via blanket impl. Simplifies where clauses on
 /// [`StackContext`] trait impls that need IP extension state and platform.
 #[cfg(feature = "knxip")]
-pub trait IpCapableStack: StackDefinition<State: HasExtensionState<ES: IpStackState>, Platform: IpPlatform> {}
+pub trait IpCapableStack:
+    StackDefinition<State: HasExtensionState<ES: HasIpExtensionState>, Platform: IpPlatform>
+{
+}
 
 #[cfg(feature = "knxip")]
 impl<D> IpCapableStack for D
 where
     D: StackDefinition,
     D::State: HasExtensionState,
-    <D::State as HasExtensionState>::ES: IpStackState,
+    <D::State as HasExtensionState>::ES: HasIpExtensionState,
     D::Platform: IpPlatform,
 {
 }
@@ -155,7 +158,7 @@ impl<D: IpCapableStack> DeviceInfoContext for StackContext<'_, D> {
         use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, DeviceStatus, KNXMedium};
 
         let state = &self.inner.state;
-        let ip = state.extension_state();
+        let ip = state.extension_state().ip_state();
         let platform = &self.inner.platform;
 
         DeviceInformation {
@@ -188,7 +191,7 @@ impl<D: IpCapableStack> DeviceInfoContext for StackContext<'_, D> {
 #[cfg(feature = "knxip")]
 impl<D: IpCapableStack> IpDiagnosticsContext for StackContext<'_, D> {
     fn ip_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpConfig {
-        let ip = self.inner.state.extension_state();
+        let ip = self.inner.state.extension_state().ip_state();
         let platform = &self.inner.platform;
         zweidraehte_proto::messages::knxip::substructs::IpConfig {
             ip_address: ip.configured_ip_address(),
@@ -213,16 +216,19 @@ impl<D: IpCapableStack> IpDiagnosticsContext for StackContext<'_, D> {
 }
 
 #[cfg(feature = "knxip")]
-impl<D: IpCapableStack> IpAdditionalIndividualAddressContext for StackContext<'_, D> {
+impl<D: IpCapableStack> IpAdditionalIndividualAddressContext for StackContext<'_, D>
+where
+    <D::State as HasExtensionState>::ES: HasAdditionalIas,
+{
     fn write_additional_individual_addresses(
         &self,
         buf: &mut [zweidraehte_proto::address::IndividualAddress],
     ) -> usize {
-        self.inner.state.extension_state().write_additional_individual_addresses(buf)
+        self.inner.state.extension_state().write_additional_ias_into(buf)
     }
 
     fn contains_additional_individual_address(&self, addr: zweidraehte_proto::address::IndividualAddress) -> bool {
-        self.inner.state.extension_state().contains_additional_individual_address(addr)
+        self.inner.state.extension_state().additional_ia_is_assigned(addr)
     }
 }
 

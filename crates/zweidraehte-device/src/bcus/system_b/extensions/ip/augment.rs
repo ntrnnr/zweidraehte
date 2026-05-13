@@ -1,12 +1,10 @@
 //! `IpAugment` and its `Augment<D>` implementation.
 //!
-//! [`IpAugment`] combines an [`IpExtensionState`] reference (persisted config)
-//! with a platform reference (current network state). It provides:
-//!
-//! - [`IpStackState`] — delegates config methods to the inner extension state
-//! - [`IpPlatformState`] — delegates current values to the platform
-//! - [`Augment<D>`](crate::service::Augment) — the IP
-//!   Parameter Object (Type 11) with all routing-only IP PIDs.
+//! [`IpAugment`] is a passive bundle of two borrows — `config: &IpExtensionState`
+//! for persisted ETS-programmable IP parameters and `platform: &P` for
+//! current platform/OS network state. The macro-generated property
+//! dispatch reads and writes those references directly; the augment
+//! itself carries no behaviour beyond storing the two pointers.
 //!
 //! Tunnelling-only PIDs (53 `ADDITIONAL_INDIVIDUAL_ADDRESSES`,
 //! 79 `TUNNELLING_ADDRESSES`) are *not* owned by this augment; they
@@ -18,7 +16,7 @@
 use core::net::Ipv4Addr;
 
 use crate::{
-    IpPlatform, IpPlatformState, IpStackState, StackDefinition, StackState,
+    IpPlatform, IpStackState, StackDefinition, StackState,
     objects::interface::{
         FullPropertyWriteRequest, Ipv4Property, PropertyError, StatePropertyValue, WriteResponse,
         interface_object_augment, pid,
@@ -90,10 +88,10 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
 
     #[io(pid = pid::ip::PROJECT_INSTALLATION_ID, pdt = PDT_UnsignedInt, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 2] { this.project_installation_id().to_be_bytes() },
+         read = |this: &Self| -> [u8; 2] { this.config.project_installation_id().to_be_bytes() },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let v = <PDT_UnsignedInt as StatePropertyValue>::from_bytes(data)?;
-             this.set_project_installation_id(v);
+             this.config.set_project_installation_id(v);
              Ok(WriteResponse::Echo)
          })]
     _project_installation_id_io: (),
@@ -118,72 +116,72 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
 
     #[io(pid = pid::ip::CURRENT_IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         read = |this: &Self| -> [u8; 1] { [this.current_ip_assignment_method()] })]
+         read = |this: &Self| -> [u8; 1] { [this.platform.current_ip_assignment_method()] })]
     _current_ip_assignment_method_io: (),
 
     #[io(pid = pid::ip::IP_ASSIGNMENT_METHOD, pdt = PDT_UnsignedChar, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 1] { [this.ip_assignment_method()] },
+         read = |this: &Self| -> [u8; 1] { [this.config.ip_assignment_method()] },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let v = <PDT_UnsignedChar as StatePropertyValue>::from_bytes(data)?;
-             this.set_ip_assignment_method(v);
+             this.config.set_ip_assignment_method(v);
              Ok(WriteResponse::Echo)
          })]
     _ip_assignment_method_io: (),
 
     #[io(pid = pid::ip::IP_CAPABILITIES, pdt = PDT_Bitset8, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         read = |this: &Self| -> [u8; 1] { [this.ip_capabilities()] })]
+         read = |this: &Self| -> [u8; 1] { [this.platform.ip_capabilities()] })]
     _ip_capabilities_io: (),
 
     #[io(pid = pid::ip::CURRENT_IP_ADDRESS, pdt = Ipv4Property, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.current_ip_address()) })]
+         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.platform.current_ip_address()) })]
     _current_ip_address_io: (),
 
     #[io(pid = pid::ip::CURRENT_SUBNET_MASK, pdt = Ipv4Property, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.current_subnet_mask()) })]
+         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.platform.current_subnet_mask()) })]
     _current_subnet_mask_io: (),
 
     #[io(pid = pid::ip::CURRENT_DEFAULT_GATEWAY, pdt = Ipv4Property, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.current_default_gateway()) })]
+         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.platform.current_default_gateway()) })]
     _current_default_gateway_io: (),
 
     #[io(pid = pid::ip::IP_ADDRESS, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.configured_ip_address()) },
+         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.config.configured_ip_address()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let v = <Ipv4Property as StatePropertyValue>::from_bytes(data)?;
-             this.set_configured_ip_address(v);
+             this.config.set_configured_ip_address(v);
              Ok(WriteResponse::Echo)
          })]
     _ip_address_io: (),
 
     #[io(pid = pid::ip::SUBNET_MASK, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.configured_subnet_mask()) },
+         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.config.configured_subnet_mask()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let v = <Ipv4Property as StatePropertyValue>::from_bytes(data)?;
-             this.set_configured_subnet_mask(v);
+             this.config.set_configured_subnet_mask(v);
              Ok(WriteResponse::Echo)
          })]
     _subnet_mask_io: (),
 
     #[io(pid = pid::ip::DEFAULT_GATEWAY, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.configured_default_gateway()) },
+         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.config.configured_default_gateway()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let v = <Ipv4Property as StatePropertyValue>::from_bytes(data)?;
-             this.set_configured_default_gateway(v);
+             this.config.set_configured_default_gateway(v);
              Ok(WriteResponse::Echo)
          })]
     _default_gateway_io: (),
 
     #[io(pid = pid::ip::MAC_ADDRESS, pdt = PDT_Generic06, access = RO,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         read = |this: &Self| -> [u8; 6] { this.mac_address() })]
+         read = |this: &Self| -> [u8; 6] { this.platform.mac_address() })]
     _mac_address_io: (),
 
     #[io(pid = pid::ip::SYSTEM_SETUP_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RO,
@@ -193,20 +191,20 @@ pub struct IpAugment<'a, P: IpPlatform, const CAPS: u16 = 0> {
 
     #[io(pid = pid::ip::ROUTING_MULTICAST_ADDRESS, pdt = Ipv4Property, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.routing_multicast_address()) },
+         read = |this: &Self| -> [u8; 4] { Ipv4Property::to_bytes(&this.config.routing_multicast_address()) },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let v = <Ipv4Property as StatePropertyValue>::from_bytes(data)?;
-             this.set_routing_multicast_address(v);
+             this.config.set_routing_multicast_address(v);
              Ok(WriteResponse::Echo)
          })]
     _routing_multicast_address_io: (),
 
     #[io(pid = pid::ip::TTL, pdt = PDT_UnsignedChar, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 1] { [this.ttl()] },
+         read = |this: &Self| -> [u8; 1] { [this.config.ttl()] },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let v = <PDT_UnsignedChar as StatePropertyValue>::from_bytes(data)?;
-             this.set_ttl(v);
+             this.config.set_ttl(v);
              Ok(WriteResponse::Echo)
          })]
     _ttl_io: (),
@@ -249,126 +247,6 @@ impl<'a, P: IpPlatform, const CAPS: u16> IpAugment<'a, P, CAPS> {
 }
 
 // ============================================================================
-// IpStackState delegation (config methods → inner extension state)
-// ============================================================================
-
-impl<P: IpPlatform, const CAPS: u16> IpStackState for IpAugment<'_, P, CAPS> {
-    fn configured_ip_address(&self) -> Ipv4Addr {
-        self.config.configured_ip_address()
-    }
-
-    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-        self.config.set_configured_ip_address(addr);
-    }
-
-    fn configured_subnet_mask(&self) -> Ipv4Addr {
-        self.config.configured_subnet_mask()
-    }
-
-    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-        self.config.set_configured_subnet_mask(mask);
-    }
-
-    fn configured_default_gateway(&self) -> Ipv4Addr {
-        self.config.configured_default_gateway()
-    }
-
-    fn set_configured_default_gateway(&self, gw: Ipv4Addr) {
-        self.config.set_configured_default_gateway(gw);
-    }
-
-    fn ip_assignment_method(&self) -> u8 {
-        self.config.ip_assignment_method()
-    }
-
-    fn set_ip_assignment_method(&self, method: u8) {
-        self.config.set_ip_assignment_method(method);
-    }
-
-    fn routing_multicast_address(&self) -> Ipv4Addr {
-        self.config.routing_multicast_address()
-    }
-
-    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
-        self.config.set_routing_multicast_address(addr);
-    }
-
-    fn ttl(&self) -> u8 {
-        self.config.ttl()
-    }
-
-    fn set_ttl(&self, ttl: u8) {
-        self.config.set_ttl(ttl);
-    }
-
-    fn friendly_name_len(&self) -> usize {
-        self.config.friendly_name_len()
-    }
-
-    fn friendly_name(&self) -> [u8; 30] {
-        self.config.friendly_name()
-    }
-
-    fn set_friendly_name(&self, name: &[u8]) {
-        self.config.set_friendly_name(name);
-    }
-
-    fn project_installation_id(&self) -> u16 {
-        self.config.project_installation_id()
-    }
-
-    fn set_project_installation_id(&self, id: u16) {
-        self.config.set_project_installation_id(id);
-    }
-
-    fn additional_individual_address_capacity(&self) -> usize {
-        self.config.additional_individual_address_capacity()
-    }
-
-    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
-        self.config.write_additional_individual_addresses(buf)
-    }
-
-    fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool {
-        self.config.contains_additional_individual_address(addr)
-    }
-
-    fn set_additional_individual_addresses(&self, addrs: &[IndividualAddress]) -> Result<(), ()> {
-        self.config.set_additional_individual_addresses(addrs)
-    }
-}
-
-// ============================================================================
-// IpPlatformState delegation (current values → platform)
-// ============================================================================
-
-impl<P: IpPlatform, const CAPS: u16> IpPlatformState for IpAugment<'_, P, CAPS> {
-    fn current_ip_address(&self) -> Ipv4Addr {
-        self.platform.current_ip_address()
-    }
-
-    fn current_subnet_mask(&self) -> Ipv4Addr {
-        self.platform.current_subnet_mask()
-    }
-
-    fn current_default_gateway(&self) -> Ipv4Addr {
-        self.platform.current_default_gateway()
-    }
-
-    fn mac_address(&self) -> [u8; 6] {
-        self.platform.mac_address()
-    }
-
-    fn current_ip_assignment_method(&self) -> u8 {
-        self.platform.current_ip_assignment_method()
-    }
-
-    fn ip_capabilities(&self) -> u8 {
-        self.platform.ip_capabilities()
-    }
-}
-
-// ============================================================================
 // Constants
 // ============================================================================
 
@@ -396,8 +274,8 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
         req: &crate::objects::interface::FullPropertyReadRequest,
         buf: &mut [u8],
     ) -> Result<usize, PropertyError> {
-        let name = self.friendly_name();
-        let len = self.friendly_name_len();
+        let name = self.config.friendly_name();
+        let len = self.config.friendly_name_len();
 
         if req.start_idx == 0 {
             if buf.len() < 2 {
@@ -427,8 +305,8 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
 
         // Read-modify-write: KNX array properties support writes at
         // arbitrary indices within the array.
-        let mut name = self.friendly_name();
-        let mut len = self.friendly_name_len();
+        let mut name = self.config.friendly_name();
+        let mut len = self.config.friendly_name_len();
 
         let start = (req.start_idx - 1) as usize;
         let end = (start + req.data.len()).min(30);
@@ -443,7 +321,7 @@ impl<P: IpPlatform, const CAPS: u16> IpAugment<'_, P, CAPS> {
             len = end;
         }
 
-        self.set_friendly_name(&name[..len]);
+        self.config.set_friendly_name(&name[..len]);
         Ok(WriteResponse::Echo)
     }
 }

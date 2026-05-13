@@ -3,9 +3,11 @@
 //! Everything related to KNX/IP extension state lives here:
 //!
 //! - [`IpExtensionConfig`] — serializable IP configuration
-//! - [`IpExtensionState`] — runtime state with interior mutability
+//! - [`IpExtensionState`] — runtime state with interior mutability,
+//!   exposing the persisted IP config as inherent methods
 //! - [`ExtensionState`] + [`Extension<P>`](crate::bcus::system_b::Extension) impls
-//! - [`IpStackState`] impl — IP config property accessors
+//! - [`HasIpExtensionState`] impl — accessor so generic context impls
+//!   can reach the persisted IP state through any extension wrapper
 //! - [`IpAugment`] — combines config + platform for property dispatch
 //!
 //! PID 68 (`KNXNETIP_DEVICE_CAPABILITIES`) is stored in `IpExtensionState`
@@ -33,7 +35,7 @@ use crate::layers::linklayers::knxip::features::{FeatureSet, TunnelingFeature};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::HasDomainAddress;
 use crate::restart::EraseCode;
-use crate::{HasRoutingMulticastRebind, IpConfig, IpPlatformConfig, IpStackState};
+use crate::{HasIpExtensionState, HasRoutingMulticastRebind, IpConfig, IpPlatformConfig};
 use zweidraehte_proto::address::IndividualAddress;
 
 /// Channel buffering pushed routing-multicast-group changes from
@@ -168,7 +170,9 @@ pub enum IpAssignmentResult {
 ///
 /// `IpExtensionState` implements:
 /// - [`ExtensionState`] — persistence (serialize/deserialize/factory reset)
-/// - [`IpStackState`] — IP config property accessors
+/// - [`HasIpExtensionState`] — accessor returning `&Self` for generic
+///   navigation; inherent methods on this type provide the IP config
+///   property accessors directly
 ///
 /// The const generic `CAPS` is the PID\_KNXNETIP\_DEVICE\_CAPABILITIES
 /// bitfield (PID 68). Set it to
@@ -383,6 +387,11 @@ impl<const CAPS: u16> HasRoutingMulticastRebind for IpExtensionState<CAPS> {
     }
 }
 
+/// `IpExtensionState` alone carries no tunnelling-address storage, so it
+/// adopts the trait's no-op defaults. `IpInterfaceExtension` bundles
+/// this with a [`TunnellingExtension`] and overrides them.
+impl<const CAPS: u16> crate::ip::HasAdditionalIas for IpExtensionState<CAPS> {}
+
 // ============================================================================
 // Extension — unified persistence + augmentation
 // ============================================================================
@@ -477,10 +486,10 @@ pub type IpDeviceState<
 /// extension carries no tunnelling slots in this composition) with a
 /// [`TunnellingExtension`] sized at `N`. The aggregator implements
 /// every trait the device's `D::State` flow expects from a single
-/// extension — `ExtensionState`, `Extension<P>`, `IpStackState`,
-/// `HasGoSecurityView`, `HasSecurityMode`, `HasRoutingMulticastRebind`,
-/// `HasDomainAddress` — by delegating each to the inner part that
-/// owns the relevant state.
+/// extension — `ExtensionState`, `Extension<P>`, `HasIpExtensionState`,
+/// `HasAdditionalIas`, `HasGoSecurityView`, `HasSecurityMode`,
+/// `HasRoutingMulticastRebind`, `HasDomainAddress` — by delegating
+/// each to the inner part that owns the relevant state.
 ///
 /// The augment side is the
 /// [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry)
@@ -531,78 +540,23 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N,
     }
 }
 
-// `IpStackState` mirrors `IpExtensionState`'s impl exactly except for
-// the additional-individual-address methods, which delegate to
-// `TunnellingExtension` so the same data backs PID 53/79 dispatch
-// (via `TunnellingAugment`) and any direct call through the
-// `IpStackState` surface.
-impl<const N: usize, const CAPS: u16> IpStackState for IpInterfaceExtension<N, CAPS> {
-    fn configured_ip_address(&self) -> Ipv4Addr {
-        self.ip.configured_ip_address()
+/// `HasIpExtensionState` lets generic code reach the persisted IP
+/// state through the wrapper. Tunnelling-side state lives in the
+/// paired [`TunnellingExtension`] and is exposed separately via
+/// [`HasAdditionalIas`](crate::ip::HasAdditionalIas).
+impl<const N: usize, const CAPS: u16> HasIpExtensionState for IpInterfaceExtension<N, CAPS> {
+    fn ip_state(&self) -> &dyn crate::ip::IpStackState {
+        &self.ip
     }
-    fn set_configured_ip_address(&self, addr: Ipv4Addr) {
-        self.ip.set_configured_ip_address(addr);
-    }
-    fn configured_subnet_mask(&self) -> Ipv4Addr {
-        self.ip.configured_subnet_mask()
-    }
-    fn set_configured_subnet_mask(&self, mask: Ipv4Addr) {
-        self.ip.set_configured_subnet_mask(mask);
-    }
-    fn configured_default_gateway(&self) -> Ipv4Addr {
-        self.ip.configured_default_gateway()
-    }
-    fn set_configured_default_gateway(&self, gw: Ipv4Addr) {
-        self.ip.set_configured_default_gateway(gw);
-    }
-    fn ip_assignment_method(&self) -> u8 {
-        self.ip.ip_assignment_method()
-    }
-    fn set_ip_assignment_method(&self, method: u8) {
-        self.ip.set_ip_assignment_method(method);
-    }
-    fn routing_multicast_address(&self) -> Ipv4Addr {
-        self.ip.routing_multicast_address()
-    }
-    fn set_routing_multicast_address(&self, addr: Ipv4Addr) {
-        self.ip.set_routing_multicast_address(addr);
-    }
-    fn ttl(&self) -> u8 {
-        self.ip.ttl()
-    }
-    fn set_ttl(&self, ttl: u8) {
-        self.ip.set_ttl(ttl);
-    }
-    fn friendly_name_len(&self) -> usize {
-        self.ip.friendly_name_len()
-    }
-    fn friendly_name(&self) -> [u8; 30] {
-        self.ip.friendly_name()
-    }
-    fn set_friendly_name(&self, name: &[u8]) {
-        self.ip.set_friendly_name(name);
-    }
-    fn project_installation_id(&self) -> u16 {
-        self.ip.project_installation_id()
-    }
-    fn set_project_installation_id(&self, id: u16) {
-        self.ip.set_project_installation_id(id);
-    }
+}
 
-    fn additional_individual_address_capacity(&self) -> usize {
-        N
-    }
-
-    fn write_additional_individual_addresses(&self, buf: &mut [IndividualAddress]) -> usize {
+impl<const N: usize, const CAPS: u16> crate::ip::HasAdditionalIas for IpInterfaceExtension<N, CAPS> {
+    fn write_additional_ias_into(&self, buf: &mut [IndividualAddress]) -> usize {
         self.tunnelling.write_into(buf)
     }
 
-    fn contains_additional_individual_address(&self, addr: IndividualAddress) -> bool {
+    fn additional_ia_is_assigned(&self, addr: IndividualAddress) -> bool {
         self.tunnelling.contains(addr)
-    }
-
-    fn set_additional_individual_addresses(&self, addresses: &[IndividualAddress]) -> Result<(), ()> {
-        self.tunnelling.set(addresses)
     }
 }
 
@@ -677,10 +631,10 @@ pub type IpInterfaceDeviceState<
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpInterfaceExtensionFor<F>>;
 
 // ============================================================================
-// IpStackState — persisted config accessors
+// IpStackState — persisted config accessors (single canonical impl)
 // ============================================================================
 
-impl<const CAPS: u16> IpStackState for IpExtensionState<CAPS> {
+impl<const CAPS: u16> crate::ip::IpStackState for IpExtensionState<CAPS> {
     fn configured_ip_address(&self) -> Ipv4Addr {
         self.configured_ip.get()
     }
@@ -757,12 +711,12 @@ impl<const CAPS: u16> IpStackState for IpExtensionState<CAPS> {
     fn set_project_installation_id(&self, id: u16) {
         self.project_installation_id.set(id);
     }
+}
 
-    // The additional-individual-address methods come from
-    // `IpStackState`'s defaults: capacity = 0, write returns 0,
-    // set returns Err(()). Tunnelling-capable devices use
-    // `IpInterfaceExtension` (which delegates these to a paired
-    // `TunnellingExtension`), not bare `IpExtensionState`.
+impl<const CAPS: u16> HasIpExtensionState for IpExtensionState<CAPS> {
+    fn ip_state(&self) -> &dyn crate::ip::IpStackState {
+        self
+    }
 }
 
 // ============================================================================

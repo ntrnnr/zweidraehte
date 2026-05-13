@@ -13,7 +13,9 @@ pub use crate::{
 
 // KNX/IP-specific types
 #[cfg(feature = "knxip")]
-pub use crate::{InsecureIpDeviceBuilder, IpDeviceLayers, IpPlatform, IpPlatformConfig, IpPlatformState, IpStackState};
+pub use crate::{
+    HasIpExtensionState, InsecureIpDeviceBuilder, IpDeviceLayers, IpPlatform, IpPlatformConfig, IpStackState,
+};
 
 // Channel types for KNX/IP stacks (used by InsecureIpDeviceBuilder and standalone tests)
 #[cfg(feature = "knxip")]

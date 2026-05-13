@@ -35,8 +35,8 @@ pub use rng::{NoRng, Rng, SecureRng};
 mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::{
-    DEFAULT_MULTICAST_ADDR, HasRoutingMulticastRebind, IpConfig, IpPlatform, IpPlatformConfig, IpPlatformState,
-    IpStackState, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
+    DEFAULT_MULTICAST_ADDR, HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpConfig, IpPlatform,
+    IpPlatformConfig, IpStackState, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
 };
 
 mod composition;
