@@ -1,0 +1,15 @@
+[package]
+edition = "2024"
+name = "stm32g0_blink"
+version = "0.1.0"
+
+[dependencies]
+embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-stm32 = { workspace = true, features = ["defmt", "stm32g0b0re", "memory-x", "time-driver-any"] }
+
+cortex-m = { workspace = true, features = ["critical-section-single-core"] }
+cortex-m-rt = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }

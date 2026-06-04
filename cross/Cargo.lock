@@ -1974,6 +1974,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32g0_blink"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "embassy-executor",
+ "embassy-stm32",
+ "embassy-time",
+ "panic-probe",
+]
+
+[[package]]
 name = "stm32g0_tp1_light_switch"
 version = "0.1.0"
 dependencies = [
