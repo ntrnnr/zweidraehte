@@ -50,11 +50,12 @@ use crate::StackDefinition;
 #[cfg(feature = "knxip")]
 use crate::bcus::system_b::IpExtensionState;
 use crate::bcus::system_b::{
-    Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState, Tp1ExtensionState,
+    Extension, ExtensionConfig, ExtensionState, HasSecurityMode, RfExtensionState, SystemBDeviceState,
+    Tp1ExtensionState,
 };
 use crate::logging::debug;
 use crate::objects::comm::HasGoSecurityView;
-use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, PropertyError};
+use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, PropertyError};
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::storage::SequenceNumberStorage;
@@ -940,6 +941,27 @@ impl<
     }
 }
 
+// The RF Domain Address store (RF Medium Object PID 56) is also transparent to
+// the secure wrapper — forward it so a Data-Secure RF device still satisfies the
+// `HasRfDomainAddress` bound the KNX-RF link layer's context trait requires.
+impl<
+    Inner: ExtensionState + HasRfDomainAddress,
+    SEQ,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> HasRfDomainAddress for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+{
+    fn rf_domain_address(&self, out: &mut [u8; 6]) {
+        self.inner.rf_domain_address(out);
+    }
+
+    fn set_rf_domain_address(&self, addr: &[u8; 6]) {
+        self.inner.set_rf_domain_address(addr);
+    }
+}
+
 impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
     HasSecurityState for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
 {
@@ -1302,6 +1324,24 @@ pub type SecureTp1DeviceState<
     const P2P: usize,
     const SIAT: usize,
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, SecureTp1ExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>>;
+
+/// KNX-RF extension state with Data Secure support. Wraps the RF Medium Object /
+/// Domain Address extension in the secure wrapper.
+pub type SecureRfExtensionState<SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> =
+    SecureExtensionState<RfExtensionState, SEQ, GRP, P2P, SIAT, GO>;
+
+/// KNX-RF device state with Data Secure support. The RF analogue of
+/// [`SecureTp1DeviceState`]; see its docs for the `GRP`/`GO`/`SIAT` sizing
+/// rationale (03/03/07 §5.3).
+pub type SecureRfDeviceState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D,
+    SEQ,
+    const P2P: usize,
+    const SIAT: usize,
+> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, SecureRfExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.

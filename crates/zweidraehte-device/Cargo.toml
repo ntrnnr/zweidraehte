@@ -48,6 +48,7 @@ std = ["zweidraehte-proto/std", "zweidraehte-platform/std", "critical-section/st
 linux = ["zweidraehte-platform/linux", "std"]
 knxip = ["zweidraehte-proto/knxip"]
 tp1 = []
+rf = []
 ip-interface = ["knxip", "tp1"]
 usb = ["std", "dep:async-hid", "dep:futures-lite"]
 conformance = ["std"]

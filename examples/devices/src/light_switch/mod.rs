@@ -62,12 +62,20 @@ impl LightSwitchDevice {
     /// Application ID for the TP1 variant. Distinct from the IP variant so
     /// both can coexist in a single knxprod package.
     pub const APPLICATION_ID_TP1: u16 = 0x0301;
+    /// Application ID for the KNX-RF variant (mask `SystemBRf` / 0x27B0).
+    pub const APPLICATION_ID_RF: u16 = 0x0303;
     /// Application ID for the Data Secure TP1 variant. Same mask version
     /// as the plain TP1 variant (`SystemBTp1` / 0x07B0) — Data Secure is a
     /// System B feature, not a distinct mask — but a different
     /// application ID so both secure and insecure TP1 variants coexist in
     /// a single knxprod catalogue.
     pub const APPLICATION_ID_TP1_SECURE: u16 = 0x0302;
+    /// Application ID for the Data Secure KNX-RF variant. Same mask
+    /// version as the plain RF variant (`SystemBRf` / 0x27B0) — Data
+    /// Secure is a System B feature, not a distinct mask — but a
+    /// different application ID so both secure and insecure RF variants
+    /// coexist in a single knxprod catalogue.
+    pub const APPLICATION_ID_RF_SECURE: u16 = 0x0304;
     pub const APPLICATION_VERSION: u8 = 0x02;
     pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
     pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
@@ -80,12 +88,14 @@ impl LightSwitchDevice {
     /// matching application ID:
     /// - `SystemBKnxIp` (0x57B0) → `APPLICATION_ID_IP` (0x0300)
     /// - `SystemBTp1` (0x07B0) → `APPLICATION_ID_TP1` (0x0301)
+    /// - `SystemBRf` (0x27B0) → `APPLICATION_ID_RF` (0x0303)
     ///
     /// For the Data Secure TP1 variant see
     /// [`device_descriptor_secure_tp1`](Self::device_descriptor_secure_tp1).
     pub const fn device_descriptor(mask: MaskVersion) -> DeviceDescriptor {
         let application_id = match mask {
             MaskVersion::SystemBTp1 => Self::APPLICATION_ID_TP1,
+            MaskVersion::SystemBRf => Self::APPLICATION_ID_RF,
             _ => Self::APPLICATION_ID_IP,
         };
         DeviceDescriptor {
@@ -121,6 +131,30 @@ impl LightSwitchDevice {
             pei_type: Self::PEI_TYPE,
         }
     }
+
+    /// Build a device descriptor for the Data Secure KNX-RF variant.
+    ///
+    /// Same mask version (`SystemBRf` / 0x27B0) as the plain RF variant —
+    /// the mask version does not distinguish secure from insecure System
+    /// B — but uses
+    /// [`APPLICATION_ID_RF_SECURE`](Self::APPLICATION_ID_RF_SECURE) so
+    /// both variants coexist in the same knxprod catalogue. This is the
+    /// RF analogue of
+    /// [`device_descriptor_secure_tp1`](Self::device_descriptor_secure_tp1);
+    /// the matching firmware is not implemented yet.
+    pub const fn device_descriptor_secure_rf() -> DeviceDescriptor {
+        DeviceDescriptor {
+            mask_version: MaskVersion::SystemBRf,
+            manufacturer_id: Self::MANUFACTURER_ID,
+            hardware_type: Self::HARDWARE_TYPE,
+            application_id: Self::APPLICATION_ID_RF_SECURE,
+            application_version: Self::APPLICATION_VERSION,
+            max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
+            max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
+            max_com_objects: Self::MAX_COM_OBJECTS,
+            pei_type: Self::PEI_TYPE,
+        }
+    }
 }
 
 /// Device descriptor for KNX/IP (mask version 57B0).
@@ -129,7 +163,17 @@ pub const DEVICE_DESCRIPTOR_IP: DeviceDescriptor = LightSwitchDevice::device_des
 /// Device descriptor for TP-UART (mask version 07B0).
 pub const DEVICE_DESCRIPTOR_TP1: DeviceDescriptor = LightSwitchDevice::device_descriptor(MaskVersion::SystemBTp1);
 
+/// Device descriptor for KNX-RF (mask version 27B0).
+pub const DEVICE_DESCRIPTOR_RF: DeviceDescriptor = LightSwitchDevice::device_descriptor(MaskVersion::SystemBRf);
+
 /// Device descriptor for the Data Secure TP1 variant (mask version 07B0,
 /// application ID 0x0302). Pairs with the `stm32g0_tp1_secure_light_switch`
 /// firmware.
 pub const DEVICE_DESCRIPTOR_TP1_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_secure_tp1();
+
+/// Device descriptor for the Data Secure KNX-RF variant (mask version
+/// 27B0, application ID 0x0304). The matching firmware does not exist
+/// yet — this descriptor is the RF counterpart of
+/// [`DEVICE_DESCRIPTOR_TP1_SECURE`] so the secure RF variant can already
+/// be generated into the knxprod catalogue.
+pub const DEVICE_DESCRIPTOR_RF_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_secure_rf();

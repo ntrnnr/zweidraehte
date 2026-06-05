@@ -222,6 +222,45 @@ impl DomainAddressSerialNumberWrite {
 }
 
 // ============================================================================
+// DomainAddress (plain, broadcast / programming-mode — A_DomainAddress_*)
+// ============================================================================
+
+/// Parser for `A_DomainAddress_Write` (KNX 03/03/07 §3.3.3).
+///
+/// Unlike the serial-number variant, the device is selected by being in
+/// programming mode, so the PDU carries no serial number — just the new domain
+/// address right after the APCI. Wire format: APCI(2) + domain_address(N), with
+/// N = 2 (KNX-PL110) or 6 (KNX-RF).
+pub struct DomainAddressWrite;
+
+impl DomainAddressWrite {
+    /// Minimum length: APCI(2), no domain address yet.
+    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 2;
+
+    /// Extract the domain address (the bytes after the APCI). Empty if absent.
+    pub fn domain_address(buf: &[u8]) -> &[u8] {
+        let start = offsets::MSG_APCI + 2;
+        if buf.len() <= start { &[] } else { &buf[start..buf.len()] }
+    }
+}
+
+/// Writer for `A_DomainAddress_Response` (KNX 03/03/07 §3.3.4).
+///
+/// Wire format: APCI(2) + domain_address(N).
+pub struct DomainAddressResponse;
+
+impl DomainAddressResponse {
+    /// APDU length with no domain address (APCI only).
+    pub const MSG_LEN_NO_DOA: usize = offsets::MSG_APCI + 2;
+
+    /// Write the domain address right after the APCI.
+    pub fn write_domain_address(buf: &mut [u8], doa: &[u8]) {
+        let start = offsets::MSG_APCI + 2;
+        buf[start..start + doa.len()].copy_from_slice(doa);
+    }
+}
+
+// ============================================================================
 // ADC (Read / Response)
 // ============================================================================
 

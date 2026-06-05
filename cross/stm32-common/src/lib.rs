@@ -33,6 +33,8 @@ pub mod prov_storage;
 pub mod ram_seq;
 pub mod rng;
 pub mod storage;
+#[cfg(feature = "rf")]
+pub mod sx1211_adapter;
 pub mod uart;
 
 pub use fram::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};

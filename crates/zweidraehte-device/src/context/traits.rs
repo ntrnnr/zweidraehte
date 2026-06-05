@@ -86,6 +86,24 @@ pub trait AddressTableContext {
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT>;
 }
 
+/// Provides the stored RF Domain Address and KNX Serial Number to the KNX-RF
+/// link layer.
+///
+/// Link layers never reach into interface objects directly; they read stack
+/// state through context traits like this one (cf. [`KnxIndividualAddressContext`]).
+/// The RF data-link layer needs both fields: the 6-octet RF Domain Address (RF
+/// Medium Object PID 56) for inbound Domain-Address acceptance and for the
+/// block-1 `SN/DoA` field when transmitting domain-addressed frames (AET=1),
+/// and the KNX Serial Number for the block-1 field of serial-addressed frames
+/// (AET=0, per KNX 03/02/05 §6.1.5.1).
+pub trait RfDomainAddressContext {
+    /// Copy the device's stored 6-octet RF Domain Address into `out`.
+    fn rf_domain_address(&self, out: &mut [u8; 6]);
+
+    /// The device's 6-octet KNX Serial Number.
+    fn knx_serial_number(&self) -> [u8; 6];
+}
+
 /// Provides access to publish communication object events to user code.
 pub trait EventPublisherContext<Index> {
     /// Publish a communication object event.

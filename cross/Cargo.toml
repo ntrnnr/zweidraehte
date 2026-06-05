@@ -11,6 +11,8 @@ members = [
     "stm32g0_blink",
     "knxrf",
     "stm32g0_knxrf_playground",
+    "stm32g0_knxrf_device",
+    "stm32g0_knxrf_secure_light_switch",
     "tpuart_bridge",
     "picow",
     "pico_eth",

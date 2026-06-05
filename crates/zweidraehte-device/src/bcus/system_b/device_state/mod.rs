@@ -19,7 +19,7 @@ use crate::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
         comm::{ComObjects, HasCommObjects, HasGoSecurityView},
-        interface::{HasDomainAddress, HasMaxRetryCount, HasRoutingCount},
+        interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRoutingCount},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
             HasPeiApplication, HasRunStateMachine, Table,
@@ -903,6 +903,24 @@ impl<
 
     fn set_domain_address(&self, addr: &[u8]) {
         self.extension_state.set_domain_address(addr);
+        self.mark_dirty();
+    }
+}
+
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: StackDefinition,
+    ES: ExtensionState + HasRfDomainAddress,
+> HasRfDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
+{
+    fn rf_domain_address(&self, out: &mut [u8; 6]) {
+        self.extension_state.rf_domain_address(out);
+    }
+
+    fn set_rf_domain_address(&self, addr: &[u8; 6]) {
+        self.extension_state.set_rf_domain_address(addr);
         self.mark_dirty();
     }
 }

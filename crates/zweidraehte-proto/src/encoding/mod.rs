@@ -18,4 +18,5 @@
 //! - Format-specific types and utilities
 
 pub mod cemi;
+pub mod rf;
 pub mod tp1;

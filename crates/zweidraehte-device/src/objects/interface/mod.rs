@@ -568,4 +568,19 @@ pub mod pid {
         /// PB Security Confirm (PID 72)
         pub const PB_SECURITY_CONFIRM: u16 = 72;
     }
+
+    /// PIDs of the RF Medium Object (Object Type 19 / 0x13), per KNX
+    /// 03/05/01 §4.15. Only the subset the KNX-RF Ready link layer needs.
+    pub mod rf {
+        /// RF Domain Address (PID 56). 6-octet `PDT_Generic06`, non-volatile,
+        /// mandatory in the RF Medium Object (03/05/01 §4.15.8). Holds the
+        /// installation's Domain Address used for frame filtering and as the
+        /// block-1 `SN/DoA` field of domain-addressed transmissions.
+        pub const RF_DOMAIN_ADDRESS: u16 = 56;
+
+        /// RF Retransmitter Flag (PID 57). 1-bit `PDT_Binary_Information`
+        /// controlling whether the device repeats received RF frames
+        /// (03/05/01 §4.15.9). Stored but not yet acted upon.
+        pub const RF_RETRANSMITTER: u16 = 57;
+    }
 }

@@ -150,6 +150,19 @@ where
     D,
 >;
 
+/// KNX-RF System B state for `D`, with sizes drawn from `D::DEVICE`. Pairs the
+/// device with [`RfExtensionState`](super::extensions::RfExtensionState) (the RF
+/// Medium Object + Domain Address store) for use with the KNX-RF link layer.
+pub type RfStateFor<D>
+where
+    D: SystemBStackDefinition,
+= super::extensions::RfSystemBDeviceState<
+    { <D as SystemBStackDefinition>::ADT_SIZE },
+    { <D as SystemBStackDefinition>::AST_SIZE },
+    { <D as SystemBStackDefinition>::COT_SIZE },
+    D,
+>;
+
 /// KNX/IP System B state for `D` using feature set `Proto`, with sizes
 /// drawn from `D::DEVICE`.
 #[cfg(feature = "knxip")]
@@ -194,6 +207,23 @@ pub type SecureTp1StateFor<D, SEQ, const P2P: usize, const SIAT: usize>
 where
     D: SystemBStackDefinition,
 = super::extensions::SecureTp1DeviceState<
+    { <D as SystemBStackDefinition>::ADT_SIZE },
+    { <D as SystemBStackDefinition>::AST_SIZE },
+    { <D as SystemBStackDefinition>::COT_SIZE },
+    D,
+    SEQ,
+    P2P,
+    SIAT,
+>;
+
+/// KNX-RF Data Secure System B state for `D`. The RF analogue of
+/// [`SecureTp1StateFor`]; pairs [`RfExtensionState`](super::extensions::RfExtensionState)
+/// with the Data Secure wrapper. See [`SecureTp1StateFor`] for the `P2P`/`SIAT`
+/// sizing rationale (03/03/07 §5.3).
+pub type SecureRfStateFor<D, SEQ, const P2P: usize, const SIAT: usize>
+where
+    D: SystemBStackDefinition,
+= super::extensions::SecureRfDeviceState<
     { <D as SystemBStackDefinition>::ADT_SIZE },
     { <D as SystemBStackDefinition>::AST_SIZE },
     { <D as SystemBStackDefinition>::COT_SIZE },

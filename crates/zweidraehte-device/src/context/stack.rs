@@ -22,7 +22,7 @@
 
 #[cfg(feature = "knxip")]
 use crate::bcus::system_b::HasExtensionState;
-use crate::objects::interface::HasMaxRetryCount;
+use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress};
 #[cfg(feature = "knxip")]
 use crate::{
     HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpPlatform,
@@ -34,7 +34,7 @@ use crate::{
     StackState,
     context::{
         AddressTableContext, ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext,
-        MaxRetryCountContext, PropertyServiceContext, layer::LayerContext,
+        MaxRetryCountContext, PropertyServiceContext, RfDomainAddressContext, layer::LayerContext,
     },
     definition::StackDefinition,
     inner::Inner,
@@ -270,5 +270,20 @@ impl<D: StackDefinition> AddressTableContext for StackContext<'_, D> {
 
     fn address_table(&self) -> &core::cell::RefCell<Self::ADT> {
         self.inner.state.adt()
+    }
+}
+
+// Only stacks whose state stores an RF Domain Address (i.e. RF devices) get this
+// impl. Serial number is always available via `StackState`.
+impl<D: StackDefinition> RfDomainAddressContext for StackContext<'_, D>
+where
+    D::State: HasRfDomainAddress,
+{
+    fn rf_domain_address(&self, out: &mut [u8; 6]) {
+        self.inner.state.rf_domain_address(out);
+    }
+
+    fn knx_serial_number(&self) -> [u8; 6] {
+        *self.inner.state.serial_number()
     }
 }

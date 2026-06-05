@@ -65,12 +65,14 @@ create_protocol_enum!(
     ///
     /// - `System7Tp1` (0x0705) — System 7 TP1
     /// - `SystemBTp1` (0x07B0) — System B TP1
+    /// - `SystemBRf` (0x27B0) — System B KNX-RF
     /// - `SystemBKnxIp` (0x57B0) — System B KNX/IP
     /// - `Other(u16)` — Unknown / unsupported mask version
     #[derive(Copy, Clone, Eq, PartialEq, Hash)]
     pub enum MaskVersion: u16 {
         System7Tp1,         0x0705, "System 7 TP1 (0705)";
         SystemBTp1,         0x07B0, "System B TP1 (07B0)";
+        SystemBRf,          0x27B0, "System B RF (27B0)";
         SystemBKnxIp,       0x57B0, "System B KNX/IP (57B0)";
         _, "Unknown mask version (0x{:04X})";
     }
@@ -87,11 +89,17 @@ impl MaskVersion {
         matches!(self, MaskVersion::System7Tp1 | MaskVersion::SystemBTp1)
     }
 
+    /// Check if this is a KNX-RF device (mask version 27B0).
+    pub fn is_rf(&self) -> bool {
+        matches!(self, MaskVersion::SystemBRf)
+    }
+
     /// Get the raw u16 value.
     pub const fn as_u16(&self) -> u16 {
         match self {
             MaskVersion::System7Tp1 => 0x0705,
             MaskVersion::SystemBTp1 => 0x07B0,
+            MaskVersion::SystemBRf => 0x27B0,
             MaskVersion::SystemBKnxIp => 0x57B0,
             MaskVersion::Other(v) => *v,
         }

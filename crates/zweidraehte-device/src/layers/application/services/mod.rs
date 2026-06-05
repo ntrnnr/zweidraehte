@@ -31,6 +31,7 @@ pub mod function_property;
 pub mod manufacturer;
 pub mod memory;
 pub mod property_ext;
+pub mod rf_domain_addr;
 pub mod system_network_parameter;
 pub mod user_memory;
 
@@ -42,6 +43,7 @@ pub use function_property::FunctionPropertyService;
 pub use manufacturer::UserManufacturerInfoService;
 pub use memory::MemoryService;
 pub use property_ext::PropertyExtValueService;
+pub use rf_domain_addr::RfDomainAddressService;
 pub use system_network_parameter::SystemNetworkParameterService;
 pub use user_memory::UserMemoryService;
 

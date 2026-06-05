@@ -44,9 +44,17 @@ postcard = { workspace = true }
 serde = { workspace = true }
 chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
 
+# SX1211 KNX-RF codec + driver (only pulled in by the `rf` feature).
+knxrf = { path = "../knxrf", default-features = false, features = ["defmt"], optional = true }
+
 [features]
 # When enabled, missing or corrupt KNXP records on first boot are
 # silently filled in from compile-time constants emitted by the
 # firmware's `build.rs` (see ZZ_SERIAL_HEX / ZZ_FDSK_HEX / ZZ_MAC_HEX).
 # Off by default — production firmware refuses to boot without a record.
 provision-on-boot = []
+
+# KNX-RF support: the SX1211 transceiver adapter (`sx1211_adapter`) bridging the
+# blocking SX1211 driver to the device stack's async `RfTransceiver` trait.
+# Pulls in the `knxrf` codec/driver and the device stack's `rf` link layer.
+rf = ["dep:knxrf", "zweidraehte-device/rf"]

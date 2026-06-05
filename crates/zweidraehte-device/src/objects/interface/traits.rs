@@ -917,6 +917,22 @@ pub trait HasMaxRetryCount {
     fn set_max_retry_count(&self, value: u8);
 }
 
+/// Trait for device state that stores a 6-octet RF Domain Address.
+///
+/// Backs the RF Medium Object's `PID_RF_DOMAIN_ADDRESS` (PID 56, mandatory per
+/// KNX 03/05/01 §4.15.8) and feeds the KNX-RF link layer's Domain-Address
+/// filtering and frame construction via
+/// [`RfDomainAddressContext`](crate::context::RfDomainAddressContext). Distinct
+/// from [`HasDomainAddress`], which is medium-generic (4 octets for KNX/IP); the
+/// RF Domain Address is always 6 octets.
+pub trait HasRfDomainAddress {
+    /// Copy the stored 6-octet RF Domain Address into `out`.
+    fn rf_domain_address(&self, out: &mut [u8; 6]);
+
+    /// Replace the stored 6-octet RF Domain Address.
+    fn set_rf_domain_address(&self, addr: &[u8; 6]);
+}
+
 /// Trait for containers that provide access to DeviceObject properties.
 ///
 /// This trait enables type-safe access to the DeviceObject's semantic properties

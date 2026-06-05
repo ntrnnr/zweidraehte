@@ -24,6 +24,8 @@ bitfield.workspace = true
 aes = { version = "0.8", default-features = false }
 
 [dev-dependencies]
+quickcheck = "1"
+quickcheck_macros = "1"
 test-case = "3.3"
 
 [features]
