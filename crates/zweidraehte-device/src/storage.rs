@@ -295,19 +295,23 @@ impl DeviceIdentity for NoIdentity {
 /// - A dedicated file (Linux userspace)
 /// - RAM-only (accepting reset on power cycle)
 ///
-/// Per KNX spec 03/03/07 section 5.3.1, there are exactly two sending
-/// counters (regular + tool access) and per-peer receiving counters.
+/// # Sending sequence number
+///
+/// Per KNX 03/03/07 §5.x a device maintains **one single Sequence Number
+/// Sending** for *all* its outgoing secure communication — group, broadcast,
+/// P2P, and tool access alike — incremented on every secure frame it sends.
+/// Receiving state is the separate, genuinely per-partner part: the SIAT (one
+/// last-valid per sender IA) plus the tool-access receiving counter below.
 pub trait SequenceNumberStorage {
     /// Error type for storage operations.
     type Error;
 
-    /// Load the two sending sequence numbers (regular + tool access).
-    /// Each is 6 bytes big-endian. Returns `(regular, tool_access)`.
-    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error>;
+    /// Load the device's Sequence Number Sending (6 bytes big-endian).
+    fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error>;
 
-    /// Save the two sending sequence numbers.
-    /// Called after every outgoing secure message.
-    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error>;
+    /// Save the device's Sequence Number Sending. Called after every outgoing
+    /// secure message.
+    fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error>;
 
     /// Load last-valid receiving sequence number for a peer, keyed by
     /// sender IA.

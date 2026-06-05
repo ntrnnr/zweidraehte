@@ -1183,11 +1183,13 @@ impl<
                 // Threshold is a 6-byte (48-bit) value: FF 00 00 00 00 00.
                 const THRESHOLD: u64 = 0xFF_0000_0000_00;
                 const REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+                use crate::layers::secure_application::outgoing::seq6_to_u64;
                 let mut storage = self.seq_storage.borrow_mut();
-                if let Ok((regular, tool)) = storage.load_sending_seqs() {
-                    let tool_u64 = u64::from_be_bytes([0, 0, tool[0], tool[1], tool[2], tool[3], tool[4], tool[5]]);
-                    if tool_u64 >= THRESHOLD {
-                        let _ = storage.save_sending_seqs(&regular, &REINIT_VALUE);
+                if let Ok(seq) = storage.load_sending_seq() {
+                    // Re-initialise the single Sequence Number Sending only once it
+                    // nears exhaustion (spec §5.x); below threshold it is preserved.
+                    if seq6_to_u64(&seq) >= THRESHOLD {
+                        let _ = storage.save_sending_seq(&REINIT_VALUE);
                     }
                 }
             }

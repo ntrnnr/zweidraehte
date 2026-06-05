@@ -25,15 +25,14 @@ use zweidraehte_device::storage::SequenceNumberStorage;
 /// peers whose last-valid receiving sequence number is remembered. Must
 /// be a power of two (heapless `FnvIndexMap` requirement).
 pub struct RamSeqStorage<const P2P: usize = 8> {
-    regular_send: [u8; 6],
-    tool_send: [u8; 6],
+    sending: [u8; 6],
     tool_recv: Option<[u8; 6]>,
     peers: FnvIndexMap<u16, [u8; 6], P2P>,
 }
 
 impl<const P2P: usize> RamSeqStorage<P2P> {
     pub const fn new() -> Self {
-        Self { regular_send: [0; 6], tool_send: [0; 6], tool_recv: None, peers: FnvIndexMap::new() }
+        Self { sending: [0; 6], tool_recv: None, peers: FnvIndexMap::new() }
     }
 }
 
@@ -46,13 +45,12 @@ impl<const P2P: usize> Default for RamSeqStorage<P2P> {
 impl<const P2P: usize> SequenceNumberStorage for RamSeqStorage<P2P> {
     type Error = Infallible;
 
-    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error> {
-        Ok((self.regular_send, self.tool_send))
+    fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
+        Ok(self.sending)
     }
 
-    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error> {
-        self.regular_send = *regular;
-        self.tool_send = *tool;
+    fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
+        self.sending = *seq;
         Ok(())
     }
 

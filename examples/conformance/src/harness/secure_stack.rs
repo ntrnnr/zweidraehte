@@ -1068,7 +1068,7 @@ use zweidraehte_device::storage::{HasSequenceStorage, SequenceNumberStorage};
 /// offset. Writes are immediately visible to the parent and survive child
 /// process restarts (the parent holds the memfd).
 ///
-/// Layout at `ptr`: `[magic: 4B "SEQ\0"] [regular: 6B] [tool: 6B]`
+/// Layout at `ptr`: `[magic: 4B "SEQ\0"] [sending: 6B]`
 pub struct ShmSeqStorage {
     ptr: *mut u8,
 }
@@ -1114,40 +1114,37 @@ impl ShmSeqStorage {
 // Shared memory layout for sequence number storage:
 //
 // Offset 0:   magic(4)            "SEQ\0"
-// Offset 4:   regular_sending(6)  Regular sending SeqNr
-// Offset 10:  tool_sending(6)     Tool access sending SeqNr
-// Offset 16:  tool_receiving(6)   Tool access receiving SeqNr (last valid)
-// Offset 22:  peer_count(2)       Number of peer entries
-// Offset 24:  peer_entries[N]     N entries of: peer_ia(2) + last_valid_seq(6) = 8 bytes each
+// Offset 4:   sending(6)          single Sequence Number Sending
+// Offset 10:  tool_receiving(6)   Tool access receiving SeqNr (last valid)
+// Offset 16:  peer_count(2)       Number of peer entries
+// Offset 18:  peer_entries[N]     N entries of: peer_ia(2) + last_valid_seq(6) = 8 bytes each
 //
-// Max 16 peers → total = 4+6+6+6+2+(16*8) = 152 bytes.
-const SHM_TOOL_RECV_OFFSET: usize = 16;
-const SHM_PEER_COUNT_OFFSET: usize = 22;
-const SHM_PEER_ENTRIES_OFFSET: usize = 24;
+// Max 16 peers → total = 4+6+6+2+(16*8) = 146 bytes.
+const SHM_SENDING_OFFSET: usize = 4;
+const SHM_TOOL_RECV_OFFSET: usize = 10;
+const SHM_PEER_COUNT_OFFSET: usize = 16;
+const SHM_PEER_ENTRIES_OFFSET: usize = 18;
 const SHM_PEER_ENTRY_SIZE: usize = 8;
 const SHM_MAX_PEERS: usize = 16;
 
 impl SequenceNumberStorage for ShmSeqStorage {
     type Error = core::convert::Infallible;
 
-    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error> {
+    fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
         if !self.has_magic() {
-            return Ok(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
+            return Ok([0, 0, 0, 0, 0, 1]);
         }
-        let mut regular = [0u8; 6];
-        let mut tool = [0u8; 6];
+        let mut seq = [0u8; 6];
         unsafe {
-            core::ptr::copy_nonoverlapping(self.ptr.add(4), regular.as_mut_ptr(), 6);
-            core::ptr::copy_nonoverlapping(self.ptr.add(10), tool.as_mut_ptr(), 6);
+            core::ptr::copy_nonoverlapping(self.ptr.add(SHM_SENDING_OFFSET), seq.as_mut_ptr(), 6);
         }
-        Ok((regular, tool))
+        Ok(seq)
     }
 
-    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error> {
+    fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
         self.write_magic();
         unsafe {
-            core::ptr::copy_nonoverlapping(regular.as_ptr(), self.ptr.add(4), 6);
-            core::ptr::copy_nonoverlapping(tool.as_ptr(), self.ptr.add(10), 6);
+            core::ptr::copy_nonoverlapping(seq.as_ptr(), self.ptr.add(SHM_SENDING_OFFSET), 6);
         }
         Ok(())
     }

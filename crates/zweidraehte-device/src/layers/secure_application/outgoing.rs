@@ -30,36 +30,44 @@ use crate::storage::SequenceNumberStorage;
 // Sending sequence number reservation
 // ============================================================================
 
+/// Default initial Sequence Number Sending on fresh storage (spec §5.3.1: any
+/// value 1..255, must be non-zero — SeqNr 0 is ignored by the remote S-AL).
+pub(crate) const INITIAL_SENDING_SEQ: [u8; 6] = [0, 0, 0, 0, 0, 1];
+
+/// Decode a 6-octet big-endian sequence number to `u64`.
+pub(crate) fn seq6_to_u64(seq: &[u8; 6]) -> u64 {
+    u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]])
+}
+
+/// Encode the low 48 bits of `val` as a 6-octet big-endian sequence number.
+pub(crate) fn u64_to_seq6(val: u64) -> [u8; 6] {
+    let b = val.to_be_bytes();
+    [b[2], b[3], b[4], b[5], b[6], b[7]]
+}
+
 /// Reserve and persist the next sending sequence number.
 ///
-/// Loads the current pair from storage, returns the *current* value for
-/// the selected counter (to use in the outgoing frame), and persists the
-/// incremented value. Returns `None` on 48-bit overflow — per spec the
-/// device must stop sending secure frames once the counter saturates.
+/// Returns the *current* value of the device's single Sequence Number Sending
+/// (to place in the outgoing frame) and persists the incremented value. The
+/// `tool_access` distinction does **not** apply to the sending counter (spec
+/// §5.x: one counter for all outgoing communication); it is kept in the
+/// signature only for call-site clarity. Returns `None` on 48-bit overflow —
+/// per spec the device must stop sending secure frames once the counter saturates.
 pub(crate) fn reserve_next_seq_nr<SEQ: SequenceNumberStorage>(
     seq_storage: &RefCell<SEQ>,
-    tool_access: bool,
+    _tool_access: bool,
 ) -> Option<[u8; 6]> {
     let mut storage = seq_storage.borrow_mut();
-    let (regular, tool) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
-    let seq = if tool_access { tool } else { regular };
+    let seq = storage.load_sending_seq().unwrap_or(INITIAL_SENDING_SEQ);
+    let val = seq6_to_u64(&seq);
 
     // 48-bit overflow guard.
-    let val = u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]]);
     if val >= 0xFFFF_FFFF_FFFF {
         return None;
     }
 
-    // Increment and persist only the relevant counter.
-    let next_bytes = (val + 1).to_be_bytes();
-    let mut next_seq = [0u8; 6];
-    next_seq.copy_from_slice(&next_bytes[2..8]);
-
-    if tool_access {
-        let _ = storage.save_sending_seqs(&regular, &next_seq);
-    } else {
-        let _ = storage.save_sending_seqs(&next_seq, &tool);
-    }
+    // Increment the single counter and persist it.
+    let _ = storage.save_sending_seq(&u64_to_seq6(val + 1));
 
     Some(seq)
 }

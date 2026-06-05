@@ -321,11 +321,10 @@ where
     let response_seq_local = received_minus_1.max(new_stored) + 1;
     let response_seq_local_bytes = u64_to_seq(response_seq_local);
 
-    // Step 8: SeqNr_remote = device's own Sequence Number Sending.
-    // Use tool counter when T flag is set, regular counter otherwise.
-    // Do NOT increment — spec says sync does not alter SeqNoSending.
-    let (regular_seq, tool_seq) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
-    let seq_nr_remote = if scf.tool_access { tool_seq } else { regular_seq };
+    // Step 8: SeqNr_remote = device's own single Sequence Number Sending (the
+    // one value used on every Secure Link). Do NOT increment — spec says sync
+    // does not alter SeqNoSending.
+    let seq_nr_remote = storage.load_sending_seq().unwrap_or(super::outgoing::INITIAL_SENDING_SEQ);
     drop(storage);
 
     debug!(
@@ -528,19 +527,16 @@ where
         }
     }
 
-    // Step 9: Update sending sequence number from SeqNr_local if higher.
-    // SeqNr_local is what the responder thinks our next sending sequence
-    // should be. If it's higher than our current value, adopt it.
+    // Step 9: Update our Sequence Number Sending from SeqNr_local if higher.
+    // SeqNr_local is what the responder expects from us next; if it exceeds our
+    // current value we adopt it (raising the one counter used on every Secure
+    // Link).
     let seq_local_val = seq_to_u64(&seq_nr_local);
     if seq_local_val > 0 {
         let mut storage = sal.seq_storage.borrow_mut();
-        let (regular, tool) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
-        let current = if pending.tool_access { &tool } else { &regular };
-        let current_val = seq_to_u64(current);
+        let current_val = seq_to_u64(&storage.load_sending_seq().unwrap_or(super::outgoing::INITIAL_SENDING_SEQ));
         if seq_local_val > current_val {
-            let new_regular = if pending.tool_access { regular } else { seq_nr_local };
-            let new_tool = if pending.tool_access { seq_nr_local } else { tool };
-            let _ = storage.save_sending_seqs(&new_regular, &new_tool);
+            let _ = storage.save_sending_seq(&seq_nr_local);
         }
     }
 
@@ -600,8 +596,7 @@ where
 
     // Step 2: Get current sending sequence number (don't increment for sync).
     let storage = sal.seq_storage.borrow();
-    let (regular, tool_seq) = storage.load_sending_seqs().unwrap_or(([0, 0, 0, 0, 0, 1], [0, 0, 0, 0, 0, 1]));
-    let seq_nr_local = if tool_access { tool_seq } else { regular };
+    let seq_nr_local = storage.load_sending_seq().unwrap_or(super::outgoing::INITIAL_SENDING_SEQ);
     drop(storage);
 
     // Step 3: Generate random challenge.

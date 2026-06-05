@@ -309,7 +309,10 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
             // PID 55 SECURITY_FAILURES_LOG — read-only at the value level;
             // accessed via FunctionPropertyStateRead.
             pid::security::SECURITY_FAILURES_LOG => Err(PropertyError::InvalidPropertyId),
-            // PID 59 SEQUENCE_NUMBER_SENDING — 6-byte tool counter.
+            // PID 59 SEQUENCE_NUMBER_SENDING — the device's single Sequence Number
+            // Sending (KNX 03/03/07 §5.x), shared by group, P2P, broadcast and
+            // tool-access sends. ETS reads this to learn what value to expect from
+            // the device on every Secure Link.
             pid::security::SEQUENCE_NUMBER_SENDING => {
                 if req.start_idx == 0 {
                     buf[0..2].copy_from_slice(&1u16.to_be_bytes());
@@ -319,10 +322,10 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                         return Some(Err(PropertyError::BufferTooSmall));
                     }
                     let storage = self.seq_storage.borrow();
-                    let Ok((_regular, tool)) = storage.load_sending_seqs() else {
+                    let Ok(seq) = storage.load_sending_seq() else {
                         return Some(Err(PropertyError::InvalidPropertyId));
                     };
-                    buf[..6].copy_from_slice(&tool);
+                    buf[..6].copy_from_slice(&seq);
                     Ok(6)
                 }
             }
@@ -415,7 +418,10 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                 let mut table = self.state.go_flags().borrow_mut();
                 write_security_table(&mut table, req)
             }
-            // PID 59 SEQUENCE_NUMBER_SENDING — write tool counter (must be non-zero).
+            // PID 59 SEQUENCE_NUMBER_SENDING — the device's single Sequence Number
+            // Sending (KNX 03/03/07 §5.x). ETS writes this to advance the counter
+            // it expects the device to use for *all* outgoing secure frames (group
+            // and tool-access), so we apply it to both storage slots in lockstep.
             pid::security::SEQUENCE_NUMBER_SENDING => {
                 if req.start_idx == 0 {
                     Ok(WriteResponse::Echo)
@@ -423,14 +429,13 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                     if req.data.len() < 6 {
                         return Some(Err(PropertyError::BufferTooSmall));
                     }
-                    let mut tool = [0u8; 6];
-                    tool.copy_from_slice(&req.data[..6]);
-                    if tool == [0u8; 6] {
+                    let mut value = [0u8; 6];
+                    value.copy_from_slice(&req.data[..6]);
+                    if value == [0u8; 6] {
                         return Some(Err(PropertyError::ValueOutOfRange));
                     }
                     let mut storage = self.seq_storage.borrow_mut();
-                    let regular = storage.load_sending_seqs().map(|(r, _)| r).unwrap_or([0, 0, 0, 0, 0, 1]);
-                    let _ = storage.save_sending_seqs(&regular, &tool);
+                    let _ = storage.save_sending_seq(&value);
                     Ok(WriteResponse::Echo)
                 }
             }

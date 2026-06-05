@@ -12,16 +12,15 @@
 //! # Wire layout
 //!
 //! Adapted from the conformance harness's `ShmSeqStorage` (battle-
-//! tested by the conformance suite). 152 bytes worst-case at 16
+//! tested by the conformance suite). 146 bytes worst-case at 16
 //! peer slots, out of 2 KiB available on the chip.
 //!
 //! ```text
 //! Offset 0:   magic[4]            "SEQ\0"     first-boot detection
-//! Offset 4:   regular_sending[6]
-//! Offset 10:  tool_sending[6]
-//! Offset 16:  tool_receiving[6]               (all-zero = unset)
-//! Offset 22:  peer_count[2]       big-endian u16
-//! Offset 24:  peer_entries[N]     each 8 bytes: peer_ia[2] + seq[6]
+//! Offset 4:   sending[6]                      single Sequence Number Sending
+//! Offset 10:  tool_receiving[6]               (all-zero = unset)
+//! Offset 16:  peer_count[2]       big-endian u16
+//! Offset 18:  peer_entries[N]     each 8 bytes: peer_ia[2] + seq[6]
 //! ```
 //!
 //! # First-boot behaviour
@@ -61,11 +60,10 @@ use crate::fram::{Fm25l16b, FramError};
 const MAGIC: [u8; 4] = *b"SEQ\0";
 
 const OFFSET_MAGIC: u16 = 0;
-const OFFSET_REGULAR_SEND: u16 = 4;
-const OFFSET_TOOL_SEND: u16 = 10;
-const OFFSET_TOOL_RECV: u16 = 16;
-const OFFSET_PEER_COUNT: u16 = 22;
-const OFFSET_PEER_ENTRIES: u16 = 24;
+const OFFSET_SENDING: u16 = 4;
+const OFFSET_TOOL_RECV: u16 = 10;
+const OFFSET_PEER_COUNT: u16 = 16;
+const OFFSET_PEER_ENTRIES: u16 = 18;
 
 const PEER_ENTRY_SIZE: u16 = 8; // 2 bytes IA + 6 bytes seq
 
@@ -128,8 +126,7 @@ where
     /// next boot — safe.
     fn initialise_layout(fram: &mut Fm25l16b<BUS, CS>) -> Result<(), FramError<E>> {
         fram.write(OFFSET_PEER_COUNT, &[0, 0])?;
-        fram.write(OFFSET_REGULAR_SEND, &DEFAULT_SEND)?;
-        fram.write(OFFSET_TOOL_SEND, &DEFAULT_SEND)?;
+        fram.write(OFFSET_SENDING, &DEFAULT_SEND)?;
         fram.write(OFFSET_TOOL_RECV, &[0u8; 6])?;
         fram.write(OFFSET_MAGIC, &MAGIC)?;
         Ok(())
@@ -189,23 +186,20 @@ where
 {
     type Error = FramError<E>;
 
-    fn load_sending_seqs(&self) -> Result<([u8; 6], [u8; 6]), Self::Error> {
+    fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
         let mut fram = self.fram.borrow_mut();
         if !Self::has_magic(&mut fram)? {
-            return Ok((DEFAULT_SEND, DEFAULT_SEND));
+            return Ok(DEFAULT_SEND);
         }
-        let mut regular = [0u8; 6];
-        let mut tool = [0u8; 6];
-        fram.read(OFFSET_REGULAR_SEND, &mut regular)?;
-        fram.read(OFFSET_TOOL_SEND, &mut tool)?;
-        Ok((regular, tool))
+        let mut seq = [0u8; 6];
+        fram.read(OFFSET_SENDING, &mut seq)?;
+        Ok(seq)
     }
 
-    fn save_sending_seqs(&mut self, regular: &[u8; 6], tool: &[u8; 6]) -> Result<(), Self::Error> {
+    fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
         let mut fram = self.fram.borrow_mut();
         Self::ensure_initialised(&mut fram)?;
-        fram.write(OFFSET_REGULAR_SEND, regular)?;
-        fram.write(OFFSET_TOOL_SEND, tool)?;
+        fram.write(OFFSET_SENDING, seq)?;
         Ok(())
     }
 
