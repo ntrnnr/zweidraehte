@@ -7,6 +7,8 @@
 //! *including* those interspersed CRC bytes; the "data"/stripped buffer is the
 //! telegram with the CRC bytes removed.
 
+use crate::sx1211::regs::{SYNC_WORD, TX_POSTAMBLE, TX_PREAMBLE_BYTE, TX_PREAMBLE_LEN};
+
 /// Smallest legal value of the length field. The on-air length check
 /// `(byte - 9) < 0x3F`, which rejects anything below 9.
 pub const MIN_DATA_LEN: u8 = 9;
@@ -73,4 +75,44 @@ pub fn prepare_tx_buf(telegram: &[u8], onair: &mut [u8]) -> usize {
     let crc_len = crate::crc::insert_block_crcs(telegram, &mut crc_buf);
     crate::manchester::encode_buf(&crc_buf[..crc_len], onair);
     crc_len * 2
+}
+
+/// Upper bound on a fully-assembled on-air transmit buffer — preamble, sync
+/// word, the Manchester-encoded telegram (with per-block CRCs), and postamble —
+/// for the longest legal frame. Use it to size the buffer passed to
+/// [`build_tx_buf`].
+pub const TX_BUF_CAP: usize =
+    TX_PREAMBLE_LEN + SYNC_WORD.len() + 2 * MAX_ONAIR_LEN + TX_POSTAMBLE.len();
+
+/// Assemble the complete on-air byte sequence for `telegram` into `out` and
+/// return its length: the `0x55` preamble, the sync word, the
+/// Manchester-encoded telegram with interspersed block CRCs ([`prepare_tx_buf`]),
+/// and the postamble end marker.
+///
+/// This is the full byte stream the transceiver feeds through its FIFO in
+/// transmit mode; the preamble/sync/postamble that `prepare_tx_buf` deliberately
+/// omits are added here. `telegram[0]` is the length field.
+///
+/// # Panics
+/// Panics if `out` is shorter than the assembled frame; size it to
+/// [`TX_BUF_CAP`].
+pub fn build_tx_buf(telegram: &[u8], out: &mut [u8]) -> usize {
+    let mut pos = 0;
+
+    // Preamble: a run of the 0x55 chip pair for the bit synchroniser to lock on.
+    out[pos..pos + TX_PREAMBLE_LEN].fill(TX_PREAMBLE_BYTE);
+    pos += TX_PREAMBLE_LEN;
+
+    // Sync word — the same bytes the receiver's sync detector is programmed with.
+    out[pos..pos + SYNC_WORD.len()].copy_from_slice(&SYNC_WORD);
+    pos += SYNC_WORD.len();
+
+    // Telegram body: block CRCs inserted, then Manchester-encoded.
+    pos += prepare_tx_buf(telegram, &mut out[pos..]);
+
+    // Postamble end marker (not checked by receivers, mandatory on transmit).
+    out[pos..pos + TX_POSTAMBLE.len()].copy_from_slice(&TX_POSTAMBLE);
+    pos += TX_POSTAMBLE.len();
+
+    pos
 }

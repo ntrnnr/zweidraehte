@@ -67,6 +67,41 @@ fn tx_to_rx_roundtrips(len_raw: u8, seed: u8) -> bool {
         && out[..telegram.len()] == telegram[..]
 }
 
+/// `build_tx_buf` frames the telegram as preamble + sync + Manchester body +
+/// postamble, and the body decodes + CRC-verifies back to the original telegram.
+#[quickcheck]
+fn build_tx_buf_frames_and_roundtrips(len_raw: u8, seed: u8) -> bool {
+    use knxrf::frame::{TX_BUF_CAP, build_tx_buf};
+    use knxrf::sx1211::regs::{SYNC_WORD, TX_POSTAMBLE, TX_PREAMBLE_BYTE, TX_PREAMBLE_LEN};
+
+    let telegram = make_telegram(valid_len(len_raw), seed);
+    let mut buf = [0u8; TX_BUF_CAP];
+    let n = build_tx_buf(&telegram, &mut buf);
+
+    // Preamble run, then the sync word, then the postamble end marker.
+    if buf[..TX_PREAMBLE_LEN].iter().any(|&b| b != TX_PREAMBLE_BYTE) {
+        return false;
+    }
+    let sync_at = TX_PREAMBLE_LEN;
+    if buf[sync_at..sync_at + SYNC_WORD.len()] != SYNC_WORD[..] {
+        return false;
+    }
+    if buf[n - TX_POSTAMBLE.len()..n] != TX_POSTAMBLE[..] {
+        return false;
+    }
+
+    // The body between sync and postamble decodes + CRC-verifies to the telegram.
+    let body = &buf[sync_at + SYNC_WORD.len()..n - TX_POSTAMBLE.len()];
+    let mut decoded = [0u8; MAX_ONAIR_LEN];
+    let dn = match decode_buf(body, &mut decoded) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let mut out = [0u8; MAX_ONAIR_LEN];
+    matches!(verify_and_strip(&decoded[..dn], &mut out), Ok(m) if m == telegram.len())
+        && out[..telegram.len()] == telegram[..]
+}
+
 #[test]
 fn detects_payload_corruption() {
     let telegram = make_telegram(20, 0x33);

@@ -112,6 +112,24 @@ where
         res.and(cs)
     }
 
+    /// Write bytes from `buf` into the FIFO until it reports full or `buf` is
+    /// exhausted, returning the number of bytes written.
+    ///
+    /// This is the transmit feed primitive: the FIFO drains on air far slower
+    /// than SPI fills it, so a long frame is pushed across several calls. The
+    /// caller yields between calls (after the chip has sent a byte or two) and
+    /// re-invokes with the remaining slice. The per-byte `Fifofull` check keeps
+    /// the FIFO from overrunning without needing exact free-space accounting.
+    pub fn write_fifo_chunk(&mut self, buf: &[u8]) -> Result<usize, Sx1211Error<SPI::Error>> {
+        for (i, &b) in buf.iter().enumerate() {
+            if self.fifo_full()? {
+                return Ok(i);
+            }
+            self.write_fifo(b)?;
+        }
+        Ok(buf.len())
+    }
+
     /// Read one byte from the FIFO over `NSS_DATA`.
     pub fn read_fifo(&mut self) -> Result<u8, Sx1211Error<SPI::Error>> {
         let mut buf = [0x00u8];
@@ -129,6 +147,12 @@ where
     /// status bit of `REG_IRQ_PARAM0`).
     pub fn fifo_has_data(&mut self) -> Result<bool, Sx1211Error<SPI::Error>> {
         Ok(self.read_reg(REG_IRQ_PARAM0)? & FIFO_NOT_EMPTY != 0)
+    }
+
+    /// Returns `true` while the FIFO is full (the `Fifofull` status bit of
+    /// `REG_IRQ_PARAM0`). The transmit feed loop uses this to pace itself.
+    pub fn fifo_full(&mut self) -> Result<bool, Sx1211Error<SPI::Error>> {
+        Ok(self.read_reg(REG_IRQ_PARAM0)? & FIFO_FULL != 0)
     }
 
     /// Read the raw RSSI register (0.5 dB/LSB).
@@ -254,6 +278,54 @@ where
         self.write_reg(REG_SYNC1, SYNC_WORD[1])?;
         self.write_reg(REG_SYNC2, SYNC_WORD[2])?;
         self.write_reg(REG_IRQ_PARAM0, IRQ_PARAM0_RX)?;
+        self.set_mode(MODE_RECEIVE)
+    }
+
+    /// Arm the transmitter and begin sending. Switches to buffered mode, primes
+    /// the FIFO with [`TX_PRIME_BYTE`] — which starts transmission immediately
+    /// because `Tx_start_irq_0` (set by [`IRQ_PARAM1_INIT`] at init) keys up as
+    /// soon as the FIFO is non-empty — then enters transmit mode.
+    ///
+    /// After this returns the chip is already transmitting the prime byte, so
+    /// the caller must feed the on-air buffer (preamble first) with
+    /// [`Self::write_fifo_chunk`] without delay. Tx-done is signalled on the
+    /// IRQ1 pin: [`IRQ_PARAM0_RX`] already sets `Tx_irq_1` so no IRQ
+    /// reprogramming is needed.
+    pub fn arm_tx(&mut self) -> Result<(), Sx1211Error<SPI::Error>> {
+        self.set_data_mode(DATA_MODE_BUFFERED)?;
+        self.write_fifo(TX_PRIME_BYTE)?;
+        self.set_mode(MODE_TRANSMIT)
+    }
+
+    /// Arm the receiver for a carrier-sense (listen-before-talk) measurement:
+    /// continuous mode (so the raw demodulated transitions reach the DATA pin
+    /// for edge counting), the narrower CCA RX filter, the RSSI block enabled
+    /// via [`RX_PARAM2_CCA`], then enter RX.
+    ///
+    /// The caller counts DATA-pin edges over its listen window, reads
+    /// [`Self::get_rssi`], classifies the channel, then calls [`Self::stop`].
+    pub fn prepare_cca(&mut self) -> Result<(), Sx1211Error<SPI::Error>> {
+        self.set_data_mode(DATA_MODE_CONTINUOUS)?;
+        self.set_rx_filter(RXPBW_137KHZ, RXABW_115KHZ)?;
+
+        // The chip needs a moment to accept the RX-control value; read it back.
+        let mut tries = 0u8;
+        loop {
+            self.write_reg(REG_RX_PARAM2, RX_PARAM2_CCA)?;
+            let got = self.read_reg(REG_RX_PARAM2)?;
+            if got == RX_PARAM2_CCA {
+                break;
+            }
+            tries += 1;
+            if tries >= 100 {
+                return Err(Sx1211Error::SpiVerify {
+                    reg: REG_RX_PARAM2,
+                    expected: RX_PARAM2_CCA,
+                    got,
+                });
+            }
+        }
+
         self.set_mode(MODE_RECEIVE)
     }
 

@@ -18,3 +18,4 @@ panic-probe = { workspace = true, features = ["print-defmt"] }
 # SX1211 driver + KNX-RF codec.
 knxrf = { path = "../knxrf", features = ["defmt"] }
 embedded-hal.workspace = true
+zweidraehte-proto = { version = "0.1.0", path = "../../crates/zweidraehte-proto", default-features = false }

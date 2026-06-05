@@ -2160,6 +2160,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "knxrf",
  "panic-probe",
+ "zweidraehte-proto",
 ]
 
 [[package]]
