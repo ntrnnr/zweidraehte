@@ -1,0 +1,22 @@
+[package]
+name = "knxrf"
+version = "0.1.0"
+edition = "2024"
+description = "KNX-RF physical-layer codec and Semtech SX1211 transceiver driver (no_std, HAL-agnostic)"
+
+[dependencies]
+# HAL-agnostic chip driver: we only depend on the embedded-hal 1.0 SpiBus /
+# OutputPin traits so the same driver works under embassy on the target and
+# under a mock SPI on the host.
+embedded-hal = { workspace = true }
+# Optional defmt derives on the public error/enum types. Off for host tests.
+defmt = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Property tests for the pure codec (Manchester + block-CRC round-trips).
+# These run on the host with `cargo test -p knxrf`.
+quickcheck = "1"
+quickcheck_macros = "1"
+
+[features]
+defmt = ["dep:defmt"]
