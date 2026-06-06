@@ -392,6 +392,13 @@ pub struct SingleDeviceDef<'a> {
     /// Whether this hardware is an IP-enabled device.
     /// Corresponds to `Hardware/@IsIPEnabled`.
     pub is_ip_enabled: Option<bool>,
+    /// Whether this hardware is a KNX-RF retransmitter.
+    /// Corresponds to `Hardware/@IsRFRetransmitter`.
+    pub is_rf_retransmitter: Option<bool>,
+    /// KNX-RF receive capabilities (`Hardware/@RFRxCapabilities`).
+    pub rf_rx_capabilities: Option<RfRxCapabilities>,
+    /// KNX-RF transmit capabilities (`Hardware/@RFTxCapabilities`).
+    pub rf_tx_capabilities: Option<RfTxCapabilities>,
 }
 
 /// Internal configuration passed to the MTXML generator.

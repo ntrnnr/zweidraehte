@@ -13,6 +13,7 @@ members = [
     "stm32g0_knxrf_playground",
     "stm32g0_knxrf_device",
     "stm32g0_knxrf_secure_light_switch",
+    "stm32g0_knxrf_secure_retransmitter",
     "tpuart_bridge",
     "picow",
     "pico_eth",

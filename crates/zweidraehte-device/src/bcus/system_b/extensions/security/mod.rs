@@ -50,12 +50,14 @@ use crate::StackDefinition;
 #[cfg(feature = "knxip")]
 use crate::bcus::system_b::IpExtensionState;
 use crate::bcus::system_b::{
-    Extension, ExtensionConfig, ExtensionState, HasSecurityMode, RfExtensionState, SystemBDeviceState,
-    Tp1ExtensionState,
+    Extension, ExtensionConfig, ExtensionState, HasSecurityMode, RfExtensionState, RfRetransmitterExtension,
+    SystemBDeviceState, Tp1ExtensionState,
 };
 use crate::logging::debug;
 use crate::objects::comm::HasGoSecurityView;
-use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, PropertyError};
+use crate::objects::interface::{
+    HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter, PropertyError,
+};
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::storage::SequenceNumberStorage;
@@ -962,6 +964,36 @@ impl<
     }
 }
 
+// The retransmitter role (RF Medium Object PID 57, Device Object PID 74) is
+// likewise transparent to the secure wrapper — forward it so a Data-Secure RF
+// device that composes `RfRetransmitterExtension` still satisfies the
+// `HasRfRetransmitter` bound the `RetransmitEnabled` link layer requires.
+impl<
+    Inner: ExtensionState + HasRfRetransmitter,
+    SEQ,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> HasRfRetransmitter for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+{
+    fn rf_retransmit_enabled(&self) -> bool {
+        self.inner.rf_retransmit_enabled()
+    }
+
+    fn set_rf_retransmit_enabled(&self, value: bool) {
+        self.inner.set_rf_retransmit_enabled(value);
+    }
+
+    fn rf_repeat_counter_limit(&self) -> u8 {
+        self.inner.rf_repeat_counter_limit()
+    }
+
+    fn set_rf_repeat_counter_limit(&self, value: u8) {
+        self.inner.set_rf_repeat_counter_limit(value);
+    }
+}
+
 impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
     HasSecurityState for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
 {
@@ -1342,6 +1374,36 @@ pub type SecureRfDeviceState<
     const P2P: usize,
     const SIAT: usize,
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, SecureRfExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>>;
+
+/// KNX-RF **retransmitter** extension state with Data Secure support. As
+/// [`SecureRfExtensionState`], but the wrapped inner extension is
+/// [`RfRetransmitterExtension`], so the device also gains the PID 57 / PID 74
+/// retransmitter surface (`SecureExtensionState<RfRetransmitterExtension<RfExtensionState>, …>`).
+pub type SecureRfRetransmitterExtensionState<
+    SEQ,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> = SecureExtensionState<RfRetransmitterExtension, SEQ, GRP, P2P, SIAT, GO>;
+
+/// KNX-RF retransmitter device state with Data Secure support; the retransmitter
+/// analogue of [`SecureRfDeviceState`].
+pub type SecureRfRetransmitterDeviceState<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D,
+    SEQ,
+    const P2P: usize,
+    const SIAT: usize,
+> = SystemBDeviceState<
+    ADT_SIZE,
+    AST_SIZE,
+    COT_SIZE,
+    D,
+    SecureRfRetransmitterExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>,
+>;
 
 #[cfg(feature = "knxip")]
 /// KNX/IP extension state with Data Secure support.

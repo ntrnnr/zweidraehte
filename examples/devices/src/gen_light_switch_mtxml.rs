@@ -45,6 +45,14 @@ const SERIAL_NUMBER_RF: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x06];
 /// the device definition exists so the variant can be generated.
 const SERIAL_NUMBER_RF_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x07];
 
+/// Hardware serial for the Data Secure KNX-RF **retransmitter** variant.
+/// Identical to the secure RF device but advertises `IsRFRetransmitter="true"`;
+/// it reuses the same secure RF application program (retransmission is a
+/// hardware capability, not an application change). Backed by the
+/// `stm32g0_knxrf_secure_light_switch` firmware composing the retransmitter
+/// extension.
+const SERIAL_NUMBER_RF_SECURE_RT: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x08];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
@@ -329,6 +337,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         application_programs: vec![app_rf_secure_ref],
     });
 
+    // Secure RF **retransmitter** hardware: byte-identical to `hw_rf_secure_ref`
+    // and sharing the same secure RF application program, but advertising
+    // `IsRFRetransmitter="true"`. This is the only difference between a normal RF
+    // device and a retransmitter in the product definition (the repeating is a
+    // runtime/hardware capability, not an application change), mirroring the MDT
+    // `RF-TAL55Bx0x-01S` reference.
+    let hw_rf_secure_retransmit_ref = builder.hardware(HardwareDef {
+        serial_number: SERIAL_NUMBER_RF_SECURE_RT,
+        hardware_version: 1,
+        name: "2-Button Light Switch RF Secure (Retransmitter)",
+        bus_current: None,
+        is_ip_enabled: None,
+        is_rf_retransmitter: Some(true),
+        rf_rx_capabilities: Some(RfRxCapabilities::Ready),
+        rf_tx_capabilities: Some(RfTxCapabilities::Ready),
+        products: vec![ProductDef {
+            name: "Light Switch 2-fold (RF, Secure, Retransmitter)",
+            order_number: "LS-0002-RF-SEC-RT",
+            is_rail_mounted: false,
+            visible_description: None,
+        }],
+        application_programs: vec![app_rf_secure_ref],
+    });
+
     builder.catalog(CatalogSectionDef {
         name: "Push Buttons",
         entries: vec![
@@ -360,6 +392,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 name: "Light Switch 2-fold (RF, Secure)",
                 hardware: hw_rf_secure_ref,
                 product_order_number: "LS-0002-RF-SEC",
+                application_program: app_rf_secure_ref,
+            },
+            CatalogEntryDef {
+                name: "Light Switch 2-fold (RF, Secure, Retransmitter)",
+                hardware: hw_rf_secure_retransmit_ref,
+                product_order_number: "LS-0002-RF-SEC-RT",
                 application_program: app_rf_secure_ref,
             },
         ],
@@ -400,6 +438,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             name: "2-Button Light Switch RF Secure",
             hardware: hw_rf_secure_ref,
             product_order_number: "LS-0002-RF-SEC",
+            application_program: app_rf_secure_ref,
+        });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch RF Secure (Retransmitter)",
+            hardware: hw_rf_secure_retransmit_ref,
+            product_order_number: "LS-0002-RF-SEC-RT",
             application_program: app_rf_secure_ref,
         });
     }

@@ -8,15 +8,22 @@
 //!   filters inbound frames against and inserts into domain-addressed
 //!   transmissions. (The optional Device-Object mirror, PID 82, is not
 //!   implemented.)
-//! - `PID_RF_RETRANSMITTER` (PID 57) — the RF Retransmitter flag (03/05/01
-//!   §4.15.9). Stored for management round-trips; the retransmitter *role* is not
-//!   yet implemented.
+//!
+//! The optional retransmitter role — `PID_RF_RETRANSMITTER` (PID 57) and
+//! `PID_RF_REPEAT_COUNTER` (PID 74), plus the actual Layer-2 repeating
+//! behaviour — is *not* part of this base extension. It lives in the
+//! compile-time-optional wrapper extension [`retransmitter`], so devices that
+//! are not retransmitters carry neither the extra PIDs nor any link-layer code.
 //!
 //! Mirrors the [`tp1`](super::tp1) extension's shape, but contributes a *new*
 //! object (`additional_objects`) rather than intercepting the Device Object.
 //! Unlike TP1, the augment is a thin separate struct ([`RfAugment`]) holding a
 //! borrow of the state, because an augment-provided object always needs its own
 //! `OBJECT_TYPE` (PID 1) entry.
+
+pub mod retransmitter;
+
+pub use retransmitter::{RetransmitterCells, RfRetransmitterAugment, RfRetransmitterConfig, RfRetransmitterExtension};
 
 use core::cell::Cell;
 
@@ -30,7 +37,7 @@ use crate::objects::interface::{
 };
 use crate::restart::EraseCode;
 use zweidraehte_proto::access::AccessPolicy;
-use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_BinaryInformation, PDT_Generic06, PDT_UnsignedInt};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic06, PDT_UnsignedInt};
 
 // ============================================================================
 // Defaults
@@ -53,14 +60,11 @@ pub struct RfExtensionConfig {
     /// PID_RF_DOMAIN_ADDRESS (PID 56): 6-octet RF Domain Address.
     #[serde(default = "default_rf_domain_address")]
     pub rf_domain_address: [u8; 6],
-    /// PID_RF_RETRANSMITTER (PID 57): retransmitter enabled flag.
-    #[serde(default)]
-    pub rf_retransmitter: bool,
 }
 
 impl Default for RfExtensionConfig {
     fn default() -> Self {
-        Self { rf_domain_address: default_rf_domain_address(), rf_retransmitter: false }
+        Self { rf_domain_address: default_rf_domain_address() }
     }
 }
 
@@ -72,13 +76,11 @@ impl ExtensionConfig for RfExtensionConfig {}
 
 /// Runtime KNX-RF extension state with interior mutability.
 ///
-/// Holds the RF Domain Address and retransmitter flag behind `Cell`s so the
-/// interface-object augment can write them in place; persistence is automatic
-/// (a successful property write marks the device dirty, flushing
-/// [`to_config`](ExtensionState::to_config)).
+/// Holds the RF Domain Address behind a `Cell` so the interface-object augment
+/// can write it in place; persistence is automatic (a successful property write
+/// marks the device dirty, flushing [`to_config`](ExtensionState::to_config)).
 pub struct RfExtensionState {
     rf_domain_address: Cell<[u8; 6]>,
-    rf_retransmitter: Cell<bool>,
 }
 
 impl RfExtensionState {
@@ -97,23 +99,16 @@ impl ExtensionState for RfExtensionState {
     type Resources = ();
 
     fn from_config(config: RfExtensionConfig, _resources: ()) -> Self {
-        Self {
-            rf_domain_address: Cell::new(config.rf_domain_address),
-            rf_retransmitter: Cell::new(config.rf_retransmitter),
-        }
+        Self { rf_domain_address: Cell::new(config.rf_domain_address) }
     }
 
     fn to_config(&self) -> RfExtensionConfig {
-        RfExtensionConfig {
-            rf_domain_address: self.rf_domain_address.get(),
-            rf_retransmitter: self.rf_retransmitter.get(),
-        }
+        RfExtensionConfig { rf_domain_address: self.rf_domain_address.get() }
     }
 
     fn on_erase(&self, code: EraseCode) {
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
             self.rf_domain_address.set(default_rf_domain_address());
-            self.rf_retransmitter.set(false);
         }
     }
 }
@@ -154,19 +149,6 @@ pub struct RfAugment<'a> {
              Ok(WriteResponse::Echo)
          })]
     _rf_domain_address_io: (),
-
-    // PID 57 — RF_RETRANSMITTER: 1-bit flag, RW.
-    #[io(pid = pid::rf::RF_RETRANSMITTER, pdt = PDT_BinaryInformation, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 1] { [this.state.rf_retransmitter.get() as u8] },
-         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-             if data.is_empty() {
-                 return Err(PropertyError::TypeMismatch);
-             }
-             this.state.rf_retransmitter.set(data[0] != 0);
-             Ok(WriteResponse::Echo)
-         })]
-    _rf_retransmitter_io: (),
 }
 
 impl Extension<()> for RfExtensionState {

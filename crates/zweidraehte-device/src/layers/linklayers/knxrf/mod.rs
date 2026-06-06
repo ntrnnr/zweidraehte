@@ -7,6 +7,21 @@
 //! between the internal `KnxMessageBuffer` format and CRC-stripped RF telegrams
 //! via [`zweidraehte_proto::encoding::rf`].
 //!
+//! # Optional retransmitter (repeater)
+//!
+//! The link layer is generic over a [`RetransmitPolicy`]. The default
+//! [`NoRetransmit`] compiles the repeating path away. [`RetransmitEnabled`]
+//! (selected with [`KnxRfLinkLayerBuilder::with_retransmitter`]) turns the
+//! device into a KNX-RF **DoA retransmitter** (03/02/05 §6.1.7): on each
+//! accepted frame it re-broadcasts the CRC-stripped telegram with the RF
+//! Repetition Counter decremented, gated by the shared LFN history (never
+//! repeat a duplicate), the RC limit (PID 74) and the runtime enable flag
+//! (PID 57). Those parameters reach the link layer through
+//! [`RfRetransmitterContext`], which a stack context only provides when the
+//! device composes the
+//! [`RfRetransmitterExtension`](crate::bcus::system_b::RfRetransmitterExtension)
+//! — so the policy and the extension are wired together at compile time.
+//!
 //! Scope: **KNX RF Ready asynchronous Standard frames**, bidirectional (RX + TX
 //! with confirmations). RF Multi, BiBat, and LTE-extended frames are out of
 //! scope.
@@ -25,10 +40,12 @@
 
 mod history;
 
+use core::marker::PhantomData;
+
 use embassy_futures::select::{Either, select};
 use embassy_sync::channel::DynamicSender;
 
-use crate::context::{LinkLayerBufferContext, RfDomainAddressContext};
+use crate::context::{LinkLayerBufferContext, RfDomainAddressContext, RfRetransmitterContext};
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use history::LfnHistory;
 use zweidraehte_proto::encoding::rf;
@@ -96,26 +113,44 @@ pub struct KnxRfResources;
 /// The radio is owned by the builder and handed to the run loop; create the
 /// builder with the platform-specific transceiver (e.g. an SX1211 adapter) and
 /// wire it into the device as `type LLB = KnxRfLinkLayerBuilder<MyRadio>`.
-pub struct KnxRfLinkLayerBuilder<R: RfTransceiver> {
+///
+/// `P` selects the [`RetransmitPolicy`]: the default [`NoRetransmit`] compiles
+/// the repeating code path away entirely, while [`RetransmitEnabled`] (via
+/// [`with_retransmitter`](Self::with_retransmitter)) makes the device a KNX-RF
+/// DoA retransmitter — which the type system then requires the device to back
+/// with the retransmitter extension (see [`RetransmitEnabled`]).
+pub struct KnxRfLinkLayerBuilder<R: RfTransceiver, P = NoRetransmit> {
     radio: R,
     /// Whether this device is unidirectional (sets the RF-info Unidir flag on TX).
     unidir: bool,
+    _policy: PhantomData<P>,
 }
 
-impl<R: RfTransceiver> KnxRfLinkLayerBuilder<R> {
+impl<R: RfTransceiver> KnxRfLinkLayerBuilder<R, NoRetransmit> {
     /// Create a bidirectional KNX-RF link-layer builder over `radio`.
     pub fn new(radio: R) -> Self {
-        Self { radio, unidir: false }
+        Self { radio, unidir: false, _policy: PhantomData }
     }
+}
 
+impl<R: RfTransceiver, P> KnxRfLinkLayerBuilder<R, P> {
     /// Mark this device as unidirectional (transmit-only sensors, etc.).
     pub fn unidirectional(mut self) -> Self {
         self.unidir = true;
         self
     }
+
+    /// Turn this into a KNX-RF DoA **retransmitter** link layer (03/02/05
+    /// §6.1.7). The resulting builder only satisfies `LinkLayerBuilder` for a
+    /// stack context that exposes [`RfRetransmitterContext`] — i.e. a device
+    /// that composes the retransmitter extension — so the dependency is checked
+    /// at compile time.
+    pub fn with_retransmitter(self) -> KnxRfLinkLayerBuilder<R, RetransmitEnabled> {
+        KnxRfLinkLayerBuilder { radio: self.radio, unidir: self.unidir, _policy: PhantomData }
+    }
 }
 
-impl<R: RfTransceiver> LinkLayerBuilderBase for KnxRfLinkLayerBuilder<R> {
+impl<R: RfTransceiver, P> LinkLayerBuilderBase for KnxRfLinkLayerBuilder<R, P> {
     type Resources = KnxRfResources;
 
     fn create_resources(&self) -> Self::Resources {
@@ -123,15 +158,26 @@ impl<R: RfTransceiver> LinkLayerBuilderBase for KnxRfLinkLayerBuilder<R> {
     }
 }
 
-impl<R: RfTransceiver> LinkLayerCapabilities for KnxRfLinkLayerBuilder<R> {}
+impl<R: RfTransceiver, P> LinkLayerCapabilities for KnxRfLinkLayerBuilder<R, P> {}
 
 // `R: 'static` because the radio is owned by — and moved into — the run-loop
 // future. Concrete transceivers own 'static peripherals (e.g. embassy SPI), so
 // this is satisfied in practice.
-impl<R, CTX> LinkLayerBuilder<CTX> for KnxRfLinkLayerBuilder<R>
+//
+// A single impl covers both policies: `P: RetransmitPolicy<CTX>` holds
+// unconditionally for `NoRetransmit`, but for `RetransmitEnabled` it requires
+// `CTX: RfRetransmitterContext` (see the policy impls below) — which a
+// `StackContext` only provides when the device composes the retransmitter
+// extension. Selecting the retransmitter link layer without the extension is
+// therefore a compile error at the device's `LinkLayerBuilder` use site.
+impl<R, CTX, P> LinkLayerBuilder<CTX> for KnxRfLinkLayerBuilder<R, P>
 where
     R: RfTransceiver + 'static,
     CTX: LinkLayerBufferContext + RfDomainAddressContext,
+    // `P` is a zero-sized marker (`NoRetransmit` / `RetransmitEnabled`), so the
+    // `'static` bound is trivially met and lets the run-loop future hold a
+    // `PhantomData<P>` for the lifetime `'a`.
+    P: RetransmitPolicy<CTX> + 'static,
 {
     fn build_and_run<'a>(
         self,
@@ -142,7 +188,7 @@ where
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
         req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
-        let mut ll = KnxRfLinkLayer {
+        let mut ll = KnxRfLinkLayer::<R, CTX, P> {
             radio: self.radio,
             unidir: self.unidir,
             context,
@@ -150,8 +196,115 @@ where
             conf_tx,
             history: LfnHistory::new(),
             tx_lfn: 0,
+            _policy: PhantomData,
         };
         async move { ll.run(req_rx).await }
+    }
+}
+
+// ============================================================================
+// Retransmit policy — compile-time gate for the §6.1.7 repeating behaviour
+// ============================================================================
+
+/// Compile-time selector for the KNX-RF retransmit (repeater) behaviour.
+///
+/// Implemented for a given stack context only by the variant that is legal in
+/// it: [`NoRetransmit`] for *every* context (no-op), [`RetransmitEnabled`]
+/// only for a context that exposes [`RfRetransmitterContext`]. The link layer
+/// is generic over `P: RetransmitPolicy<CTX>`, so the wrong combination simply
+/// fails to type-check rather than misbehaving at runtime.
+pub trait RetransmitPolicy<CTX> {
+    /// Apply the §6.1.7 retransmit decision to a just-received frame.
+    ///
+    /// `dup` is the result of the shared LFN-history check (a duplicate is
+    /// never repeated). For [`NoRetransmit`] this is a no-op the optimiser
+    /// removes entirely.
+    fn maybe_retransmit<R: RfTransceiver>(
+        radio: &mut R,
+        dup: bool,
+        telegram: &[u8],
+        meta: &rf::RfRxMeta,
+        context: &CTX,
+    ) -> impl core::future::Future<Output = ()>;
+}
+
+/// No retransmit behaviour — the default. The repeating code path is
+/// monomorphised away, so a normal RF device carries none of it.
+pub struct NoRetransmit;
+
+impl<CTX> RetransmitPolicy<CTX> for NoRetransmit {
+    async fn maybe_retransmit<R: RfTransceiver>(_: &mut R, _: bool, _: &[u8], _: &rf::RfRxMeta, _: &CTX) {}
+}
+
+/// KNX-RF DoA retransmitter behaviour. Only valid for a stack context that
+/// exposes the retransmitter parameters ([`RfRetransmitterContext`]), which in
+/// turn requires the device to compose the retransmitter extension.
+///
+/// The bound is enforced at compile time: a context that does not implement
+/// [`RfRetransmitterContext`] is not a valid `RetransmitPolicy`, so selecting
+/// the retransmitter link layer without the backing extension fails to build.
+///
+/// ```compile_fail
+/// use zweidraehte_device::layers::linklayers::knxrf::{RetransmitEnabled, RetransmitPolicy};
+/// // A context with no retransmitter parameters.
+/// struct PlainCtx;
+/// fn requires_policy<P: RetransmitPolicy<PlainCtx>>() {}
+/// // `PlainCtx: !RfRetransmitterContext`, so this line does not compile.
+/// requires_policy::<RetransmitEnabled>();
+/// ```
+///
+/// The same usage with [`NoRetransmit`] compiles, since it is a policy for
+/// every context:
+///
+/// ```
+/// use zweidraehte_device::layers::linklayers::knxrf::{NoRetransmit, RetransmitPolicy};
+/// struct PlainCtx;
+/// fn requires_policy<P: RetransmitPolicy<PlainCtx>>() {}
+/// requires_policy::<NoRetransmit>();
+/// ```
+pub struct RetransmitEnabled;
+
+impl<CTX: RfRetransmitterContext> RetransmitPolicy<CTX> for RetransmitEnabled {
+    async fn maybe_retransmit<R: RfTransceiver>(
+        radio: &mut R,
+        dup: bool,
+        telegram: &[u8],
+        meta: &rf::RfRxMeta,
+        context: &CTX,
+    ) {
+        // §6.1.7.3 History List: never repeat a frame we already saw (the
+        // shared LFN history was updated by the caller's duplicate check).
+        // §6.1.7 runtime toggle (PID 57): honour the enable flag.
+        if dup || !context.rf_retransmit_enabled() {
+            return;
+        }
+
+        // §6.1.7.4 RF Repetition Counter: repeat only while RC > 0 and
+        // RC > limit, decrementing on this hop. Otherwise discard.
+        let rc = meta.rc;
+        let limit = context.rf_repeat_counter_limit();
+        if rc == 0 || rc <= limit {
+            return;
+        }
+        let rc_decremented = rc - 1;
+
+        // Re-emit the CRC-stripped frame unchanged except for the decremented
+        // RC nibble; the LFN and every other field are preserved (the
+        // retransmitter must not alter the LFN) and the transceiver recomputes
+        // block CRCs. RSSI annotation (RF-info bits 3:2) is left void — a
+        // conformant value when we don't measure signal strength.
+        if telegram.len() <= rf::LPCI1_IDX {
+            return;
+        }
+        let mut out = [0u8; RF_FRAME_BUF];
+        let n = telegram.len().min(out.len());
+        out[..n].copy_from_slice(&telegram[..n]);
+        out[rf::LPCI1_IDX] =
+            (out[rf::LPCI1_IDX] & !rf::LPCI1_RC_MASK) | ((rc_decremented << rf::LPCI1_RC_SHIFT) & rf::LPCI1_RC_MASK);
+
+        if radio.transmit(&out[..n]).await.is_err() {
+            warn!("KNX-RF: retransmit failed");
+        }
     }
 }
 
@@ -159,7 +312,7 @@ where
 // Runtime
 // ============================================================================
 
-struct KnxRfLinkLayer<'a, R: RfTransceiver, CTX> {
+struct KnxRfLinkLayer<'a, R: RfTransceiver, CTX, P> {
     radio: R,
     unidir: bool,
     context: &'a CTX,
@@ -167,12 +320,14 @@ struct KnxRfLinkLayer<'a, R: RfTransceiver, CTX> {
     conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
     history: LfnHistory,
     tx_lfn: u8,
+    _policy: PhantomData<P>,
 }
 
-impl<R, CTX> KnxRfLinkLayer<'_, R, CTX>
+impl<R, CTX, P> KnxRfLinkLayer<'_, R, CTX, P>
 where
     R: RfTransceiver,
     CTX: LinkLayerBufferContext + RfDomainAddressContext,
+    P: RetransmitPolicy<CTX>,
 {
     /// Event loop: race radio reception against transmit requests. Reception is
     /// cancel-safe per [`RfTransceiver`], so dropping it to service a request is
@@ -236,9 +391,19 @@ where
         }
 
         // LFN duplicate suppression (KNX 03/02/05 §6.1.4.3), aged by wall-clock.
+        // A single shared history serves both the receiver dedup (§6.1.4.3.3)
+        // and the retransmitter History List (§6.1.7.3): both key on
+        // (sender, LFN) and cap at 7 entries, so one `is_duplicate` call —
+        // which also records the frame — gates both paths below.
         let src = u16::from_be_bytes([internal[1], internal[2]]);
         let now_ms = embassy_time::Instant::now().as_millis();
-        if self.history.is_duplicate(&meta.sn_or_doa, src, meta.lfn, now_ms) {
+        let dup = self.history.is_duplicate(&meta.sn_or_doa, src, meta.lfn, now_ms);
+
+        // Retransmit (§6.1.7) before up-delivery, for timely repeating. For the
+        // default `NoRetransmit` policy this is a monomorphised no-op.
+        P::maybe_retransmit(&mut self.radio, dup, telegram, &meta, self.context).await;
+
+        if dup {
             trace!("KNX-RF: duplicate LFN {=u8} from {=u16:#06x} dropped", meta.lfn, src);
             return;
         }
@@ -348,7 +513,12 @@ fn tx_uses_domain_address(ctrl: u8, npdu: u8, dst_zero: bool, unidir: bool) -> b
 
 #[cfg(test)]
 mod tests {
-    use super::tx_uses_domain_address;
+    use super::{
+        NoRetransmit, RetransmitEnabled, RetransmitPolicy, RfRetransmitterContext, RfRx, RfTransceiver,
+        tx_uses_domain_address,
+    };
+    use embassy_futures::block_on;
+    use zweidraehte_proto::encoding::rf;
 
     // Internal CTRL bit 0x10 set = normal/installation; cleared = system broadcast.
     const CTRL_NORMAL: u8 = 0xBC;
@@ -387,5 +557,155 @@ mod tests {
         // regardless of direction.
         assert!(!tx_uses_domain_address(CTRL_SYS_BCAST, NPDU_GROUP, true, false));
         assert!(!tx_uses_domain_address(CTRL_SYS_BCAST, NPDU_GROUP, true, true));
+    }
+
+    // ========================================================================
+    // Retransmit policy (§6.1.7) tests
+    // ========================================================================
+
+    /// Records the last transmitted telegram; `receive` never resolves.
+    struct MockRadio {
+        last: [u8; super::RF_FRAME_BUF],
+        last_len: usize,
+        tx_count: usize,
+    }
+
+    impl MockRadio {
+        fn new() -> Self {
+            Self { last: [0; super::RF_FRAME_BUF], last_len: 0, tx_count: 0 }
+        }
+    }
+
+    impl RfTransceiver for MockRadio {
+        type Error = ();
+
+        async fn receive(&mut self, _buf: &mut [u8]) -> Result<RfRx, ()> {
+            core::future::pending().await
+        }
+
+        async fn transmit(&mut self, telegram: &[u8]) -> Result<(), ()> {
+            let n = telegram.len().min(self.last.len());
+            self.last[..n].copy_from_slice(&telegram[..n]);
+            self.last_len = n;
+            self.tx_count += 1;
+            Ok(())
+        }
+    }
+
+    /// Minimal retransmitter-parameter context for policy tests.
+    struct MockCtx {
+        enabled: bool,
+        limit: u8,
+    }
+
+    impl RfRetransmitterContext for MockCtx {
+        fn rf_retransmit_enabled(&self) -> bool {
+            self.enabled
+        }
+
+        fn rf_repeat_counter_limit(&self) -> u8 {
+            self.limit
+        }
+    }
+
+    // LPCI-1 octet (telegram index 15): RC in bits 6:4, LFN in bits 3:1.
+    // 0x66 = RC 6, LFN 3, AET 0.
+    const LPCI1_RC6_LFN3: u8 = 0x66;
+
+    fn meta_with_rc(rc: u8) -> rf::RfRxMeta {
+        rf::RfRxMeta {
+            internal_len: 0,
+            sn_or_doa: [0; 6],
+            aet: true,
+            lfn: 3,
+            rc,
+            unidir: false,
+            battery_ok: true,
+            frame_type: 0,
+        }
+    }
+
+    /// A 20-octet CRC-stripped telegram with a recognisable LPCI-1 octet and
+    /// distinct surrounding bytes, so we can assert byte-exact preservation.
+    fn sample_telegram() -> [u8; 20] {
+        let mut t = [0u8; 20];
+        for (i, b) in t.iter_mut().enumerate() {
+            *b = i as u8 + 1;
+        }
+        t[rf::LPCI1_IDX] = LPCI1_RC6_LFN3;
+        t
+    }
+
+    #[test]
+    fn retransmit_decrements_rc_and_preserves_lfn() {
+        let mut radio = MockRadio::new();
+        let telegram = sample_telegram();
+        let ctx = MockCtx { enabled: true, limit: 0 };
+        block_on(RetransmitEnabled::maybe_retransmit(&mut radio, false, &telegram, &meta_with_rc(6), &ctx));
+
+        assert_eq!(radio.tx_count, 1, "frame with RC>limit must be repeated once");
+        assert_eq!(radio.last_len, telegram.len());
+        // RC nibble decremented 6→5, LFN bits (0x06) preserved ⇒ 0x56.
+        assert_eq!(radio.last[rf::LPCI1_IDX], 0x56);
+        // Every other octet is byte-identical (LFN unchanged, no re-encode).
+        for i in 0..telegram.len() {
+            if i != rf::LPCI1_IDX {
+                assert_eq!(radio.last[i], telegram[i], "octet {i} must be preserved");
+            }
+        }
+    }
+
+    #[test]
+    fn retransmit_honours_rc_limit() {
+        // RC 6 > limit 5 ⇒ repeated (to RC 5).
+        let mut radio = MockRadio::new();
+        let telegram = sample_telegram();
+        let ctx = MockCtx { enabled: true, limit: 5 };
+        block_on(RetransmitEnabled::maybe_retransmit(&mut radio, false, &telegram, &meta_with_rc(6), &ctx));
+        assert_eq!(radio.tx_count, 1);
+        assert_eq!(radio.last[rf::LPCI1_IDX] >> 4, 5);
+
+        // RC 5 == limit 5 ⇒ not repeated.
+        let mut radio = MockRadio::new();
+        let mut t = sample_telegram();
+        t[rf::LPCI1_IDX] = (5 << 4) | 0x06;
+        block_on(RetransmitEnabled::maybe_retransmit(&mut radio, false, &t, &meta_with_rc(5), &ctx));
+        assert_eq!(radio.tx_count, 0, "RC == limit must not be repeated");
+    }
+
+    #[test]
+    fn retransmit_drops_rc_zero() {
+        let mut radio = MockRadio::new();
+        let telegram = sample_telegram();
+        let ctx = MockCtx { enabled: true, limit: 0 };
+        block_on(RetransmitEnabled::maybe_retransmit(&mut radio, false, &telegram, &meta_with_rc(0), &ctx));
+        assert_eq!(radio.tx_count, 0, "RC 0 must never be repeated");
+    }
+
+    #[test]
+    fn retransmit_skips_duplicates() {
+        let mut radio = MockRadio::new();
+        let telegram = sample_telegram();
+        let ctx = MockCtx { enabled: true, limit: 0 };
+        block_on(RetransmitEnabled::maybe_retransmit(&mut radio, true, &telegram, &meta_with_rc(6), &ctx));
+        assert_eq!(radio.tx_count, 0, "a history duplicate must not be repeated");
+    }
+
+    #[test]
+    fn retransmit_respects_disabled_flag() {
+        let mut radio = MockRadio::new();
+        let telegram = sample_telegram();
+        let ctx = MockCtx { enabled: false, limit: 0 };
+        block_on(RetransmitEnabled::maybe_retransmit(&mut radio, false, &telegram, &meta_with_rc(6), &ctx));
+        assert_eq!(radio.tx_count, 0, "PID 57 disabled suppresses retransmission");
+    }
+
+    #[test]
+    fn no_retransmit_policy_never_transmits() {
+        let mut radio = MockRadio::new();
+        let telegram = sample_telegram();
+        let ctx = MockCtx { enabled: true, limit: 0 };
+        block_on(NoRetransmit::maybe_retransmit(&mut radio, false, &telegram, &meta_with_rc(6), &ctx));
+        assert_eq!(radio.tx_count, 0, "NoRetransmit is a no-op");
     }
 }

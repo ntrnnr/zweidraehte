@@ -104,6 +104,27 @@ pub trait RfDomainAddressContext {
     fn knx_serial_number(&self) -> [u8; 6];
 }
 
+/// Provides the KNX-RF retransmitter parameters to the link layer.
+///
+/// This context trait exists on the stack context **only when the device
+/// composes the optional retransmitter extension** (i.e. `D::State:
+/// HasRfRetransmitter`). The `RetransmitEnabled` KNX-RF link-layer policy
+/// requires this bound, so a device cannot select the repeating link layer
+/// without also composing the extension — and a non-retransmitter device never
+/// names this trait, so the retransmit code path is monomorphized away.
+///
+/// Backs the §6.1.7 algorithm: a received frame is repeated only while
+/// [`rf_retransmit_enabled`](Self::rf_retransmit_enabled) is set and its RF
+/// Repetition Counter is `> 0` and `> rf_repeat_counter_limit`.
+pub trait RfRetransmitterContext {
+    /// Whether the device should currently repeat qualifying RF frames
+    /// (`PID_RF_RETRANSMITTER`).
+    fn rf_retransmit_enabled(&self) -> bool;
+
+    /// The RF Repetition Counter limit (`PID_RF_REPEAT_COUNTER`).
+    fn rf_repeat_counter_limit(&self) -> u8;
+}
+
 /// Provides access to publish communication object events to user code.
 pub trait EventPublisherContext<Index> {
     /// Publish a communication object event.

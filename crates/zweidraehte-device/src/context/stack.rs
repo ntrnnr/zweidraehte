@@ -22,7 +22,7 @@
 
 #[cfg(feature = "knxip")]
 use crate::bcus::system_b::HasExtensionState;
-use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress};
+use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 #[cfg(feature = "knxip")]
 use crate::{
     HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpPlatform,
@@ -34,7 +34,8 @@ use crate::{
     StackState,
     context::{
         AddressTableContext, ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext,
-        MaxRetryCountContext, PropertyServiceContext, RfDomainAddressContext, layer::LayerContext,
+        MaxRetryCountContext, PropertyServiceContext, RfDomainAddressContext, RfRetransmitterContext,
+        layer::LayerContext,
     },
     definition::StackDefinition,
     inner::Inner,
@@ -285,5 +286,23 @@ where
 
     fn knx_serial_number(&self) -> [u8; 6] {
         *self.inner.state.serial_number()
+    }
+}
+
+// Only present when the device composes the optional retransmitter extension
+// (`D::State: HasRfRetransmitter`). This is the compile-time gate that lets the
+// `RetransmitEnabled` KNX-RF link-layer policy read the retransmitter
+// parameters; non-retransmitter devices never satisfy the bound, so the
+// repeating link layer cannot be selected without the extension.
+impl<D: StackDefinition> RfRetransmitterContext for StackContext<'_, D>
+where
+    D::State: HasRfRetransmitter,
+{
+    fn rf_retransmit_enabled(&self) -> bool {
+        self.inner.state.rf_retransmit_enabled()
+    }
+
+    fn rf_repeat_counter_limit(&self) -> u8 {
+        self.inner.state.rf_repeat_counter_limit()
     }
 }

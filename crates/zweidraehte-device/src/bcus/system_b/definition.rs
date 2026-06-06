@@ -232,3 +232,21 @@ where
     P2P,
     SIAT,
 >;
+
+/// KNX-RF **retransmitter** Data Secure System B state for `D`. As
+/// [`SecureRfStateFor`], but the RF medium extension is wrapped in
+/// [`RfRetransmitterExtension`](super::extensions::RfRetransmitterExtension),
+/// adding the PID 57 / PID 74 retransmitter surface. Pair it with
+/// `type LLB = KnxRfLinkLayerBuilder<Radio, RetransmitEnabled>`.
+pub type SecureRfRetransmitterStateFor<D, SEQ, const P2P: usize, const SIAT: usize>
+where
+    D: SystemBStackDefinition,
+= super::extensions::SecureRfRetransmitterDeviceState<
+    { <D as SystemBStackDefinition>::ADT_SIZE },
+    { <D as SystemBStackDefinition>::AST_SIZE },
+    { <D as SystemBStackDefinition>::COT_SIZE },
+    D,
+    SEQ,
+    P2P,
+    SIAT,
+>;

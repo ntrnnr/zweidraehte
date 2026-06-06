@@ -69,6 +69,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         is_rail_mounted: false,
         catalog_section: "KNX/IP Devices",
         is_ip_enabled: Some(true),
+        is_rf_retransmitter: None,
+        rf_rx_capabilities: None,
+        rf_tx_capabilities: None,
     })
     .output_dir(&out_dir)
     .schema_version(KnxSchemaVersion::V20);

@@ -19,7 +19,7 @@ use crate::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
         comm::{ComObjects, HasCommObjects, HasGoSecurityView},
-        interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRoutingCount},
+        interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter, HasRoutingCount},
         tables::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine,
             HasPeiApplication, HasRunStateMachine, Table,
@@ -921,6 +921,37 @@ impl<
 
     fn set_rf_domain_address(&self, addr: &[u8; 6]) {
         self.extension_state.set_rf_domain_address(addr);
+        self.mark_dirty();
+    }
+}
+
+// Forwarded only when the composed extension carries the retransmitter role,
+// so `D::State: HasRfRetransmitter` (and hence the `RetransmitEnabled` KNX-RF
+// link layer) is available exactly for retransmitter devices. Writes mark the
+// device dirty to persist the runtime flag / RC limit.
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: StackDefinition,
+    ES: ExtensionState + HasRfRetransmitter,
+> HasRfRetransmitter for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
+{
+    fn rf_retransmit_enabled(&self) -> bool {
+        self.extension_state.rf_retransmit_enabled()
+    }
+
+    fn set_rf_retransmit_enabled(&self, value: bool) {
+        self.extension_state.set_rf_retransmit_enabled(value);
+        self.mark_dirty();
+    }
+
+    fn rf_repeat_counter_limit(&self) -> u8 {
+        self.extension_state.rf_repeat_counter_limit()
+    }
+
+    fn set_rf_repeat_counter_limit(&self, value: u8) {
+        self.extension_state.set_rf_repeat_counter_limit(value);
         self.mark_dirty();
     }
 }

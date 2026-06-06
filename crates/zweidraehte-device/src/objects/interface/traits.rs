@@ -933,6 +933,35 @@ pub trait HasRfDomainAddress {
     fn set_rf_domain_address(&self, addr: &[u8; 6]);
 }
 
+/// Trait for device state that carries the KNX-RF retransmitter role.
+///
+/// Implemented only by the optional retransmitter wrapper extension
+/// (`RfRetransmitterExtension`); its presence on `D::State` is what makes
+/// [`RfRetransmitterContext`](crate::context::RfRetransmitterContext)
+/// available, which in turn is the compile-time gate for the
+/// `RetransmitEnabled` KNX-RF link-layer policy. Backs the RF Medium Object's
+/// `PID_RF_RETRANSMITTER` (PID 57, 03/05/01 §4.15.9) and the Device Object's
+/// `PID_RF_REPEAT_COUNTER` (PID 74, the optional cascade-depth limit from
+/// 03/02/05 §6.1.7.4).
+pub trait HasRfRetransmitter {
+    /// Whether the device should currently repeat qualifying RF frames.
+    ///
+    /// Reflects `PID_RF_RETRANSMITTER`; ETS may toggle it at runtime even on a
+    /// device built with the retransmitter compiled in.
+    fn rf_retransmit_enabled(&self) -> bool;
+
+    /// Replace the runtime retransmitter-enabled flag.
+    fn set_rf_retransmit_enabled(&self, value: bool);
+
+    /// The RF Repetition Counter limit (`PID_RF_REPEAT_COUNTER`). A received
+    /// frame is repeated only while its RC is `> 0` and `> limit`; the RC is
+    /// decremented on each hop (03/02/05 §6.1.7.4). Default 0.
+    fn rf_repeat_counter_limit(&self) -> u8;
+
+    /// Replace the RF Repetition Counter limit.
+    fn set_rf_repeat_counter_limit(&self, value: u8);
+}
+
 /// Trait for containers that provide access to DeviceObject properties.
 ///
 /// This trait enables type-safe access to the DeviceObject's semantic properties

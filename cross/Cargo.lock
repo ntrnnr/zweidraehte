@@ -2215,6 +2215,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32g0_knxrf_secure_retransmitter"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "dev-provisioning-build",
+ "devices",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-stm32",
+ "embassy-time",
+ "embedded-common",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "knxrf",
+ "panic-probe",
+ "static_cell",
+ "stm32-common",
+ "zweidraehte-device",
+ "zweidraehte-platform",
+]
+
+[[package]]
 name = "stm32g0_tp1_light_switch"
 version = "0.1.0"
 dependencies = [

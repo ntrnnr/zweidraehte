@@ -594,6 +594,7 @@ router and link layer is three channels: `req` (router→LL), `ind`
 |---|---|---|---|
 | TP1 (TPUART / NCN / Elmos) | `tpuart/` | yes | `BufferManagerContext`, `ApduLengthContext`, `MaxRetryCountContext`, `KnxIndividualAddressContext`, `AddressTableContext` |
 | KNX/IP | `knxip/` | yes | `BufferManagerContext`, `ApduLengthContext`, `PropertyServiceContext` (device-management connection), `DeviceInfoContext`, `IpDiagnosticsContext`, `IpAdditionalIndividualAddressContext` |
+| KNX-RF (feature `rf`) | `knxrf/` | yes | `BufferManagerContext`, `RfDomainAddressContext`, `RfRetransmitterContext` (only with the `RetransmitEnabled` policy) |
 | USB (HID) | `usb/` | yes | `BufferManagerContext`, `ApduLengthContext`, `PropertyServiceContext` |
 | External IP interface | `ip_interface.rs` (feature `ip-interface`) | yes | `BufferManagerContext`, `ApduLengthContext` |
 | Mock (tests) | `mock.rs` | yes | `BufferManagerContext` |
@@ -609,6 +610,23 @@ TP1 deserves a specific note: after chip detection, it calls
 `ctx.set_max_apdu_length(…)` to reflect the chip's true capability
 (56 for TPUART1/2, 248 for NCN/Elmos), clamped to
 `D::MAX_APDU_LENGTH`.
+
+KNX-RF shows how a link-layer *behaviour* is made compile-time optional
+without a feature flag. The builder carries a zero-sized policy parameter,
+`KnxRfLinkLayerBuilder<R, P = NoRetransmit>`. The DoA-retransmitter
+behaviour (03/02/05 §6.1.7) lives in the `RetransmitEnabled` policy, whose
+`LinkLayerBuilder` bound requires `CTX: RfRetransmitterContext`. A
+`StackContext` only implements that trait when `D::State:
+HasRfRetransmitter`, which only holds when the device composes the wrapper
+extension `RfRetransmitterExtension<Inner>` (Security-style; it adds the RF
+Medium Object's PID 57 and the Device Object's PID 74). So the *state +
+interface-object surface* (the extension) and the *runtime behaviour* (the
+policy) are two independent opt-ins that the type system forces to agree:
+selecting the repeating link layer without the extension does not compile,
+and a non-retransmitter device monomorphises the repeating path away
+entirely. This pairing — wrapper extension for PIDs/state, ZST link-layer
+policy for behaviour — is the template for medium capabilities that not
+every device should pay for.
 
 ### 3.8 Objects and interface objects
 
