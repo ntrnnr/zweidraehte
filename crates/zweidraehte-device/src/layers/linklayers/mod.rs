@@ -1,5 +1,10 @@
 pub mod mock;
 
+// Medium-neutral destination address checking, shared by the TP1 and KNX-RF
+// link layers (each filters incoming frames by destination address).
+#[cfg(any(feature = "tp1", feature = "rf"))]
+pub mod address_check;
+
 #[cfg(feature = "knxip")]
 pub mod knxip;
 

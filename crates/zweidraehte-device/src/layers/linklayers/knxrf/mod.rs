@@ -45,7 +45,11 @@ use core::marker::PhantomData;
 use embassy_futures::select::{Either, select};
 use embassy_sync::channel::DynamicSender;
 
-use crate::context::{LinkLayerBufferContext, RfDomainAddressContext, RfRetransmitterContext};
+use crate::context::{
+    AddressTableContext, KnxIndividualAddressContext, LinkLayerBufferContext, RfDomainAddressContext,
+    RfRetransmitterContext,
+};
+use crate::layers::linklayers::address_check::{AddressChecker, DeviceAddressChecker};
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use history::LfnHistory;
 use zweidraehte_proto::encoding::rf;
@@ -173,7 +177,7 @@ impl<R: RfTransceiver, P> LinkLayerCapabilities for KnxRfLinkLayerBuilder<R, P> 
 impl<R, CTX, P> LinkLayerBuilder<CTX> for KnxRfLinkLayerBuilder<R, P>
 where
     R: RfTransceiver + 'static,
-    CTX: LinkLayerBufferContext + RfDomainAddressContext,
+    CTX: LinkLayerBufferContext + RfDomainAddressContext + KnxIndividualAddressContext + AddressTableContext,
     // `P` is a zero-sized marker (`NoRetransmit` / `RetransmitEnabled`), so the
     // `'static` bound is trivially met and lets the run-loop future hold a
     // `PhantomData<P>` for the lifetime `'a`.
@@ -326,7 +330,7 @@ struct KnxRfLinkLayer<'a, R: RfTransceiver, CTX, P> {
 impl<R, CTX, P> KnxRfLinkLayer<'_, R, CTX, P>
 where
     R: RfTransceiver,
-    CTX: LinkLayerBufferContext + RfDomainAddressContext,
+    CTX: LinkLayerBufferContext + RfDomainAddressContext + KnxIndividualAddressContext + AddressTableContext,
     P: RetransmitPolicy<CTX>,
 {
     /// Event loop: race radio reception against transmit requests. Reception is
@@ -408,14 +412,39 @@ where
             return;
         }
 
-        // Forward. Destination filtering (individual address / group membership)
-        // is left to the transport and application layers, which already drop
-        // frames not meant for this device.
-        // TODO: optionally pre-filter by individual address / address table to
-        // avoid allocating buffers for frames addressed elsewhere.
+        // Destination filtering (KNX 03/02/05 §6.1.5.3 reception): only deliver
+        // frames actually addressed to this device. Unlike TP1 — where the
+        // TP-UART ACKs and accepts by address — RF has no Layer-2 ACK, so the
+        // link layer must drop foreign-destination frames itself; otherwise
+        // every individual-addressed telegram on the domain reaches the
+        // transport / secure application layer and (for secure devices) fails
+        // MAC verification. This runs *after* the retransmit branch above: a
+        // retransmitter still repeats frames not meant for it.
+        if !self.is_destination_local(&internal) {
+            trace!("KNX-RF: frame not addressed to us dropped from up-delivery");
+            return;
+        }
+
         let buffer = self.context.buffer_manager().alloc_from_slice(&internal[..meta.internal_len]).await;
         let msg = KnxMessageBuffer::new(buffer, ServiceType::L_Data_Ind);
         self.ind_tx.send(IndicationMessage::indication(msg)).await;
+    }
+
+    /// Whether a received frame's destination targets this device, using the
+    /// shared [`DeviceAddressChecker`]: accept broadcasts (destination
+    /// `0x0000`), group frames whose Group Address is in the loaded address
+    /// table (an empty loaded table accepts all, matching the ETS programming
+    /// window), and individual frames addressed to our own IA.
+    ///
+    /// The internal frame's first six octets (`[ctrl, src_hi, src_lo, dst_hi,
+    /// dst_lo, npci]`) share the standard L_Data header layout the checker
+    /// parses, so the same logic the TP1 link layer uses for its ACK decision
+    /// drives RF up-delivery filtering.
+    fn is_destination_local(&self, internal: &[u8]) -> bool {
+        let Ok(header) = <&[u8; 6]>::try_from(&internal[..6]) else {
+            return false;
+        };
+        DeviceAddressChecker::new(self.context, self.context.address_table()).should_ack(header)
     }
 
     /// Encode and transmit an `L_Data.req` from the network layer, then confirm.

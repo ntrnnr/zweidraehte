@@ -96,89 +96,14 @@ use zweidraehte_proto::address::GroupAddress;
 // Re-export for external use
 pub use chip::ChipType as TpUartChipType;
 
-/// Trait for deciding whether to ACK an incoming TP1 frame.
-///
-/// The TPUART link layer calls [`should_ack`](AddressChecker::should_ack)
-/// after receiving the 6-byte header of every incoming frame. The
-/// implementation decides whether to send `U_ACK_INF` based on the
-/// destination address and address type (group / individual / broadcast).
-///
-/// The header layout depends on the frame type (determined by bit 7 of
-/// the control byte):
-///
-/// - **Standard** (ctrl bit 7 = 1): `[ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]`
-/// - **Extended** (ctrl bit 7 = 0): `[ctrl, ext_ctrl, src_hi, src_lo, dst_hi, dst_lo]`
-///
-/// Use [`extract_tp1_header_fields`] to get destination and AT flag from
-/// either format.
-///
-/// Different operating modes need different strategies:
-///
-/// | Mode | Checker | Behaviour |
-/// |------|---------|-----------|
-/// | Normal device | [`DeviceAddressChecker`] | ACK own individual address, loaded group addresses, broadcast |
-/// | KNX/IP tunnel | [`AckAllChecker`] | ACK everything (forward all traffic) |
-/// | Bus monitor / test | [`NoAddressChecker`] | ACK nothing |
-///
-/// # Implementation Notes
-///
-/// - This is called synchronously during frame reception, so implementations
-///   must be fast (e.g., using `RefCell`, not async).
-/// - The header bytes are raw TP1 wire bytes, not KNX-decoded.
-pub trait AddressChecker {
-    /// Decide whether the link layer should ACK a frame with this header.
-    ///
-    /// See [`extract_tp1_header_fields`] for extracting destination and
-    /// address type from both standard and extended frame headers.
-    fn should_ack(&self, header: &[u8; 6]) -> bool;
-}
-
-/// Extract destination address and address-type flag from a raw 6-byte
-/// TP1 header, handling both standard and extended frame formats.
-///
-/// Returns `(dst_hi, dst_lo, is_group_address)`.
-fn extract_tp1_header_fields(header: &[u8; 6]) -> (u8, u8, bool) {
-    let is_extended = (header[0] & 0x80) == 0;
-    if is_extended {
-        // Extended: [ctrl, ext_ctrl, src_hi, src_lo, dst_hi, dst_lo]
-        // AT flag is in ext_ctrl (header[1]) bit 7.
-        let dst_hi = header[4];
-        let dst_lo = header[5];
-        let is_group = (header[1] & 0x80) != 0;
-        (dst_hi, dst_lo, is_group)
-    } else {
-        // Standard: [ctrl, src_hi, src_lo, dst_hi, dst_lo, at_npci]
-        // AT flag is in at_npci (header[5]) bit 7.
-        let dst_hi = header[3];
-        let dst_lo = header[4];
-        let is_group = (header[5] & 0x80) != 0;
-        (dst_hi, dst_lo, is_group)
-    }
-}
-
-/// A no-op address checker that never ACKs any frames.
-///
-/// Useful for bus monitor mode or testing, where the device must not
-/// interfere with bus traffic.
-pub struct NoAddressChecker;
-
-impl AddressChecker for NoAddressChecker {
-    fn should_ack(&self, _header: &[u8; 6]) -> bool {
-        false
-    }
-}
-
-/// An address checker that ACKs every frame unconditionally.
-///
-/// Used by KNX/IP tunneling gateways that need to forward all bus traffic
-/// to the tunnel client.
-pub struct AckAllChecker;
-
-impl AddressChecker for AckAllChecker {
-    fn should_ack(&self, _header: &[u8; 6]) -> bool {
-        true
-    }
-}
+// The address-checking abstraction is medium-neutral and lives in
+// `super::address_check` so the KNX-RF link layer can share it. Re-exported
+// here for backward compatibility (TPUART builders and downstream code still
+// refer to `tpuart::AddressChecker`, `DeviceAddressChecker`, etc.).
+pub use super::address_check::{AckAllChecker, AddressChecker, DeviceAddressChecker, NoAddressChecker};
+// The TPUART receive path also parses raw headers directly for its ACK
+// decision; reuse the shared helper under the historic name.
+use super::address_check::extract_header_fields as extract_tp1_header_fields;
 
 /// Marker type: construct a [`DeviceAddressChecker`] automatically at
 /// link layer build time from the stack context.
@@ -194,58 +119,6 @@ impl AddressChecker for AckAllChecker {
 /// different checker (e.g., [`AckAllChecker`] for tunneling gateways or
 /// [`NoAddressChecker`] for bus monitors).
 pub struct AutoAddressChecker;
-
-/// Address checker for normal KNX devices.
-///
-/// ACKs frames matching:
-/// - The device's own individual address (via [`KnxIndividualAddressContext`])
-/// - Group addresses present in the loaded address table
-/// - Broadcast destination (`0.0.0` / `0/0/0`)
-///
-/// # Example
-///
-/// ```ignore
-/// let checker = DeviceAddressChecker::new(stack_context, stack_context.adt());
-/// let builder = TpUartLinkLayerBuilder::with_address_checker(uart_tx, uart_rx, checker);
-/// ```
-pub struct DeviceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
-    address_context: &'a dyn KnxIndividualAddressContext,
-    address_table: &'a core::cell::RefCell<ADT>,
-}
-
-impl<'a, ADT: AddressTable + HasLoadStateMachine> DeviceAddressChecker<'a, ADT> {
-    pub fn new(
-        address_context: &'a dyn KnxIndividualAddressContext,
-        address_table: &'a core::cell::RefCell<ADT>,
-    ) -> Self {
-        Self { address_context, address_table }
-    }
-}
-
-impl<ADT: AddressTable + HasLoadStateMachine> AddressChecker for DeviceAddressChecker<'_, ADT> {
-    fn should_ack(&self, header: &[u8; 6]) -> bool {
-        let (dst_hi, dst_lo, is_group_address) = extract_tp1_header_fields(header);
-
-        // Broadcast: destination 0x0000 is broadcast regardless of address
-        // type flag. Individual 0.0.0 and group 0/0/0 are both broadcast.
-        if dst_hi == 0 && dst_lo == 0 {
-            return true;
-        }
-
-        if is_group_address {
-            let ga = GroupAddress::from_bytes(&[dst_hi, dst_lo]);
-            let table = self.address_table.borrow();
-            // Loaded + empty table ACKs all group frames.
-            // This covers the ETS programming window where the table is loaded
-            // but entries haven't been written yet.
-            table.is_loaded() && (table.entry_count() == 0 || table.contains(ga))
-        } else {
-            let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
-            let our_addr = self.address_context.individual_address();
-            dst == our_addr
-        }
-    }
-}
 
 // ============================================================================
 // Link Layer Builder
