@@ -105,8 +105,8 @@ pub mod runtime;
 pub use generator::{
     AppProgramRef, ApplicationProgramDef, BaggageGenerator, BuilderError, BusInterfaceDef, CatalogEntryDef,
     CatalogGenerator, CatalogSectionDef, DeviceInstanceDef, GeneratorError, HardwareDef, HardwareGenerator,
-    HardwareRef, KnxprodBuilder, KnxprodOutput, MtxmlGenerator, ProductDef, SingleDeviceDef, System7MemoryLayout,
-    System7Segment,
+    HardwareRef, KnxprodBuilder, KnxprodOutput, MtxmlGenerator, ProductDef, RfRxCapabilities, RfTxCapabilities,
+    SingleDeviceDef, System7MemoryLayout, System7Segment,
 };
 pub use schema::BusAccessType;
 

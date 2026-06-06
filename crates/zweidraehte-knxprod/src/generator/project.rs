@@ -14,7 +14,19 @@ use crate::signing::KnxSchemaVersion;
 
 use super::builder::{AppProgramRef, HardwareRef};
 use super::mtxml::MtxmlGenerator;
-use super::{ApplicationProgramDef, GeneratorError, HardwareDef};
+use super::{ApplicationProgramDef, GeneratorError, HardwareDef, medium_type_from_mask};
+
+/// Placeholder RF domain address used for the backbone line of an
+/// all-RF generated test project.
+///
+/// A real installation gets a random per-project domain address from
+/// ETS; for a generated `.knxproj` we only need a stable, non-zero
+/// 48-bit value so the line is well-formed and importable. The bytes
+/// spell `0x02DA_xxxx` ("2DA" ≈ "zweidraehte") to make it recognisable
+/// in a project dump.
+// TODO: make the domain address configurable per generated project
+// once we generate real RF installations rather than test fixtures.
+const PLACEHOLDER_RF_DOMAIN_ADDRESS: u64 = 0x02DA_0000_0001;
 
 // ============================================================================
 // Public Input Type
@@ -121,6 +133,12 @@ impl ProjectGenerator {
             })
             .collect();
 
+        // Derive the backbone line's medium from the placed devices.
+        let (backbone_medium, domain_address) = backbone_line_medium(device_instances.iter().map(|def| {
+            let AppProgramRef(app_idx) = def.application_program;
+            medium_type_from_mask(application_programs[app_idx].device.mask_version.as_u16())
+        }));
+
         let mut knx = ProjectKnx::default();
         if let Some(version) = schema_version {
             knx.xmlns = version.namespace_url();
@@ -144,9 +162,8 @@ impl ProjectGenerator {
                                 id: format!("{}-0_L-1", project_id),
                                 name: "Backbone line".to_string(),
                                 address: "0".to_string(),
-                                // MT-5 is the master data reference for "Twisted Pair"
-                                // media type — the standard backbone line medium.
-                                medium_type_ref_id: "MT-5".to_string(),
+                                medium_type_ref_id: backbone_medium.to_string(),
+                                domain_address,
                                 puid: 2,
                             },
                         },
@@ -171,5 +188,58 @@ impl ProjectGenerator {
         serde::Serialize::serialize(knx, serializer).map_err(|e| GeneratorError::Serialization(e.to_string()))?;
 
         Ok(buffer)
+    }
+}
+
+/// Pick the backbone line's `MediumTypeRefId` (and RF domain address) from
+/// the media of the devices placed in the project.
+///
+/// The devices sit in `UnassignedDevices`, so the backbone line medium is
+/// cosmetic until the user assigns them. We still pick a sensible value: a
+/// single-medium project (e.g. an all-RF package) gets a matching backbone
+/// line — and, for RF, the domain address that medium requires
+/// (`MediumType` MT-2 has a 48-bit `DomainAddressLength`). A mixed-medium
+/// project keeps the conventional KNXnet/IP backbone (`MT-5`), since no
+/// single line medium fits all of its devices. An empty project likewise
+/// falls back to `MT-5`.
+fn backbone_line_medium<'a>(mut mediums: impl Iterator<Item = &'a str>) -> (&'a str, Option<u64>) {
+    let medium = match mediums.next() {
+        Some(first) if mediums.all(|other| other == first) => first,
+        _ => "MT-5",
+    };
+    let domain_address = (medium == "MT-2").then_some(PLACEHOLDER_RF_DOMAIN_ADDRESS);
+    (medium, domain_address)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_rf_backbone_gets_rf_medium_and_domain_address() {
+        let (medium, domain) = backbone_line_medium(["MT-2", "MT-2"].into_iter());
+        assert_eq!(medium, "MT-2");
+        assert_eq!(domain, Some(PLACEHOLDER_RF_DOMAIN_ADDRESS));
+    }
+
+    #[test]
+    fn homogeneous_non_rf_backbone_has_no_domain_address() {
+        let (medium, domain) = backbone_line_medium(["MT-0", "MT-0"].into_iter());
+        assert_eq!(medium, "MT-0");
+        assert_eq!(domain, None);
+    }
+
+    #[test]
+    fn mixed_medium_backbone_falls_back_to_ip() {
+        let (medium, domain) = backbone_line_medium(["MT-5", "MT-0", "MT-2"].into_iter());
+        assert_eq!(medium, "MT-5");
+        assert_eq!(domain, None);
+    }
+
+    #[test]
+    fn empty_project_falls_back_to_ip() {
+        let (medium, domain) = backbone_line_medium(core::iter::empty());
+        assert_eq!(medium, "MT-5");
+        assert_eq!(domain, None);
     }
 }

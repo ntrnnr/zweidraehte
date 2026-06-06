@@ -81,6 +81,18 @@ pub struct Hardware {
     pub has_application_program: bool,
     #[serde(rename = "@IsIPEnabled", skip_serializing_if = "Option::is_none")]
     pub is_ip_enabled: Option<bool>,
+    /// `Hardware/@IsRFRetransmitter` — whether this RF device acts as a
+    /// retransmitter (repeater) on the KNX-RF medium. Registration-relevant.
+    #[serde(rename = "@IsRFRetransmitter", skip_serializing_if = "Option::is_none")]
+    pub is_rf_retransmitter: Option<bool>,
+    /// `Hardware/@RFRxCapabilities` — RF receive capability class
+    /// (`Ready` / `ReadyFast` / `Slow`). Registration-relevant.
+    #[serde(rename = "@RFRxCapabilities", skip_serializing_if = "Option::is_none")]
+    pub rf_rx_capabilities: Option<String>,
+    /// `Hardware/@RFTxCapabilities` — RF transmit capability class
+    /// (`Ready` / `ReadyFast` / `ReadyFastSlow`). Registration-relevant.
+    #[serde(rename = "@RFTxCapabilities", skip_serializing_if = "Option::is_none")]
+    pub rf_tx_capabilities: Option<String>,
     #[serde(rename = "Products")]
     pub products: Products,
     #[serde(rename = "Hardware2Programs")]
@@ -98,6 +110,9 @@ impl Default for Hardware {
             has_individual_address: true,
             has_application_program: true,
             is_ip_enabled: None,
+            is_rf_retransmitter: None,
+            rf_rx_capabilities: None,
+            rf_tx_capabilities: None,
             products: Products::default(),
             hardware2programs: Hardware2Programs::default(),
         }

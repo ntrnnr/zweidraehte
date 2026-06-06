@@ -144,6 +144,11 @@ pub struct Line {
     pub address: String,
     #[serde(rename = "@MediumTypeRefId")]
     pub medium_type_ref_id: String,
+    /// `Line/@DomainAddress` — RF domain address for KNX-RF lines.
+    /// The RF medium has a 48-bit domain address (`MediumType` MT-2 has
+    /// `DomainAddressLength="48"`); other media omit this attribute.
+    #[serde(rename = "@DomainAddress", skip_serializing_if = "Option::is_none")]
+    pub domain_address: Option<u64>,
     #[serde(rename = "@Puid")]
     pub puid: u32,
 }

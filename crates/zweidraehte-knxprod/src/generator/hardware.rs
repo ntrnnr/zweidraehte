@@ -98,6 +98,9 @@ impl HardwareGenerator {
                 has_individual_address: true,
                 has_application_program: true,
                 is_ip_enabled: hw_def.is_ip_enabled,
+                is_rf_retransmitter: hw_def.is_rf_retransmitter,
+                rf_rx_capabilities: hw_def.rf_rx_capabilities.map(|c| c.as_str().to_string()),
+                rf_tx_capabilities: hw_def.rf_tx_capabilities.map(|c| c.as_str().to_string()),
                 products: Products { products },
                 hardware2programs: Hardware2Programs { hardware2programs: h2p_elements },
             });

@@ -287,6 +287,9 @@ impl<'a> KnxprodBuilder<'a> {
             name: def.hardware_name,
             bus_current: None,
             is_ip_enabled: def.is_ip_enabled,
+            is_rf_retransmitter: None,
+            rf_rx_capabilities: None,
+            rf_tx_capabilities: None,
             products: vec![ProductDef {
                 name: def.product_name,
                 order_number: def.order_number,

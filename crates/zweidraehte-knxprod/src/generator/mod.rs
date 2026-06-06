@@ -270,11 +270,72 @@ pub struct HardwareDef<'a> {
     /// Whether this hardware is an IP-enabled device.
     /// Corresponds to `Hardware/@IsIPEnabled`.
     pub is_ip_enabled: Option<bool>,
+    /// Whether this KNX-RF device acts as a retransmitter (repeater).
+    /// Corresponds to `Hardware/@IsRFRetransmitter`. Leave `None` for
+    /// non-RF hardware; ETS treats an absent attribute as `false`.
+    pub is_rf_retransmitter: Option<bool>,
+    /// KNX-RF receive capability class. Corresponds to
+    /// `Hardware/@RFRxCapabilities`. Only meaningful for RF hardware.
+    pub rf_rx_capabilities: Option<RfRxCapabilities>,
+    /// KNX-RF transmit capability class. Corresponds to
+    /// `Hardware/@RFTxCapabilities`. Only meaningful for RF hardware.
+    pub rf_tx_capabilities: Option<RfTxCapabilities>,
     /// Products in this hardware definition.
     pub products: Vec<ProductDef<'a>>,
     /// Application programs linked to this hardware.
     /// Each entry creates a `<Hardware2Program>` element.
     pub application_programs: Vec<AppProgramRef>,
+}
+
+/// KNX-RF receive capability class (`Hardware/@RFRxCapabilities`).
+///
+/// Mirrors the `RFRxCapabilities_t` enumeration in the KNX project
+/// schema. The value is registration-relevant — it feeds the hardware
+/// hash — so it must serialize to the exact spec string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RfRxCapabilities {
+    /// Standard receive timing.
+    Ready,
+    /// Fast receive timing.
+    ReadyFast,
+    /// Slow receive timing.
+    Slow,
+}
+
+impl RfRxCapabilities {
+    /// The exact schema string emitted into `@RFRxCapabilities`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RfRxCapabilities::Ready => "Ready",
+            RfRxCapabilities::ReadyFast => "ReadyFast",
+            RfRxCapabilities::Slow => "Slow",
+        }
+    }
+}
+
+/// KNX-RF transmit capability class (`Hardware/@RFTxCapabilities`).
+///
+/// Mirrors the `RFTxCapabilities_t` enumeration in the KNX project
+/// schema. Registration-relevant, same as [`RfRxCapabilities`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RfTxCapabilities {
+    /// Standard transmit timing.
+    Ready,
+    /// Fast transmit timing.
+    ReadyFast,
+    /// Both fast and slow transmit timing.
+    ReadyFastSlow,
+}
+
+impl RfTxCapabilities {
+    /// The exact schema string emitted into `@RFTxCapabilities`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RfTxCapabilities::Ready => "Ready",
+            RfTxCapabilities::ReadyFast => "ReadyFast",
+            RfTxCapabilities::ReadyFastSlow => "ReadyFastSlow",
+        }
+    }
 }
 
 /// A catalog entry linking a product to a hardware-to-program mapping.
