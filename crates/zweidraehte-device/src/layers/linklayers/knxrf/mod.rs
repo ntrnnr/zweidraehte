@@ -52,6 +52,7 @@ use crate::context::{
 use crate::layers::linklayers::address_check::{AddressChecker, DeviceAddressChecker};
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use history::LfnHistory;
+use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::encoding::rf;
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -394,12 +395,26 @@ where
             }
         }
 
+        // Drop frames we originated ourselves. On KNX-RF a device hears its own
+        // telegrams come back — repeated by a retransmitter on the domain (the
+        // source IA is preserved across retransmission), or directly when
+        // another device still shares our individual address (e.g. the default
+        // 15.15.255 before programming). TP1 never receives its own sent frames,
+        // so the network layer's duplication check assumes a self-sourced frame
+        // means a cloned IA; on RF that is normal traffic. Dropping it here also
+        // stops the application from reprocessing its own telegrams and stops a
+        // combined end-device/retransmitter from re-repeating its own frames.
+        let src = u16::from_be_bytes([internal[1], internal[2]]);
+        if IndividualAddress::from_bytes(&[internal[1], internal[2]]) == self.context.individual_address() {
+            trace!("KNX-RF: own-source frame (echo) dropped");
+            return;
+        }
+
         // LFN duplicate suppression (KNX 03/02/05 §6.1.4.3), aged by wall-clock.
         // A single shared history serves both the receiver dedup (§6.1.4.3.3)
         // and the retransmitter History List (§6.1.7.3): both key on
         // (sender, LFN) and cap at 7 entries, so one `is_duplicate` call —
         // which also records the frame — gates both paths below.
-        let src = u16::from_be_bytes([internal[1], internal[2]]);
         let now_ms = embassy_time::Instant::now().as_millis();
         let dup = self.history.is_duplicate(&meta.sn_or_doa, src, meta.lfn, now_ms);
 
