@@ -529,10 +529,25 @@ where
                 }
             } else if seq_nr_val == stored_val {
                 // Retransmission: ignore silently (no failure log per spec).
+                // Logged at debug so an otherwise-invisible drop is diagnosable
+                // (e.g. a tool replaying a SeqNr the device already consumed).
+                debug!(
+                    "S-AL: dropping retransmission from {:#06X} (tool={}): SeqNr {} == stored {}",
+                    src, scf.tool_access, seq_nr_val, stored_val
+                );
                 return SecureResult::Dropped;
             } else {
                 // Replay: ignore, log SeqNr failure.
                 // The S-AL shall not block further messages from this sender.
+                // Surface the rejection: `log_security_failure_and_maybe_report`
+                // only updates the security-state counter, so without this the
+                // drop is invisible — a tool stuck on a stale SeqNr (e.g. one
+                // behind the value a prior tool/ETS session left in the shared
+                // `tool_receiving_seq`) otherwise looks like an unexplained hang.
+                warn!(
+                    "S-AL: replay rejected from {:#06X} (tool={}): SeqNr {} < stored {}; tool must S-A_Sync_Req",
+                    src, scf.tool_access, seq_nr_val, stored_val
+                );
                 // Drop the seq-storage borrow before the helper call — the
                 // helper doesn't touch seq storage today, but releasing
                 // the outer `RefCell::borrow_mut` guard here keeps the
