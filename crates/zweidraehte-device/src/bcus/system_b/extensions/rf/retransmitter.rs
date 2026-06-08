@@ -21,18 +21,21 @@
 //!   gate that makes the `RetransmitEnabled` KNX-RF link-layer policy
 //!   selectable (see [`crate::context::RfRetransmitterContext`]).
 //!
-//! # Why it owns the whole RF Medium Object
+//! # How PID 57 joins the RF Medium Object
 //!
-//! A single interface object's properties cannot be split across two augments:
-//! `A_PropertyDescription_Read` enumerates by property *index*, and each augment
-//! indexes only its own descriptors, so a property contributed by a second
-//! augment is invisible to the index scan. The base [`RfAugment`](super::RfAugment)
-//! already provides the RF Medium Object (PIDs 1 and 56), so rather than appending
-//! PID 57 to it, this augment **replaces** it: it owns the full RF Medium Object
-//! (PID 1, PID 56 delegated to the wrapped state, PID 57) and the wrapper does
-//! *not* compose the base `RfAugment`. PID 74 sits on the Device Object, a base
-//! object whose enumeration already merges a single augment's intercepts, so it
-//! is intercepted normally.
+//! `A_PropertyDescription_Read` enumerates an object's properties by *index*.
+//! The base [`RfAugment`](super::RfAugment) already provides the RF Medium
+//! Object (PIDs 1 and 56), and this augment contributes one more property
+//! (PID 57) to the *same* object type via `target_objects` + `intercepts`.
+//! Rather than duplicating PIDs 1 and 56 here, the two augments are composed in
+//! [`RfRetransmitterAugmentBundle`]: the `#[derive(ServiceRegistry)]` aggregator
+//! merges their descriptor tables into one property-index space, rebasing the
+//! index-based scan per augment, so the RF Medium Object enumerates PID 1, 56,
+//! 57 in declaration order even though the descriptors live in two augments.
+//! (This two-augments-per-object support is what the bundle exists for; it is
+//! exercised end to end by the `rf_retransmitter_property_scan` integration
+//! test.) PID 74 sits on the base Device Object, whose enumeration already
+//! merges a single augment's intercepts, so it is intercepted normally.
 //!
 //! The *behaviour* (the actual repeating) lives in the link layer and is gated
 //! by a separate ZST policy generic; this extension only carries the state and

@@ -41,6 +41,13 @@ portable-atomic = { version = "1.13.1", default-features = false, features = ["c
 [dev-dependencies]
 test-case = "3.3"
 
+# The RF-retransmitter property-description scan test builds a real interface-
+# object container on the host, which needs the std critical-section impl for
+# the embassy-sync channels inside `LayerContext`.
+[[test]]
+name = "rf_retransmitter_property_scan"
+required-features = ["std"]
+
 [features]
 defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-proto/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
 log = ["dep:log", "zweidraehte-util/log", "zweidraehte-proto/log", "zweidraehte-platform/log"]
