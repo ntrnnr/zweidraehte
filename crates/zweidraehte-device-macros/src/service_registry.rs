@@ -641,13 +641,65 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let prop_chain_description_read = if !any_aug_or_flatten {
         quote! { ::core::option::Option::None }
     } else {
-        let calls = all_aug_idents.iter().map(|id| {
+        // `A_PropertyDescription_Read` comes in two flavours (see `PropertyLookup`):
+        //
+        // - `ByPid`: a property id is unique within an object type, so whichever
+        //   augment owns it claims the request — a plain left-to-right
+        //   `.or_else()` chain is correct.
+        //
+        // - `ByIndex`: the index is *into the object type's merged descriptor
+        //   table*. When two augments contribute to the same object type, the
+        //   second augment's descriptors live at indices *after* the first's, but
+        //   each leaf augment numbers its own descriptors from 0. So we walk the
+        //   augments in declaration order, carrying the index down and subtracting
+        //   each augment's `descriptor_count_for(object_type)` until we reach the
+        //   augment whose range covers it — then delegate with the rebased index.
+        //   This is what lets e.g. the RF Medium Object's PIDs be split across the
+        //   base RF augment and a retransmitter augment.
+        let by_pid_calls = all_aug_idents.iter().map(|id| {
             quote! {
                 .or_else(|| ::zweidraehte_device::service::Augment::<D>::property_description_read(
                     &self.#id, ctx, object_type, object_idx, lookup))
             }
         });
-        quote! { ::core::option::Option::None #( #calls )* }
+        let by_index_arms = all_aug_idents.iter().map(|id| {
+            quote! {
+                {
+                    let n = ::zweidraehte_device::service::Augment::<D>::descriptor_count_for(
+                        &self.#id, object_type);
+                    if __rebased_idx < n {
+                        return ::zweidraehte_device::service::Augment::<D>::property_description_read(
+                            &self.#id, ctx, object_type, object_idx,
+                            ::zweidraehte_device::objects::interface::PropertyLookup::ByIndex(__rebased_idx));
+                    }
+                    __rebased_idx -= n;
+                }
+            }
+        });
+        quote! {
+            match lookup {
+                ::zweidraehte_device::objects::interface::PropertyLookup::ByPid(_) => {
+                    ::core::option::Option::None #( #by_pid_calls )*
+                }
+                ::zweidraehte_device::objects::interface::PropertyLookup::ByIndex(__req_idx) => {
+                    let mut __rebased_idx = __req_idx;
+                    #( #by_index_arms )*
+                    ::core::option::Option::None
+                }
+            }
+        }
+    };
+
+    // `descriptor_count_for` aggregation: sum the count across every augment /
+    // flatten field so a parent registry exposes the merged total (and so a
+    // nested registry's index offsets are computed against the right base).
+    let descriptor_count_terms = all_aug_idents.iter().map(|id| {
+        quote! { + ::zweidraehte_device::service::Augment::<D>::descriptor_count_for(&self.#id, object_type) }
+    });
+    let descriptor_count_body = if !any_aug_or_flatten {
+        quote! { 0u16 }
+    } else {
+        quote! { 0u16 #( #descriptor_count_terms )* }
     };
 
     let prop_chain_value_read = if !any_aug_or_flatten {
@@ -845,6 +897,13 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 let mut index = index;
                 #( #io_at_arms )*
                 ::core::option::Option::None
+            }
+
+            fn descriptor_count_for(
+                &self,
+                object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
+            ) -> u16 {
+                #descriptor_count_body
             }
 
             fn poll_augments(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {

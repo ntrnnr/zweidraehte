@@ -209,6 +209,22 @@ pub trait Augment<D: StackDefinition> {
         None
     }
 
+    /// Number of `A_PropertyDescription_Read`-visible property descriptors this
+    /// augment contributes for `object_type`.
+    ///
+    /// This is what lets *two* augments contribute to the **same** interface
+    /// object: the [`ServiceRegistry`](crate::service::ServiceRegistry)
+    /// aggregator sums it across the augments declared before a given field, so
+    /// an index-based property scan can rebase the requested index into each
+    /// augment's own descriptor table instead of every augment starting at
+    /// index 0 (which made a second augment's properties unreachable by index).
+    ///
+    /// Leaf augments return the count of their declared descriptors for
+    /// `object_type`; aggregator impls sum across fields. Default: 0.
+    fn descriptor_count_for(&self, _object_type: InterfaceObjectType) -> u16 {
+        0
+    }
+
     // -------------------------------------------------------------
     // Augment-side lifecycle (defaults: no timer)
     // -------------------------------------------------------------
@@ -303,6 +319,10 @@ impl<D: StackDefinition, A: Augment<D>> Augment<D> for &A {
 
     fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
         (**self).additional_object_type_at(index)
+    }
+
+    fn descriptor_count_for(&self, object_type: InterfaceObjectType) -> u16 {
+        (**self).descriptor_count_for(object_type)
     }
 
     fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {

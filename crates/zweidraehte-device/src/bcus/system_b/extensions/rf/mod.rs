@@ -23,7 +23,10 @@
 
 pub mod retransmitter;
 
-pub use retransmitter::{RetransmitterCells, RfRetransmitterAugment, RfRetransmitterConfig, RfRetransmitterExtension};
+pub use retransmitter::{
+    RetransmitterCells, RfRetransmitterAugment, RfRetransmitterAugmentBundle, RfRetransmitterConfig,
+    RfRetransmitterExtension,
+};
 
 use core::cell::Cell;
 

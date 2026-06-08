@@ -594,6 +594,18 @@ pub(crate) fn gen_augment(
                     _ => None,
                 }
             }
+
+            fn descriptor_count_for(
+                &self,
+                object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
+            ) -> u16 {
+                // Count of this augment's descriptors for `object_type` — the
+                // same filter the index-based `property_description_read` scan
+                // uses. The `ServiceRegistry` aggregator sums this across the
+                // augments preceding a field so a second augment contributing
+                // to the same object type is reachable by index.
+                Self::DESCRIPTORS.iter().filter(|(t, _)| *t == object_type).count() as u16
+            }
         }
     })
 }

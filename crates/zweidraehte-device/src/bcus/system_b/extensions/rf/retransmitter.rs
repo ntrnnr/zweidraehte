@@ -63,9 +63,7 @@ use crate::objects::interface::{
 };
 use crate::restart::EraseCode;
 use zweidraehte_proto::access::AccessPolicy;
-use zweidraehte_proto::dpt::{
-    InterfaceObjectType, PDT_BinaryInformation, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt,
-};
+use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_BinaryInformation, PDT_UnsignedChar};
 use zweidraehte_proto::messages::knx::RequiredSecurity;
 
 // ============================================================================
@@ -227,62 +225,36 @@ impl HasRfRetransmitter for RfRetransmitterExtension {
 }
 
 // ============================================================================
-// Augment — owns the RF Medium Object (Type 19) and intercepts Device PID 74
+// Augment — adds the retransmitter role to the RF Medium Object + Device Object
 // ============================================================================
 
-/// Provides the complete RF Medium Object (PID 1 / 56 / 57) and intercepts the
-/// Device Object's `PID_RF_REPEAT_COUNTER` (PID 74).
+/// Adds `PID_RF_RETRANSMITTER` (PID 57) to the RF Medium Object (Type 19) and
+/// intercepts the Device Object's `PID_RF_REPEAT_COUNTER` (PID 74).
 ///
-/// It owns the RF Medium Object outright (`additional_objects`) — replacing the
-/// base [`RfAugment`](super::RfAugment), which the wrapper does not compose — so
-/// all three RF Medium PIDs share one descriptor table and enumerate correctly.
-/// PID 56 is delegated to the wrapped [`RfExtensionState`] so the Domain Address
-/// store stays single-sourced.
+/// It does **not** own the RF Medium Object: the base [`RfAugment`](super::RfAugment)
+/// provides that object's `OBJECT_TYPE` (PID 1) and Domain Address (PID 56), and
+/// this augment merely contributes PID 57 to the same object type via
+/// `target_objects`. The two augments' descriptors for the RF Medium Object are
+/// merged into one index space by the [`ServiceRegistry`](crate::service::ServiceRegistry)
+/// aggregator (which rebases the index-based `A_PropertyDescription_Read` scan
+/// per augment), so the object enumerates PID 1, 56, 57 in order even though the
+/// descriptors live in two augments. PID 74 sits on the (base) Device Object and
+/// is intercepted normally.
+///
+/// The extension composes this together with `RfAugment` — see
+/// [`RfRetransmitterAugmentBundle`].
 #[interface_object_augment(
-    additional_objects = [InterfaceObjectType::RFMedium],
-    target_objects = [InterfaceObjectType::Device]
+    target_objects = [InterfaceObjectType::RFMedium, InterfaceObjectType::Device]
 )]
 pub struct RfRetransmitterAugment<'a> {
-    /// Borrow of the wrapped RF medium state (for the Domain Address, PID 56).
-    pub inner: &'a RfExtensionState,
     /// Borrow of the retransmitter cells (PID 57 / PID 74).
     pub cells: &'a RetransmitterCells,
 
-    // PID 1 — OBJECT_TYPE: mandatory on every augment-provided object.
-    #[io(pid = pid::OBJECT_TYPE, pdt = PDT_UnsignedInt, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
-         target = InterfaceObjectType::RFMedium,
-         read = |_this: &Self| -> [u8; 2] {
-             let v: u16 = InterfaceObjectType::RFMedium.into();
-             v.to_be_bytes()
-         })]
-    _object_type_io: (),
-
-    // PID 56 — RF_DOMAIN_ADDRESS on the RF Medium Object: 6-octet, RW, delegated
-    // to the wrapped RF state so the Domain Address has a single home.
-    #[io(pid = pid::rf::RF_DOMAIN_ADDRESS, pdt = PDT_Generic06, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         target = InterfaceObjectType::RFMedium,
-         read = |this: &Self| -> [u8; 6] {
-             let mut doa = [0u8; 6];
-             this.inner.rf_domain_address(&mut doa);
-             doa
-         },
-         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-             if data.len() < 6 {
-                 return Err(PropertyError::BufferTooSmall);
-             }
-             let mut doa = [0u8; 6];
-             doa.copy_from_slice(&data[..6]);
-             this.inner.set_rf_domain_address(&doa);
-             Ok(WriteResponse::Echo)
-         })]
-    _rf_domain_address_io: (),
-
     // PID 57 — RF_RETRANSMITTER on the RF Medium Object: 1-bit flag, RW.
+    // Contributed to the RF Medium Object that `RfAugment` provides.
     #[io(pid = pid::rf::RF_RETRANSMITTER, pdt = PDT_BinaryInformation, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         target = InterfaceObjectType::RFMedium,
+         target = InterfaceObjectType::RFMedium, intercepts,
          read = |this: &Self| -> [u8; 1] { [this.cells.enabled.get() as u8] },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              if data.is_empty() {
@@ -308,9 +280,23 @@ pub struct RfRetransmitterAugment<'a> {
     _rf_repeat_counter_io: (),
 }
 
+/// The retransmitter extension's augment: the base RF Medium Object
+/// ([`RfAugment`](super::RfAugment), PID 1 / 56) plus the retransmitter role
+/// ([`RfRetransmitterAugment`], PID 57 / 74), composed so both contribute to the
+/// one RF Medium Object. The `ServiceRegistry` merge across the two
+/// `#[service(augment)]` fields is what makes a single object's properties span
+/// two augments.
+#[derive(crate::service::ServiceRegistry)]
+pub struct RfRetransmitterAugmentBundle<'a> {
+    #[service(augment)]
+    pub base: super::RfAugment<'a>,
+    #[service(augment)]
+    pub retransmitter: RfRetransmitterAugment<'a>,
+}
+
 impl Extension<()> for RfRetransmitterExtension {
     type Augment<'a, D: StackDefinition>
-        = RfRetransmitterAugment<'a>
+        = RfRetransmitterAugmentBundle<'a>
     where
         Self: 'a;
 
@@ -318,20 +304,27 @@ impl Extension<()> for RfRetransmitterExtension {
     where
         (): 'a,
     {
-        RfRetransmitterAugment { inner: &self.inner, cells: &self.cells }
+        RfRetransmitterAugmentBundle {
+            base: super::RfAugment { state: &self.inner },
+            retransmitter: RfRetransmitterAugment { cells: &self.cells },
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use zweidraehte_proto::properties::PropertyDescriptor;
 
-    /// Collect the descriptor PIDs for one object type, preserving the
-    /// declaration order that drives `A_PropertyDescription_Read` index scans.
-    fn pids_for(object_type: InterfaceObjectType) -> ([u16; 8], usize) {
+    type DescriptorRow = (InterfaceObjectType, PropertyDescriptor);
+
+    /// Collect the descriptor PIDs from a `DESCRIPTORS` table for one object
+    /// type, in declaration order (the order that drives the index-based
+    /// `A_PropertyDescription_Read` scan within that augment).
+    fn pids_for(table: &[DescriptorRow], object_type: InterfaceObjectType) -> ([u16; 8], usize) {
         let mut out = [0u16; 8];
         let mut n = 0;
-        for (t, d) in RfRetransmitterAugment::DESCRIPTORS {
+        for (t, d) in table {
             if *t == object_type {
                 out[n] = d.pid;
                 n += 1;
@@ -340,21 +333,31 @@ mod tests {
         (out, n)
     }
 
-    // Regression: the RF Medium Object's PIDs must all sit in *one* augment's
-    // descriptor table, in index order (1, 56, 57). Splitting them across the
-    // base `RfAugment` and this augment made PID 57 invisible to the index-based
-    // property scan (it landed at local index 0 but was sought at global 2).
+    // The RF Medium Object's PIDs are deliberately split across two augments:
+    // the base `RfAugment` provides OBJECT_TYPE (PID 1) and RF_DOMAIN_ADDRESS
+    // (PID 56); this retransmitter augment contributes RF_RETRANSMITTER (PID 57)
+    // to the same object type. The `ServiceRegistry` index merge (which rebases
+    // the per-object-type index across the two augments) is what makes all three
+    // enumerate as 1, 56, 57 — verified end to end by the property-index-scan
+    // example and the conformance suite. Here we pin the split contract: the base
+    // owns 1 + 56, the retransmitter owns 57, and together they total 3.
     #[test]
-    fn rf_medium_object_enumerates_all_three_pids_in_order() {
-        let (pids, n) = pids_for(InterfaceObjectType::RFMedium);
-        assert_eq!(&pids[..n], &[pid::OBJECT_TYPE, pid::rf::RF_DOMAIN_ADDRESS, pid::rf::RF_RETRANSMITTER]);
+    fn rf_medium_object_split_across_base_and_retransmitter() {
+        let (base, base_n) = pids_for(super::super::RfAugment::DESCRIPTORS, InterfaceObjectType::RFMedium);
+        assert_eq!(&base[..base_n], &[pid::OBJECT_TYPE, pid::rf::RF_DOMAIN_ADDRESS]);
+
+        let (rtx, rtx_n) = pids_for(RfRetransmitterAugment::DESCRIPTORS, InterfaceObjectType::RFMedium);
+        assert_eq!(&rtx[..rtx_n], &[pid::rf::RF_RETRANSMITTER]);
+
+        // The merged RF Medium Object enumerates exactly three properties.
+        assert_eq!(base_n + rtx_n, 3);
     }
 
-    // PID 74 is intercepted on the (base) Device Object, where the container
-    // merges a single augment's intercepts into the scan.
+    // PID 74 is intercepted on the (base) Device Object by the retransmitter
+    // augment; the base RF augment contributes nothing to the Device Object.
     #[test]
     fn device_object_intercepts_repeat_counter() {
-        let (pids, n) = pids_for(InterfaceObjectType::Device);
+        let (pids, n) = pids_for(RfRetransmitterAugment::DESCRIPTORS, InterfaceObjectType::Device);
         assert_eq!(&pids[..n], &[pid::device::RF_REPEAT_COUNTER]);
     }
 }
