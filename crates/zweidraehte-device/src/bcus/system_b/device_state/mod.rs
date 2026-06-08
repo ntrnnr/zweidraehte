@@ -674,7 +674,26 @@ impl<
     fn set_max_apdu_length(&self, length: u16) {
         self.max_apdu_length.set(length);
     }
+}
 
+// ============================================================================
+// HasSecurityMode Implementation
+// ============================================================================
+
+// Security Mode, access-denial logging, and group-key presence are a security
+// concern, so they live on `HasSecurityMode` (not `StackState`). The device
+// state forwards them to its extension state, which is where the real policy
+// lives — `()` / TP1 / RF give the plain defaults, `SecureExtensionState`
+// delegates to the Security IO. `CoreDeviceState` bounds `HasSecurityMode`, so
+// generic code still reaches these through `D::State`.
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    D: StackDefinition,
+    ES: ExtensionState + HasSecurityMode,
+> HasSecurityMode for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
+{
     fn security_mode_enabled(&self) -> bool {
         self.extension_state.security_mode_enabled()
     }

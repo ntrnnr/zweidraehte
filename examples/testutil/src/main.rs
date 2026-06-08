@@ -14,6 +14,7 @@ use static_cell::StaticCell;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
+    bcus::system_b::HasSecurityMode,
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::{
@@ -139,6 +140,10 @@ impl StackState for MyState {
         self.programming_mode.set(enabled);
     }
 }
+
+// Insecure test fixture: the `HasSecurityMode` defaults (Security Mode off,
+// no group keys, no access-denial logging) are exactly right.
+impl HasSecurityMode for MyState {}
 
 impl HasAuthorization for MyState {}
 impl HasPersistence for MyState {

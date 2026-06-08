@@ -208,6 +208,9 @@ impl StackState for SecureConformanceState {
     fn set_programming_mode(&self, enabled: bool) {
         self.inner.set_programming_mode(enabled);
     }
+}
+
+impl HasSecurityMode for SecureConformanceState {
     fn security_mode_enabled(&self) -> bool {
         self.inner.security_mode_enabled()
     }

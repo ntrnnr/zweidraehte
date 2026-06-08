@@ -21,7 +21,7 @@ use const_default::ConstDefault;
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    bcus::system_b::{ExtensionAugmentFor, MemoryLayout, Tp1SystemBDeviceState},
+    bcus::system_b::{ExtensionAugmentFor, HasSecurityMode, MemoryLayout, Tp1SystemBDeviceState},
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
@@ -846,6 +846,21 @@ impl StackState for ConformanceState {
 
     fn set_programming_mode(&self, enabled: bool) {
         self.inner.set_programming_mode(enabled);
+    }
+}
+
+// Security Mode moved off `StackState` onto `HasSecurityMode`. The insecure
+// harness forwards to its inner `SystemBDeviceState`, which gives the plain
+// (non-secure) defaults.
+impl HasSecurityMode for ConformanceState {
+    fn security_mode_enabled(&self) -> bool {
+        self.inner.security_mode_enabled()
+    }
+    fn log_access_denied(&self, source_addr: u16) {
+        self.inner.log_access_denied(source_addr);
+    }
+    fn has_group_key(&self, tsap: u16) -> bool {
+        self.inner.has_group_key(tsap)
     }
 }
 

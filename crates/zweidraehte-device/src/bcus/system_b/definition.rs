@@ -203,18 +203,20 @@ where
 /// entries for devices we have a secure P2P link with. A group-only
 /// secure device typically has `P2P = 0` and `SIAT > 0`. Table sizes
 /// ADT / AST / COT are drawn from `D::DEVICE`.
+///
+/// # The Data Secure table-size invariant lives here
+///
+/// All four secure `*StateFor` aliases delegate to [`SecureStateFor`], which
+/// is the *one* place that maps the security table sizes to the device's other
+/// tables: the group key table is keyed by GA index (`GRP = ADT_SIZE`) and the
+/// GO security flags table has one entry per communication object
+/// (`GO = COT_SIZE`). Adding a new secure medium is therefore a one-line alias
+/// over `SecureStateFor` with the right inner extension — no need to restate
+/// the invariant.
 pub type SecureTp1StateFor<D, SEQ, const P2P: usize, const SIAT: usize>
 where
     D: SystemBStackDefinition,
-= super::extensions::SecureTp1DeviceState<
-    { <D as SystemBStackDefinition>::ADT_SIZE },
-    { <D as SystemBStackDefinition>::AST_SIZE },
-    { <D as SystemBStackDefinition>::COT_SIZE },
-    D,
-    SEQ,
-    P2P,
-    SIAT,
->;
+= SecureStateFor<D, super::extensions::Tp1ExtensionState, SEQ, P2P, SIAT>;
 
 /// KNX-RF Data Secure System B state for `D`. The RF analogue of
 /// [`SecureTp1StateFor`]; pairs [`RfExtensionState`](super::extensions::RfExtensionState)
@@ -223,15 +225,7 @@ where
 pub type SecureRfStateFor<D, SEQ, const P2P: usize, const SIAT: usize>
 where
     D: SystemBStackDefinition,
-= super::extensions::SecureRfDeviceState<
-    { <D as SystemBStackDefinition>::ADT_SIZE },
-    { <D as SystemBStackDefinition>::AST_SIZE },
-    { <D as SystemBStackDefinition>::COT_SIZE },
-    D,
-    SEQ,
-    P2P,
-    SIAT,
->;
+= SecureStateFor<D, super::extensions::RfExtensionState, SEQ, P2P, SIAT>;
 
 /// KNX-RF **retransmitter** Data Secure System B state for `D`. As
 /// [`SecureRfStateFor`], but the RF medium extension is wrapped in
@@ -241,14 +235,46 @@ where
 pub type SecureRfRetransmitterStateFor<D, SEQ, const P2P: usize, const SIAT: usize>
 where
     D: SystemBStackDefinition,
-= super::extensions::SecureRfRetransmitterDeviceState<
+= SecureStateFor<D, super::extensions::RfRetransmitterExtension, SEQ, P2P, SIAT>;
+
+/// KNX/IP Data Secure System B state for `D` using capability flags `CAPS`.
+/// The KNX/IP analogue of [`SecureTp1StateFor`]; pairs
+/// [`IpExtensionState`](super::extensions::IpExtensionState) with the Data
+/// Secure wrapper. (Tunnelling-capable secure devices wrap
+/// [`IpInterfaceExtension`](super::extensions::IpInterfaceExtension) and use
+/// [`SecureStateFor`] directly with that inner type.)
+#[cfg(feature = "knxip")]
+pub type SecureIpStateFor<D, SEQ, const CAPS: u16, const P2P: usize, const SIAT: usize>
+where
+    D: SystemBStackDefinition,
+= SecureStateFor<D, super::extensions::IpExtensionState<CAPS>, SEQ, P2P, SIAT>;
+
+/// Generic Data Secure System B state for `D` wrapping an arbitrary inner
+/// medium extension `Inner`.
+///
+/// This is the single home of the Data Secure table-size invariant
+/// (`GRP = ADT_SIZE`, `GO = COT_SIZE`) and the ADT/AST/COT projection off
+/// `D::DEVICE`. The medium-specific aliases ([`SecureTp1StateFor`],
+/// [`SecureRfStateFor`], [`SecureRfRetransmitterStateFor`],
+/// [`SecureIpStateFor`]) are thin wrappers that fix `Inner`; a future secure
+/// medium only needs to add one such wrapper (or use this alias directly).
+pub type SecureStateFor<D, Inner, SEQ, const P2P: usize, const SIAT: usize>
+where
+    D: SystemBStackDefinition,
+    Inner: super::ExtensionState,
+= super::SystemBDeviceState<
     { <D as SystemBStackDefinition>::ADT_SIZE },
     { <D as SystemBStackDefinition>::AST_SIZE },
     { <D as SystemBStackDefinition>::COT_SIZE },
     D,
-    SEQ,
-    P2P,
-    SIAT,
+    super::extensions::SecureExtensionState<
+        Inner,
+        SEQ,
+        { <D as SystemBStackDefinition>::ADT_SIZE },
+        P2P,
+        SIAT,
+        { <D as SystemBStackDefinition>::COT_SIZE },
+    >,
 >;
 
 // ============================================================================

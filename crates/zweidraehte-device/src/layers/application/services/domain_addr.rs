@@ -12,6 +12,7 @@
 
 use crate::{
     StackState,
+    bcus::system_b::HasSecurityMode,
     definition::StackDefinition,
     objects::interface::HasDomainAddress,
     service::{AlCtx, ApciHandler},

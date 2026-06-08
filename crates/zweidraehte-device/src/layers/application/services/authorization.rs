@@ -11,7 +11,8 @@
 //! ```
 
 use crate::{
-    HasAuthorization, StackState,
+    HasAuthorization,
+    bcus::system_b::HasSecurityMode,
     definition::StackDefinition,
     service::{AlCtx, ApciHandler},
 };

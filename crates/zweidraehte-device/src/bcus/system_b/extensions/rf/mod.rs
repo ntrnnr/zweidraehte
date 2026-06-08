@@ -182,7 +182,13 @@ impl HasRfDomainAddress for RfExtensionState {
 }
 
 // The medium-generic `HasDomainAddress` (used by `A_DomainAddressSerialNumber`
-// services) reports the same 6-octet value for the RF medium.
+// services) reports the same 6-octet value for the RF medium. A blanket
+// `impl<T: HasRfDomainAddress> HasDomainAddress for T` was considered to fold
+// this together with `RfRetransmitterExtension` and the secure wrapper, but it
+// collides (coherence) with the `HasDomainAddress for SystemBDeviceState`
+// forwarding impl — which must stay, because it also serves KNX/IP extensions
+// and marks the device dirty on write. The per-RF-type bridge below is the
+// honest cost of keeping that single dirty-tracking forwarding point.
 impl HasDomainAddress for RfExtensionState {
     const DOMAIN_ADDRESS_LENGTH: usize = 6;
 

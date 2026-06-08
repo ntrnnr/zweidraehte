@@ -20,6 +20,7 @@ use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 
 use super::SystemBObjects;
+use crate::bcus::system_b::HasSecurityMode;
 use crate::objects::interface::{HasRoutingCount, PropertyLookup};
 
 // ============================================================================

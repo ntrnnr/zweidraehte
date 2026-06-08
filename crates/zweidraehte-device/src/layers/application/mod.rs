@@ -28,6 +28,7 @@ use crate::service::{AlCtx, ApciHandler as _, Layer, ServiceCtx};
 use crate::{
     HasAuthorization, StackDefinition, StackState,
     actor::Request,
+    bcus::system_b::HasSecurityMode,
     context::StackContext,
     objects::interface::{FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, PropertyServiceHandler},
     restart::{EraseCode, RestartError, RestartRequest},

@@ -5,7 +5,7 @@
 //! providing individual address, serial number, authorization, and
 //! programming mode. It has no dependency on KNX/IP.
 
-use crate::bcus::system_b::HasDiagnosticsContext;
+use crate::bcus::system_b::{HasDiagnosticsContext, HasSecurityMode};
 use crate::config::MAX_APDU_LENGTH_EXTENDED;
 use crate::device_model::DeviceModelNotifier;
 use crate::objects::{
@@ -178,43 +178,15 @@ pub trait StackState {
     fn set_programming_mode(&self, enabled: bool);
 
     // =========================================================================
-    // Persistence
-    // =========================================================================
-
-    // =========================================================================
     // KNX Data Secure
     // =========================================================================
-
-    /// Whether the device's Security Mode is currently enabled.
-    ///
-    /// When `true`, the "Security Mode On" columns of the access policy
-    /// matrix apply; when `false`, the "Security Mode Off" columns apply.
-    ///
-    /// Default: `false` (non-secure devices always use "Security Mode Off").
-    /// Secure devices override this by delegating to the Security IO's
-    /// `security_mode_enabled` flag.
-    fn security_mode_enabled(&self) -> bool {
-        false
-    }
-
-    /// Called by the property dispatch layer when a property access is
-    /// denied due to security policy. Secure devices should log this as
-    /// a security failure (AccessError).
-    ///
-    /// `source_addr` is the sender's individual address.
-    ///
-    /// Default: no-op (non-secure devices don't log security failures).
-    fn log_access_denied(&self, _source_addr: u16) {}
-
-    /// Check whether a group key exists for the given TSAP index.
-    ///
-    /// Used by GO diagnostics to validate security flags on direct
-    /// GroupValue_Write/Read commands (ServiceIDs 0x01 and 0x03).
-    ///
-    /// Default: `false` (non-secure devices have no group keys).
-    fn has_group_key(&self, _tsap: u16) -> bool {
-        false
-    }
+    //
+    // `security_mode_enabled` / `log_access_denied` / `has_group_key` are
+    // **not** declared here. They live on [`HasSecurityMode`], which every
+    // device state satisfies and which [`CoreDeviceState`] bounds, so generic
+    // code reaches them through the same `D::State` it already has. Keeping
+    // them off `StackState` avoids declaring the same three methods (with the
+    // same default bodies) on two traits.
 }
 
 // ============================================================================
@@ -325,6 +297,7 @@ pub trait CoreDeviceState<CO>:
     + HasCommunicationObjectTable
     + HasCommObjects<CO = CO>
     + HasGoSecurityView
+    + HasSecurityMode
     + HasDiagnosticsContext
     + HasConnectionAuth
     + HasRoutingCount
@@ -343,6 +316,7 @@ impl<T, CO> CoreDeviceState<CO> for T where
         + HasCommunicationObjectTable
         + HasCommObjects<CO = CO>
         + HasGoSecurityView
+        + HasSecurityMode
         + HasDiagnosticsContext
         + HasConnectionAuth
         + HasRoutingCount
