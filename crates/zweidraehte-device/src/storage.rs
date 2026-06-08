@@ -360,5 +360,27 @@ pub trait HasSequenceStorage {
 
     /// Create a new sequence storage instance, e.g., by loading
     /// persisted values from flash or shared memory.
-    fn create_seq_storage() -> Self::SeqStorage;
+    ///
+    /// # Two construction models
+    ///
+    /// This factory callback only fits devices whose `SeqStorage` can be
+    /// built from nothing — e.g. the conformance harness, which maps an
+    /// IPC shared-memory region with no peripheral handles. Real hardware
+    /// targets whose store needs a peripheral (an SPI FRAM, a flash sector
+    /// handle) cannot satisfy that — those handles only exist in `main`.
+    /// Such devices thread the already-constructed store through
+    /// [`StateInit`](crate::StackDefinition::StateInit) →
+    /// [`SecureResources`](crate::bcus::system_b::SecureResources) instead,
+    /// and never call this method.
+    ///
+    /// The default therefore panics: it exists so StateInit-threading
+    /// devices do not have to write an `unreachable!()` stub merely to
+    /// satisfy the bound. Override it only for the from-nothing model.
+    fn create_seq_storage() -> Self::SeqStorage {
+        unimplemented!(
+            "create_seq_storage is unused on this device: sequence storage is \
+             threaded through StateInit/SecureResources. Override this method \
+             only for devices that build their store from nothing."
+        )
+    }
 }

@@ -119,9 +119,7 @@ pub struct Stm32G0KnxRfSecure;
 // `SecureAugmentBundle` composes the inner `RfAugment` (RF Medium Object,
 // Type 19) with the `SecurityAugment` (Security IO, Type 0x11), so the RF
 // Domain Address property and the secure key tables both reach ETS.
-type SecAugment<'a> = <<Stm32G0KnxRfSecure as StackDefinition>::ES as zweidraehte_device::bcus::system_b::Extension<
-    (),
->>::Augment<'a, Stm32G0KnxRfSecure>;
+type SecAugment<'a> = ExtensionAugmentFor<'a, Stm32G0KnxRfSecure>;
 
 /// Augment chain: the secure RF medium + security augment plus the demo Easter
 /// Egg augment.
@@ -137,11 +135,10 @@ impl SystemBStackDefinition for Stm32G0KnxRfSecure {}
 
 impl HasSequenceStorage for Stm32G0KnxRfSecure {
     type SeqStorage = Stm32G0SeqStorage;
-    fn create_seq_storage() -> Self::SeqStorage {
-        // The real store is built in `main` from the SPI2 peripheral and threaded
-        // through `StateInit` → `SecureResources`; this callback is never used.
-        core::unreachable!("seq storage is threaded through StateInit, not this factory callback")
-    }
+    // `create_seq_storage` is intentionally not overridden: the real store is
+    // built in `main` from the SPI2 FRAM peripheral and threaded through
+    // `StateInit` → `SecureResources`. The trait's default panics if ever
+    // called, which it never is for this StateInit-threading device.
 }
 
 impl StackDefinition for Stm32G0KnxRfSecure {

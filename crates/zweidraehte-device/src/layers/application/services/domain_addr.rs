@@ -37,8 +37,12 @@ use crate::logging::{debug, error, trace, warn};
 /// - `A_DomainAddressSerialNumber_Write` — update individual address and domain address
 /// - `A_DomainAddressSerialNumber_Response` — ignored (we send these)
 ///
-/// Also recognizes (but does not act on):
-/// - `A_DomainAddress_Read/Write/Response` — only relevant for PL/RF media
+/// This service does **not** handle the broadcast
+/// `A_DomainAddress_Read/Write/Response` services — those are
+/// programming-mode-selected and medium-specific, owned by
+/// [`RfDomainAddressService`](super::rf_domain_addr::RfDomainAddressService)
+/// for KNX-RF. The two services have disjoint APCI sets and may be composed
+/// together in any order.
 ///
 /// Requires `D::State: HasDomainAddress`.
 #[derive(Default)]
@@ -65,13 +69,13 @@ where
                 true
             }
 
-            // TODO: A_DomainAddress_Read/Write/Response — only applicable for
-            // PL (PowerLine, DoA=8) and RF (DoA=48) media. Not implemented yet.
-            ApciCode::DomainAddressRead | ApciCode::DomainAddressWrite | ApciCode::DomainAddressResponse => {
-                debug!("AL ignoring DomainAddress_{:?} (not implemented for this medium)", apci);
-                true
-            }
-
+            // `A_DomainAddress_Read/Write/Response` (the broadcast,
+            // programming-mode-selected variants) are NOT handled here. They
+            // belong to the medium-specific service that owns the on-wire
+            // Domain Address — `RfDomainAddressService` for KNX-RF. Returning
+            // `false` lets them fall through to that service in the
+            // `AlExtensions` tuple regardless of declaration order; claiming
+            // them here (even as a no-op) would silently shadow it.
             _ => false,
         }
     }

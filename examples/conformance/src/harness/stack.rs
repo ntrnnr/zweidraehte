@@ -21,7 +21,7 @@ use const_default::ConstDefault;
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    bcus::system_b::{MemoryLayout, Tp1SystemBDeviceState},
+    bcus::system_b::{ExtensionAugmentFor, MemoryLayout, Tp1SystemBDeviceState},
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
@@ -1327,7 +1327,7 @@ impl StackDefinition for IpcConformanceTestStack {
     }
 
     type InterfaceObjects<'a> = zweidraehte_device::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = <Self::ES as zweidraehte_device::bcus::system_b::Extension<Self::Platform>>::Augment<'a, Self>;
+    type Augments<'a> = ExtensionAugmentFor<'a, Self>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,

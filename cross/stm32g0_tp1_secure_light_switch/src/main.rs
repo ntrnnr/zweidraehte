@@ -160,11 +160,7 @@ pub struct Stm32G0SecureLightSwitch;
 // Security augment type alias — produced by the secure extension for
 // `Stm32G0SecureLightSwitch`. The conformance DUT uses the same
 // pattern; see `examples/conformance/src/harness/secure_stack.rs:871`.
-type SecAugment<'a> =
-    <<Stm32G0SecureLightSwitch as StackDefinition>::ES as zweidraehte_device::bcus::system_b::Extension<()>>::Augment<
-        'a,
-        Stm32G0SecureLightSwitch,
-    >;
+type SecAugment<'a> = ExtensionAugmentFor<'a, Stm32G0SecureLightSwitch>;
 
 /// Augment chain: KNX Data Secure augment (drives Security IO 0x11)
 /// plus the demo Easter Egg augment.
@@ -180,16 +176,11 @@ impl SystemBStackDefinition for Stm32G0SecureLightSwitch {}
 
 impl HasSequenceStorage for Stm32G0SecureLightSwitch {
     type SeqStorage = Stm32G0SeqStorage;
-    fn create_seq_storage() -> Self::SeqStorage {
-        // Vestigial: the framework never actually calls this. The
-        // real seq-store is built in `main` from the SPI2 peripheral
-        // and threaded into the state via `StateInit` →
-        // `SecureResources`. `FramSeqStorage` owns real hardware so
-        // it cannot be fabricated out of thin air anyway — if the
-        // framework ever starts calling this, that's a bug we want
-        // to hear about loudly.
-        core::unreachable!("seq storage is threaded through StateInit, not this factory callback")
-    }
+    // `create_seq_storage` is intentionally not overridden: the real store is
+    // built in `main` from the SPI2 FRAM peripheral and threaded through
+    // `StateInit` → `SecureResources`. `FramSeqStorage` owns real hardware so
+    // it cannot be fabricated from nothing anyway. The trait's default panics
+    // if ever called, which it never is for this StateInit-threading device.
 }
 
 impl StackDefinition for Stm32G0SecureLightSwitch {

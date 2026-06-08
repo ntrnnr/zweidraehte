@@ -15,8 +15,8 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     StackDefinition,
     bcus::system_b::{
-        DeviceConfig, HasDeviceConfig, HasExtensionState, HasSecurityMode, SecureExtensionConfig, SecureResources,
-        SecureTp1DeviceState, SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig,
+        DeviceConfig, ExtensionAugmentFor, HasDeviceConfig, HasExtensionState, HasSecurityMode, SecureExtensionConfig,
+        SecureResources, SecureTp1DeviceState, SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig,
         create_system_b_objects,
     },
     context::layer::LayerContext,
@@ -905,10 +905,7 @@ impl CertificationObjectAugment {
 // ============================================================================
 
 /// Type alias for the security augment produced by the extension.
-type SecAugment<'a> = <
-    <IpcSecureConformanceTestStack as StackDefinition>::ES as
-    zweidraehte_device::bcus::system_b::Extension<()>
->::Augment<'a, IpcSecureConformanceTestStack>;
+type SecAugment<'a> = ExtensionAugmentFor<'a, IpcSecureConformanceTestStack>;
 
 /// Conformance-only "extras" beyond the security augment: the
 /// certification object the spec validation suite checks, plus a

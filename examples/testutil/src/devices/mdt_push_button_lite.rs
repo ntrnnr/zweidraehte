@@ -14,8 +14,8 @@ use core::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    Extension, HasDeviceConfig, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
-    SystemBStackDefinition, SystemBStateInit,
+    Extension, ExtensionAugmentFor, HasDeviceConfig, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor,
+    SystemBMemoryMap, SystemBStackDefinition, SystemBStateInit,
 };
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp};
@@ -3241,7 +3241,7 @@ impl StackDefinition for MdtStack {
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
+    type Augments<'a> = ExtensionAugmentFor<'a, Self>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,

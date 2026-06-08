@@ -58,8 +58,8 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{
-    Extension, HasDeviceConfig, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor, SystemBMemoryMap,
-    SystemBStackDefinition, SystemBStateInit,
+    Extension, ExtensionAugmentFor, HasDeviceConfig, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor,
+    SystemBMemoryMap, SystemBStackDefinition, SystemBStateInit,
 };
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
@@ -574,7 +574,7 @@ impl StackDefinition for DemoStack {
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
+    type Augments<'a> = ExtensionAugmentFor<'a, Self>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,

@@ -250,3 +250,30 @@ where
     P2P,
     SIAT,
 >;
+
+// ============================================================================
+// Augment type alias
+// ============================================================================
+
+/// The augment type produced by `D`'s extension state.
+///
+/// Every device's augment chain begins with the augment its `type ES`
+/// extension creates (the Security IO + medium object for secure devices, the
+/// RF Medium Object for plain RF devices, etc.). Naming that type used to
+/// require each device to hand-write the projection
+///
+/// ```rust,ignore
+/// type SecAugment<'a> =
+///     <<Self as StackDefinition>::ES as Extension<()>>::Augment<'a, Self>;
+/// ```
+///
+/// This alias replaces that incantation. Devices write the augment field as
+/// `sec: ExtensionAugmentFor<'a, Self>` in their
+/// [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry) augment
+/// bundle. Unlike the hand-written version it threads
+/// [`D::Platform`](StackDefinition::Platform) rather than hard-coding `()`, so
+/// it is correct for IP-platform secure devices too.
+pub type ExtensionAugmentFor<'a, D>
+where
+    D: StackDefinition,
+= <<D as StackDefinition>::ES as super::Extension<<D as StackDefinition>::Platform>>::Augment<'a, D>;

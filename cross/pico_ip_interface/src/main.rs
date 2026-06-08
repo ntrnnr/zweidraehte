@@ -138,7 +138,7 @@ impl StackDefinition for PicoIpInterface {
     }
 
     type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
+    type Augments<'a> = ExtensionAugmentFor<'a, Self>;
 
     fn create_interface_objects<'a>(
         state: &'a Self::State,
