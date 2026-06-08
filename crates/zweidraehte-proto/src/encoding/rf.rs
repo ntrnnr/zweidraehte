@@ -79,6 +79,29 @@ pub const LPCI1_IDX: usize = 15;
 /// Index of the block-2 payload (TPCI/APCI/data; block 2, octet 7 onward).
 pub const BLOCK2_PAYLOAD_IDX: usize = 16;
 
+/// Octets a CRC-stripped telegram carries on top of its APDU: the 16-octet RF
+/// block-1 + block-2 link header up to and including LPCI-1
+/// ([`BLOCK2_PAYLOAD_IDX`]) plus the TPCI octet (the APDU/NPDU length-field
+/// value counts from *after* the TPCI). So `telegram_len = APDU + this`, and the
+/// largest APDU a buffer of size `N` can frame is `N - this`.
+pub const TELEGRAM_HEADER_OVERHEAD: usize = BLOCK2_PAYLOAD_IDX + 1;
+
+/// Largest CRC-stripped telegram [`knx_message_to_rf`] produces for an internal
+/// frame carrying an APDU of `max_apdu_length` octets (the NPDU length-field /
+/// PID 56 `MAX_APDU_LENGTH` value, spec 03/05/01 §4.3.7). Size the RF link
+/// layer's frame buffers to this so legal frames never hit
+/// [`RfError::BufferTooSmall`].
+///
+/// This mirrors [`crate::config::max_outgoing_msg_len`]: the internal `msg_len`
+/// for that APDU is `INT_PAYLOAD + 1 + apdu`; the telegram swaps the 6-octet
+/// internal header (`INT_PAYLOAD`) for the 16-octet RF link header
+/// ([`BLOCK2_PAYLOAD_IDX`]), which is exactly [`TELEGRAM_HEADER_OVERHEAD`] above
+/// the APDU. (Cross-checked against the captured frame: `max_telegram_len(3)` ==
+/// `CAPTURED.len()` == 20.)
+pub const fn max_telegram_len(max_apdu_length: u16) -> usize {
+    TELEGRAM_HEADER_OVERHEAD + max_apdu_length as usize
+}
+
 /// RF-info octet: frame sent by a unidirectional device.
 pub const RF_INFO1_UNIDIR: u8 = 0x01;
 /// RF-info octet: battery state OK (0 = weak).
@@ -343,6 +366,18 @@ mod tests {
         // Internal frame: CTRL, 1.2.1 → group 0x0100, GroupValueWrite, temp.
         let frame = &out[..meta.internal_len];
         assert_eq!(frame, &[0xBC, 0x12, 0x01, 0x01, 0x00, 0xe0, 0x00, 0x80, 0x0c, 0xc4]);
+    }
+
+    #[test]
+    fn max_telegram_len_matches_captured_frame() {
+        // The captured frame decodes to a 10-octet internal frame, i.e. an APDU
+        // of 3 (internal_len = INT_PAYLOAD + 1 + apdu = 6 + 1 + 3). Its on-air
+        // telegram is therefore the maximum for a 3-octet APDU.
+        assert_eq!(max_telegram_len(3), CAPTURED.len());
+        // The buffer-sizing identity the RF link layer relies on: the telegram
+        // for a given APDU is the internal frame for that APDU with the 6-octet
+        // header swapped for the 16-octet RF link header (a net +10 octets).
+        assert_eq!(max_telegram_len(55), INT_PAYLOAD + 1 + 55 + (BLOCK2_PAYLOAD_IDX - INT_PAYLOAD));
     }
 
     #[test]

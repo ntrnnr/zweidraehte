@@ -66,7 +66,7 @@ use devices::light_switch::{
 use zweidraehte_device::storage::SecureDeviceIdentity;
 use zweidraehte_device::{
     bcus::system_b::*,
-    config::MAX_APDU_LENGTH_EXTENDED,
+    config::MAX_APDU_LENGTH_RF,
     layers::linklayers::knxrf::{KnxRfLinkLayerBuilder, RetransmitEnabled},
     prelude::*,
     storage::HasSequenceStorage,
@@ -163,7 +163,11 @@ impl HasSequenceStorage for Stm32G0KnxRfRetransmitter {
 
 impl StackDefinition for Stm32G0KnxRfRetransmitter {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+    // The configured RF APDU ceiling: sizes the pool buffers and is what PID 56
+    // reports (the device state inits the runtime limit to this). The 55-octet
+    // ceiling still leaves 42 octets of plaintext after the Data Secure envelope
+    // (OVERHEAD = 13). See `MAX_APDU_LENGTH_RF`.
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = LightSwitchParams;

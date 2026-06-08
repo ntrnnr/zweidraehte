@@ -15,7 +15,6 @@ use const_default::ConstDefault;
 
 use crate::{
     HasAuthorization, HasPersistence, StackDefinition, StackState,
-    config::MAX_APDU_LENGTH_EXTENDED,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::{
         comm::{ComObjects, HasCommObjects, HasGoSecurityView},
@@ -133,12 +132,18 @@ pub struct SystemBDeviceState<
     /// Programming mode flag (volatile — does not survive restarts).
     programming_mode: Cell<bool>,
 
-    /// Runtime maximum APDU length, set by the link layer after hardware
-    /// capability detection (TP-UART chip detection, USB descriptor
-    /// parsing). Read by PID 56 (MAX_APDU_LENGTH) on the Device Object.
-    /// Initialised to [`MAX_APDU_LENGTH_EXTENDED`] (254); the link layer
-    /// clamps it down to the bus-specific maximum (e.g. 14 for TP1
-    /// without Extended Frame Format) on first detection.
+    /// Runtime maximum APDU length. Read by PID 56 (MAX_APDU_LENGTH) on the
+    /// Device Object.
+    ///
+    /// Initialised to the compile-time [`StackDefinition::MAX_APDU_LENGTH`] —
+    /// the same value the pre-allocated buffers are sized from, so a device that
+    /// configures a medium-appropriate ceiling (e.g. `MAX_APDU_LENGTH_RF` for
+    /// KNX-RF) reports it without any link-layer action. Link layers that detect
+    /// a *lower* hardware limit (a TP-UART without Extended Frame Format, a USB
+    /// interface's descriptor) clamp it down further via
+    /// [`set_max_apdu_length`](StackState::set_max_apdu_length); the value can
+    /// never exceed the compile-time ceiling, since the buffers could not hold a
+    /// larger frame.
     max_apdu_length: Cell<u16>,
 
     // ========================================================================
@@ -277,7 +282,7 @@ impl<
             auth_keys: RefCell::new([[0xFF; 4]; NUM_AUTH_KEYS]),
             routing_count: Cell::new(6),
             programming_mode: Cell::new(false),
-            max_apdu_length: Cell::new(MAX_APDU_LENGTH_EXTENDED),
+            max_apdu_length: Cell::new(D::MAX_APDU_LENGTH),
             adt: RefCell::new(Table::new()),
             ast: RefCell::new(Table::new()),
             cot: RefCell::new(Table::new()),
@@ -521,7 +526,7 @@ impl<
             auth_keys: RefCell::new(auth_keys),
             routing_count: Cell::new(routing_count),
             programming_mode: Cell::new(false),
-            max_apdu_length: Cell::new(MAX_APDU_LENGTH_EXTENDED),
+            max_apdu_length: Cell::new(D::MAX_APDU_LENGTH),
             adt: RefCell::new(address_table),
             ast: RefCell::new(association_table),
             cot: RefCell::new(group_object_table),

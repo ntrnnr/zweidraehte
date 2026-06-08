@@ -39,6 +39,30 @@ pub const MAX_APDU_LENGTH_TP1_STANDARD: u16 = 15;
 /// This is also the maximum for KNX/IP devices.
 pub const MAX_APDU_LENGTH_EXTENDED: u16 = 254;
 
+/// Recommended `StackDefinition::MAX_APDU_LENGTH` for a KNX-RF System B device
+/// (mask 27B0h).
+///
+/// Like [`MAX_APDU_LENGTH_TP1_STANDARD`] / [`MAX_APDU_LENGTH_EXTENDED`], this is
+/// a value a device assigns to its compile-time `MAX_APDU_LENGTH` — which sizes
+/// the buffers and is what PID 56 reports. It is *not* enforced by the link
+/// layer; a device is free to choose another value (the RF link layer caps the
+/// physically framable ceiling at `knxrf::MAX_SUPPORTED_APDU`).
+///
+/// Unlike TP1, a KNX-RF Standard frame carries an 8-bit length field and splits
+/// the LSDU across multiple 16-octet data blocks (KNX 03/02/05 §6.1.2.4), so it
+/// is **not** limited to the 15-octet TP1 standard-frame APDU. The mask 27B0h
+/// profile (KNX 06/01/35 §3.2) mandates `APDU-length ≥ 15`; that 15 is a floor,
+/// not the value a real device reports.
+///
+/// We pick **55**, the established KNX long-frame APDU length, because the
+/// 15-octet floor is unusable with KNX Data Secure: the secure envelope costs
+/// [`apdu::secure::OVERHEAD`](crate::messages::apdu::secure::OVERHEAD) = 13
+/// octets, so a 15-octet ceiling leaves only 2 octets of plaintext — too little
+/// for even a 1-octet secured `A_GroupValue_Write`. 55 leaves 42 octets of
+/// secure plaintext budget while still fitting the RF link layer's frame
+/// buffers (see `encoding::rf::max_telegram_len`).
+pub const MAX_APDU_LENGTH_RF: u16 = 55;
+
 /// Frame overhead in bytes.
 ///
 /// This is the maximum overhead for any KNX frame format that may be stored
@@ -69,6 +93,13 @@ pub const MAX_APDU_LENGTH_EXTENDED: u16 = 254;
 /// Since received cEMI frames are copied into the buffer before conversion
 /// to internal format (which happens in-place), the buffer capacity must
 /// be able to hold the full cEMI frame.
+///
+/// **KNX-RF wire frames are intentionally excluded.** The RF block-1 header
+/// (length / C / Esc / RF-info + 6-octet SN/DoA = 10 octets) is larger than
+/// this, but RF wire telegrams never reach a pool buffer: the radio driver
+/// strips preamble, Manchester coding, and the FT3 block CRCs below the
+/// `RfTransceiver` boundary, and the RF link layer converts to the 6-octet
+/// internal header in its own scratch buffers before allocating from the pool.
 pub const FRAME_OVERHEAD: usize = 9;
 
 /// Default headroom for protocol headers.

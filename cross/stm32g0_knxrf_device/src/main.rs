@@ -46,7 +46,7 @@ use devices::light_switch::{
 };
 
 use zweidraehte_device::{
-    bcus::system_b::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::knxrf::KnxRfLinkLayerBuilder, prelude::*,
+    bcus::system_b::*, config::MAX_APDU_LENGTH_RF, layers::linklayers::knxrf::KnxRfLinkLayerBuilder, prelude::*,
 };
 
 // ================================================================================
@@ -100,7 +100,10 @@ impl SystemBStackDefinition for Stm32G0KnxRf {}
 
 impl StackDefinition for Stm32G0KnxRf {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+    // The configured RF APDU ceiling: sizes the pool buffers and is what PID 56
+    // reports (the device state inits the runtime limit to this). Far below the
+    // extended-frame 254, saving ~200 B/buffer. See `MAX_APDU_LENGTH_RF`.
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
     const TL_STYLE: TlStyle = TlStyle::Style1;
 
     type P = LightSwitchParams;

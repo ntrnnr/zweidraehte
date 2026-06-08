@@ -53,14 +53,31 @@ use crate::layers::linklayers::address_check::{AddressChecker, DeviceAddressChec
 use crate::layers::{Inbox, LinkLayerBuilder, LinkLayerBuilderBase, LinkLayerCapabilities};
 use history::LfnHistory;
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::config::{MAX_APDU_LENGTH_RF, max_outgoing_msg_len};
 use zweidraehte_proto::encoding::rf;
 use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 /// Largest CRC-stripped telegram / internal frame we handle, in octets. Sized
-/// to the RF physical layer's maximum on-air payload.
+/// to the RF physical layer's maximum on-air payload; the largest APDU a frame
+/// of which still fits is exposed as [`MAX_SUPPORTED_APDU`].
 const RF_FRAME_BUF: usize = 96;
+
+/// Largest APDU (PID 56 / `MAX_APDU_LENGTH` value) whose Standard telegram still
+/// fits [`RF_FRAME_BUF`]. The link layer advertises whatever the device puts in
+/// [`StackDefinition::MAX_APDU_LENGTH`](crate::StackDefinition::MAX_APDU_LENGTH)
+/// (the same value the pool buffers are sized from); a device whose ceiling
+/// exceeds this cannot frame its own telegrams on RF, so it should compile-time
+/// `assert!(MAX_APDU_LENGTH <= MAX_SUPPORTED_APDU)`. (Frames larger than this
+/// that arrive on-air are dropped, not truncated — see the up-delivery guard.)
+pub const MAX_SUPPORTED_APDU: u16 = (RF_FRAME_BUF - rf::TELEGRAM_HEADER_OVERHEAD) as u16;
+
+// The recommended RF APDU value must itself be framable in the scratch buffer;
+// if `MAX_APDU_LENGTH_RF` is ever raised past what `RF_FRAME_BUF` can hold, fail
+// the build. `core::assert!` avoids defmt's non-const `assert!` override (which
+// fails const evaluation on targets that pull in defmt).
+const _: () = core::assert!(MAX_APDU_LENGTH_RF <= MAX_SUPPORTED_APDU);
 
 /// Repetition counter advertised on transmitted frames. KNX 03/02/05 §6.2.1.2
 /// fixes RF-Ready end devices at 6.
@@ -338,6 +355,14 @@ where
     /// cancel-safe per [`RfTransceiver`], so dropping it to service a request is
     /// fine — the next loop iteration re-arms RX.
     async fn run(&mut self, mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>) -> ! {
+        // Note: unlike TP-UART / USB we do *not* call `set_max_apdu_length`. RF
+        // has no link-time capability negotiation — the radio carries whatever
+        // the device's compile-time `MAX_APDU_LENGTH` was sized for — so the
+        // runtime value (already initialised to that ceiling by the device
+        // state) is correct as-is. PID 56 therefore reports the configured RF
+        // APDU directly. Frames that exceed it are dropped by the up-delivery
+        // guard below; the build-time `MAX_APDU_LENGTH_RF <= MAX_SUPPORTED_APDU`
+        // assertion keeps the recommended ceiling framable in `RF_FRAME_BUF`.
         let mut rx_buf = [0u8; RF_FRAME_BUF];
         loop {
             match select(self.radio.receive(&mut rx_buf), req_rx.next()).await {
@@ -424,6 +449,22 @@ where
 
         if dup {
             trace!("KNX-RF: duplicate LFN {=u8} from {=u16:#06x} dropped", meta.lfn, src);
+            return;
+        }
+
+        // Reject frames longer than the APDU ceiling we advertise, before
+        // copying them into a pool buffer. The codec bounds the decoded frame
+        // only by the scratch-buffer size; our pool buffers are sized to the
+        // advertised MAX_APDU_LENGTH, so a longer internal frame would overflow
+        // the buffer the indication is built in. Like the destination filter,
+        // this runs *after* the retransmit branch — a repeater still forwards
+        // frames it cannot itself receive — and only gates local up-delivery.
+        let max_internal = max_outgoing_msg_len(self.context.max_apdu_length(), false);
+        if meta.internal_len > max_internal {
+            trace!(
+                "KNX-RF: over-length frame ({=usize} > {=usize}) dropped from up-delivery",
+                meta.internal_len, max_internal
+            );
             return;
         }
 
