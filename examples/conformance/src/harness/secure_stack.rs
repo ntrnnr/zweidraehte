@@ -10,7 +10,7 @@
 
 use core::cell::{Cell, RefCell};
 
-use zweidraehte_device::bcus::system_b::DiagnosticsAugment;
+use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, SecureGoSendPresent};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     StackDefinition,
@@ -919,8 +919,11 @@ type SecAugment<'a> = ExtensionAugmentFor<'a, IpcSecureConformanceTestStack>;
 pub struct ConformanceExtras<'a> {
     #[service(augment)]
     pub cert: CertificationObjectAugment,
+    // This is a secure device, so diagnostics uses the `SecureGoSendPresent`
+    // strategy — the secure GO-diagnostics send-paths are wired up. (A
+    // non-secure device would use the default `SecureGoSendAbsent`.)
     #[service(augment)]
-    pub diag: DiagnosticsAugment<'a>,
+    pub diag: DiagnosticsAugment<'a, SecureGoSendPresent>,
 }
 
 /// Outer device augment chain: the secure-extension augment, plus the
@@ -1011,7 +1014,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             sec: state.extension_state().create_augment::<Self>(platform),
             extras: ConformanceExtras {
                 cert: CertificationObjectAugment::new(),
-                diag: DiagnosticsAugment::new(&state.inner.operation_mode),
+                diag: DiagnosticsAugment::<SecureGoSendPresent>::new(&state.inner.operation_mode),
             },
         }
     }

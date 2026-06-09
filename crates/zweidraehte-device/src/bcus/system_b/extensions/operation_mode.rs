@@ -202,6 +202,136 @@ impl DiagnosticsContext for OperationModeState {
 }
 
 // ============================================================================
+// Secure-send strategy
+// ============================================================================
+
+/// Outcome of a GO-diagnostics secure-send attempt, mapped to the
+/// spec-mandated Function Property return codes by the caller.
+pub enum SecureSendOutcome {
+    /// The secure telegram was built and queued — caller returns `E_SUCCESS` (0x00).
+    Queued,
+    /// No group key was available for the requested GA (or the device has no
+    /// secure capability at all) — caller returns `F8 E_DATA_VOID`, per
+    /// 03/05/01 §4.8.1.3.3 Table 37 ("Security is requested for GA for which
+    /// there is no GA Key").
+    NoKey,
+}
+
+/// Strategy for the *secure* half of GO diagnostics (PID 66): the secure
+/// `GroupValue_Write`/`Read` sends (WriteServiceID 0x01 / ReadServiceID 0x03)
+/// and the per-GO security-flags read used by the config report.
+///
+/// [`DiagnosticsAugment`] is generic over this strategy so a **non-secure**
+/// device carries no security concept at all — it composes the augment with
+/// [`SecureGoSendAbsent`], whose methods need no security state and report
+/// "no key" / "plain". A secure device composes it with
+/// [`SecureGoSendPresent`], whose impl is the only place the Data Secure
+/// bounds (`HasSecurityState + HasSeqStorage`) appear.
+///
+/// The trait is parameterised on `D` precisely so the two impls can differ in
+/// their `D`-bounds: `SecureGoSendAbsent` is unconditional, `SecureGoSendPresent`
+/// requires the secure extension state. (A method-level `where` clause cannot
+/// express that, and the crate does not enable `specialization`, so a blanket
+/// no-op plus a bounded real impl is not an option — two distinct concrete
+/// implementor types are.)
+pub trait SecureGoSender<D: StackDefinition> {
+    /// Send a secure `A_GroupValue_Write` to `tsap`, or report `NoKey`.
+    fn send_write_secure(
+        ctx: &ServiceCtx<'_, D>,
+        tsap: u16,
+        priority: Priority,
+        encoding: GroupValueEncoding,
+        value: &[u8],
+        security: RequestedSecurity,
+    ) -> SecureSendOutcome;
+
+    /// Send a secure `A_GroupValue_Read` to `tsap`, or report `NoKey`.
+    fn send_read_secure(
+        ctx: &ServiceCtx<'_, D>,
+        tsap: u16,
+        priority: Priority,
+        security: RequestedSecurity,
+    ) -> SecureSendOutcome;
+
+    /// Per-GO security flags (`auth`/`conf` bits) for the GO config-read
+    /// response. Folds the read-side security touch into the same seam, so a
+    /// non-secure device never names `HasSecurityState` here either. Returns
+    /// `0` (plain) on a non-secure device.
+    fn go_security_flags(ctx: &ServiceCtx<'_, D>, go_idx: u16) -> u8;
+}
+
+/// Secure-send strategy for a **non-secure** device: there is no group-key
+/// table and no sequence-number storage, so every secure send reports
+/// [`SecureSendOutcome::NoKey`] (→ `F8`) and every GO reports plain (`0`)
+/// security flags. Carries no security bound — this is the default strategy.
+pub struct SecureGoSendAbsent;
+
+impl<D: StackDefinition> SecureGoSender<D> for SecureGoSendAbsent {
+    fn send_write_secure(
+        _ctx: &ServiceCtx<'_, D>,
+        _tsap: u16,
+        _priority: Priority,
+        _encoding: GroupValueEncoding,
+        _value: &[u8],
+        _security: RequestedSecurity,
+    ) -> SecureSendOutcome {
+        SecureSendOutcome::NoKey
+    }
+
+    fn send_read_secure(
+        _ctx: &ServiceCtx<'_, D>,
+        _tsap: u16,
+        _priority: Priority,
+        _security: RequestedSecurity,
+    ) -> SecureSendOutcome {
+        SecureSendOutcome::NoKey
+    }
+
+    fn go_security_flags(_ctx: &ServiceCtx<'_, D>, _go_idx: u16) -> u8 {
+        0
+    }
+}
+
+/// Secure-send strategy for a **secure** device: drives
+/// [`SecureGroupValueAddressedSender`] and reads the real per-GO security
+/// flags. This is the only place the Data Secure bounds appear, so a device
+/// only composes [`DiagnosticsAugment`] with this strategy when its extension
+/// state actually carries security.
+pub struct SecureGoSendPresent;
+
+impl<D: StackDefinition> SecureGoSender<D> for SecureGoSendPresent
+where
+    D::State: StackState + HasExtensionState + HasAddressTable,
+    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+{
+    fn send_write_secure(
+        ctx: &ServiceCtx<'_, D>,
+        tsap: u16,
+        priority: Priority,
+        encoding: GroupValueEncoding,
+        value: &[u8],
+        security: RequestedSecurity,
+    ) -> SecureSendOutcome {
+        ctx.secure_group_value_sender().send_group_write_tsap_secure(tsap, priority, encoding, value, security);
+        SecureSendOutcome::Queued
+    }
+
+    fn send_read_secure(
+        ctx: &ServiceCtx<'_, D>,
+        tsap: u16,
+        priority: Priority,
+        security: RequestedSecurity,
+    ) -> SecureSendOutcome {
+        ctx.secure_group_value_sender().send_group_read_tsap_secure(tsap, priority, security);
+        SecureSendOutcome::Queued
+    }
+
+    fn go_security_flags(ctx: &ServiceCtx<'_, D>, go_idx: u16) -> u8 {
+        ctx.state.extension_state().go_security_flags_for(go_idx).unwrap_or(0)
+    }
+}
+
+// ============================================================================
 // Augment
 // ============================================================================
 
@@ -225,7 +355,11 @@ impl DiagnosticsContext for OperationModeState {
 //
 // The `where_bounds(...)` argument adds the bounds on `D::State` that
 // the function-property handlers need (state lookups for application,
-// communication objects, security state, etc.).
+// communication objects, tables). The *secure* GO-diagnostics services
+// (secure GroupValue send + the GO security-flags read) are not bounded
+// here: they go through the `GS: SecureGoSender<D>` strategy, so a
+// non-secure device composes this augment with `SecureGoSendAbsent` and
+// names no security trait at all.
 #[interface_object_augment(
     target_objects = [
         InterfaceObjectType::ApplicationProgram,
@@ -237,13 +371,16 @@ impl DiagnosticsContext for OperationModeState {
             + HasCommunicationObjectTable
             + HasCommObjects
             + HasAddressTable
-            + HasAssociationTable
-            + HasExtensionState,
-        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+            + HasAssociationTable,
+        GS: SecureGoSender<D>,
     ),
 )]
-pub struct DiagnosticsAugment<'a> {
+pub struct DiagnosticsAugment<'a, GS = SecureGoSendAbsent> {
     state: &'a OperationModeState,
+    /// Selects the secure-send strategy without storing any data — both
+    /// strategy types are zero-sized. A non-secure device uses the default
+    /// `SecureGoSendAbsent`; a secure device names `SecureGoSendPresent`.
+    _sender: core::marker::PhantomData<GS>,
 
     // PID_OPERATION_MODE (52) on the ApplicationProgram object.
     // Access policy `3FF/00C` per AN193 v04 §"Object Type 3" — plain
@@ -284,7 +421,7 @@ pub struct DiagnosticsAugment<'a> {
             this.handle_go_diag_command(ctx, req)
         },
         function_state_read = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
-            this.handle_go_diag_state_read(ctx.state, req)
+            this.handle_go_diag_state_read(ctx, req)
         },
     )]
     _go_diagnostics_io: (),
@@ -317,9 +454,10 @@ fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> Fun
     FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(out) }
 }
 
-impl<'a> DiagnosticsAugment<'a> {
+impl<'a, GS> DiagnosticsAugment<'a, GS> {
     pub fn new(state: &'a OperationModeState) -> Self {
-        Self { state }
+        // Both strategy types are zero-sized, so no `GS` value is needed.
+        Self { state, _sender: core::marker::PhantomData }
     }
 
     // ================================================================
@@ -458,13 +596,8 @@ impl<'a> DiagnosticsAugment<'a> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
-        D::State: StackState
-            + HasCommunicationObjectTable
-            + HasCommObjects
-            + HasAddressTable
-            + HasAssociationTable
-            + HasExtensionState,
-        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasAssociationTable,
+        GS: SecureGoSender<D>,
     {
         // Minimum: [reserved, service_id]
         if req.service_data.len() < 2 {
@@ -499,15 +632,14 @@ impl<'a> DiagnosticsAugment<'a> {
     }
 
     /// Handle FunctionPropertyExtStateRead for PID_GO_DIAGNOSTICS.
-    fn handle_go_diag_state_read<S>(&self, state: &S, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult
+    fn handle_go_diag_state_read<D: StackDefinition>(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult
     where
-        S: StackState
-            + HasCommunicationObjectTable
-            + HasCommObjects
-            + HasAddressTable
-            + HasAssociationTable
-            + HasExtensionState,
-        <S as HasExtensionState>::ES: HasSecurityState,
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasAssociationTable,
+        GS: SecureGoSender<D>,
     {
         if req.service_data.len() < 2 {
             return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
@@ -521,8 +653,10 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         match service_id {
-            0x00 => self.handle_go_diag_read_config(state, req),
-            0x01 => self.handle_go_diag_read_value(state, req),
+            // read-config needs the per-GO security flags via the strategy, so
+            // it takes the full `ctx`; read-value is security-free.
+            0x00 => self.handle_go_diag_read_config(ctx, req),
+            0x01 => self.handle_go_diag_read_value(ctx.state, req),
             _ => {
                 // Invalid ReadServiceID → F2 (E_COMMAND_INVALID).
                 FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) }
@@ -625,8 +759,8 @@ impl<'a> DiagnosticsAugment<'a> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
-        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasExtensionState,
-        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable,
+        GS: SecureGoSender<D>,
     {
         let data = req.service_data;
         // Need at least: reserved(1) + serviceID(1) + flags(1) + GA(2) + value(1).
@@ -703,33 +837,34 @@ impl<'a> DiagnosticsAugment<'a> {
         // Dispatch via the right sender capability
         //
         // Plain (sec_bits == 0) goes through `GroupValueAddressedSender`
-        // exactly like before. Secure (auth-only / auth+conf) goes
-        // through `SecureGroupValueAddressedSender`, which builds a
-        // fully-wrapped KNX Data Secure frame using the TSAP's group
-        // key — bypassing the S-AL's respond-to-incoming-secure path
-        // (the triggering FctPropertyExtCommand arrived plaintext).
+        // exactly like before. Secure (auth-only / auth+conf) goes through
+        // the `GS: SecureGoSender<D>` strategy: on a secure device it builds
+        // a fully-wrapped KNX Data Secure frame using the TSAP's group key;
+        // on a non-secure device (`SecureGoSendAbsent`) it reports `NoKey`,
+        // which maps to `F8` per 03/05/01 §4.8.1.3.3 Table 37 ("Security is
+        // requested for GA for which there is no GA Key"). The `has_group_key`
+        // guard above already returns `F8` for non-secure devices before we
+        // get here, so the strategy `NoKey` arm is the belt-and-braces path.
         // ================================================================
         match sec_bits {
-            0x00 => ctx.group_value_sender().send_group_write_tsap(tsap, Priority::Low, encoding, value),
-            0x01 => ctx.secure_group_value_sender().send_group_write_tsap_secure(
-                tsap,
-                Priority::Low,
-                encoding,
-                value,
-                RequestedSecurity::AuthOnly,
-            ),
-            0x03 => ctx.secure_group_value_sender().send_group_write_tsap_secure(
-                tsap,
-                Priority::Low,
-                encoding,
-                value,
-                RequestedSecurity::AuthConf,
-            ),
+            0x00 => {
+                ctx.group_value_sender().send_group_write_tsap(tsap, Priority::Low, encoding, value);
+                FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
+            }
+            0x01 | 0x03 => {
+                let security = if sec_bits == 0x01 { RequestedSecurity::AuthOnly } else { RequestedSecurity::AuthConf };
+                match GS::send_write_secure(ctx, tsap, Priority::Low, encoding, value, security) {
+                    SecureSendOutcome::Queued => {
+                        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
+                    }
+                    SecureSendOutcome::NoKey => {
+                        FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) }
+                    }
+                }
+            }
             // sec_bits == 0x02 was rejected as invalid earlier.
             _ => unreachable!("invalid sec_bits {:#04X} — should have been rejected", sec_bits),
         }
-
-        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
     }
 
     // ================================================================
@@ -829,8 +964,8 @@ impl<'a> DiagnosticsAugment<'a> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult
     where
-        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasExtensionState,
-        <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable,
+        GS: SecureGoSender<D>,
     {
         let data = req.service_data;
         // Spec §4.8.1.3.5 Figure 39: `[reserved, 0x03, flags, GA(2)]`.
@@ -874,23 +1009,28 @@ impl<'a> DiagnosticsAugment<'a> {
             sec_bits
         );
 
+        // Plain reads go through `GroupValueAddressedSender`; secure reads go
+        // through the `GS` strategy (real send on a secure device, `NoKey`→`F8`
+        // on a non-secure one — see `handle_go_diag_direct_write`).
         match sec_bits {
-            0x00 => ctx.group_value_sender().send_group_read_tsap(tsap, Priority::Low),
-            0x01 => ctx.secure_group_value_sender().send_group_read_tsap_secure(
-                tsap,
-                Priority::Low,
-                RequestedSecurity::AuthOnly,
-            ),
-            0x03 => ctx.secure_group_value_sender().send_group_read_tsap_secure(
-                tsap,
-                Priority::Low,
-                RequestedSecurity::AuthConf,
-            ),
+            0x00 => {
+                ctx.group_value_sender().send_group_read_tsap(tsap, Priority::Low);
+                FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
+            }
+            0x01 | 0x03 => {
+                let security = if sec_bits == 0x01 { RequestedSecurity::AuthOnly } else { RequestedSecurity::AuthConf };
+                match GS::send_read_secure(ctx, tsap, Priority::Low, security) {
+                    SecureSendOutcome::Queued => {
+                        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
+                    }
+                    SecureSendOutcome::NoKey => {
+                        FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) }
+                    }
+                }
+            }
             // sec_bits == 0x02 was rejected as invalid earlier.
             _ => unreachable!("invalid sec_bits {:#04X} — should have been rejected", sec_bits),
         }
-
-        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
     }
 
     // ================================================================
@@ -945,10 +1085,14 @@ impl<'a> DiagnosticsAugment<'a> {
     /// Request: [reserved, 0x00, GO_idx_hi, GO_idx_lo]
     /// Success: rc=0x20, [service_id, GO_idx_hi, GO_idx_lo, linked, sec_flags,
     ///          config_flags, priority, size_hi, size_lo]
-    fn handle_go_diag_read_config<S>(&self, state: &S, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult
+    fn handle_go_diag_read_config<D: StackDefinition>(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> FunctionPropertyResult
     where
-        S: StackState + HasCommunicationObjectTable + HasCommObjects + HasAssociationTable + HasExtensionState,
-        <S as HasExtensionState>::ES: HasSecurityState,
+        D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAssociationTable,
+        GS: SecureGoSender<D>,
     {
         let data = req.service_data;
         if data.len() != 4 {
@@ -956,7 +1100,7 @@ impl<'a> DiagnosticsAugment<'a> {
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
-        let cot = state.cot().borrow();
+        let cot = ctx.state.cot().borrow();
 
         let Some(entry) = cot.get_object(go_idx) else {
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x00]) };
@@ -973,13 +1117,13 @@ impl<'a> DiagnosticsAugment<'a> {
         // Linked: spec §4.8.1.1.6 NOTE 31 — set iff at least one GA is
         // linked to this GO; calculated at query time from the
         // association table.
-        let linked = state.ast().borrow().tsaps_for_asap(go_idx).next().is_some();
+        let linked = ctx.state.ast().borrow().tsaps_for_asap(go_idx).next().is_some();
 
-        // Security flags: per-GO `auth` / `conf` bits from PID_GO_SECURITY_FLAGS.
-        // `go_security_flags_for` returns `None` for out-of-range indices;
-        // a missing entry is reported as 0 (plain) which matches the
-        // default for devices without secure group objects.
-        let sec_raw = state.extension_state().go_security_flags_for(go_idx).unwrap_or(0);
+        // Security flags: per-GO `auth` / `conf` bits from PID_GO_SECURITY_FLAGS,
+        // obtained through the secure-send strategy so a non-secure device
+        // reports 0 (plain) without naming any security trait. A missing entry
+        // is also reported as 0, matching devices without secure group objects.
+        let sec_raw = GS::go_security_flags(ctx, go_idx);
         let auth = sec_raw & 0x01 != 0;
         let conf = sec_raw & 0x02 != 0;
 

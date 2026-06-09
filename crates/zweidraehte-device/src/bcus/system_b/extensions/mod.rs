@@ -19,7 +19,10 @@ mod ip;
 pub use ip::*;
 
 pub mod operation_mode;
-pub use operation_mode::{DiagnosticsAugment, DiagnosticsContext, HasDiagnosticsContext, OperationModeState};
+pub use operation_mode::{
+    DiagnosticsAugment, DiagnosticsContext, HasDiagnosticsContext, OperationModeState, SecureGoSendAbsent,
+    SecureGoSendPresent, SecureGoSender, SecureSendOutcome,
+};
 
 pub mod security;
 pub use security::{

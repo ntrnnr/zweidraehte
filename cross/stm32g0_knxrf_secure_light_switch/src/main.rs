@@ -121,12 +121,16 @@ pub struct Stm32G0KnxRfSecure;
 // Domain Address property and the secure key tables both reach ETS.
 type SecAugment<'a> = ExtensionAugmentFor<'a, Stm32G0KnxRfSecure>;
 
-/// Augment chain: the secure RF medium + security augment plus the demo Easter
-/// Egg augment.
+/// Augment chain: the secure RF medium + security augment, the
+/// GO/operation-mode diagnostics augment, plus the demo Easter Egg
+/// augment. As a secure device it uses the `SecureGoSendPresent` strategy
+/// so the secure GO-diagnostics send-paths are wired up.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct Stm32G0SecureAugments<'a> {
     #[service(augment)]
     pub sec: SecAugment<'a>,
+    #[service(augment)]
+    pub diag: DiagnosticsAugment<'a, SecureGoSendPresent>,
     #[service(augment)]
     pub easter: EasterEggAugment,
 }
@@ -194,6 +198,7 @@ impl StackDefinition for Stm32G0KnxRfSecure {
     {
         Stm32G0SecureAugments {
             sec: state.extension_state().create_augment::<Self>(platform),
+            diag: DiagnosticsAugment::<SecureGoSendPresent>::new(&state.operation_mode),
             easter: EasterEggAugment,
         }
     }
