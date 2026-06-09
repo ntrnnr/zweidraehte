@@ -253,84 +253,8 @@ pub trait Augment<D: StackDefinition> {
 /// as their `StackDefinition::Augments` without any custom type.
 impl<D: StackDefinition> Augment<D> for () {}
 
-/// Shared-ref forwarding. Hooks are `&self`; only `poll_augments`
-/// needs special handling because it's `&mut self` on the trait but
-/// can't be on a shared reference. Implemented by ignoring the poll
-/// call — devices using `&A` cannot drive their augment's lifecycle
-/// through that reference, which is consistent with how the IO
-/// container holds `&'a D::Augments<'a>`: lifecycle ticks happen
-/// through the runner's `&mut augments_owner`, not through the IO
-/// container's shared borrow.
-impl<D: StackDefinition, A: Augment<D>> Augment<D> for &A {
-    fn get_property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
-        (**self).get_property_descriptor(object_type, prop_id)
-    }
-
-    fn property_description_read(
-        &self,
-        ctx: &ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        object_idx: u16,
-        lookup: PropertyLookup,
-    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
-        (**self).property_description_read(ctx, object_type, object_idx, lookup)
-    }
-
-    fn property_value_read(
-        &self,
-        ctx: &ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FullPropertyReadRequest,
-        buf: &mut [u8],
-    ) -> Option<Result<usize, PropertyError>> {
-        (**self).property_value_read(ctx, object_type, req, buf)
-    }
-
-    fn property_value_write(
-        &self,
-        ctx: &ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FullPropertyWriteRequest<'_>,
-    ) -> Option<Result<WriteResponse, PropertyError>> {
-        (**self).property_value_write(ctx, object_type, req)
-    }
-
-    fn function_property_command(
-        &self,
-        ctx: &ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> Option<FunctionPropertyResult> {
-        (**self).function_property_command(ctx, object_type, req)
-    }
-
-    fn function_property_state_read(
-        &self,
-        ctx: &ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FunctionPropertyRequest<'_>,
-    ) -> Option<FunctionPropertyResult> {
-        (**self).function_property_state_read(ctx, object_type, req)
-    }
-
-    fn additional_object_count(&self) -> u16 {
-        (**self).additional_object_count()
-    }
-
-    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
-        (**self).additional_object_type_at(index)
-    }
-
-    fn descriptor_count_for(&self, object_type: InterfaceObjectType) -> u16 {
-        (**self).descriptor_count_for(object_type)
-    }
-
-    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {
-        // No-op: a shared ref cannot drive `&mut self` lifecycle. The
-        // owner runs `poll_augments` on the augment chain directly.
-    }
-
-    fn next_augment_deadline(&self) -> Option<Instant> {
-        (**self).next_augment_deadline()
-    }
-}
+// A `&A: Augment<D>` shared-ref forwarding impl used to live here, solely so
+// the TP1 extension's `&'a Tp1ExtensionState` augment satisfied `Augment<D>`.
+// TP1 now hands out a by-value `Tp1Augment<'a>` like the other extensions, so
+// nothing borrows its augment through a shared ref any more and the forwarding
+// impl (whose `poll_augments` was a forced no-op) was removed as dead code.

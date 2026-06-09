@@ -6,6 +6,7 @@
 //! # Modules
 //!
 //! - [`devices`] - Device definitions (parameters, comm objects, descriptors)
+//! - [`mock_platform`] - Shared mock [`IpPlatform`] for KNX/IP demos and tests
 //! - [`storage`] - Device state persistence backends
 //! - [`util`] - Shared utilities (keyboard input, etc.)
 //! - [`equivalence`] - Application program equivalence testing
@@ -27,9 +28,11 @@
 // Core modules
 pub mod devices;
 pub mod equivalence;
+pub mod mock_platform;
 pub mod storage;
 pub mod util;
 
 // Re-export commonly used items for convenience
+pub use mock_platform::MockIpPlatform;
 pub use storage::{FileIdentity, JsonStorage};
 pub use util::poll_key;

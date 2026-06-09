@@ -97,7 +97,7 @@ pub struct Stm32G0LightSwitch;
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct Stm32G0LightSwitchAugments<'a> {
     #[service(augment)]
-    pub tp1: &'a Tp1ExtensionState,
+    pub tp1: Tp1Augment<'a>,
     #[service(augment)]
     pub easter: EasterEggAugment,
 }

@@ -881,31 +881,6 @@ pub struct SecureExtensionState<
     fdsk: [u8; 16],
 }
 
-// The secure wrapper is transparent to most medium-specific accessor traits:
-// it simply forwards them to `self.inner`. Each such impl otherwise repeats the
-// same six-parameter generic header. `secure_forward!` captures that header so
-// the per-trait impls reduce to the trait name, the extra `Inner` bound, and
-// the method/const bodies — which is the only part that actually varies.
-macro_rules! secure_forward {
-    (
-        impl $trait:ident for inner where Inner: $bound:path {
-            $($body:tt)*
-        }
-    ) => {
-        impl<
-            Inner: ExtensionState + $bound,
-            SEQ,
-            const GRP: usize,
-            const P2P: usize,
-            const SIAT: usize,
-            const GO: usize,
-        > $trait for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
-        {
-            $($body)*
-        }
-    };
-}
-
 /// `SecureExtensionState` delegates `HasSecurityState` to its inner
 /// `SecurityState`, so that `SystemBDeviceState` with a secure extension
 /// can satisfy `HasSecurityState` through `HasExtensionState`.
@@ -933,55 +908,54 @@ impl<
 // Medium Object PID 56, required by the KNX-RF link layer's context trait), and
 // `HasRfRetransmitter` (RF Medium Object PID 57 / Device Object PID 74, required
 // by the `RetransmitEnabled` link layer) are all pure delegations.
-secure_forward! {
-    impl HasMaxRetryCount for inner where Inner: HasMaxRetryCount {
-        fn max_retry_count(&self) -> u8 {
-            self.inner.max_retry_count()
-        }
-        fn set_max_retry_count(&self, value: u8) {
-            self.inner.set_max_retry_count(value);
-        }
-    }
+// `forward_to_field!` (defined in `bcus::system_b`) generates the pure
+// delegation to `self.inner`; the wrapper takes no persistence side-effect
+// here (the device state above is what marks dirty). The six-parameter
+// generic header — `Inner: ExtensionState + <bound>` plus `SEQ` and the
+// four table-size consts — is the same for every forwarded trait; only the
+// `<bound>` and the method set vary. There is no `mark_dirty` on a secure
+// wrapper, so no `mark_dirty` suffix.
+forward_to_field! {
+    impl<[
+        Inner: ExtensionState + HasMaxRetryCount, SEQ,
+        const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize,
+    ]> HasMaxRetryCount for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO> {
+        get fn max_retry_count(&self) -> u8;
+        set fn set_max_retry_count(&self, value: u8);
+    } => self.inner
 }
 
-secure_forward! {
-    impl HasDomainAddress for inner where Inner: HasDomainAddress {
+forward_to_field! {
+    impl<[
+        Inner: ExtensionState + HasDomainAddress, SEQ,
+        const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize,
+    ]> HasDomainAddress for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO> {
         const DOMAIN_ADDRESS_LENGTH: usize = Inner::DOMAIN_ADDRESS_LENGTH;
-        fn domain_address(&self, buf: &mut [u8]) {
-            self.inner.domain_address(buf);
-        }
-        fn set_domain_address(&self, addr: &[u8]) {
-            self.inner.set_domain_address(addr);
-        }
-    }
+        out fn domain_address(&self, buf: &mut [u8]);
+        set fn set_domain_address(&self, addr: &[u8]);
+    } => self.inner
 }
 
-secure_forward! {
-    impl HasRfDomainAddress for inner where Inner: HasRfDomainAddress {
-        fn rf_domain_address(&self, out: &mut [u8; 6]) {
-            self.inner.rf_domain_address(out);
-        }
-        fn set_rf_domain_address(&self, addr: &[u8; 6]) {
-            self.inner.set_rf_domain_address(addr);
-        }
-    }
+forward_to_field! {
+    impl<[
+        Inner: ExtensionState + HasRfDomainAddress, SEQ,
+        const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize,
+    ]> HasRfDomainAddress for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO> {
+        out fn rf_domain_address(&self, out: &mut [u8; 6]);
+        set fn set_rf_domain_address(&self, addr: &[u8; 6]);
+    } => self.inner
 }
 
-secure_forward! {
-    impl HasRfRetransmitter for inner where Inner: HasRfRetransmitter {
-        fn rf_retransmit_enabled(&self) -> bool {
-            self.inner.rf_retransmit_enabled()
-        }
-        fn set_rf_retransmit_enabled(&self, value: bool) {
-            self.inner.set_rf_retransmit_enabled(value);
-        }
-        fn rf_repeat_counter_limit(&self) -> u8 {
-            self.inner.rf_repeat_counter_limit()
-        }
-        fn set_rf_repeat_counter_limit(&self, value: u8) {
-            self.inner.set_rf_repeat_counter_limit(value);
-        }
-    }
+forward_to_field! {
+    impl<[
+        Inner: ExtensionState + HasRfRetransmitter, SEQ,
+        const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize,
+    ]> HasRfRetransmitter for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO> {
+        get fn rf_retransmit_enabled(&self) -> bool;
+        set fn set_rf_retransmit_enabled(&self, value: bool);
+        get fn rf_repeat_counter_limit(&self) -> u8;
+        set fn set_rf_repeat_counter_limit(&self, value: u8);
+    } => self.inner
 }
 
 impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>

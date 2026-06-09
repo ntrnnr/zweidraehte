@@ -64,13 +64,13 @@ type Storage = RpFlashStorage<PicoTp1State, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoTp1LightSwitch;
 
-/// Augment chain: TP1 medium augment (just borrows the extension
-/// state) + the demo Easter Egg augment. Derives `Augment<D>`
-/// from the field annotations.
+/// Augment chain: the TP1 medium augment (borrows the extension state)
+/// plus the demo Easter Egg augment. Derives `Augment<D>` from the field
+/// annotations.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 struct PicoTp1Augments<'a> {
     #[service(augment)]
-    tp1: &'a Tp1ExtensionState,
+    tp1: Tp1Augment<'a>,
     #[service(augment)]
     easter: EasterEggAugment,
 }

@@ -4,33 +4,21 @@
 //! The DLL retry parameters encode busy_retry (bits 6-4) and nak_retry
 //! (bits 2-0), defaulting to 0x33 (3 busy retries, 3 NAK retries).
 //!
-//! `Tp1ExtensionState` implements [`Extension<()>`](crate::bcus::system_b::Extension),
-//! providing both persistence and augmentation. It IS its own augment
-//! — `create_augment` returns `&self`.
-//!
-//! ```rust,ignore
-//! type ES = Tp1ExtensionState;
-//! type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-//! type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
-//!
-//! fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> {
-//!     state.extension_state().create_augment::<Self>(platform)
-//! }
-//!
-//! fn create_interface_objects<'a>(state, _platform, layer_ctx, augments) -> Self::InterfaceObjects<'a> {
-//!     create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
-//! }
-//! ```
+//! Like the other extensions ([`rf`](super::rf), [`ip`](super::ip)), the
+//! persisted runtime state and its interface-object augment are kept in two
+//! structs: [`Tp1ExtensionState`] holds the `Cell`-backed retry count, and
+//! [`Tp1Augment`] borrows it (`state: &'a Tp1ExtensionState`) and carries the
+//! PID 52 dispatch. `Tp1ExtensionState`'s [`Extension<()>`](crate::bcus::system_b::Extension)
+//! impl hands out a `Tp1Augment` from `create_augment`.
 
 use core::cell::Cell;
 
-use serde::{Deserialize, Serialize};
-
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
+// `ExtensionState` here is the derive macro (and trait); it generates the
+// `Tp1ExtensionConfig` mirror and the `ExtensionState` impl.
+use crate::bcus::system_b::{Extension, ExtensionState, HasSecurityMode, SystemBDeviceState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{HasMaxRetryCount, PropertyError, WriteResponse, interface_object_augment, pid};
-use crate::restart::EraseCode;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic01};
 
@@ -45,46 +33,51 @@ const fn default_max_retry_count() -> u8 {
 }
 
 // ============================================================================
-// Persisted Config
-// ============================================================================
-
-/// Persisted TP1 extension configuration.
-///
-/// Serialized to storage when the device state is saved. Currently contains
-/// only the DLL retry parameters, but may grow as more TP1-specific
-/// persistent properties are added.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Tp1ExtensionConfig {
-    /// PID_MAX_RETRY_COUNT value: busy_retry (bits 6-4), nak_retry (bits 2-0).
-    #[serde(default = "default_max_retry_count")]
-    pub max_retry_count: u8,
-}
-
-impl Default for Tp1ExtensionConfig {
-    fn default() -> Self {
-        Self { max_retry_count: default_max_retry_count() }
-    }
-}
-
-impl ExtensionConfig for Tp1ExtensionConfig {}
-
-// ============================================================================
-// Runtime State
+// Runtime State (and the derived persisted Config)
 // ============================================================================
 
 /// Runtime TP1 extension state with interior mutability.
 ///
-/// Bridges the serializable [`Tp1ExtensionConfig`] and the runtime
-/// representation used by the TPUART link layer (via `HasMaxRetryCount`)
-/// and the interface object augment (via [`Augment<D>`](crate::service::Augment)).
-//
-// `#[interface_object_augment]` adds PID_MAX_RETRY_COUNT (52) to the Device
-// Object. The augment's `get_property_descriptor` is generated automatically
-// by the macro, closing the access-policy audit gap that the previous
-// hand-written impl left open.
-#[interface_object_augment(target_objects = [InterfaceObjectType::Device])]
+/// Holds the DLL retry count behind a `Cell` so the interface-object augment
+/// can write it in place; persistence is automatic (a successful property
+/// write marks the device dirty, flushing
+/// [`to_config`](crate::bcus::system_b::ExtensionState::to_config)).
+///
+/// `#[derive(ExtensionState)]` generates the persisted `Tp1ExtensionConfig`
+/// mirror (`Cell<u8>` → `u8`) together with the `from_config` / `to_config` /
+/// `on_erase` glue. The interface-object surface lives on the separate
+/// [`Tp1Augment`], which borrows this state.
+#[derive(ExtensionState)]
+#[extension_state(config = Tp1ExtensionConfig)]
 pub struct Tp1ExtensionState {
+    /// PID_MAX_RETRY_COUNT value: busy_retry (bits 6-4), nak_retry (bits 2-0).
+    #[config(serde_default = "default_max_retry_count")]
+    #[erase(default = default_max_retry_count())]
     max_retry_count: Cell<u8>,
+}
+
+// Plain TP1 has no Data Secure layer — every send is plaintext, so the
+// trait's `Plain` defaults are correct without any override.
+impl HasGoSecurityView for Tp1ExtensionState {}
+
+impl HasSecurityMode for Tp1ExtensionState {}
+
+// ============================================================================
+// Tp1Augment — intercepts PID_MAX_RETRY_COUNT (52) on the Device Object
+// ============================================================================
+
+/// Adds PID_MAX_RETRY_COUNT (52) to the Device Object for TP1 devices.
+///
+/// A passive borrow of [`Tp1ExtensionState`]; the macro-generated property
+/// dispatch reads and writes the state's `Cell` directly. Unlike
+/// [`RfAugment`](super::RfAugment) this is an *intercepting* augment
+/// (`target_objects` + `intercepts`): it contributes one property to the
+/// existing Device Object rather than providing a new object, so it carries
+/// no PID 1 `OBJECT_TYPE` entry.
+#[interface_object_augment(target_objects = [InterfaceObjectType::Device])]
+pub struct Tp1Augment<'a> {
+    /// Persisted TP1 configuration (from extension state).
+    pub state: &'a Tp1ExtensionState,
 
     #[io(
         pid = pid::device::MAX_RETRY_COUNT,
@@ -93,50 +86,25 @@ pub struct Tp1ExtensionState {
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
         rl = 3, wl = 3,
         intercepts,
-        read = |this: &Self| [this.max_retry_count.get()],
+        read = |this: &Self| [this.state.max_retry_count.get()],
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
             if data.is_empty() {
                 return Err(PropertyError::TypeMismatch);
             }
-            this.max_retry_count.set(data[0]);
+            this.state.max_retry_count.set(data[0]);
             Ok(WriteResponse::Echo)
         },
     )]
     _max_retry_count_io: (),
 }
 
-// Plain TP1 has no Data Secure layer — every send is plaintext, so the
-// trait's `Plain` defaults are correct without any override.
-impl HasGoSecurityView for Tp1ExtensionState {}
-
-impl ExtensionState for Tp1ExtensionState {
-    type Config = Tp1ExtensionConfig;
-    type Resources = ();
-
-    fn from_config(config: Tp1ExtensionConfig, _resources: ()) -> Self {
-        Self { max_retry_count: Cell::new(config.max_retry_count) }
-    }
-
-    fn to_config(&self) -> Tp1ExtensionConfig {
-        Tp1ExtensionConfig { max_retry_count: self.max_retry_count.get() }
-    }
-
-    fn on_erase(&self, code: EraseCode) {
-        if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
-            self.max_retry_count.set(default_max_retry_count());
-        }
-    }
-}
-
-impl HasSecurityMode for Tp1ExtensionState {}
-
 // ============================================================================
-// Extension — unified persistence + augmentation
+// Extension — persistence + augmentation
 // ============================================================================
 
 impl Extension<()> for Tp1ExtensionState {
     type Augment<'a, D: StackDefinition>
-        = &'a Tp1ExtensionState
+        = Tp1Augment<'a>
     where
         Self: 'a;
 
@@ -144,7 +112,7 @@ impl Extension<()> for Tp1ExtensionState {
     where
         (): 'a,
     {
-        self
+        Tp1Augment { state: self }
     }
 }
 
@@ -173,5 +141,5 @@ impl HasMaxRetryCount for Tp1ExtensionState {
     }
 }
 
-// `Augment<D>` and matching `Augment<D>` impls are generated by
-// the `#[interface_object_augment(...)]` attribute above the struct.
+// The `Augment<D>` impl for `Tp1Augment` is generated by the
+// `#[interface_object_augment(...)]` attribute on that struct above.

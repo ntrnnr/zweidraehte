@@ -893,91 +893,77 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
     }
 }
 
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition,
-    ES: ExtensionState + HasMaxRetryCount,
-> HasMaxRetryCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
-{
-    fn max_retry_count(&self) -> u8 {
-        self.extension_state.max_retry_count()
-    }
-
-    fn set_max_retry_count(&self, value: u8) {
-        self.extension_state.set_max_retry_count(value);
-        self.mark_dirty();
-    }
+// The medium-specific accessor traits (`HasMaxRetryCount`,
+// `HasRfRetransmitter`, …) live on the extension state but must be
+// re-exposed on `SystemBDeviceState` so the router and link layers can
+// reach them through `D::State` without knowing the concrete `ES`. Each
+// such impl is the same shape: gate on `ES: ExtensionState + Trait`,
+// forward every getter to `self.extension_state`, and forward every
+// setter to `self.extension_state` followed by `self.mark_dirty()` so the
+// runtime change is persisted. `forward_to_field!` (shared with the
+// wrapper extensions, which forward to `inner` instead) factors out that
+// shape — the call site declares only the trait, its methods, and that
+// setters mark dirty. The `get` / `set` / `out` keyword on each method
+// keeps the otherwise-common `fn name(&self` prefix unambiguous and
+// selects the body (plain forward, forward + `mark_dirty`, or
+// output-buffer forward).
+forward_to_field! {
+    impl<[
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        D: StackDefinition,
+        ES: ExtensionState + HasMaxRetryCount,
+    ]> HasMaxRetryCount for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES> {
+        get fn max_retry_count(&self) -> u8;
+        set fn set_max_retry_count(&self, value: u8);
+    } => self.extension_state, mark_dirty
 }
 
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition,
-    ES: ExtensionState + HasDomainAddress,
-> HasDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
-{
-    const DOMAIN_ADDRESS_LENGTH: usize = ES::DOMAIN_ADDRESS_LENGTH;
-
-    fn domain_address(&self, buf: &mut [u8]) {
-        self.extension_state.domain_address(buf);
-    }
-
-    fn set_domain_address(&self, addr: &[u8]) {
-        self.extension_state.set_domain_address(addr);
-        self.mark_dirty();
-    }
+forward_to_field! {
+    impl<[
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        D: StackDefinition,
+        ES: ExtensionState + HasDomainAddress,
+    ]> HasDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES> {
+        const DOMAIN_ADDRESS_LENGTH: usize = ES::DOMAIN_ADDRESS_LENGTH;
+        out fn domain_address(&self, buf: &mut [u8]);
+        set fn set_domain_address(&self, addr: &[u8]);
+    } => self.extension_state, mark_dirty
 }
 
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition,
-    ES: ExtensionState + HasRfDomainAddress,
-> HasRfDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
-{
-    fn rf_domain_address(&self, out: &mut [u8; 6]) {
-        self.extension_state.rf_domain_address(out);
-    }
-
-    fn set_rf_domain_address(&self, addr: &[u8; 6]) {
-        self.extension_state.set_rf_domain_address(addr);
-        self.mark_dirty();
-    }
+forward_to_field! {
+    impl<[
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        D: StackDefinition,
+        ES: ExtensionState + HasRfDomainAddress,
+    ]> HasRfDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES> {
+        out fn rf_domain_address(&self, out: &mut [u8; 6]);
+        set fn set_rf_domain_address(&self, addr: &[u8; 6]);
+    } => self.extension_state, mark_dirty
 }
 
 // Forwarded only when the composed extension carries the retransmitter role,
 // so `D::State: HasRfRetransmitter` (and hence the `RetransmitEnabled` KNX-RF
 // link layer) is available exactly for retransmitter devices. Writes mark the
 // device dirty to persist the runtime flag / RC limit.
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition,
-    ES: ExtensionState + HasRfRetransmitter,
-> HasRfRetransmitter for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
-{
-    fn rf_retransmit_enabled(&self) -> bool {
-        self.extension_state.rf_retransmit_enabled()
-    }
-
-    fn set_rf_retransmit_enabled(&self, value: bool) {
-        self.extension_state.set_rf_retransmit_enabled(value);
-        self.mark_dirty();
-    }
-
-    fn rf_repeat_counter_limit(&self) -> u8 {
-        self.extension_state.rf_repeat_counter_limit()
-    }
-
-    fn set_rf_repeat_counter_limit(&self, value: u8) {
-        self.extension_state.set_rf_repeat_counter_limit(value);
-        self.mark_dirty();
-    }
+forward_to_field! {
+    impl<[
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        D: StackDefinition,
+        ES: ExtensionState + HasRfRetransmitter,
+    ]> HasRfRetransmitter for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES> {
+        get fn rf_retransmit_enabled(&self) -> bool;
+        set fn set_rf_retransmit_enabled(&self, value: bool);
+        get fn rf_repeat_counter_limit(&self) -> u8;
+        set fn set_rf_repeat_counter_limit(&self, value: u8);
+    } => self.extension_state, mark_dirty
 }
 
 impl<

@@ -40,12 +40,23 @@ portable-atomic = { version = "1.13.1", default-features = false, features = ["c
 
 [dev-dependencies]
 test-case = "3.3"
+# Used by the `extension_state_config_derive` test to assert the
+# `#[derive(ExtensionState)]`-generated `*Config` types serialize to the same
+# JSON (field names / serde defaults) as the hand-written structs they replaced,
+# so a saved config keeps round-tripping.
+serde_json = { workspace = true }
 
 # The RF-retransmitter property-description scan test builds a real interface-
 # object container on the host, which needs the std critical-section impl for
 # the embassy-sync channels inside `LayerContext`.
 [[test]]
 name = "rf_retransmitter_property_scan"
+required-features = ["std"]
+
+# Serde-stability guard for the `#[derive(ExtensionState)]` config mirrors.
+# Needs `std` for `serde_json`.
+[[test]]
+name = "extension_state_config_derive"
 required-features = ["std"]
 
 [features]

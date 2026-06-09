@@ -72,12 +72,13 @@ for standalone applications.
 
 ```
 crates/
-  zweidraehte-proto/       Shared KNX protocol types (messages, encoding, addresses, DPTs)
-  zweidraehte-device/      KNX device stack (layers, objects, BCUs)
-  zweidraehte-platform/    Platform abstraction (serial, sockets, network)
-  zweidraehte-ets/         Procedural macros for ETS parameter definitions
-  zweidraehte-knxprod/     XML generator for KNX product definitions
-  zweidraehte-util/        Embedded utility types (button input, etc.)
+  zweidraehte-proto/         Shared KNX protocol types (messages, encoding, addresses, DPTs)
+  zweidraehte-device/        KNX device stack (layers, objects, BCUs)
+  zweidraehte-device-macros/ Proc-macros for interface objects, service registries, extension state
+  zweidraehte-platform/      Platform abstraction (serial, sockets, network)
+  zweidraehte-ets/           Procedural macros for ETS parameter definitions
+  zweidraehte-knxprod/       XML generator for KNX product definitions
+  zweidraehte-util/          Embedded utility types (button input, etc.)
 
 examples/
   conformance/             KNX conformance test framework
@@ -174,12 +175,13 @@ Subdirectories:
   - `tables/` - Standard KNX tables (address table, app table, association table, CO table) with `Has*` accessor traits
 - `bcus/` - Bus Control Units (BCU) device implementations
   - `system_b/` - System B BCU implementation (mask versions 07B0 / 57B0)
+    - `mod.rs` - module wiring + the `forward_to_field!` macro (forwards a trait to a named field — `extension_state` on `SystemBDeviceState`, `inner` on wrapper extensions)
     - `device_state/` - `SystemBDeviceState`
-    - `extensions/` - TP1, IP, Security, OperationMode extensions and augments
+    - `extensions/` - TP1, RF (+ retransmitter), IP, Security, OperationMode extensions and their augments; leaf extensions use `#[derive(ExtensionState)]`, each pairs a plain `*State` struct with a borrowing `*Augment<'a>`
     - `objects/` - `SystemBObjects` container
-    - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary
+    - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
-    - `definition.rs` - `SystemBStackDefinition` convenience supertrait
+    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
@@ -239,6 +241,31 @@ Macros provided:
   - Supports multi-DPT objects with selector-based typed access
   - Attributes: `index`, `display`, `function`, `flags`, `selector_enum`
 
+#### 5b. Device Macros Crate (`crates/zweidraehte-device-macros`)
+**Purpose**: Proc-macros for KNX interface-object metadata, service-registry
+wiring, and extension-state generation. Re-exported through `zweidraehte-device`
+(e.g. `interface_object_augment` via `objects::interface`, `ServiceRegistry`
+and the `ExtensionState` derive via `service` / `bcus::system_b`).
+
+Macros provided:
+- `#[interface_object(object_type = ...)]` - Rewrites a struct into an
+  `InterfaceObject` impl with a `const PROPERTY_DESCRIPTORS` table, from
+  per-field `#[io(...)]` annotations.
+- `#[interface_object_augment(target_objects | additional_objects = [...])]` -
+  Same DSL for `Augment<D>` impls; `target_objects` + `intercepts` adds PIDs to
+  an existing object, `additional_objects` provides a new object. Supports
+  `where_bounds(...)`.
+- `#[derive(ServiceRegistry)]` - Derives `LayerRegistry<D>` / `Augment<D>` for a
+  device's services struct by walking `#[service(handler | augment | flatten |
+  lifecycle | channel)]` fields.
+- `#[derive(ExtensionState)]` - Generates the persisted `*Config` mirror struct
+  (`Cell`/`RefCell` fields unwrapped) plus its `Default`/`ExtensionConfig` impls
+  and the `ExtensionState` impl (`from_config`/`to_config`/`on_erase`) from a
+  runtime `*State` struct. Struct attr `#[extension_state(config = ...,
+  resources = ..., on_erase = manual, default = manual)]`; field attrs
+  `#[runtime_only]`, `#[config(ty = ..., from = ..., to = ..., serde_default =
+  ...)]`, `#[erase(default = ...)]`.
+
 #### 6. KNXPROD Generator Crate (`crates/zweidraehte-knxprod`)
 **Purpose**: XML generator for KNX product definitions (MTXML format)
 
@@ -270,8 +297,9 @@ Subdirectories:
 - `devices/` - Device implementations
   - `mdt_push_button_lite.rs` - MDT Push Button Lite 55 replication
   - `system_b_demo.rs` - Demo System B device
+- `mock_platform.rs` - Shared `MockIpPlatform` (mock `IpPlatform`) for KNX/IP device demos and tests
 - `storage/` - State persistence backends (JSON-based)
-- `util/` - Helper utilities (keyboard input polling)
+- `util/` - Helper utilities (keyboard input polling, mock context)
 
 Binaries (run with `cargo run --bin <name>`):
 - `stack_system_b` - System B device demo
@@ -374,6 +402,9 @@ zweidraehte-proto          (no_std, pure protocol types)
 zweidraehte-ets            (proc-macro, no runtime deps)
   └── zweidraehte-device
 
+zweidraehte-device-macros  (proc-macro, no runtime deps)
+  └── zweidraehte-device
+
 zweidraehte-knxprod        (std, XML generation)
   ├── examples/testutil
   ├── examples/devices
@@ -403,6 +434,9 @@ MTXML/KNXPROD Files
 ### Key Design Patterns
 
 - **Trait-Based Abstraction**: `Layer` trait for protocol layers, `ComObjects` trait for comm object access, `MemoryMap` trait for device memory, `LinkLayerBuilder` for pluggable link layers
+- **State / Augment split**: every extension pairs a plain runtime `*State` struct with a separate borrowing `*Augment<'a>` (the augment holds `&'a State`, so writes reach the state's authoritative `Cell`/`RefCell`). TP1, RF, IP all follow this one shape.
+- **Config derived from State**: `#[derive(ExtensionState)]` generates the persisted `*Config` mirror and the `from_config`/`to_config`/`on_erase` glue from the runtime state's `Cell`/`RefCell` fields — the state is the single source of truth.
+- **Macro-collapsed boilerplate**: `system_b_standard_stack!` generates the always-identical half of a device's `StackDefinition` impl; `forward_to_field!` generates trait-forwarding to a struct field. Both are opt-in; hand-writing still works.
 - **Platform Abstraction**: Platform crate abstracts OS-specific operations with features to enable/disable platform support
 - **no_std Compatible**: Core stack works in both no_std embedded and std Linux environments
 - **Proto/Device Split**: Pure protocol types in `zweidraehte-proto` can be shared with future client implementations without pulling in device stack logic

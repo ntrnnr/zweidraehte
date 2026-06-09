@@ -30,15 +30,15 @@ pub use retransmitter::{
 
 use core::cell::Cell;
 
-use serde::{Deserialize, Serialize};
-
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode, SystemBDeviceState};
+// `ExtensionState` here is the derive macro (and trait); the derive
+// generates the `RfExtensionConfig` mirror and the `ExtensionState` impl,
+// so the hand-written config/serde/erase plumbing is gone.
+use crate::bcus::system_b::{Extension, ExtensionState, HasSecurityMode, SystemBDeviceState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
     HasDomainAddress, HasRfDomainAddress, PropertyError, WriteResponse, interface_object_augment, pid,
 };
-use crate::restart::EraseCode;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic06, PDT_UnsignedInt};
 
@@ -54,27 +54,7 @@ const fn default_rf_domain_address() -> [u8; 6] {
 }
 
 // ============================================================================
-// Persisted Config
-// ============================================================================
-
-/// Persisted KNX-RF extension configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RfExtensionConfig {
-    /// PID_RF_DOMAIN_ADDRESS (PID 56): 6-octet RF Domain Address.
-    #[serde(default = "default_rf_domain_address")]
-    pub rf_domain_address: [u8; 6],
-}
-
-impl Default for RfExtensionConfig {
-    fn default() -> Self {
-        Self { rf_domain_address: default_rf_domain_address() }
-    }
-}
-
-impl ExtensionConfig for RfExtensionConfig {}
-
-// ============================================================================
-// Runtime State
+// Runtime State (and the derived persisted Config)
 // ============================================================================
 
 /// Runtime KNX-RF extension state with interior mutability.
@@ -82,7 +62,16 @@ impl ExtensionConfig for RfExtensionConfig {}
 /// Holds the RF Domain Address behind a `Cell` so the interface-object augment
 /// can write it in place; persistence is automatic (a successful property write
 /// marks the device dirty, flushing [`to_config`](ExtensionState::to_config)).
+///
+/// `#[derive(ExtensionState)]` generates the persisted `RfExtensionConfig`
+/// mirror (the `Cell` unwrapped to a plain `[u8; 6]`) together with the
+/// `from_config` / `to_config` / `on_erase` glue.
+#[derive(ExtensionState)]
+#[extension_state(config = RfExtensionConfig)]
 pub struct RfExtensionState {
+    /// PID_RF_DOMAIN_ADDRESS (PID 56): 6-octet RF Domain Address.
+    #[config(serde_default = "default_rf_domain_address")]
+    #[erase(default = default_rf_domain_address())]
     rf_domain_address: Cell<[u8; 6]>,
 }
 
@@ -96,25 +85,6 @@ impl RfExtensionState {
 // Plain RF has no Data Secure layer, so the `Plain` defaults are correct.
 impl HasGoSecurityView for RfExtensionState {}
 impl HasSecurityMode for RfExtensionState {}
-
-impl ExtensionState for RfExtensionState {
-    type Config = RfExtensionConfig;
-    type Resources = ();
-
-    fn from_config(config: RfExtensionConfig, _resources: ()) -> Self {
-        Self { rf_domain_address: Cell::new(config.rf_domain_address) }
-    }
-
-    fn to_config(&self) -> RfExtensionConfig {
-        RfExtensionConfig { rf_domain_address: self.rf_domain_address.get() }
-    }
-
-    fn on_erase(&self, code: EraseCode) {
-        if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
-            self.rf_domain_address.set(default_rf_domain_address());
-        }
-    }
-}
 
 // ============================================================================
 // RfAugment — provides the RF Medium Object (Type 19)

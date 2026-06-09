@@ -23,6 +23,7 @@ use proc_macro::TokenStream;
 use syn::{DeriveInput, ItemStruct, parse_macro_input};
 
 mod codegen;
+mod extension_state;
 mod parse;
 mod service_registry;
 
@@ -101,6 +102,32 @@ pub fn interface_object_augment(attr: TokenStream, item: TokenStream) -> TokenSt
 pub fn derive_service_registry(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as DeriveInput);
     match service_registry::derive(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
+/// Derive [`ExtensionState`](::zweidraehte_device::bcus::system_b::ExtensionState)
+/// and the persisted `*Config` mirror for a runtime `*State` struct.
+///
+/// The runtime state is the single source of truth: the config type, its
+/// `Default`/`ExtensionConfig` impls, and `from_config`/`to_config`/`on_erase`
+/// are all generated from the state's `Cell`/`RefCell` fields. See the
+/// `extension_state` module for the full attribute reference.
+///
+/// ```rust,ignore
+/// #[derive(ExtensionState)]
+/// #[extension_state(config = Tp1ExtensionConfig)]
+/// pub struct Tp1ExtensionState {
+///     #[config(serde_default = "default_max_retry_count")]
+///     #[erase(default = default_max_retry_count())]
+///     max_retry_count: Cell<u8>,
+/// }
+/// ```
+#[proc_macro_derive(ExtensionState, attributes(extension_state, runtime_only, config, erase))]
+pub fn derive_extension_state(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+    match extension_state::derive(&input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

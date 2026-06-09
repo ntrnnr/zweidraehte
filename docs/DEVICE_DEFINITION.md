@@ -182,9 +182,9 @@ it to receive a sequence-number storage handle and the FDSK copy.
 Implements `Extension<()>` with `Augment = ()`.
 
 **`Tp1ExtensionState`** — TP1 retry count (PID 52).
-Implements `Extension<()>` — self-contained, IS its own augment
-(`Augment = &'a Tp1ExtensionState`). Adds PID\_MAX\_RETRY\_COUNT to the
-Device Object.
+Implements `Extension<()>`; `create_augment` returns a separate
+[`Tp1Augment<'a>`] that borrows `&'a Tp1ExtensionState`. Adds
+PID\_MAX\_RETRY\_COUNT to the Device Object.
 
 ```rust
 pub struct Tp1ExtensionState {
@@ -294,13 +294,15 @@ Security rekey timers).
 For built-in mediums, the `Extension` trait handles augment creation
 automatically. You don't construct medium-specific augments manually:
 
-- **TP1**: `Tp1ExtensionState` IS its own augment, accessed by
-  reference. `create_augment` returns `&self`. The augment chain
-  ends up holding `&'a Tp1ExtensionState` so writes to property
-  storage (e.g. PID 52 retry count) reach the same `Cell<u8>` the
-  device state owns.
-- **IP**: `IpExtensionState` produces an `IpAugment<'a, P, N, CAPS>`
+- **TP1**: `Tp1ExtensionState::create_augment` returns a `Tp1Augment<'a>`
+  that holds `state: &'a Tp1ExtensionState`. Writes to property storage
+  (e.g. PID 52 retry count) reach the same `Cell<u8>` the device state
+  owns, via that borrow.
+- **IP**: `IpExtensionState` produces an `IpAugment<'a, P, CAPS>`
   wrapper that bundles state + platform.
+
+Both follow the same shape — a small augment struct borrowing the state
+(and the platform, for IP).
 
 For ergonomics, devices spell their `D::Augments<'a>` either as a
 direct projection or as a `#[derive(ServiceRegistry)]` struct
@@ -369,7 +371,7 @@ impl:
 ```rust
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct PicoTp1Augments<'a> {
-    #[service(augment)] tp1:    &'a Tp1ExtensionState,
+    #[service(augment)] tp1:    Tp1Augment<'a>,
     #[service(augment)] easter: EasterEggAugment,
 }
 
@@ -587,10 +589,12 @@ type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
 
 ### Step 4: StackDefinition
 
-The `Extension` trait and helper functions eliminate most of the
-boilerplate. For System B devices, `type ES` determines the augment type
-automatically, and `SystemBInterfaceObjectsFor` derives the
-`InterfaceObjects` type from it.
+A standard System B device's `StackDefinition` impl is half device-specific
+bill-of-materials and half always-identical shell (the `StateInit`/`Mem`
+types, the one-line `create_state`, the `InterfaceObjects`/`Augments` GATs,
+and the two `create_*` method bodies — Rust can't inherit those from the
+`SystemBStackDefinition` supertrait). The `system_b_standard_stack!` macro
+generates the shell so you write only the BOM.
 
 For KNX/IP devices, `IpExtensionFor<F>` derives both the tunneling
 capacity and the PID 68 capabilities bitfield from the same `FeatureSet`
@@ -602,78 +606,50 @@ type used for the link layer builder:
 #[derive(Debug, Clone, Copy)]
 struct MyDevice;
 
-impl SystemBStackDefinition for MyDevice {}
+// IP link-layer bill of materials.
+impl KnxNetIpDefinition for MyDevice {
+    type Transport = LinuxIpTransport;
+    type Features = KnxIpDeviceUdp;
+}
 
-impl StackDefinition for MyDevice {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = MyParams;
-    type CO = MyComObjects;
-    type LLB = KnxNetIpBuilder<LinuxIpTransport, KnxIpDeviceUdp, 2>;
-    type Platform = MyPlatform;
-    type ES = IpExtensionFor<KnxIpDeviceUdp>;
-    type State = MyState;
-    type Mem = SystemBMemoryMap;
-
-    // Construction-time envelope. SystemBStateInit bundles the
-    // factory identity with an optional persisted DeviceConfig
-    // snapshot loaded from storage. Resources defaulted to ().
-    type StateInit = SystemBStateInit<Self::Identity, <MyState as HasDeviceConfig>::Config>;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        MyState::from_init(init)
-    }
-
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-
-    // No extras: D::Augments is just the medium extension's augment.
-    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        _platform: &'a Self::Platform,
-        layer_ctx: &'a LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        state.extension_state().create_augment::<Self>(platform)
-    }
-
-    type AlExtensions = (SystemBAlServices, DomainAddressService);
-    type LayerBuilder = InsecureIpDeviceBuilder;
+zweidraehte_device::system_b_standard_stack! {
+    stack:              MyDevice,
+    device:             &DEVICE_DESCRIPTOR,
+    tl_style:           TlStyle::Style1,
+    params:             MyParams,
+    com_objects:        MyComObjects,
+    link_layer_builder: KnxNetIpBuilder<MyDevice>,
+    platform:           MyPlatform,
+    extension_state:    IpExtensionFor<KnxIpDeviceUdp>,
+    state:              MyState,
+    config:             <MyState as HasDeviceConfig>::Config,
+    al_extensions:      (SystemBAlServices, DomainAddressService),
+    layer_builder:      InsecureIpDeviceBuilder,
 }
 ```
 
-Note how `KnxIpDeviceUdp` appears in both `type LLB` and `type ES` —
-this is the single source of truth for the device's IP feature set.
+The macro generates the empty `impl SystemBStackDefinition for MyDevice {}`,
+the `type Mem`/`type StateInit` (`SystemBStateInit<Self::Identity, config>`),
+`fn create_state` (`MyState::from_init(init)`), the
+`InterfaceObjects`/`Augments` GATs, and the `create_interface_objects` /
+`create_augments` bodies. Note how `KnxIpDeviceUdp` appears in both
+`link_layer_builder` (via `KnxNetIpDefinition::Features`) and
+`extension_state` — the single source of truth for the device's IP feature
+set.
 
 **TP1 device:**
 
-The same shape, with `type ES = Tp1ExtensionState`. `create_augments`
-and `create_interface_objects` are byte-for-byte identical to the
-KNX/IP example — the `Extension` trait abstracts the medium.
+The same macro, with `extension_state: Tp1ExtensionState` and the TP1 link
+layer builder — the `Extension` trait abstracts the medium, so nothing else
+changes.
 
 **With extra augments (e.g., EasterEggAugment):**
 
-When the device chains extra augments alongside the medium extension,
-spell `D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct so
-each augment has a name:
+When the device chains extra augments alongside the medium extension, spell
+`D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct so each augment
+has a name, and override `type Augments<'a>` + `create_augments` via the
+macro's optional trailing `extra { … }` block (whose items are spliced into
+the generated `impl StackDefinition` verbatim):
 
 ```rust
 #[derive(zweidraehte_device::service::ServiceRegistry)]
@@ -682,29 +658,38 @@ pub struct MyDeviceAugments<'a> {
     #[service(augment)] easter: EasterEggAugment,
 }
 
-impl StackDefinition for MyDevice {
-    // …
-    type InterfaceObjects<'a> = DefaultSystemBInterfaceObjects<'a, Self, Self::Augments<'a>>;
-    type Augments<'a> = MyDeviceAugments<'a>;
+zweidraehte_device::system_b_standard_stack! {
+    stack: MyDevice, device: &DEVICE_DESCRIPTOR, tl_style: TlStyle::Style1,
+    params: MyParams, com_objects: MyComObjects,
+    link_layer_builder: KnxNetIpBuilder<MyDevice>, platform: MyPlatform,
+    extension_state: IpExtensionFor<KnxIpDeviceUdp>, state: MyState,
+    config: <MyState as HasDeviceConfig>::Config,
+    al_extensions: (SystemBAlServices, DomainAddressService),
+    layer_builder: InsecureIpDeviceBuilder,
+    extra {
+        type Augments<'a> = MyDeviceAugments<'a>;
 
-    fn create_interface_objects<'a>(
-        state, _platform, layer_ctx, augments,
-    ) -> Self::InterfaceObjects<'a> where … {
-        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
-    }
-
-    fn create_augments<'a>(state, platform, _lctx) -> Self::Augments<'a> where … {
-        MyDeviceAugments {
-            ip:     state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
+        fn create_augments<'a>(
+            state: &'a Self::State,
+            platform: &'a Self::Platform,
+            _lctx: &'a LayerContext<Self>,
+        ) -> Self::Augments<'a>
+        where Self::State: 'a, Self::Platform: 'a {
+            MyDeviceAugments {
+                ip:     state.extension_state().create_augment::<Self>(platform),
+                easter: EasterEggAugment,
+            }
         }
     }
 }
 ```
 
-The macro emits the `Augment<D>` impl for the struct, which
-the IO container calls into for property dispatch and IO list
-contributions. See the "Augments" section above for the full story
+The `#[derive(ServiceRegistry)]` macro emits the `Augment<D>` impl for the
+bundle, which the IO container calls into for property dispatch and IO list
+contributions. The macro is opt-in — a fully hand-written `impl
+StackDefinition` still works, and is the path for devices with a
+non-standard `InterfaceObjects` wrapper or other deviations. See the
+"Augments" section above for the full story
 including `#[service(flatten)]` for nested composition.
 
 ### Step 5: Startup
@@ -800,8 +785,8 @@ context the layers need is reached through `D::Augments<'a>` and
      |    +-- () (test/mock only)
      |
      +-- Extension<Platform>::create_augment()
-     |    +-- IpAugment (combines config + platform + capabilities)
-     |    +-- &Tp1ExtensionState (is its own augment)
+     |    +-- IpAugment<'a, P, CAPS> (borrows config + platform)
+     |    +-- Tp1Augment<'a> (borrows the Tp1ExtensionState)
      |    +-- () (no augment)
      |
      v
@@ -830,99 +815,82 @@ context the layers need is reached through `D::Augments<'a>` and
 
 To create an extension that owns persistent state and provides augmentation:
 
-### 1. Define the config (serializable) and state (runtime)
+### 1. Define the runtime state and derive its config
+
+`#[derive(ExtensionState)]` treats the runtime `*State` struct as the
+source of truth and generates the persisted `*Config` mirror (the
+`Cell`/`RefCell` fields unwrapped), its `Default`/`ExtensionConfig` impls,
+and the `ExtensionState` impl (`from_config`/`to_config`/`on_erase`):
 
 ```rust
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MyConfig {
-    pub counter: u32,
-}
-
-impl Default for MyConfig {
-    fn default() -> Self { Self { counter: 0 } }
-}
-
-impl ExtensionConfig for MyConfig {}
-
+#[derive(ExtensionState)]
+#[extension_state(config = MyConfig)]
 pub struct MyExtension {
+    // Generated config field: `pub counter: u32`. `#[erase(default = …)]`
+    // is the value a factory reset restores (defaults to `Default`).
+    #[erase(default = 0)]
     counter: Cell<u32>,
 }
-
-impl ExtensionState for MyExtension {
-    type Config = MyConfig;
-    type Resources = ();
-    fn from_config(config: MyConfig, _resources: ()) -> Self {
-        Self { counter: Cell::new(config.counter) }
-    }
-    fn to_config(&self) -> MyConfig {
-        MyConfig { counter: self.counter.get() }
-    }
-    fn on_erase(&self, code: EraseCode) {
-        // Decide per code what to clear. For a counter, clear on
-        // FactoryReset and ResetActiveAppParameters; leave alone
-        // for ConfirmedRestart.
-        if matches!(code, EraseCode::FactoryReset | EraseCode::ResetActiveAppParameters) {
-            self.counter.set(0);
-        }
-    }
-}
 ```
 
-### 2. Implement Augment
+This generates `pub struct MyConfig { pub counter: u32 }` (with
+`Serialize`/`Deserialize`/`Default`/`ExtensionConfig`) plus the
+`ExtensionState` impl. Field/struct attributes cover the cases the plain
+`Cell<T>` → `T` unwrap can't:
 
-`Augment<D>` is generic over the *device*, not the state. The
-extension reaches into its own fields directly via `&self`:
+- `#[config(ty = U, from = |c| …, to = |s| …)]` — wire type differs from the
+  runtime type (e.g. an `Ipv4Addr` field persisted as `[u8; 4]`).
+- `#[config(serde_default = "path")]` — emit `#[serde(default = "path")]` on
+  the config field.
+- `#[runtime_only]` — a field that is never persisted (rebuilt in
+  `from_config`).
+- struct-level `on_erase = manual` / `default = manual` — hand-write those
+  two pieces when a field reset needs a side-effect, or the factory defaults
+  aren't per-field. (The composing `SecureExtensionState` and the
+  tuple-config retransmitter hand-write the whole impl — the derive is for
+  flat leaf extensions.)
+
+### 2. Define the augment
+
+The augment is a *separate* struct that borrows the state. For a fixed list
+of PIDs, `#[interface_object_augment]` generates the `Augment<D>` impl from
+the `#[io(…)]` field DSL — the read/write closures reach the state through
+`this.state`:
 
 ```rust
-impl<D: StackDefinition> Augment<D> for MyExtension {
-    fn property_value_read(
-        &self,
-        _ctx: &ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FullPropertyReadRequest,
-        buf: &mut [u8],
-    ) -> Option<Result<usize, PropertyError>> {
-        if object_type != InterfaceObjectType::Device || req.pid != MY_PID {
-            return None;
-        }
-        let val = self.counter.get().to_be_bytes();
-        buf[..4].copy_from_slice(&val);
-        Some(Ok(4))
-    }
+#[interface_object_augment(target_objects = [InterfaceObjectType::Device])]
+pub struct MyAugment<'a> {
+    pub state: &'a MyExtension,
 
-    fn property_value_write(
-        &self,
-        _ctx: &ServiceCtx<'_, D>,
-        object_type: InterfaceObjectType,
-        req: &FullPropertyWriteRequest<'_>,
-    ) -> Option<Result<WriteResponse, PropertyError>> {
-        if object_type != InterfaceObjectType::Device || req.pid != MY_PID {
-            return None;
-        }
-        let val = u32::from_be_bytes(req.data[..4].try_into().unwrap());
-        self.counter.set(val);
-        Some(Ok(WriteResponse::Echo))
-    }
+    #[io(pid = MY_PID, pdt = PDT_UnsignedLong, access = RW,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3, intercepts,
+         read  = |this: &Self| this.state.counter.get().to_be_bytes(),
+         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
+             this.state.counter.set(u32::from_be_bytes(data[..4].try_into().unwrap()));
+             Ok(WriteResponse::Echo)
+         })]
+    _counter_io: (),
 }
 ```
 
-For augments that just expose a fixed list of PIDs, the
-`#[interface_object_augment]` attribute macro saves the boilerplate.
-It generates the `Augment<D>` impl from a small DSL.
+Use `target_objects` + `intercepts` to add PIDs to an existing object (as
+above, on the Device Object), or `additional_objects = [X]` to provide a new
+object — the latter needs a PID 1 `OBJECT_TYPE` entry. (Augments needing
+hand-written dispatch can `impl Augment<D>` directly instead.)
 
 ### 3. Implement Extension
 
-Since this extension needs no platform, use `Extension<()>`. The
-extension state IS its own augment, accessed by reference:
+Since this extension needs no platform, use `Extension<()>`; `create_augment`
+returns the augment borrowing the state:
 
 ```rust
 impl Extension<()> for MyExtension {
-    type Augment<'a, D: StackDefinition> = &'a MyExtension where Self: 'a;
+    type Augment<'a, D: StackDefinition> = MyAugment<'a> where Self: 'a;
 
     fn create_augment<'a, D: StackDefinition>(
         &'a self, _platform: &'a (),
     ) -> Self::Augment<'a, D> where (): 'a {
-        self
+        MyAugment { state: self }
     }
 }
 ```
@@ -932,46 +900,22 @@ impl Extension<()> for MyExtension {
 ```rust
 type MyState = SystemBDeviceState<ADT, AST, COT, Params, MyExtension>;
 
-impl StackDefinition for MyDevice {
-    type ES = MyExtension;
-    type State = MyState;
-
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>;
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        _platform: &'a Self::Platform,
-        layer_ctx: &'a LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        create_system_b_objects::<Self, _>(state, layer_ctx, &Self::memory_layout(), augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        state.extension_state().create_augment::<Self>(platform)
-    }
-    // ...
+zweidraehte_device::system_b_standard_stack! {
+    stack: MyDevice, device: &DEVICE_DESCRIPTOR, tl_style: TlStyle::Style1,
+    params: Params, com_objects: MyComObjects,
+    link_layer_builder: …, platform: (),
+    extension_state: MyExtension, state: MyState,
+    config: <MyState as HasDeviceConfig>::Config,
+    al_extensions: (SystemBAlServices, DomainAddressService),
+    layer_builder: InsecureDeviceBuilder,
 }
 ```
 
 The counter is automatically persisted and restored across power
-cycles because `ExtensionState::to_config()` / `from_config()`
+cycles because the derived `ExtensionState::to_config()` / `from_config()`
 captures it.
 
 To compose this extension's augment with one or more extra augments
-(e.g. `EasterEggAugment`), wrap them in a
-`#[derive(ServiceRegistry)]` struct as shown in the "Augments"
-section earlier.
+(e.g. `EasterEggAugment`), wrap them in a `#[derive(ServiceRegistry)]`
+struct and override `type Augments<'a>` / `create_augments` via the macro's
+`extra { … }` block, as shown in the "Augments" section earlier.

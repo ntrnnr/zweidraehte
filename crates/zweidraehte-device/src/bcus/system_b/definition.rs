@@ -303,3 +303,125 @@ pub type ExtensionAugmentFor<'a, D>
 where
     D: StackDefinition,
 = <<D as StackDefinition>::ES as super::Extension<<D as StackDefinition>::Platform>>::Augment<'a, D>;
+
+// ============================================================================
+// system_b_standard_stack! — collapse the always-identical StackDefinition shell
+// ============================================================================
+
+/// Generate the boilerplate half of a System B device's
+/// [`StackDefinition`](crate::StackDefinition) impl.
+///
+/// Every standard System B device (`SystemBStackDefinition` +
+/// `SystemBMemoryMap` + the `ExtensionAugmentFor` augment chain) repeats the
+/// same shell: the `StateInit`/`Mem` types, the one-line `create_state`, the
+/// `InterfaceObjects`/`Augments` GATs, and the two `create_*` method bodies
+/// (which Rust can't inherit from the `SystemBStackDefinition` supertrait —
+/// see [`SystemBStackDefinition::default_interface_objects`]). Only the
+/// device-specific bill of materials varies. This macro takes that BOM and
+/// emits the full `impl StackDefinition` (plus the empty
+/// `impl SystemBStackDefinition`), so a device's stack wiring collapses to one
+/// invocation.
+///
+/// It is **opt-in**: a device with a custom augment bundle or a non-standard
+/// `InterfaceObjects` wrapper should keep writing the impl by hand. Defaulted
+/// `StackDefinition` items not listed below (`Identity`, `Rng`, `Mutex`,
+/// `MAX_APDU_LENGTH`, …) take their trait defaults; override them in the
+/// optional `extra { … }` block, whose items are spliced into the generated
+/// `impl StackDefinition` verbatim.
+///
+/// ```rust,ignore
+/// system_b_standard_stack! {
+///     stack: DemoStack,
+///     device: &DEVICE_DESCRIPTOR,
+///     tl_style: TlStyle::Style1,
+///     params: DemoParams,
+///     com_objects: comm_objs::DemoComObjects,
+///     link_layer_builder: KnxNetIpBuilder<DemoStack>,
+///     platform: MockIpPlatform,
+///     extension_state: IpExtensionFor<KnxIpDeviceTcp>,
+///     state: DemoState,
+///     config: DemoDeviceConfig,
+///     al_extensions: (SystemBAlServices, DomainAddressService),
+///     layer_builder: InsecureIpDeviceBuilder,
+/// }
+/// ```
+#[macro_export]
+macro_rules! system_b_standard_stack {
+    (
+        stack: $stack:ty,
+        device: $device:expr,
+        tl_style: $tl_style:expr,
+        params: $params:ty,
+        com_objects: $com_objects:ty,
+        link_layer_builder: $llb:ty,
+        platform: $platform:ty,
+        extension_state: $es:ty,
+        state: $state:ty,
+        config: $config:ty,
+        al_extensions: $al_extensions:ty,
+        layer_builder: $layer_builder:ty
+        $(, extra { $($extra:item)* })?
+        $(,)?
+    ) => {
+        impl $crate::bcus::system_b::SystemBStackDefinition for $stack {}
+
+        impl $crate::StackDefinition for $stack {
+            // ---- device-specific bill of materials -------------------------
+            const DEVICE: &'static $crate::ets::DeviceDescriptor = $device;
+            const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
+
+            type P = $params;
+            type CO = $com_objects;
+            type LLB = $llb;
+            type Platform = $platform;
+            type ES = $es;
+            type State = $state;
+            type AlExtensions = $al_extensions;
+            type LayerBuilder = $layer_builder;
+
+            // ---- always-identical shell ------------------------------------
+            type Mem = $crate::bcus::system_b::SystemBMemoryMap;
+            type StateInit = $crate::bcus::system_b::SystemBStateInit<Self::Identity, $config>;
+
+            fn create_state(init: Self::StateInit) -> Self::State {
+                <$state>::from_init(init)
+            }
+
+            type InterfaceObjects<'a> = $crate::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
+            type Augments<'a> = $crate::bcus::system_b::ExtensionAugmentFor<'a, Self>;
+
+            fn create_interface_objects<'a>(
+                state: &'a Self::State,
+                platform: &'a Self::Platform,
+                layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
+                augments: &'a Self::Augments<'a>,
+            ) -> Self::InterfaceObjects<'a>
+            where
+                Self::State: 'a,
+                Self::Platform: 'a,
+            {
+                <Self as $crate::bcus::system_b::SystemBStackDefinition>::default_interface_objects(
+                    state, platform, layer_ctx, augments,
+                )
+            }
+
+            fn create_augments<'a>(
+                state: &'a Self::State,
+                platform: &'a Self::Platform,
+                _layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
+            ) -> Self::Augments<'a>
+            where
+                Self::State: 'a,
+                Self::Platform: 'a,
+            {
+                // `extension_state()` comes from `HasExtensionState`; spell the
+                // trait explicitly so the macro doesn't depend on it being
+                // imported at the call site.
+                let es = <Self::State as $crate::bcus::system_b::HasExtensionState>::extension_state(state);
+                <$es as $crate::bcus::system_b::Extension<Self::Platform>>::create_augment::<Self>(es, platform)
+            }
+
+            $($($extra)*)?
+        }
+    };
+}

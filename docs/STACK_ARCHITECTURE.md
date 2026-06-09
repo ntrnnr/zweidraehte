@@ -399,7 +399,7 @@ For augment chains:
 ```rust
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct PicoTp1Augments<'a> {
-    #[service(augment)] tp1:    &'a Tp1ExtensionState,
+    #[service(augment)] tp1:    Tp1Augment<'a>,
     #[service(augment)] easter: EasterEggAugment,
 }
 ```
@@ -418,10 +418,11 @@ Hook methods on `Augment` walk fields left-to-right; the first `Some`
 claims the request. IO list counts sum across all fields; lifecycle
 delegates to each.
 
-The `()` and `&A` shapes also implement `Augment<D>`
-directly, so devices that need no augments (`()`) and projection
-types that hand out a borrowed augment (`<D::ES as Extension<…>>::Augment<'a, D>`)
-plug in without per-device migration to the derive.
+The `()` shape implements `Augment<D>` directly, so devices that need
+no augments plug in without writing an empty impl. (A `&A: Augment<D>`
+blanket impl used to exist so the old "TP1 is its own augment" shape
+worked; it was removed once TP1 gained a by-value `Tp1Augment<'a>` like
+every other extension — see §3.12.)
 
 #### Service inputs and side-effect events
 
@@ -807,10 +808,12 @@ The stack has two complementary concepts that work together:
   for producing the augment that exposes that state on the wire.
   Lives behind `D::ES`. Built into the device state at startup.
 * **Augment** — the property-dispatch and IO-list-contribution hook
-  itself. Implements `Augment<D>` (see §3.2). May be a
-  borrow into the extension state (`&'a Tp1ExtensionState` — the
-  state IS its own augment) or a wrapper struct that bundles state
-  + platform (`IpAugment<'a, P, N, CAPS>`).
+  itself. Implements `Augment<D>` (see §3.2). It is a small struct that
+  *borrows* the extension state (and possibly the platform): `Tp1Augment<'a>
+  { state: &'a Tp1ExtensionState }`, `RfAugment<'a> { state: &'a … }`, or
+  `IpAugment<'a, P, CAPS> { config: &'a …, platform: &'a P }`. All
+  extensions follow this one shape — `create_augment` builds the augment
+  from `&'a self` (plus `&'a platform`).
 
 Each device's complete augment set lives behind the
 `D::Augments<'a>` GAT on `StackDefinition`. The IO container
@@ -838,6 +841,15 @@ extensions that need none. `on_erase` is invoked from
 receives the `EraseCode` so each extension decides per code what to
 clear.
 
+For a leaf extension the persisted `ExtensionConfig` struct is just the
+runtime `ExtensionState` with its `Cell`/`RefCell` fields unwrapped, and
+`from_config`/`to_config`/`on_erase` are mechanical. `#[derive(ExtensionState)]`
+generates all of that — the `*Config` struct, its `Default`/`ExtensionConfig`
+impls, and the `ExtensionState` impl — from the state struct's fields. See
+§7.2. (`Tp1ExtensionState`, `RfExtensionState`, `IpExtensionState` all use
+it; the composing `SecureExtensionState` and the tuple-config retransmitter
+hand-write theirs.)
+
 The `Extension` trait survives because it lets devices spell
 `<D::ES as Extension<D::Platform>>::Augment<'a, D>` as a clean type
 alias — useful when the augment type contains const generics
@@ -849,7 +861,8 @@ that you don't want to hand-write.
 | Extension | Medium | `Config` | `Resources` | `Augment` | Feature flag |
 |---|---|---|---|---|---|
 | `()` | any/none | `()` | `()` | `()` | — |
-| `Tp1ExtensionState` | TP1 | `Tp1ExtensionConfig` | `()` | `&'a Tp1ExtensionState` (self) | — |
+| `Tp1ExtensionState` | TP1 | `Tp1ExtensionConfig` | `()` | `Tp1Augment<'a>` | — |
+| `RfExtensionState` | KNX-RF | `RfExtensionConfig` | `()` | `RfAugment<'a>` | — |
 | `IpExtensionState<CAPS>` | KNX/IP | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
 | `SecureExtensionState<Inner, SEQ, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<InnerResources, SEQ>` | `(InnerAugment, SecurityAugment)` | — (needs `HasSequenceStorage`) |
 | `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment` | — |
@@ -880,7 +893,7 @@ multiple augments, gives each one a name. The macro emits the
 ```rust
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct PicoTp1Augments<'a> {
-    #[service(augment)] tp1:    &'a Tp1ExtensionState,
+    #[service(augment)] tp1:    Tp1Augment<'a>,
     #[service(augment)] easter: EasterEggAugment,
 }
 
@@ -917,29 +930,32 @@ The outer struct's `Augment<D>` impl walks `sec` first,
 then delegates the rest of the chain into `extras` (which itself
 walks `cert` then `diag`).
 
-#### Why `&'a Tp1ExtensionState` as a field?
+#### The state / augment split
 
-The TP1 extension is its own augment — `Tp1ExtensionState`
-implements `Augment<D>` directly, contributing
-`PID_MAX_RETRY_COUNT` (52) on the Device Object. Its
-`create_augment` returns `&self` because the state owns
-`Cell<u8>`-backed property storage that lives on `D::State` and
-must be reachable from the augment chain by reference, not by
-value. Owning a copy in the augment chain would mean writes never
-reach the state's authoritative copy.
+Every extension keeps *persisted state* and its *interface-object augment*
+in two structs, and the augment **borrows** the state. The augment is what
+`create_augment` builds; it holds `&'a State` (not an owned copy) so writes
+reach the state's authoritative `Cell`/`RefCell` storage on `D::State`.
 
-The IP extension takes a different shape — `IpExtensionState<N,
-CAPS>` produces a wrapper `IpAugment<'a, P, N, CAPS>` that bundles
-the extension state with the platform. Same lifetime story (`&'a`
-everywhere); the wrapper exists because the augment needs both
-state *and* platform on each hook call.
+```rust
+// TP1 — augment borrows only the state.
+struct Tp1Augment<'a> { state: &'a Tp1ExtensionState }   // PID 52
 
-Devices reading the asymmetry directly:
+// IP — augment borrows the state AND the platform, because half its PIDs
+// read live network values the state doesn't own.
+struct IpAugment<'a, P, const CAPS: u16> { config: &'a IpExtensionState<CAPS>, platform: &'a P }
+```
+
+`Tp1ExtensionState`'s `Extension::Augment` is therefore `Tp1Augment<'a>`,
+symmetric with `RfAugment<'a>` and `IpAugment<'a, …>`. (Historically TP1 was
+its own augment — `create_augment` returned `&self` and a `&A: Augment<D>`
+blanket impl promoted it — but that made TP1 the odd one out and was
+removed.) Devices spell their augment-bundle fields by the augment type:
 
 ```rust
 struct PicoTp1Augments<'a> {
-    tp1:    &'a Tp1ExtensionState,                      // state IS augment
-    easter: EasterEggAugment,                            // by value
+    tp1:    Tp1Augment<'a>,                               // borrows the state
+    easter: EasterEggAugment,                             // by value
 }
 
 struct PicoEthAugments<'a> {
@@ -1260,19 +1276,35 @@ debug counter, a vendor PID on the Device Object):
 
 ### 7.2 Add a persisted extension with augment
 
-1. Define `MyExtensionConfig: ExtensionConfig` (the serialisable form).
-2. Define `MyExtensionState` with `Cell`/`RefCell` fields.
-3. Implement `ExtensionState` (pick `type Resources` — `()` unless
-   you need FDSK, SEQ storage, etc.).
-4. Implement `Extension<Platform>` with `type Augment<'a, D> =
-   MyAugment<'a, …>` and `create_augment`.
-5. Implement `Augment<D>` on the augment type. (For the common case
-   where the state itself contributes properties, the state IS its
-   own augment — `create_augment` returns `&self` and `MyAugment<'a,
-   D> = &'a MyExtensionState`. The `#[interface_object_augment]`
-   macro handles this shape.)
-6. Set `type ES = MyExtensionState` in `StackDefinition`.
-7. Set `type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>`
+The canonical shape is a plain state struct plus a separate borrowing
+augment — `RfExtensionState` + `RfAugment` is the template to copy.
+
+1. Define `MyExtensionState` with `Cell`/`RefCell` fields and put
+   `#[derive(ExtensionState)]` + `#[extension_state(config = MyExtensionConfig)]`
+   on it. The derive generates `MyExtensionConfig` (the serialisable mirror,
+   `Cell<T>` → `T`), its `Default`/`ExtensionConfig` impls, and the
+   `ExtensionState` impl (`from_config`/`to_config`/`on_erase`). Annotate
+   fields that need help — `#[config(ty = …, from = …, to = …)]` for a
+   wire/runtime type divergence, `#[runtime_only]` for a non-persisted field,
+   `#[erase(default = …)]` for the factory-reset value, and `on_erase = manual`
+   / `default = manual` on the struct attr to hand-write those two pieces
+   when a field reset needs a side-effect or the defaults aren't per-field.
+   (Hand-writing the whole `*Config` + `ExtensionState` still works for the
+   irreducible cases — the composing `SecureExtensionState` and the
+   tuple-config retransmitter do.)
+2. Define a separate `MyAugment<'a> { state: &'a MyExtensionState, … }`
+   carrying `#[interface_object_augment(…)]` and the `#[io(…)]` PIDs; the
+   closures reach the state through `this.state.<field>`. Use
+   `target_objects` + `intercepts` to add PIDs to an existing object (TP1
+   on the Device Object), or `additional_objects = [X]` to provide a new
+   object — the latter needs a PID 1 `OBJECT_TYPE` entry.
+3. Implement `Extension<Platform>` with `type Augment<'a, D> = MyAugment<'a>`
+   and `create_augment` returning `MyAugment { state: self, … }`. Pick
+   `Platform` (`()` unless the augment needs platform state like IP) and
+   `Resources` (`()` unless you need FDSK / SEQ storage).
+4. Set `type ES = MyExtensionState` in `StackDefinition` (or via
+   `system_b_standard_stack! { …, extension_state: MyExtensionState, … }`).
+5. Set `type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>`
    if there are no extras, or define a per-device augment struct
    (see §7.1) that includes a `#[service(augment)]` field for
    `state.extension_state().create_augment::<Self>(platform)`.

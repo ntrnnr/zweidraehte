@@ -58,6 +58,11 @@
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
+/// `#[derive(ExtensionState)]` — generates the `*Config` mirror and the
+/// `ExtensionState` impl from a runtime `*State` struct. Shares the trait's
+/// name so a single `use` brings both into scope.
+pub use zweidraehte_device_macros::ExtensionState;
+
 use crate::{
     StackDefinition,
     objects::comm::HasGoSecurityView,
@@ -186,6 +191,13 @@ impl<A: ExtensionConfig, B: ExtensionConfig> ExtensionConfig for (A, B) {}
 /// Devices that need multiple extension concerns (e.g., IP config +
 /// custom augment state) should define a single struct that combines
 /// them and implements this trait directly.
+///
+/// For the common leaf-extension case — where the persisted config is
+/// the runtime state with `Cell`/`RefCell` unwrapped — derive this trait
+/// (and its `*Config` mirror) with `#[derive(ExtensionState)]` instead of
+/// hand-writing `from_config`/`to_config`/`on_erase`. The derive shares
+/// this trait's name; `use crate::bcus::system_b::ExtensionState` brings
+/// both the trait and the derive into scope.
 pub trait ExtensionState: Sized {
     /// The serializable config type for this extension state.
     type Config: ExtensionConfig;
@@ -291,7 +303,8 @@ impl ExtensionState for () {
 /// # Implementations
 ///
 /// - [`()`] — no extension, no augment
-/// - [`Tp1ExtensionState`](super::extensions::tp1::Tp1ExtensionState) — self-contained, IS its own augment
+/// - [`Tp1ExtensionState`](super::extensions::tp1::Tp1ExtensionState) — creates a
+///   [`Tp1Augment`](super::extensions::tp1::Tp1Augment) borrowing self
 /// - [`IpExtensionState`](super::extensions::ip::IpExtensionState) — creates an
 ///   [`IpAugment`](super::extensions::ip::IpAugment) from self + platform
 pub trait Extension<Platform = ()>: ExtensionState {
@@ -302,10 +315,9 @@ pub trait Extension<Platform = ()>: ExtensionState {
     /// Leaf augments satisfy it via `#[interface_object_augment]`
     /// codegen; composed bundles satisfy it via
     /// [`#[derive(ServiceRegistry)]`](crate::service::ServiceRegistry);
-    /// the `()` and `&A` impls in `service::registry` cover the
-    /// trivial cases.
+    /// the `()` impl covers the no-augment case.
     ///
-    /// For TP1: `&'a Tp1ExtensionState` (the extension IS the augment).
+    /// For TP1: `Tp1Augment<'a>` (borrows the extension state).
     /// For IP: `IpAugment<'a, P, CAPS>` (wraps extension + platform).
     /// For `Secure(Inner)`: `SecureAugmentBundle<'a, Inner::Augment, …>`
     ///   (a `#[derive(ServiceRegistry)]` struct holding the inner

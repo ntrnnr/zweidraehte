@@ -16,7 +16,7 @@
 //!
 //! #[derive(zweidraehte_device::service::ServiceRegistry)]
 //! pub struct MyDeviceAugments<'a> {
-//!     #[service(augment)] tp1:    &'a Tp1ExtensionState,
+//!     #[service(augment)] tp1:    Tp1Augment<'a>,
 //!     #[service(augment)] easter: EasterEggAugment,
 //! }
 //!

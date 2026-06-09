@@ -153,59 +153,45 @@ impl ExtensionState for RfRetransmitterExtension {
 // ----------------------------------------------------------------------------
 // Trait forwarding — the wrapper is transparent to the base RF medium traits.
 // ----------------------------------------------------------------------------
+//
+// `forward_to_field!` (defined in `bcus::system_b`, shared with the secure
+// wrapper) generates the pure delegation to `self.inner`. The retransmitter
+// is a concrete (non-generic) wrapper, so the generics group is empty.
+// There is no persistence side-effect on the wrapper, so no `mark_dirty`
+// suffix. `HasRfRetransmitter` is *not* forwarded — its accessors read the
+// retransmitter's own `cells`, not the inner extension — so it stays
+// hand-written below.
 
-impl HasSecurityMode for RfRetransmitterExtension {
-    fn security_mode_enabled(&self) -> bool {
-        self.inner.security_mode_enabled()
-    }
-
-    fn log_access_denied(&self, source_addr: u16) {
-        self.inner.log_access_denied(source_addr);
-    }
-
-    fn has_group_key(&self, tsap: u16) -> bool {
-        self.inner.has_group_key(tsap)
-    }
+forward_to_field! {
+    impl<[]> HasSecurityMode for RfRetransmitterExtension {
+        get fn security_mode_enabled(&self) -> bool;
+        out fn log_access_denied(&self, source_addr: u16);
+        get fn has_group_key(&self, tsap: u16) -> bool;
+    } => self.inner
 }
 
-impl HasGoSecurityView for RfRetransmitterExtension {
-    fn required_security_for_asap(&self, asap: u16) -> RequiredSecurity {
-        self.inner.required_security_for_asap(asap)
-    }
-
-    fn required_security_for_p2p(&self, peer_ia: u16) -> RequiredSecurity {
-        self.inner.required_security_for_p2p(peer_ia)
-    }
-
-    fn required_security_for_broadcast(&self) -> RequiredSecurity {
-        self.inner.required_security_for_broadcast()
-    }
-
-    fn required_security_for_tool_access(&self) -> RequiredSecurity {
-        self.inner.required_security_for_tool_access()
-    }
+forward_to_field! {
+    impl<[]> HasGoSecurityView for RfRetransmitterExtension {
+        get fn required_security_for_asap(&self, asap: u16) -> RequiredSecurity;
+        get fn required_security_for_p2p(&self, peer_ia: u16) -> RequiredSecurity;
+        get fn required_security_for_broadcast(&self) -> RequiredSecurity;
+        get fn required_security_for_tool_access(&self) -> RequiredSecurity;
+    } => self.inner
 }
 
-impl HasRfDomainAddress for RfRetransmitterExtension {
-    fn rf_domain_address(&self, out: &mut [u8; 6]) {
-        self.inner.rf_domain_address(out);
-    }
-
-    fn set_rf_domain_address(&self, addr: &[u8; 6]) {
-        self.inner.set_rf_domain_address(addr);
-    }
+forward_to_field! {
+    impl<[]> HasRfDomainAddress for RfRetransmitterExtension {
+        out fn rf_domain_address(&self, out: &mut [u8; 6]);
+        out fn set_rf_domain_address(&self, addr: &[u8; 6]);
+    } => self.inner
 }
 
-impl HasDomainAddress for RfRetransmitterExtension {
-    const DOMAIN_ADDRESS_LENGTH: usize = <RfExtensionState as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
-
-    fn domain_address(&self, buf: &mut [u8]) {
-        self.inner.domain_address(buf);
-    }
-
-    fn set_domain_address(&self, addr: &[u8]) {
-        self.inner.set_domain_address(addr);
-    }
+forward_to_field! {
+    impl<[]> HasDomainAddress for RfRetransmitterExtension {
+        const DOMAIN_ADDRESS_LENGTH: usize = <RfExtensionState as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
+        out fn domain_address(&self, buf: &mut [u8]);
+        out fn set_domain_address(&self, addr: &[u8]);
+    } => self.inner
 }
 
 // The new role accessor, backed by our own cells.

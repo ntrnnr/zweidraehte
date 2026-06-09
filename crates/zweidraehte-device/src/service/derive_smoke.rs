@@ -19,7 +19,7 @@ use crate::StackDefinition;
 use crate::StackState;
 #[cfg(feature = "knxip")]
 use crate::bcus::system_b::IpAugment;
-use crate::bcus::system_b::{SecurityAugment, Tp1ExtensionState};
+use crate::bcus::system_b::{SecurityAugment, Tp1Augment};
 use crate::layers::application::services::{
     adc::AdcService, address_serial::IndividualAddressSerialNumberService, authorization::AuthorizationService,
     domain_addr::DomainAddressService, function_property::FunctionPropertyService,
@@ -311,7 +311,7 @@ fn _assert_augments_implement_augment<'a, D, SEQ>()
 where
     D: StackDefinition,
     SEQ: SequenceNumberStorage + 'a,
-    Tp1ExtensionState: Augment<D>,
+    Tp1Augment<'a>: Augment<D>,
     SecurityAugment<'a, SEQ, 8, 8, 16, 16>: Augment<D>,
 {
 }

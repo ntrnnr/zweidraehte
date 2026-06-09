@@ -6875,6 +6875,7 @@ dependencies = [
  "portable-atomic",
  "replace_with",
  "serde",
+ "serde_json",
  "serde_with",
  "static_cell",
  "test-case",
