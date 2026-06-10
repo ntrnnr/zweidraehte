@@ -12,7 +12,7 @@ use embassy_sync::{
     pubsub::{PubSubBehavior, PubSubChannel},
 };
 
-use super::traits::{BufferManagerContext, EventPublisherContext, RestartPublisherContext};
+use super::traits::BufferManagerContext;
 use crate::{
     actor::Request,
     definition::StackDefinition,
@@ -70,7 +70,7 @@ impl<D: StackDefinition> LayerContext<D> {
 }
 
 // ============================================================================
-// Outbox helpers (inherent, no trait soup)
+// Inherent helpers (outbox, event publish, restart — no trait soup)
 // ============================================================================
 
 impl<D: StackDefinition> LayerContext<D> {
@@ -78,23 +78,21 @@ impl<D: StackDefinition> LayerContext<D> {
     pub fn push_outbox(&self, msg: KnxMessageBuffer<Buffer<'static>>) {
         self.outbox.borrow_mut().push(msg);
     }
+
+    /// Publish a communication object event to subscribed user code.
+    pub fn publish_event(&self, index: <<D as StackDefinition>::CO as ComObjects>::Index, event: ComObjectEvent) {
+        self.event_channel.publish_immediate((index, event));
+    }
+
+    /// Try sending a restart request to user code. Returns `true` if sent.
+    pub fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
+        self.restart_channel.try_send(request).is_ok()
+    }
 }
 
 // ============================================================================
 // Context Trait Implementations
 // ============================================================================
-
-impl<D: StackDefinition> EventPublisherContext<<<D as StackDefinition>::CO as ComObjects>::Index> for LayerContext<D> {
-    fn publish_event(&self, index: <<D as StackDefinition>::CO as ComObjects>::Index, event: ComObjectEvent) {
-        self.event_channel.publish_immediate((index, event));
-    }
-}
-
-impl<D: StackDefinition> RestartPublisherContext for LayerContext<D> {
-    fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
-        self.restart_channel.try_send(request).is_ok()
-    }
-}
 
 impl<D: StackDefinition> BufferManagerContext for LayerContext<D> {
     fn buffer_manager(&self) -> &DynBufferManager<'static> {

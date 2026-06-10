@@ -10,7 +10,6 @@
 use crate::{
     StackDefinition, StackState,
     bcus::system_b::{DiagnosticsContext, HasDiagnosticsContext},
-    context::EventPublisherContext,
     context::layer::LayerContext,
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
     lifecycle::LifecycleEvent,

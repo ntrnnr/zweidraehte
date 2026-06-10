@@ -4,10 +4,8 @@
 //! Layers depend only on the specific context traits they need, making them
 //! easier to test and more modular.
 
-use crate::objects::comm::ComObjectEvent;
 use crate::objects::interface::PropertyServiceHandler;
 use crate::objects::tables::{AddressTable, HasLoadStateMachine};
-use crate::restart::RestartRequest;
 use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 /// Provides access to the buffer manager for allocating and freeing message buffers.
@@ -123,16 +121,4 @@ pub trait RfRetransmitterContext {
 
     /// The RF Repetition Counter limit (`PID_RF_REPEAT_COUNTER`).
     fn rf_repeat_counter_limit(&self) -> u8;
-}
-
-/// Provides access to publish communication object events to user code.
-pub trait EventPublisherContext<Index> {
-    /// Publish a communication object event.
-    fn publish_event(&self, index: Index, event: ComObjectEvent);
-}
-
-/// Provides access to send restart requests to user code.
-pub trait RestartPublisherContext {
-    /// Try sending a restart request. Returns true if sent successfully.
-    fn try_send_restart_request(&self, request: RestartRequest) -> bool;
 }

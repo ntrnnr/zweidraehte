@@ -61,7 +61,7 @@ compile-time type with a known dispatch shape.
 2. **Small single-responsibility "context" traits.** A layer or
    augment depends on the narrow capability it actually uses —
    `BufferManagerContext`, `ApduLengthContext`,
-   `AddressTableContext`, `EventPublisherContext`, and so on. Big shared
+   `AddressTableContext`, `PropertyServiceContext`, and so on. Big shared
    containers (`LayerContext<D>`, `StackContext<'a, D>`) implement
    many of these traits; consumers accept
    `ctx: &(impl A + B)`. This keeps every layer's bound explicit
@@ -459,14 +459,20 @@ the `*Config` persistence vocabulary in §4. Contents:
 | `app_service_channel` | `Channel<Mutex, Request<ApplicationLayerService, _>, 1>` | Actor-style requests *to* the AL from user code. |
 | `group_data` | `GroupDataState` | Shared bookkeeping between AL's built-in group handler and augment-held `GroupDataProvider`s. |
 
-**Context traits provided:**
-`BufferManagerContext`, `EventPublisherContext<CO::Index>`,
-`RestartPublisherContext`.
+**Context traits provided:** `BufferManagerContext`.
 
-**Inherent helpers (no trait):** `push_outbox(msg)` and
-`push_outbox_deferred(msg)` are inherent methods on `LayerContext<D>`
-— consumers (layers, augments emitting telegrams) call them directly
-without going through a context trait. The deferred queue is flushed
+**Inherent helpers (no trait):** `push_outbox(msg)`,
+`push_outbox_deferred(msg)`, `publish_event(index, ComObjectEvent)`
+(publishes a CO event on `event_channel`), and
+`try_send_restart_request(RestartRequest) -> bool` (pushes a restart
+request onto `restart_channel`) are inherent methods on
+`LayerContext<D>` — consumers (layers, augments emitting telegrams)
+call them directly on the concrete context, without going through a
+context trait. The publish/restart helpers were trait methods
+(`EventPublisherContext` / `RestartPublisherContext`) until they were
+collapsed to inherent methods: each had a single impl on
+`LayerContext<D>` and no generic bound site, so the trait abstracted
+nothing. The deferred queue is flushed
 at the end of a dispatch cycle and is used by augments that must send
 a bus telegram *after* a management response has been emitted (e.g.
 GO diagnostics emitting a `GroupValue_Write` after acknowledging the
@@ -571,10 +577,11 @@ All layers live under
 **Context traits required by layers** (selected, non-exhaustive; see
 §5 for the full surface):
 
-- AL requires: `BufferManagerContext`, `EventPublisherContext`,
-  `RestartPublisherContext`, `PropertyServiceHandler` on
-  `InterfaceObjects`. Outbox writes use the inherent
-  `LayerContext::push_outbox()` / `push_outbox_deferred()` helpers.
+- AL requires: `BufferManagerContext`, `PropertyServiceHandler` on
+  `InterfaceObjects`. Outbox writes, CO-event publishing, and restart
+  requests use the inherent `LayerContext::push_outbox()` /
+  `push_outbox_deferred()` / `publish_event()` /
+  `try_send_restart_request()` helpers.
 - TL requires access to `HasConnectionAuth` on `D::State` for
   per-connection access levels.
 - Secure AL additionally requires `HasSecurityState` and
@@ -676,8 +683,8 @@ Property-service infrastructure. Key types:
 
 Communication objects (`ComObjects` trait, `ComObjectEvent`,
 `LifecycleEvent`). The user's `#[derive(EtsComObjects)]` struct
-implements `ComObjects`; its `Index` enum drives
-`EventPublisherContext<Index>`.
+implements `ComObjects`; its `Index` enum types the
+`LayerContext::publish_event(index, ComObjectEvent)` inherent helper.
 
 #### `objects/tables`
 
@@ -1087,13 +1094,18 @@ file, methods (short form), typical provider, and typical consumer.
 | `MaxRetryCountContext` | `max_retry_count() -> u8` | `StackContext<'a, D>` (conditional on `D::State: HasMaxRetryCount`) | TPUART during chip init |
 | `KnxIndividualAddressContext` | `individual_address() -> IndividualAddress` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
 | `AddressTableContext` | `type ADT`, `address_table() -> &RefCell<ADT>` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
-| `EventPublisherContext<Index>` | `publish_event(index, ComObjectEvent)` | `LayerContext<D>` | AL group-data handler; augments with `GroupDataProvider` |
-| `RestartPublisherContext` | `try_send_restart_request(RestartRequest) -> bool` | `LayerContext<D>` | AL `handle_restart()` |
 
-The outbox is **not** behind a context trait. `LayerContext<D>`
-exposes inherent helpers `push_outbox(msg)` /
-`push_outbox_deferred(msg)`; augments that need to emit telegrams
-(security GO diagnostics, cyclic group writes) call those directly.
+The outbox, CO-event publishing, and restart requests are **not**
+behind a context trait. `LayerContext<D>` exposes them as inherent
+helpers: `push_outbox(msg)` / `push_outbox_deferred(msg)` (augments
+that need to emit telegrams — security GO diagnostics, cyclic group
+writes — call those directly), `publish_event(index, ComObjectEvent)`
+(AL group-data handler; augments with `GroupDataProvider`), and
+`try_send_restart_request(RestartRequest) -> bool` (AL
+`handle_restart()`). The latter two were the `EventPublisherContext` /
+`RestartPublisherContext` traits, each with a single `LayerContext<D>`
+impl and no generic bound site; they were collapsed to inherent
+methods.
 
 ### 5.2 KNX/IP (`linklayers/knxip/context.rs`, feature `knxip`)
 

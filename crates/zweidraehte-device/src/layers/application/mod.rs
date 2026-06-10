@@ -21,7 +21,6 @@ pub(crate) mod group_data;
 pub mod services;
 
 use crate::access_policy::{AccessDecision, check_service_access};
-use crate::context::RestartPublisherContext;
 use crate::context::layer::LayerContext;
 use crate::objects::interface::PropertyError;
 use crate::service::{AlCtx, ApciHandler as _, Layer, ServiceCtx};
