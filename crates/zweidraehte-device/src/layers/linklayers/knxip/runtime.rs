@@ -349,12 +349,15 @@ where
 
                             let (addr_buf, addr_count, tunnel_slots) = self.address_and_tunnel_snapshot();
                             let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
+                            // This is an outgoing routing frame, not a reply
+                            // to an incoming UDP packet — socket_idx is unused.
                             let context = dispatch::make_server_context::<F::RemoteConfig>(
                                 self.context,
                                 self.ind_tx,
                                 &addr_buf[..addr_count],
                                 tunnel_ref,
                                 self.address_filter,
+                                0,
                             );
 
                             match F::Routing::on_request(&mut self.routing, &msg, &context).await {

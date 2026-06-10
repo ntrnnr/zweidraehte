@@ -139,6 +139,21 @@ pub type KnxIpInterfaceTcp<const N: usize> =
 ///
 /// Session storage is allocated; crypto dispatch is not yet implemented
 /// (see [`super::secure`]).
+///
+/// # WARNING: IP Secure session handling is NOT implemented
+///
+/// Using this feature set does **not** enable KNX IP Secure. The `0x09xx`
+/// service-type range (`SECURE_WRAPPER`, `SESSION_REQUEST`,
+/// `SESSION_RESPONSE`, `SESSION_AUTHENTICATE`, `SESSION_STATUS`,
+/// `TIMER_NOTIFY`) is never dispatched — those frames are silently dropped.
+/// Only the per-session storage is reserved via
+/// [`WithIpSecure<N>`](super::secure::WithIpSecure); no authentication,
+/// encryption, or key exchange takes place.
+///
+/// This alias exists to allow the rest of the device definition to name an
+/// eventual secure-interface type without compile-time breakage. It must
+/// **not** be used in any context that requires actual KNX IP Secure
+/// compliance.
 pub type KnxIpSecureInterfaceTcp<const N: usize> =
     Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
 

@@ -180,11 +180,14 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         }
 
         // Determine if this is a data frame (request) or an ACK.
-        // Convention: ACK service types are the request type + 1
-        // (e.g., DeviceConfigurationRequest=0x0310, DeviceConfigurationAck=0x0311;
-        //        TunnelingRequest=0x0420, TunnelingAck=0x0421).
-        let service_type_raw: u16 = service_type.into();
-        let is_ack = (service_type_raw & 0x01) != 0;
+        //
+        // We cannot use an odd/even heuristic on the service code because
+        // TunnelingFeatureResponse (0x0423) and TunnelingFeatureInfo (0x0425)
+        // are also odd but are NOT ACK frames — they carry feature data and
+        // would fail TunnelingAck parsing if misrouted. Use an explicit match
+        // on the two real ACK types instead.
+        let is_ack =
+            matches!(service_type, KNXnetIPServiceType::TunnelingAck | KNXnetIPServiceType::DeviceConfigurationAck);
 
         if is_ack {
             let conn = self.connections[conn_idx].as_mut().expect("just verified Some");
@@ -770,12 +773,38 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         let channel_id = request.communication_channel_id;
 
         // Find the connection and determine response target.
-        // Known connections reply via their stored transport; unknown channels
-        // reply via the same transport the request arrived on.
+        //
+        // Per KNX 3/8/2 §8.6.4.2 the ConnectionstateRequest must originate
+        // from the client's control endpoint (IP + port). Accepting heartbeats
+        // from arbitrary sources would let any host that guesses an active
+        // channel ID prevent the heartbeat-timeout from firing (heartbeat
+        // hijack). Since SearchResponse packets make our presence public, the
+        // channel ID space is the only remaining gate.
+        //
+        // For UDP connections we compare the packet source against the stored
+        // control endpoint (both IP and port). TCP connections are implicitly
+        // authenticated by the socket itself — any request arriving on the TCP
+        // stream is from the established peer, so no extra check is needed.
+        let source = origin.peer_addr();
         let (status, target) = match self.find_connection_mut(channel_id) {
             Some(ctx) => {
-                ctx.last_activity = Instant::now();
-                (ConnectionStatus::NoError, ctx.response_target())
+                let source_ok = match ctx.transport {
+                    ConnectionTransport::Tcp { .. } => true,
+                    ConnectionTransport::Udp => source == ctx.control_endpoint,
+                };
+
+                if source_ok {
+                    ctx.last_activity = Instant::now();
+                    (ConnectionStatus::NoError, ctx.response_target())
+                } else {
+                    debug!(
+                        "Connectionstate request for channel {} from {}, expected control endpoint {} — ignoring",
+                        channel_id, source, ctx.control_endpoint
+                    );
+                    // Respond with NoSuchConnectionID to match the treatment
+                    // of unknown channels (§8.6.4.3 table row "no such connection").
+                    (ConnectionStatus::NoSuchConnectionID, origin.reply_target())
+                }
             }
             None => {
                 debug!("Connectionstate request for unknown channel {}", channel_id);
@@ -873,12 +902,32 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
     }
 
     fn allocate_channel_id(&mut self) -> u8 {
-        // Simple incrementing allocation. Channel ID 0 is reserved.
-        let id = self.next_channel_id;
-        self.next_channel_id = self.next_channel_id.wrapping_add(1);
-        if self.next_channel_id == 0 {
-            self.next_channel_id = 1;
+        // Advance the counter, skipping any ID that is still in use by a live
+        // connection. Channel ID 0 is reserved by the spec and never assigned.
+        //
+        // The slot-exhaustion check in `handle_connect_request` (`slot_idx`
+        // lookup) runs *before* this function is called, so we are guaranteed
+        // that at least one connection slot is free when we arrive here.
+        // Therefore the loop will always find a free ID in at most 255
+        // iterations — the fallback `return` at the end is truly unreachable
+        // in correct usage, but is present to satisfy the type checker without
+        // an `unreachable!()` that would panic in debug builds.
+        for _ in 0..255u8 {
+            let id = self.next_channel_id;
+            self.next_channel_id = self.next_channel_id.wrapping_add(1);
+            if self.next_channel_id == 0 {
+                self.next_channel_id = 1;
+            }
+
+            // Skip IDs that are still held by an active connection.
+            let in_use = self.connections.iter().any(|slot| slot.as_ref().is_some_and(|ctx| ctx.channel_id == id));
+            if !in_use {
+                return id;
+            }
         }
-        id
+
+        // Unreachable: the pre-call slot check ensures at least one free slot,
+        // which implies at least one free ID among the 255 non-zero values.
+        self.next_channel_id
     }
 }

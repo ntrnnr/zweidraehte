@@ -196,6 +196,18 @@ pub struct ServerContext<'a> {
     /// the network layer. `None` for tunneling-only servers that forward
     /// all traffic.
     address_filter: Option<&'a dyn AddressFilter>,
+    /// Index of the UDP socket on which this indication arrived.
+    ///
+    /// Services that send UDP responses must use this index so that replies
+    /// leave on the same socket the request arrived on. When the device
+    /// listens on multiple sockets (e.g. unicast + multicast), a response
+    /// sourced from the wrong socket would carry the wrong local IP address
+    /// and may be filtered by the client or the network.
+    ///
+    /// Currently the device always creates a single UDP socket, so this is
+    /// always 0 in practice. The field is threaded through now so that
+    /// multi-socket support can be enabled without changing the service API.
+    pub socket_idx: usize,
 }
 
 impl<'a> ServerContext<'a> {
@@ -212,6 +224,7 @@ impl<'a> ServerContext<'a> {
         knx_addresses: &'a dyn KnxIndividualAddressContext,
         tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
         address_filter: Option<&'a dyn AddressFilter>,
+        socket_idx: usize,
     ) -> Self {
         Self {
             buffer_manager,
@@ -225,6 +238,7 @@ impl<'a> ServerContext<'a> {
             knx_addresses,
             tunneling_slot_info,
             address_filter,
+            socket_idx,
         }
     }
 

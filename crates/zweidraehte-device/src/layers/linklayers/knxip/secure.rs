@@ -58,6 +58,26 @@ impl IpSecureFeature for NoIpSecure {
 /// [`KnxNetIpDefinition`](super::KnxNetIpDefinition) — secure sessions
 /// have a 1:1 affinity with TCP streams (§2.2.3.3, §2.4.2: closing the
 /// TCP connection implicitly closes all sessions opened on it).
+///
+/// # WARNING: IP Secure session handling is NOT implemented
+///
+/// This type only allocates the per-session storage array in
+/// [`KnxNetIpResources`](super::KnxNetIpResources). The dispatch path for
+/// the KNX IP Secure service-type range (`0x09xx`: `SECURE_WRAPPER`,
+/// `SESSION_REQUEST`, `SESSION_RESPONSE`, `SESSION_AUTHENTICATE`,
+/// `SESSION_STATUS`, `TIMER_NOTIFY`) is **not wired up**. All frames with
+/// those service types are silently dropped by the `Connectionless`
+/// dispatch branch without any processing.
+///
+/// A device built with [`KnxIpSecureInterfaceTcp`](super::features::KnxIpSecureInterfaceTcp)
+/// therefore presents a **false security posture**: it advertises IP Secure
+/// capability via the session storage shape but performs no authentication,
+/// encryption, or key exchange. Do **not** use this type in a production
+/// build that requires KNX IP Secure compliance.
+///
+/// The session slots and state types are shape-only stubs for a future
+/// implementation. See the module-level doc comment in [`super::secure`]
+/// for the planned dispatch integration.
 pub struct WithIpSecure<const N: usize>;
 
 impl<const N: usize> IpSecureFeature for WithIpSecure<N> {

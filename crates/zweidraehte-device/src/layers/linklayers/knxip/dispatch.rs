@@ -58,12 +58,16 @@ pub(super) const MAX_RETRY_ATTEMPTS: u8 = 5;
 ///
 /// The caller materialises the additional-address and tunneling-slot data
 /// into local buffers (with the correct capacity `N`) and passes slices.
+/// `socket_idx` is the index of the UDP socket on which the triggering
+/// indication arrived; it is stored in the context so service handlers
+/// can send their response on the correct socket.
 pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
     context: &'a dyn KnxNetIpContext,
     ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
     additional_addresses: &'a [zweidraehte_proto::address::IndividualAddress],
     tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
     address_filter: Option<&'a dyn super::types::AddressFilter>,
+    socket_idx: usize,
 ) -> ServerContext<'a> {
     // The remote-config write/reset capabilities are gated identically to
     // the diagnostics read side: present exactly when the remote-config
@@ -86,6 +90,7 @@ pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
         context,
         tunneling_slot_info,
         address_filter,
+        socket_idx,
     )
 }
 
@@ -155,12 +160,15 @@ where
 
                 let (addr_buf, addr_count, tunnel_slots) = self.address_and_tunnel_snapshot();
                 let tunnel_ref = tunnel_slots.as_ref().map(|(len, v)| (*len, v.as_slice()));
+                // Retries are outgoing routing frames, not replies to an
+                // incoming UDP packet, so no source socket is meaningful here.
                 let context = make_server_context::<F::RemoteConfig>(
                     self.context,
                     self.ind_tx,
                     &addr_buf[..addr_count],
                     tunnel_ref,
                     self.address_filter,
+                    0,
                 );
 
                 match F::Routing::on_request(&mut self.routing, &pending.message, &context).await {
@@ -326,6 +334,8 @@ where
 
         // Helper closure to build server context — captures immutable fields
         // that are disjoint from the mutable server fields.
+        // `socket_idx` is captured so that responses are routed back on the
+        // same UDP socket the request arrived on.
         let address_filter = self.address_filter;
         let make_ctx = |ind_tx| {
             make_server_context::<F::RemoteConfig>(
@@ -334,6 +344,7 @@ where
                 additional_addresses,
                 tunnel_ref,
                 address_filter,
+                socket_idx,
             )
         };
 

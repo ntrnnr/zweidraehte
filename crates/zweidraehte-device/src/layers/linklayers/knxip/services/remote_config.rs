@@ -116,7 +116,7 @@ impl RemoteConfigurationServer {
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse {
             buffer: response_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: 0 },
+            target: ResponseTarget::Udp { destination, socket_idx: context.socket_idx },
         });
         Ok(responses)
     }
@@ -219,7 +219,7 @@ impl RemoteConfigurationServer {
         let mut responses = Vec::new();
         let _ = responses.push(PendingResponse {
             buffer: response_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: 0 },
+            target: ResponseTarget::Udp { destination, socket_idx: context.socket_idx },
         });
         Ok(responses)
     }
@@ -591,6 +591,7 @@ mod tests {
             &knx_addrs,
             None,
             None,
+            0,
         );
 
         let (frame, len) = reset_frame(selector, cmd);
@@ -651,6 +652,7 @@ mod tests {
             &knx_addrs,
             None,
             None,
+            0,
         );
 
         let requested = IpConfig {
