@@ -86,7 +86,7 @@ where
 {
     let objs = knx.objects().borrow();
     let val = objs.value(status_obj.index());
-    val.first().is_some_and(|&b| b & 1 != 0)
+    val.and_then(|v| v.first().copied()).is_some_and(|b| b & 1 != 0)
 }
 
 /// Optimistically update the local status object to match what we sent.
@@ -101,8 +101,7 @@ where
     D: StackDefinition<CO = LightSwitchComObjects>,
 {
     let mut objs = knx.objects().borrow_mut();
-    let buf = objs.value_mut(status_obj.index());
-    if let Some(b) = buf.first_mut() {
+    if let Some(b) = objs.value_mut(status_obj.index()).and_then(|buf| buf.first_mut()) {
         *b = value as u8;
     }
 }

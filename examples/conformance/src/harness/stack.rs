@@ -238,8 +238,8 @@ impl ComObjects for ConformanceComObjects {
         }
     }
 
-    fn info(&self, idx: u16) -> ComObjectInfo<'_> {
-        match CoIndex::from_index(idx).expect("invalid index") {
+    fn info(&self, idx: u16) -> Option<ComObjectInfo<'_>> {
+        CoIndex::from_index(idx).map(|index| match index {
             // GO0-GO3: 1-bit main object and shadow objects
             CoIndex::Go0 => ComObjectInfo { status: &self.go_0.status, value: self.go_0.value.as_ref() },
             CoIndex::Go1CommFlags => {
@@ -287,11 +287,11 @@ impl ComObjects for ConformanceComObjects {
             CoIndex::GoDiagNoT => {
                 ComObjectInfo { status: &self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_ref() }
             }
-        }
+        })
     }
 
-    fn info_mut(&mut self, idx: u16) -> ComObjectInfoMut<'_> {
-        match CoIndex::from_index(idx).expect("invalid index") {
+    fn info_mut(&mut self, idx: u16) -> Option<ComObjectInfoMut<'_>> {
+        CoIndex::from_index(idx).map(|index| match index {
             // GO0-GO3: 1-bit main object and shadow objects
             CoIndex::Go0 => ComObjectInfoMut { status: &mut self.go_0.status, value: self.go_0.value.as_mut() },
             CoIndex::Go1CommFlags => ComObjectInfoMut {
@@ -349,7 +349,7 @@ impl ComObjects for ConformanceComObjects {
             CoIndex::GoDiagNoT => {
                 ComObjectInfoMut { status: &mut self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_mut() }
             }
-        }
+        })
     }
 }
 

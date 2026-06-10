@@ -93,7 +93,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// `false` if it was already busy transmitting.
     fn try_claim_object(&self, asap: u16, status: ComObjectStatus) -> bool {
         self.inner.with_comm_objs(|co| {
-            if co.status(asap) == ComObjectStatus::Busy {
+            if co.status(asap) == Some(ComObjectStatus::Busy) {
                 return false;
             }
             co.set_status(asap, status);
@@ -138,11 +138,14 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     ) -> Result<(), UpdateObjectError> {
         // Claim the object and set its value atomically within one borrow.
         let accepted = self.inner.with_comm_objs(|co| {
-            if co.status(asap.index()) == ComObjectStatus::Busy {
+            if co.status(asap.index()) == Some(ComObjectStatus::Busy) {
                 return false;
             }
             co.set_status(asap.index(), ComObjectStatus::WriteRequest);
-            co.info_mut(asap.index()).value.copy_from_slice(value.as_ref());
+            co.info_mut(asap.index())
+                .expect("typed comm-object Index is always in range")
+                .value
+                .copy_from_slice(value.as_ref());
             true
         });
         if !accepted {

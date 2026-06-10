@@ -104,12 +104,13 @@ impl ComObjects for NoCo {
         NoCo
     }
 
-    fn info(&self, _idx: u16) -> ComObjectInfo<'_> {
-        unimplemented!("the property-description test has no comm objects")
+    fn info(&self, _idx: u16) -> Option<ComObjectInfo<'_>> {
+        // The property-description test has no comm objects.
+        None
     }
 
-    fn info_mut(&mut self, _idx: u16) -> ComObjectInfoMut<'_> {
-        unimplemented!("the property-description test has no comm objects")
+    fn info_mut(&mut self, _idx: u16) -> Option<ComObjectInfoMut<'_>> {
+        None
     }
 }
 

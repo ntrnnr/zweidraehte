@@ -727,10 +727,23 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 
         drop(cot); // Release borrow before accessing comm objects.
 
-        // Write the value to the comm object.
+        // Write the value to the comm object. The COT entry existing does not
+        // guarantee the comm-object container covers this index (both tables
+        // are downloaded independently), so treat a miss as a void GO.
         {
             let mut co = state.comm_objects().borrow_mut();
-            let dest = co.value_mut(go_idx);
+            let Some(dest) = co.value_mut(go_idx) else {
+                return FunctionPropertyResult {
+                    return_code: 0xA1, // E_GD_GO_VOID
+                    data: PropertyBuf::new(&[0x00]),
+                };
+            };
+            if dest.len() < value_data.len() {
+                return FunctionPropertyResult {
+                    return_code: 0xA3, // E_GD_GO_SIZE_MISMATCH
+                    data: PropertyBuf::new(&[0x00]),
+                };
+            }
             dest[..value_data.len()].copy_from_slice(value_data);
         }
 
@@ -738,8 +751,8 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let co = state.comm_objects().borrow();
         // GO diagnostics status uses only the low nibble of the flags byte
         // (stripping the idle indicator in bit 6).
-        let status = co.status(go_idx).to_flags_byte() & 0x0F;
-        go_diag_success(0x00, go_idx, status, co.value(go_idx))
+        let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
+        go_diag_success(0x00, go_idx, status, co.value(go_idx).unwrap_or(&[]))
     }
 
     // ================================================================
@@ -918,10 +931,17 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         };
 
         // Build success response with current value (before building the
-        // telegram, since we need the borrow for the value data).
+        // telegram, since we need the borrow for the value data). The COT
+        // entry existing does not guarantee the comm-object container covers
+        // this index — both tables are downloaded independently.
         let co = ctx.state.comm_objects().borrow();
-        let status = co.status(go_idx).to_flags_byte() & 0x0F;
-        let value = co.value(go_idx);
+        let Some(value) = co.value(go_idx) else {
+            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
+        };
+        if value.len() < object_size {
+            return FunctionPropertyResult { return_code: 0xA3, data: PropertyBuf::new(&[0x02]) };
+        }
+        let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
         let resp = go_diag_success(0x02, go_idx, status, value);
 
         // ================================================================
@@ -1178,9 +1198,14 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         drop(cot);
 
         let co = state.comm_objects().borrow();
+        // The COT entry existing does not guarantee the comm-object container
+        // covers this index — both tables are downloaded independently.
+        let Some(value) = co.value(go_idx) else {
+            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x01]) };
+        };
         // GO diagnostics status uses only the low nibble (strip idle indicator).
-        let status = co.status(go_idx).to_flags_byte() & 0x0F;
-        go_diag_success(0x01, go_idx, status, co.value(go_idx))
+        let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
+        go_diag_success(0x01, go_idx, status, value)
     }
 }
 

@@ -334,35 +334,43 @@ pub const trait ComObjectIndex: Clone + Sized {
 }
 
 /// Trait for managing communication objects in a KNX application.
+///
+/// All index-taking accessors return `None` (or no-op) for an out-of-range
+/// index. The index typically originates from the association table, which
+/// is downloaded from ETS and therefore untrusted: a malicious or corrupt
+/// table must not be able to panic the device.
 pub trait ComObjects {
     type Index: ComObjectIndex;
 
     fn new() -> Self;
-    fn info<'a>(&'a self, idx: u16) -> ComObjectInfo<'a>;
-    fn info_mut<'a>(&'a mut self, idx: u16) -> ComObjectInfoMut<'a>;
+    fn info<'a>(&'a self, idx: u16) -> Option<ComObjectInfo<'a>>;
+    fn info_mut<'a>(&'a mut self, idx: u16) -> Option<ComObjectInfoMut<'a>>;
 
     #[inline]
-    fn status(&self, idx: u16) -> ComObjectStatus {
-        let info = self.info(idx);
-        *info.status
+    fn status(&self, idx: u16) -> Option<ComObjectStatus> {
+        self.info(idx).map(|info| *info.status)
     }
 
+    /// Set the status of the object at `idx`. No-op for an invalid index —
+    /// every caller in the stack reaches this only after the same index
+    /// succeeded in a value/COT lookup, so an invalid index here means the
+    /// container changed under us and dropping the status write is the
+    /// safest response.
     #[inline]
     fn set_status(&mut self, idx: u16, status: ComObjectStatus) {
-        let info = self.info_mut(idx);
-        *info.status = status;
+        if let Some(info) = self.info_mut(idx) {
+            *info.status = status;
+        }
     }
 
     #[inline]
-    fn value(&self, idx: u16) -> &[u8] {
-        let info = self.info(idx);
-        info.value
+    fn value(&self, idx: u16) -> Option<&[u8]> {
+        self.info(idx).map(|info| info.value)
     }
 
     #[inline]
-    fn value_mut(&mut self, idx: u16) -> &mut [u8] {
-        let info = self.info_mut(idx);
-        info.value
+    fn value_mut(&mut self, idx: u16) -> Option<&mut [u8]> {
+        self.info_mut(idx).map(|info| info.value)
     }
 
     /// Acknowledge that an update has been processed by the application.
@@ -371,10 +379,11 @@ pub trait ComObjects {
     /// Call this after your application has handled a `ComObjectEvent::Updated` event
     /// to indicate that the new value has been processed.
     ///
-    /// Only affects objects in `Updated` status; other statuses are left unchanged.
+    /// Only affects objects in `Updated` status; other statuses (and invalid
+    /// indices) are left unchanged.
     #[inline]
     fn acknowledge_update(&mut self, idx: u16) {
-        if self.status(idx) == ComObjectStatus::Updated {
+        if self.status(idx) == Some(ComObjectStatus::Updated) {
             self.set_status(idx, ComObjectStatus::IdleOk);
         }
     }

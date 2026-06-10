@@ -117,12 +117,13 @@ impl ComObjects for IpInterfaceComObjects {
         Self
     }
 
-    fn info(&self, _idx: u16) -> ComObjectInfo<'_> {
-        panic!("IP Interface has no communication objects");
+    fn info(&self, _idx: u16) -> Option<ComObjectInfo<'_>> {
+        // The IP interface has no communication objects.
+        None
     }
 
-    fn info_mut(&mut self, _idx: u16) -> ComObjectInfoMut<'_> {
-        panic!("IP Interface has no communication objects");
+    fn info_mut(&mut self, _idx: u16) -> Option<ComObjectInfoMut<'_>> {
+        None
     }
 }
 

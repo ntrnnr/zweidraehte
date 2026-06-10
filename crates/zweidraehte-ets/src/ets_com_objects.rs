@@ -337,16 +337,16 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
                     }
                 }
 
-                fn info<'a>(&'a self, idx: u16) -> zweidraehte_device::objects::comm::ComObjectInfo<'a> {
-                    match Index::from_index(idx).unwrap() {
+                fn info<'a>(&'a self, idx: u16) -> Option<zweidraehte_device::objects::comm::ComObjectInfo<'a>> {
+                    Index::from_index(idx).map(|index| match index {
                         #(#info_arms),*
-                    }
+                    })
                 }
 
-                fn info_mut<'a>(&'a mut self, idx: u16) -> zweidraehte_device::objects::comm::ComObjectInfoMut<'a> {
-                    match Index::from_index(idx).unwrap() {
+                fn info_mut<'a>(&'a mut self, idx: u16) -> Option<zweidraehte_device::objects::comm::ComObjectInfoMut<'a>> {
+                    Index::from_index(idx).map(|index| match index {
                         #(#info_mut_arms),*
-                    }
+                    })
                 }
             }
 
@@ -507,18 +507,18 @@ fn generate_module_based_impl(
                     }
                 }
 
-                fn info<'a>(&'a self, idx: u16) -> zweidraehte_device::objects::comm::ComObjectInfo<'a> {
+                fn info<'a>(&'a self, idx: u16) -> Option<zweidraehte_device::objects::comm::ComObjectInfo<'a>> {
                     const OBJS_PER_INSTANCE: usize = #objects_per_instance;
                     let instance = idx as usize / OBJS_PER_INSTANCE;
                     let local_idx = idx as usize % OBJS_PER_INSTANCE;
-                    self.#field_ident[instance].info(local_idx as u16)
+                    self.#field_ident.get(instance)?.info(local_idx as u16)
                 }
 
-                fn info_mut<'a>(&'a mut self, idx: u16) -> zweidraehte_device::objects::comm::ComObjectInfoMut<'a> {
+                fn info_mut<'a>(&'a mut self, idx: u16) -> Option<zweidraehte_device::objects::comm::ComObjectInfoMut<'a>> {
                     const OBJS_PER_INSTANCE: usize = #objects_per_instance;
                     let instance = idx as usize / OBJS_PER_INSTANCE;
                     let local_idx = idx as usize % OBJS_PER_INSTANCE;
-                    self.#field_ident[instance].info_mut(local_idx as u16)
+                    self.#field_ident.get_mut(instance)?.info_mut(local_idx as u16)
                 }
             }
 

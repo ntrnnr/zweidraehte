@@ -224,7 +224,19 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 {
                     let mut objs = self.state.comm_objects().borrow_mut();
 
-                    objs.value_mut(asap).copy_from_slice(&ind.buf()[msg_offset..msg_offset + object_size]);
+                    // The ASAP comes from the downloaded association table and the
+                    // size from the downloaded CO table — neither is trusted. An
+                    // out-of-range ASAP or a size that disagrees with the actual
+                    // storage must drop the write, not panic the device.
+                    let Some(dst) = objs.value_mut(asap) else {
+                        warn!("AL ASAP {} outside comm-object range, dropping group write", asap);
+                        continue;
+                    };
+                    if dst.len() != object_size {
+                        warn!("AL ASAP {} size mismatch: COT {} vs storage {}", asap, object_size, dst.len());
+                        continue;
+                    }
+                    dst.copy_from_slice(&ind.buf()[msg_offset..msg_offset + object_size]);
                     objs.set_status(asap, ComObjectStatus::Updated);
 
                     // Call write hook
@@ -248,7 +260,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                     "AL ASAP {} updated via {:?}: {:?}",
                     asap,
                     apci,
-                    zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap))
+                    zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap).unwrap_or(&[]))
                 );
             } else {
                 error!("Length of telegram not enough to contain object value");
@@ -343,6 +355,21 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // Call read hook
             self.state.comm_objects().borrow_mut().prepare_read(asap);
 
+            // The ASAP comes from the downloaded association table; an entry
+            // outside the device's comm-object range (or whose storage size
+            // disagrees with the downloaded CO table) must not panic us.
+            {
+                let objs = self.state.comm_objects().borrow();
+                let Some(value) = objs.value(asap) else {
+                    warn!("AL ASAP {} outside comm-object range, dropping group read", asap);
+                    continue;
+                };
+                if value.len() != object_size {
+                    warn!("AL ASAP {} size mismatch: COT {} vs storage {}", asap, object_size, value.len());
+                    continue;
+                }
+            }
+
             // Allocate a new message for the response
             let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(response_len) else {
                 warn!("AL no buffer for response");
@@ -365,8 +392,9 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             .with_required_security(response_security)
             .with_application(ApciCode::GroupValueResponse)
             .with_data(|buf| {
-                buf[msg_offset..msg_offset + object_size]
-                    .copy_from_slice(self.state.comm_objects().borrow().value(asap));
+                buf[msg_offset..msg_offset + object_size].copy_from_slice(
+                    self.state.comm_objects().borrow().value(asap).expect("ASAP validated above in this iteration"),
+                );
             });
 
             self.lctx.push_outbox(msg.into_inner());
@@ -374,7 +402,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
                 asap,
-                zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap))
+                zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap).unwrap_or(&[]))
             );
 
             // Publish read event to the event channel
@@ -411,7 +439,10 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             return true; // Not an "app not running" error
         };
 
-        let status = *self.state.comm_objects().borrow().info(asap).status;
+        let Some(status) = self.state.comm_objects().borrow().status(asap) else {
+            error!("ASAP {} outside comm-object range", asap);
+            return true; // Not an "app not running" error
+        };
 
         if !read && status != ComObjectStatus::WriteRequest {
             return true;
@@ -523,14 +554,15 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 // in the second APCI byte. Multi-byte values never take
                 // this branch because `size_in_bytes()` returns `(_, false)`
                 // for them.
-                let value_byte = self.state.comm_objects().borrow().value(asap).first().copied().unwrap_or(0);
+                let value_byte =
+                    self.state.comm_objects().borrow().value(asap).and_then(|v| v.first().copied()).unwrap_or(0);
                 builder
                     .with_application(ApciCode::GroupValueWrite)
                     .with_data(|buf| GroupValueWriteRequest::write_short(buf, value_byte))
             } else {
                 // Full write: copy the CO value into the APDU area.
                 let co = self.state.comm_objects().borrow();
-                let value = co.value(asap);
+                let value = co.value(asap).expect("ASAP status was validated at function entry");
                 builder
                     .with_application(ApciCode::GroupValueWrite)
                     .with_data(|buf| GroupValueWriteRequest::write_full(buf, value))
@@ -601,7 +633,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 // them on app start), a ROI scan is needed.
                 if self.state.app().borrow().is_running()
                     && self.state.ast().borrow().is_loaded()
-                    && self.state.comm_objects().borrow().status(1) == ComObjectStatus::Uninitialized
+                    && self.state.comm_objects().borrow().status(1) == Some(ComObjectStatus::Uninitialized)
                 {
                     Some(embassy_time::Instant::now())
                 } else {
@@ -630,7 +662,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         if self.lctx.group_data.read_on_init.get() == ReadOnInitState::Idle
             && self.state.app().borrow().is_running()
             && self.state.ast().borrow().is_loaded()
-            && self.state.comm_objects().borrow().status(1) == ComObjectStatus::Uninitialized
+            && self.state.comm_objects().borrow().status(1) == Some(ComObjectStatus::Uninitialized)
         {
             info!("AL read-on-init: starting cycle (detected uninitialized objects)");
             self.lctx.group_data.read_on_init.set(ReadOnInitState::Scanning(1));
@@ -706,8 +738,9 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 continue;
             }
 
-            // 2. Object must still be uninitialized (value not yet valid)
-            if self.state.comm_objects().borrow().status(asap) != ComObjectStatus::Uninitialized {
+            // 2. Object must still be uninitialized (value not yet valid).
+            // An out-of-range ASAP (None) is skipped via the same branch.
+            if self.state.comm_objects().borrow().status(asap) != Some(ComObjectStatus::Uninitialized) {
                 debug!("AL read-on-init: ASAP {} skipped (value already valid)", asap);
                 continue;
             }
