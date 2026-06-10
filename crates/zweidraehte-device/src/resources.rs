@@ -15,20 +15,29 @@ use zweidraehte_proto::messages::buffers::BufferManager;
 /// - APDU data (up to `MAX_APDU_LENGTH`)
 /// - Headroom (16 bytes): for zero-copy header prepending
 ///
-/// # Example
+/// # Canonical incantation
+///
+/// Most devices should spell their static resources as:
 ///
 /// ```ignore
-/// use zweidraehte_device::config::{MAX_APDU_LENGTH_TP1_STANDARD, buffer_size_for_apdu};
+/// use static_cell::StaticCell;
+/// use zweidraehte_device::{StackDefinition, StackResources, config::buffer_size_for_apdu};
 ///
-/// impl StackDefinition for MyDevice {
-///     const MASK_VERSION: &'static [u8; 2] = &[0x07, 0xB0];
-///     const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_TP1_STANDARD; // 14 bytes
-///     // ... other fields
-/// }
-///
-/// // Buffer size is 39 bytes (14 + 9 overhead + 16 headroom)
-/// static RESOURCES: StaticCell<StackResources<MyDevice, { buffer_size_for_apdu(MyDevice::MAX_APDU_LENGTH) }>> = StaticCell::new();
+/// static RESOURCES: StaticCell<
+///     StackResources<
+///         MyDevice,
+///         { buffer_size_for_apdu(<MyDevice as StackDefinition>::MAX_APDU_LENGTH) },
+///     >,
+/// > = StaticCell::new();
 /// ```
+///
+/// A `DefaultStackResources<D>` type alias that automatically derives `BUF_SZ`
+/// from `D::MAX_APDU_LENGTH` would be nicer, but Rust's `generic_const_exprs`
+/// feature currently causes overflow errors when the expression is used in a
+/// `static` declaration (because the compiler must evaluate the const in a
+/// context where the where-clauses are fully resolved, and the current
+/// `generic_const_exprs` implementation does not support that for trait-
+/// associated consts). Once the feature stabilises this can be revisited.
 ///
 /// # Type Parameters
 ///
@@ -37,13 +46,6 @@ use zweidraehte_proto::messages::buffers::BufferManager;
 /// - `NUM_BUFS`: Number of buffers in the pool (default: 8). The cEMI device
 ///   management path can hold up to 4 buffers simultaneously, so values below
 ///   5 risk deadlocks under concurrent load.
-///
-/// # Note on Buffer Size
-///
-/// We would like to automatically derive `BUF_SZ` from `D::MAX_APDU_LENGTH`,
-/// but Rust's `generic_const_exprs` feature is still incomplete and causes
-/// overflow errors when used with static declarations. Until this is fixed,
-/// users must explicitly specify the buffer size.
 pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 8> {
     pub(crate) inner: MaybeUninit<Inner<D>>,
     pub(crate) buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,

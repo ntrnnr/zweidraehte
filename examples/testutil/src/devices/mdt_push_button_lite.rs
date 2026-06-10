@@ -3186,7 +3186,6 @@ zweidraehte_device::system_b_standard_stack! {
     platform: MockIpPlatform,
     extension_state: IpExtensionFor<KnxIpDeviceUdp>,
     state: MdtState,
-    config: MdtDeviceConfig,
     al_extensions: (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,

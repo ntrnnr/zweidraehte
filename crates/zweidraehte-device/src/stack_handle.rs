@@ -390,6 +390,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # Returns
     /// A `DynSubscriber` that yields tuples of `(object_index, event_type)`
     ///
+    /// # Subscriber limit
+    /// At most **4** dynamic subscribers can be active simultaneously. Calling
+    /// this method when 4 are already live panics. If you need more, raise the
+    /// `SUBS` const in `context/layer.rs` (`PubSubChannel<…, 4, SUBS, 1>`).
+    ///
     /// # Events
     /// * `ComObjectEvent::Updated` - Object was updated by an incoming GroupValueWrite
     /// * `ComObjectEvent::LocallyUpdated` - Object was updated locally via `update_object`
@@ -429,7 +434,9 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self,
     ) -> embassy_sync::pubsub::DynSubscriber<'_, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent)>
     {
-        self.inner.layer_context.event_channel.dyn_subscriber().unwrap()
+        self.inner.layer_context.event_channel.dyn_subscriber().expect(
+            "too many event subscribers: LayerContext event_channel allows at most 4; raise SUBS in context/layer.rs",
+        )
     }
 
     /// Subscribe to application lifecycle events.
@@ -439,6 +446,11 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// - ETS programming completing (load state machine cascade)
     /// - Explicit run state control commands
     /// - Device startup with persisted loaded state
+    ///
+    /// # Subscriber limit
+    /// At most **4** dynamic subscribers can be active simultaneously. Calling
+    /// this method when 4 are already live panics. If you need more, raise the
+    /// `SUBS` const in `context/layer.rs` (`PubSubChannel<…, 4, SUBS, 1>`).
     ///
     /// # Example
     /// ```rust,ignore
@@ -460,7 +472,9 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # }
     /// ```
     pub fn lifecycle_events(&self) -> embassy_sync::pubsub::DynSubscriber<'_, LifecycleEvent> {
-        self.inner.layer_context.lifecycle_channel.dyn_subscriber().unwrap()
+        self.inner.layer_context.lifecycle_channel.dyn_subscriber().expect(
+            "too many lifecycle subscribers: LayerContext lifecycle_channel allows at most 4; raise SUBS in context/layer.rs",
+        )
     }
 
     /// Allocate a KNX message buffer from raw bytes.

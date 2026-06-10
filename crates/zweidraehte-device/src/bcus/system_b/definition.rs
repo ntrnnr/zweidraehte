@@ -327,7 +327,27 @@ where
 /// `StackDefinition` items not listed below (`Identity`, `Rng`, `Mutex`,
 /// `MAX_APDU_LENGTH`, …) take their trait defaults; override them in the
 /// optional `extra { … }` block, whose items are spliced into the generated
-/// `impl StackDefinition` verbatim.
+/// `impl StackDefinition` verbatim. Only items that the macro does **not**
+/// already generate may appear in `extra { … }` — duplicates cause a Rust
+/// compile error. The macro always generates `Augments`, `create_augments`,
+/// `InterfaceObjects`, `create_interface_objects`, `Mem`, `StateInit`, and
+/// `create_state`.
+///
+/// # Limitations: items that require hand-writing `StackDefinition`
+///
+/// The following scenarios require a fully hand-written impl because the macro
+/// always generates the corresponding items:
+///
+/// - **Custom augment chain** — the macro always emits
+///   `type Augments<'a> = ExtensionAugmentFor<'a, Self>` (the single-extension
+///   default). Devices that need `#[derive(ServiceRegistry)]` multi-augment
+///   bundles must hand-write the entire impl.
+/// - **Secure devices with `SecureResources`** — the macro generates
+///   `type StateInit = SystemBStateInit<Self::Identity, Config>` with `R = ()`.
+///   Stacks that need the third resource parameter must hand-write the impl.
+///   For a working example see `examples/conformance/src/harness/secure_stack.rs`.
+/// - **Non-standard `InterfaceObjects` wrapper** — the macro pins
+///   `InterfaceObjects<'a>` to `SystemBInterfaceObjectsFor<'a, Self>`.
 ///
 /// ```rust,ignore
 /// system_b_standard_stack! {
@@ -340,7 +360,6 @@ where
 ///     platform: MockIpPlatform,
 ///     extension_state: IpExtensionFor<KnxIpDeviceTcp>,
 ///     state: DemoState,
-///     config: DemoDeviceConfig,
 ///     al_extensions: (SystemBAlServices, DomainAddressService),
 ///     layer_builder: InsecureIpDeviceBuilder,
 /// }
@@ -357,7 +376,6 @@ macro_rules! system_b_standard_stack {
         platform: $platform:ty,
         extension_state: $es:ty,
         state: $state:ty,
-        config: $config:ty,
         al_extensions: $al_extensions:ty,
         layer_builder: $layer_builder:ty
         $(, extra { $($extra:item)* })?
@@ -381,7 +399,12 @@ macro_rules! system_b_standard_stack {
 
             // ---- always-identical shell ------------------------------------
             type Mem = $crate::bcus::system_b::SystemBMemoryMap;
-            type StateInit = $crate::bcus::system_b::SystemBStateInit<Self::Identity, $config>;
+            // The config type is always derivable as `<State as HasDeviceConfig>::Config`,
+            // so we project it here rather than requiring callers to spell it out.
+            type StateInit = $crate::bcus::system_b::SystemBStateInit<
+                Self::Identity,
+                <$state as $crate::bcus::system_b::HasDeviceConfig>::Config,
+            >;
 
             fn create_state(init: Self::StateInit) -> Self::State {
                 <$state>::from_init(init)

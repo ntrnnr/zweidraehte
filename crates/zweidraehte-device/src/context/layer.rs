@@ -41,8 +41,8 @@ pub struct LayerContext<D: StackDefinition> {
     pub buffer_manager: DynBufferManager<'static>,
     pub outbox: RefCell<Outbox>,
     pub event_channel:
-        PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 2, 1>,
-    pub lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
+        PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 4, 1>,
+    pub lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1>,
     pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
     pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 

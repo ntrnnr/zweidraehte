@@ -112,12 +112,17 @@ pub trait StackDefinition: Copy + 'static {
     /// A typical KNX device accepts 1 incoming connection (from ETS or a
     /// configurator). Routers or gateways may need more. Default: 1.
     ///
-    /// Note: Due to `generic_const_exprs` limitations, the default
-    /// [`Runner::run()`](crate::Runner::run) cannot forward these constants
-    /// to the transport layer at compile time. The TL's own defaults (1/0)
-    /// match these defaults. If you override these values, you'll need a
-    /// custom runner that instantiates `TransportLayer` with explicit const
-    /// generics.
+    /// # Important: overrides are currently ignored by the standard builders
+    ///
+    /// Due to a `generic_const_exprs` limitation, the standard layer builders
+    /// ([`InsecureDeviceBuilder`](crate::InsecureDeviceBuilder),
+    /// [`InsecureIpDeviceBuilder`](crate::InsecureIpDeviceBuilder), and
+    /// [`SecureDeviceBuilder`](crate::SecureDeviceBuilder)) always construct
+    /// `TransportLayer` with the hard-coded defaults (1 incoming, 0 outgoing).
+    /// Overriding this constant on your `StackDefinition` is **silently a
+    /// no-op** with those builders. To use a non-default value you must write
+    /// a custom `LayerStackBuilder` that passes explicit const generics to
+    /// `TransportLayer::new`.
     const TL_MAX_INCOMING: usize = 1;
 
     /// Maximum outgoing transport-layer connections (initiated by us).
@@ -128,6 +133,11 @@ pub trait StackDefinition: Copy + 'static {
     /// Only valid with [`TlStyle::Style3`] or higher — the transport layer
     /// will panic at startup if `TL_MAX_OUTGOING > 0` with a style that
     /// does not support outgoing connections.
+    ///
+    /// # Important: overrides are currently ignored by the standard builders
+    ///
+    /// See [`TL_MAX_INCOMING`](Self::TL_MAX_INCOMING) — the same limitation
+    /// applies here.
     const TL_MAX_OUTGOING: usize = 0;
 
     /// Transport layer state machine style per KNX spec 03/03/04 section 5.4.

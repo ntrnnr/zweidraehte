@@ -91,6 +91,13 @@ impl KnxNetIpDefinition for PicoWLightSwitch {
     const MAX_UDP_SOCKETS: usize = 3;
 }
 
+// `system_b_standard_stack!` would collapse this to one macro call if there
+// were no extra augments, but since `PicoWAugments` chains two augments (IP +
+// Easter egg) the macro cannot generate the correct `type Augments` / `create_augments`
+// bodies — the macro always emits the single-extension default. Devices that
+// chain multiple augments must hand-write `StackDefinition` until a future
+// macro extension supports a custom augment slot without conflicting with the
+// macro-generated default. (See `system_b_standard_stack!` docs.)
 impl StackDefinition for PicoWLightSwitch {
     const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
     const TL_STYLE: TlStyle = TlStyle::Style1;

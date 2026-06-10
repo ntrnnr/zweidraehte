@@ -552,17 +552,14 @@ pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
 ```rust
 #[derive(EtsParams, Clone, Default, Serialize, Deserialize)]
 pub struct MyParams {
-    #[display("Brightness")]
+    #[ets(display = "Brightness")]
     pub brightness: u8,
 }
 
 #[derive(EtsComObjects)]
 pub struct MyComObjects {
-    #[index(0)]
-    #[display("Switch")]
-    #[function("Switching")]
-    #[flags(C, W, T, U)]
-    pub switch: GroupObject<DPT_Switch>,
+    #[ets(index = 0, display = "Switch", function = "Switching", flags = C | W | T | U)]
+    pub switch: ComObject<DPT_Switch>,
 }
 ```
 
@@ -570,22 +567,25 @@ pub struct MyComObjects {
 
 Choose the state type alias based on your medium. For KNX/IP devices,
 pass the same `FeatureSet` type used for the link layer builder —
-tunneling capacity and device capabilities are derived automatically:
+tunneling capacity and device capabilities are derived automatically.
+The `IpStateFor<D, Proto>` alias projects the table sizes directly from
+`D::DEVICE` so you do not need to state them by hand:
 
 ```rust
-const ADT_SIZE: usize = DEVICE_DESCRIPTOR.address_table_size();
-const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
-const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
-
 // KNX/IP routing device
-type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpDeviceUdp>;
+type MyState = IpStateFor<MyDevice, KnxIpDeviceUdp>;
 
 // KNX/IP tunneling interface with 4 slots
-type MyState = IpDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams, KnxIpInterfaceUdp<4>>;
+type MyState = IpStateFor<MyDevice, KnxIpInterfaceUdp<4>>;
 
 // TP1 device
-type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyParams>;
+type MyState = Tp1StateFor<MyDevice>;
 ```
+
+The lower-level aliases that take explicit `ADT_SIZE`/`AST_SIZE`/`COT_SIZE`
+const generics (`Tp1SystemBDeviceState`, `IpDeviceState`, …) still exist for
+cases where you need explicit control, but the `*StateFor<D, …>` forms are
+preferred for new code.
 
 ### Step 4: StackDefinition
 
@@ -622,18 +622,17 @@ zweidraehte_device::system_b_standard_stack! {
     platform:           MyPlatform,
     extension_state:    IpExtensionFor<KnxIpDeviceUdp>,
     state:              MyState,
-    config:             <MyState as HasDeviceConfig>::Config,
     al_extensions:      (SystemBAlServices, DomainAddressService),
     layer_builder:      InsecureIpDeviceBuilder,
 }
 ```
 
 The macro generates the empty `impl SystemBStackDefinition for MyDevice {}`,
-the `type Mem`/`type StateInit` (`SystemBStateInit<Self::Identity, config>`),
-`fn create_state` (`MyState::from_init(init)`), the
-`InterfaceObjects`/`Augments` GATs, and the `create_interface_objects` /
-`create_augments` bodies. Note how `KnxIpDeviceUdp` appears in both
-`link_layer_builder` (via `KnxNetIpDefinition::Features`) and
+the `type Mem`/`type StateInit` (deriving the config type automatically as
+`<MyState as HasDeviceConfig>::Config`), `fn create_state`
+(`MyState::from_init(init)`), the `InterfaceObjects`/`Augments` GATs, and the
+`create_interface_objects` / `create_augments` bodies. Note how `KnxIpDeviceUdp`
+appears in both `link_layer_builder` (via `KnxNetIpDefinition::Features`) and
 `extension_state` — the single source of truth for the device's IP feature
 set.
 
@@ -646,10 +645,10 @@ changes.
 **With extra augments (e.g., EasterEggAugment):**
 
 When the device chains extra augments alongside the medium extension, spell
-`D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct so each augment
-has a name, and override `type Augments<'a>` + `create_augments` via the
-macro's optional trailing `extra { … }` block (whose items are spliced into
-the generated `impl StackDefinition` verbatim):
+`D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct. Because
+`system_b_standard_stack!` always generates `type Augments<'a>` and
+`create_augments`, a custom augment chain requires a fully hand-written
+`impl StackDefinition` (the macro cannot cover this case):
 
 ```rust
 #[derive(zweidraehte_device::service::ServiceRegistry)]
@@ -658,37 +657,32 @@ pub struct MyDeviceAugments<'a> {
     #[service(augment)] easter: EasterEggAugment,
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: MyDevice, device: &DEVICE_DESCRIPTOR, tl_style: TlStyle::Style1,
-    params: MyParams, com_objects: MyComObjects,
-    link_layer_builder: KnxNetIpBuilder<MyDevice>, platform: MyPlatform,
-    extension_state: IpExtensionFor<KnxIpDeviceUdp>, state: MyState,
-    config: <MyState as HasDeviceConfig>::Config,
-    al_extensions: (SystemBAlServices, DomainAddressService),
-    layer_builder: InsecureIpDeviceBuilder,
-    extra {
-        type Augments<'a> = MyDeviceAugments<'a>;
+impl SystemBStackDefinition for MyDevice {}
 
-        fn create_augments<'a>(
-            state: &'a Self::State,
-            platform: &'a Self::Platform,
-            _lctx: &'a LayerContext<Self>,
-        ) -> Self::Augments<'a>
-        where Self::State: 'a, Self::Platform: 'a {
-            MyDeviceAugments {
-                ip:     state.extension_state().create_augment::<Self>(platform),
-                easter: EasterEggAugment,
-            }
+impl StackDefinition for MyDevice {
+    // ... bill of materials items ...
+    type Augments<'a> = MyDeviceAugments<'a>;
+
+    fn create_augments<'a>(
+        state: &'a Self::State,
+        platform: &'a Self::Platform,
+        _lctx: &'a LayerContext<Self>,
+    ) -> Self::Augments<'a>
+    where Self::State: 'a, Self::Platform: 'a {
+        MyDeviceAugments {
+            ip:     state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
         }
     }
+    // ... other items (Mem, StateInit, create_state, InterfaceObjects, ...) ...
 }
 ```
 
 The `#[derive(ServiceRegistry)]` macro emits the `Augment<D>` impl for the
 bundle, which the IO container calls into for property dispatch and IO list
 contributions. The macro is opt-in — a fully hand-written `impl
-StackDefinition` still works, and is the path for devices with a
-non-standard `InterfaceObjects` wrapper or other deviations. See the
+StackDefinition` is the path for devices with a custom augment chain,
+a non-standard `InterfaceObjects` wrapper, or other deviations. See the
 "Augments" section above for the full story
 including `#[service(flatten)]` for nested composition.
 
@@ -726,7 +720,9 @@ async fn main(spawner: Spawner) {
     );
 
     // 4. Create link layer builder.
-    let link_layer_builder = KnxNetIpBuilder::<LinuxIpTransport, KnxIpDeviceUdp, 2>::new(
+    //    Features, transport type, and sizing knobs all flow from MyDevice's
+    //    KnxNetIpDefinition impl — no explicit const generics at the call site.
+    let link_layer_builder = KnxNetIpBuilder::<MyDevice>::new(
         "eth0", local_addr, control_endpoint, (),
     );
 
@@ -905,7 +901,6 @@ zweidraehte_device::system_b_standard_stack! {
     params: Params, com_objects: MyComObjects,
     link_layer_builder: …, platform: (),
     extension_state: MyExtension, state: MyState,
-    config: <MyState as HasDeviceConfig>::Config,
     al_extensions: (SystemBAlServices, DomainAddressService),
     layer_builder: InsecureDeviceBuilder,
 }

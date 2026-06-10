@@ -254,6 +254,22 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
         // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
         // generics here once `generic_const_exprs` no longer overflows for trait
         // consts forwarded through where-clauses.
+        //
+        // Until then, non-default values of TL_MAX_INCOMING / TL_MAX_OUTGOING are
+        // silently ignored. The asserts below catch an accidental override at
+        // runtime; a custom LayerStackBuilder is required to honour them.
+        debug_assert_eq!(
+            D::TL_MAX_INCOMING,
+            1,
+            "TL_MAX_INCOMING override has no effect with InsecureDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
+        debug_assert_eq!(
+            D::TL_MAX_OUTGOING,
+            0,
+            "TL_MAX_OUTGOING override has no effect with InsecureDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
         let nl = NetworkLayer::new(ctx);
         let tl = TransportLayer::new(ctx);
         let al = ApplicationLayer::new(ctx);
@@ -277,6 +293,18 @@ where
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
+        debug_assert_eq!(
+            D::TL_MAX_INCOMING,
+            1,
+            "TL_MAX_INCOMING override has no effect with SecureDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
+        debug_assert_eq!(
+            D::TL_MAX_OUTGOING,
+            0,
+            "TL_MAX_OUTGOING override has no effect with SecureDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
         let nl = NetworkLayer::new(ctx);
         let tl = TransportLayer::new(ctx);
         let application_layer = ApplicationLayer::new(ctx);
@@ -407,6 +435,18 @@ pub type IpDeviceLayers<'a, D> = IpLayerStack<'a, D, ApplicationLayer<'a, D>>;
 #[cfg(feature = "knxip")]
 impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
     pub fn with_cemi(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
+        debug_assert_eq!(
+            D::TL_MAX_INCOMING,
+            1,
+            "TL_MAX_INCOMING override has no effect with InsecureIpDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
+        debug_assert_eq!(
+            D::TL_MAX_OUTGOING,
+            0,
+            "TL_MAX_OUTGOING override has no effect with InsecureIpDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
         let nl = NetworkLayer::new(ctx);
         let transport_layer = TransportLayer::new(ctx);
 

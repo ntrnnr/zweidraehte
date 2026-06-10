@@ -175,14 +175,14 @@ pub trait DeviceModel {
 /// - Publishing [`LifecycleEvent`]s for user code
 pub struct SystemBDeviceModel<'a, D: StackDefinition> {
     state: &'a D::State,
-    lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
+    lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 }
 
 impl<'a, D: StackDefinition> SystemBDeviceModel<'a, D> {
     pub fn new(
         state: &'a D::State,
-        lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 2, 1>,
+        lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1>,
         interface_objects: &'a D::InterfaceObjects<'static>,
     ) -> Self {
         Self { state, lifecycle_channel, interface_objects }
