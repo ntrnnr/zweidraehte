@@ -1,0 +1,470 @@
+use proc_macro2::TokenStream as TokenStream2;
+use quote::quote;
+use syn::{Data, DeriveInput, Type};
+
+use crate::parse::{get_const_zero_expr, get_type_info, get_type_size, parse_field_attrs, parse_variant_attrs};
+
+pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
+    let enum_name = &input.ident;
+    let discriminant_enum_name = syn::Ident::new(&format!("{}Discriminant", enum_name), enum_name.span());
+
+    // Verify it's an enum
+    let variants = match &input.data {
+        Data::Enum(data) => &data.variants,
+        _ => return Err(syn::Error::new_spanned(input, "EtsUnion can only be derived for enums")),
+    };
+
+    // Verify #[repr(C, u8)] or similar
+    let has_repr_c = input.attrs.iter().any(|attr| {
+        if attr.path().is_ident("repr") {
+            if let Ok(meta) = attr.meta.require_list() {
+                let tokens = meta.tokens.to_string();
+                // Check for repr(C, u8) or repr(u8, C) or just repr(u8)
+                tokens.contains("C") || tokens.contains("u8")
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    });
+
+    if !has_repr_c {
+        return Err(syn::Error::new_spanned(
+            input,
+            "EtsUnion requires #[repr(C, u8)] or #[repr(u8)] for predictable memory layout",
+        ));
+    }
+
+    // First pass: calculate max alignment across all variants to determine data_offset.
+    // In #[repr(C, u8)], the variant data area starts at an offset aligned to the
+    // maximum alignment of any field in any variant.
+    let mut max_align: usize = 1;
+    for variant in variants.iter() {
+        if let syn::Fields::Named(fields) = &variant.fields {
+            for field in &fields.named {
+                if let Ok(type_info) = get_type_info(&field.ty)
+                    && type_info.align > max_align
+                {
+                    max_align = type_info.align;
+                }
+            }
+        }
+    }
+    // Data offset is the discriminant (1 byte) aligned up to max_align
+    let data_offset: usize = (1 + max_align - 1) & !(max_align - 1);
+
+    // Second pass: calculate variant sizes and generate params
+    let mut max_variant_size: usize = 0;
+    let mut selector_variants = Vec::new();
+    let mut union_params = Vec::new();
+    // Collect variant names for discriminant enum generation
+    let mut discriminant_variants: Vec<(syn::Ident, i64)> = Vec::new();
+    // Track the default variant for Default/ConstDefault generation
+    let mut default_variant_info: Option<(syn::Ident, Vec<(syn::Ident, Type)>)> = None;
+
+    let mut current_discriminant: i64 = 0;
+    for variant in variants.iter() {
+        let variant_name = &variant.ident;
+        // Get explicit discriminant if present, otherwise use auto-incrementing value
+        let discriminant_value =
+            if let Some((_, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }))) = &variant.discriminant {
+                lit.base10_parse::<i64>().unwrap_or(current_discriminant)
+            } else {
+                current_discriminant
+            };
+        current_discriminant = discriminant_value + 1;
+
+        // Parse variant attributes for display name
+        let variant_attrs = parse_variant_attrs(&variant.attrs)?;
+
+        // Skip variants marked with #[ets(skip)] — they are size anchors, not ETS-visible
+        if variant_attrs.skip {
+            // Still need to calculate the variant size for max_variant_size tracking
+            let variant_size = match &variant.fields {
+                syn::Fields::Unit => 0,
+                syn::Fields::Named(fields) => {
+                    let mut size = 0usize;
+                    for field in &fields.named {
+                        size += get_type_size(&field.ty)?;
+                    }
+                    size
+                }
+                syn::Fields::Unnamed(fields) => {
+                    let mut size = 0usize;
+                    for field in &fields.unnamed {
+                        size += get_type_size(&field.ty)?;
+                    }
+                    size
+                }
+            };
+            if variant_size > max_variant_size {
+                max_variant_size = variant_size;
+            }
+            continue;
+        }
+
+        // Store for discriminant enum generation
+        discriminant_variants.push((variant_name.clone(), discriminant_value));
+
+        // Check if this is the default variant
+        if variant_attrs.is_default {
+            let fields: Vec<(syn::Ident, Type)> = match &variant.fields {
+                syn::Fields::Named(fields) => {
+                    fields.named.iter().filter_map(|f| f.ident.clone().map(|name| (name, f.ty.clone()))).collect()
+                }
+                syn::Fields::Unit => Vec::new(),
+                syn::Fields::Unnamed(_) => Vec::new(),
+            };
+            default_variant_info = Some((variant_name.clone(), fields));
+        }
+
+        let display_name = variant_attrs.display.unwrap_or_else(|| {
+            // Convert CamelCase to Title Case with spaces
+            let name = variant_name.to_string();
+            let mut result = String::new();
+            for (i, c) in name.chars().enumerate() {
+                if i > 0 && c.is_uppercase() {
+                    result.push(' ');
+                }
+                result.push(c);
+            }
+            result
+        });
+
+        // Add to selector variants
+        let variant_name_str = variant_name.to_string();
+        selector_variants.push(quote! {
+            zweidraehte_device::ets::EtsEnumVariant {
+                text: #display_name,
+                variant_name: #variant_name_str,
+                value: #discriminant_value,
+            }
+        });
+
+        // Calculate variant size and collect field params
+        let variant_size: usize;
+        match &variant.fields {
+            syn::Fields::Unit => {
+                variant_size = 0;
+                // Unit variant - no union parameters
+            }
+            syn::Fields::Named(fields) => {
+                let mut size = 0usize;
+                let mut field_offset = 0usize;
+
+                for field in &fields.named {
+                    let field_name = field.ident.as_ref().unwrap();
+                    let field_type = &field.ty;
+
+                    let field_attrs = parse_field_attrs(&field.attrs)?;
+
+                    // Handle ets_enum fields first - they don't use get_type_info
+                    // EtsEnum types are always 1 byte (repr(u8)) with 1-byte alignment
+                    if field_attrs.ets_enum_field {
+                        // Skip if marked with #[ets(skip)] but still count size for layout
+                        if field_attrs.skip {
+                            size = field_offset + 1;
+                            field_offset += 1;
+                            continue;
+                        }
+
+                        let field_display = field_attrs.display.unwrap_or_else(|| {
+                            field_name
+                                .to_string()
+                                .split('_')
+                                .map(|word| {
+                                    let mut chars = word.chars();
+                                    match chars.next() {
+                                        Some(first) => first.to_uppercase().chain(chars).collect(),
+                                        None => String::new(),
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        });
+
+                        let variant_name_str = variant_name.to_string();
+                        let field_name_str = field_name.to_string();
+                        let param_offset = field_offset as u16;
+                        let bit_offset = field_attrs.bit_offset.unwrap_or(0);
+
+                        // For ets_enum fields, use default_value if specified
+                        let default_value_expr =
+                            if let Some(val) = field_attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
+
+                        // Generate suffix expression for ets_enum fields
+                        let suffix_expr = if let Some(ref suffix) = field_attrs.suffix {
+                            quote!(Some(#suffix))
+                        } else {
+                            quote!(None)
+                        };
+
+                        union_params.push(quote! {
+                            zweidraehte_device::ets::EtsUnionVariantParam {
+                                variant_name: #variant_name_str,
+                                variant_value: #discriminant_value,
+                                param: zweidraehte_device::ets::EtsParamDef {
+                                    name: #field_name_str,
+                                    display_name: #field_display,
+                                    suffix: #suffix_expr,
+                                    offset: #param_offset,
+                                    rust_offset: #param_offset,
+                                    size_bits: #field_type::ETS_SIZE_BITS,
+                                    bit_offset: #bit_offset,
+                                    param_type: zweidraehte_device::ets::EtsParamType::Enum,
+                                    hidden: false,
+                                    no_memory: false,
+                                    type_name: None,
+                                    text_pattern: None,
+                                },
+                                enum_variants: Some(#field_type::ETS_VARIANTS),
+                                default_value: #default_value_expr,
+                            }
+                        });
+
+                        size = field_offset + 1;
+                        field_offset += 1;
+                        continue;
+                    }
+
+                    // Get type info for non-ets_enum fields
+                    let type_info = get_type_info(field_type)?;
+
+                    // Apply alignment padding before this field
+                    let align = type_info.align;
+                    if align > 1 {
+                        field_offset = (field_offset + align - 1) & !(align - 1);
+                    }
+
+                    // Skip if marked with #[ets(skip)] but still count size for layout
+                    if field_attrs.skip {
+                        size = field_offset + type_info.size_bytes;
+                        field_offset += type_info.size_bytes;
+                        continue;
+                    }
+
+                    let field_display = field_attrs.display.unwrap_or_else(|| {
+                        field_name
+                            .to_string()
+                            .split('_')
+                            .map(|word| {
+                                let mut chars = word.chars();
+                                match chars.next() {
+                                    Some(first) => first.to_uppercase().chain(chars).collect(),
+                                    None => String::new(),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    });
+
+                    let size_bits = field_attrs.bits.unwrap_or(type_info.size_bits);
+                    let bit_offset = field_attrs.bit_offset.unwrap_or(0);
+
+                    // Determine param type - if has enum_variants, it's an Enum type
+                    // If marked as string or has text_pattern, it's a String type
+                    let param_type = if field_attrs.enum_variants.is_some() {
+                        quote!(zweidraehte_device::ets::EtsParamType::Enum)
+                    } else if field_attrs.string_field || field_attrs.text_pattern.is_some() {
+                        quote!(zweidraehte_device::ets::EtsParamType::String)
+                    } else {
+                        type_info.param_type.clone()
+                    };
+
+                    let variant_name_str = variant_name.to_string();
+                    let field_name_str = field_name.to_string();
+                    // Use the field offset within the variant data area
+                    let param_offset = field_offset as u16;
+
+                    // Generate enum_variants expression
+                    let enum_variants_expr = if let Some(variants) = &field_attrs.enum_variants {
+                        let variant_defs: Vec<_> = variants
+                            .iter()
+                            .map(|v| {
+                                let text = &v.text;
+                                let value = v.value;
+                                quote! {
+                                    zweidraehte_device::ets::EtsEnumVariant {
+                                        text: #text,
+                                        variant_name: #text,
+                                        value: #value,
+                                    }
+                                }
+                            })
+                            .collect();
+                        quote!(Some(&[#(#variant_defs),*]))
+                    } else {
+                        quote!(None)
+                    };
+
+                    let default_value_expr =
+                        if let Some(val) = field_attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
+
+                    // Generate text_pattern expression
+                    let text_pattern_expr = if let Some(ref pattern) = field_attrs.text_pattern {
+                        quote!(Some(#pattern))
+                    } else {
+                        quote!(None)
+                    };
+
+                    // Generate suffix expression for non-ets_enum fields
+                    let suffix_expr =
+                        if let Some(ref suffix) = field_attrs.suffix { quote!(Some(#suffix)) } else { quote!(None) };
+
+                    union_params.push(quote! {
+                        zweidraehte_device::ets::EtsUnionVariantParam {
+                            variant_name: #variant_name_str,
+                            variant_value: #discriminant_value,
+                            param: zweidraehte_device::ets::EtsParamDef {
+                                name: #field_name_str,
+                                display_name: #field_display,
+                                suffix: #suffix_expr,
+                                offset: #param_offset,
+                                rust_offset: #param_offset,
+                                size_bits: #size_bits,
+                                bit_offset: #bit_offset,
+                                param_type: #param_type,
+                                hidden: false,
+                                no_memory: false,
+                                type_name: None,
+                                text_pattern: #text_pattern_expr,
+                            },
+                            enum_variants: #enum_variants_expr,
+                            default_value: #default_value_expr,
+                        }
+                    });
+
+                    size = field_offset + type_info.size_bytes;
+                    field_offset += type_info.size_bytes;
+                }
+
+                variant_size = size;
+            }
+            syn::Fields::Unnamed(fields) => {
+                // Tuple variants - treat as raw bytes
+                let mut size = 0usize;
+                for field in &fields.unnamed {
+                    size += get_type_size(&field.ty)?;
+                }
+                variant_size = size;
+            }
+        }
+
+        if variant_size > max_variant_size {
+            max_variant_size = variant_size;
+        }
+    }
+
+    let enum_name_str = enum_name.to_string();
+    let variant_count = discriminant_variants.len();
+    let data_offset_u16 = data_offset as u16;
+    // NOTE: We use core::mem::size_of to get the actual Rust size including alignment
+    // padding. The calculated max_variant_size is only used for data_size (the logical
+    // size of variant data), but total_size must match the actual struct layout for
+    // correct memory mapping in ETS export.
+
+    // Generate discriminant enum variants
+    let discriminant_enum_variants: Vec<_> = discriminant_variants
+        .iter()
+        .map(|(name, value)| {
+            quote! { #name = #value as isize }
+        })
+        .collect();
+
+    let base_impl = quote! {
+        /// Discriminant-only enum for use in ComObjectRef `when` clauses.
+        ///
+        /// This enum has the same variant names and discriminant values as the parent
+        /// union enum, but with unit variants that can be cast to integers.
+        /// Use this when you need to specify a discriminant value in an attribute.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        #[repr(isize)]
+        pub enum #discriminant_enum_name {
+            #(#discriminant_enum_variants),*
+        }
+
+        impl #enum_name {
+            /// ETS union information for this enum.
+            ///
+            /// Contains metadata about the union structure for ETS export.
+            pub const ETS_UNION_INFO: zweidraehte_device::ets::EtsUnionInfo = zweidraehte_device::ets::EtsUnionInfo {
+                name: #enum_name_str,
+                // Use actual Rust size including alignment padding
+                total_size: core::mem::size_of::<#enum_name>() as u16,
+                // Offset where variant data begins (after discriminant + alignment padding)
+                data_offset: #data_offset_u16,
+                // data_size is total_size minus data_offset
+                data_size: (core::mem::size_of::<#enum_name>() as u16 - #data_offset_u16),
+                variant_count: #variant_count,
+                variant_params: &[
+                    #(#union_params),*
+                ],
+            };
+
+            /// Selector variants for ETS dropdown.
+            ///
+            /// These are the display names and values for the discriminant.
+            pub const ETS_SELECTOR_VARIANTS: &'static [zweidraehte_device::ets::EtsEnumVariant] = &[
+                #(#selector_variants),*
+            ];
+        }
+
+        // Implement the marker trait
+        impl zweidraehte_device::ets::EtsUnionType for #enum_name {
+            fn ets_union_info() -> &'static zweidraehte_device::ets::EtsUnionInfo {
+                &Self::ETS_UNION_INFO
+            }
+
+            fn ets_selector_variants() -> &'static [zweidraehte_device::ets::EtsEnumVariant] {
+                Self::ETS_SELECTOR_VARIANTS
+            }
+        }
+    };
+
+    // Generate Default and ConstDefault implementations if a default variant was specified
+    let default_impls = if let Some((default_variant_name, fields)) = default_variant_info {
+        // For EtsUnion fields, we use ConstDefault::DEFAULT which properly handles
+        // EtsEnum types and nested unions. Fields starting with _ are assumed to be
+        // padding and use get_const_zero_expr.
+        let field_defaults: Vec<TokenStream2> = fields
+            .iter()
+            .map(|(name, ty)| {
+                let name_str = name.to_string();
+                if name_str.starts_with('_') {
+                    // Padding fields - use zero
+                    let zero_expr = get_const_zero_expr(ty);
+                    quote! { #name: #zero_expr }
+                } else {
+                    // Regular fields - use ConstDefault::DEFAULT
+                    quote! { #name: <#ty as const_default::ConstDefault>::DEFAULT }
+                }
+            })
+            .collect();
+
+        let default_expr = if field_defaults.is_empty() {
+            quote! { #enum_name::#default_variant_name }
+        } else {
+            quote! { #enum_name::#default_variant_name { #(#field_defaults),* } }
+        };
+
+        quote! {
+            impl core::default::Default for #enum_name {
+                fn default() -> Self {
+                    #default_expr
+                }
+            }
+
+            impl const_default::ConstDefault for #enum_name {
+                const DEFAULT: Self = #default_expr;
+            }
+        }
+    } else {
+        quote! {}
+    };
+
+    Ok(quote! {
+        #base_impl
+        #default_impls
+    })
+}
