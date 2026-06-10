@@ -16,7 +16,8 @@ use core::cell::Cell;
 use crate::StackDefinition;
 // `ExtensionState` here is the derive macro (and trait); it generates the
 // `Tp1ExtensionConfig` mirror and the `ExtensionState` impl.
-use crate::bcus::system_b::{Extension, ExtensionState, HasSecurityMode, SystemBDeviceState};
+use crate::HasSecurityMode;
+use crate::bcus::system_b::{Extension, ExtensionState, SystemBDeviceState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{HasMaxRetryCount, PropertyError, WriteResponse, interface_object_augment, pid};
 use zweidraehte_proto::access::AccessPolicy;

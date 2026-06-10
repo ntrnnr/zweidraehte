@@ -8,8 +8,7 @@
 //! - TL confirmation tracking for pending group sends
 
 use crate::{
-    StackDefinition, StackState,
-    bcus::system_b::{DiagnosticsContext, HasDiagnosticsContext},
+    DiagnosticsContext, HasDiagnosticsContext, StackDefinition, StackState,
     context::layer::LayerContext,
     layers::application::capabilities::{GroupValueAddressedSender, GroupValueEncoding, GroupValueSender},
     lifecycle::LifecycleEvent,

@@ -21,8 +21,9 @@
 //! [`NoP2p`]: super::p2p_feature::NoP2p
 //! [`WithP2p`]: super::p2p_feature::WithP2p
 
+use crate::HasExtensionState;
 use crate::StackState;
-use crate::bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType};
+use crate::bcus::system_b::{HasSecurityState, SecurityFailureType};
 use crate::definition::StackDefinition;
 use crate::objects::tables::{HasAssociationTable, LoadState};
 use crate::prelude::HasAddressTable;

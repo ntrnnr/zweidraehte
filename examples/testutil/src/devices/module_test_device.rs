@@ -214,11 +214,11 @@
 //! // Via ComObjects trait with index calculation
 //! // channel_object_index(instance, local_obj): instance is 1-indexed, local_obj is 0-indexed
 //! let ch2_switch_idx = DimmerCommObjects::channel_object_index(2, 0) as u16;
-//! comm_objs.value_mut(ch2_switch_idx)[0] = 1;  // Turn on
+//! comm_objs.value_mut(ch2_switch_idx).unwrap()[0] = 1;  // Turn on
 //!
 //! // Type-safe Index (0-indexed for both)
 //! let idx = Index::for_instance(1, 0).unwrap();  // ch2 (0-indexed), switch
-//! comm_objs.value_mut(idx.index())[0] = 1;
+//! comm_objs.value_mut(idx.index()).unwrap()[0] = 1;
 //! ```
 //!
 //! # Module Structure Note
@@ -1116,27 +1116,27 @@ mod tests {
         assert_eq!(ch2_switch_idx, 3);
 
         // Read current value via trait method
-        let value_bytes = comm_objs.value(ch2_switch_idx);
+        let value_bytes = comm_objs.value(ch2_switch_idx).unwrap();
         assert_eq!(value_bytes, &[0]); // Default is off (0)
 
         // Write a new value via trait method
-        comm_objs.value_mut(ch2_switch_idx)[0] = 1; // Turn on
+        comm_objs.value_mut(ch2_switch_idx).unwrap()[0] = 1; // Turn on
 
         // Verify write
-        assert_eq!(comm_objs.value(ch2_switch_idx), &[1]);
+        assert_eq!(comm_objs.value(ch2_switch_idx).unwrap(), &[1]);
 
         // === Status management ===
         // Objects track their status (idle, updated, write request, etc.)
 
-        assert!(comm_objs.status(ch2_switch_idx).is_idle());
+        assert!(comm_objs.status(ch2_switch_idx).unwrap().is_idle());
 
         // Mark as remotely updated (this happens when stack receives GroupValueWrite)
         comm_objs.set_status(ch2_switch_idx, ComObjectStatus::Updated);
-        assert_eq!(comm_objs.status(ch2_switch_idx), ComObjectStatus::Updated);
+        assert_eq!(comm_objs.status(ch2_switch_idx), Some(ComObjectStatus::Updated));
 
         // Application acknowledges the update
         comm_objs.acknowledge_update(ch2_switch_idx);
-        assert!(comm_objs.status(ch2_switch_idx).is_idle());
+        assert!(comm_objs.status(ch2_switch_idx).unwrap().is_idle());
     }
 
     #[test]
@@ -1202,14 +1202,14 @@ mod tests {
         let received_value: u8 = 15; // 15% brightness requested
 
         // Stack writes the value and marks it as updated
-        comm_objs.value_mut(updated_obj_idx)[0] = received_value;
+        comm_objs.value_mut(updated_obj_idx).unwrap()[0] = received_value;
         comm_objs.set_status(updated_obj_idx, ComObjectStatus::Updated);
 
         // === Application event loop would receive ComObjectEvent::Updated ===
 
         // Check which object was updated
         assert_eq!(updated_obj_idx, 7);
-        assert_eq!(comm_objs.status(updated_obj_idx), ComObjectStatus::Updated);
+        assert_eq!(comm_objs.status(updated_obj_idx), Some(ComObjectStatus::Updated));
 
         // Determine channel (1-indexed) from object index
         let channel = updated_obj_idx as usize / 3 + 1;
@@ -1220,12 +1220,12 @@ mod tests {
         assert_eq!(local_obj, channel_objects::DIM_VALUE);
 
         // Read the new value (raw byte - DPT_Scaling is 0-255 for 0-100%)
-        let raw_value = comm_objs.value(updated_obj_idx)[0];
+        let raw_value = comm_objs.value(updated_obj_idx).unwrap()[0];
         assert_eq!(raw_value, 15);
 
         // Acknowledge the update (clear the Updated status)
         comm_objs.acknowledge_update(updated_obj_idx);
-        assert!(comm_objs.status(updated_obj_idx).is_idle());
+        assert!(comm_objs.status(updated_obj_idx).unwrap().is_idle());
 
         // === Apply business logic: brightness constraints ===
 
@@ -1234,22 +1234,22 @@ mod tests {
         assert_eq!(constrained, 20); // Clamped to min of 20%
 
         // Update the dim value with constrained value
-        comm_objs.value_mut(updated_obj_idx)[0] = constrained;
+        comm_objs.value_mut(updated_obj_idx).unwrap()[0] = constrained;
 
         // === Update the status object ===
 
         // channel_object_index(3, 2) = ch3 status
         let status_idx = DimmerCommObjects::channel_object_index(3, 2) as u16;
         let is_on = constrained > 0;
-        comm_objs.value_mut(status_idx)[0] = if is_on { 1 } else { 0 };
+        comm_objs.value_mut(status_idx).unwrap()[0] = if is_on { 1 } else { 0 };
 
         // Mark status for transmission (WriteRequest tells stack to send GroupValueWrite)
         comm_objs.set_status(status_idx, ComObjectStatus::WriteRequest);
 
         // Verify final state
-        assert_eq!(comm_objs.value(updated_obj_idx), &[20]); // Dim at 20%
-        assert_eq!(comm_objs.value(status_idx), &[1]); // Status is ON
-        assert_eq!(comm_objs.status(status_idx), ComObjectStatus::WriteRequest);
+        assert_eq!(comm_objs.value(updated_obj_idx).unwrap(), &[20]); // Dim at 20%
+        assert_eq!(comm_objs.value(status_idx).unwrap(), &[1]); // Status is ON
+        assert_eq!(comm_objs.status(status_idx), Some(ComObjectStatus::WriteRequest));
 
         // The stack would now see WriteRequest and send GroupValueWrite for status
         // After transmission, it would call:
@@ -1278,14 +1278,14 @@ mod tests {
         assert_eq!(ch3_status.index(), 8); // 2*3 + 2 = 8
 
         // Use with ComObjects trait methods
-        comm_objs.value_mut(ch1_switch.index())[0] = 1;
-        assert_eq!(comm_objs.value(ch1_switch.index()), &[1]);
+        comm_objs.value_mut(ch1_switch.index()).unwrap()[0] = 1;
+        assert_eq!(comm_objs.value(ch1_switch.index()).unwrap(), &[1]);
 
         // For dynamic access (when channel is known at runtime), use channel_object_index:
         // Instance is 1-indexed (ETS convention), local_obj is 0-indexed
         let runtime_channel = 2;
         let switch_idx = DimmerCommObjects::channel_object_index(runtime_channel, 0) as u16;
-        comm_objs.value_mut(switch_idx)[0] = 1;
-        assert_eq!(comm_objs.value(switch_idx), &[1]);
+        comm_objs.value_mut(switch_idx).unwrap()[0] = 1;
+        assert_eq!(comm_objs.value(switch_idx).unwrap(), &[1]);
     }
 }

@@ -5,7 +5,6 @@
 //! providing individual address, serial number, authorization, and
 //! programming mode. It has no dependency on KNX/IP.
 
-use crate::bcus::system_b::{HasDiagnosticsContext, HasSecurityMode};
 use crate::config::MAX_APDU_LENGTH_EXTENDED;
 use crate::device_model::DeviceModelNotifier;
 use crate::objects::{
@@ -280,6 +279,113 @@ pub trait HasPersistence {
     /// genuinely don't persist (e.g. ephemeral test fixtures) should
     /// provide an explicit empty body and document why.
     fn mark_dirty(&self);
+}
+
+// ============================================================================
+// Generic capability traits — BCU implementations satisfy these
+// ============================================================================
+//
+// These three traits describe capabilities that are required by generic stack
+// layers but are not specific to any one BCU family. They live here, in the
+// generic core, rather than inside `bcus::system_b` because:
+//
+// - `CoreDeviceState` bounds on them, and `CoreDeviceState` is generic.
+// - The application layer, secure-application layer, and context-trait impls
+//   all reach them through `D::State`, which is BCU-agnostic.
+//
+// Each trait carries only no-op defaults, so BCUs without the corresponding
+// capability (e.g., a plain TP1 device without Data Secure) satisfy the bound
+// for free with the blanket `impl HasSecurityMode for () {}`. BCUs that *do*
+// implement the capability provide the real bodies.
+
+/// Whether the device's Security Mode is currently enabled.
+///
+/// Extension state types that include security (e.g.,
+/// `SecureExtensionState`) implement this to delegate to the Security
+/// Interface Object's flag. Non-secure extensions use the default
+/// (`false`).
+///
+/// Separated from [`ExtensionState`](crate::bcus::system_b::ExtensionState)
+/// because security mode is not a persistence concern — TP1 and IP
+/// extensions should not need to know about it.
+pub trait HasSecurityMode {
+    fn security_mode_enabled(&self) -> bool {
+        false
+    }
+
+    /// Log a security access denial. Called by the property dispatch layer
+    /// when a property access is denied due to security policy.
+    ///
+    /// Default: no-op. Extensions with security state override this to
+    /// record the failure in the security failures log.
+    fn log_access_denied(&self, _source_addr: u16) {}
+
+    /// Check whether a group key exists for the given TSAP index.
+    ///
+    /// Used by GO diagnostics to validate security flags on direct
+    /// GroupValue_Write/Read commands. Default: `false` (no keys).
+    fn has_group_key(&self, _tsap: u16) -> bool {
+        false
+    }
+}
+
+impl HasSecurityMode for () {}
+
+/// Context trait for querying diagnostic mode state.
+///
+/// Implemented on `()` with no-op defaults so devices without diagnostics
+/// support can use `()` as their diagnostics context.
+pub trait DiagnosticsContext {
+    /// Whether the device is currently in diagnostic mode.
+    fn is_diagnostic_mode(&self) -> bool {
+        false
+    }
+
+    /// Current operation mode byte (0x00=normal, 0x01=diagnostic).
+    fn operation_mode(&self) -> u8 {
+        0x00
+    }
+
+    /// Remaining time in the current operation mode (0xFF = no timeout).
+    fn time_left(&self) -> u8 {
+        0xFF
+    }
+
+    /// Source address filter for incoming GO updates in diagnostic mode.
+    /// `None` means no filter (all sources blocked in diagnostic mode).
+    fn diagnostic_source_filter(&self) -> Option<u16> {
+        None
+    }
+
+    /// Set the source address filter for diagnostic mode.
+    fn set_diagnostic_source_filter(&self, _ia: Option<u16>) {}
+}
+
+impl DiagnosticsContext for () {}
+
+/// Trait for device states that provide a diagnostics context.
+///
+/// The application layer and stack handle use this to check diagnostic
+/// mode state without coupling to the concrete state type.
+pub trait HasDiagnosticsContext {
+    /// The concrete diagnostics context type.
+    type Diagnostics: DiagnosticsContext;
+
+    /// Get a reference to the diagnostics context.
+    fn diagnostics(&self) -> &Self::Diagnostics;
+}
+
+/// Trait for accessing the extension state on a device state.
+///
+/// This enables context trait impls and other generic code to access
+/// the extension state (e.g., `IpExtensionState`) through a trait bound
+/// rather than knowing the concrete `SystemBDeviceState` type.
+pub trait HasExtensionState {
+    /// The extension state type.
+    type ES;
+
+    /// Get a reference to the extension state.
+    fn extension_state(&self) -> &Self::ES;
 }
 
 // ============================================================================

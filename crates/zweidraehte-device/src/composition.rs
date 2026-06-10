@@ -9,8 +9,7 @@
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
-use crate::StackState;
-use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
+use crate::bcus::system_b::{HasSecurityState, HasSeqStorage};
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{
     CemiEvent, CemiTransportLayer, CemiTransportLayerChannelPair, CemiTransportLayerEndpoints,
@@ -18,6 +17,7 @@ use crate::layers::transport::cemi::{
 use crate::rng::SecureRng;
 use crate::service::{Layer, LayerRegistry};
 use crate::storage::SecureDeviceIdentity;
+use crate::{HasExtensionState, StackState};
 use crate::{
     actor::Request,
     context::StackContext,
@@ -35,6 +35,25 @@ use crate::{
 };
 
 use zweidraehte_proto::messages::buffers::Buffer;
+use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
+
+// ============================================================================
+// Link-layer channel type aliases
+// ============================================================================
+//
+// The three channel ends handed to `run_link_layer` are spelled out identically
+// in the trait definition and in every impl. Centralising them here avoids the
+// repetition and keeps the parameter list readable.
+
+/// Sender end of the indication channel into the router task.
+pub type LlIndicationSender<'a> = DynamicSender<'a, IndicationMessage<Buffer<'static>>>;
+
+/// Sender end of the confirmation channel into the router task.
+pub type LlConfirmationSender<'a> = DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>;
+
+// The request-receiver end (`req_rx`) uses `impl layers::Inbox<…> + 'a` directly
+// in each method signature. A type alias for that would require `type_alias_impl_trait`,
+// which is not yet stabilised, so it stays spelled out at each call site.
 
 // ============================================================================
 // Layer stack builders
@@ -80,9 +99,9 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: LlIndicationSender<'a>,
+        conf_tx: LlConfirmationSender<'a>,
+        req_rx: impl layers::Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a;
 }
 
@@ -114,9 +133,9 @@ where
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: LlIndicationSender<'a>,
+        conf_tx: LlConfirmationSender<'a>,
+        req_rx: impl layers::Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         builder.build_and_run(resources, context, Default::default(), ind_tx, conf_tx, req_rx)
     }
@@ -154,9 +173,9 @@ where
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: LlIndicationSender<'a>,
+        conf_tx: LlConfirmationSender<'a>,
+        req_rx: impl layers::Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         builder.build_and_run(resources, context, channels.ll_endpoints(), ind_tx, conf_tx, req_rx)
     }
@@ -226,6 +245,11 @@ where
     #[service(handler)]
     al: AL,
 
+    // TODO: `SystemBDeviceModel` is hardcoded here, coupling this generic layer
+    // stack to the System B BCU. A future pass should parameterise the device
+    // model type on `StackDefinition` (or derive it from a trait bound) so
+    // non-System-B BCUs can compose their own lifecycle hook without forking
+    // `StandardLayerStack`.
     #[service(lifecycle)]
     device_model: device_model::SystemBDeviceModel<'a, D>,
 
@@ -289,7 +313,8 @@ impl<'a, D: StackDefinition + HasSequenceStorage, P2P: P2pFeature>
 where
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
-    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
+    <D::State as HasExtensionState>::ES:
+        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
@@ -349,7 +374,8 @@ where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::State: HasExtensionState,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
-    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage<SeqStorage = D::SeqStorage>,
+    <D::State as HasExtensionState>::ES:
+        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
     // Forbid `NoRng` on secure stacks. Without this, forgetting to
     // set `type Rng = …` would still compile (the default is
     // `NoRng`) and the first `S-A_Sync` would panic at runtime. The
@@ -376,9 +402,9 @@ where
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
-        ind_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::IndicationMessage<Buffer<'static>>>,
-        conf_tx: DynamicSender<'a, zweidraehte_proto::messages::builder::ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl layers::Inbox<zweidraehte_proto::messages::builder::RequestMessage<Buffer<'static>>> + 'a,
+        ind_tx: LlIndicationSender<'a>,
+        conf_tx: LlConfirmationSender<'a>,
+        req_rx: impl layers::Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> impl core::future::Future<Output = !> + 'a {
         builder.build_and_run(resources, context, Default::default(), ind_tx, conf_tx, req_rx)
     }
@@ -415,6 +441,7 @@ where
     #[service(handler)]
     al: AL,
 
+    // TODO: same `SystemBDeviceModel` coupling as in `StandardLayerStack` above.
     #[service(lifecycle)]
     device_model: device_model::SystemBDeviceModel<'a, D>,
 

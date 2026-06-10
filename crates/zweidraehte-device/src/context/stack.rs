@@ -21,7 +21,7 @@
 //! exactly the self-referential wall.
 
 #[cfg(feature = "knxip")]
-use crate::bcus::system_b::HasExtensionState;
+use crate::HasExtensionState;
 use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 #[cfg(feature = "knxip")]
 use crate::{

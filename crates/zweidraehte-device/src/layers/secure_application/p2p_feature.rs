@@ -42,8 +42,9 @@ use zweidraehte_proto::messages::{
     knx::{KnxMessageBuffer, ServiceType},
 };
 
+use crate::HasExtensionState;
 use crate::StackState;
-use crate::bcus::system_b::{HasExtensionState, HasSecurityState};
+use crate::bcus::system_b::HasSecurityState;
 use crate::definition::StackDefinition;
 use crate::logging::info;
 use crate::objects::tables::HasAssociationTable;

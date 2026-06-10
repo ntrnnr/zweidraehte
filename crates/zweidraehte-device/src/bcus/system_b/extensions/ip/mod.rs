@@ -32,7 +32,8 @@ use crate::StackDefinition;
 // `ExtensionState` here is the derive macro (and trait); it generates the
 // `IpExtensionConfig` mirror and the `ExtensionState` impl (with `Default`
 // and `on_erase` kept hand-written via `default = manual` / `on_erase = manual`).
-use crate::bcus::system_b::{Extension, ExtensionState, HasSecurityMode, SystemBDeviceState};
+use crate::HasSecurityMode;
+use crate::bcus::system_b::{Extension, ExtensionState, SystemBDeviceState};
 use crate::layers::linklayers::knxip::features::{FeatureSet, TunnelingFeature};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::HasDomainAddress;
@@ -498,9 +499,27 @@ pub struct IpInterfaceExtension<const N: usize, const CAPS: u16> {
     pub tunnelling: TunnellingExtension<N>,
 }
 
-impl<const N: usize, const CAPS: u16> HasGoSecurityView for IpInterfaceExtension<N, CAPS> {}
+// Forward both security-view traits explicitly to `self.ip` rather than relying
+// on the default no-op bodies. If `IpExtensionState` ever implements these
+// traits non-trivially (e.g., when a secure IP extension gains its own
+// security-mode flag), the aggregator would silently diverge from the inner
+// state if the forwarding were implicit. Making it explicit prevents that.
+forward_to_field! {
+    impl<[const N: usize, const CAPS: u16]> HasGoSecurityView for IpInterfaceExtension<N, CAPS> {
+        get fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity;
+        get fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity;
+        get fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity;
+        get fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity;
+    } => self.ip
+}
 
-impl<const N: usize, const CAPS: u16> HasSecurityMode for IpInterfaceExtension<N, CAPS> {}
+forward_to_field! {
+    impl<[const N: usize, const CAPS: u16]> HasSecurityMode for IpInterfaceExtension<N, CAPS> {
+        get fn security_mode_enabled(&self) -> bool;
+        out fn log_access_denied(&self, source_addr: u16);
+        get fn has_group_key(&self, tsap: u16) -> bool;
+    } => self.ip
+}
 
 impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpInterfaceExtension<N, CAPS> {
     fn routing_multicast_rebind_channel(&self) -> &RoutingMulticastRebindChannel {

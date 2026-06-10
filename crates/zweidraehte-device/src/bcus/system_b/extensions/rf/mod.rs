@@ -34,7 +34,8 @@ use crate::StackDefinition;
 // `ExtensionState` here is the derive macro (and trait); the derive
 // generates the `RfExtensionConfig` mirror and the `ExtensionState` impl,
 // so the hand-written config/serde/erase plumbing is gone.
-use crate::bcus::system_b::{Extension, ExtensionState, HasSecurityMode, SystemBDeviceState};
+use crate::HasSecurityMode;
+use crate::bcus::system_b::{Extension, ExtensionState, SystemBDeviceState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
     HasDomainAddress, HasRfDomainAddress, PropertyError, WriteResponse, interface_object_augment, pid,

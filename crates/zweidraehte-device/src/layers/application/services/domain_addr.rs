@@ -11,8 +11,7 @@
 //! [`HasDomainAddress`].
 
 use crate::{
-    StackState,
-    bcus::system_b::HasSecurityMode,
+    HasSecurityMode, StackState,
     definition::StackDefinition,
     objects::interface::HasDomainAddress,
     service::{AlCtx, ApciHandler},

@@ -22,8 +22,8 @@ use core::cell::Cell;
 
 use embassy_time::Instant;
 
-use crate::bcus::system_b::HasSecurityMode;
-use crate::bcus::system_b::{HasExtensionState, HasSecurityState, HasSeqStorage};
+use crate::HasExtensionState;
+use crate::bcus::system_b::{HasSecurityState, HasSeqStorage};
 use crate::layers::application::capabilities::{
     GroupValueAddressedSender, GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender,
 };
@@ -36,61 +36,13 @@ use crate::objects::tables::{
     HasCommunicationObjectTable, HasRunStateMachine,
 };
 use crate::service::ServiceCtx;
-use crate::{StackDefinition, StackState};
+use crate::{DiagnosticsContext, HasSecurityMode, StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_proto::messages::apdu::go_diagnostics::{
     GoConfigResponse, GoStatusValueResponse, OperationModeResponse,
 };
 use zweidraehte_proto::messages::knx::Priority;
-
-// ============================================================================
-// Traits
-// ============================================================================
-
-/// Context trait for querying diagnostic mode state.
-///
-/// Implement on `()` with no-op defaults so devices without diagnostics
-/// support can use `()` as their diagnostics context.
-pub trait DiagnosticsContext {
-    /// Whether the device is currently in diagnostic mode.
-    fn is_diagnostic_mode(&self) -> bool {
-        false
-    }
-
-    /// Current operation mode byte (0x00=normal, 0x01=diagnostic).
-    fn operation_mode(&self) -> u8 {
-        0x00
-    }
-
-    /// Remaining time in the current operation mode (0xFF = no timeout).
-    fn time_left(&self) -> u8 {
-        0xFF
-    }
-
-    /// Source address filter for incoming GO updates in diagnostic mode.
-    /// `None` means no filter (all sources blocked in diagnostic mode).
-    fn diagnostic_source_filter(&self) -> Option<u16> {
-        None
-    }
-
-    /// Set the source address filter for diagnostic mode.
-    fn set_diagnostic_source_filter(&self, _ia: Option<u16>) {}
-}
-
-impl DiagnosticsContext for () {}
-
-/// Trait for device states that provide a diagnostics context.
-///
-/// The application layer and stack handle use this to check diagnostic
-/// mode state without coupling to the concrete state type.
-pub trait HasDiagnosticsContext {
-    /// The concrete diagnostics context type.
-    type Diagnostics: DiagnosticsContext;
-
-    /// Get a reference to the diagnostics context.
-    fn diagnostics(&self) -> &Self::Diagnostics;
-}
 
 // ============================================================================
 // State

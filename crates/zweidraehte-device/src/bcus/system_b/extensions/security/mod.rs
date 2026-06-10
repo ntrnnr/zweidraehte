@@ -46,12 +46,13 @@ use core::cell::{Cell, RefCell};
 
 use serde::{Deserialize, Serialize};
 
+use crate::HasSecurityMode;
 use crate::StackDefinition;
 #[cfg(feature = "knxip")]
 use crate::bcus::system_b::IpExtensionState;
 use crate::bcus::system_b::{
-    Extension, ExtensionConfig, ExtensionState, HasSecurityMode, RfExtensionState, RfRetransmitterExtension,
-    SystemBDeviceState, Tp1ExtensionState,
+    Extension, ExtensionConfig, ExtensionState, RfExtensionState, RfRetransmitterExtension, SystemBDeviceState,
+    Tp1ExtensionState,
 };
 use crate::logging::debug;
 use crate::objects::comm::HasGoSecurityView;

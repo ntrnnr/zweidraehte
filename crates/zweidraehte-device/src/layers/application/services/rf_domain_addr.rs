@@ -21,8 +21,7 @@
 //! ```
 
 use crate::{
-    StackState,
-    bcus::system_b::HasSecurityMode,
+    HasSecurityMode, StackState,
     definition::StackDefinition,
     objects::interface::HasRfDomainAddress,
     service::{AlCtx, ApciHandler},

@@ -13,9 +13,9 @@
 use core::cell::{Cell, RefCell};
 
 use crate::{
-    StackState,
+    HasExtensionState, StackState,
     actor::Request,
-    bcus::system_b::{HasExtensionState, HasSecurityState, SecurityFailureType},
+    bcus::system_b::{HasSecurityState, SecurityFailureType},
     definition::StackDefinition,
     layers::application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     objects::tables::{AssociationTable, HasAssociationTable},

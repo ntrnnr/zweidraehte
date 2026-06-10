@@ -440,7 +440,7 @@ macro_rules! system_b_standard_stack {
                 // `extension_state()` comes from `HasExtensionState`; spell the
                 // trait explicitly so the macro doesn't depend on it being
                 // imported at the call site.
-                let es = <Self::State as $crate::bcus::system_b::HasExtensionState>::extension_state(state);
+                let es = <Self::State as $crate::HasExtensionState>::extension_state(state);
                 <$es as $crate::bcus::system_b::Extension<Self::Platform>>::create_augment::<Self>(es, platform)
             }
 

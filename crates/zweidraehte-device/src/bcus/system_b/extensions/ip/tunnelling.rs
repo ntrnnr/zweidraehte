@@ -33,8 +33,9 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zerocopy::FromBytes;
 
+use crate::HasSecurityMode;
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
+use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, PropertyDescriptor, PropertyError, WriteResponse,

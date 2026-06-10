@@ -13,10 +13,10 @@ use core::cell::{Cell, RefCell};
 use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, SecureGoSendPresent};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    StackDefinition,
+    HasExtensionState, HasSecurityMode, StackDefinition,
     bcus::system_b::{
-        DeviceConfig, ExtensionAugmentFor, HasDeviceConfig, HasExtensionState, HasSecurityMode, SecureExtensionConfig,
-        SecureResources, SecureTp1DeviceState, SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig,
+        DeviceConfig, ExtensionAugmentFor, HasDeviceConfig, SecureExtensionConfig, SecureResources,
+        SecureTp1DeviceState, SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig,
         create_system_b_objects,
     },
     context::layer::LayerContext,
@@ -356,7 +356,7 @@ impl zweidraehte_device::objects::comm::HasGoSecurityView for SecureConformanceS
     }
 }
 
-impl zweidraehte_device::bcus::system_b::HasDiagnosticsContext for SecureConformanceState {
+impl zweidraehte_device::HasDiagnosticsContext for SecureConformanceState {
     type Diagnostics = zweidraehte_device::bcus::system_b::OperationModeState;
 
     fn diagnostics(&self) -> &Self::Diagnostics {
@@ -1009,7 +1009,8 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        use zweidraehte_device::bcus::system_b::{Extension, HasExtensionState};
+        use zweidraehte_device::HasExtensionState;
+        use zweidraehte_device::bcus::system_b::Extension;
         SecureConformanceAugments {
             sec: state.extension_state().create_augment::<Self>(platform),
             extras: ConformanceExtras {

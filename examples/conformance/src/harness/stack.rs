@@ -21,7 +21,8 @@ use const_default::ConstDefault;
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    bcus::system_b::{ExtensionAugmentFor, HasSecurityMode, MemoryLayout, Tp1SystemBDeviceState},
+    HasSecurityMode,
+    bcus::system_b::{ExtensionAugmentFor, MemoryLayout, Tp1SystemBDeviceState},
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
@@ -910,8 +911,8 @@ impl DeviceModelNotifier for ConformanceState {
 // Trait Forwarding — HasExtensionState
 // ============================================================================
 
-impl zweidraehte_device::bcus::system_b::HasExtensionState for ConformanceState {
-    type ES = <InnerState as zweidraehte_device::bcus::system_b::HasExtensionState>::ES;
+impl zweidraehte_device::HasExtensionState for ConformanceState {
+    type ES = <InnerState as zweidraehte_device::HasExtensionState>::ES;
 
     fn extension_state(&self) -> &Self::ES {
         self.inner.extension_state()
@@ -972,7 +973,7 @@ impl zweidraehte_device::objects::comm::HasGoSecurityView for ConformanceState {
     }
 }
 
-impl zweidraehte_device::bcus::system_b::HasDiagnosticsContext for ConformanceState {
+impl zweidraehte_device::HasDiagnosticsContext for ConformanceState {
     type Diagnostics = zweidraehte_device::bcus::system_b::OperationModeState;
 
     fn diagnostics(&self) -> &Self::Diagnostics {
@@ -1371,7 +1372,8 @@ impl StackDefinition for IpcConformanceTestStack {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        use zweidraehte_device::bcus::system_b::{Extension, HasExtensionState};
+        use zweidraehte_device::HasExtensionState;
+        use zweidraehte_device::bcus::system_b::Extension;
         state.extension_state().create_augment::<Self>(platform)
     }
 

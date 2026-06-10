@@ -232,39 +232,6 @@ pub trait ExtensionState: Sized {
     fn on_erase(&self, code: EraseCode);
 }
 
-/// Whether the device's Security Mode is currently enabled.
-///
-/// Extension state types that include security (e.g.,
-/// [`SecureExtensionState`]) implement this to delegate to the Security
-/// Interface Object's flag. Non-secure extensions use the default
-/// (`false`).
-///
-/// Separated from [`ExtensionState`] because security mode is not a
-/// persistence concern — TP1 and IP extensions should not need to know
-/// about it.
-pub trait HasSecurityMode {
-    fn security_mode_enabled(&self) -> bool {
-        false
-    }
-
-    /// Log a security access denial. Called by the property dispatch layer
-    /// when a property access is denied due to security policy.
-    ///
-    /// Default: no-op. Extensions with security state override this to
-    /// record the failure in the security failures log.
-    fn log_access_denied(&self, _source_addr: u16) {}
-
-    /// Check whether a group key exists for the given TSAP index.
-    ///
-    /// Used by GO diagnostics to validate security flags on direct
-    /// GroupValue_Write/Read commands. Default: `false` (no keys).
-    fn has_group_key(&self, _tsap: u16) -> bool {
-        false
-    }
-}
-
-impl HasSecurityMode for () {}
-
 // The empty extension state has no security policy — every send is plain.
 impl HasGoSecurityView for () {}
 

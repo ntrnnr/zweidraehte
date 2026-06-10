@@ -57,8 +57,9 @@ use core::cell::Cell;
 use serde::{Deserialize, Serialize};
 
 use super::{RfExtensionConfig, RfExtensionState};
+use crate::HasSecurityMode;
 use crate::StackDefinition;
-use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState, HasSecurityMode};
+use crate::bcus::system_b::{Extension, ExtensionConfig, ExtensionState};
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
     HasDomainAddress, HasRfDomainAddress, HasRfRetransmitter, PropertyError, WriteResponse, interface_object_augment,

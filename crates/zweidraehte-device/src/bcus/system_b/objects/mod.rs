@@ -41,8 +41,8 @@ use crate::{
 };
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt, RoutingCount};
 
+use crate::HasSecurityMode;
 use crate::StackDefinition;
-use crate::bcus::system_b::HasSecurityMode;
 use crate::context::layer::LayerContext;
 use crate::ets::DeviceDescriptor;
 use crate::objects::interface::HasRoutingCount;

@@ -14,7 +14,7 @@ use static_cell::StaticCell;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    bcus::system_b::HasSecurityMode,
+    HasSecurityMode,
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::{
@@ -195,7 +195,7 @@ impl HasRoutingCount for MyState {
     }
 }
 
-impl zweidraehte_device::bcus::system_b::HasDiagnosticsContext for MyState {
+impl zweidraehte_device::HasDiagnosticsContext for MyState {
     type Diagnostics = ();
     fn diagnostics(&self) -> &Self::Diagnostics {
         &()

@@ -35,27 +35,9 @@ use zweidraehte_proto::NUM_AUTH_KEYS;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
-use super::{
-    DeviceConfig, ExtensionState, HasDeviceConfig, HasDiagnosticsContext, HasSecurityMode, OperationModeState,
-    SystemBStateInit,
-};
+use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
-// ============================================================================
-// HasExtensionState trait
-// ============================================================================
-
-/// Trait for accessing the extension state on a device state.
-///
-/// This enables context trait impls and other generic code to access
-/// the extension state (e.g., `IpExtensionState`) through a trait bound
-/// rather than knowing the concrete `SystemBDeviceState` type.
-pub trait HasExtensionState {
-    /// The extension state type.
-    type ES;
-
-    /// Get a reference to the extension state.
-    fn extension_state(&self) -> &Self::ES;
-}
+use super::{DeviceConfig, ExtensionState, HasDeviceConfig, OperationModeState, SystemBStateInit};
 
 // ============================================================================
 // Unified Device State
