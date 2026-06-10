@@ -521,11 +521,19 @@ where
             let stored_val = stored.map(|s| seq_to_u64(&s)).unwrap_or(0);
 
             if seq_nr_val > stored_val {
-                // Accept: update stored to the received value.
+                // Accept: update stored to the received value.  A save failure
+                // is logged but does not cause the frame to be dropped — the
+                // MAC already verified, so the plaintext is genuine; discarding
+                // it would break the session.  The worst-case consequence is
+                // that the same SeqNr can be replayed until storage recovers.
                 if scf.tool_access {
-                    let _ = storage.save_tool_receiving_seq(&seq_nr);
+                    if let Err(_e) = storage.save_tool_receiving_seq(&seq_nr) {
+                        warn!("S-AL: failed to persist tool receiving SeqNr from {:#06X}", src);
+                    }
                 } else {
-                    let _ = storage.save_receiving_seq(src, &seq_nr);
+                    if let Err(_e) = storage.save_receiving_seq(src, &seq_nr) {
+                        warn!("S-AL: failed to persist receiving SeqNr from {:#06X}", src);
+                    }
                 }
             } else if seq_nr_val == stored_val {
                 // Retransmission: ignore silently (no failure log per spec).

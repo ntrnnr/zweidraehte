@@ -273,8 +273,8 @@ impl AccessPolicy {
     pub const OPEN_OFF_TOOL_ON: Self = Self::new(0x3FF, 0x00C);
 
     /// `3FF / 000` — Everyone can read+write when sec off; no access at all when sec on.
-    /// Used for A_Restart with erase code 03h (master reset), per 03/04/01 §6.2.6.3.3
-    /// Table 8. When Security Mode is OFF, a device accepts the master reset from any
+    /// Used for A_Restart with erase code 03h (ResetIA), per AN193 v04
+    /// §2.2.4.3. When Security Mode is OFF, a device accepts the reset from any
     /// client (including plain-bus); when Security Mode is ON, it is refused entirely.
     pub const OPEN_OFF_DENY_ON: Self = Self::new(0x3FF, 0x000);
 

@@ -11,6 +11,8 @@
 
 use core::cell::{Cell, RefCell};
 
+use subtle::ConstantTimeEq;
+
 use const_default::ConstDefault;
 
 use crate::{
@@ -718,8 +720,13 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 
     fn authorize(&self, key: &[u8; 4]) -> u8 {
         let keys = self.auth_keys.borrow();
+        // Use constant-time comparison to prevent a timing side-channel that
+        // would otherwise reveal which level (if any) matched first. The return
+        // value still reveals whether *a* match occurred (by returning a level
+        // ≠ MAX_ACCESS_LEVELS − 1), which is inherent to the protocol, but the
+        // loop itself no longer short-circuits on match.
         for level in 0..NUM_AUTH_KEYS {
-            if &keys[level] == key {
+            if bool::from(keys[level].ct_eq(key)) {
                 return level as u8;
             }
         }

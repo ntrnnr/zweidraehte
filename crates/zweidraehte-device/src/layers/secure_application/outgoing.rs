@@ -66,8 +66,15 @@ pub(crate) fn reserve_next_seq_nr<SEQ: SequenceNumberStorage>(
         return None;
     }
 
-    // Increment the single counter and persist it.
-    let _ = storage.save_sending_seq(&u64_to_seq6(val + 1));
+    // Increment the single counter and persist it.  A save failure here is
+    // unexpected (storage corruption or a full flash sector) — warn and abort
+    // the send rather than emitting a frame whose sequence number has not been
+    // durably stored. The caller treats `None` as an abort and suppresses the
+    // outgoing frame.
+    if let Err(_e) = storage.save_sending_seq(&u64_to_seq6(val + 1)) {
+        warn!("S-AL: failed to persist sending SeqNr; aborting secure frame");
+        return None;
+    }
 
     Some(seq)
 }

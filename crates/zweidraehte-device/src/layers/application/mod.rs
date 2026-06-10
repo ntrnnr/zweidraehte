@@ -20,7 +20,7 @@ pub mod capabilities;
 pub(crate) mod group_data;
 pub mod services;
 
-use crate::access_policy::{AccessDecision, check_service_access};
+use crate::access_policy::{AccessDecision, check_service_access, restart_access_policy, restart_required_level};
 use crate::context::layer::LayerContext;
 use crate::objects::interface::PropertyError;
 use crate::service::{AlCtx, ApciHandler as _, Layer, ServiceCtx};
@@ -965,12 +965,14 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             return;
         }
 
-        // Security-mode access policy: AP 3FF/00C for all restart types.
-        // When security mode is off, all callers can restart (0x3FF = all bits set).
-        // When security mode is on, only Tool A+C is allowed (0x00C).
-        use zweidraehte_proto::access::AccessPolicy;
+        // Per-erase-code security-mode access policy (03/04/01 Table 8).
+        // Different erase codes carry different policies — notably erase code
+        // 0x03 (ResetIA) is deny-everyone when security is ON (3FF/000), while
+        // basic/confirmed restart uses 3FF/0CC and factory-reset variants use
+        // 3FF/00C.
         let security_on = self.state.security_mode_enabled();
-        if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&restart_ctx, security_on) {
+        let policy = restart_access_policy(u8::from(erase_code));
+        if !policy.can_write(&restart_ctx, security_on) {
             warn!("AL Restart: access denied by security policy ({:?}, sec_on={})", restart_ctx, security_on);
             if needs_response {
                 self.send_restart_response(ind, RestartError::AccessDenied, 0);
@@ -979,10 +981,7 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
         }
 
         // Legacy access level check (non-secure fallback).
-        let required_level = match erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => 3,
-            _ => 0,
-        };
+        let required_level = restart_required_level(u8::from(erase_code));
 
         if !restart_ctx.has_level(required_level) {
             warn!("AL Restart: access denied ({:?}, required={})", restart_ctx, required_level);

@@ -22,6 +22,7 @@ heapless = { workspace = true }
 replace_with = { workspace = true }
 bitfield.workspace = true
 aes = { version = "0.8", default-features = false }
+subtle = { version = "2.6.1", default-features = false }
 
 [dev-dependencies]
 quickcheck = "1"

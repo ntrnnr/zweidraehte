@@ -130,36 +130,49 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
 }
 
 // ============================================================================
-// Restart Access Policies (KNX spec 03/04/01, Table 8)
+// Restart Access Policies (AN193 v04 §2.2.4.3; erase codes: 03/05/02 Table 4)
 // ============================================================================
 
 /// Get the access policy for a restart with the given erase code.
 ///
-/// Per KNX spec 03/04/01 Table 8, different restart/reset types have
-/// different access requirements:
+/// Source: AN193 v04 "Access Policies" §2.2.4.3 ("Data accessed by the
+/// A_Restart-service"); erase-code semantics are defined in 03/05/02 §3.7
+/// Table 4. The A_Restart service itself is open at service level
+/// (3FF/3FF) — enforcement happens per erase code at data level:
 ///
 /// | Erase Code | Description | Policy |
 /// |------------|-------------|--------|
 /// | 0x00 | Basic restart (type=0) | 3FF / 0CC |
 /// | 0x01 | Confirmed restart | 3FF / 0CC |
-/// | 0x02 | Reset to default state | 3FF / 00C |
-/// | 0x03 | Master reset | 3FF / 000 |
+/// | 0x02 | Factory reset | 3FF / 00C |
+/// | 0x03 | Reset IA | 3FF / 000 |
+/// | 0x04 | Reset application program | 3FF / 00C (see note) |
 /// | 0x05 | Reset parameters | 3FF / 00C |
 /// | 0x06 | Reset links | 3FF / 00C |
-/// | 0x07 | Reset to default w/o IA | 3FF / 00C |
-/// | 0x08 | Local reset to defaults | 3FF / 00C |
+/// | 0x07 | Factory reset keeping IA | 3FF / 00C |
 ///
-/// Note: Erase code 0x03 (master reset) has policy `3FF / 000`. When
+/// Note: Erase code 0x03 (ResetIA) has policy `3FF / 000`. When
 /// Security Mode is OFF, any client (including plain) may trigger it;
 /// when Security Mode is ON, it is denied to every client. Local/HMI
 /// triggering bypasses Access Policies entirely.
+///
+/// Note: AN193 §2.2.4.3 lists erase codes 01h–03h and 05h–07h but omits
+/// 04h (ResetAP), although 03/05/02 Table 4 defines it. We give 04h the
+/// same 3FF/00C policy as every other master-reset variant; conformance
+/// test M-2.9.6 requires at least the open security-OFF half.
 pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
     match erase_code {
-        0x00 | 0x01 => AccessPolicy::READ_OPEN_WRITE_TOOL,    // 3FF / 0CC
-        0x02 => AccessPolicy::TOOL_ONLY,                      // 3FF / 00C
+        0x00 | 0x01 => AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF / 0CC
+        // Factory-reset variants: everyone when Security Mode is OFF, Tool
+        // only when ON. (TOOL_ONLY — 00C/00C — would wrongly deny plain
+        // callers with security OFF; conformance M-2.9.x exercises exactly
+        // that path.)
+        0x02 | 0x04..=0x07 => AccessPolicy::OPEN_OFF_TOOL_ON, // 3FF / 00C
         0x03 => AccessPolicy::OPEN_OFF_DENY_ON,               // 3FF / 000
-        0x05 | 0x06 | 0x07 | 0x08 => AccessPolicy::TOOL_ONLY, // 3FF / 00C
-        _ => AccessPolicy::TOOL_ONLY,                         // Unknown: conservative default
+        // Unknown erase codes are rejected as UnsupportedEraseCode by the
+        // restart handler before any reset runs; the conservative policy here
+        // is defence in depth only.
+        _ => AccessPolicy::TOOL_ONLY,
     }
 }
 
@@ -169,11 +182,9 @@ pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
 /// The level check is a simplified version of the full access policy.
 pub const fn restart_required_level(erase_code: u8) -> u8 {
     match erase_code {
-        0x00 | 0x01 => 3,               // Basic/confirmed restart: anyone
-        0x02 => 0,                      // Reset to default: level 0
-        0x03 => 0,                      // Master reset: level 0 (and even then, policy says no remote)
-        0x05 | 0x06 | 0x07 | 0x08 => 0, // All resets: level 0
-        _ => 0,                         // Unknown: conservative
+        0x00 | 0x01 => 3, // Basic/confirmed restart: anyone
+        // All master-reset variants (0x02..=0x07, incl. 0x04 ResetAP): level 0.
+        _ => 0,
     }
 }
 
@@ -242,7 +253,7 @@ mod tests {
         let policy = restart_access_policy(0x00);
         assert!(policy.can_write(&unlisted, false));
 
-        // Master reset (0x03) is policy 3FF/000 per 03/04/01 §6.2.6.3.3 Table 8.
+        // ResetIA (0x03) is policy 3FF/000 per AN193 v04 §2.2.4.3.
         // When Security Mode is OFF, the device accepts the reset from any client
         // (including plain). When Security Mode is ON, it is refused entirely.
         let tool = AccessContext::with_security(0, SecurityMode::AuthConf, ClientRole::Tool);
@@ -250,9 +261,16 @@ mod tests {
         assert!(policy.can_write(&tool, false));
         assert!(!policy.can_write(&tool, true));
 
-        // Reset to default (0x02): only Tool can write
+        // Factory reset (0x02): 3FF/00C — everyone when sec off, Tool only when on
         let policy = restart_access_policy(0x02);
-        assert!(policy.can_write(&tool, false)); // Tool A+C, sec off: bits 3,2 of 00C → bit 3 set
-        assert!(!policy.can_write(&unlisted, false));
+        assert!(policy.can_write(&tool, false));
+        assert!(policy.can_write(&unlisted, false));
+        assert!(policy.can_write(&tool, true));
+        assert!(!policy.can_write(&unlisted, true));
+
+        // ResetAP (0x04) follows the same factory-reset policy row
+        let policy = restart_access_policy(0x04);
+        assert!(policy.can_write(&unlisted, false));
+        assert!(!policy.can_write(&unlisted, true));
     }
 }

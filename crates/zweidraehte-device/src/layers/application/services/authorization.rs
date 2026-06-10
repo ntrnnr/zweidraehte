@@ -71,7 +71,8 @@ fn handle_authorize_request<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
         return;
     };
 
-    debug!("AL Authorize_Request: key={:?}", zweidraehte_util::fmt::Bytes(&req.key));
+    // Key bytes are not logged — log presence and length only.
+    debug!("AL Authorize_Request: key present ({} bytes)", req.key.len());
 
     let access_level = ctx.state.authorize(&req.key);
     debug!("AL Authorize_Request: granted level {}", access_level);
@@ -115,12 +116,8 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
         error!("Key_Write message too short: {}", ind.len());
         return;
     };
-    debug!(
-        "AL Key_Write: level={}, key={:?}, current_ctx={:?}",
-        req.level,
-        zweidraehte_util::fmt::Bytes(&req.key),
-        ctx.access
-    );
+    // Key bytes are not logged — log level and context only.
+    debug!("AL Key_Write: level={}, current_ctx={:?}", req.level, ctx.access);
 
     let result_level = ctx.state.key_write(req.level, &req.key, ctx.access);
     debug!("AL Key_Write: result={}", result_level);

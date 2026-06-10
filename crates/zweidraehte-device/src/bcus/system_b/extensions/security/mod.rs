@@ -74,13 +74,31 @@ use crate::storage::SequenceNumberStorage;
 ///
 /// Written by ETS during configuration (via the load state machine),
 /// read by the S-AL at runtime for key lookup and GO flag checks.
+///
+/// # Key redaction
+///
+/// The `Debug` impl prints entry counts only and never the raw entry bytes
+/// to prevent AES key material from appearing in logs. The `Serialize` and
+/// `Deserialize` impls are unaffected — persistence requires real bytes.
 #[serde_with::serde_as]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SecurityTable<const N: usize, const ENTRY_SIZE: usize> {
     /// Entry data. Only entries `0..count` are valid.
     #[serde_as(as = "[[_; ENTRY_SIZE]; N]")]
     pub(crate) data: [[u8; ENTRY_SIZE]; N],
     count: u16,
+}
+
+impl<const N: usize, const ENTRY_SIZE: usize> core::fmt::Debug for SecurityTable<N, ENTRY_SIZE> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // Entry data is never shown — it may contain AES key material.
+        f.debug_struct("SecurityTable")
+            .field("capacity", &N)
+            .field("entry_size", &ENTRY_SIZE)
+            .field("count", &self.count)
+            .field("data", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl<const N: usize, const ENTRY_SIZE: usize> Default for SecurityTable<N, ENTRY_SIZE> {
@@ -197,8 +215,14 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
 /// Sequence numbers are stored separately via [`SequenceNumberStorage`]
 /// due to their high write frequency.
 ///
+/// # Key redaction
+///
+/// The `Debug` impl omits the `tool_key` bytes and delegates table display
+/// to `SecurityTable`'s redacted `Debug` impl. `Serialize`/`Deserialize`
+/// are unaffected.
+///
 /// [`SequenceNumberStorage`]: crate::storage::SequenceNumberStorage
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct SecurityExtensionConfig<const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> {
     #[serde(default)]
     pub security_mode_enabled: bool,
@@ -233,6 +257,24 @@ pub struct SecurityExtensionConfig<const GRP: usize, const P2P: usize, const SIA
     /// GO security flags: 1 byte per group object.
     #[serde(default)]
     pub go_flags: SecurityTable<GO, 1>,
+}
+
+impl<const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> core::fmt::Debug
+    for SecurityExtensionConfig<GRP, P2P, SIAT, GO>
+{
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // The tool_key field is AES-128 key material — never print raw bytes.
+        f.debug_struct("SecurityExtensionConfig")
+            .field("security_mode_enabled", &self.security_mode_enabled)
+            .field("tool_key", &"[REDACTED]")
+            .field("load_state", &self.load_state)
+            .field("failures_log", &self.failures_log)
+            .field("grp_keys", &self.grp_keys)
+            .field("p2p_keys", &self.p2p_keys)
+            .field("siat", &self.siat)
+            .field("go_flags", &self.go_flags)
+            .finish()
+    }
 }
 
 fn default_tool_key() -> [u8; 16] {

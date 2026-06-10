@@ -4,11 +4,13 @@
 //! to the device's tables for A_Memory_Read/Write services.
 
 use crate::{
+    HasSecurityMode,
     ets::DeviceDescriptor,
     memory::{MemoryError, MemoryMap},
     objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, TableMemory},
 };
 use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::access::AccessPolicy;
 
 /// Memory layout information for System B devices.
 ///
@@ -173,7 +175,7 @@ impl SystemBMemoryMap {
 
 impl<Tables> MemoryMap<Tables> for SystemBMemoryMap
 where
-    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication,
+    Tables: HasAddressTable + HasAssociationTable + HasCommunicationObjectTable + HasApplication + HasSecurityMode,
 {
     fn read(&self, tables: &Tables, address: u16, data: &mut [u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
         let layout = &self.layout;
@@ -233,7 +235,22 @@ where
         }
     }
 
-    fn write(&self, tables: &Tables, address: u16, data: &[u8], _ctx: AccessContext) -> Result<usize, MemoryError> {
+    fn write(&self, tables: &Tables, address: u16, data: &[u8], ctx: AccessContext) -> Result<usize, MemoryError> {
+        // 03/05/01 §4.16.2 / §4.17.2 / §4.18.2: on devices supporting KNX
+        // Secure, write access to the group address / association / group
+        // object tables — "memory mapped or Property based" — is limited to
+        // the Role "Tool"; other roles may only read. As an Access Policy
+        // that is 3FF/00C (OPEN_OFF_TOOL_ON): everyone while Security Mode is
+        // OFF, Tool only while it is ON. The legacy access-level scheme adds
+        // no write restriction of its own (Vol 6 Annex A lists write level 3
+        // for the System B table objects). The application/parameter region
+        // is not covered by those clauses; we deliberately gate it under the
+        // same policy because with Security Mode ON a plain parameter write
+        // would otherwise bypass the secure download path.
+        if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx, tables.security_mode_enabled()) {
+            return Err(MemoryError::AccessDenied);
+        }
+
         let layout = &self.layout;
 
         // Check if address is within our mapped range

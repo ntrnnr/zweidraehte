@@ -10,6 +10,7 @@
 
 use aes::Aes128;
 use aes::cipher::{BlockEncrypt, KeyInit};
+use subtle::ConstantTimeEq;
 
 // ============================================================================
 // Block Construction (KNX-specific)
@@ -321,8 +322,9 @@ pub fn verify_and_decrypt(
     let b0 = block_b0(&ctx.seq_nr, ctx.src, ctx.dst, ctx.addr_type, ctx.tpci_apci, q);
     let y_n = cbc_mac(&cipher, &b0, &[scf_byte], payload);
 
-    // Step 4: Compare MSB32(Y_n) with decrypted MAC
-    if y_n[0..4] == decrypted_mac[..] { Ok(()) } else { Err(CryptoError::MacMismatch) }
+    // Step 4: Compare MSB32(Y_n) with decrypted MAC using constant-time
+    // equality to prevent timing side-channels on MAC verification.
+    if bool::from(y_n[0..4].ct_eq(&decrypted_mac)) { Ok(()) } else { Err(CryptoError::MacMismatch) }
 }
 
 /// Verify MAC for authentication-only mode (payload is not encrypted).
@@ -336,7 +338,8 @@ pub fn verify_mac_auth_only(
     received_mac: &[u8; 4],
 ) -> Result<(), CryptoError> {
     let expected = compute_mac_auth_only(key, ctx, scf_byte, apdu_with_prefix);
-    if expected == *received_mac { Ok(()) } else { Err(CryptoError::MacMismatch) }
+    // Constant-time comparison to prevent timing side-channels.
+    if bool::from(expected.ct_eq(received_mac)) { Ok(()) } else { Err(CryptoError::MacMismatch) }
 }
 
 // ============================================================================
@@ -422,7 +425,8 @@ pub fn verify_and_decrypt_sync_req(
 
     let y_n = cbc_mac(&cipher, &b0, &assoc, challenge);
 
-    if y_n[0..4] == decrypted_mac[..] { Ok(()) } else { Err(CryptoError::MacMismatch) }
+    // Constant-time comparison to prevent timing side-channels.
+    if bool::from(y_n[0..4].ct_eq(&decrypted_mac)) { Ok(()) } else { Err(CryptoError::MacMismatch) }
 }
 
 /// Encrypt and MAC an outgoing S-A_Sync_Res.
@@ -505,7 +509,8 @@ pub fn verify_and_decrypt_sync_res(
     let b0 = block_b0(random, src, dst, addr_type, tpci_apci, q);
     let y_n = cbc_mac(&cipher, &b0, &[scf_byte], payload);
 
-    if y_n[0..4] == decrypted_mac[..] { Ok(()) } else { Err(CryptoError::MacMismatch) }
+    // Constant-time comparison to prevent timing side-channels.
+    if bool::from(y_n[0..4].ct_eq(&decrypted_mac)) { Ok(()) } else { Err(CryptoError::MacMismatch) }
 }
 
 // ============================================================================

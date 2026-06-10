@@ -308,9 +308,13 @@ where
         let updated = received_val - 1;
         let updated_bytes = u64_to_seq(updated);
         if scf.tool_access {
-            let _ = storage.save_tool_receiving_seq(&updated_bytes);
+            if let Err(_e) = storage.save_tool_receiving_seq(&updated_bytes) {
+                warn!("S-AL: failed to persist tool receiving SeqNr (sync_req phase) from {:#06X}", src);
+            }
         } else {
-            let _ = storage.save_receiving_seq(src, &updated_bytes);
+            if let Err(_e) = storage.save_receiving_seq(src, &updated_bytes) {
+                warn!("S-AL: failed to persist receiving SeqNr (sync_req phase) from {:#06X}", src);
+            }
         }
         updated
     } else {
@@ -522,9 +526,13 @@ where
     if seq_remote_val > 0 {
         let mut storage = sal.seq_storage.borrow_mut();
         if pending.tool_access {
-            let _ = storage.save_tool_receiving_seq(&seq_nr_remote);
+            if let Err(_e) = storage.save_tool_receiving_seq(&seq_nr_remote) {
+                warn!("S-AL: failed to persist tool receiving SeqNr (sync_res) from {:#06X}", src);
+            }
         } else {
-            let _ = storage.save_receiving_seq(src, &seq_nr_remote);
+            if let Err(_e) = storage.save_receiving_seq(src, &seq_nr_remote) {
+                warn!("S-AL: failed to persist receiving SeqNr (sync_res) from {:#06X}", src);
+            }
         }
     }
 
@@ -537,7 +545,9 @@ where
         let mut storage = sal.seq_storage.borrow_mut();
         let current_val = seq_to_u64(&storage.load_sending_seq().unwrap_or(super::outgoing::INITIAL_SENDING_SEQ));
         if seq_local_val > current_val {
-            let _ = storage.save_sending_seq(&seq_nr_local);
+            if let Err(_e) = storage.save_sending_seq(&seq_nr_local) {
+                warn!("S-AL: failed to persist sending SeqNr (sync_res) from {:#06X}", src);
+            }
         }
     }
 
