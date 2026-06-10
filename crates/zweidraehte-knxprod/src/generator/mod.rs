@@ -532,6 +532,13 @@ pub enum GeneratorError {
         /// What kind of translation this was (enum, param, obj)
         kind: String,
     },
+    /// The ApplicationPrograms list is empty; at least one program is required
+    EmptyApplicationPrograms,
+    /// A parameter size_bits value is outside the range [1, 63]
+    InvalidParameterSize {
+        /// The out-of-range value
+        size_bits: u8,
+    },
 }
 
 impl std::fmt::Display for GeneratorError {
@@ -543,6 +550,12 @@ impl std::fmt::Display for GeneratorError {
             }
             GeneratorError::UnknownTranslation { language, ref_path, kind } => {
                 write!(f, "Unknown {kind} in translation for {language}: '{ref_path}' does not exist")
+            }
+            GeneratorError::EmptyApplicationPrograms => {
+                write!(f, "ApplicationPrograms list is empty; at least one program is required")
+            }
+            GeneratorError::InvalidParameterSize { size_bits } => {
+                write!(f, "Parameter size_bits {size_bits} is out of range [1, 63]")
             }
         }
     }

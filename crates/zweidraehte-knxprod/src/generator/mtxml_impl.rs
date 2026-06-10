@@ -1,3 +1,21 @@
+use std::sync::OnceLock;
+
+/// Compiled regex for `{{param_name:default}}` text-template substitution.
+/// Pattern is constant; compile once and reuse across calls.
+static PARAM_TEMPLATE_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+fn param_template_re() -> &'static regex::Regex {
+    PARAM_TEMPLATE_RE
+        .get_or_init(|| regex::Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*):([^}]*)\}\}").expect("hardcoded regex is valid"))
+}
+
+/// Compiled regex for collapsing multiple consecutive spaces.
+static MULTI_SPACE_RE: OnceLock<regex::Regex> = OnceLock::new();
+
+fn multi_space_re() -> &'static regex::Regex {
+    MULTI_SPACE_RE.get_or_init(|| regex::Regex::new(r" {2,}").expect("hardcoded regex is valid"))
+}
+
 pub struct MtxmlGenerator;
 
 impl MtxmlGenerator {
@@ -756,7 +774,7 @@ impl MtxmlGenerator {
         Ok((
             StaticSection {
                 code: Some(Self::build_code(config, app_id, param_size, mask_family)),
-                parameter_types: Some(Self::build_parameter_types(config, app_id)),
+                parameter_types: Some(Self::build_parameter_types(config, app_id)?),
                 parameters: Some(Self::build_parameters(config, app_id, &code_segment_id)),
                 parameter_refs: Some(parameter_refs),
                 com_object_table,
@@ -1525,7 +1543,10 @@ impl MtxmlGenerator {
     }
 
     /// Build parameter type definitions.
-    fn build_parameter_types(config: &ApplicationProgramConfig, app_id: &str) -> ParameterTypes {
+    fn build_parameter_types(
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+    ) -> Result<ParameterTypes, GeneratorError> {
         let mut types = ParameterTypes::default();
         let mut seen_types = std::collections::HashSet::new();
 
@@ -1539,7 +1560,7 @@ impl MtxmlGenerator {
 
             // URL-encode the type name for the ID
             let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
-            let type_def = Self::build_type_def(&param.base, param.enum_variants, &type_id);
+            let type_def = Self::build_type_def(&param.base, param.enum_variants, &type_id)?;
 
             types.types.push(ParameterType { id: type_id, name: type_name, internal_description: None, type_def });
         }
@@ -1583,7 +1604,7 @@ impl MtxmlGenerator {
                     if !seen_types.contains(&type_name) {
                         seen_types.insert(type_name.clone());
                         let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
-                        let type_def = Self::build_type_def(&param.param, param.enum_variants, &type_id);
+                        let type_def = Self::build_type_def(&param.param, param.enum_variants, &type_id)?;
                         types.types.push(ParameterType {
                             id: type_id,
                             name: type_name,
@@ -1611,7 +1632,7 @@ impl MtxmlGenerator {
                     seen_types.insert(type_name.clone());
 
                     let type_id = format!("{}_PT-{}", app_id, Self::encode_id(&type_name));
-                    let type_def = Self::build_type_def(&param_ext.base, param_ext.enum_variants, &type_id);
+                    let type_def = Self::build_type_def(&param_ext.base, param_ext.enum_variants, &type_id)?;
 
                     types.types.push(ParameterType {
                         id: type_id,
@@ -1640,7 +1661,7 @@ impl MtxmlGenerator {
             }
         }
 
-        types
+        Ok(types)
     }
 
     /// Generate a type name from a parameter definition.
@@ -1707,29 +1728,41 @@ impl MtxmlGenerator {
     }
 
     /// Build a type definition for a parameter.
+    ///
+    /// Returns `Err(InvalidParameterSize)` if `size_bits` is 0 or greater than
+    /// 63, since `1i64 << size_bits` would overflow or produce an incorrect max
+    /// value in those cases.
     fn build_type_def(
         param: &zweidraehte_device::ets::EtsParamDef,
         enum_variants: Option<&[zweidraehte_device::ets::EtsEnumVariant]>,
         type_id: &str,
-    ) -> ParameterTypeDef {
+    ) -> Result<ParameterTypeDef, GeneratorError> {
         match param.param_type {
             EtsParamType::UnsignedInt => {
+                if param.size_bits == 0 || param.size_bits > 63 {
+                    return Err(GeneratorError::InvalidParameterSize { size_bits: param.size_bits });
+                }
                 let max = (1i64 << param.size_bits) - 1;
-                ParameterTypeDef::TypeNumber(TypeNumber {
+                Ok(ParameterTypeDef::TypeNumber(TypeNumber {
                     size_in_bit: param.size_bits,
                     num_type: "unsignedInt".to_string(),
                     min_inclusive: 0,
                     max_inclusive: max,
-                })
+                }))
             }
             EtsParamType::SignedInt => {
+                // size_bits == 0 is nonsensical; size_bits == 1 gives half = 1 (range [-1, 0])
+                // which is technically valid, but > 63 would overflow.
+                if param.size_bits == 0 || param.size_bits > 63 {
+                    return Err(GeneratorError::InvalidParameterSize { size_bits: param.size_bits });
+                }
                 let half = 1i64 << (param.size_bits - 1);
-                ParameterTypeDef::TypeNumber(TypeNumber {
+                Ok(ParameterTypeDef::TypeNumber(TypeNumber {
                     size_in_bit: param.size_bits,
                     num_type: "signedInt".to_string(),
                     min_inclusive: -half,
                     max_inclusive: half - 1,
-                })
+                }))
             }
             EtsParamType::Enum => {
                 let enumerations = if let Some(variants) = enum_variants {
@@ -1745,11 +1778,11 @@ impl MtxmlGenerator {
                 } else {
                     vec![]
                 };
-                ParameterTypeDef::TypeRestriction(TypeRestriction {
+                Ok(ParameterTypeDef::TypeRestriction(TypeRestriction {
                     base: "Value".to_string(),
                     size_in_bit: param.size_bits as u32,
                     enumerations,
-                })
+                }))
             }
             EtsParamType::String => {
                 // Use pattern if provided, with fixed size for color types
@@ -1763,9 +1796,9 @@ impl MtxmlGenerator {
                 } else {
                     (param.size_bits as u32, None)
                 };
-                ParameterTypeDef::TypeText(TypeText { size_in_bit: size, pattern })
+                Ok(ParameterTypeDef::TypeText(TypeText { size_in_bit: size, pattern }))
             }
-            EtsParamType::None => ParameterTypeDef::TypeNone(TypeNone {}),
+            EtsParamType::None => Ok(ParameterTypeDef::TypeNone(TypeNone {})),
         }
     }
 
@@ -2117,11 +2150,9 @@ impl MtxmlGenerator {
         if !text.contains("{{") {
             return text.to_string();
         }
-        let re = regex::Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*):([^}]*)\}\}").unwrap();
-        let stripped = re.replace_all(text, "$2").to_string();
+        let stripped = param_template_re().replace_all(text, "$2").to_string();
         // Collapse runs of whitespace that result from stripping empty templates
-        let ws_re = regex::Regex::new(r" {2,}").unwrap();
-        ws_re.replace_all(&stripped, " ").trim().to_string()
+        multi_space_re().replace_all(&stripped, " ").trim().to_string()
     }
 
     /// Resolve `{{param_name:default}}` templates for V20 schema.
@@ -2137,10 +2168,8 @@ impl MtxmlGenerator {
             return (text.to_string(), None);
         }
 
-        let re = regex::Regex::new(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*):([^}]*)\}\}").unwrap();
-
         // Find the first (and only — V20 supports one per element) template.
-        if let Some(cap) = re.captures(text) {
+        if let Some(cap) = param_template_re().captures(text) {
             let full_match = cap.get(0).unwrap().as_str();
             let param_name = cap.get(1).unwrap().as_str();
 
@@ -3169,7 +3198,7 @@ impl MtxmlGenerator {
 
             let mut whens: Vec<When> = Vec::new();
             for variant in union_info.selector_variants {
-                let variant_prefix = format!("{}_{}_", union_name, variant.text);
+                let variant_prefix = format!("{}_{}_", union_name, variant.variant_name);
                 let variant_param_refs: Vec<_> = param_ref_map
                     .primary
                     .iter()
@@ -3373,7 +3402,7 @@ impl MtxmlGenerator {
                         for variant in union_info.selector_variants {
                             // For each variant, find all the variant parameters
                             // Variant params are named like: union_name_VariantName_field
-                            let variant_prefix = format!("{}_{}_", union_name, variant.text);
+                            let variant_prefix = format!("{}_{}_", union_name, variant.variant_name);
 
                             // Collect param refs for this variant
                             let variant_param_refs: Vec<_> = param_ref_map
@@ -3643,7 +3672,7 @@ impl MtxmlGenerator {
 
                             // Add value param refs for each object's union
                             for (_obj_name, value_union, _) in &all_obj_refs {
-                                let variant_prefix = format!("{}_{}_", value_union, variant.text);
+                                let variant_prefix = format!("{}_{}_", value_union, variant.variant_name);
                                 for (param_name, ref_id) in param_ref_map.primary.iter() {
                                     if param_name.starts_with(&variant_prefix) {
                                         when_items.push(when_param_ref(ref_id.clone()));
@@ -4230,7 +4259,13 @@ impl MtxmlGenerator {
     /// 3. All Choose ParamRefId values have matching ParameterRef Ids
     /// 4. All Parameter ParameterType references have matching ParameterType Ids
     pub fn validate(knx: &Knx) -> Result<(), GeneratorError> {
-        let app = &knx.manufacturer_data.manufacturer.application_programs.programs[0];
+        let app = knx
+            .manufacturer_data
+            .manufacturer
+            .application_programs
+            .programs
+            .first()
+            .ok_or(GeneratorError::EmptyApplicationPrograms)?;
 
         // Collect all defined IDs
         let param_ref_ids: std::collections::HashSet<&str> = app

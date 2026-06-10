@@ -39,8 +39,8 @@ use crate::runtime::model::{
 };
 use crate::schema::{
     ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject,
-    ComObjectRef, Module, ModuleArg, ModuleDef, ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterRef,
-    ParameterType, WhenItem,
+    ComObjectRef, DynamicSection, Module, ModuleArg, ModuleDef, ModuleDefDynamicItem, ParameterBlock,
+    ParameterBlockItem, ParameterRef, ParameterType, WhenItem,
 };
 
 /// A complete KNX device instance with all state needed for configuration and programming.
@@ -567,183 +567,23 @@ impl Device {
         self.visible_com_object_refs.clear();
         self.visible_modules.clear();
 
-        // Clone the dynamic section to avoid borrow conflicts
-        let dynamic = self.program.dynamic.clone();
-
-        if let Some(dynamic) = dynamic {
-            // Process channel-independent block
-            if let Some(cib) = &dynamic.channel_independent_block {
-                self.process_channel_independent_block(cib);
-            }
-
-            // Process channels
-            for channel in &dynamic.channels {
-                self.process_channel(channel);
-            }
-        }
-    }
-
-    fn process_channel_independent_block(&mut self, cib: &ChannelIndependentBlock) {
-        for item in &cib.items {
-            match item {
-                ChannelIndependentItem::ParameterBlock(pb) => {
-                    self.process_parameter_block(pb);
-                }
-                ChannelIndependentItem::Choose(choose) => {
-                    self.process_choose(choose);
-                }
-            }
-        }
-    }
-
-    fn process_channel(&mut self, channel: &Channel) {
-        for item in &channel.items {
-            match item {
-                ChannelItem::ParameterBlock(pb) => {
-                    self.process_parameter_block(pb);
-                }
-                ChannelItem::Choose(choose) => {
-                    self.process_choose(choose);
-                }
-                ChannelItem::Module(module) => {
-                    self.process_module(module);
-                }
-            }
-        }
-    }
-
-    fn process_parameter_block(&mut self, pb: &ParameterBlock) {
-        self.process_parameter_block_with_module(pb, None);
-    }
-
-    fn process_choose(&mut self, choose: &Choose) {
-        self.process_choose_with_module(choose, None);
-    }
-
-    fn process_parameter_block_with_module(&mut self, pb: &ParameterBlock, module_ctx: Option<&ModuleContext>) {
-        for item in &pb.items {
-            self.process_parameter_block_item_with_module(item, module_ctx);
-        }
-    }
-
-    fn process_parameter_block_item_with_module(
-        &mut self,
-        item: &ParameterBlockItem,
-        module_ctx: Option<&ModuleContext>,
-    ) {
-        match item {
-            ParameterBlockItem::ParameterRefRef(prr) => {
-                self.visible_param_refs.insert(prr.ref_id.clone());
-            }
-            ParameterBlockItem::ComObjectRefRef(corr) => {
-                self.visible_com_object_refs.insert(corr.ref_id.clone());
-            }
-            ParameterBlockItem::Choose(choose) => {
-                self.process_choose_with_module(choose, module_ctx);
-            }
-            ParameterBlockItem::ParameterSeparator(_) => {}
-            ParameterBlockItem::Module(module) => {
-                self.process_module(module);
-            }
-            ParameterBlockItem::Button(_) => {}
-            ParameterBlockItem::Rows(_) | ParameterBlockItem::Columns(_) => {}
-        }
-    }
-
-    fn process_choose_with_module(&mut self, choose: &Choose, module_ctx: Option<&ModuleContext>) {
-        let selector_value = self.get_selector_value_with_module(&choose.param_ref_id, module_ctx);
-
-        let mut items_to_process: Vec<Vec<WhenItem>> = Vec::new();
-        let mut any_matched = false;
-
-        for when in &choose.whens {
-            if when.default.unwrap_or(false) {
-                continue;
-            }
-            if let Some(test) = &when.test
-                && self.matches_condition(selector_value, test)
-            {
-                items_to_process.push(when.items.clone());
-                any_matched = true;
-            }
-        }
-
-        if !any_matched {
-            for when in &choose.whens {
-                if when.default.unwrap_or(false) {
-                    items_to_process.push(when.items.clone());
-                    break;
-                }
-            }
-        }
-
-        for items in items_to_process {
-            self.process_when_items_with_module(&items, module_ctx);
-        }
-    }
-
-    fn process_when_items_with_module(&mut self, items: &[WhenItem], module_ctx: Option<&ModuleContext>) {
-        for item in items {
-            match item {
-                WhenItem::ParameterRefRef(prr) => {
-                    self.visible_param_refs.insert(prr.ref_id.clone());
-                }
-                WhenItem::ComObjectRefRef(corr) => {
-                    self.visible_com_object_refs.insert(corr.ref_id.clone());
-                }
-                WhenItem::ParameterBlock(pb) => {
-                    self.process_parameter_block_with_module(pb, module_ctx);
-                }
-                WhenItem::Choose(nested_choose) => {
-                    self.process_choose_with_module(nested_choose, module_ctx);
-                }
-                WhenItem::ParameterSeparator(_) => {}
-                WhenItem::Assign(_) => {}
-                WhenItem::Module(module) => {
-                    self.process_module(module);
-                }
-            }
-        }
-    }
-
-    fn get_selector_value_with_module(&self, param_ref_id: &str, module_ctx: Option<&ModuleContext>) -> Option<i64> {
-        // First try module context if available
-        if let Some(ctx) = module_ctx
-            && let Some(param_refs) = &ctx.module_def.static_section.parameter_refs
-            && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id)
-        {
-            let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
-            if let Some(value) = self.module_param_values.get(&composite_id) {
-                return match value {
-                    ParameterValue::Integer(v) => Some(*v),
-                    ParameterValue::Float(v) => Some(*v as i64),
-                    _ => None,
-                };
-            }
-        }
-
-        // Fall back to main device parameter lookup
-        self.get_selector_value(param_ref_id)
-    }
-
-    fn process_module(&mut self, module: &Module) {
-        self.visible_modules.insert(module.id.clone());
-
-        if let Some(module_def) = self.module_defs.get(&module.ref_id).cloned()
-            && let Some(dynamic) = &module_def.dynamic
-        {
-            let module_ctx = ModuleContext { instance_id: module.id.clone(), module_def: module_def.clone() };
-
-            for item in &dynamic.items {
-                match item {
-                    ModuleDefDynamicItem::ParameterBlock(pb) => {
-                        self.process_parameter_block_with_module(pb, Some(&module_ctx));
-                    }
-                    ModuleDefDynamicItem::Choose(choose) => {
-                        self.process_choose_with_module(choose, Some(&module_ctx));
-                    }
-                }
-            }
+        // Build the read-only lookup context from self's maps, then call the
+        // free traversal function so the borrow checker sees distinct borrows:
+        // `self.program.dynamic` (read) vs. `self.visible_*` (write).
+        if let Some(dynamic) = &self.program.dynamic {
+            let ctx = VisibilityReadCtx {
+                param_refs: &self.param_refs,
+                param_values: &self.param_values,
+                module_param_values: &self.module_param_values,
+                module_defs: &self.module_defs,
+            };
+            traverse_dynamic_section(
+                dynamic,
+                &ctx,
+                &mut self.visible_param_refs,
+                &mut self.visible_com_object_refs,
+                &mut self.visible_modules,
+            );
         }
     }
 
@@ -755,13 +595,6 @@ impl Device {
             ParameterValue::Integer(v) => Some(*v),
             ParameterValue::Float(v) => Some(*v as i64),
             _ => None,
-        }
-    }
-
-    fn matches_condition(&self, value: Option<i64>, test: &str) -> bool {
-        match (value, Condition::parse(test)) {
-            (Some(v), Some(cond)) => cond.matches(v),
-            _ => false,
         }
     }
 }
@@ -798,6 +631,213 @@ impl crate::runtime::model::ConditionEvaluator for Device {
 
         // Fall back to main device parameter lookup
         Device::get_selector_value(self, param_ref_id)
+    }
+}
+
+// ============================================================================
+// Visibility Traversal — Free Functions
+// ============================================================================
+
+/// Read-only lookup tables needed during a visibility traversal.
+///
+/// Separating these into their own struct lets the borrow checker see that
+/// `program.dynamic` (read) and the `visible_*` sets (write) are independent
+/// fields, removing the need to clone the entire `DynamicSection`.
+struct VisibilityReadCtx<'a> {
+    param_refs: &'a HashMap<String, ParameterRef>,
+    param_values: &'a HashMap<String, ParameterValue>,
+    module_param_values: &'a HashMap<String, ParameterValue>,
+    module_defs: &'a HashMap<String, ModuleDef>,
+}
+
+impl VisibilityReadCtx<'_> {
+    fn selector_value(&self, param_ref_id: &str, module_ctx: Option<&ModuleContext>) -> Option<i64> {
+        if let Some(ctx) = module_ctx
+            && let Some(param_refs) = &ctx.module_def.static_section.parameter_refs
+            && let Some(param_ref) = param_refs.refs.iter().find(|pr| pr.id == param_ref_id)
+        {
+            let composite_id = format!("{}::{}", ctx.instance_id, param_ref.ref_id);
+            if let Some(value) = self.module_param_values.get(&composite_id) {
+                return match value {
+                    ParameterValue::Integer(v) => Some(*v),
+                    ParameterValue::Float(v) => Some(*v as i64),
+                    _ => None,
+                };
+            }
+        }
+        let param_ref = self.param_refs.get(param_ref_id)?;
+        match self.param_values.get(&param_ref.ref_id)? {
+            ParameterValue::Integer(v) => Some(*v),
+            ParameterValue::Float(v) => Some(*v as i64),
+            _ => None,
+        }
+    }
+}
+
+fn traverse_dynamic_section(
+    dynamic: &DynamicSection,
+    ctx: &VisibilityReadCtx<'_>,
+    visible_params: &mut HashSet<String>,
+    visible_objects: &mut HashSet<String>,
+    visible_modules: &mut HashSet<String>,
+) {
+    if let Some(cib) = &dynamic.channel_independent_block {
+        for item in &cib.items {
+            match item {
+                ChannelIndependentItem::ParameterBlock(pb) => {
+                    traverse_parameter_block(pb, None, ctx, visible_params, visible_objects, visible_modules);
+                }
+                ChannelIndependentItem::Choose(choose) => {
+                    traverse_choose(choose, None, ctx, visible_params, visible_objects, visible_modules);
+                }
+            }
+        }
+    }
+
+    for channel in &dynamic.channels {
+        for item in &channel.items {
+            match item {
+                ChannelItem::ParameterBlock(pb) => {
+                    traverse_parameter_block(pb, None, ctx, visible_params, visible_objects, visible_modules);
+                }
+                ChannelItem::Choose(choose) => {
+                    traverse_choose(choose, None, ctx, visible_params, visible_objects, visible_modules);
+                }
+                ChannelItem::Module(module) => {
+                    traverse_module(module, ctx, visible_params, visible_objects, visible_modules);
+                }
+            }
+        }
+    }
+}
+
+fn traverse_parameter_block(
+    pb: &ParameterBlock,
+    module_ctx: Option<&ModuleContext>,
+    ctx: &VisibilityReadCtx<'_>,
+    visible_params: &mut HashSet<String>,
+    visible_objects: &mut HashSet<String>,
+    visible_modules: &mut HashSet<String>,
+) {
+    for item in &pb.items {
+        match item {
+            ParameterBlockItem::ParameterRefRef(prr) => {
+                visible_params.insert(prr.ref_id.clone());
+            }
+            ParameterBlockItem::ComObjectRefRef(corr) => {
+                visible_objects.insert(corr.ref_id.clone());
+            }
+            ParameterBlockItem::Choose(choose) => {
+                traverse_choose(choose, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+            }
+            ParameterBlockItem::Module(module) => {
+                traverse_module(module, ctx, visible_params, visible_objects, visible_modules);
+            }
+            ParameterBlockItem::ParameterSeparator(_)
+            | ParameterBlockItem::Button(_)
+            | ParameterBlockItem::Rows(_)
+            | ParameterBlockItem::Columns(_) => {}
+        }
+    }
+}
+
+fn traverse_choose(
+    choose: &Choose,
+    module_ctx: Option<&ModuleContext>,
+    ctx: &VisibilityReadCtx<'_>,
+    visible_params: &mut HashSet<String>,
+    visible_objects: &mut HashSet<String>,
+    visible_modules: &mut HashSet<String>,
+) {
+    let selector_value = ctx.selector_value(&choose.param_ref_id, module_ctx);
+
+    let mut any_matched = false;
+    let mut default_items: Option<&[WhenItem]> = None;
+
+    for when in &choose.whens {
+        if when.default.unwrap_or(false) {
+            default_items = Some(&when.items);
+            continue;
+        }
+        if let Some(test) = &when.test
+            && matches!(
+                (selector_value, Condition::parse(test)),
+                (Some(v), Some(cond)) if cond.matches(v)
+            )
+        {
+            traverse_when_items(&when.items, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+            any_matched = true;
+        }
+    }
+
+    if !any_matched {
+        if let Some(items) = default_items {
+            traverse_when_items(items, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+        }
+    }
+}
+
+fn traverse_when_items(
+    items: &[WhenItem],
+    module_ctx: Option<&ModuleContext>,
+    ctx: &VisibilityReadCtx<'_>,
+    visible_params: &mut HashSet<String>,
+    visible_objects: &mut HashSet<String>,
+    visible_modules: &mut HashSet<String>,
+) {
+    for item in items {
+        match item {
+            WhenItem::ParameterRefRef(prr) => {
+                visible_params.insert(prr.ref_id.clone());
+            }
+            WhenItem::ComObjectRefRef(corr) => {
+                visible_objects.insert(corr.ref_id.clone());
+            }
+            WhenItem::ParameterBlock(pb) => {
+                traverse_parameter_block(pb, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+            }
+            WhenItem::Choose(nested_choose) => {
+                traverse_choose(nested_choose, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+            }
+            WhenItem::Module(module) => {
+                traverse_module(module, ctx, visible_params, visible_objects, visible_modules);
+            }
+            WhenItem::ParameterSeparator(_) | WhenItem::Assign(_) => {}
+        }
+    }
+}
+
+fn traverse_module(
+    module: &Module,
+    ctx: &VisibilityReadCtx<'_>,
+    visible_params: &mut HashSet<String>,
+    visible_objects: &mut HashSet<String>,
+    visible_modules: &mut HashSet<String>,
+) {
+    visible_modules.insert(module.id.clone());
+
+    if let Some(module_def) = ctx.module_defs.get(&module.ref_id)
+        && let Some(dynamic) = &module_def.dynamic
+    {
+        let module_ctx = ModuleContext { instance_id: module.id.clone(), module_def: module_def.clone() };
+
+        for item in &dynamic.items {
+            match item {
+                ModuleDefDynamicItem::ParameterBlock(pb) => {
+                    traverse_parameter_block(
+                        pb,
+                        Some(&module_ctx),
+                        ctx,
+                        visible_params,
+                        visible_objects,
+                        visible_modules,
+                    );
+                }
+                ModuleDefDynamicItem::Choose(choose) => {
+                    traverse_choose(choose, Some(&module_ctx), ctx, visible_params, visible_objects, visible_modules);
+                }
+            }
+        }
     }
 }
 
