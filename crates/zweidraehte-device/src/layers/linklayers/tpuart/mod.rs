@@ -706,14 +706,12 @@ where
                     self.execute_send_actions(actions).await;
                 }
                 MainAction::ResetSendStateMachine => {
-                    // Reset send state machine due to error (e.g., U_State.ind with error flags)
-                    self.send_ctx.reset();
-                    // Also clear any pending transmission
-                    if self.current_tx.is_some() {
-                        self.current_tx = None;
-                        // Notify caller of failure
-                        debug!("TPUART: Send state machine reset due to error");
-                    }
+                    // Reset send state machine due to error (e.g., U_State.ind with error flags).
+                    // complete_transmission sends L_Data.con(err) and resets send_ctx, so the
+                    // transport layer isn't left waiting forever for a confirmation that will
+                    // never arrive.
+                    debug!("TPUART: Send state machine reset due to error");
+                    self.complete_transmission(false).await;
                 }
                 MainAction::ConfigureRetryCounts => {
                     let buf = [U_MAX_RST_CNT, self.retry_config.encode()];
@@ -883,7 +881,7 @@ where
 
         // Check for echo
         let is_echo = if let (Some(tx), Some(buf)) = (&self.current_tx, &self.receive_buffer) {
-            self.is_echo_check(&tx.tp1_buffer, buf)
+            self.is_echo(&tx.tp1_buffer, buf)
         } else {
             false
         };
@@ -911,8 +909,11 @@ where
         self.main_ctx.receive_state.is_extended = is_extended;
         self.main_ctx.receive_state.control_byte = ctrl;
 
-        // Check if this is an echo of our transmission
-        // Compare control byte (ignoring repeat bit) and addresses
+        // Check if this is an echo of our transmission using all 6 header bytes
+        // (ctrl + src(2) + dst(2) + routing).  The earlier 4-byte check in
+        // `SendSmFrameStart` runs when only ctrl+addr have arrived; this
+        // 6-byte version runs here, after the full header is buffered, to
+        // confirm the match before we decide on ACK.
         if let Some(ref tx) = self.current_tx
             && tx.tp1_buffer.len() >= 6
         {
@@ -939,15 +940,6 @@ where
         } else {
             debug!("TPUART: no ACK for dst={} group={}", dst, is_group);
         }
-    }
-
-    /// Check if received bytes match our transmitted frame (echo detection) - non-borrowing version
-    fn is_echo_check(&self, tx_buf: &Buffer<'static>, rx_buf: &Buffer<'static>) -> bool {
-        if rx_buf.len() < 4 || tx_buf.len() < 4 {
-            return false;
-        }
-        // Compare control byte (ignoring repeat bit) and source/dest addresses
-        ((rx_buf[0] ^ tx_buf[0]) & !0x20) == 0 && rx_buf[1..4] == tx_buf[1..4]
     }
 
     /// Start a new transmission

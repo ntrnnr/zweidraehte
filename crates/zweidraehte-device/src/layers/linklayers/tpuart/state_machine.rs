@@ -810,12 +810,12 @@ fn process_idle_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Acti
         ctx.main_state = MainState::Invalidate;
         actions.push(MainAction::StartTimer(TIMEOUT_INVALIDATE)).unwrap();
     }
-    // E981 register read response
-    else if byte == E981_PRODUCT_ID_IND && ctx.chip_type == ChipType::E981 {
-        ctx.main_state = MainState::WaitRegRes;
-        // Will receive the actual register value next
-    }
-    // Unknown byte - ignore
+    // Unknown byte - ignore. This intentionally includes an out-of-context
+    // E981_PRODUCT_ID_IND (0xFE): the product-ID indication only occurs as a
+    // response during chip detection (handled in process_config_byte), and
+    // register-read responses are indicated by 0xF1, not 0xFE. An earlier
+    // version entered WaitRegRes here with no expected_bytes set, which made
+    // the next innocent bus byte complete a phantom register read.
 }
 
 // ============================================================================
