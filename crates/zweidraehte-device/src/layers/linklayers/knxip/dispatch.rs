@@ -4,7 +4,9 @@
 
 use core::net::SocketAddrV4;
 
-use crate::layers::linklayers::knxip::context::{IpAdditionalIndividualAddressContext, IpDiagnosticsContext};
+use crate::layers::linklayers::knxip::context::{
+    IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
+};
 use embassy_sync::{
     blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
@@ -63,14 +65,23 @@ pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
     tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
     address_filter: Option<&'a dyn super::types::AddressFilter>,
 ) -> ServerContext<'a> {
+    // The remote-config write/reset capabilities are gated identically to
+    // the diagnostics read side: present exactly when the remote-config
+    // server is enabled. `context` (a `&dyn KnxNetIpContext`) implements all
+    // three, so the same handle backs each `Some`.
     let ip_diagnostics: Option<&dyn IpDiagnosticsContext> =
         if RC::exposes_diagnostics() { Some(context) } else { None };
+    let ip_config_write: Option<&dyn IpConfigWriteContext> =
+        if RC::exposes_diagnostics() { Some(context) } else { None };
+    let restart_ctx: Option<&dyn RemoteRestartContext> = if RC::exposes_diagnostics() { Some(context) } else { None };
     ServerContext::new(
         context.buffer_manager(),
         ind_tx,
         context.max_apdu_length(),
         context,
         ip_diagnostics,
+        ip_config_write,
+        restart_ctx,
         additional_addresses,
         context,
         tunneling_slot_info,

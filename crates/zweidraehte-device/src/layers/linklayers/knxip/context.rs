@@ -6,6 +6,9 @@ use embassy_sync::channel::Channel;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 
+use crate::ip::IpStackState;
+use crate::restart::RestartRequest;
+
 /// Provides access to dynamic device information for KNX/IP discovery.
 ///
 /// Implemented by the stack's runtime context so the KNX/IP link layer
@@ -45,6 +48,40 @@ pub trait IpDiagnosticsContext {
 
     /// Build an `IpCurrentConfig` DIB from the platform's current state.
     fn ip_current_config(&self) -> zweidraehte_proto::messages::knxip::substructs::IpCurrentConfig;
+}
+
+/// Write side of remote IP configuration (03/08/07 §4.4.3,
+/// `REMOTE_BASIC_CONFIGURATION_REQUEST`).
+///
+/// The read side stays on [`IpDiagnosticsContext`]; this trait is kept
+/// separate so the diagnostics interface remains read-only. The returned
+/// [`IpStackState`] exposes the `set_*` mutators (interior-mutable `Cell`
+/// fields, hence a shared `&self`). A write must be followed by
+/// [`mark_config_dirty`](Self::mark_config_dirty) so the runtime persists
+/// the change — the `IpStackState` setters deliberately do not mark the
+/// device state dirty themselves.
+pub trait IpConfigWriteContext {
+    /// Borrow the persisted IP extension state to apply configuration writes.
+    fn ip_state_mut(&self) -> &dyn IpStackState;
+
+    /// Flag the device state as dirty so the runtime persists the IP
+    /// configuration changes applied via [`ip_state_mut`](Self::ip_state_mut).
+    fn mark_config_dirty(&self);
+}
+
+/// Lets the KNX/IP remote-reset server (03/08/07 §4.4.4,
+/// `REMOTE_RESET_REQUEST`) raise the same [`RestartRequest`] the
+/// Application Layer raises for `A_Restart`. Routing the remote reset
+/// through the existing restart channel means user code handles it through
+/// one unified path, rather than needing a second reset hook.
+///
+/// Only IP stacks implement this; the runtime reaches it through
+/// [`KnxNetIpContext`](super::KnxNetIpContext).
+pub trait RemoteRestartContext {
+    /// Publish a restart request. Returns `true` if it was enqueued
+    /// (the channel has depth 1; a full channel means a restart is already
+    /// pending, so dropping the duplicate is harmless).
+    fn request_restart(&self, request: RestartRequest) -> bool;
 }
 
 /// Exposes the routing-multicast-rebind channel that the write-handler

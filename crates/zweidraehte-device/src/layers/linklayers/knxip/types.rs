@@ -11,7 +11,9 @@ use heapless::Vec;
 use core::cell::RefCell;
 
 use crate::context::KnxIndividualAddressContext;
-use crate::layers::linklayers::knxip::context::{DeviceInfoContext, IpDiagnosticsContext};
+use crate::layers::linklayers::knxip::context::{
+    DeviceInfoContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
+};
 use crate::objects::tables::{AddressTable, HasLoadStateMachine};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knx::DestinationAddress;
@@ -173,6 +175,13 @@ pub struct ServerContext<'a> {
     /// IP diagnostics context for remote config responses.
     /// Present when remote config server is enabled.
     ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
+    /// IP configuration write side, for `REMOTE_BASIC_CONFIGURATION_REQUEST`.
+    /// Present when the remote config server is enabled (same gate as
+    /// `ip_diagnostics`).
+    ip_config_write: Option<&'a dyn IpConfigWriteContext>,
+    /// Restart-request publisher, for `REMOTE_RESET_REQUEST`. Present when
+    /// the remote config server is enabled.
+    restart_ctx: Option<&'a dyn RemoteRestartContext>,
     /// Additional individual addresses (tunneling slots), borrowed from
     /// a caller-owned buffer with the correct capacity `N`.
     additional_addresses: &'a [IndividualAddress],
@@ -197,6 +206,8 @@ impl<'a> ServerContext<'a> {
         max_apdu_length: u16,
         device_info: &'a dyn DeviceInfoContext,
         ip_diagnostics: Option<&'a dyn IpDiagnosticsContext>,
+        ip_config_write: Option<&'a dyn IpConfigWriteContext>,
+        restart_ctx: Option<&'a dyn RemoteRestartContext>,
         additional_addresses: &'a [IndividualAddress],
         knx_addresses: &'a dyn KnxIndividualAddressContext,
         tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
@@ -208,6 +219,8 @@ impl<'a> ServerContext<'a> {
             max_apdu_length,
             device_info,
             ip_diagnostics,
+            ip_config_write,
+            restart_ctx,
             additional_addresses,
             knx_addresses,
             tunneling_slot_info,
@@ -232,6 +245,22 @@ impl<'a> ServerContext<'a> {
     /// Returns `None` if the remote config server is not enabled.
     pub fn ip_diagnostics(&self) -> Option<&dyn IpDiagnosticsContext> {
         self.ip_diagnostics
+    }
+
+    /// Get the IP configuration write context, if available.
+    ///
+    /// Returns `None` if the remote config server is not enabled. Used by
+    /// `REMOTE_BASIC_CONFIGURATION_REQUEST` to apply incoming IP config DIBs.
+    pub fn ip_config_write(&self) -> Option<&dyn IpConfigWriteContext> {
+        self.ip_config_write
+    }
+
+    /// Get the restart-request publisher, if available.
+    ///
+    /// Returns `None` if the remote config server is not enabled. Used by
+    /// `REMOTE_RESET_REQUEST` to raise a restart on the shared restart channel.
+    pub fn restart_ctx(&self) -> Option<&dyn RemoteRestartContext> {
+        self.restart_ctx
     }
 
     /// Get additional individual addresses (tunneling slots).

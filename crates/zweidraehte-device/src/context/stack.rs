@@ -27,11 +27,12 @@ use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetra
 use crate::{
     HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpPlatform,
     layers::linklayers::knxip::context::{
-        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext, RoutingMulticastRebindContext,
+        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
+        RemoteRestartContext, RoutingMulticastRebindContext,
     },
 };
 use crate::{
-    StackState,
+    HasPersistence, StackState,
     context::{
         AddressTableContext, ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext,
         MaxRetryCountContext, PropertyServiceContext, RfDomainAddressContext, RfRetransmitterContext,
@@ -246,6 +247,35 @@ where
         &self,
     ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::net::Ipv4Addr, 2> {
         self.inner.state.extension_state().routing_multicast_rebind_channel()
+    }
+}
+
+/// Expose the IP extension state's write side to the remote-config server
+/// (`REMOTE_BASIC_CONFIGURATION_REQUEST`). `IpCapableStack` already bounds
+/// `ES: HasIpExtensionState`, so `ip_state()` is available; the extra
+/// `HasPersistence` bound on `D::State` lets us mark the write dirty.
+#[cfg(feature = "knxip")]
+impl<D: IpCapableStack> IpConfigWriteContext for StackContext<'_, D>
+where
+    D::State: HasPersistence,
+{
+    fn ip_state_mut(&self) -> &dyn crate::ip::IpStackState {
+        self.inner.state.extension_state().ip_state()
+    }
+
+    fn mark_config_dirty(&self) {
+        self.inner.state.mark_dirty();
+    }
+}
+
+/// Forward the remote-reset server's restart request onto the same restart
+/// channel the Application Layer uses for `A_Restart`, so user code drains
+/// one queue for both. Reaches the channel through the `LayerContext`'s
+/// inherent `try_send_restart_request` helper.
+#[cfg(feature = "knxip")]
+impl<D: IpCapableStack> RemoteRestartContext for StackContext<'_, D> {
+    fn request_restart(&self, request: crate::restart::RestartRequest) -> bool {
+        self.inner.layer_context.try_send_restart_request(request)
     }
 }
 

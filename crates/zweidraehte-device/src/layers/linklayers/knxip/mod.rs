@@ -8,7 +8,8 @@ use embassy_sync::{
 use crate::{
     context::{ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext, PropertyServiceContext},
     layers::linklayers::knxip::context::{
-        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext, RoutingMulticastRebindContext,
+        DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
+        RemoteRestartContext, RoutingMulticastRebindContext,
     },
 };
 use zweidraehte_proto::messages::{buffers::Buffer, builder::IndicationMessage};
@@ -42,6 +43,8 @@ pub(crate) trait KnxNetIpContext:
     + PropertyServiceContext
     + DeviceInfoContext
     + IpDiagnosticsContext
+    + IpConfigWriteContext
+    + RemoteRestartContext
     + IpAdditionalIndividualAddressContext
     + KnxIndividualAddressContext
     + RoutingMulticastRebindContext
@@ -54,6 +57,8 @@ impl<T> KnxNetIpContext for T where
         + PropertyServiceContext
         + DeviceInfoContext
         + IpDiagnosticsContext
+        + IpConfigWriteContext
+        + RemoteRestartContext
         + IpAdditionalIndividualAddressContext
         + KnxIndividualAddressContext
         + RoutingMulticastRebindContext
