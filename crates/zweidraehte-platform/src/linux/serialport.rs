@@ -62,7 +62,7 @@ pub struct AsyncSerialPortRx {
     s: Async<OwnedFd>,
 }
 
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
 impl AsyncSerialPort {
     pub fn open(options: Options) -> Result<Self> {
@@ -73,10 +73,24 @@ impl AsyncSerialPort {
             .open_native()?;
 
         #[cfg(target_os = "linux")]
-        serialport_low_latency::enable_low_latency(&mut t).unwrap();
+        if let Err(e) = serialport_low_latency::enable_low_latency(&mut t) {
+            // Low latency mode is a best-effort optimisation; not all adapters or
+            // kernel versions support ASYNC_LOW_LATENCY.  A failure here only
+            // affects latency, never correctness.
+            #[cfg(feature = "log")]
+            log::warn!("Could not enable low-latency mode on serial port: {e}");
+            let _ = e;
+        }
 
-        // SAFETY: We keep the TTYPort around, so the OwnedFd doesn't get invalidated
-        let fd = unsafe { OwnedFd::from_raw_fd(t.as_raw_fd()) };
+        // Dup the fd so the OwnedFd has its own independent descriptor.
+        // from_raw_fd would create a second owner of the TTYPort's fd, causing
+        // a double-close when both drop.  The split() method below uses the
+        // same dup pattern for the same reason.
+        //
+        // TTYPort only implements AsRawFd, not AsFd, so we use BorrowedFd::borrow_raw
+        // to satisfy nix::unistd::dup's AsFd bound.  This is safe: t is alive
+        // for the duration of this call and we do not store the BorrowedFd.
+        let fd = nix::unistd::dup(unsafe { BorrowedFd::borrow_raw(t.as_raw_fd()) }).map_err(std::io::Error::from)?;
         tcflush(&fd, FlushArg::TCIOFLUSH).unwrap();
 
         Ok(Self { _t: t, s: Async::new(fd)? })

@@ -80,7 +80,7 @@ impl AsRawFd for UdpMulticastSocket {
 
 impl AsFd for UdpMulticastSocket {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        unsafe { BorrowedFd::borrow_raw(self.s.as_raw_fd()) }
+        self.s.as_fd()
     }
 }
 

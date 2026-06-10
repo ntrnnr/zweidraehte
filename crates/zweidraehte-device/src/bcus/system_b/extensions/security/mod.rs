@@ -175,12 +175,7 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     ///
     /// Returns `count * ENTRY_SIZE` bytes covering entries `0..count`.
     pub fn as_flat_bytes(&self) -> &[u8] {
-        let byte_count = self.count as usize * ENTRY_SIZE;
-        // The data is [[u8; ENTRY_SIZE]; N], which is contiguous in memory.
-        let ptr = self.data.as_ptr() as *const u8;
-        // Safety: `byte_count <= N * ENTRY_SIZE`, and the layout of
-        // `[[u8; ENTRY_SIZE]; N]` is contiguous bytes.
-        unsafe { core::slice::from_raw_parts(ptr, byte_count) }
+        self.data[..self.count as usize].as_flattened()
     }
 }
 
