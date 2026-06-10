@@ -447,7 +447,11 @@ pub enum ComObjectType {
 
 impl From<u8> for ComObjectType {
     fn from(value: u8) -> Self {
-        // SAFETY: This is safe because the enum is repr(u8) and all values for all variants are defined
+        // SAFETY: `ComObjectType` is `#[repr(u8)]` and covers all 256 discriminants
+        // (0-254 are named variants; 255 is `Byte252`). Every `u8` is therefore a
+        // valid discriminant. The round-trip test below (`test_com_object_type_roundtrip`)
+        // iterates all 256 values and verifies that `u8::from(ComObjectType::from(v)) == v`,
+        // which catches any future gap if a variant is removed.
         unsafe { core::mem::transmute(value) }
     }
 }
@@ -1305,3 +1309,22 @@ pub use addr7::{AddrTab7, AddrTab7Impl};
 pub use app::{Application, PeiApplication};
 pub use asso6::{AssoTab6, AssoTab6Impl};
 pub use co7::{CoTab7, CoTab7Impl};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Verify that every `u8` value round-trips through `ComObjectType::from` and
+    /// back to `u8`.  This test is the safety guard for the `transmute` in
+    /// `From<u8> for ComObjectType`: if a variant is ever removed, the gap will
+    /// cause this test to fail rather than silently producing undefined behaviour at
+    /// runtime.
+    #[test]
+    fn test_com_object_type_roundtrip() {
+        for v in 0u8..=255 {
+            let cot = ComObjectType::from(v);
+            let back: u8 = cot.into();
+            assert_eq!(back, v, "ComObjectType round-trip failed for value {v}");
+        }
+    }
+}

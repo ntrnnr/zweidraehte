@@ -8,6 +8,7 @@ zweidraehte-device = { path = "../../crates/zweidraehte-device", default-feature
 zweidraehte-proto = { path = "../../crates/zweidraehte-proto", default-features = false }
 zweidraehte-util = { path = "../../crates/zweidraehte-util" }
 const-default = { workspace = true }
+zerocopy = { workspace = true }
 serde = { workspace = true }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod", optional = true }
 env_logger = { workspace = true, optional = true }

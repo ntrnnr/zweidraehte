@@ -690,7 +690,7 @@ pub(crate) const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calcula
 // Test Parameters
 // ============================================================================
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, IntoBytes, KnownLayout, Immutable)]
 pub struct TestParameters;
 
 impl ConstDefault for TestParameters {
@@ -1412,6 +1412,7 @@ impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::bcus::system_b::{DeviceConfig, HasDeviceConfig, Tp1ExtensionConfig};
 
 /// The persisted state type for the inner `Tp1SystemBDeviceState`.

@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 
+use zerocopy::{FromBytes, Immutable, KnownLayout, Unaligned};
 use zweidraehte_proto::dpt::DatapointType;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,14 +118,29 @@ impl ComObjectStatus {
     }
 }
 
-/// A trait for communication object values to abstract over different DatapointTypes
-pub trait ComObjectValueType: Clone + Default + AsRef<[u8]> + AsMut<[u8]> + Sized {}
+/// A trait for communication object values to abstract over different DatapointTypes.
+///
+/// The `Unaligned` bound guarantees that values of this type can be safely
+/// constructed from and cast to a byte buffer at **any** address. This is
+/// required by `ComObjectStorage::as_typed` and `TypedComObj::get`, which
+/// reinterpret a `[u8; N]` buffer (no alignment guarantee) as a `&T`. Without
+/// `Unaligned`, the cast could be undefined behaviour on architectures where
+/// misaligned loads trap (e.g. ARMv6-M, some RISC-V variants).
+///
+/// The `FromBytes` bound makes the read direction (`as_typed`, `TypedComObj::get`)
+/// sound: every bit pattern that can arrive on the bus is a valid `T`. Bus data
+/// originates from untrusted remote devices, so accepting any byte sequence is
+/// both correct (the device interprets it as whatever bit pattern it is) and safe
+/// (no undefined behaviour from invalid bit patterns in `T`).
+pub trait ComObjectValueType: Clone + Default + AsRef<[u8]> + AsMut<[u8]> + Sized + Unaligned + FromBytes {}
 
-// Implement the trait for all DatapointType instances
+// Implement the trait for all DatapointType instances.
+// DatapointType<PDT, MAIN, SUB> delegates to PDT for AsRef/AsMut; the
+// Unaligned and FromBytes bounds propagate naturally from PDT.
 impl<T, const MAIN: u16, const SUB: u16> ComObjectValueType for DatapointType<T, MAIN, SUB>
 where
     T: Clone + Default,
-    DatapointType<T, MAIN, SUB>: Clone + Default + AsRef<[u8]> + AsMut<[u8]>,
+    DatapointType<T, MAIN, SUB>: Clone + Default + AsRef<[u8]> + AsMut<[u8]> + Unaligned + FromBytes,
 {
 }
 
@@ -158,12 +174,17 @@ pub struct ComObjectInfo<'a> {
 /// (via ComObjectRefs). The size is auto-derived by the proc macro from the maximum
 /// size across all ref DPT types.
 ///
+/// `[u8; SIZE]` is trivially `Unaligned` (alignment 1) and `FromBytes` (all byte
+/// patterns are valid), so `ComObjectStorage` satisfies the `ComObjectValueType`
+/// bounds unconditionally.
+///
 /// # Example
 ///
 /// A comm object with refs for `DPT_Switch` (1 byte), `DPT_Scaling` (1 byte),
 /// `DPT_Value_Temp` (2 bytes), and `DPT_Colour_RGB` (3 bytes) would use
 /// `ComObjectStorage<3>` since 3 is the maximum size.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable, Unaligned)]
+#[repr(C)]
 pub struct ComObjectStorage<const SIZE: usize> {
     data: [u8; SIZE],
 }
@@ -206,40 +227,47 @@ impl<const SIZE: usize> ComObjectStorage<SIZE> {
 
     /// Interpret the storage as a typed reference.
     ///
-    /// # Safety
+    /// `T` must implement [`zerocopy::Unaligned`] and [`FromBytes`]:
+    /// - `Unaligned` ensures that casting a `[u8; SIZE]` buffer (alignment 1) to `&T`
+    ///   is well-defined on all target architectures.
+    /// - `FromBytes` ensures that every bus-received bit pattern is a valid `T`.
     ///
-    /// The caller must ensure that:
-    /// - `T` has size <= `SIZE`
-    /// - The storage contains valid data for type `T`
-    /// - `T` is properly aligned (most DPT types are 1-byte aligned)
+    /// # Panics
+    ///
+    /// Panics in debug builds if `size_of::<T>() > SIZE`.
     #[inline]
-    pub unsafe fn as_typed<T>(&self) -> &T {
-        debug_assert!(core::mem::size_of::<T>() <= SIZE);
+    pub fn as_typed<T: Unaligned + FromBytes>(&self) -> &T {
+        debug_assert!(core::mem::size_of::<T>() <= SIZE, "T does not fit in ComObjectStorage");
+        // SAFETY: Unaligned removes the alignment precondition; FromBytes guarantees
+        // every bit pattern is a valid T.  The byte slice has at least size_of::<T>()
+        // bytes (enforced by the debug_assert above and documented as a caller contract).
         unsafe { &*(self.data.as_ptr() as *const T) }
     }
 
     /// Interpret the storage as a mutable typed reference.
     ///
-    /// # Safety
+    /// Same requirements as [`as_typed`](Self::as_typed).
     ///
-    /// Same requirements as `as_typed`.
+    /// # Panics
+    ///
+    /// Panics in debug builds if `size_of::<T>() > SIZE`.
     #[inline]
-    pub unsafe fn as_typed_mut<T>(&mut self) -> &mut T {
-        debug_assert!(core::mem::size_of::<T>() <= SIZE);
+    pub fn as_typed_mut<T: Unaligned + FromBytes>(&mut self) -> &mut T {
+        debug_assert!(core::mem::size_of::<T>() <= SIZE, "T does not fit in ComObjectStorage");
+        // SAFETY: Same as as_typed; mut variant adds that the exclusive borrow prevents
+        // aliasing and that writing any bit pattern (valid by FromBytes) into the buffer
+        // is sound.
         unsafe { &mut *(self.data.as_mut_ptr() as *mut T) }
     }
 
-    /// Write a typed value into the storage.
+    /// Write a typed value into the storage by copying its byte representation.
     ///
-    /// # Safety
-    ///
-    /// The caller must ensure that:
-    /// - `T` has size <= `SIZE`
-    /// - `T` is properly aligned
+    /// This is a plain byte copy and requires no unsafe: `value.as_ref()` provides a
+    /// well-defined `&[u8]` slice that is copied into the internal buffer.
     #[inline]
-    pub unsafe fn write_typed<T: AsRef<[u8]>>(&mut self, value: &T) {
+    pub fn write_typed<T: AsRef<[u8]>>(&mut self, value: &T) {
         let bytes = value.as_ref();
-        debug_assert!(bytes.len() <= SIZE);
+        debug_assert!(bytes.len() <= SIZE, "T does not fit in ComObjectStorage");
         self.data[..bytes.len()].copy_from_slice(bytes);
     }
 }
@@ -275,26 +303,35 @@ pub struct TypedComObj<'a, T: ComObjectValueType, const INDEX: u16> {
 impl<'a, T: ComObjectValueType, const INDEX: u16> TypedComObj<'a, T, INDEX> {
     /// Create a new typed comm object wrapper.
     ///
-    /// # Safety
+    /// The `ComObjectValueType` supertrait bounds (`Unaligned` + `FromBytes`) make the
+    /// pointer cast in `get()` / `get_mut()` sound without additional preconditions on
+    /// alignment or bit-pattern validity.
     ///
-    /// The caller must ensure that:
-    /// - The storage slice has at least `size_of::<T>()` bytes
-    /// - The storage contains valid data for type `T`
+    /// The caller must ensure that the `storage` slice has at least `size_of::<T>()`
+    /// bytes; the debug assertion enforces this in development builds.
     #[inline]
-    pub unsafe fn new(storage: &'a mut [u8], status: &'a mut ComObjectStatus) -> Self {
+    pub fn new(storage: &'a mut [u8], status: &'a mut ComObjectStatus) -> Self {
         debug_assert!(storage.len() >= core::mem::size_of::<T>());
         Self { storage, status, _phantom: core::marker::PhantomData }
     }
 
     /// Get a typed reference to the value.
+    ///
+    /// Sound because `T: Unaligned` (no alignment requirement on the buffer pointer)
+    /// and `T: FromBytes` (every bus-received bit pattern is valid).
     #[inline]
     pub fn get(&self) -> &T {
+        // SAFETY: Unaligned + FromBytes (via ComObjectValueType) make this cast sound.
+        // The debug_assert in new() guards the size precondition.
         unsafe { &*(self.storage.as_ptr() as *const T) }
     }
 
     /// Get a mutable typed reference to the value.
+    ///
+    /// Sound for the same reasons as `get`.
     #[inline]
     pub fn get_mut(&mut self) -> &mut T {
+        // SAFETY: Same as get; exclusive borrow prevents aliasing.
         unsafe { &mut *(self.storage.as_mut_ptr() as *mut T) }
     }
 

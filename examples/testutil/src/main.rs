@@ -11,6 +11,7 @@ use embassy_time::{Duration, Timer};
 use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
@@ -24,7 +25,8 @@ use zweidraehte_device::{
 use zweidraehte_proto::dpt::DPT_Switch;
 use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 
-#[derive(Debug, ConstDefault)]
+#[derive(Debug, ConstDefault, IntoBytes, KnownLayout, Immutable)]
+#[repr(C)]
 pub struct AppParameters {
     _delay_time: u16,
 }

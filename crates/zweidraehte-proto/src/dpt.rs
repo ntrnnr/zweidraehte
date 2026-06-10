@@ -831,7 +831,11 @@ impl<const MAIN: u16, const SUB: u16> fmt::Debug for DatapointID<MAIN, SUB> {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+// `repr(transparent)` makes the layout identical to the single field `backing: PDT`.
+// Combined with the zerocopy derives this means `DatapointType<PDT, MAIN, SUB>`
+// inherits the byte-level properties (alignment, padding freedom, validity) of PDT.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, FromBytes, KnownLayout, Immutable, Unaligned, IntoBytes)]
+#[repr(transparent)]
 pub struct DatapointType<PDT, const MAIN: u16, const SUB: u16> {
     backing: PDT,
 }

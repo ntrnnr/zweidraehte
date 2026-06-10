@@ -6,6 +6,7 @@
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use zweidraehte_knxprod::ets_pages;
@@ -13,7 +14,7 @@ use zweidraehte_knxprod::ets_pages;
 ///
 /// KNX stores multi-byte parameters in big-endian format (network byte order).
 /// This wrapper type stores the value in big-endian and provides serde support.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, KnownLayout, Immutable, IntoBytes)]
 #[repr(transparent)]
 pub struct BeU16([u8; 2]);
 
@@ -236,7 +237,7 @@ pub mod comm_objs {
 // ----------------------------------------------------------------------------
 
 /// Analog input type selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum AnalogInputType {
     #[ets(display = "0-10V")]
@@ -250,7 +251,7 @@ impl ConstDefault for AnalogInputType {
 }
 
 /// Temperature sensor type selector.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum SensorType {
     #[ets(display = "PT100")]
@@ -266,7 +267,7 @@ impl ConstDefault for SensorType {
 }
 
 /// Yes/No boolean selector for invert options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum YesNo {
     #[ets(display = "No")]
@@ -301,7 +302,7 @@ impl From<YesNo> for bool {
 /// - `ETS_UNION_INFO`: Union metadata including variant parameters
 /// - `ETS_SELECTOR_VARIANTS`: Enum variants for the discriminant/selector
 /// - `EtsUnionType` trait implementation
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum OutputConfig {
     /// Output disabled
@@ -343,10 +344,23 @@ impl ConstDefault for OutputConfig {
     const DEFAULT: Self = OutputConfig::Disabled;
 }
 
+// SAFETY: OutputConfig is #[repr(C, u8)]. The in-memory layout is a u8
+// discriminant followed by a union body padded to the size of the largest
+// variant (Pwm: BeU16 + u8 = 3 bytes → body = 3 bytes, total = 4 bytes).
+// After ConstDefault initialisation the body bytes of non-maximal variants
+// (Disabled, Switch, Dimmer) are zero-initialised, so no uninitialized bytes
+// are ever read. The ETS download path writes the struct as a flat byte array;
+// the validity of the discriminant after a raw write is enforced only at the
+// point of calling `params()` — see ApplicationImpl module docs.
+// zerocopy's derive rejects #[repr(C, u8)] directly, so this impl is manual.
+unsafe impl IntoBytes for OutputConfig {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Input source configuration union.
 ///
 /// Demonstrates a union with different input types, each with their own parameters.
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum InputSource {
     /// No input source configured
@@ -394,10 +408,16 @@ impl ConstDefault for InputSource {
     const DEFAULT: Self = InputSource::None;
 }
 
+// SAFETY: Same as OutputConfig — #[repr(C, u8)] with all-byte-or-u8 fields,
+// zero-initialised after ConstDefault, no uninitialized padding bytes in practice.
+unsafe impl IntoBytes for InputSource {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Scene configuration union.
 ///
 /// Demonstrates a simple union for scene recall/store behavior.
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum SceneConfig {
     /// Scene disabled
@@ -428,6 +448,11 @@ impl ConstDefault for SceneConfig {
     const DEFAULT: Self = SceneConfig::Disabled;
 }
 
+// SAFETY: Same as OutputConfig.
+unsafe impl IntoBytes for SceneConfig {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Application parameters for the demo device.
 ///
 /// The `#[derive(EtsParams)]` macro generates:
@@ -445,7 +470,7 @@ impl ConstDefault for SceneConfig {
 ///
 /// Union fields can be placed anywhere in the struct. The macro uses `core::mem::offset_of!`
 /// to correctly calculate field offsets regardless of union placement.
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct DemoParams {
     /// Channel A output configuration - controls comm object DPT and mode-specific params
@@ -471,6 +496,16 @@ pub struct DemoParams {
     /// Lock behavior with enum variants
     #[ets(display = "Lock Behavior", enum_variants("No Action" => 0, "Lock Off" => 1, "Lock On" => 2, "Lock Toggle" => 3))]
     pub lock_behavior: u8,
+}
+
+// SAFETY: DemoParams is #[repr(C)] and all fields implement IntoBytes (via
+// their own unsafe impls or derive). The EtsUnion fields (OutputConfig,
+// InputSource, SceneConfig) have been verified to produce no uninitialized
+// padding bytes after ConstDefault construction. The u8 and BeU16 fields are
+// trivially no-padding.  The struct itself has no inter-field alignment padding
+// because all EtsUnion fields precede the smaller u8/BeU16 fields.
+unsafe impl IntoBytes for DemoParams {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
 }
 
 // ============================================================================

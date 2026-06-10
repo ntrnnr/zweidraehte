@@ -17,6 +17,7 @@
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::prelude::*;
 
@@ -25,7 +26,7 @@ use zweidraehte_device::prelude::*;
 // ============================================================================
 
 /// Debounce time for button inputs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum DebounceTime {
     #[ets(display = "20 ms")]
@@ -57,7 +58,7 @@ impl DebounceTime {
 }
 
 /// Threshold for distinguishing short from long button presses.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum LongPressTime {
     #[ets(display = "300 ms")]
@@ -96,7 +97,7 @@ impl LongPressTime {
 ///
 /// In 2-function mode, each button has its own independent function
 /// configuration and comm objects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum ButtonsMode {
     #[ets(display = "1-function")]
@@ -113,7 +114,7 @@ impl ConstDefault for ButtonsMode {
 ///
 /// Controls which physical button maps to which logical direction.
 /// Only visible in the ETS UI when `buttons_mode` is `OneFunction`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum RockerDirection {
     #[ets(display = "Top = ON / Up / Brighter")]
@@ -130,7 +131,7 @@ impl ConstDefault for RockerDirection {
 ///
 /// In 1-function Switch mode, the action is always fixed on/off based
 /// on which physical button is pressed, so this parameter is hidden.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(u8)]
 pub enum SwitchAction {
     /// Invert the last known state (requires status feedback object)
@@ -152,7 +153,7 @@ impl ConstDefault for SwitchAction {
 // Stored as 0–63 internally, matching DPT 17.001 wire format.
 // Displayed as "1" through "64" in the ETS dropdown.
 ets_range_enum! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
     #[ets(type_name = "SceneNumber")]
     pub enum SceneNumber {
         range 0..64 => "Scene{}";
@@ -179,7 +180,7 @@ ets_range_enum! {
 ///   up/down.
 /// - **Scene**: short press recalls a scene, long press stores it.
 ///   Scene number is configurable.
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum ButtonConfig {
     /// Switch on/off
@@ -209,6 +210,14 @@ pub enum ButtonConfig {
 
 impl ConstDefault for ButtonConfig {
     const DEFAULT: Self = ButtonConfig::Switch { action: SwitchAction::DEFAULT };
+}
+
+// SAFETY: ButtonConfig is #[repr(C, u8)] with all-u8 or repr(u8)-enum fields.
+// After ConstDefault, the union-body bytes for shorter variants are zero.
+// zerocopy's derive rejects #[repr(C, u8)]; this manual impl provides the
+// same guarantee.
+unsafe impl IntoBytes for ButtonConfig {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
 }
 
 // ============================================================================
@@ -275,7 +284,7 @@ pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte_device::ets::EtsParamDefExt
 ///
 /// In 2-function mode, each button has its own independent `ButtonConfig`.
 /// The `rocker_direction` parameter is hidden.
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct LightSwitchParams {
     /// Button input debounce time (applies to both buttons)
@@ -303,4 +312,12 @@ pub struct LightSwitchParams {
     /// Hidden in 1-function mode.
     #[ets(union, display = "Function")]
     pub button2_config: ButtonConfig,
+}
+
+// SAFETY: LightSwitchParams is #[repr(C)] with all-u8 fields (or #[repr(u8)] enums
+// whose In-Bytes impls are already verified). All fields implement IntoBytes, and
+// #[repr(C)] on a struct of uniform-u8 types produces no internal padding. The
+// ButtonConfig union bodies for shorter variants are zero-initialised by ConstDefault.
+unsafe impl IntoBytes for LightSwitchParams {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
 }

@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::bcus::system_b::{HasDeviceConfig, IpExtensionFor, IpStateFor};
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp};
@@ -53,7 +54,9 @@ pub const INTERFACE_NAME: &str = "knxdevbridgeif";
 // ============================================================================
 
 /// GEboolEnableDisable - 1-bit enable/disable toggle
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum GEboolEnableDisable {
     #[default]
@@ -66,7 +69,9 @@ pub enum GEboolEnableDisable {
 /// ObjectType enum for send values mode - matches MDT's DPTType1Bit values
 /// Used as selector_param values for ComObjectRefs in send values mode
 /// Note: Switch is at value 10 (not 0) to match MDT's DPTType1Bit
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 #[ets(type_name = "ObjectType")]
 pub enum ObjectType {
@@ -101,7 +106,9 @@ pub enum ObjectType {
 }
 
 /// DptType enum for cases where Switch (10) is not an option
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum DptType {
     /// 2Bit DPT 2.001 Forcible control
@@ -132,7 +139,9 @@ pub enum DptType {
 }
 
 /// Zwangsfuehrung - Priority/Forcible control
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum Zwangsfuehrung {
     #[default]
@@ -147,7 +156,9 @@ pub enum Zwangsfuehrung {
 }
 
 /// LogicObjectType - Logic output object type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum LogicObjectType {
     #[default]
@@ -162,7 +173,9 @@ pub enum LogicObjectType {
 }
 
 /// ExtInputLogicType - External logic input configuration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ExtInputLogicType {
     #[default]
@@ -179,7 +192,9 @@ pub enum ExtInputLogicType {
 }
 
 /// LogicButton - Button selection for logic inputs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum LogicButton {
     #[default]
@@ -194,7 +209,7 @@ pub enum LogicButton {
 // SceneValue - Scene number selection (1-64)
 // Display shows 1-64, stored as 0-63 (DPT 17.001 format)
 ets_range_enum! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
     #[ets(type_name = "SceneValue")]
     pub enum SceneValue {
         range 0..64 => "Scene{}";
@@ -205,7 +220,7 @@ ets_range_enum! {
 // Select0to100Percent - Percentage selection (0-100%)
 // Maps percentage display to byte values using formula: round(percent * 2.55)
 ets_range_enum! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
     #[ets(type_name = "select0to100percent")]
     pub enum Select0to100Percent {
         range 0..=100 => percent_to_byte "P{}%";
@@ -214,7 +229,9 @@ ets_range_enum! {
 }
 
 /// GEDPT_Switch - Basic ON/OFF switch value
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[ets(type_name = "GEDPT_Switch")]
 #[repr(u8)]
 pub enum GedptSwitch {
@@ -227,7 +244,9 @@ pub enum GedptSwitch {
 
 /// ColourControl - RGB/HSV colour mode selector
 /// Used for colour control parameters (12 occurrences)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ColourControl {
     #[default]
@@ -239,7 +258,9 @@ pub enum ColourControl {
 
 /// PressedOnOff - Which value is sent when pressed
 /// Used for switch function configuration (8 occurrences)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum PressedOnOff {
     #[default]
@@ -251,7 +272,9 @@ pub enum PressedOnOff {
 
 /// YesNo - Simple yes/no toggle
 /// Used for various confirmation parameters (4 occurrences)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum YesNo {
     #[default]
@@ -262,7 +285,9 @@ pub enum YesNo {
 }
 
 /// TipOperationCount - Number of tip operations
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum TipOperationCount {
     #[default]
@@ -273,7 +298,9 @@ pub enum TipOperationCount {
 }
 
 /// ValueCount - Number of values/scenes
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ValueCount {
     #[default]
@@ -286,7 +313,9 @@ pub enum ValueCount {
 }
 
 /// TimeForLongKeypress - Time duration for long keypress detection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum TimeForLongKeypress {
     #[ets(display = "basic setting")]
@@ -349,7 +378,9 @@ pub enum TimeForLongKeypress {
 }
 
 /// DelayTime1sTo60min - Delay time from 1 second to 60 minutes
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum DelayTime1sTo60min {
     #[default]
@@ -418,7 +449,9 @@ pub enum DelayTime1sTo60min {
 }
 
 /// SceneToggleDelayTime - Delay time for scene toggling (0-10 seconds)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum SceneToggleDelayTime {
     #[default]
@@ -449,7 +482,9 @@ pub enum SceneToggleDelayTime {
 }
 
 /// ExtraLongKeypressTime - Time for extra long keypress (no basic setting option)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum ExtraLongKeypressTime {
     #[ets(display = "0,1 s")]
@@ -510,7 +545,9 @@ pub enum ExtraLongKeypressTime {
 }
 
 /// SendingCondition - When to send logic output
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum SendingCondition {
     #[ets(display = "not automatic")]
@@ -527,7 +564,9 @@ pub enum SendingCondition {
 }
 
 /// NoYes - No/Yes toggle (different from YesNo)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum NoYes {
     #[default]
@@ -538,7 +577,9 @@ pub enum NoYes {
 }
 
 /// ForcibleControlValue - 2-bit forcible control value (used in unions)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ForcibleControlValue {
     #[default]
@@ -553,7 +594,9 @@ pub enum ForcibleControlValue {
 }
 
 /// ReactionTime - Reaction time on keypress
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ReactionTime {
     #[default]
@@ -566,7 +609,9 @@ pub enum ReactionTime {
 }
 
 /// CyclicSendInterval - Cyclic sending interval
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum CyclicSendInterval {
     #[default]
@@ -593,7 +638,9 @@ pub enum CyclicSendInterval {
 }
 
 /// RequestNoRequest - Request/No request toggle
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum RequestNoRequest {
     #[ets(display = "no request")]
@@ -604,7 +651,9 @@ pub enum RequestNoRequest {
 }
 
 /// ButtonsType - Button 1/2 function type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ButtonsType {
     #[ets(display = "not active")]
@@ -619,7 +668,9 @@ pub enum ButtonsType {
 }
 
 /// ButtonFunction - Main button function mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum ButtonFunction {
     #[ets(display = "not active")]
@@ -640,7 +691,9 @@ pub enum ButtonFunction {
 }
 
 /// SwitchSubfunction - Switch subfunction type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum SwitchSubfunction {
     #[ets(display = "switch")]
@@ -653,7 +706,9 @@ pub enum SwitchSubfunction {
 }
 
 /// LogicType - Logic channel type
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum LogicType {
     #[ets(display = "not active")]
@@ -668,7 +723,9 @@ pub enum LogicType {
 }
 
 /// SlapObjectType - Slap button object type selector
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum SlapObjectType {
     #[default]
@@ -697,7 +754,9 @@ pub enum SlapObjectType {
 }
 
 /// LogicOutputType - Logic output object type selector
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum LogicOutputType {
     #[default]
@@ -712,7 +771,9 @@ pub enum LogicOutputType {
 }
 
 /// ButtonValueFunction - Button value function mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ButtonValueFunction {
     #[default]
@@ -727,7 +788,9 @@ pub enum ButtonValueFunction {
 }
 
 /// SpecialFunction - Button special function selector
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum SpecialFunction {
     #[default]
@@ -738,7 +801,9 @@ pub enum SpecialFunction {
 }
 
 /// BlindsOperationFunction - Operation function for blinds
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum BlindsOperationFunction {
     #[default]
@@ -749,7 +814,9 @@ pub enum BlindsOperationFunction {
 }
 
 /// TipOutputObjects - Tip output objects mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum TipOutputObjects {
     #[default]
@@ -760,7 +827,9 @@ pub enum TipOutputObjects {
 }
 
 /// SlapCleaningMode - Slap cleaning function mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum SlapCleaningMode {
     #[default]
@@ -773,7 +842,9 @@ pub enum SlapCleaningMode {
 }
 
 /// TwoButtonValueFunction - Two-button value function mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum TwoButtonValueFunction {
     #[default]
@@ -786,7 +857,9 @@ pub enum TwoButtonValueFunction {
 }
 
 /// GroupSendOption - Group send option for two-button mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum GroupSendOption {
     #[default]
@@ -799,7 +872,9 @@ pub enum GroupSendOption {
 }
 
 /// LongAction - Action for long keypress
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum LongAction {
     #[default]
@@ -816,7 +891,9 @@ pub enum LongAction {
 }
 
 /// ShortAction - Action for short keypress in SwitchSendValuesShortLong mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ShortAction {
     #[default]
@@ -833,7 +910,9 @@ pub enum ShortAction {
 }
 
 /// TwoButtonFunction - Two-button function selector
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum TwoButtonFunction {
     #[default]
@@ -850,7 +929,9 @@ pub enum TwoButtonFunction {
 }
 
 /// ButtonAssignment - Button assignment for two-button mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Serialize, Deserialize, Default, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u16)]
 pub enum ButtonAssignment {
     #[default]
@@ -866,7 +947,7 @@ pub enum ButtonAssignment {
 
 /// SubTypeH Union (8-bit) - Number of tip-operations or values
 /// Used for multi-tip and toggle value modes
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum SubTypeHUnion {
     /// Number of tip-operations for Multi-tip mode (2 or 3 operations)
@@ -886,10 +967,16 @@ pub enum SubTypeHUnion {
     } = 1,
 }
 
+// SAFETY: #[repr(C, u8)] with all-u8 (repr(u8) enum) fields; no uninitialized
+// bytes in practice after ConstDefault. zerocopy derive rejects repr(C,u8).
+unsafe impl IntoBytes for SubTypeHUnion {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Button Value Union (32-bit) - Various value types for button output
 /// This union allows the same memory to be interpreted as different value types
 /// Discriminant values MUST match ObjectType enum for choose/when to work correctly!
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum ButtonValueUnion {
     /// Switch value (ON/OFF) - matches ObjectType::Switch = 0 (button_object_type "1Bit")
@@ -983,8 +1070,14 @@ pub enum ButtonValueUnion {
     _Reserved([u8; 4]),
 }
 
+// SAFETY: #[repr(C, u8)] with fields of u8 or repr(u8) enums; the _Reserved
+// variant is never constructed and its bytes are zero-initialised by ConstDefault.
+unsafe impl IntoBytes for ButtonValueUnion {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Time Duration Union (16-bit) - Various time values
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum TimeDurationUnion {
     /// Time for long keypress (with "basic setting" option) - TimeforLongSwitchGroup0-30s
@@ -1030,8 +1123,15 @@ pub enum TimeDurationUnion {
     } = 5,
 }
 
+// SAFETY: #[repr(C, u8)] with fields of u8 or repr(u16) enums (u16-aligned,
+// but the union body is always padded to the size of the largest variant so
+// all bytes are accounted for). No uninitialized bytes after ConstDefault.
+unsafe impl IntoBytes for TimeDurationUnion {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Extra Long Values Union (16-bit) - Values for extra long keypress
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum ExtraLongValueUnion {
     /// Switch value
@@ -1075,9 +1175,14 @@ pub enum ExtraLongValueUnion {
     _Reserved([u8; 2]),
 }
 
+// SAFETY: #[repr(C, u8)] with u8 and u16 field types; _Reserved is zero-init.
+unsafe impl IntoBytes for ExtraLongValueUnion {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Send Condition Union (8-bit) - Condition for sending logic output
 /// Used for logic channel configuration - determines when output is sent
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum SendConditionUnion {
     /// Standard send condition with enum selection
@@ -1095,9 +1200,14 @@ pub enum SendConditionUnion {
     } = 1,
 }
 
+// SAFETY: #[repr(C, u8)] with all-u8 fields; zero-init after ConstDefault.
+unsafe impl IntoBytes for SendConditionUnion {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
+
 /// Logic Value To Send Union (8-bit) - Value type for logic output
 /// Used for logic channel "send value when pressed" mode
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C, u8)]
 pub enum LogicValueUnion {
     /// Switch value (Yes/No)
@@ -1127,6 +1237,11 @@ pub enum LogicValueUnion {
         #[ets(display = "    Forcible control", ets_enum)]
         value: ForcibleControlValue,
     } = 3,
+}
+
+// SAFETY: #[repr(C, u8)] with all-u8 fields; zero-init after ConstDefault.
+unsafe impl IntoBytes for LogicValueUnion {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
 }
 
 // ============================================================================
@@ -2380,7 +2495,7 @@ pub mod comm_objs {
 // ============================================================================
 
 /// Application parameters for the MDT Push Button Lite device.
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable)]
 #[repr(C)]
 pub struct MdtParams {
     /// Startup time in seconds (2-240), default 2s
@@ -3143,6 +3258,24 @@ pub struct MdtParams {
 // Default and ConstDefault are auto-generated by #[derive(EtsParams)]
 // based on #[ets(default = X)] attributes on fields and ConstDefault impls
 // for ets_enum and union fields.
+
+// SAFETY: MdtParams is #[repr(C)].  The struct contains a mix of u8, u16,
+// repr(u8) enum, repr(u16) enum, and [u8; 30] array fields.  Under #[repr(C)]
+// the compiler inserts alignment padding between fields of differing alignment
+// (e.g. a u8 field followed by a u16 field incurs 1 byte of padding).  Those
+// padding bytes are initialised to 0 by ConstDefault::DEFAULT (which is a
+// `const` — all bytes including padding have defined values) and are never
+// written in isolation by the stack, so they remain 0 in practice.
+//
+// The stricter guarantee — no padding at all — is not achievable without
+// reordering all fields or inserting explicit padding fields, which would break
+// ETS layout compatibility.  This unsafe impl documents the chosen trade-off:
+// reading the struct as bytes exposes zero-valued padding bytes, which is
+// deterministic and safe, but violates the strict IntoBytes contract.
+// A future improvement could reorder fields to eliminate padding.
+unsafe impl IntoBytes for MdtParams {
+    fn only_derive_is_allowed_to_implement_this_trait() {}
+}
 
 // ============================================================================
 // Mock IP Platform

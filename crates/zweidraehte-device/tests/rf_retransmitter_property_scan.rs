@@ -48,6 +48,7 @@ use zweidraehte_device::objects::comm::{
 use zweidraehte_device::objects::interface::{PropertyServiceHandler, pid};
 use zweidraehte_device::storage::StaticIdentity;
 
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 use zweidraehte_proto::properties::PropertyError;
@@ -121,7 +122,7 @@ impl ComObjectBusHook for NoCo {}
 // Trivial parameters.
 // ============================================================================
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize, IntoBytes, KnownLayout, Immutable)]
 struct NoParams;
 
 impl ConstDefault for NoParams {

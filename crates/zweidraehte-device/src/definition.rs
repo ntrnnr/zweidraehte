@@ -9,6 +9,8 @@
 use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
+
 use crate::{
     LayerStackBuilder,
     bcus::system_b::Extension,
@@ -180,7 +182,25 @@ pub trait StackDefinition: Copy + 'static {
     /// during interface object construction.
     type Platform: 'static = ();
 
-    type P: ConstDefault;
+    /// Application parameter struct.
+    ///
+    /// Must implement:
+    /// - [`ConstDefault`] — zero-arg const construction for stack startup.
+    /// - [`IntoBytes`] — no padding bytes, so that `ApplicationImpl`
+    ///   can expose the raw memory of `D` as a `&[u8]` slice without reading
+    ///   uninitialized padding bytes (which would be UB in the Rust abstract
+    ///   machine).
+    /// - [`KnownLayout`] and [`Immutable`] — required by
+    ///   the `IntoBytes` derive.
+    ///
+    /// Structs derived with `#[derive(EtsParams)]` that contain only primitive
+    /// fields and `#[repr(u8)]` enum fields can add
+    /// `#[derive(IntoBytes, KnownLayout, Immutable)]`
+    /// directly.  Structs that contain `#[derive(EtsUnion)]` fields (which use
+    /// `#[repr(C, u8)]`, rejected by zerocopy's derive) must provide a manual
+    /// `unsafe impl IntoBytes`.  See the `ApplicationImpl` documentation
+    /// for the full safety contract.
+    type P: ConstDefault + IntoBytes + KnownLayout + Immutable;
     /// Communication-object container. Must also implement
     /// [`ComObjectBusHook`](crate::objects::comm::ComObjectBusHook) —
     /// most devices pick up an empty impl (either written by hand or

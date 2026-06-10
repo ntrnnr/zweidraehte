@@ -76,6 +76,7 @@ use crate::{
     restart::EraseCode,
     service::Augment,
 };
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_proto::address::IndividualAddress;
 
 // ============================================================================
@@ -345,7 +346,7 @@ pub struct DeviceConfig<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    P: ConstDefault = (),
+    P: ConstDefault + IntoBytes + KnownLayout + Immutable = (),
     E: ExtensionConfig = (),
 > {
     /// Version of the device config format.
@@ -395,8 +396,13 @@ pub struct DeviceConfig<
     pub extension_config: E,
 }
 
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, P: ConstDefault, E: ExtensionConfig>
-    DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, P, E>
+impl<
+    const ADT_SIZE: usize,
+    const AST_SIZE: usize,
+    const COT_SIZE: usize,
+    P: ConstDefault + IntoBytes + KnownLayout + Immutable,
+    E: ExtensionConfig,
+> DeviceConfig<ADT_SIZE, AST_SIZE, COT_SIZE, P, E>
 {
     /// Current version of the device config format.
     pub const VERSION: u8 = 1;

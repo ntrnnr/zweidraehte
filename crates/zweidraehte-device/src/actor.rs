@@ -55,7 +55,9 @@ where
     reply_to: &'static DynamicSender<'static, R>,
 }
 
-unsafe impl<M, R> Send for Request<M, R> {}
+// M and R must themselves be Send: if M or R contain e.g. *mut T, sending the
+// Request across a thread boundary would be unsound even with the wrapper.
+unsafe impl<M: Send, R: Send> Send for Request<M, R> {}
 
 impl<M, R> Request<M, R> {
     fn new(message: M, reply_to: &'static DynamicSender<'static, R>) -> Self {
@@ -134,12 +136,31 @@ impl<'a, MUT: RawMutex, M, R> ActorRequest<MUT, M, R> for DynamicSender<'a, Requ
         let sender: DynamicSender<'_, R> = channel.sender().into();
         let bomb = DropBomb::new();
 
-        // We guarantee that channel lives until we've been notified on it, at which
-        // point its out of reach for the replier.
-        let reply_to = unsafe {
+        // SAFETY: We transmute the lifetime of `sender` from the local borrow of
+        // `channel` to `'static` in order to place it inside `Request<M, R>`, which
+        // requires `R: 'static`. The extended lifetime is safe for the following
+        // reasons:
+        //
+        // 1. `channel` is allocated on the stack and lives until the end of this
+        //    function.  The transmuted reference is placed into a `Request` that is
+        //    sent to the replier, which then calls `reply_to.send(value).await`.
+        //    That send completes before `channel.receive().await` returns, after which
+        //    neither the replier nor any other caller retains a copy of `reply_to`.
+        //
+        // 2. The `DropBomb` converts future cancellation into a panic: if this
+        //    `request` future is dropped before `channel.receive()` completes, the
+        //    bomb fires rather than letting `reply_to` dangle.  Consequently, the
+        //    transmuted reference cannot outlive `channel` during normal operation.
+        //
+        // 3. Known residual hazard: `mem::forget` of the in-flight `request` future
+        //    (or an equivalent executor-level leak) would defuse the bomb without
+        //    resolving the channel, leaving `reply_to` dangling.  This is an inherited
+        //    limitation of the ector-derived design and is documented here for
+        //    transparency.
+        let reply_to: &'static DynamicSender<'static, R> = unsafe {
             core::mem::transmute::<
                 &embassy_sync::channel::DynamicSender<'_, R>,
-                &embassy_sync::channel::DynamicSender<'_, R>,
+                &embassy_sync::channel::DynamicSender<'static, R>,
             >(&sender)
         };
         let message = Request::new(message, reply_to);
@@ -159,12 +180,14 @@ impl<MUT: RawMutex, OuterMut: RawMutex, M, R, const N: usize> ActorRequest<MUT, 
         let sender: DynamicSender<'_, R> = channel.sender().into();
         let bomb = DropBomb::new();
 
-        // We guarantee that channel lives until we've been notified on it, at which
-        // point its out of reach for the replier.
-        let reply_to = unsafe {
+        // SAFETY: Same invariant as the DynamicSender impl above — `channel` outlives
+        // the transmuted reference because `channel.receive().await` completes before
+        // the stack frame is unwound, and the DropBomb converts cancellation to a
+        // panic.  The mem::forget leak hazard applies here identically.
+        let reply_to: &'static DynamicSender<'static, R> = unsafe {
             core::mem::transmute::<
                 &embassy_sync::channel::DynamicSender<'_, R>,
-                &embassy_sync::channel::DynamicSender<'_, R>,
+                &embassy_sync::channel::DynamicSender<'static, R>,
             >(&sender)
         };
         let message = Request::new(message, reply_to);

@@ -13,6 +13,7 @@ embassy-time = { workspace = true, features = ["std"] }
 embassy-futures = { workspace = true }
 embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
 const-default = { workspace = true }
+zerocopy = { workspace = true }
 static_cell = { workspace = true }
 paste = { workspace = true }
 heapless = { workspace = true }

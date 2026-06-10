@@ -16,22 +16,87 @@
 //! - `RunnableApplication<Table<ApplicationImpl<D>>>` - Adds run state machine (implements `HasRunStateMachine`)
 //!
 //! The type alias `Application<D>` provides the complete stack.
+//!
+//! # Soundness requirements for `D`
+//!
+//! `D` must implement [`zerocopy::IntoBytes`] (guaranteed no padding bytes and all
+//! bit patterns are valid `u8` values), [`zerocopy::KnownLayout`], and
+//! [`zerocopy::Immutable`]. These bounds are enforced at compile time on
+//! [`ApplicationImpl`].
+//!
+//! ## Why `IntoBytes`?
+//!
+//! `data_ref` and `data_ref_mut` expose the raw bytes of `_data: D` as a `&[u8]`
+//! slice. Reading padding bytes — bytes that `#[repr(C)]` inserts between fields to
+//! satisfy alignment — as `u8` is undefined behaviour in the Rust abstract machine
+//! because padding bytes are considered "uninitialised". `IntoBytes` requires that a
+//! type has **no padding bytes**, eliminating this hazard entirely.
+//!
+//! ## Write-path validity (known limitation)
+//!
+//! The table-download write path (`TableMemory::write` → `data_ref_mut`) can install
+//! arbitrary byte patterns into `_data`. For types that contain `#[repr(u8)]` or
+//! `#[repr(u16)]` enums this means invalid discriminants could be loaded, which is
+//! undefined behaviour the moment `params()` returns `&D`.
+//!
+//! A fully validated write path would require [`zerocopy::TryFromBytes`] on `D`. This
+//! cannot currently be derived for the `#[repr(C, u8)]` data-carrying enums produced
+//! by `#[derive(EtsUnion)]` — zerocopy's derive macro rejects `#[repr(C, u8)]`
+//! outright. Therefore the write-path validity guarantee is documented as a **caller
+//! responsibility**: device firmware should only allow ETS to load a well-formed
+//! application image, and the conformance test harness only loads trusted byte images.
+//!
+//! The stack transition from `LoadState::Loading` → `LoadState::Loaded` (via
+//! `LoadCompleted`) does NOT currently validate the downloaded bytes. A future
+//! improvement could add a validation hook here once `TryFromBytes` support lands in
+//! zerocopy for the affected repr forms.
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use super::{RunnableApplication, Table, TableMemory};
 
 /// Inner implementation for application data storage.
 ///
-/// Generic over `D`, which is application-specific data that can be stored
-/// alongside the application program object.
+/// Generic over `D`, the application-specific parameter struct stored inside
+/// the application program object. `D` must implement:
+///
+/// - [`zerocopy::IntoBytes`] — no padding bytes, all bytes are defined. This
+///   ensures `data_ref` does not read uninitialized padding.
+/// - [`zerocopy::KnownLayout`] — required by `IntoBytes`.
+/// - [`zerocopy::Immutable`] — no interior mutability, required for safe shared
+///   byte-level access.
+///
+/// Param structs that contain `#[derive(EtsUnion)]` fields (which use
+/// `#[repr(C, u8)]`) must provide a manual `unsafe impl zerocopy::IntoBytes`
+/// because zerocopy's derive macro does not support `#[repr(C, u8)]`. See the
+/// module-level documentation for the safety invariant that must be upheld.
+///
+/// # Compile-fail example
+///
+/// A type with niche-carrying fields or interior mutability is rejected:
+///
+/// ```compile_fail
+/// # use zweidraehte_device::objects::tables::app::ApplicationImpl;
+/// # use const_default::ConstDefault;
+/// use core::cell::Cell;
+///
+/// // Cell<u8> is not Immutable — ApplicationImpl<D> must reject it.
+/// #[derive(ConstDefault)]
+/// struct BadParams {
+///     value: Cell<u8>,
+/// }
+///
+/// // This must not compile: Cell<u8> violates the Immutable bound.
+/// fn _check(_: ApplicationImpl<BadParams>) {}
+/// ```
 #[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
-pub struct ApplicationImpl<D: ConstDefault> {
+pub struct ApplicationImpl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> {
     _data: D,
 }
 
-impl<D: ConstDefault> ApplicationImpl<D> {
+impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> ApplicationImpl<D> {
     /// Get a type-safe reference to the application parameters.
     ///
     /// This provides direct access to the stored data without going through byte slices.
@@ -47,17 +112,29 @@ impl<D: ConstDefault> ApplicationImpl<D> {
     }
 }
 
-impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
+impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> TableMemory for ApplicationImpl<D> {
     fn data_ref(&self) -> &[u8] {
-        // SAFETY: D is stored in memory as contiguous bytes, and we're creating
-        // a read-only byte slice from it. The lifetime is tied to &self.
-        unsafe { core::slice::from_raw_parts(&self._data as *const D as *const u8, core::mem::size_of::<D>()) }
+        // Using zerocopy::IntoBytes::as_bytes avoids the padding-read UB that
+        // the previous from_raw_parts approach had: IntoBytes guarantees no
+        // padding bytes, so every byte in the slice is a defined value.
+        self._data.as_bytes()
     }
 
     fn data_ref_mut(&mut self) -> &mut [u8] {
-        // SAFETY: D is stored in memory as contiguous bytes, and we're creating
-        // a mutable byte slice from it. The lifetime is tied to &mut self.
-        unsafe { core::slice::from_raw_parts_mut(&mut self._data as *mut D as *mut u8, core::mem::size_of::<D>()) }
+        // SAFETY:
+        // - `IntoBytes` guarantees no padding bytes, so every byte in the
+        //   returned slice corresponds to a field byte (not an uninitialized gap).
+        // - `as_mut_bytes()` is not available without `FromBytes` (which would
+        //   require all bit patterns to be valid — too strong for enum fields).
+        //   We use the raw pointer form instead: this is safe because IntoBytes
+        //   already guarantees the absence of padding, and writing arbitrary byte
+        //   patterns into individual field bytes (e.g. a single octet of a `u8`
+        //   enum) does not produce UB by itself until the written value is
+        //   interpreted as `D` via `params()`. See the module-level documentation
+        //   for the write-path validity contract.
+        unsafe {
+            core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(self._data).cast::<u8>(), core::mem::size_of::<D>())
+        }
     }
 
     fn max_size() -> usize {
@@ -109,7 +186,7 @@ impl<D: ConstDefault> TableMemory for ApplicationImpl<D> {
 /// ```
 pub type Application<D> = RunnableApplication<Table<ApplicationImpl<D>>>;
 
-impl<D: ConstDefault> Application<D> {
+impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> Application<D> {
     /// Get a type-safe reference to the application parameters.
     ///
     /// This provides direct access to your application data struct without going through byte slices.
