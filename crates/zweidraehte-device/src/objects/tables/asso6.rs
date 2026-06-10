@@ -187,7 +187,8 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
     }
 
     fn entry_count(&self) -> u16 {
-        U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get()
+        // The count is bus-downloaded data and must not exceed physical capacity.
+        U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get().min(self.max_entries() as u16)
     }
 
     /// Gets the sending TSAP for a given ASAP

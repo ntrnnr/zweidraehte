@@ -87,7 +87,9 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for RoutingIndication<B> {
         }
 
         // The remaining data is the cEMI frame
-        let cemi_len = header.total_length.get() as usize - mem::size_of::<KNXnetIPHeader>();
+        let cemi_len = (header.total_length.get() as usize)
+            .checked_sub(mem::size_of::<KNXnetIPHeader>())
+            .ok_or(ParseError::Format)?;
         let cemi_frame = buffer.take_front(cemi_len).ok_or(ParseError::Format)?;
 
         Ok(RoutingIndication { cemi_frame })

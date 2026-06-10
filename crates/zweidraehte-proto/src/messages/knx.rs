@@ -1093,18 +1093,18 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
 
         match addr {
             DestinationAddress::Individual(a) => {
-                self.set_address_type(AddressType::Individual);
+                self.set_address_type(AddressType::Individual).expect("literal address type is always encodable");
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(a.as_bytes());
             }
             DestinationAddress::Group(a) => {
-                self.set_address_type(AddressType::Group);
+                self.set_address_type(AddressType::Group).expect("literal address type is always encodable");
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(a.as_bytes());
             }
             DestinationAddress::Broadcast => {
-                self.set_address_type(AddressType::Broadcast);
+                self.set_address_type(AddressType::Broadcast).expect("literal address type is always encodable");
             }
             DestinationAddress::SystemBroadcast => {
-                self.set_address_type(AddressType::SystemBroadcast);
+                self.set_address_type(AddressType::SystemBroadcast).expect("literal address type is always encodable");
             }
             DestinationAddress::ConnectionNr(nr) => {
                 self.set_connection_nr(nr);
@@ -1128,10 +1128,16 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
         self.write_u16_be(MSG_DEST_ADDR, conn_nr);
     }
 
-    /// Set the address type and system broadcast flags in the message
+    /// Set the address type and system broadcast flags in the message.
     ///
-    /// In case of Broadcast and SystemBroadcast the destination address is set to 0
-    pub fn set_address_type(&mut self, addr_type: AddressType) {
+    /// In case of Broadcast and SystemBroadcast the destination address is set to 0.
+    ///
+    /// Returns `Err` if `addr_type` is `AddressType::Other(_)`, which has no
+    /// well-defined wire encoding for this field.
+    pub fn set_address_type(
+        &mut self,
+        addr_type: AddressType,
+    ) -> Result<(), crate::error::UnrecognizedProtocolCode<u8>> {
         use offsets::*;
 
         match addr_type {
@@ -1158,8 +1164,10 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
                 self.ctrl_field_mut().set_sb(SystemBroadcast::SysBroadcast);
                 self.buf[MSG_DEST_ADDR..MSG_DEST_ADDR + 2].copy_from_slice(&[0, 0]);
             }
-            _ => panic!("Invalid address type"),
+            AddressType::Other(code) => return Err(crate::error::UnrecognizedProtocolCode(code)),
         }
+
+        Ok(())
     }
 
     /// Set the TPCI value in the message from an enum.
@@ -1190,7 +1198,7 @@ impl<B: DerefMut<Target = [u8]>> KnxMessageBuffer<B, InternalFormat> {
             }
         };
 
-        self.set_address_type(addr_type);
+        self.set_address_type(addr_type).expect("literal address type is always encodable");
         self.tpci_field_mut().set_dc(control);
         self.tpci_field_mut().set_n(numbered);
         self.tpci_field_mut().set_seqno(seqno);

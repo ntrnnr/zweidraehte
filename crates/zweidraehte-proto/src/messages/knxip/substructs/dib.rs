@@ -372,7 +372,10 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for SupportedServiceFamilies<B> {
             return Err(ParseError::Format);
         }
 
-        let expected_len = header.struct_len as usize - mem::size_of::<raw::Header>();
+        // Guard against a wire-supplied struct_len smaller than the header itself, which
+        // would wrap to a huge usize on subtraction.
+        let expected_len =
+            (header.struct_len as usize).checked_sub(mem::size_of::<raw::Header>()).ok_or(ParseError::Format)?;
         let services_bytes = buffer.take_front(expected_len).ok_or(ParseError::Format)?;
 
         let records = SupportedServicesRecords::parse(services_bytes)?;
@@ -615,8 +618,10 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for KnxAddresses<B> {
 
         let data = buffer.take_obj_front::<raw::KNXAddressesData>().ok_or(ParseError::Format)?;
 
-        let expected_len =
-            header.struct_len as usize - mem::size_of::<raw::Header>() - mem::size_of::<raw::KNXAddressesData>();
+        let expected_len = (header.struct_len as usize)
+            .checked_sub(mem::size_of::<raw::Header>())
+            .and_then(|n| n.checked_sub(mem::size_of::<raw::KNXAddressesData>()))
+            .ok_or(ParseError::Format)?;
         let addresses_bytes = buffer.take_front(expected_len).ok_or(ParseError::Format)?;
 
         let additional_addresses = AdditionalIndividualAddressesRecords::parse(addresses_bytes)?;
@@ -795,9 +800,10 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingInfo<B> {
 
         let data = buffer.take_obj_front::<raw::TunnelingInformationData>().ok_or(ParseError::Format)?;
 
-        let expected_len = header.struct_len as usize
-            - mem::size_of::<raw::Header>()
-            - mem::size_of::<raw::TunnelingInformationData>();
+        let expected_len = (header.struct_len as usize)
+            .checked_sub(mem::size_of::<raw::Header>())
+            .and_then(|n| n.checked_sub(mem::size_of::<raw::TunnelingInformationData>()))
+            .ok_or(ParseError::Format)?;
         let slots_bytes = buffer.take_front(expected_len).ok_or(ParseError::Format)?;
 
         let slots = TunnelingSlotInfoRecords::parse(slots_bytes)?;

@@ -132,7 +132,9 @@ pub struct DeviceObject<'a, S: StackState> {
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
          read = |this: &Self| [if this.state.is_programming_mode() { 0x01u8 } else { 0x00u8 }],
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
-             this.state.set_programming_mode(data[0] != 0);
+             // ProgrammingMode is a 1-byte property; reject zero-length writes.
+             let &[byte] = data else { return Err(PropertyError::BufferTooSmall); };
+             this.state.set_programming_mode(byte != 0);
              Ok(WriteResponse::Echo)
          })]
     progmode: (),

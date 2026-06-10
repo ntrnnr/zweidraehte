@@ -603,6 +603,45 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             access_ctx
         );
 
+        // Validate data length against the property descriptor when one
+        // exists. Properties served by augments may have no entry in the
+        // descriptor table, so we skip validation rather than blocking them.
+        //
+        // This mirrors the per-element-size check in the extended write path
+        // (property_ext.rs lines ~269-282) but uses the standard error response
+        // format (count=0) instead of an ext return code.
+        if let Ok(desc) = self.interface_objects.property_description_read(hdr.object_idx, hdr.prop_id, 0) {
+            // Only validate when we know the fixed element size (returns 0 for
+            // variable-size or unknown PDTs) and the write targets elements
+            // rather than the count field (start_idx > 0).
+            use crate::layers::application::services::property_ext::pdt_element_size;
+            let elem_size = pdt_element_size(desc.pdt);
+            if elem_size > 0 && hdr.count > 0 && hdr.start_idx > 0 {
+                let expected = hdr.count as usize * elem_size;
+                if data.len() != expected {
+                    warn!(
+                        "AL PropertyValueWrite: data size {} != count {} × elem_size {} (pid={}, obj={})",
+                        data.len(),
+                        hdr.count,
+                        elem_size,
+                        hdr.prop_id,
+                        hdr.object_idx
+                    );
+                    let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(PropertyValueResponse::ERROR_MSG_LEN)
+                    else {
+                        warn!("AL no buffer for response");
+                        return;
+                    };
+                    let msg =
+                        ind.respond_with(msg_buf).with_application(ApciCode::PropertyValueResponse).with_data(|buf| {
+                            PropertyValueResponse::write_error(buf, hdr.object_idx as u8, hdr.prop_id, hdr.start_idx);
+                        });
+                    self.lctx.push_outbox(msg.into_inner());
+                    return;
+                }
+            }
+        }
+
         let req = FullPropertyWriteRequest {
             object_idx: hdr.object_idx,
             pid: hdr.prop_id,

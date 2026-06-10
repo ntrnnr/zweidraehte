@@ -37,6 +37,12 @@ use super::transport::{UsbCemiTransport, UsbCemiTransportResources, comm_mode, p
 /// Timeout for KNX tunnel operations (per spec: 1 second)
 const TUNNEL_TIMEOUT: Duration = Duration::from_millis(1000);
 
+/// Delay between reconnection attempts after a transport error or failed
+/// initialization.  Long enough to avoid a tight retry loop that would spin
+/// the CPU, short enough that the stack recovers quickly after e.g. a brief
+/// USB reset or device unplug/replug.
+const RECONNECT_DELAY: Duration = Duration::from_millis(2000);
+
 /// Resources for USB Link Layer
 pub struct UsbLinkLayerResources {
     /// Transport resources
@@ -169,18 +175,11 @@ impl UsbLinkLayerBuilder {
     async fn open_transport<'a>(
         selector: &DeviceSelector,
         resources: super::transport::InitializedResources<'a>,
-    ) -> UsbCemiTransport<'a, super::device::AsyncHidDevice> {
+    ) -> Result<UsbCemiTransport<'a, super::device::AsyncHidDevice>, super::device::UsbHidError> {
         info!("USB Link Layer: Opening device...");
-        let mut transport = UsbCemiTransport::open(selector, resources)
-            .await
-            .unwrap_or_else(|e| panic!("USB Link Layer: Failed to open device: {:?}", e));
-
-        transport
-            .initialize()
-            .await
-            .unwrap_or_else(|e| panic!("USB Link Layer: Failed to initialize transport: {:?}", e));
-
-        transport
+        let mut transport = UsbCemiTransport::open(selector, resources).await?;
+        transport.initialize().await?;
+        Ok(transport)
     }
 
     /// Configure the interface's individual address.
@@ -205,14 +204,13 @@ impl UsbLinkLayerBuilder {
     }
 
     /// Set the cEMI Server Object to Data Link Layer mode and verify.
-    async fn configure_comm_mode<'a, D: UsbHidDevice>(transport: &mut UsbCemiTransport<'a, D>) {
+    async fn configure_comm_mode<'a, D: UsbHidDevice>(
+        transport: &mut UsbCemiTransport<'a, D>,
+    ) -> Result<(), super::device::UsbHidError> {
         info!("USB Link Layer: Setting communication mode to Data Link Layer...");
-        if let Err(e) = transport
+        transport
             .prop_write(properties::CEMI_SERVER_OBJECT, properties::PID_COMM_MODE, &[comm_mode::DATA_LINK_LAYER])
-            .await
-        {
-            panic!("USB Link Layer: Failed to set comm mode: {:?}", e);
-        }
+            .await?;
 
         match Self::read_comm_mode(transport).await {
             Ok(mode) if mode == comm_mode::DATA_LINK_LAYER => {
@@ -227,6 +225,8 @@ impl UsbLinkLayerBuilder {
                 info!("USB Link Layer: Communication mode set (write confirmed)");
             }
         }
+
+        Ok(())
     }
 
     /// Query the interface's max APDU length, falling back to the default.
@@ -264,33 +264,58 @@ impl<CTX: LinkLayerBufferContext> LinkLayerBuilder<CTX> for UsbLinkLayerBuilder 
         _ll_endpoints: (),
         ind_tx: DynamicSender<'a, IndicationMessage<Buffer<'static>>>,
         conf_tx: DynamicSender<'a, ConfirmationMessage<Buffer<'static>>>,
-        req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
+        mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>> + 'a,
     ) -> ! {
-        let transport_resources = resources.transport.init();
+        // Reconnection loop: on any transport error — whether during bring-up or
+        // during steady-state operation — we wait briefly and retry from scratch.
+        // The transport resources (`rx_report`, `tx_report`, reassembly buffer,
+        // transfer buffer) are re-initialised on every attempt so that stale
+        // partial state from a previous session does not carry over.
+        loop {
+            let transport_resources = resources.transport.init();
 
-        let mut transport = Self::open_transport(&self.selector, transport_resources).await;
-        Self::configure_address(&mut transport, self.individual_address).await;
-        Self::configure_comm_mode(&mut transport).await;
+            let mut transport = match Self::open_transport(&self.selector, transport_resources).await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("USB Link Layer: Failed to open device: {:?}, retrying...", e);
+                    Timer::after(RECONNECT_DELAY).await;
+                    continue;
+                }
+            };
 
-        let max_apdu_length = Self::query_max_apdu_length(&mut transport).await;
-        // Update the stack state so PID 56 (MAX_APDU_LENGTH) in the Device Object
-        // reports the actual hardware capability rather than the compile-time default.
-        context.set_max_apdu_length(max_apdu_length);
+            Self::configure_address(&mut transport, self.individual_address).await;
 
-        Self::log_bus_status(&mut transport).await;
-        info!("USB Link Layer: Initialization complete");
+            if let Err(e) = Self::configure_comm_mode(&mut transport).await {
+                error!("USB Link Layer: Failed to set comm mode: {:?}, retrying...", e);
+                Timer::after(RECONNECT_DELAY).await;
+                continue;
+            }
 
-        let mut link_layer = UsbLinkLayer {
-            transport,
-            buffer_manager: context.buffer_manager(),
-            ind_tx,
-            conf_tx,
-            pending_tx: None,
-            timeout_deadline: None,
-            max_apdu_length,
-        };
+            let max_apdu_length = Self::query_max_apdu_length(&mut transport).await;
+            // Update the stack state so PID 56 (MAX_APDU_LENGTH) in the Device Object
+            // reports the actual hardware capability rather than the compile-time default.
+            context.set_max_apdu_length(max_apdu_length);
 
-        link_layer.process(req_rx).await
+            Self::log_bus_status(&mut transport).await;
+            info!("USB Link Layer: Initialization complete");
+
+            let mut link_layer = UsbLinkLayer {
+                transport,
+                buffer_manager: context.buffer_manager(),
+                ind_tx,
+                conf_tx,
+                pending_tx: None,
+                timeout_deadline: None,
+                max_apdu_length,
+            };
+
+            // process() returns when a fatal transport error forces us out of the
+            // steady-state loop; re-enter the outer reconnection loop above.
+            link_layer.process(&mut req_rx).await;
+
+            error!("USB Link Layer: Transport disconnected, retrying in {}ms...", RECONNECT_DELAY.as_millis());
+            Timer::after(RECONNECT_DELAY).await;
+        }
     }
 }
 
@@ -427,7 +452,10 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
 
     /// Main event loop: receives requests from the network layer, USB data
     /// from the transport, and handles transmission timeouts.
-    async fn process<M>(&mut self, mut req_rx: M) -> !
+    ///
+    /// Returns when a fatal transport error is encountered; the caller is
+    /// responsible for tearing down and re-opening the transport.
+    async fn process<M>(&mut self, req_rx: &mut M)
     where
         M: Inbox<RequestMessage<Buffer<'static>>>,
     {
@@ -459,7 +487,11 @@ impl<'a, D: UsbHidDevice> UsbLinkLayer<'a, D> {
                             // No complete frame yet, continue
                         }
                         Err(e) => {
-                            panic!("USB Link Layer: Device read error: {:?}", e);
+                            // A read error most likely means the device was unplugged or
+                            // reset.  Abort the steady-state loop so the outer
+                            // reconnection sequence can re-open the transport.
+                            error!("USB Link Layer: Device read error: {:?}", e);
+                            break;
                         }
                     }
                 }

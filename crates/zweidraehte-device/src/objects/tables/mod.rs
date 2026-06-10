@@ -932,7 +932,12 @@ impl<T: TableMemory> Table<T> {
 impl<T: TableMemory> HasLoadStateMachine for Table<T> {
     fn write_lsm(&mut self, mut buf: &[u8], alloc_address: Option<u32>) -> LoadAction {
         let mut buf = &mut buf;
-        let (mut new_state, action) = Self::next_state(buf.take_front(1).unwrap()[0].into(), self.state);
+        // An empty LOAD_STATE_CONTROL write carries no event — treat as a no-op.
+        let event_byte = match buf.take_front(1) {
+            Some(b) => b[0],
+            None => return LoadAction::None,
+        };
+        let (mut new_state, action) = Self::next_state(event_byte.into(), self.state);
 
         match action {
             LoadAction::LoadStart => {}
@@ -941,7 +946,16 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
 
                 match additional_data.take_byte_front().map(LoadSegment::from) {
                     Some(LoadSegment::RelativeData) => {
-                        let data = additional_data.take_obj_front::<McbData>().unwrap();
+                        // Truncated RelativeData payload — the allocation descriptor
+                        // is incomplete; treat the command as malformed.
+                        let data = match additional_data.take_obj_front::<McbData>() {
+                            Some(d) => d,
+                            None => {
+                                self.last_error_code = LoadError::UndefinedLoadCommand as u8;
+                                self.state = LoadState::Err;
+                                return LoadAction::None;
+                            }
+                        };
 
                         let req_mem_sz = data.requested_memory_size.get() as usize;
                         if req_mem_sz <= T::max_size() {

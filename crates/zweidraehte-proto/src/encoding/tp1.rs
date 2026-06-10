@@ -194,6 +194,15 @@ pub fn knx_to_tp1_message<B: MessageBuffer>(msg: B) -> B {
 pub fn knx_to_tp1_message_no_checksum<B: MessageBuffer>(mut msg: B) -> B {
     let len = msg.len();
 
+    // A valid KNX internal message is at minimum 7 bytes: ctrl(1) + src(2) + dst(2) +
+    // npdu(1) + tpci(1). Shorter buffers cannot be encoded as TP1; document the
+    // contract in debug builds and return early in release so a caller bug does not
+    // cause an out-of-bounds access.
+    debug_assert!(len >= 7, "knx_to_tp1_message_no_checksum: message too short (len={len})");
+    if len < 7 {
+        return msg;
+    }
+
     // Check for standard frame: length <= 23 and lower 4 bits of NPDU are 0
     if (len < 23) && ((msg[5] & 0xf) == 0) {
         // Standard frame
@@ -242,6 +251,13 @@ pub fn knx_to_tp1_message_no_checksum<B: MessageBuffer>(mut msg: B) -> B {
 pub fn knx_to_tp1_bytes_no_checksum<const N: usize>(src: &[u8]) -> heapless::Vec<u8, N> {
     let len = src.len();
     let mut out: heapless::Vec<u8, N> = heapless::Vec::new();
+
+    // Same minimum-length contract as `knx_to_tp1_message_no_checksum`: the
+    // internal KNX frame must be at least 7 bytes before TP1 encoding can proceed.
+    debug_assert!(len >= 7, "knx_to_tp1_bytes_no_checksum: message too short (len={len})");
+    if len < 7 {
+        return out;
+    }
 
     if (len < 23) && ((src[5] & 0x0f) == 0) {
         // Standard frame: copy as-is, then rewrite bytes [0] and [5].

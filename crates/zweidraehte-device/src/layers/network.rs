@@ -115,11 +115,12 @@ impl<D: StackDefinition> Layer<D> for NetworkLayer<'_, D> {
                 // to 0.
                 let addr_type = match s {
                     ServiceType::N_Data_Req => {
-                        msg.set_address_type(AddressType::Individual);
+                        msg.set_address_type(AddressType::Individual)
+                            .expect("literal address type is always encodable");
                         AddressType::Individual
                     }
                     ServiceType::N_GroupData_Req => {
-                        msg.set_address_type(AddressType::Group);
+                        msg.set_address_type(AddressType::Group).expect("literal address type is always encodable");
                         AddressType::Group
                     }
                     ServiceType::N_Broadcast_Req => {

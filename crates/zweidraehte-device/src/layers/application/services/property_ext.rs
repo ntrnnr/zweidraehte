@@ -501,8 +501,10 @@ fn is_function_pdt(pdt: u8) -> bool {
 
 /// Get the element size in bytes for a given PDT code.
 ///
-/// Returns 0 for unknown/variable-size PDTs.
-fn pdt_element_size(pdt: u8) -> usize {
+/// Returns 0 for unknown/variable-size PDTs. Used both within this
+/// module and by the standard property write handler in the application
+/// layer to validate incoming data lengths before dispatch.
+pub fn pdt_element_size(pdt: u8) -> usize {
     match pdt {
         0x01 => 1,  // PDT_CHAR
         0x02 => 1,  // PDT_UNSIGNED_CHAR

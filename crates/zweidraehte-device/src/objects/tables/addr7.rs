@@ -39,7 +39,8 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
     }
 
     fn entry_count(&self) -> u16 {
-        U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get()
+        // The count is bus-downloaded data and must not exceed physical capacity.
+        U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get().min(self.max_entries() as u16)
     }
 
     fn get_address(&self, tsap: u16) -> Option<GroupAddress> {
