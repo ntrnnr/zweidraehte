@@ -185,7 +185,14 @@ pub(crate) fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_
 
         let variant_name_str = format!("{}{}", variant_prefix, variant_num);
         let variant_name = syn::Ident::new(&variant_name_str, proc_macro2::Span::call_site());
-        let value_lit = value as u8;
+        // The generated enum is `#[repr(u8)]`; a `Direct` formula over a range
+        // that reaches >= 256 would silently wrap (`256 as u8 == 0`). Reject it.
+        let value_lit = u8::try_from(value).map_err(|_| {
+            syn::Error::new(
+                proc_macro2::Span::call_site(),
+                format!("range_enum variant value {value} does not fit in u8; adjust the range or formula"),
+            )
+        })?;
 
         let is_default = i == default_index;
         if is_default {

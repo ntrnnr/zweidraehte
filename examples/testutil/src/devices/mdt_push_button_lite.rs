@@ -1117,7 +1117,7 @@ pub enum LogicValueUnion {
     /// Raw 1-byte value (0-255)
     #[ets(default_variant, display = "    1Byte Value")]
     ByteValue {
-        #[ets(display = "    1Byte Value", unsigned)]
+        #[ets(display = "    1Byte Value")]
         value: u8,
     } = 2,
 

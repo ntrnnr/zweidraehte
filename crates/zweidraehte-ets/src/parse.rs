@@ -152,6 +152,11 @@ pub(crate) fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> 
                     // Parse: module = ModuleType
                     input.parse::<Token![=]>()?;
                     result.module_type = Some(input.parse()?);
+                } else {
+                    // Reject unknown keys rather than silently skipping them: a
+                    // typo like `#[ets(displaj = "Foo")]` would otherwise be a
+                    // no-op, producing wrong ETS metadata with no diagnostic.
+                    return Err(syn::Error::new(ident.span(), format!("unknown `#[ets(...)]` key `{ident}`")));
                 }
 
                 // Consume optional comma
@@ -202,6 +207,8 @@ pub(crate) fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAtt
                 } else if ident == "skip" {
                     // Skip this variant from ETS metadata generation
                     result.skip = true;
+                } else {
+                    return Err(syn::Error::new(ident.span(), format!("unknown `#[ets(...)]` variant key `{ident}`")));
                 }
 
                 // Consume optional comma
@@ -326,9 +333,18 @@ pub(crate) fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                     && let Lit::Int(int) = &lit.lit
                 {
                     let len: usize = int.base10_parse()?;
+                    // `size_bits` is a u8; a `[u8; N]` with N >= 32 would overflow
+                    // it and silently truncate (e.g. [u8; 32] -> 256 as u8 -> 0),
+                    // producing a zero-sized ETS descriptor. Reject it instead.
+                    let size_bits = u8::try_from(len * 8).map_err(|_| {
+                        syn::Error::new_spanned(
+                            ty,
+                            format!("[u8; {len}] exceeds 255 bits; ETS size_bits cannot represent it"),
+                        )
+                    })?;
                     return Ok(TypeInfo {
                         size_bytes: len,
-                        size_bits: (len * 8) as u8,
+                        size_bits,
                         align: 1, // [u8; N] has alignment of 1
                         param_type: quote!(zweidraehte_device::ets::EtsParamType::None),
                     });

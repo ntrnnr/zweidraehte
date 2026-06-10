@@ -689,14 +689,21 @@ fn generate_selector_impl(
         return Ok(quote!());
     }
 
-    // Collect unique variants from all refs
+    // Collect unique variants from all refs. We keep `variant_order` alongside
+    // the map so codegen iterates in source-declaration order: a plain HashMap
+    // iterates nondeterministically, which would shuffle the generated enum
+    // variants and match arms between builds (non-reproducible output).
     let mut variants_map: std::collections::HashMap<String, Vec<(&ComObjectField, &ComObjectRefAttrs)>> =
         std::collections::HashMap::new();
+    let mut variant_order: Vec<String> = Vec::new();
 
     for (obj, refs) in &selector_fields {
         for ref_attr in refs {
             if let Some(SelectorValue::Path(path)) = &ref_attr.when {
                 let variant_name = path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+                if !variants_map.contains_key(&variant_name) {
+                    variant_order.push(variant_name.clone());
+                }
                 variants_map.entry(variant_name).or_default().push((obj, ref_attr));
             }
         }
@@ -704,9 +711,10 @@ fn generate_selector_impl(
 
     // Generate enum variants - deduplicate fields by name within each variant
     // (same field may have multiple refs with same `when` but different functions)
-    let enum_variants: Vec<_> = variants_map
+    let enum_variants: Vec<_> = variant_order
         .iter()
-        .map(|(variant_name, field_refs)| {
+        .map(|variant_name| {
+            let field_refs = &variants_map[variant_name];
             let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
 
             // Deduplicate by field name, keeping the first ref for each field
@@ -733,9 +741,10 @@ fn generate_selector_impl(
         .collect();
 
     // Generate match arms for the accessor method
-    let match_arms: Vec<_> = variants_map
+    let match_arms: Vec<_> = variant_order
         .iter()
-        .map(|(variant_name, field_refs)| {
+        .map(|variant_name| {
+            let field_refs = &variants_map[variant_name];
             let variant_ident = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
             let selector_variant = syn::Ident::new(variant_name, proc_macro2::Span::call_site());
 
@@ -901,6 +910,8 @@ fn parse_com_objects_struct_attrs(attrs: &[Attribute]) -> syn::Result<ComObjects
                 } else if ident == "selector_enum" {
                     input.parse::<Token![=]>()?;
                     result.selector_enum = Some(input.parse()?);
+                } else {
+                    return Err(syn::Error::new(ident.span(), format!("unknown `#[ets(...)]` struct key `{ident}`")));
                 }
 
                 let _ = input.parse::<Option<Token![,]>>();
@@ -972,6 +983,11 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
                     // Parse: module = ModuleType
                     input.parse::<Token![=]>()?;
                     result.module_type = Some(input.parse()?);
+                } else {
+                    return Err(syn::Error::new(
+                        ident.span(),
+                        format!("unknown `#[ets(...)]` comm-object key `{ident}`"),
+                    ));
                 }
 
                 let _ = input.parse::<Option<Token![,]>>();
@@ -1112,6 +1128,8 @@ fn parse_ets_ref_attrs(attrs: &[Attribute]) -> syn::Result<Vec<ComObjectRefAttrs
                     input.parse::<Token![=]>()?;
                     let value: syn::LitBool = input.parse()?;
                     ref_attr.read_on_init = Some(value.value);
+                } else {
+                    return Err(syn::Error::new(ident.span(), format!("unknown `#[ets_ref(...)]` key `{ident}`")));
                 }
 
                 let _ = input.parse::<Option<Token![,]>>();

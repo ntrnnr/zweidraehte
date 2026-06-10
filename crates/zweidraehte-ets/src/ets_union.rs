@@ -66,13 +66,22 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
     let mut current_discriminant: i64 = 0;
     for variant in variants.iter() {
         let variant_name = &variant.ident;
-        // Get explicit discriminant if present, otherwise use auto-incrementing value
-        let discriminant_value =
-            if let Some((_, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }))) = &variant.discriminant {
-                lit.base10_parse::<i64>().unwrap_or(current_discriminant)
-            } else {
-                current_discriminant
-            };
+        // Get explicit discriminant if present, otherwise use auto-incrementing value.
+        // A non-literal explicit discriminant (e.g. `= SOME_CONST`) cannot be
+        // evaluated at macro time and would silently corrupt every subsequent
+        // auto-increment, so reject it rather than guessing.
+        let discriminant_value = match &variant.discriminant {
+            Some((_, syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Int(lit), .. }))) => {
+                lit.base10_parse::<i64>().map_err(|e| syn::Error::new(lit.span(), e))?
+            }
+            Some((_, expr)) => {
+                return Err(syn::Error::new_spanned(
+                    expr,
+                    "EtsUnion only supports integer-literal discriminants (e.g. `= 2`), not expressions or named constants",
+                ));
+            }
+            None => current_discriminant,
+        };
         current_discriminant = discriminant_value + 1;
 
         // Parse variant attributes for display name
