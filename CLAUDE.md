@@ -175,13 +175,13 @@ Subdirectories:
   - `tables/` - Standard KNX tables (address table, app table, association table, CO table) with `Has*` accessor traits
 - `bcus/` - Bus Control Units (BCU) device implementations
   - `system_b/` - System B BCU implementation (mask versions 07B0 / 57B0)
-    - `mod.rs` - module wiring + the `forward_to_field!` macro (forwards a trait to a named field — `extension_state` on `SystemBDeviceState`, `inner` on wrapper extensions)
+    - `mod.rs` - module wiring + the `forward_to_field!` macro (forwards a trait to a named field — `extension_state` on `SystemBDeviceState`, `inner` on wrapper extensions) + `forward_system_b_state_traits!` (emits the standard 14-trait pure-delegation set for state newtypes; `StackState`/`DeviceModelNotifier` stay hand-written)
     - `device_state/` - `SystemBDeviceState`
     - `extensions/` - TP1, RF (+ retransmitter), IP, Security, OperationMode extensions and their augments; leaf extensions use `#[derive(ExtensionState)]`, each pairs a plain `*State` struct with a borrowing `*Augment<'a>`
     - `objects/` - `SystemBObjects` container
     - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
-    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl
+    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all cross devices use it)
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
@@ -239,7 +239,10 @@ Macros provided:
 - `#[derive(EtsComObjects)]` - For communication object definitions
   - Generates Index enum, ETS_COMM_OBJECTS array
   - Supports multi-DPT objects with selector-based typed access
-  - Attributes: `index`, `display`, `function`, `flags`, `selector_enum`
+  - Attributes: `index`, `display`, `function`, `flags`, `selector_enum`,
+    `initial` (non-default seed value in the generated `new()`)
+  - Struct attrs: `bus_hook` (derived dispatch + hand-written
+    `ComObjectBusHook`), `manual_impl` (hand-write both)
 
 #### 5b. Device Macros Crate (`crates/zweidraehte-device-macros`)
 **Purpose**: Proc-macros for KNX interface-object metadata, service-registry
@@ -261,7 +264,9 @@ Macros provided:
 - `#[derive(ExtensionState)]` - Generates the persisted `*Config` mirror struct
   (`Cell`/`RefCell` fields unwrapped) plus its `Default`/`ExtensionConfig` impls
   and the `ExtensionState` impl (`from_config`/`to_config`/`on_erase`) from a
-  runtime `*State` struct. Struct attr `#[extension_state(config = ...,
+  runtime `*State` struct, plus an inherent `apply_config(&self, Config)`
+  (in-place reset through interior mutability; used by `on_erase = manual`
+  impls). Struct attr `#[extension_state(config = ...,
   resources = ..., on_erase = manual, default = manual)]`; field attrs
   `#[runtime_only]`, `#[config(ty = ..., from = ..., to = ..., serde_default =
   ...)]`, `#[erase(default = ...)]`.
