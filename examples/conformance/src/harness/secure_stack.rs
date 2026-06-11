@@ -23,15 +23,13 @@ use zweidraehte_device::{
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     memory::MemoryMap,
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, HasRoutingCount, PropertyError, PropertyRead, WriteResponse,
+        FullPropertyReadRequest, FullPropertyWriteRequest, PropertyError, PropertyRead, WriteResponse,
     },
     objects::tables::{
-        Application, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
-        HasLoadStateMachine, HasPeiApplication, LoadEvent,
+        Application, HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine, LoadEvent,
     },
 };
 use zweidraehte_proto::AccessContext;
-use zweidraehte_proto::HasConnectionAuth;
 use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::dpt::InterfaceObjectType;
@@ -212,31 +210,15 @@ impl StackState for SecureConformanceState {
     }
 }
 
-impl HasSecurityMode for SecureConformanceState {
-    fn security_mode_enabled(&self) -> bool {
-        self.inner.security_mode_enabled()
-    }
-    fn log_access_denied(&self, source_addr: u16) {
-        self.inner.log_access_denied(source_addr);
-    }
-    fn has_group_key(&self, tsap: u16) -> bool {
-        self.inner.has_group_key(tsap)
-    }
-}
-
-// ============================================================================
-// Trait Forwarding
-// ============================================================================
-
-// ============================================================================
-// HasPersistence Forwarding
-// ============================================================================
-
-impl HasPersistence for SecureConformanceState {
-    fn mark_dirty(&self) {
-        self.inner.mark_dirty();
-    }
-}
+// All pure-delegation trait impls (`HasSecurityMode`, `HasPersistence`,
+// `HasAuthorization`, `HasExtensionState`, the table accessors,
+// `HasCommObjects`, `HasGoSecurityView` — which the secure inner
+// extension overrides to consult `PID_GO_SECURITY_FLAGS`, the P2P key
+// table, etc. — `HasDiagnosticsContext`, `HasRoutingCount`,
+// `HasConnectionAuth`) come from the bundle macro. `StackState` (fixed
+// APDU length) and `DeviceModelNotifier` (dm_slot) are the two
+// genuinely customised traits and stay hand-written.
+zweidraehte_device::forward_system_b_state_traits!(impl SecureConformanceState => self.inner: SecureInnerState);
 
 // ============================================================================
 // Random byte source for KNX Data Secure (plugs into `StackDefinition::Rng`)
@@ -258,25 +240,6 @@ impl zweidraehte_device::Rng for GetrandomRng {
 impl zweidraehte_device::SecureRng for GetrandomRng {}
 
 // ============================================================================
-// HasAuthorization Forwarding
-// ============================================================================
-
-impl HasAuthorization for SecureConformanceState {
-    fn max_access_levels(&self) -> u8 {
-        self.inner.max_access_levels()
-    }
-    fn default_access_level(&self) -> u8 {
-        self.inner.default_access_level()
-    }
-    fn authorize(&self, key: &[u8; 4]) -> u8 {
-        self.inner.authorize(key)
-    }
-    fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
-        self.inner.key_write(level, key, ctx)
-    }
-}
-
-// ============================================================================
 // DeviceModelNotifier
 // ============================================================================
 
@@ -286,121 +249,6 @@ impl DeviceModelNotifier for SecureConformanceState {
     }
     fn take_event(&self) -> Option<DeviceModelEvent> {
         self.dm_slot.take_event()
-    }
-}
-
-// ============================================================================
-// HasExtensionState
-// ============================================================================
-
-impl HasExtensionState for SecureConformanceState {
-    type ES = <SecureInnerState as HasExtensionState>::ES;
-    fn extension_state(&self) -> &Self::ES {
-        self.inner.extension_state()
-    }
-}
-
-// ============================================================================
-// Table Accessors
-// ============================================================================
-
-impl HasAddressTable for SecureConformanceState {
-    type ADT = <SecureInnerState as HasAddressTable>::ADT;
-
-    fn adt(&self) -> &RefCell<Self::ADT> {
-        self.inner.adt()
-    }
-}
-
-impl HasAssociationTable for SecureConformanceState {
-    type AST = <SecureInnerState as HasAssociationTable>::AST;
-
-    fn ast(&self) -> &RefCell<Self::AST> {
-        self.inner.ast()
-    }
-}
-
-impl HasCommunicationObjectTable for SecureConformanceState {
-    type COT = <SecureInnerState as HasCommunicationObjectTable>::COT;
-
-    fn cot(&self) -> &RefCell<Self::COT> {
-        self.inner.cot()
-    }
-}
-
-impl zweidraehte_device::objects::comm::HasCommObjects for SecureConformanceState {
-    type CO = super::stack::comm_objs::ConformanceComObjects;
-
-    fn comm_objects(&self) -> &RefCell<Self::CO> {
-        self.inner.comm_objects()
-    }
-}
-
-// The secure conformance harness wraps a `SystemBDeviceState` whose
-// extension state is `SecureExtensionState<...>`. Forward the policy
-// queries down to the inner state — the secure extension's overrides
-// then consult `PID_GO_SECURITY_FLAGS`, the P2P key table, etc.
-impl zweidraehte_device::objects::comm::HasGoSecurityView for SecureConformanceState {
-    fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_asap(asap)
-    }
-
-    fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_p2p(peer_ia)
-    }
-
-    fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_broadcast()
-    }
-
-    fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_tool_access()
-    }
-}
-
-impl zweidraehte_device::HasDiagnosticsContext for SecureConformanceState {
-    type Diagnostics = zweidraehte_device::bcus::system_b::OperationModeState;
-
-    fn diagnostics(&self) -> &Self::Diagnostics {
-        self.inner.diagnostics()
-    }
-}
-
-impl HasApplication for SecureConformanceState {
-    type APP = <SecureInnerState as HasApplication>::APP;
-
-    fn app(&self) -> &RefCell<Self::APP> {
-        self.inner.app()
-    }
-}
-
-impl HasPeiApplication for SecureConformanceState {
-    type PEI = <SecureInnerState as HasPeiApplication>::PEI;
-
-    fn pei(&self) -> &RefCell<Self::PEI> {
-        self.inner.pei()
-    }
-}
-
-impl HasRoutingCount for SecureConformanceState {
-    fn routing_count(&self) -> u8 {
-        self.inner.routing_count()
-    }
-
-    fn set_routing_count(&self, value: u8) {
-        self.inner.set_routing_count(value)
-    }
-}
-
-impl HasConnectionAuth for SecureConformanceState {
-    fn connection_access(&self, slot: u8) -> AccessContext {
-        self.inner.connection_access(slot)
-    }
-    fn set_connection_access(&self, slot: u8, ctx: AccessContext) {
-        self.inner.set_connection_access(slot, ctx);
-    }
-    fn reset_connection_access(&self, slot: u8, default_level: u8) {
-        self.inner.reset_connection_access(slot, default_level);
     }
 }
 

@@ -21,7 +21,6 @@ use const_default::ConstDefault;
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    HasSecurityMode,
     bcus::system_b::{ExtensionAugmentFor, MemoryLayout, Tp1SystemBDeviceState},
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
@@ -856,49 +855,13 @@ impl StackState for ConformanceState {
     }
 }
 
-// Security Mode moved off `StackState` onto `HasSecurityMode`. The insecure
-// harness forwards to its inner `SystemBDeviceState`, which gives the plain
-// (non-secure) defaults.
-impl HasSecurityMode for ConformanceState {
-    fn security_mode_enabled(&self) -> bool {
-        self.inner.security_mode_enabled()
-    }
-    fn log_access_denied(&self, source_addr: u16) {
-        self.inner.log_access_denied(source_addr);
-    }
-    fn has_group_key(&self, tsap: u16) -> bool {
-        self.inner.has_group_key(tsap)
-    }
-}
-
-// ============================================================================
-// HasPersistence Forwarding
-// ============================================================================
-
-impl HasPersistence for ConformanceState {
-    fn mark_dirty(&self) {
-        self.inner.mark_dirty();
-    }
-}
-
-// ============================================================================
-// HasAuthorization Forwarding
-// ============================================================================
-
-impl HasAuthorization for ConformanceState {
-    fn max_access_levels(&self) -> u8 {
-        self.inner.max_access_levels()
-    }
-    fn default_access_level(&self) -> u8 {
-        self.inner.default_access_level()
-    }
-    fn authorize(&self, key: &[u8; 4]) -> u8 {
-        self.inner.authorize(key)
-    }
-    fn key_write(&self, level: u8, key: &[u8; 4], ctx: AccessContext) -> u8 {
-        self.inner.key_write(level, key, ctx)
-    }
-}
+// All pure-delegation trait impls (`HasSecurityMode`, `HasPersistence`,
+// `HasAuthorization`, `HasExtensionState`, the table accessors,
+// `HasCommObjects`, `HasGoSecurityView`, `HasDiagnosticsContext`,
+// `HasRoutingCount`, `HasConnectionAuth`) come from the bundle macro.
+// `StackState` (fixed APDU length) and `DeviceModelNotifier` (dm_slot)
+// are the two genuinely customised traits and stay hand-written.
+zweidraehte_device::forward_system_b_state_traits!(impl ConformanceState => self.inner: InnerState);
 
 // ============================================================================
 // DeviceModelNotifier Implementation
@@ -910,117 +873,6 @@ impl DeviceModelNotifier for ConformanceState {
     }
     fn take_event(&self) -> Option<DeviceModelEvent> {
         self.dm_slot.take_event()
-    }
-}
-
-// ============================================================================
-// Trait Forwarding — HasExtensionState
-// ============================================================================
-
-impl zweidraehte_device::HasExtensionState for ConformanceState {
-    type ES = <InnerState as zweidraehte_device::HasExtensionState>::ES;
-
-    fn extension_state(&self) -> &Self::ES {
-        self.inner.extension_state()
-    }
-}
-
-// ============================================================================
-// Trait Forwarding — Table Accessors
-// ============================================================================
-
-impl HasAddressTable for ConformanceState {
-    type ADT = <InnerState as HasAddressTable>::ADT;
-    fn adt(&self) -> &RefCell<Self::ADT> {
-        self.inner.adt()
-    }
-}
-
-impl HasAssociationTable for ConformanceState {
-    type AST = <InnerState as HasAssociationTable>::AST;
-    fn ast(&self) -> &RefCell<Self::AST> {
-        self.inner.ast()
-    }
-}
-
-impl HasCommunicationObjectTable for ConformanceState {
-    type COT = <InnerState as HasCommunicationObjectTable>::COT;
-    fn cot(&self) -> &RefCell<Self::COT> {
-        self.inner.cot()
-    }
-}
-
-impl zweidraehte_device::objects::comm::HasCommObjects for ConformanceState {
-    type CO = ConformanceComObjects;
-
-    fn comm_objects(&self) -> &RefCell<Self::CO> {
-        self.inner.comm_objects()
-    }
-}
-
-// The conformance harness for the plain (non-secure) stack inherits the
-// inner `SystemBDeviceState`'s `Plain` defaults — there is no Data Secure
-// extension in this configuration.
-impl zweidraehte_device::objects::comm::HasGoSecurityView for ConformanceState {
-    fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_asap(asap)
-    }
-
-    fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_p2p(peer_ia)
-    }
-
-    fn required_security_for_broadcast(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_broadcast()
-    }
-
-    fn required_security_for_tool_access(&self) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.inner.required_security_for_tool_access()
-    }
-}
-
-impl zweidraehte_device::HasDiagnosticsContext for ConformanceState {
-    type Diagnostics = zweidraehte_device::bcus::system_b::OperationModeState;
-
-    fn diagnostics(&self) -> &Self::Diagnostics {
-        self.inner.diagnostics()
-    }
-}
-
-impl HasApplication for ConformanceState {
-    type APP = <InnerState as HasApplication>::APP;
-    fn app(&self) -> &RefCell<Self::APP> {
-        self.inner.app()
-    }
-}
-
-impl HasPeiApplication for ConformanceState {
-    type PEI = <InnerState as HasPeiApplication>::PEI;
-    fn pei(&self) -> &RefCell<Self::PEI> {
-        self.inner.pei()
-    }
-}
-
-impl HasRoutingCount for ConformanceState {
-    fn routing_count(&self) -> u8 {
-        self.inner.routing_count()
-    }
-    fn set_routing_count(&self, value: u8) {
-        self.inner.set_routing_count(value)
-    }
-}
-
-impl zweidraehte_proto::HasConnectionAuth for ConformanceState {
-    fn connection_access(&self, slot: u8) -> zweidraehte_proto::AccessContext {
-        self.inner.connection_access(slot)
-    }
-
-    fn set_connection_access(&self, slot: u8, ctx: zweidraehte_proto::AccessContext) {
-        self.inner.set_connection_access(slot, ctx);
-    }
-
-    fn reset_connection_access(&self, slot: u8, default_level: u8) {
-        self.inner.reset_connection_access(slot, default_level);
     }
 }
 
