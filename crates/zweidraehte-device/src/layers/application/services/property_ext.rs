@@ -561,12 +561,13 @@ fn handle_function_property_ext_command<D: StackDefinition>(
         return;
     };
 
-    // Check PDT: only PDT_FUNCTION and PDT_CONTROL properties can be accessed
-    // via function property services. Other PDTs get an empty response (no
-    // return_code, no data) per spec 3.4.7.3.
+    // Check PDT: only PDT_FUNCTION and PDT_CONTROL properties can be
+    // accessed via the Ext function property services. Other PDTs get a
+    // response with return_code E_DATA_TYPE_CONFLICT and no data per
+    // spec 3.4.8.3.
     match ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         Ok(desc) if !is_function_pdt(desc.pdt) => {
-            debug!("AL FunctionPropertyExtCommand: PDT 0x{:02X} is not function/control → empty response", desc.pdt);
+            debug!("AL FunctionPropertyExtCommand: PDT 0x{:02X} is not function/control → type conflict", desc.pdt);
             send_function_ext_response(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
             return;
         }
@@ -639,10 +640,10 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
         return;
     };
 
-    // Check PDT (same as Command handler).
+    // Check PDT (same as Command handler; spec 3.4.8.3).
     match ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         Ok(desc) if !is_function_pdt(desc.pdt) => {
-            debug!("AL FunctionPropertyExtStateRead: PDT 0x{:02X} is not function/control → empty response", desc.pdt);
+            debug!("AL FunctionPropertyExtStateRead: PDT 0x{:02X} is not function/control → type conflict", desc.pdt);
             send_function_ext_response(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
             return;
         }
@@ -706,25 +707,13 @@ fn send_function_ext_response<D: StackDefinition>(
     ctx.lctx.push_outbox(msg.into_inner());
 }
 
-/// Send an empty `FunctionPropertyExtState_Response` (no return_code, no data).
-///
-/// Used when the addressed property is not PDT_FUNCTION or PDT_CONTROL
-/// (spec 3.4.7.3).
-#[allow(dead_code)]
-fn send_function_ext_empty_response<D: StackDefinition>(
-    ind: &KnxMessageBuffer<Buffer<'static>>,
-    ctx: &AlCtx<'_, D>,
-    hdr: &FunctionPropertyExtHeader,
-) {
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(FunctionPropertyExtResponse::EMPTY_MSG_LEN) else {
-        warn!("AL no buffer for FunctionPropertyExtState_Response");
-        return;
-    };
-    let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
-        FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
-    });
-    ctx.lctx.push_outbox(msg.into_inner());
-}
+// NOTE: the *Ext* function-property services never send the "empty"
+// (return_code-less) response — that form belongs to the plain
+// A_FunctionProperty services only (03/03/07 §3.4.7.3, handled in
+// `function_property.rs`). Per §3.4.8.3 the Ext services answer a
+// wrong-PDT / absent property with a normal response carrying the
+// appropriate return code and no data, which is what the handlers
+// above do.
 
 // ============================================================================
 // PropertyExtDescription Handler

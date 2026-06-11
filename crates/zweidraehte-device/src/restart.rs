@@ -25,19 +25,17 @@
 //!
 //! The stack sends [`RestartRequest`] events when A_Restart messages are received.
 //! User code should:
-//! 1. Execute the appropriate reset based on the erase code
+//! 1. Execute the appropriate reset based on the erase code (for System B
+//!    devices, `SystemBDeviceState::apply_erase_code` is the canonical
+//!    per-code dispatch)
 //! 2. Flush storage
 //! 3. Send a [`RestartResponse`] back to the stack
 //! 4. Trigger the platform restart after the response is sent
-//!
-//! See [`RestartHandler`] trait for implementing device-specific reset behavior.
 
 create_protocol_enum!(
     /// Erase codes for A_Restart Master Reset.
     ///
     /// These codes specify what data should be reset during a master reset operation.
-    /// Not all devices support all erase codes - use [`RestartHandler::supports_erase_code`]
-    /// to check support.
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum EraseCode: u8 {
         Basic,              0x00, "Basic restart";
@@ -70,7 +68,9 @@ create_protocol_enum!(
 ///
 /// When the stack receives an A_Restart message, it validates the request and
 /// sends this event to user code. User code should:
-/// 1. Execute the reset using [`RestartHandler::execute_reset`]
+/// 1. Execute the reset for [`erase_code`](Self::erase_code) (for System B
+///    devices, `SystemBDeviceState::apply_erase_code` is the canonical
+///    per-code dispatch)
 /// 2. Flush storage
 /// 3. Send a [`RestartResponse`] back via [`Request::reply()`](crate::actor::Request::reply)
 /// 4. Trigger platform restart after response is sent
@@ -121,87 +121,11 @@ impl RestartResponse {
     }
 }
 
-/// Trait for handling restart/reset operations.
-///
-/// Implementations define which erase codes they support and what data gets reset
-/// for each code. This allows different device types (07B0, 57B0, etc.) to have
-/// different reset behaviors.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// impl RestartHandler for MyDeviceState {
-///     fn supports_erase_code(&self, code: EraseCode) -> bool {
-///         matches!(code,
-///             EraseCode::Basic | EraseCode::Confirmed |
-///             EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA
-///         )
-///     }
-///
-///     fn execute_reset(&mut self, code: EraseCode, _channel: u8) -> Result<u16, RestartError> {
-///         match code {
-///             EraseCode::Basic | EraseCode::Confirmed => Ok(0),
-///             EraseCode::FactoryReset => {
-///                 self.reset_to_factory_defaults();
-///                 Ok(0)
-///             }
-///             EraseCode::FactoryResetKeepIA => {
-///                 let ia = self.individual_address();
-///                 self.reset_to_factory_defaults();
-///                 self.set_individual_address(ia);
-///                 Ok(0)
-///             }
-///             _ => Err(RestartError::UnsupportedEraseCode),
-///         }
-///     }
-///
-///     fn flush_storage(&mut self) -> Result<(), RestartError> {
-///         self.storage.flush().map_err(|_| RestartError::NoError)
-///     }
-/// }
-/// ```
-pub trait RestartHandler {
-    /// Check if an erase code is supported by this device.
-    ///
-    /// Returns `true` if the device can handle the given erase code.
-    /// The stack will respond with [`RestartError::UnsupportedEraseCode`] for
-    /// unsupported codes.
-    fn supports_erase_code(&self, code: EraseCode) -> bool;
-
-    /// Get the required access level for an erase code.
-    ///
-    /// Returns the minimum access level (0 = highest, 3 = lowest) required
-    /// to execute the given erase code.
-    ///
-    /// Default implementation:
-    /// - Basic/Confirmed restart: level 3 (anyone)
-    /// - All other resets: level 0 (system access)
-    fn required_access_level(&self, code: EraseCode) -> u8 {
-        match code {
-            EraseCode::Basic | EraseCode::Confirmed => 3, // Anyone can do basic restart
-            _ => 0,                                       // Master reset operations require system access
-        }
-    }
-
-    /// Execute the reset for the given erase code.
-    ///
-    /// This method should reset the appropriate data based on the erase code.
-    /// It should NOT:
-    /// - Flush storage (call `flush_storage` separately)
-    /// - Perform the actual restart (user code does this after responding)
-    ///
-    /// # Arguments
-    /// - `code`: The erase code specifying what to reset
-    /// - `channel`: Channel number (0 for all channels)
-    ///
-    /// # Returns
-    /// - `Ok(process_time)`: Reset successful, process time in 100ms units
-    /// - `Err(error)`: Reset failed with the given error
-    fn execute_reset(&mut self, code: EraseCode, channel: u8) -> Result<u16, RestartError>;
-
-    /// Flush any pending storage writes.
-    ///
-    /// Called after `execute_reset` to ensure all changes are persisted
-    /// before the device restarts.
-    fn flush_storage(&mut self) -> Result<(), RestartError>;
-}
+// A `RestartHandler` trait (supports_erase_code / execute_reset /
+// flush_storage) used to live here. It was never consumed by the stack:
+// the application layer validates A_Restart itself (access policy +
+// erase-code checks in `handle_restart`) and hands the request to user
+// code via the restart channel, where the reset is applied with the
+// inherent `SystemBDeviceState::apply_erase_code` / reset methods. The
+// trait was deleted rather than kept as a second, diverging definition
+// of the same dispatch.

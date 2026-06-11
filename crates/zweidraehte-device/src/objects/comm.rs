@@ -91,11 +91,22 @@ impl ComObjectStatus {
     /// - Bit 1: Write/Transmit request pending
     /// - Bit 0: Error flag (1 = error, 0 = ok)
     ///
-    /// This is the inverse of `to_flags_byte()`.
+    /// This is a **best-effort** inverse of [`to_flags_byte()`]
+    /// (Self::to_flags_byte): the BCU1 byte cannot represent every
+    /// status variant distinctly, so three variants do not round-trip:
+    ///
+    /// - `Busy` parses back as `WriteRequest` (both encode `0x02`),
+    /// - `WriteRequestError` parses back as `IdleError` (encodes `0x41`),
+    /// - `Uninitialized` parses back as `IdleOk` (encodes `0x40`;
+    ///   "uninitialized" is a device-local notion with no flag bit).
+    ///
+    /// All other variants — including `ReadRequestError` (`0x45`,
+    /// read-request bit + error bit) — round-trip exactly.
     pub fn from_flags_byte(flags: u8) -> Self {
         // Check special flags first (read request and update take priority)
         if flags & 0x04 != 0 {
-            ComObjectStatus::ReadRequest
+            // Read request pending; bit 0 distinguishes the error variant.
+            if flags & 0x01 != 0 { ComObjectStatus::ReadRequestError } else { ComObjectStatus::ReadRequest }
         } else if flags & 0x08 != 0 {
             ComObjectStatus::Updated
         } else if flags & 0x02 != 0 {
@@ -572,4 +583,31 @@ pub enum ComObjectEvent {
 
     /// A response to a read request was received
     ReadResponse,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ComObjectStatus;
+
+    /// `from_flags_byte` round-trips every variant except the three the
+    /// BCU1 byte cannot represent distinctly (documented on the method).
+    #[test]
+    fn status_flags_byte_round_trip() {
+        let cases = [
+            (ComObjectStatus::IdleOk, ComObjectStatus::IdleOk),
+            (ComObjectStatus::IdleError, ComObjectStatus::IdleError),
+            (ComObjectStatus::ReadRequest, ComObjectStatus::ReadRequest),
+            (ComObjectStatus::ReadRequestError, ComObjectStatus::ReadRequestError),
+            (ComObjectStatus::WriteRequest, ComObjectStatus::WriteRequest),
+            (ComObjectStatus::Updated, ComObjectStatus::Updated),
+            // Lossy by encoding: no distinct flag-bit pattern exists.
+            (ComObjectStatus::Busy, ComObjectStatus::WriteRequest),
+            (ComObjectStatus::WriteRequestError, ComObjectStatus::IdleError),
+            (ComObjectStatus::Uninitialized, ComObjectStatus::IdleOk),
+        ];
+        for (status, expected) in cases {
+            let parsed = ComObjectStatus::from_flags_byte(status.to_flags_byte());
+            assert_eq!(parsed, expected, "round-trip of {:?} via 0x{:02X}", status, status.to_flags_byte());
+        }
+    }
 }

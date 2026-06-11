@@ -720,6 +720,12 @@ pub(crate) mod table_sizes {
     pub const ADT: usize = ConformanceTestConfig::ADDR7_SIZE;
     pub const AST: usize = ConformanceTestConfig::ASSO6_SIZE;
     pub const COT: usize = ConformanceTestConfig::CO7_SIZE;
+
+    /// Entry counts (not byte sizes) — capacity parameters for the
+    /// Data Secure tables (`GRP` = one key slot per group address,
+    /// `GO` = one flag byte per communication object).
+    pub const ADT_ENTRIES: usize = ConformanceTestConfig::NUM_GROUP_ADDRS;
+    pub const COT_ENTRIES: usize = ConformanceTestConfig::NUM_COMM_OBJECTS;
 }
 
 /// The inner device state type used by the conformance wrapper.

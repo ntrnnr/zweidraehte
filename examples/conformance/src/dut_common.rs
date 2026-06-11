@@ -302,9 +302,9 @@ pub trait ConformanceStack: StackDefinition + 'static {
 ///
 /// Both conformance DUTs wrap a different `SystemBDeviceState` instantiation
 /// (plain TP1 vs Data-Secure TP1). The concrete inner types differ only in
-/// their `ExtensionState` parameter, but the reset API is inherent on
-/// `SystemBDeviceState` and identical for both. Calling this helper from each
-/// DUT's `apply_erase_code` keeps the match arms in one place.
+/// their `ExtensionState` parameter; `SystemBDeviceState::apply_erase_code`
+/// is the canonical dispatch for both (including the `ResetLinks` →
+/// `extension_state.on_erase` notification the security extension needs).
 pub fn apply_erase_code_to_system_b<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -315,19 +315,10 @@ pub fn apply_erase_code_to_system_b<
     inner: &SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>,
     code: EraseCode,
 ) {
-    match code {
-        EraseCode::Basic | EraseCode::Confirmed => {}
-        EraseCode::FactoryReset => inner.factory_reset(),
-        EraseCode::ResetIA => inner.reset_individual_address(),
-        EraseCode::ResetAP => inner.reset_application(),
-        EraseCode::ResetParam => inner.reset_parameters(),
-        EraseCode::ResetLinks => {
-            inner.reset_address_table();
-            inner.reset_association_table();
-        }
-        EraseCode::FactoryResetKeepIA => inner.factory_reset_keep_ia(),
-        EraseCode::Other(_) => log::warn!("apply_erase_code: unsupported {:?}", code),
+    if matches!(code, EraseCode::Other(_)) {
+        log::warn!("apply_erase_code: unsupported {:?}", code);
     }
+    inner.apply_erase_code(code);
 }
 
 /// Handle one [`IpcCommand`] dispatched by the link layer.

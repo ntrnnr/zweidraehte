@@ -251,11 +251,13 @@ macro_rules! knx_stack_config {
                 let mut asso_idx = 2;
                 $(
                     $(
-                        // Each entry: TSAP (2 bytes) + ASAP (2 bytes)
-                        asso6_data[asso_idx] = 0;                    // TSAP high byte
-                        asso6_data[asso_idx + 1] = $assoc_tsap;      // TSAP low byte
-                        asso6_data[asso_idx + 2] = 0;                // ASAP high byte
-                        asso6_data[asso_idx + 3] = $assoc_asap;      // ASAP low byte
+                        // Each entry: TSAP (2 bytes) + ASAP (2 bytes), big-endian.
+                        let tsap_bytes = ($assoc_tsap as u16).to_be_bytes();
+                        let asap_bytes = ($assoc_asap as u16).to_be_bytes();
+                        asso6_data[asso_idx] = tsap_bytes[0];
+                        asso6_data[asso_idx + 1] = tsap_bytes[1];
+                        asso6_data[asso_idx + 2] = asap_bytes[0];
+                        asso6_data[asso_idx + 3] = asap_bytes[1];
                         asso_idx += 4;
                     )*
                 )*
@@ -391,18 +393,23 @@ macro_rules! knx_stack_config {
             ///
             /// Group keys and GO flags are built at compile time from the
             /// `security` block in `knx_stack_config!`.
+            ///
+            /// Capacities are entry counts: the group key table holds at
+            /// most one key per group address (`NUM_GROUP_ADDRS`), the GO
+            /// flags table one byte per communication object
+            /// (`NUM_COMM_OBJECTS`).
             pub fn create_security_config() -> $crate::bcus::system_b::SecurityExtensionConfig<
-                { Self::ADDR7_SIZE },
+                { Self::NUM_GROUP_ADDRS },
                 { Self::P2P_CAPACITY },
                 { Self::SIAT_CAPACITY },
-                { Self::CO7_SIZE },
+                { Self::NUM_COMM_OBJECTS },
             > {
                 use $crate::bcus::system_b::{SecurityExtensionConfig, SecurityTable};
 
                 let tool_key = $crate::config::parse_hex_key::<16>($tool_key_hex);
 
                 // Build group key table: each entry is 18 bytes (2-byte TSAP + 16-byte key).
-                let mut grp_data = [[0u8; 18]; Self::ADDR7_SIZE];
+                let mut grp_data = [[0u8; 18]; Self::NUM_GROUP_ADDRS];
                 let mut _gk_idx = 0usize;
                 $(
                     {
@@ -421,7 +428,7 @@ macro_rules! knx_stack_config {
                 let grp_keys = SecurityTable::from_entries(grp_data, _gk_idx as u16);
 
                 // Build GO security flags table: each entry is 1 byte.
-                let mut go_data = [[0u8; 1]; Self::CO7_SIZE];
+                let mut go_data = [[0u8; 1]; Self::NUM_COMM_OBJECTS];
                 $(
                     // CO indices are 1-based in the config but 0-based in the table.
                     go_data[$gf_co - 1] = [$gf_val];

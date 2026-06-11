@@ -175,13 +175,16 @@ impl StackDefinition for Stm32G0KnxRfRetransmitter {
     // it only type-checks because `type ES` composes the retransmitter extension
     // (which provides `RfRetransmitterContext`).
     type LLB = KnxRfLinkLayerBuilder<Radio, RetransmitEnabled>;
-    // RF retransmitter extension + Data Secure wrapper.
+    // RF retransmitter extension + Data Secure wrapper. `GRP`/`GO` are
+    // entry counts (one group key slot per address table entry, one
+    // flag byte per communication object), matching `SecureStateFor`'s
+    // invariant.
     type ES = SecureRfRetransmitterExtensionState<
         Stm32G0SeqStorage,
-        { Self::ADT_SIZE },
+        { Self::ADT_ENTRIES },
         P2P_SIZE,
         SIAT_SIZE,
-        { Self::COT_SIZE },
+        { Self::COT_ENTRIES },
     >;
     type Identity = FlashSecureIdentityData;
     type State = Stm32G0SecureState;

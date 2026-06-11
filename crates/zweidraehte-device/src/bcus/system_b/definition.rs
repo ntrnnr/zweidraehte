@@ -49,6 +49,23 @@ pub trait SystemBStackDefinition: StackDefinition<Mem = SystemBMemoryMap> {
     /// [`DEVICE`](StackDefinition::DEVICE).
     const COT_SIZE: usize = Self::DEVICE.comm_object_table_size();
 
+    /// Number of address-table entries (group addresses), derived from
+    /// [`DEVICE`](StackDefinition::DEVICE).
+    ///
+    /// This is an **entry count**, unlike [`ADT_SIZE`](Self::ADT_SIZE)
+    /// which is the table's byte length. Use it for per-entry
+    /// capacities such as the Data Secure group key table (`GRP`).
+    const ADT_ENTRIES: usize = Self::DEVICE.max_address_table_entries as usize;
+
+    /// Number of communication objects, derived from
+    /// [`DEVICE`](StackDefinition::DEVICE).
+    ///
+    /// This is an **entry count**, unlike [`COT_SIZE`](Self::COT_SIZE)
+    /// which is the table's byte length. Use it for per-entry
+    /// capacities such as the Data Secure GO security flags table
+    /// (`GO`).
+    const COT_ENTRIES: usize = Self::DEVICE.max_com_objects as usize;
+
     /// Compute the memory layout for this device's tables.
     ///
     /// Derives all table offsets and sizes from
@@ -253,11 +270,13 @@ where
 /// medium extension `Inner`.
 ///
 /// This is the single home of the Data Secure table-size invariant
-/// (`GRP = ADT_SIZE`, `GO = COT_SIZE`) and the ADT/AST/COT projection off
-/// `D::DEVICE`. The medium-specific aliases ([`SecureTp1StateFor`],
-/// [`SecureRfStateFor`], [`SecureRfRetransmitterStateFor`],
-/// [`SecureIpStateFor`]) are thin wrappers that fix `Inner`; a future secure
-/// medium only needs to add one such wrapper (or use this alias directly).
+/// (`GRP = ADT_ENTRIES`: one group key slot per address table entry,
+/// `GO = COT_ENTRIES`: one flag byte per communication object) and the
+/// ADT/AST/COT projection off `D::DEVICE`. The medium-specific aliases
+/// ([`SecureTp1StateFor`], [`SecureRfStateFor`],
+/// [`SecureRfRetransmitterStateFor`], [`SecureIpStateFor`]) are thin
+/// wrappers that fix `Inner`; a future secure medium only needs to add
+/// one such wrapper (or use this alias directly).
 pub type SecureStateFor<D, Inner, SEQ, const P2P: usize, const SIAT: usize>
 where
     D: SystemBStackDefinition,
@@ -270,10 +289,10 @@ where
     super::extensions::SecureExtensionState<
         Inner,
         SEQ,
-        { <D as SystemBStackDefinition>::ADT_SIZE },
+        { <D as SystemBStackDefinition>::ADT_ENTRIES },
         P2P,
         SIAT,
-        { <D as SystemBStackDefinition>::COT_SIZE },
+        { <D as SystemBStackDefinition>::COT_ENTRIES },
     >,
 >;
 

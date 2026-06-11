@@ -13,24 +13,35 @@ pub struct AssoTab6Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<AssoTab6Impl<N>> {
-    /// Get the TSAP (Transport Service Access Point) at the given index.
-    /// Index is 1-based.
-    pub fn tsap(&self, idx: u16) -> u16 {
-        // NOTE: idx is 1-indexed!
+    /// Get the TSAP (Transport Service Access Point) at the given
+    /// **1-based** index.
+    ///
+    /// Returns `None` for index 0 or beyond [`entry_count()`]
+    /// (AssociationTable::entry_count) — the checked style of
+    /// `addr7::get_tsap`.
+    pub fn tsap(&self, idx: u16) -> Option<u16> {
+        if idx == 0 || idx > self.entry_count() {
+            return None;
+        }
         // Format: [count_h, count_l, tsap1_h, tsap1_l, asap1_h, asap1_l, tsap2_h, tsap2_l, asap2_h, asap2_l, ...]
         // Each entry is 4 bytes: TSAP (2 bytes) + ASAP (2 bytes)
         let start = 2 + ((idx as usize) - 1) * 4;
-        U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
+        Some(U16::from_bytes(self.table.data[start..start + 2].try_into().expect("slice is exactly 2 bytes")).get())
     }
 
-    /// Get the ASAP (Application Service Access Point) at the given index.
-    /// Index is 1-based.
-    pub fn asap(&self, idx: u16) -> u16 {
-        // NOTE: idx is 1-indexed!
+    /// Get the ASAP (Application Service Access Point) at the given
+    /// **1-based** index.
+    ///
+    /// Returns `None` for index 0 or beyond [`entry_count()`]
+    /// (AssociationTable::entry_count).
+    pub fn asap(&self, idx: u16) -> Option<u16> {
+        if idx == 0 || idx > self.entry_count() {
+            return None;
+        }
         // Format: [count_h, count_l, tsap1_h, tsap1_l, asap1_h, asap1_l, tsap2_h, tsap2_l, asap2_h, asap2_l, ...]
         // Each entry is 4 bytes: TSAP (2 bytes) + ASAP (2 bytes)
         let start = 2 + ((idx as usize) - 1) * 4 + 2;
-        U16::from_bytes(self.table.data[start..start + 2].try_into().unwrap()).get()
+        Some(U16::from_bytes(self.table.data[start..start + 2].try_into().expect("slice is exactly 2 bytes")).get())
     }
 
     /// Find the next ASAP number associated with a given TSAP
@@ -50,9 +61,10 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
             while *start_idx < count {
                 *start_idx += 1;
 
-                if self.tsap(*start_idx) == tsap {
+                if self.tsap(*start_idx) == Some(tsap) {
                     // Found a match, return the associated ASAP
-                    return Some((self.asap(*start_idx), *start_idx));
+                    let asap = self.asap(*start_idx).expect("idx stays within entry_count");
+                    return Some((asap, *start_idx));
                 }
             }
 
@@ -86,9 +98,10 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
             while *start_idx < count {
                 *start_idx += 1;
 
-                if self.asap(*start_idx) == asap {
+                if self.asap(*start_idx) == Some(asap) {
                     // Found a match, return the associated TSAP
-                    return Some((self.tsap(*start_idx), *start_idx));
+                    let tsap = self.tsap(*start_idx).expect("idx stays within entry_count");
+                    return Some((tsap, *start_idx));
                 }
             }
 
@@ -208,8 +221,8 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
 
         // Find the first association where ASAP matches
         for i in 1..=count {
-            if self.asap(i) == asap {
-                let tsap = self.tsap(i);
+            if self.asap(i) == Some(asap) {
+                let tsap = self.tsap(i).expect("idx stays within entry_count");
                 trace!("Found sending TSAP {} for ASAP {}", tsap, asap);
                 return Some(tsap);
             }

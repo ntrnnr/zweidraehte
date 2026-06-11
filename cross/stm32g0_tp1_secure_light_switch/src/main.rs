@@ -195,8 +195,11 @@ impl StackDefinition for Stm32G0SecureLightSwitch {
     type P = LightSwitchParams;
     type CO = LightSwitchComObjects;
     type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
-    // TP1 extension + Data Secure wrapper.
-    type ES = SecureTp1ExtensionState<Stm32G0SeqStorage, { Self::ADT_SIZE }, P2P_SIZE, SIAT_SIZE, { Self::COT_SIZE }>;
+    // TP1 extension + Data Secure wrapper. `GRP`/`GO` are entry counts
+    // (one group key slot per address table entry, one flag byte per
+    // communication object), matching `SecureStateFor`'s invariant.
+    type ES =
+        SecureTp1ExtensionState<Stm32G0SeqStorage, { Self::ADT_ENTRIES }, P2P_SIZE, SIAT_SIZE, { Self::COT_ENTRIES }>;
     // Flash-backed identity that carries the FDSK.
     type Identity = FlashSecureIdentityData;
     type State = Stm32G0SecureState;

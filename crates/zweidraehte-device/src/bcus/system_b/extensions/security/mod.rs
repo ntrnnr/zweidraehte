@@ -181,13 +181,27 @@ impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
     }
 
     /// Clear all entries (reset count to 0).
+    ///
+    /// Also zeroes the backing storage: entries hold key material, and
+    /// the full `data` array — not just the active prefix — is what the
+    /// persisted config serializes. Stale keys must not survive a clear.
     pub fn clear(&mut self) {
+        self.data = [[0u8; ENTRY_SIZE]; N];
         self.count = 0;
     }
 
     /// Set the element count directly (for load state machine use).
+    ///
+    /// Zeroes any entries dropped by a shrinking count — same key-material
+    /// rationale as [`clear()`](Self::clear): the serialized config carries
+    /// the whole `data` array, so truncated entries must not leak old keys
+    /// into storage.
     pub fn set_count(&mut self, count: u16) {
-        self.count = count.min(N as u16);
+        let count = count.min(N as u16);
+        for entry in self.data[count as usize..].iter_mut() {
+            *entry = [0u8; ENTRY_SIZE];
+        }
+        self.count = count;
     }
 
     /// View active entries as a flat byte slice.
@@ -1215,9 +1229,14 @@ impl<
     }
 
     fn on_erase(&self, code: EraseCode) {
+        // Wrapper pass-through contract: the inner (medium) extension
+        // sees *every* erase code, not just the factory resets — it
+        // decides for itself which codes are relevant. The security
+        // handling below is purely additive.
+        self.inner.on_erase(code);
+
         match code {
             EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA => {
-                self.inner.on_erase(code);
                 self.security.factory_reset();
 
                 // Spec 03/05/01 §6.1.4: after a factory reset, the FDSK
@@ -1340,10 +1359,12 @@ pub type SecureTp1ExtensionState<SEQ, const GRP: usize, const P2P: usize, const 
 
 /// TP1 device state with Data Secure support.
 ///
-/// `GRP` (group key table size) and `GO` (GO security flags table size)
-/// are derived from `ADT_SIZE` and `COT_SIZE` respectively, since the
-/// group key table is indexed by GA index (one per address table entry)
-/// and the GO flags table has one entry per communication object.
+/// `GRP` (group key table capacity) and `GO` (GO security flags table
+/// capacity) are **entry counts** derived from the byte-size parameters:
+/// the group key table holds one key per address table entry
+/// (`(ADT_SIZE - 2) / 2`, inverting the `2 + entries · 2` table layout)
+/// and the GO flags table one byte per communication object
+/// (`(COT_SIZE - 2) / 2`).
 ///
 /// `P2P` sizes the P2P Key Table. `SIAT` sizes the Security Individual
 /// Address Table — per 03/03/07 §5.3 this must cover the union of P2P
@@ -1357,7 +1378,13 @@ pub type SecureTp1DeviceState<
     SEQ,
     const P2P: usize,
     const SIAT: usize,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, SecureTp1ExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>>;
+> = SystemBDeviceState<
+    ADT_SIZE,
+    AST_SIZE,
+    COT_SIZE,
+    D,
+    SecureTp1ExtensionState<SEQ, { (ADT_SIZE - 2) / 2 }, P2P, SIAT, { (COT_SIZE - 2) / 2 }>,
+>;
 
 /// KNX-RF extension state with Data Secure support. Wraps the RF Medium Object /
 /// Domain Address extension in the secure wrapper.
@@ -1375,7 +1402,13 @@ pub type SecureRfDeviceState<
     SEQ,
     const P2P: usize,
     const SIAT: usize,
-> = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, SecureRfExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>>;
+> = SystemBDeviceState<
+    ADT_SIZE,
+    AST_SIZE,
+    COT_SIZE,
+    D,
+    SecureRfExtensionState<SEQ, { (ADT_SIZE - 2) / 2 }, P2P, SIAT, { (COT_SIZE - 2) / 2 }>,
+>;
 
 /// KNX-RF **retransmitter** extension state with Data Secure support. As
 /// [`SecureRfExtensionState`], but the wrapped inner extension is
@@ -1404,7 +1437,7 @@ pub type SecureRfRetransmitterDeviceState<
     AST_SIZE,
     COT_SIZE,
     D,
-    SecureRfRetransmitterExtensionState<SEQ, ADT_SIZE, P2P, SIAT, COT_SIZE>,
+    SecureRfRetransmitterExtensionState<SEQ, { (ADT_SIZE - 2) / 2 }, P2P, SIAT, { (COT_SIZE - 2) / 2 }>,
 >;
 
 #[cfg(feature = "knxip")]
@@ -1425,11 +1458,11 @@ pub type SecureIpExtensionState<
 #[cfg(feature = "knxip")]
 /// KNX/IP device state with Data Secure support.
 ///
-/// Like [`SecureTp1DeviceState`], `GRP` and `GO` are derived from
-/// `ADT_SIZE` and `COT_SIZE`. `P2P`, `SIAT`, and the IP-specific
-/// `CAPS` (capability flags) remain as independent parameters. See
-/// the `SecureTp1DeviceState` docs for the SIAT vs. P2P sizing
-/// rationale (03/03/07 §5.3).
+/// Like [`SecureTp1DeviceState`], `GRP` and `GO` are **entry counts**
+/// derived from the `ADT_SIZE`/`COT_SIZE` byte sizes. `P2P`, `SIAT`,
+/// and the IP-specific `CAPS` (capability flags) remain as independent
+/// parameters. See the `SecureTp1DeviceState` docs for the SIAT vs.
+/// P2P sizing rationale (03/03/07 §5.3).
 pub type SecureIpDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -1444,5 +1477,50 @@ pub type SecureIpDeviceState<
     AST_SIZE,
     COT_SIZE,
     D,
-    SecureIpExtensionState<SEQ, CAPS, ADT_SIZE, P2P, SIAT, COT_SIZE>,
+    SecureIpExtensionState<SEQ, CAPS, { (ADT_SIZE - 2) / 2 }, P2P, SIAT, { (COT_SIZE - 2) / 2 }>,
 >;
+
+#[cfg(test)]
+mod tests {
+    use super::SecurityTable;
+
+    /// Truncating via `set_count` must zero the dropped entries — the
+    /// persisted config serializes the whole backing array, so stale
+    /// key material above the count would otherwise reach storage.
+    #[test]
+    fn set_count_zeroes_truncated_entries() {
+        let mut table: SecurityTable<4, 18> = SecurityTable::new();
+        let key_a = [0xAA; 18];
+        let key_b = [0xBB; 18];
+        let mut data = [0u8; 36];
+        data[..18].copy_from_slice(&key_a);
+        data[18..].copy_from_slice(&key_b);
+        table.write_entries(0, &data).expect("two entries fit in a 4-slot table");
+        assert_eq!(table.count(), 2);
+
+        table.set_count(1);
+        assert_eq!(table.count(), 1);
+        assert_eq!(table.get(0), Some(&key_a));
+        // The dropped entry must be gone from the backing array, not
+        // just hidden behind the count.
+        assert_eq!(table.data[1], [0u8; 18]);
+    }
+
+    /// `clear` must zero the whole backing array, same rationale.
+    #[test]
+    fn clear_zeroes_backing_array() {
+        let mut table: SecurityTable<2, 18> = SecurityTable::new();
+        table.write_entries(0, &[0xCC; 18]).expect("one entry fits");
+        table.clear();
+        assert_eq!(table.count(), 0);
+        assert_eq!(table.data, [[0u8; 18]; 2]);
+    }
+
+    /// `set_count` clamps to capacity and zeroing stays in bounds.
+    #[test]
+    fn set_count_clamps_to_capacity() {
+        let mut table: SecurityTable<2, 8> = SecurityTable::new();
+        table.set_count(100);
+        assert_eq!(table.count(), 2);
+    }
+}

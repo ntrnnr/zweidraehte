@@ -30,7 +30,7 @@ use crate::{
             co7::CoTab7Impl,
         },
     },
-    restart::{EraseCode, RestartError, RestartHandler},
+    restart::EraseCode,
 };
 use zweidraehte_proto::MAX_ACCESS_LEVELS;
 use zweidraehte_proto::NUM_AUTH_KEYS;
@@ -338,7 +338,7 @@ impl<
     }
 
     // ========================================================================
-    // Reset Methods (for RestartHandler)
+    // Reset Methods (erase-code handling for restart requests)
     // ========================================================================
 
     /// Reset individual address to factory default (15.15.255).
@@ -417,10 +417,52 @@ impl<
     }
 
     /// Perform factory reset but keep the individual address.
+    ///
+    /// The wrapped [`factory_reset()`](Self::factory_reset) notifies the
+    /// extension with `EraseCode::FactoryReset` (not `FactoryResetKeepIA`).
+    /// All current extensions treat the two codes identically — the IA is
+    /// core state, not extension state — so no information is lost.
     pub fn factory_reset_keep_ia(&self) {
         let ia = self.individual_address.get();
         self.factory_reset();
         self.individual_address.set(ia);
+    }
+
+    /// Apply an A_Restart master-reset erase code to this state.
+    ///
+    /// This is the canonical per-code dispatch for restart handling —
+    /// call it from the user-side restart task with the
+    /// [`RestartRequest::erase_code`](crate::restart::RestartRequest::erase_code)
+    /// the stack delivered. Beyond the individual `reset_*` methods it
+    /// also notifies the extension state where the spec requires it:
+    /// `ResetLinks` raises `extension_state.on_erase(ResetLinks)` so a
+    /// Data Secure extension can clear its security report
+    /// (03/05/01 §6.3.11-§6.3.12), and the factory-reset variants
+    /// notify via [`factory_reset()`](Self::factory_reset).
+    ///
+    /// `Basic`/`Confirmed` reset nothing (the restart itself is the
+    /// user code's job, after flushing storage and replying).
+    /// `Other(_)` codes are ignored — the application layer already
+    /// rejects them before the request reaches user code.
+    pub fn apply_erase_code(&self, code: EraseCode) {
+        match code {
+            EraseCode::Basic | EraseCode::Confirmed => {}
+            EraseCode::FactoryReset => self.factory_reset(),
+            EraseCode::ResetIA => self.reset_individual_address(),
+            EraseCode::ResetAP => self.reset_application(),
+            EraseCode::ResetParam => self.reset_parameters(),
+            // Standard erase code per 03/05/02 §3.7.1.2 Table 4 — resets
+            // Group Address Table and Group Object Association Table.
+            // Also notifies extensions (security clears PID 57/58 per
+            // spec 03/05/01 sections 6.3.11-6.3.12).
+            EraseCode::ResetLinks => {
+                self.reset_address_table();
+                self.reset_association_table();
+                self.extension_state.on_erase(code);
+            }
+            EraseCode::FactoryResetKeepIA => self.factory_reset_keep_ia(),
+            EraseCode::Other(_) => {}
+        }
     }
 }
 
@@ -543,76 +585,6 @@ impl<
             Some(config) => Self::from_config(init.identity, config, init.resources),
             None => Self::new(init.identity, D::CO::new(), init.resources),
         }
-    }
-}
-
-// ============================================================================
-// RestartHandler Implementation
-// ============================================================================
-
-impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
-    RestartHandler for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
-{
-    fn supports_erase_code(&self, code: EraseCode) -> bool {
-        // System B devices support all standard erase codes
-        matches!(
-            code,
-            EraseCode::Basic
-                | EraseCode::Confirmed
-                | EraseCode::FactoryReset
-                | EraseCode::ResetIA
-                | EraseCode::ResetAP
-                | EraseCode::ResetParam
-                | EraseCode::ResetLinks
-                | EraseCode::FactoryResetKeepIA
-        )
-    }
-
-    fn execute_reset(&mut self, code: EraseCode, _channel: u8) -> Result<u16, RestartError> {
-        match code {
-            EraseCode::Basic | EraseCode::Confirmed => {
-                // Just restart, no data reset needed
-                Ok(0)
-            }
-            EraseCode::FactoryReset => {
-                self.factory_reset();
-                Ok(0)
-            }
-            EraseCode::ResetIA => {
-                self.reset_individual_address();
-                Ok(0)
-            }
-            EraseCode::ResetAP => {
-                self.reset_application();
-                Ok(0)
-            }
-            EraseCode::ResetParam => {
-                self.reset_parameters();
-                Ok(0)
-            }
-            // Standard erase code per 03/05/02 §3.7.1.2 Table 4 — resets
-            // Group Address Table and Group Object Association Table.
-            // Also notifies extensions (security clears PID 57/58 per
-            // spec 03/05/01 sections 6.3.11-6.3.12).
-            EraseCode::ResetLinks => {
-                self.reset_address_table();
-                self.reset_association_table();
-                self.extension_state.on_erase(code);
-                Ok(0)
-            }
-            EraseCode::FactoryResetKeepIA => {
-                self.factory_reset_keep_ia();
-                Ok(0)
-            }
-            EraseCode::Other(_) => Err(RestartError::UnsupportedEraseCode),
-        }
-    }
-
-    fn flush_storage(&mut self) -> Result<(), RestartError> {
-        // Storage flushing is handled by the storage backend
-        // The mark_dirty() calls above ensure the dirty flag is set
-        // User code should call the storage's flush method
-        Ok(())
     }
 }
 

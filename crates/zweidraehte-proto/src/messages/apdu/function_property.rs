@@ -129,6 +129,18 @@ impl FunctionPropertyResponse {
     pub const fn msg_len(data_len: usize) -> usize {
         offsets::MSG_APCI + 5 + data_len
     }
+
+    /// Length of an "empty" response: object_idx + prop_id only, with
+    /// neither a return_code octet nor data (03/03/07 §3.4.7.3 — sent
+    /// when the addressed property is not of PDT_Function).
+    pub const EMPTY_MSG_LEN: usize = offsets::MSG_APCI + 4;
+
+    /// Write an empty response (no return_code, no data) per
+    /// 03/03/07 §3.4.7.3.
+    pub fn write_empty(buf: &mut [u8], object_idx: u8, prop_id: u16) {
+        buf[offsets::MSG_APCI + 2] = object_idx;
+        buf[offsets::MSG_APCI + 3] = prop_id as u8;
+    }
 }
 
 #[cfg(test)]

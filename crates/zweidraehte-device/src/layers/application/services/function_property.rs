@@ -20,6 +20,7 @@ use crate::{
     objects::interface::{FunctionPropertyRequest, PropertyServiceHandler},
     service::{AlCtx, ApciHandler},
 };
+use zweidraehte_proto::dpt::{PDT_Function, PropertyDataDefinition};
 use zweidraehte_proto::messages::{
     apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse as FpResponseWriter},
     buffers::Buffer,
@@ -81,6 +82,29 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
         service_data.len(),
         ctx.access,
     );
+
+    // 03/03/07 §3.4.7.3: the plain function-property services may only
+    // address PDT_Function properties. A property that is absent or of
+    // any other PDT (including PDT_Control, which is reachable via the
+    // *Ext* services only) gets the "empty" response — object/PID
+    // echoed back with neither a return_code octet nor data.
+    let is_pdt_function = matches!(
+        ctx.interface_objects.property_description_read(hdr.object_idx as u16, hdr.prop_id as u16, 0),
+        Ok(desc) if desc.pdt == PDT_Function::ID
+    );
+    if !is_pdt_function {
+        debug!("AL FunctionProperty{}: prop {} is not PDT_Function → empty response", label, hdr.prop_id);
+        let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(FpResponseWriter::EMPTY_MSG_LEN) else {
+            warn!("AL no buffer for FunctionProperty empty response");
+            return;
+        };
+        let msg =
+            ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
+                FpResponseWriter::write_empty(buf, hdr.object_idx, hdr.prop_id as u16);
+            });
+        ctx.lctx.push_outbox(msg.into_inner());
+        return;
+    }
 
     let req = FunctionPropertyRequest {
         object_idx: hdr.object_idx as u16,

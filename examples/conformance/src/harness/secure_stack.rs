@@ -48,10 +48,12 @@ use super::stack::{
 
 /// Security table sizes for const generics.
 ///
-/// `GRP` and `GO` are no longer needed — `SecureTp1DeviceState` derives
-/// them from `ADT_SIZE` and `COT_SIZE` respectively. `P2P` (P2P Key
-/// Table) and `SIAT` (Security Individual Address Table) are
-/// independent per 03/03/07 §5.3.
+/// `GRP` and `GO` are not declared here — `SecureTp1DeviceState`
+/// derives them as entry counts from the `ADT_SIZE`/`COT_SIZE` byte
+/// sizes, and the explicit spellings below use
+/// `table_sizes::{ADT_ENTRIES, COT_ENTRIES}`. `P2P` (P2P Key Table)
+/// and `SIAT` (Security Individual Address Table) are independent per
+/// 03/03/07 §5.3.
 pub mod sec_table_sizes {
     /// Max P2P Key Table entries.
     pub const P2P: usize = 8;
@@ -974,10 +976,10 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type LLB = super::ipc::IpcLinkLayerBuilder;
     type ES = SecureTp1ExtensionState<
         ShmSeqStorage,
-        { table_sizes::ADT },
+        { table_sizes::ADT_ENTRIES },
         { sec_table_sizes::P2P },
         { sec_table_sizes::SIAT },
-        { table_sizes::COT },
+        { table_sizes::COT_ENTRIES },
     >;
     type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
@@ -1251,10 +1253,10 @@ type SecureInnerDeviceConfig = DeviceConfig<
     TestParameters,
     SecureExtensionConfig<
         Tp1ExtensionConfig,
-        { table_sizes::ADT },
+        { table_sizes::ADT_ENTRIES },
         { sec_table_sizes::P2P },
         { sec_table_sizes::SIAT },
-        { table_sizes::COT },
+        { table_sizes::COT_ENTRIES },
     >,
 >;
 

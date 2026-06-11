@@ -104,8 +104,6 @@ pub trait TableMemory: ConstDefault + Sized {
 pub trait HasLoadStateMachine: TableMemory {
     /// Process a load state machine command.
     ///
-    /// Process a load state machine command.
-    ///
     /// Returns the [`LoadAction`] that the state machine produced, so the
     /// caller (e.g., `ApplicationProgramObject`) can orchestrate side effects
     /// like signaling the run state machine on `LoadEnd` or `Unload`.
@@ -696,35 +694,6 @@ pub enum RunAction {
     Stopped,
 }
 
-/// Result of a run state machine transition (internal).
-///
-/// Used within `RunnableApplication` to track both the new state and
-/// the action produced by the transition table. The action is consumed
-/// internally by the cascade logic.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct RunStateResult {
-    /// The new run state.
-    pub state: RunState,
-    /// The internal action from the transition table.
-    #[allow(dead_code)] // Future: not yet used
-    pub action: RunStateAction,
-}
-
-/// Internal actions from the run state transition table.
-///
-/// These are consumed by `RunnableApplication`'s cascade logic and
-/// are not exposed outside the module. The external-facing lifecycle
-/// action is [`RunAction`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RunStateAction {
-    /// No action needed.
-    None,
-    /// App is stopping — set device control bit 0.
-    LoadStart,
-    /// App initialization complete — ready to run.
-    LoadEnd,
-}
-
 /// Trait for objects that have a run state machine.
 ///
 /// This trait is separate from `HasLoadStateMachine` because the run state machine
@@ -1124,93 +1093,53 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
         &mut self.table
     }
 
-    /// Compute the next run state and action based on event.
+    /// Compute the next run state based on the event.
     ///
-    /// |                 | HALTED          | RUNNING         | READY           | TERMINATED      |
-    /// |-----------------|-----------------|-----------------|-----------------|-----------------|
-    /// | Ready (0)       | halted, none    | running, none   | ready, none     | terminated, none|
-    /// | Restart (1)     | halted, unload  | ready, loadStart| ready, unload   | halted, unload  |
-    /// | Stop (2)        | term, none      | term, loadStart | term, none      | term, none      |
-    /// | Loaded (3)      | ready, none     | running, none   | ready, none     | term, none      |
-    /// | Unloaded (4)    | halted, none    | halted, loadStart| halted, none   | halted, none    |
-    /// | ReadyToRun (5)  | halted, none    | running, none   | running, loadEnd| term, none      |
-    fn next_run_state_with_action(&self, event: RunEvent) -> RunStateResult {
+    /// |                 | HALTED  | RUNNING | READY   | TERMINATED |
+    /// |-----------------|---------|---------|---------|------------|
+    /// | Ready (0)       | halted  | running | ready   | terminated |
+    /// | Restart (1)     | halted  | ready   | ready   | halted     |
+    /// | Stop (2)        | term    | term    | term    | term       |
+    /// | Loaded (3)      | ready   | running | ready   | term       |
+    /// | Unloaded (4)    | halted  | halted  | halted  | halted     |
+    /// | ReadyToRun (5)  | halted  | running | running | term       |
+    ///
+    /// The spec's transition table additionally annotates some arms with
+    /// loadStart/loadEnd actions; those are intentionally not modeled —
+    /// the only consumer the stack needs is start/stop notification,
+    /// which [`apply_event`](Self::apply_event) derives from the
+    /// running/not-running boundary crossing instead.
+    fn next_run_state(&self, event: RunEvent) -> RunState {
         match (self.run_state, event) {
             // Ready event - no-op, stay in current state
-            (state, RunEvent::Ready) => RunStateResult { state, action: RunStateAction::None },
+            (state, RunEvent::Ready) => state,
 
             // Restart command
-            (RunState::Halted, RunEvent::Restart) => {
-                RunStateResult { state: RunState::Halted, action: RunStateAction::None }
-            }
-            (RunState::Running, RunEvent::Restart) => {
-                RunStateResult { state: RunState::Ready, action: RunStateAction::LoadStart }
-            }
-            (RunState::Ready, RunEvent::Restart) => {
-                RunStateResult { state: RunState::Ready, action: RunStateAction::None }
-            }
-            (RunState::Terminated, RunEvent::Restart) => {
-                RunStateResult { state: RunState::Halted, action: RunStateAction::None }
-            }
+            (RunState::Halted, RunEvent::Restart) => RunState::Halted,
+            (RunState::Running, RunEvent::Restart) => RunState::Ready,
+            (RunState::Ready, RunEvent::Restart) => RunState::Ready,
+            (RunState::Terminated, RunEvent::Restart) => RunState::Halted,
 
             // Stop command
-            (RunState::Halted, RunEvent::Stop) => {
-                RunStateResult { state: RunState::Terminated, action: RunStateAction::None }
-            }
-            (RunState::Running, RunEvent::Stop) => {
-                RunStateResult { state: RunState::Terminated, action: RunStateAction::LoadStart }
-            }
-            (RunState::Ready, RunEvent::Stop) => {
-                RunStateResult { state: RunState::Terminated, action: RunStateAction::None }
-            }
-            (RunState::Terminated, RunEvent::Stop) => {
-                RunStateResult { state: RunState::Terminated, action: RunStateAction::None }
-            }
+            (_, RunEvent::Stop) => RunState::Terminated,
 
             // Loaded event (from LSM)
-            (RunState::Halted, RunEvent::Loaded) => {
-                RunStateResult { state: RunState::Ready, action: RunStateAction::None }
-            }
-            (RunState::Running, RunEvent::Loaded) => {
-                RunStateResult { state: RunState::Running, action: RunStateAction::None }
-            }
-            (RunState::Ready, RunEvent::Loaded) => {
-                RunStateResult { state: RunState::Ready, action: RunStateAction::None }
-            }
-            (RunState::Terminated, RunEvent::Loaded) => {
-                RunStateResult { state: RunState::Terminated, action: RunStateAction::None }
-            }
+            (RunState::Halted, RunEvent::Loaded) => RunState::Ready,
+            (RunState::Running, RunEvent::Loaded) => RunState::Running,
+            (RunState::Ready, RunEvent::Loaded) => RunState::Ready,
+            (RunState::Terminated, RunEvent::Loaded) => RunState::Terminated,
 
             // Unloaded event (from LSM)
-            (RunState::Halted, RunEvent::Unloaded) => {
-                RunStateResult { state: RunState::Halted, action: RunStateAction::None }
-            }
-            (RunState::Running, RunEvent::Unloaded) => {
-                RunStateResult { state: RunState::Halted, action: RunStateAction::LoadStart }
-            }
-            (RunState::Ready, RunEvent::Unloaded) => {
-                RunStateResult { state: RunState::Halted, action: RunStateAction::None }
-            }
-            (RunState::Terminated, RunEvent::Unloaded) => {
-                RunStateResult { state: RunState::Halted, action: RunStateAction::None }
-            }
+            (_, RunEvent::Unloaded) => RunState::Halted,
 
             // ReadyToRun event (startup delay complete)
-            (RunState::Halted, RunEvent::ReadyToRun) => {
-                RunStateResult { state: RunState::Halted, action: RunStateAction::None }
-            }
-            (RunState::Running, RunEvent::ReadyToRun) => {
-                RunStateResult { state: RunState::Running, action: RunStateAction::None }
-            }
-            (RunState::Ready, RunEvent::ReadyToRun) => {
-                RunStateResult { state: RunState::Running, action: RunStateAction::LoadEnd }
-            }
-            (RunState::Terminated, RunEvent::ReadyToRun) => {
-                RunStateResult { state: RunState::Terminated, action: RunStateAction::None }
-            }
+            (RunState::Halted, RunEvent::ReadyToRun) => RunState::Halted,
+            (RunState::Running, RunEvent::ReadyToRun) => RunState::Running,
+            (RunState::Ready, RunEvent::ReadyToRun) => RunState::Running,
+            (RunState::Terminated, RunEvent::ReadyToRun) => RunState::Terminated,
 
             // Unknown events - no change
-            (state, RunEvent::Other(_)) => RunStateResult { state, action: RunStateAction::None },
+            (state, RunEvent::Other(_)) => state,
         }
     }
 
@@ -1218,8 +1147,7 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
     /// crossed the running/not-running boundary.
     fn apply_event(&mut self, event: RunEvent) -> Option<RunAction> {
         let was_running = self.is_running();
-        let result = self.next_run_state_with_action(event);
-        self.run_state = result.state;
+        self.run_state = self.next_run_state(event);
         match (was_running, self.is_running()) {
             (false, true) => Some(RunAction::Started),
             (true, false) => Some(RunAction::Stopped),
