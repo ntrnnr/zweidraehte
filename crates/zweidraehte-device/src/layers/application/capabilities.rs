@@ -103,7 +103,7 @@ pub enum RequestedSecurity {
 /// provider looks up the group key for the destination TSAP, reserves
 /// a sending sequence number, builds the full secure
 /// `T_GroupData_Req` (SCF + SeqNr + encrypted payload + MAC), and
-/// queues it on the deferred outbox. Bypasses the
+/// queues it on the outbox. Bypasses the
 /// [`SecureApplicationLayer`](crate::layers::secure_application::SecureApplicationLayer)'s
 /// "respond-to-incoming-secure" path because the triggering command
 /// typically arrives plaintext.

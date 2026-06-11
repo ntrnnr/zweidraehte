@@ -31,6 +31,7 @@
 use embassy_sync::channel::DynamicSender;
 
 use crate::StackDefinition;
+use crate::context::layer::LayerContext;
 use crate::service::Layer;
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::address::IndividualAddress;
@@ -87,6 +88,10 @@ pub struct CemiTransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize 
     /// The wrapped normal transport layer.
     inner: TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>,
 
+    /// Shared runtime infrastructure — held directly rather than reached
+    /// through the inner TL, so the TL needs no context accessors.
+    lctx: &'a LayerContext<D>,
+
     /// Whether cEMI TL mode is active (DevMgmt connection established).
     active: bool,
 
@@ -101,9 +106,10 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     /// Create a new CemiTransportLayer wrapping the given TransportLayer.
     pub fn new(
         inner: TransportLayer<'a, D, MAX_INCOMING, MAX_OUTGOING>,
+        lctx: &'a LayerContext<D>,
         response_sender: DynamicSender<'a, Buffer<'static>>,
     ) -> Self {
-        Self { inner, active: false, response_sender }
+        Self { inner, lctx, active: false, response_sender }
     }
 
     /// Mutable access to the inner transport layer.
@@ -163,7 +169,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
     /// Handle a cEMI event from the DevMgmt handler.
     ///
-    /// Called by the `LayerStack` implementation's `handle_service_input`.
+    /// Called by the `LayerRegistry` implementation's `handle_service_input`.
     pub fn handle_cemi_event(&mut self, event: CemiEvent) {
         match event {
             CemiEvent::Activate => self.activate(),
@@ -240,7 +246,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         // Build internal format message: ctrl(1) + src(2) + dst(2) + npdu(1) + tpdu
         let internal_len = 6 + tpdu.len();
-        let Some(mut msg_buf) = self.inner.buffer_manager().try_alloc_with_size(internal_len) else {
+        let Some(mut msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(internal_len) else {
             warn!("cEMI TL: no buffer for injected frame");
             return;
         };
@@ -259,7 +265,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         let mut msg = KnxMessageBuffer::new(msg_buf, ServiceType::T_Data_Ind);
         msg.set_access_source(AccessSource::Explicit(zweidraehte_proto::AccessContext::MAX_ACCESS));
 
-        self.inner.lctx().push_outbox(msg);
+        self.lctx.push_outbox(msg);
     }
 }
 

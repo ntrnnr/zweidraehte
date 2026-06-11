@@ -278,16 +278,11 @@ pub trait Augment<D: StackDefinition> {
     fn property_value_write  (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_command   (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_state_read(&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
-    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {}
-    fn next_augment_deadline(&self) -> Option<Instant> { None }
 }
 ```
 
 All hook methods return `Option<…>` — returning `None` delegates to
 the next augment in the chain or the base object.
-`next_augment_deadline` / `poll_augments` are opt-in lifecycle hooks
-for augments with temporal behaviour (Diagnostics auto-revert,
-Security rekey timers).
 
 ### How Augments Relate to Extensions
 

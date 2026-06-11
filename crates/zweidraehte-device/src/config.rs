@@ -242,6 +242,11 @@ macro_rules! knx_stack_config {
                     addr7_data[addr_idx + 1] = ga[1];
                     addr_idx += 2;
                 )*
+                // Consumes the final increment (otherwise an
+                // unused-assignment warning at every macro use) and
+                // proves at compile time that the entries exactly fill
+                // the buffer — `new()` runs in const contexts.
+                assert!(addr_idx == Self::ADDR7_SIZE);
 
                 // Build association table
                 let mut asso6_data = [0u8; Self::ASSO6_SIZE];
@@ -261,6 +266,7 @@ macro_rules! knx_stack_config {
                         asso_idx += 4;
                     )*
                 )*
+                assert!(asso_idx == Self::ASSO6_SIZE);
 
                 // Build communication object table
                 let mut co7_data = [0u8; Self::CO7_SIZE];
@@ -277,6 +283,7 @@ macro_rules! knx_stack_config {
                     co7_data[co_idx + 1] = $size;
                     co_idx += 2;
                 )*
+                assert!(co_idx == Self::CO7_SIZE);
 
                 Self {
                     individual_address,
@@ -480,9 +487,12 @@ mod tests {
 
     #[test]
     fn test_asso_buffer_format() {
+        // The macro always emits the full surface (table aliases,
+        // `create_tables`, data accessors); this test exercises only
+        // the raw data arrays.
+        #[allow(dead_code)]
         mod test_config {
             use crate::config::{CE, RE, TE, WE};
-            use crate::knx_stack_config;
 
             knx_stack_config! {
                 name: TestConfig,
@@ -574,38 +584,52 @@ mod tests {
 
         // Check comm object table size (2 byte header + 3 objects * 2 bytes)
         assert_eq!(CONFIG.co7_data().len(), 2 + 3 * 2);
+
+        // Exercise create_tables: the table objects must come back loaded
+        // with the configured data at the given virtual addresses.
+        use crate::objects::tables::TableMemory as _;
+        let (addr_tab, asso_tab, co_tab) = LightingController::create_tables(0x4000, 0x4100, 0x4200);
+        assert_eq!(addr_tab.data_ref(), CONFIG.addr7_data());
+        assert_eq!(asso_tab.data_ref(), CONFIG.asso6_data());
+        assert_eq!(co_tab.data_ref(), CONFIG.co7_data());
     }
 
     #[test]
     fn test_priority_flags() {
-        // Test that priority values are correctly encoded in the lower 2 bits
-        knx_stack_config! {
-            name: PriorityTest,
-            individual_address: "1.1.1",
+        // Test that priority values are correctly encoded in the lower 2 bits.
+        // dead_code: see test_basic_config.
+        #[allow(dead_code)]
+        mod priority {
+            use crate::config::{CE, TE};
 
-            group_addresses: {
-                1 => "0/0/1",
-                2 => "0/0/2",
-                3 => "0/0/3",
-                4 => "0/0/4",
-            },
+            knx_stack_config! {
+                name: PriorityTest,
+                individual_address: "1.1.1",
 
-            comm_objects: {
-                1 => (1, CE | TE, @priority(System)),  // Priority = 0
-                2 => (1, CE | TE, @priority(High)),    // Priority = 1
-                3 => (1, CE | TE, @priority(Alarm)),   // Priority = 2
-                4 => (1, CE | TE),                     // Priority = 3 (default Low)
-            },
+                group_addresses: {
+                    1 => "0/0/1",
+                    2 => "0/0/2",
+                    3 => "0/0/3",
+                    4 => "0/0/4",
+                },
 
-            associations: {
-                1 => [1],
-                2 => [2],
-                3 => [3],
-                4 => [4],
-            },
+                comm_objects: {
+                    1 => (1, CE | TE, @priority(System)),  // Priority = 0
+                    2 => (1, CE | TE, @priority(High)),    // Priority = 1
+                    3 => (1, CE | TE, @priority(Alarm)),   // Priority = 2
+                    4 => (1, CE | TE),                     // Priority = 3 (default Low)
+                },
+
+                associations: {
+                    1 => [1],
+                    2 => [2],
+                    3 => [3],
+                    4 => [4],
+                },
+            }
         }
 
-        const CONFIG: PriorityTest = PriorityTest::new();
+        const CONFIG: priority::PriorityTest = priority::PriorityTest::new();
         let co_data = CONFIG.co7_data();
 
         // CO7 format: [header 2 bytes][obj1 2 bytes][obj2 2 bytes][obj3 2 bytes][obj4 2 bytes]

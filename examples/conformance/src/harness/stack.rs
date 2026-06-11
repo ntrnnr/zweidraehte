@@ -183,12 +183,9 @@ use zweidraehte_device::objects::tables::CommunicationObjectTable;
 // `#[derive(EtsComObjects)]` macro — which requires every struct
 // field to be a ComObject with an index — we park the CoTab pointer
 // in a process-global static set once from each DUT binary's startup.
-// Same pattern as `harness::ipc::PRIMARY_SOCKET_FD`.
-//
-// This replaces the earlier `ConformanceHookContext` struct whose
-// raw pointer lived in the device-stack's `HookContext` associated
-// type. All the unsafety is now localised to the conformance crate
-// and no longer affects the library's public traits.
+// Same pattern as `harness::ipc::PRIMARY_SOCKET_FD`. This keeps all
+// the unsafety localised to the conformance crate, off the library's
+// public traits.
 
 static COT_PTR: AtomicPtr<RefCell<conformance_config::CoTab>> = AtomicPtr::new(core::ptr::null_mut());
 

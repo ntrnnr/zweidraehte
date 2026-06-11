@@ -81,7 +81,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
     // budget. Per spec 03/03/07 §3.5.6.2 error handling, an over-budget
     // read responds with `number = 0` (no dedicated negative RC exists
     // for A_UserMemory_Read — it has no return-code field on the wire).
-    let payload_cap = ctx.response_payload_cap(UserMemoryResponse::msg_len(0));
+    let payload_cap = ctx.base.response_payload_cap(UserMemoryResponse::msg_len(0));
 
     let mut data = [0u8; 255];
     let max_read = (acc.count as usize).min(data.len()).min(payload_cap);
@@ -90,7 +90,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
         // fit any payload. Both collapse to a count=0 response.
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.state, acc.address_low, &mut data[..max_read], ctx.access)
+        ctx.memory_map.read(ctx.base.state, acc.address_low, &mut data[..max_read], ctx.base.access)
     };
 
     let response_count = match result {
@@ -98,7 +98,8 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
         Err(_) => 0,
     };
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
+    let Some(msg_buf) =
+        ctx.base.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
     else {
         warn!("AL no buffer for response");
         return;
@@ -109,7 +110,7 @@ fn handle_user_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
     });
 
     debug!("AL sending UserMemory_Response: address=0x{:05X}, count={}", acc.full_address(), response_count);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_UserMemory_Write.ind`
@@ -139,10 +140,10 @@ fn handle_user_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
     let response_count = if length_inconsistent {
         0
     } else {
-        match ctx.memory_map.write(ctx.state, acc.address_low, acc.data, ctx.access) {
+        match ctx.memory_map.write(ctx.base.state, acc.address_low, acc.data, ctx.base.access) {
             Ok(bytes_written) => {
                 debug!("AL UserMemory_Write: wrote {} bytes to 0x{:05X}", bytes_written, acc.full_address());
-                ctx.state.mark_dirty();
+                ctx.base.state.mark_dirty();
                 bytes_written as u8
             }
             Err(e) => {
@@ -160,13 +161,14 @@ fn handle_user_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
     // response larger than the budget cannot be placed on the wire;
     // emit count=0 to signal "no verify data returned" per the same
     // convention used on the read path.
-    let response_count = if ctx.response_fits(UserMemoryResponse::msg_len(response_count as usize)) {
+    let response_count = if ctx.base.response_fits(UserMemoryResponse::msg_len(response_count as usize)) {
         response_count
     } else {
-        ctx.response_payload_cap(UserMemoryResponse::msg_len(0)).min(response_count as usize) as u8
+        ctx.base.response_payload_cap(UserMemoryResponse::msg_len(0)).min(response_count as usize) as u8
     };
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
+    let Some(msg_buf) =
+        ctx.base.buffer_manager().try_alloc_with_size(UserMemoryResponse::msg_len(response_count as usize))
     else {
         warn!("AL no buffer for response");
         return;
@@ -178,5 +180,5 @@ fn handle_user_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
     });
 
     debug!("AL sending UserMemory_Response (verify): address=0x{:05X}, count={}", acc.full_address(), response_count);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

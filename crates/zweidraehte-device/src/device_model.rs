@@ -16,7 +16,7 @@
 //! write_rsm() / write_lsm()
 //!   → ApplicationProgramObject calls state.notify(DeviceModelEvent::RunAction(..))
 //!   → Runner drain loop
-//!   → InsecureDeviceLayers::drain_events()
+//!   → LayerRegistry::drain_events() (derive-generated)
 //!     → DeviceModel::drain_dm_events() calls state.take_event()
 //!     → DeviceModel::on_action()
 //! ```

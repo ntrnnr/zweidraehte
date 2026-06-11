@@ -94,9 +94,9 @@ use zweidraehte_proto::access::AccessPolicy;
 #[interface_object(object_type = InterfaceObjectType::Device)]
 pub struct DeviceObject<'a, S: StackState> {
     /// Reference to the stack-state for properties that mirror runtime fields
-    /// (programming mode, serial number, address). User-declared because
-    /// the macro no longer auto-injects a `state` field — closures simply
-    /// reach `self.state` via the `|this| this.state.…` pattern.
+    /// (programming mode, serial number, address). User-declared — the macro
+    /// does not inject fields; closures reach `self.state` via the
+    /// `|this| this.state.…` pattern.
     pub state: &'a S,
 
     #[io(pid = pid::DEVICE_CONTROL, pdt = DeviceControl, access = RW,
@@ -193,9 +193,9 @@ pub struct DeviceObject<'a, S: StackState> {
 impl<'a, S: StackState> DeviceObject<'a, S> {
     /// Create a fresh device object backed by the given `state`.
     ///
-    /// The macro no longer generates `new()` because each interface object
-    /// has different non-property struct fields; constructors are written
-    /// by hand to keep the API minimal.
+    /// Constructors are hand-written rather than macro-generated: each
+    /// interface object has different non-property struct fields, and the
+    /// explicit `new()` keeps the API minimal.
     pub fn new(state: &'a S) -> Self {
         Self {
             state,

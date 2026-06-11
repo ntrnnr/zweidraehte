@@ -26,7 +26,7 @@ use zweidraehte_client::{IndividualAddress, KnxClient};
 // ============================================================================
 
 const BSL_OBJECT_IDX: u8 = 0;
-const BSL_PROPERTY_ID: u8 = 242;
+const BSL_PROPERTY_ID: u16 = 242;
 
 /// Response bit set in the command echo byte.
 const RESPONSE_BIT: u8 = 0x80;

@@ -184,16 +184,6 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
         }
     }
 
-    /// Access to the buffer manager (used by [`CemiTransportLayer`](cemi::CemiTransportLayer)).
-    pub(crate) fn buffer_manager(&self) -> &'a zweidraehte_proto::messages::buffers::DynBufferManager<'static> {
-        &self.lctx.buffer_manager
-    }
-
-    /// Access to the layer context.
-    pub(crate) fn lctx(&self) -> &'a LayerContext<D> {
-        self.lctx
-    }
-
     // =========================================================================
     // cEMI Transport Layer support
     // =========================================================================
@@ -676,7 +666,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
             // Send immediate confirmation to AL (the actual send will happen later).
             // Use try_alloc — if no buffer available, the confirmation is skipped.
             // The data will still be sent when the pending ACK arrives.
-            if let Some(confirm_buf) = self.buffer_manager().try_alloc_with_size(7) {
+            if let Some(confirm_buf) = self.lctx.buffer_manager.try_alloc_with_size(7) {
                 let confirmation = KnxMessageBuffer::new(confirm_buf, ServiceType::T_Data_Req);
                 self.lctx.push_outbox(confirmation.confirm().build().into_inner());
             } else {
@@ -1051,7 +1041,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
         // Control PDUs need only the basic header (7 bytes up to and including TPCI)
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Connect to {}", dest);
             return;
         };
@@ -1078,7 +1068,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Disconnect to {}", dest);
             return;
         };
@@ -1106,7 +1096,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Disconnect.ind from {}", source);
             return;
         };
@@ -1133,7 +1123,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_Connect.ind from {}", source);
             return;
         };
@@ -1160,7 +1150,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_ACK({}) to {}", seq_no, dest);
             return;
         };
@@ -1187,7 +1177,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         const CONTROL_PDU_LEN: usize = 7;
 
-        let Some(msg_buf) = self.buffer_manager().try_alloc_with_size(CONTROL_PDU_LEN) else {
+        let Some(msg_buf) = self.lctx.buffer_manager.try_alloc_with_size(CONTROL_PDU_LEN) else {
             warn!("TL no buffer for T_NACK({}) to {}", seq_no, dest);
             return;
         };

@@ -84,14 +84,14 @@ where
 
     // Programming-mode selection (KNX 03/03/07 §3.3.3): only the device whose
     // button is pressed accepts the write; all others ignore it.
-    if !ctx.state.is_programming_mode() {
+    if !ctx.base.state.is_programming_mode() {
         trace!("AL DomainAddressWrite ignored (not in programming mode)");
         return;
     }
 
     // Access policy 3FF/00C: open when security mode is off, Tool A+C only when on.
-    let security_on = ctx.state.security_mode_enabled();
-    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access, security_on) {
+    let security_on = ctx.base.state.security_mode_enabled();
+    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.base.access, security_on) {
         debug!("AL DomainAddressWrite denied by access policy");
         return;
     }
@@ -105,7 +105,7 @@ where
     let mut new_doa = [0u8; RF_DOA_LEN];
     new_doa.copy_from_slice(&doa[..RF_DOA_LEN]);
     debug!("AL DomainAddressWrite: setting RF domain address");
-    ctx.state.set_rf_domain_address(&new_doa);
+    ctx.base.state.set_rf_domain_address(&new_doa);
 }
 
 /// Handle `A_DomainAddress_Read.ind`: respond with `A_DomainAddress_Response`
@@ -120,13 +120,13 @@ where
         return;
     }
 
-    if !ctx.state.is_programming_mode() {
+    if !ctx.base.state.is_programming_mode() {
         trace!("AL DomainAddressRead ignored (not in programming mode)");
         return;
     }
 
     let resp_len = DomainAddressResponse::MSG_LEN_NO_DOA + RF_DOA_LEN;
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else {
         warn!("AL no buffer for DomainAddressResponse");
         return;
     };
@@ -140,9 +140,9 @@ where
         .build();
 
     let mut doa = [0u8; RF_DOA_LEN];
-    ctx.state.rf_domain_address(&mut doa);
+    ctx.base.state.rf_domain_address(&mut doa);
     DomainAddressResponse::write_domain_address(msg.buf_mut(), &doa);
 
     debug!("AL sending DomainAddressResponse");
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

@@ -320,7 +320,8 @@ pub trait Augment<D: StackDefinition> {
   `access` (AccessContext for the request being processed). Carried
   by `Augment`'s property hooks; constructed per-request by the AL
   and the IO container with the request's real `AccessContext`.
-* `AlCtx<'a, D>` — rich: derefs to `ServiceCtx`, adds
+* `AlCtx<'a, D>` — rich: holds a `ServiceCtx` as its public `base`
+  field (no `Deref` — contexts are not smart pointers), adds
   `interface_objects` and `memory_map`. Carried by
   `ApciHandler::try_handle_apci`, since AL extensions reach into
   property dispatch and memory.
@@ -407,18 +408,16 @@ The full attribute set on `#[derive(ServiceRegistry)]` fields:
 | `#[service(handler)]` | A `Layer<D>` — wire-frame handler. Contributes to the const dispatch table via its `HANDLES` slice. |
 | `#[service(augment)]` | An `Augment<D>` — property-dispatch + IO-list contributor. Hook calls walk left-to-right; first `Some` claims. |
 | `#[service(flatten)]` | Embeds another services struct and inherits its augment chain wholesale. **Augment-only** — handlers can't flatten, since the const dispatch table would need a 2D mapping through the flattened sub-table. |
-| `#[service(lifecycle)]` | A `LifecycleHook<D>` — runs `init` / `poll` / `next_deadline` / `drain_events` on each cycle. For services-struct members that need lifecycle but neither dispatch a wire frame nor contribute to property dispatch (e.g. `DeviceModel`). |
+| `#[service(lifecycle)]` | A `LifecycleHook<D>` — runs `init` once before the router loop and `drain_events` after each dispatch cycle. For services-struct members that need lifecycle but neither dispatch a wire frame nor contribute to property dispatch (e.g. `DeviceModel`). |
 | `#[service(channel(dispatch = path))]` | A receiver/`Channel` — the runner `select!`s on it inside the async loop. The `dispatch` path names a method on the services struct that consumes the received value. Used to wire actor-style request channels (`app_service_channel`) and cEMI events from KNX/IP runtime tasks into the same loop as wire frames. |
 
 Hook methods on `Augment` walk fields left-to-right; the first `Some`
-claims the request. IO list counts sum across all fields; lifecycle
-delegates to each.
+claims the request. IO list counts sum across all fields.
 
 The `()` shape implements `Augment<D>` directly, so devices that need
-no augments plug in without writing an empty impl. (A `&A: Augment<D>`
-blanket impl used to exist so the old "TP1 is its own augment" shape
-worked; it was removed once TP1 gained a by-value `Tp1Augment<'a>` like
-every other extension — see §3.12.)
+no augments plug in without writing an empty impl. There is no
+`&A: Augment<D>` blanket impl — every extension hands out a by-value
+augment (`Tp1Augment<'a>`, `RfAugment<'a>`, …; see §3.12).
 
 #### Service inputs and side-effect events
 
@@ -449,13 +448,14 @@ the `*Config` persistence vocabulary in §4. Contents:
 |---|---|---|
 | `buffer_manager` | `DynBufferManager<'static>` | Pool of fixed-size message buffers. |
 | `outbox` | `RefCell<Outbox>` | Inter-layer message queue (§3.2). |
-| `event_channel` | `PubSubChannel<Mutex, (CO::Index, ComObjectEvent), 4, 2, 1>` | CO value changes delivered to user code + logger. |
-| `lifecycle_channel` | `PubSubChannel<Mutex, LifecycleEvent, 4, 2, 1>` | Application lifecycle events. |
+| `event_channel` | `PubSubChannel<Mutex, (CO::Index, ComObjectEvent), 4, 4, 1>` | CO value changes delivered to user code + logger. |
+| `lifecycle_channel` | `PubSubChannel<Mutex, LifecycleEvent, 4, 4, 1>` | Application lifecycle events. |
 | `restart_channel` | `Channel<Mutex, RestartRequest, 1>` | Restart requests from the stack to user binary. |
 | `app_service_channel` | `Channel<Mutex, Request<ApplicationLayerService, _>, 1>` | Actor-style requests *to* the AL from user code. |
 | `group_data` | `GroupDataState` | Shared bookkeeping between AL's built-in group handler and augment-held `GroupDataProvider`s. |
 
-**Context traits provided:** `BufferManagerContext`.
+**Context traits provided:** none — the buffer manager is a plain
+`pub` field; `BufferManagerContext` is provided by `StackContext`.
 
 **Inherent helpers (no trait):** `push_outbox(msg)`,
 `publish_event(index, ComObjectEvent)`
@@ -464,11 +464,8 @@ the `*Config` persistence vocabulary in §4. Contents:
 request onto `restart_channel`) are inherent methods on
 `LayerContext<D>` — consumers (layers, augments emitting telegrams)
 call them directly on the concrete context, without going through a
-context trait. The publish/restart helpers were trait methods
-(`EventPublisherContext` / `RestartPublisherContext`) until they were
-collapsed to inherent methods: each had a single impl on
-`LayerContext<D>` and no generic bound site, so the trait abstracted
-nothing.
+context trait. A context trait would abstract nothing here: each
+helper would have exactly one impl and no generic bound site.
 
 ### 3.4 `StackContext<'a, D>` — transient
 
@@ -945,10 +942,8 @@ struct IpAugment<'a, P, const CAPS: u16> { config: &'a IpExtensionState<CAPS>, p
 ```
 
 `Tp1ExtensionState`'s `Extension::Augment` is therefore `Tp1Augment<'a>`,
-symmetric with `RfAugment<'a>` and `IpAugment<'a, …>`. (Historically TP1 was
-its own augment — `create_augment` returned `&self` and a `&A: Augment<D>`
-blanket impl promoted it — but that made TP1 the odd one out and was
-removed.) Devices spell their augment-bundle fields by the augment type:
+symmetric with `RfAugment<'a>` and `IpAugment<'a, …>`. Devices spell
+their augment-bundle fields by the augment type:
 
 ```rust
 struct PicoTp1Augments<'a> {
@@ -1078,7 +1073,7 @@ file, methods (short form), typical provider, and typical consumer.
 
 | Trait | Methods | Provided by | Consumed by |
 |---|---|---|---|
-| `BufferManagerContext` | `buffer_manager() -> &DynBufferManager` | `LayerContext<D>`, `StackContext<'a, D>` | Every layer that allocates telegrams; all link layers |
+| `BufferManagerContext` | `buffer_manager() -> &DynBufferManager` | `StackContext<'a, D>` | All link layers (protocol layers reach the pool via their stored `&LayerContext` field) |
 | `ApduLengthContext` | `max_apdu_length()`, `set_max_apdu_length(u16)` | `StackContext<'a, D>` | TPUART and USB link layers (read chip capability, update runtime limit) |
 | `LinkLayerBufferContext` | (blanket supertrait combining the two above) | blanket impl on any `BufferManagerContext + ApduLengthContext` | Link layers that want a single bound |
 | `PropertyServiceContext` | `property_handler() -> &dyn PropertyServiceHandler` | `StackContext<'a, D>` | KNX/IP Device Management connection; any LL-side management path |
@@ -1093,10 +1088,9 @@ that need to emit telegrams — security GO diagnostics, cyclic group
 writes — call it directly), `publish_event(index, ComObjectEvent)`
 (AL group-data handler; augments with `GroupDataProvider`), and
 `try_send_restart_request(RestartRequest) -> bool` (AL
-`handle_restart()`). The latter two were the `EventPublisherContext` /
-`RestartPublisherContext` traits, each with a single `LayerContext<D>`
-impl and no generic bound site; they were collapsed to inherent
-methods.
+`handle_restart()`). Context traits for these would each have a single
+`LayerContext<D>` impl and no generic bound site, so they stay
+inherent.
 
 ### 5.2 KNX/IP (`linklayers/knxip/context.rs`, feature `knxip`)
 

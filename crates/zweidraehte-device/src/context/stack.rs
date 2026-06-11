@@ -25,14 +25,14 @@ use crate::HasExtensionState;
 use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 #[cfg(feature = "knxip")]
 use crate::{
-    HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpPlatform,
+    HasAdditionalIas, HasIpExtensionState, HasPersistence, HasRoutingMulticastRebind, IpPlatform,
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
         RemoteRestartContext, RoutingMulticastRebindContext,
     },
 };
 use crate::{
-    HasPersistence, StackState,
+    StackState,
     context::{
         AddressTableContext, ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext,
         MaxRetryCountContext, PropertyServiceContext, RfDomainAddressContext, RfRetransmitterContext,

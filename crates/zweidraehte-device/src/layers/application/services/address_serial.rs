@@ -67,14 +67,15 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
         return;
     };
 
-    if received_serial != ctx.state.serial_number() {
+    if received_serial != ctx.base.state.serial_number() {
         trace!("AL IndividualAddressSerialNumberRead ignored (serial mismatch)");
         return;
     }
 
     debug!("AL IndividualAddressSerialNumberRead: serial matches, sending response");
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(IndividualAddressSerialNumberResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(IndividualAddressSerialNumberResponse::MSG_LEN)
+    else {
         warn!("AL no buffer for response");
         return;
     };
@@ -88,10 +89,10 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
         .with_application(ApciCode::IndividualAddressSerialNumberResponse)
         .build();
 
-    let serial: &[u8; 6] = ctx.state.serial_number();
+    let serial: &[u8; 6] = ctx.base.state.serial_number();
     IndividualAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
 
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlCtx<'_, D>) {
@@ -107,15 +108,15 @@ fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx
         return;
     };
 
-    if received_serial != ctx.state.serial_number() {
+    if received_serial != ctx.base.state.serial_number() {
         trace!("AL IndividualAddressSerialNumberWrite ignored (serial mismatch)");
         return;
     }
 
     // Access policy 3FF/00C.
     use zweidraehte_proto::access::AccessPolicy;
-    let security_on = ctx.state.security_mode_enabled();
-    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access, security_on) {
+    let security_on = ctx.base.state.security_mode_enabled();
+    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.base.access, security_on) {
         debug!("AL IndividualAddressSerialNumberWrite denied by access policy");
         return;
     }
@@ -125,5 +126,5 @@ fn handle_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx
     let new_addr = IndividualAddress::from_bytes(new_addr_bytes);
 
     debug!("AL IndividualAddressSerialNumberWrite: setting address to {}", new_addr);
-    ctx.state.set_individual_address(new_addr);
+    ctx.base.state.set_individual_address(new_addr);
 }

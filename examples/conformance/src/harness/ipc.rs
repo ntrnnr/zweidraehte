@@ -585,10 +585,9 @@ impl<'a> IpcLinkLayer<'a> {
 /// The actual `DutMessage::Exiting` write is performed by
 /// [`IpcLinkLayer::emit_step_complete`] from the same async task that
 /// just wrote `StepComplete`, so both frames sit contiguously in the
-/// socket buffer. This removes the cross-task scheduling gap that
-/// previously caused `EPIPE` on macOS when the runner read
-/// `StepComplete` before the lifecycle handler had been re-scheduled
-/// to write `Exiting`.
+/// socket buffer. The contiguity matters: a cross-task scheduling gap
+/// here lets the runner read `StepComplete` and close before `Exiting`
+/// is written, which surfaces as `EPIPE` (seen on macOS).
 pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
     use embassy_time::{Duration, Timer};
 

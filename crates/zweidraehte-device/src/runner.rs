@@ -51,7 +51,8 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         );
 
         // Run state machine initialization, DeviceControl sync, and lifecycle
-        // events are handled by the DeviceModel in InsecureDeviceLayers::init().
+        // events are handled by the DeviceModel via the registry's
+        // `init_layers()` lifecycle pass.
 
         // ================================================================
         // Link layer channels
@@ -125,7 +126,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // outputs; the drain loop re-dispatches until all messages are
         // consumed or sent to the LL.
         //
-        // The router is fully generic: it only uses the `LayerStack` trait.
+        // The router is fully generic: it only uses the `LayerRegistry` trait.
         // Service inputs (e.g., app service requests from user code, cEMI
         // events) are handled through `recv_service_input` /
         // `handle_service_input`.

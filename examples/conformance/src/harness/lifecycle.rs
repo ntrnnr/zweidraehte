@@ -211,11 +211,9 @@ impl ChildLifecycle {
     /// current child → reinitialise SHM with the default snapshot →
     /// respawn and wait for ROI.
     ///
-    /// The runner-side `TestStep::FullReset` previously ran this
-    /// sequence inline and bailed on the first error, leaving the
-    /// lifecycle wedged in `Dead` between sub-steps. This method keeps
-    /// the sequence all-or-nothing: on any intermediate failure the
-    /// lifecycle ends in `Dead`, and the caller's next command will
+    /// Keeping the sequence in one method makes it all-or-nothing: on
+    /// any intermediate failure the lifecycle ends in `Dead` (never
+    /// wedged between sub-steps), and the caller's next command will
     /// auto-respawn from the (possibly partially-reset) SHM. Buffered
     /// unsolicited frames are discarded either way so the next suite
     /// doesn't inherit leftover ROI.

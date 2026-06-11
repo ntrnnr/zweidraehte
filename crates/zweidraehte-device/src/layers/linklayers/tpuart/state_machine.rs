@@ -1333,7 +1333,7 @@ mod tests {
         // TPUART2 version indication: 0x4x where lower 5 bits are version
         let version_byte = 0x45; // Version 5
 
-        let actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(version_byte));
+        let _actions = process_main_event(&mut ctx, MainEvent::ReceivedByte(version_byte));
 
         assert_eq!(ctx.chip_type, ChipType::TpUart2);
         assert_eq!(ctx.chip_version, 5);
@@ -1594,7 +1594,7 @@ mod tests {
         }
 
         // One more SendNextByte to trigger transition (byte_index becomes 10, >= total_bytes)
-        let actions = process_send_event(&mut ctx, SendEvent::SendNextByte);
+        let _actions = process_send_event(&mut ctx, SendEvent::SendNextByte);
         assert_eq!(ctx.state, SendState::WaitingForEcho);
 
         // Echo received

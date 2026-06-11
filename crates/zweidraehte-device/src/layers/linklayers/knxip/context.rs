@@ -231,6 +231,7 @@ pub trait HasIpSecureSessions {
 /// will need on top of [`KnxNetIpContext`](super::KnxNetIpContext).
 /// Currently has no impls — used by the eventual SECURE_WRAPPER /
 /// SESSION_* dispatch arms.
+#[allow(dead_code)] // consumed once the IP Secure dispatch arms land
 pub(crate) trait KnxNetIpSecureContext:
     super::KnxNetIpContext + HasIpSecureConfig + HasMcTimer + HasIpSecureSessions
 {

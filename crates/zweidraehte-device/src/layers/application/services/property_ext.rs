@@ -171,19 +171,19 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
     const DATA_SCRATCH: usize = 64;
     let mut data_buf = [0u8; DATA_SCRATCH];
 
-    let payload_cap = ctx.response_payload_cap(PropertyExtValueResponse::msg_len(0)).min(DATA_SCRATCH);
+    let payload_cap = ctx.base.response_payload_cap(PropertyExtValueResponse::msg_len(0)).min(DATA_SCRATCH);
 
     let req = FullPropertyReadRequest {
         object_idx,
         pid: hdr.prop_id,
         start_idx: hdr.start_idx,
         count: hdr.count as u16,
-        ctx: ctx.access,
+        ctx: ctx.base.access,
     };
     let result = ctx.interface_objects.property_value_read(&req, &mut data_buf[..payload_cap]);
 
     match result {
-        Ok(data_len) if !ctx.response_fits(PropertyExtValueResponse::msg_len(data_len)) => {
+        Ok(data_len) if !ctx.base.response_fits(PropertyExtValueResponse::msg_len(data_len)) => {
             // Data read successfully but the full response would exceed
             // the APDU budget — spec 03/03/07 §3.3 dedicated RC.
             warn!("AL PropertyExtValueRead result too large for APDU budget");
@@ -191,7 +191,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         }
         Ok(data_len) => {
             let response_len = PropertyExtValueResponse::msg_len(data_len);
-            let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
+            let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
                 warn!("AL no buffer for PropertyExtValueResponse");
                 return;
             };
@@ -212,7 +212,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
             });
 
             debug!("AL sending PropertyExtValueResponse: {} bytes", data_len);
-            ctx.lctx.push_outbox(msg.into_inner());
+            ctx.base.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueRead failed: {:?}", e);
@@ -312,11 +312,11 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
         count: hdr.count as u16,
         start_idx: hdr.start_idx,
         data,
-        ctx: ctx.access,
+        ctx: ctx.base.access,
     };
     let result = ctx.interface_objects.property_value_write(&req);
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueWriteConRes");
         return;
     };
@@ -336,7 +336,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
                     );
                 });
             debug!("AL sending PropertyExtValueWriteConRes: success");
-            ctx.lctx.push_outbox(msg.into_inner());
+            ctx.base.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             warn!("AL PropertyExtValueWriteCon failed: {:?}", e);
@@ -351,7 +351,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
                         e.to_ext_return_code(),
                     );
                 });
-            ctx.lctx.push_outbox(msg.into_inner());
+            ctx.base.lctx.push_outbox(msg.into_inner());
         }
     }
 }
@@ -429,7 +429,7 @@ fn handle_ext_value_write_uncon<D: StackDefinition>(ind: &KnxMessageBuffer<Buffe
         count: hdr.count as u16,
         start_idx: hdr.start_idx,
         data,
-        ctx: ctx.access,
+        ctx: ctx.base.access,
     };
     if let Err(e) = ctx.interface_objects.property_value_write(&req) {
         debug!("AL PropertyExtValueWriteUnCon write failed (ignored): {:?}", e);
@@ -447,7 +447,7 @@ fn send_ext_read_error<D: StackDefinition>(
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtValueResponse::ERROR_MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueResponse::ERROR_MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueResponse error");
         return;
     };
@@ -463,7 +463,7 @@ fn send_ext_read_error<D: StackDefinition>(
         );
     });
 
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Send an error `A_PropertyExtValue_WriteConRes` with the given return code.
@@ -473,7 +473,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
     hdr: &PropertyExtValueHeader,
     return_code: u8,
 ) {
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueWriteConRes error");
         return;
     };
@@ -489,7 +489,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
         );
     });
 
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Check whether a PDT code represents a function/control property type
@@ -579,17 +579,17 @@ fn handle_function_property_ext_command<D: StackDefinition>(
         Ok(_) => {} // PDT_FUNCTION or PDT_CONTROL — proceed.
     }
 
-    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access };
+    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.base.access };
     let result = ctx.interface_objects.function_property_command(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
-    if !ctx.response_fits(response_len) {
+    if !ctx.base.response_fits(response_len) {
         // Response data exceeds the APDU budget (spec 03/03/07 §3.3 RC 0xF4).
         warn!("AL FunctionPropertyExt result too large for APDU budget ({} bytes)", response_len);
         send_function_ext_response(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH, &[]);
         return;
     }
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
@@ -606,7 +606,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_FunctionPropertyExtState_Read.ind`.
@@ -654,17 +654,17 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
         Ok(_) => {}
     }
 
-    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.access };
+    let req = FunctionPropertyRequest { object_idx, prop_id: hdr.prop_id, service_data: data, ctx: ctx.base.access };
     let result = ctx.interface_objects.function_property_state_read(&req);
 
     let response_len = FunctionPropertyExtResponse::msg_len(result.data.len());
-    let budget = ctx.effective_apdu_budget();
+    let budget = ctx.base.effective_apdu_budget();
     if response_len > budget {
         warn!("AL FunctionPropertyExt result too large for APDU budget ({} > {})", response_len, budget);
         send_function_ext_response(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH, &[]);
         return;
     }
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
@@ -681,7 +681,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     });
 
     debug!("AL sending FunctionPropertyExtState_Response: rc=0x{:02X}", result.return_code);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -697,14 +697,14 @@ fn send_function_ext_response<D: StackDefinition>(
     data: &[u8],
 ) {
     let response_len = FunctionPropertyExtResponse::msg_len(data.len());
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionPropertyExtState_Response");
         return;
     };
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyExtStateResponse).with_data(|buf| {
         FunctionPropertyExtResponse::write(buf, hdr.object_type, hdr.object_instance, hdr.prop_id, rc, data);
     });
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 // NOTE: the *Ext* function-property services never send the "empty"
@@ -772,7 +772,7 @@ fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer
             pid: desc_resp.prop_id,
             start_idx: 0,
             count: 1,
-            ctx: ctx.access,
+            ctx: ctx.base.access,
         };
         let mut dummy = [0u8; 4];
         match ctx.interface_objects.property_value_read(&test_req, &mut dummy) {
@@ -781,7 +781,7 @@ fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer
         }
     });
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(PropertyExtDescriptionResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtDescriptionResponse::MSG_LEN) else {
         warn!("AL no buffer for PropertyExtDescriptionResponse");
         return;
     };
@@ -800,7 +800,7 @@ fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer
         }
     });
 
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 // ============================================================================
@@ -854,7 +854,7 @@ fn handle_memory_ext_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'st
 
     // Use lower 16 bits of address for our memory map.
     let addr16 = (address & 0xFFFF) as u16;
-    let result = ctx.memory_map.write(ctx.state, addr16, data, ctx.access);
+    let result = ctx.memory_map.write(ctx.base.state, addr16, data, ctx.base.access);
 
     let rc = match result {
         Ok(_) => 0x00,                            // E_SUCCESS
@@ -895,14 +895,14 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
     if count == 0 {
         // Error: count=0
         let resp_len = offsets::MSG_APCI + 6; // APCI + rc + addr
-        let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
+        let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
         let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
             buf[base + 2] = 0xFD;
             buf[base + 3] = addr_hi;
             buf[base + 4] = addr_mid;
             buf[base + 5] = addr_lo;
         });
-        ctx.lctx.push_outbox(msg.into_inner());
+        ctx.base.lctx.push_outbox(msg.into_inner());
         return;
     }
 
@@ -914,19 +914,19 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
     // A_Memory_Read (spec 03/03/07 §3.5.3 — MemoryExtended has no
     // dedicated 0xF4 path since the return code field already carries
     // a 0xFD "address void" variant for size errors).
-    let payload_cap = ctx.response_payload_cap(offsets::MSG_APCI + 6);
+    let payload_cap = ctx.base.response_payload_cap(offsets::MSG_APCI + 6);
     let read_len = count.min(data_buf.len()).min(payload_cap);
 
     let result = if read_len == 0 {
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.state, addr16, &mut data_buf[..read_len], ctx.access)
+        ctx.memory_map.read(ctx.base.state, addr16, &mut data_buf[..read_len], ctx.base.access)
     };
 
     match result {
         Ok(n) => {
             let resp_len = offsets::MSG_APCI + 6 + n;
-            let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
+            let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
             let msg =
                 ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
                     buf[base + 2] = 0x00; // E_SUCCESS
@@ -935,7 +935,7 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
                     buf[base + 5] = addr_lo;
                     buf[base + 6..base + 6 + n].copy_from_slice(&data_buf[..n]);
                 });
-            ctx.lctx.push_outbox(msg.into_inner());
+            ctx.base.lctx.push_outbox(msg.into_inner());
         }
         Err(e) => {
             let rc = match e {
@@ -944,7 +944,7 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
                 _ => 0xFD,                           // E_ADDRESS_VOID
             };
             let resp_len = offsets::MSG_APCI + 6;
-            let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
+            let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
             let msg =
                 ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
                     buf[base + 2] = rc;
@@ -952,7 +952,7 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
                     buf[base + 4] = addr_mid;
                     buf[base + 5] = addr_lo;
                 });
-            ctx.lctx.push_outbox(msg.into_inner());
+            ctx.base.lctx.push_outbox(msg.into_inner());
         }
     }
 }
@@ -967,7 +967,7 @@ fn send_memory_ext_write_response<D: StackDefinition>(
 ) {
     use zweidraehte_proto::messages::knx::offsets;
     let resp_len = offsets::MSG_APCI + 6; // APCI(2) + rc(1) + addr(3)
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else { return };
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
     let base = offsets::MSG_APCI;
     let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedWriteResponse).with_data(|buf| {
         buf[base + 2] = return_code;
@@ -975,5 +975,5 @@ fn send_memory_ext_write_response<D: StackDefinition>(
         buf[base + 4] = addr_mid;
         buf[base + 5] = addr_lo;
     });
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

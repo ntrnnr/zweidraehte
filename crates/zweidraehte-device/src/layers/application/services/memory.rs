@@ -88,14 +88,14 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
     // Cap against the effective APDU budget. Per spec 03/03/07 §3.5.3
     // Error handling: if `number > Maximum APDU Length - 3`, the
     // A_Memory_Response-PDU shall have `number = 0` with no data.
-    let payload_cap = ctx.response_payload_cap(MemoryResponse::msg_len(0));
+    let payload_cap = ctx.base.response_payload_cap(MemoryResponse::msg_len(0));
 
     let mut data = [0u8; 63]; // Max count is 63 (6 bits)
     let request_count = (acc.count as usize).min(data.len()).min(payload_cap);
     let result = if request_count == 0 {
         Ok(0usize)
     } else {
-        ctx.memory_map.read(ctx.state, acc.address, &mut data[..request_count], ctx.access)
+        ctx.memory_map.read(ctx.base.state, acc.address, &mut data[..request_count], ctx.base.access)
     };
 
     let response_count = match result {
@@ -103,7 +103,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
         Err(_) => 0,
     };
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
     else {
         warn!("AL no buffer for response");
         return;
@@ -114,7 +114,7 @@ fn handle_memory_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>
     });
 
     debug!("AL sending Memory_Response: address=0x{:04X}, count={}", acc.address, response_count);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Memory_Write.ind`
@@ -147,10 +147,10 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     let response_count = if length_inconsistent {
         0
     } else {
-        match ctx.memory_map.write(ctx.state, acc.address, acc.data, ctx.access) {
+        match ctx.memory_map.write(ctx.base.state, acc.address, acc.data, ctx.base.access) {
             Ok(bytes_written) => {
                 debug!("AL Memory_Write: wrote {} bytes to 0x{:04X}", bytes_written, acc.address);
-                ctx.state.mark_dirty();
+                ctx.base.state.mark_dirty();
                 bytes_written as u8
             }
             Err(e) => {
@@ -167,9 +167,9 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     // Verify-mode responses are bounded by the same APDU budget; a
     // count that no longer fits is reported as count=0.
     let response_count =
-        if ctx.response_fits(MemoryResponse::msg_len(response_count as usize)) { response_count } else { 0 };
+        if ctx.base.response_fits(MemoryResponse::msg_len(response_count as usize)) { response_count } else { 0 };
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(response_count as usize))
     else {
         warn!("AL no buffer for response");
         return;
@@ -183,7 +183,7 @@ fn handle_memory_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static
     });
 
     debug!("AL sending Memory_Response (verify): address=0x{:04X}, count={}", acc.address, response_count);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_MemoryBit_Write.ind`
@@ -235,7 +235,8 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 
     // Read current memory values.
     let mut current_data = [0u8; 5];
-    let read_result = ctx.memory_map.read(ctx.state, mbw.address, &mut current_data[..mbw.count as usize], ctx.access);
+    let read_result =
+        ctx.memory_map.read(ctx.base.state, mbw.address, &mut current_data[..mbw.count as usize], ctx.base.access);
 
     match read_result {
         Ok(_) => {
@@ -245,7 +246,7 @@ fn handle_memorybit_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
                 new_data[i] = (current_data[i] & mbw.and_masks[i]) ^ mbw.xor_masks[i];
             }
 
-            match ctx.memory_map.write(ctx.state, mbw.address, &new_data[..mbw.count as usize], ctx.access) {
+            match ctx.memory_map.write(ctx.base.state, mbw.address, &new_data[..mbw.count as usize], ctx.base.access) {
                 Ok(_) => {
                     debug!("AL MemoryBit_Write: wrote {} bytes to 0x{:04X}", mbw.count, mbw.address);
                     send_memorybit_response::<D>(ind, ctx, mbw.address, mbw.count, &new_data[..mbw.count as usize]);
@@ -281,9 +282,9 @@ fn send_memorybit_response<D: StackDefinition>(
     // Same budget guard as A_Memory_Read: truncate to count=0 when the
     // response won't fit.
     let (count, data) =
-        if ctx.response_fits(MemoryResponse::msg_len(count as usize)) { (count, data) } else { (0u8, &[][..]) };
+        if ctx.base.response_fits(MemoryResponse::msg_len(count as usize)) { (count, data) } else { (0u8, &[][..]) };
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(count as usize)) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(MemoryResponse::msg_len(count as usize)) else {
         warn!("AL no buffer for response");
         return;
     };
@@ -293,5 +294,5 @@ fn send_memorybit_response<D: StackDefinition>(
     });
 
     debug!("AL sending A_Memory_Response (for MemoryBit_Write): address=0x{:04X}, count={}", address, count);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

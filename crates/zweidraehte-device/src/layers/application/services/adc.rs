@@ -57,7 +57,7 @@ fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, 
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(AdcResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(AdcResponse::MSG_LEN) else {
         warn!("AL no buffer for response");
         return;
     };
@@ -70,5 +70,5 @@ fn handle_adc_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, 
     });
 
     debug!("AL sending ADC_Response: channel={}, count={}, sum={}", req.channel, response_count, sum);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

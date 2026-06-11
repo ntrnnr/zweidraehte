@@ -80,7 +80,7 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
         hdr.object_idx,
         hdr.prop_id,
         service_data.len(),
-        ctx.access,
+        ctx.base.access,
     );
 
     // 03/03/07 §3.4.7.3: the plain function-property services may only
@@ -94,7 +94,7 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
     );
     if !is_pdt_function {
         debug!("AL FunctionProperty{}: prop {} is not PDT_Function → empty response", label, hdr.prop_id);
-        let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(FpResponseWriter::EMPTY_MSG_LEN) else {
+        let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(FpResponseWriter::EMPTY_MSG_LEN) else {
             warn!("AL no buffer for FunctionProperty empty response");
             return;
         };
@@ -102,7 +102,7 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
             ind.respond_with(msg_buf).with_application(ApciCode::FunctionPropertyStateResponse).with_data(|buf| {
                 FpResponseWriter::write_empty(buf, hdr.object_idx, hdr.prop_id as u16);
             });
-        ctx.lctx.push_outbox(msg.into_inner());
+        ctx.base.lctx.push_outbox(msg.into_inner());
         return;
     }
 
@@ -110,7 +110,7 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
         object_idx: hdr.object_idx as u16,
         prop_id: hdr.prop_id,
         service_data,
-        ctx: ctx.access,
+        ctx: ctx.base.access,
     };
 
     let result = if is_command {
@@ -126,12 +126,12 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
     // code for over-budget responses (unlike the extended
     // FunctionPropertyExt family). If the handler produced more data
     // than fits in the wire budget, drop + warn.
-    if !ctx.response_fits(response_len) {
+    if !ctx.base.response_fits(response_len) {
         warn!("AL FunctionProperty response too large for APDU budget ({} bytes); dropping", response_len);
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(response_len) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
         warn!("AL no buffer for FunctionProperty response");
         return;
     };
@@ -145,5 +145,5 @@ fn handle<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx: &AlC
         result.return_code,
         response_data.len()
     );
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

@@ -111,7 +111,7 @@ where
         return;
     };
 
-    if received_serial != ctx.state.serial_number() {
+    if received_serial != ctx.base.state.serial_number() {
         trace!("AL DomainAddressSerialNumberRead ignored (serial mismatch)");
         return;
     }
@@ -121,7 +121,7 @@ where
     let doa_len = <D::State as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
     let resp_len = DomainAddressSerialNumberResponse::MSG_LEN_NO_DOA + doa_len;
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else {
         warn!("AL no buffer for DomainAddressSerialNumberResponse");
         return;
     };
@@ -132,17 +132,17 @@ where
         .with_application(ApciCode::DomainAddressSerialNumberResponse)
         .build();
 
-    let serial: &[u8; 6] = ctx.state.serial_number();
+    let serial: &[u8; 6] = ctx.base.state.serial_number();
     DomainAddressSerialNumberResponse::write_serial(msg.buf_mut(), serial);
 
     // Write domain address (if any) after the serial number.
     if doa_len > 0 {
         let mut doa_buf = [0u8; 6]; // Max domain address size (RF = 6)
-        ctx.state.domain_address(&mut doa_buf[..doa_len]);
+        ctx.base.state.domain_address(&mut doa_buf[..doa_len]);
         DomainAddressSerialNumberResponse::write_domain_address(msg.buf_mut(), &doa_buf[..doa_len]);
     }
 
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_DomainAddressSerialNumber_Write.ind`.
@@ -183,7 +183,7 @@ where
         return;
     };
 
-    if received_serial != ctx.state.serial_number() {
+    if received_serial != ctx.base.state.serial_number() {
         trace!("AL DomainAddressSerialNumberWrite ignored (serial mismatch)");
         return;
     }
@@ -191,8 +191,8 @@ where
     // Access policy 3FF/00C: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
     use zweidraehte_proto::access::AccessPolicy;
-    let security_on = ctx.state.security_mode_enabled();
-    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.access, security_on) {
+    let security_on = ctx.base.state.security_mode_enabled();
+    if !AccessPolicy::OPEN_OFF_TOOL_ON.can_write(&ctx.base.access, security_on) {
         debug!("AL DomainAddressSerialNumberWrite denied by access policy");
         return;
     }
@@ -201,7 +201,7 @@ where
     let doa = DomainAddressSerialNumberWrite::domain_address(buf);
     if doa.len() >= doa_len {
         debug!("AL DomainAddressSerialNumberWrite: setting domain address ({} bytes)", doa_len);
-        ctx.state.set_domain_address(&doa[..doa_len]);
+        ctx.base.state.set_domain_address(&doa[..doa_len]);
     } else {
         warn!("AL DomainAddressSerialNumberWrite: domain address too short ({} < {})", doa.len(), doa_len);
     }

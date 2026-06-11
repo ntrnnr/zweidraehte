@@ -90,9 +90,6 @@ use chip::{ChipType, RetryConfig};
 use state_machine::*;
 use zweidraehte_proto::encoding::tp1::{knx_to_tp1_message, tp1_to_knx_message_no_checksum, validate_tp1_checksum};
 
-use crate::objects::tables::{AddressTable, HasLoadStateMachine};
-use zweidraehte_proto::address::GroupAddress;
-
 // Re-export for external use
 pub use chip::ChipType as TpUartChipType;
 

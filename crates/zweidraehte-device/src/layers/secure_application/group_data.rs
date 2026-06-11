@@ -3,7 +3,7 @@
 //! Sibling of [`GroupDataProvider`](crate::layers::application::group_data::GroupDataProvider)
 //! for the KNX Data Secure path. Builds a full secure
 //! `T_GroupData_Req` frame (SCF + SeqNr + encrypted/authenticated
-//! payload + MAC) and queues it on the deferred outbox.
+//! payload + MAC) and queues it on the outbox.
 //!
 //! Used for *unsolicited* secure group emissions — situations where the
 //! triggering request arrives plaintext but the outgoing telegram must

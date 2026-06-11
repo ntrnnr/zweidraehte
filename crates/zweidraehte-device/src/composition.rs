@@ -478,7 +478,7 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
         let transport_layer = TransportLayer::new(ctx);
 
         let cemi_response_sender = channels.response.sender().into();
-        let tl = CemiTransportLayer::new(transport_layer, cemi_response_sender);
+        let tl = CemiTransportLayer::new(transport_layer, ctx.layer_context(), cemi_response_sender);
 
         let al = ApplicationLayer::new(ctx);
 

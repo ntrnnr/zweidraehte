@@ -680,8 +680,8 @@ where
         let outbox_cell = &self.inner.lctx().outbox;
         let mut inner_outbox = outbox_cell.replace(original);
 
-        // Drain the captured queue into the real outbox, encrypting if
-        // required. The deferred queue is gone — single FIFO drain.
+        // Drain the captured queue into the real outbox in a single
+        // FIFO pass, encrypting where required.
         while let Some(out_msg) = inner_outbox.take_next() {
             if let Some(out_msg) = self.try_encrypt_outgoing(out_msg) {
                 outbox_cell.borrow_mut().push(out_msg);

@@ -3,8 +3,12 @@
 //!
 //! These tests don't exercise wire dispatch — they only verify the
 //! macro emits compilable `LayerRegistry` / `Augment` impls
-//! against the new trait surface. End-to-end behaviour is covered
-//! by the conformance suite once the real layers migrate.
+//! against the trait surface. End-to-end behaviour is covered by the
+//! conformance suite.
+
+// The shim types exist purely for the type-level `_assert_*` bounds
+// below — nothing constructs them, by design.
+#![allow(dead_code)]
 
 use core::cell::Cell;
 

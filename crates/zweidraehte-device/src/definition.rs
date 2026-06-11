@@ -213,10 +213,9 @@ pub trait StackDefinition: Copy + 'static {
     /// Medium extension providing both state persistence and interface
     /// object augmentation.
     ///
-    /// The `Extension<Platform>` trait unifies what were previously
-    /// separate `ExtensionState` and `Augment<D>` concerns.
-    /// Each extension knows how to create its own augment given a
-    /// reference to the platform.
+    /// The `Extension<Platform>` trait covers both the `ExtensionState`
+    /// and `Augment<D>` concerns in one place: each extension knows how
+    /// to create its own augment given a reference to the platform.
     ///
     /// Common choices:
     /// - `()` — no extension (mock/test devices)

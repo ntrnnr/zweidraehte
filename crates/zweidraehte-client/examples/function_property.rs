@@ -90,7 +90,7 @@ struct Config {
     server_addr: SocketAddrV4,
     device_addr: IndividualAddress,
     object_idx: u8,
-    property_id: u8,
+    property_id: u16,
     service_data: Vec<u8>,
 }
 
@@ -98,7 +98,7 @@ fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
     let mut server_addr: Option<SocketAddrV4> = None;
     let mut device_addr: Option<IndividualAddress> = None;
     let mut object_idx: Option<u8> = None;
-    let mut property_id: Option<u8> = None;
+    let mut property_id: Option<u16> = None;
     let mut service_data = Vec::new();
 
     let mut i = 1;

@@ -11,11 +11,11 @@
 //!   three references can build one. Carries the convenience
 //!   accessors (`buffer_manager`, capability senders, APDU
 //!   budget helpers).
-//! - [`AlCtx`] wraps a `ServiceCtx` and adds the AL-only handles —
-//!   the interface-objects container and the memory map — that
-//!   AL services need to dispatch property / memory operations.
-//!   `AlCtx` derefs to `ServiceCtx`, so any helper that works on the
-//!   lean ctx works on the rich one too.
+//! - [`AlCtx`] wraps a `ServiceCtx` (as the public `base` field) and
+//!   adds the AL-only handles — the interface-objects container and
+//!   the memory map — that AL services need to dispatch property /
+//!   memory operations. Lean state is reached explicitly through
+//!   `ctx.base.…`; there is deliberately no `Deref` sugar.
 //!
 //! The split exists because the IO container — which is *itself*
 //! the interface-objects container — needs to call augments without
@@ -23,8 +23,6 @@
 //! so the IO container can manufacture one trivially. AL services
 //! continue to receive the rich ctx so they can dispatch property
 //! and memory ops without extra plumbing.
-
-use core::ops::Deref;
 
 use zweidraehte_proto::access::{AccessContext, SecurityMode};
 use zweidraehte_proto::config::max_outgoing_msg_len;
@@ -138,18 +136,20 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
     }
 }
 
-/// Rich AL-side context — extends [`ServiceCtx`] with the
+/// Rich AL-side context — bundles a [`ServiceCtx`] with the
 /// interface-objects container and the memory map that AL services
 /// dispatch property / memory operations through.
 ///
-/// Derefs to the inner [`ServiceCtx`] so any helper that works on
-/// the lean ctx works on the rich one too:
+/// Lean state is reached explicitly through the public `base` field —
+/// there is deliberately no `Deref` to `ServiceCtx` (contexts are not
+/// smart pointers, and the explicit path keeps it obvious which half
+/// a handler touches):
 ///
 /// ```rust,ignore
 /// fn handle(ctx: &AlCtx<'_, D>) {
-///     // Works because of Deref → ServiceCtx:
-///     let _ = ctx.state;
-///     let _ = ctx.buffer_manager();
+///     // Lean half, through `base`:
+///     let _ = ctx.base.state;
+///     let _ = ctx.base.buffer_manager();
 ///
 ///     // Rich-only fields:
 ///     let _ = ctx.interface_objects;
@@ -157,7 +157,8 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
 /// }
 /// ```
 pub struct AlCtx<'a, D: StackDefinition> {
-    base: ServiceCtx<'a, D>,
+    /// The lean per-call context: state, layer context, access.
+    pub base: ServiceCtx<'a, D>,
 
     /// Interface objects container — the AL's built-in property
     /// dispatch and AN163 extended property services route through
@@ -179,22 +180,5 @@ impl<'a, D: StackDefinition> AlCtx<'a, D> {
         memory_map: &'a D::Mem,
     ) -> Self {
         Self { base, interface_objects, memory_map }
-    }
-
-    /// Borrow the inner [`ServiceCtx`] explicitly. Equivalent to
-    /// `&**ctx` but more readable at call sites that pass the lean
-    /// ctx along to augment-side hooks.
-    #[inline]
-    pub fn service_ctx(&self) -> &ServiceCtx<'a, D> {
-        &self.base
-    }
-}
-
-impl<'a, D: StackDefinition> Deref for AlCtx<'a, D> {
-    type Target = ServiceCtx<'a, D>;
-
-    #[inline]
-    fn deref(&self) -> &Self::Target {
-        &self.base
     }
 }

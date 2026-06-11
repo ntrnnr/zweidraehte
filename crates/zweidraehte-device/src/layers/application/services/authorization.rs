@@ -74,7 +74,7 @@ fn handle_authorize_request<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
     // Key bytes are not logged — log presence and length only.
     debug!("AL Authorize_Request: key present ({} bytes)", req.key.len());
 
-    let access_level = ctx.state.authorize(&req.key);
+    let access_level = ctx.base.state.authorize(&req.key);
     debug!("AL Authorize_Request: granted level {}", access_level);
 
     if ind.service_type() != ServiceType::T_Data_Ind {
@@ -85,10 +85,10 @@ fn handle_authorize_request<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
     // Write the granted level directly to the shared access store so it
     // takes effect immediately.
     if let AccessSource::Connection(slot) = ind.access_source() {
-        ctx.state.set_connection_access(slot, AccessContext::new(access_level));
+        ctx.base.state.set_connection_access(slot, AccessContext::new(access_level));
     }
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(AuthorizeResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(AuthorizeResponse::MSG_LEN) else {
         warn!("AL no buffer for response");
         return;
     };
@@ -98,7 +98,7 @@ fn handle_authorize_request<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'s
     });
 
     debug!("AL sending Authorize_Response: level={}", access_level);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }
 
 /// Handle `A_Key_Write.ind`
@@ -106,8 +106,8 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
     // Access policy 3FF/0CC: everyone can write when security mode is off;
     // when security mode is on, only Tool A+C can write.
     use zweidraehte_proto::access::AccessPolicy;
-    let security_on = ctx.state.security_mode_enabled();
-    if !AccessPolicy::READ_OPEN_WRITE_TOOL.can_write(&ctx.access, security_on) {
+    let security_on = ctx.base.state.security_mode_enabled();
+    if !AccessPolicy::READ_OPEN_WRITE_TOOL.can_write(&ctx.base.access, security_on) {
         debug!("AL Key_Write denied by access policy");
         return;
     }
@@ -117,9 +117,9 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
         return;
     };
     // Key bytes are not logged — log level and context only.
-    debug!("AL Key_Write: level={}, current_ctx={:?}", req.level, ctx.access);
+    debug!("AL Key_Write: level={}, current_ctx={:?}", req.level, ctx.base.access);
 
-    let result_level = ctx.state.key_write(req.level, &req.key, ctx.access);
+    let result_level = ctx.base.state.key_write(req.level, &req.key, ctx.base.access);
     debug!("AL Key_Write: result={}", result_level);
 
     if ind.service_type() != ServiceType::T_Data_Ind {
@@ -127,7 +127,7 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
         return;
     }
 
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(KeyResponse::MSG_LEN) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(KeyResponse::MSG_LEN) else {
         warn!("AL no buffer for response");
         return;
     };
@@ -137,5 +137,5 @@ fn handle_key_write<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>,
     });
 
     debug!("AL sending Key_Response: level={}", result_level);
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

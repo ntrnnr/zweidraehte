@@ -90,7 +90,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
         return;
     }
 
-    if !ctx.state.is_programming_mode() {
+    if !ctx.base.state.is_programming_mode() {
         trace!("AL SystemNetworkParameterRead ignored: programming mode off");
         return;
     }
@@ -107,7 +107,7 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
     // operand lives in the packed PID|operand nibble and is written by
     // `SystemNetworkParameterResponse::write`.
     let resp_len = SystemNetworkParameterResponse::msg_len(6);
-    let Some(msg_buf) = ctx.buffer_manager().try_alloc_with_size(resp_len) else {
+    let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else {
         warn!("AL no buffer for SystemNetworkParameterResponse");
         return;
     };
@@ -123,8 +123,8 @@ fn handle_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'static>>, ctx:
         .with_application(ApciCode::SystemNetworkParameterResponse)
         .build();
 
-    let serial: &[u8; 6] = ctx.state.serial_number();
+    let serial: &[u8; 6] = ctx.base.state.serial_number();
     SystemNetworkParameterResponse::write(msg.buf_mut(), device_ot, pid::SERIAL_NUMBER, OPERAND_BY_PROG_MODE, serial);
 
-    ctx.lctx.push_outbox(msg.into_inner());
+    ctx.base.lctx.push_outbox(msg.into_inner());
 }

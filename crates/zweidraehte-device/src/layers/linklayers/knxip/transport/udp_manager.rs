@@ -412,7 +412,7 @@ mod rebind_tests {
     use alloc::vec;
     use alloc::vec::Vec as StdVec;
     use core::cell::RefCell;
-    use zweidraehte_platform::{AsyncTcpListener, IpTransport, NeverTcpListener, NeverTcpStream};
+    use zweidraehte_platform::{IpTransport, NeverTcpListener, NeverTcpStream};
 
     extern crate alloc;
 

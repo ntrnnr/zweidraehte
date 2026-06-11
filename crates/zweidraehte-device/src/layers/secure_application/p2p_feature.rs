@@ -46,6 +46,8 @@ use crate::HasExtensionState;
 use crate::StackState;
 use crate::bcus::system_b::HasSecurityState;
 use crate::definition::StackDefinition;
+// `info!` is only invoked from the conformance-gated time-scaling path.
+#[cfg(feature = "conformance")]
 use crate::logging::info;
 use crate::objects::tables::HasAssociationTable;
 use crate::prelude::HasAddressTable;

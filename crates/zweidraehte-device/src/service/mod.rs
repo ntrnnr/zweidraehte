@@ -5,22 +5,21 @@
 //!
 //! - [`Layer`] — wire-message handlers (NL / TL / AL / SecureAL). Holds
 //!   `&mut self` for plain-field state, plus its own lifecycle methods
-//!   (`init` / `poll` / `next_deadline`).
+//!   (`init` / `poll` / `next_deadline`). Captures its environment
+//!   (`&State`, `&LayerContext`) at construction — no per-call context.
 //! - [`ApciHandler`] — APCI fall-through extensions composed into the
 //!   AL via [`StackDefinition::Services`](crate::StackDefinition::Services).
-//!   `&self`, no lifecycle.
+//!   `&self`, no lifecycle. Receives an [`AlCtx`] per call.
 //! - [`Augment`] — interface-object property hooks plus
 //!   optional IO-list contribution. Used both for individual augments
 //!   (e.g. `IpAugment`, `SecurityAugment`) and for the aggregating
 //!   bundle on a services struct. All methods carry sensible defaults
 //!   so leaf augments override only the hooks they actually service;
-//!   `&self` for hooks, opt-in `&mut self` lifecycle for augments
-//!   with temporal behaviour (Security rekey timer, Diagnostics
-//!   auto-revert).
+//!   `&self` throughout. Receives a lean [`ServiceCtx`] per hook call.
 //!
-//! All three share [`ServiceCtx`] — a single context type covering
-//! state, IO objects, memory map, layer-context (outbox / buffer
-//! manager / channels), and the request's [`AccessContext`].
+//! The per-call contexts ([`ServiceCtx`] / [`AlCtx`]) are built by the
+//! AL and the IO container at dispatch time, carrying the request's
+//! real `AccessContext`.
 //!
 
 mod apci_tuple;
