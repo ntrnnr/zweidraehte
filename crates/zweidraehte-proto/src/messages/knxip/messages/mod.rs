@@ -250,6 +250,7 @@ mod connection;
 mod discovery;
 mod remote_config;
 mod routing;
+mod secure;
 mod tunneling;
 
 //pub use crate::messages::knxip::substructs::*;
@@ -257,4 +258,5 @@ pub use connection::*;
 pub use discovery::*;
 pub use remote_config::*;
 pub use routing::*;
+pub use secure::*;
 pub use tunneling::*;

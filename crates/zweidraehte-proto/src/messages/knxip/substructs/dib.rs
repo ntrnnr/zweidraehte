@@ -431,6 +431,82 @@ impl<'a> SerializablePacket for SupportedServiceFamiliesBuilder<'a> {
     }
 }
 
+/// Secured Service Families DIB (03/08/09 §2.6.2.2)
+///
+/// Same record shape as [`SupportedServiceFamilies`] — `(family,
+/// version)` pairs — but the version is the *required security version*
+/// of each family that only accepts SECURE_WRAPPER traffic. Appears only
+/// in `SearchResponseExtended`, and only when at least one family is
+/// secured.
+#[derive(Debug)]
+pub struct SecuredServiceFamilies<B: SplitByteSlice> {
+    records: SupportedServicesRecords<B>,
+}
+
+impl<B: SplitByteSlice> ParsablePacket<B, ()> for SecuredServiceFamilies<B> {
+    type Error = ParseError;
+
+    fn parse<BV: BufferView<B>>(buffer: &mut BV, _args: ()) -> Result<Self, Self::Error> {
+        let header = buffer.take_obj_front::<raw::Header>().ok_or(ParseError::Format)?;
+
+        if header.description_type_code != KNXnetIPServiceFamily::SecuredServices.into() {
+            return Err(ParseError::Format);
+        }
+
+        // Guard against a wire-supplied struct_len smaller than the header itself, which
+        // would wrap to a huge usize on subtraction.
+        let expected_len =
+            (header.struct_len as usize).checked_sub(mem::size_of::<raw::Header>()).ok_or(ParseError::Format)?;
+        let services_bytes = buffer.take_front(expected_len).ok_or(ParseError::Format)?;
+
+        let records = SupportedServicesRecords::parse(services_bytes)?;
+
+        Ok(Self { records })
+    }
+}
+
+impl<B: SplitByteSlice> SecuredServiceFamilies<B> {
+    /// Get the description type code
+    pub fn description_type_code(&self) -> KNXnetIPServiceFamily {
+        KNXnetIPServiceFamily::SecuredServices
+    }
+
+    /// Iterate over secured service families
+    pub fn iter(&self) -> impl Iterator<Item = SupportedService> + '_ {
+        self.records.iter()
+    }
+}
+
+/// Builder for Secured Service Families DIB
+#[derive(Debug)]
+pub struct SecuredServiceFamiliesBuilder<'a> {
+    services: &'a [SupportedService],
+}
+
+impl<'a> SecuredServiceFamiliesBuilder<'a> {
+    pub fn new(services: &'a [SupportedService]) -> Self {
+        Self { services }
+    }
+}
+
+impl<'a> SerializablePacket for SecuredServiceFamiliesBuilder<'a> {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<raw::Header>() + self.services.iter().map(|s| s.serialized_len()).sum::<usize>()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = raw::Header {
+            struct_len: self.bytes_len() as u8,
+            description_type_code: KNXnetIPServiceFamily::SecuredServices.into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for DIB header");
+
+        let records_builder: RecordSequenceBuilder<SupportedService, _> =
+            RecordSequenceBuilder::new(self.services.iter());
+        records_builder.serialize(bv);
+    }
+}
+
 /// IP Configuration DIB
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IpConfig {
@@ -877,6 +953,7 @@ pub enum DescriptionInformationBlock<B: SplitByteSlice = &'static [u8]> {
     DeviceInformation(DeviceInformation),
     ExtendedDeviceInformation(ExtendedDeviceInformation),
     SupportedServiceFamilies(SupportedServiceFamilies<B>),
+    SecuredServiceFamilies(SecuredServiceFamilies<B>),
     IpConfig(IpConfig),
     IpCurrentConfig(IpCurrentConfig),
     KnxAddresses(KnxAddresses<B>),
@@ -898,6 +975,7 @@ impl<B: SplitByteSlice> DescriptionInformationBlock<B> {
             Self::DeviceInformation(d) => d.description_type_code(),
             Self::ExtendedDeviceInformation(e) => e.description_type_code(),
             Self::SupportedServiceFamilies(s) => s.description_type_code(),
+            Self::SecuredServiceFamilies(s) => s.description_type_code(),
             Self::IpConfig(i) => i.description_type_code(),
             Self::IpCurrentConfig(i) => i.description_type_code(),
             Self::KnxAddresses(k) => k.description_type_code(),
@@ -926,6 +1004,10 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for DescriptionInformationBlock<B>
             KNXnetIPServiceFamily::SupportedServiceFamilies => {
                 let dib = SupportedServiceFamilies::parse(buffer, ())?;
                 Ok(Self::SupportedServiceFamilies(dib))
+            }
+            KNXnetIPServiceFamily::SecuredServices => {
+                let dib = SecuredServiceFamilies::parse(buffer, ())?;
+                Ok(Self::SecuredServiceFamilies(dib))
             }
             KNXnetIPServiceFamily::IPConfig => {
                 let dib = IpConfig::parse(buffer, ())?;
@@ -991,6 +1073,7 @@ pub enum DescriptionInformationBlockBuilder<'a> {
     DeviceInformation(&'a DeviceInformation),
     ExtendedDeviceInformation(&'a ExtendedDeviceInformation),
     SupportedServiceFamilies(SupportedServiceFamiliesBuilder<'a>),
+    SecuredServiceFamilies(SecuredServiceFamiliesBuilder<'a>),
     IpConfig(&'a IpConfig),
     IpCurrentConfig(&'a IpCurrentConfig),
     KnxAddresses(KnxAddressesBuilder<'a>),
@@ -1004,6 +1087,7 @@ impl<'a> SerializablePacket for DescriptionInformationBlockBuilder<'a> {
             Self::DeviceInformation(d) => d.bytes_len(),
             Self::ExtendedDeviceInformation(e) => e.bytes_len(),
             Self::SupportedServiceFamilies(s) => s.bytes_len(),
+            Self::SecuredServiceFamilies(s) => s.bytes_len(),
             Self::IpConfig(i) => i.bytes_len(),
             Self::IpCurrentConfig(i) => i.bytes_len(),
             Self::KnxAddresses(k) => k.bytes_len(),
@@ -1017,6 +1101,7 @@ impl<'a> SerializablePacket for DescriptionInformationBlockBuilder<'a> {
             Self::DeviceInformation(d) => d.serialize(bv),
             Self::ExtendedDeviceInformation(e) => e.serialize(bv),
             Self::SupportedServiceFamilies(s) => s.serialize(bv),
+            Self::SecuredServiceFamilies(s) => s.serialize(bv),
             Self::IpConfig(i) => i.serialize(bv),
             Self::IpCurrentConfig(i) => i.serialize(bv),
             Self::KnxAddresses(k) => k.serialize(bv),

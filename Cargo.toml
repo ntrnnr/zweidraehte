@@ -37,6 +37,12 @@ heapless = "0.9"
 replace_with = { version = "0.1", default-features = false }
 bitfield = "0.19"
 
+# KNX IP Secure session crypto (X25519 ECDH + SHA-256 session-key
+# derivation). Optional behind zweidraehte-proto's `ip-secure` feature so
+# non-secure microcontroller builds never compile curve25519.
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets"] }
+sha2 = { version = "0.10", default-features = false }
+
 embassy-executor = { version = "0.9", default-features = false }
 embassy-time = { version = "0.5", default-features = false }
 embassy-sync = { version = "0.7", default-features = false }

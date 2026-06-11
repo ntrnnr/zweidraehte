@@ -9,8 +9,10 @@
 //! rather than using a generic CCM crate.
 
 use aes::Aes128;
-use aes::cipher::{BlockEncrypt, KeyInit};
+use aes::cipher::KeyInit;
 use subtle::ConstantTimeEq;
+
+use super::aes_util::{ChainedXorFeeder, aes_encrypt_block};
 
 // ============================================================================
 // Block Construction (KNX-specific)
@@ -63,17 +65,6 @@ pub fn block_ctr(seq_nr: &[u8; 6], src: u16, dst: u16, j: u8) -> [u8; 16] {
 }
 
 // ============================================================================
-// AES-ECB helper
-// ============================================================================
-
-/// Encrypt a single 16-byte block with AES-128-ECB.
-fn aes_encrypt_block(key: &Aes128, block: &mut [u8; 16]) {
-    use aes::cipher::generic_array::GenericArray;
-    let b = GenericArray::from_mut_slice(block);
-    key.encrypt_block(b);
-}
-
-// ============================================================================
 // CBC-MAC (Annex A, steps 1–4)
 // ============================================================================
 
@@ -108,41 +99,6 @@ fn cbc_mac(key: &Aes128, b0: &[u8; 16], assoc_data: &[u8], payload: &[u8]) -> [u
     chain.finish(key);
 
     y
-}
-
-/// Helper that feeds byte streams into the CBC-MAC chain in 16-byte blocks,
-/// handling cross-boundary buffering and padding.
-struct ChainedXorFeeder<'a> {
-    y: &'a mut [u8; 16],
-    pos: usize, // position within current 16-byte block
-}
-
-impl<'a> ChainedXorFeeder<'a> {
-    fn new(y: &'a mut [u8; 16]) -> Self {
-        Self { y, pos: 0 }
-    }
-
-    /// Feed data into the chain. Processes complete blocks immediately.
-    fn feed(&mut self, key: &Aes128, data: &[u8]) {
-        for &byte in data {
-            self.y[self.pos] ^= byte;
-            self.pos += 1;
-            if self.pos == 16 {
-                aes_encrypt_block(key, self.y);
-                self.pos = 0;
-            }
-        }
-    }
-
-    /// Pad the final partial block with zeros and encrypt.
-    /// Does nothing if we're exactly on a block boundary.
-    fn finish(&mut self, key: &Aes128) {
-        if self.pos > 0 {
-            // Remaining bytes in y[pos..16] are already XOR'd with 0 (no-op).
-            aes_encrypt_block(key, self.y);
-            self.pos = 0;
-        }
-    }
 }
 
 // ============================================================================

@@ -23,6 +23,8 @@ replace_with = { workspace = true }
 bitfield.workspace = true
 aes = { version = "0.8", default-features = false }
 subtle = { version = "2.6.1", default-features = false }
+x25519-dalek = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 quickcheck = "1"
@@ -35,3 +37,9 @@ log = ["dep:log", "zweidraehte-util/log", "zweidraehte-platform/log"]
 alloc = []
 std = ["alloc", "zweidraehte-platform/std"]
 knxip = []
+# KNX IP Secure session-key derivation (X25519 + SHA-256). Separate from
+# `knxip` because curve25519 is a heavy dependency that size-constrained
+# non-secure IP builds must not pay for. The IP-Secure CCM and the secure
+# message codecs are always compiled (they only need `aes` and get
+# dead-stripped when unused); only the ECDH/session-key module is gated.
+ip-secure = ["dep:x25519-dalek", "dep:sha2"]
