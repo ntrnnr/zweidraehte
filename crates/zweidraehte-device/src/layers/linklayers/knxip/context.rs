@@ -114,130 +114,24 @@ pub trait IpAdditionalIndividualAddressContext {
 }
 
 // ============================================================================
-// IP Secure context traits — shape only, used once the crypto layer lands
+// IP Secure context
 // ============================================================================
-//
-// Three traits map the IP-Secure runtime surface (Vol 3 Part 8 §9) into
-// the link-layer context vocabulary:
-//
-// - [`HasIpSecureConfig`]   — persistent per-device secrets (PIDs 91–97).
-// - [`HasMcTimer`]          — 48-bit multicast timer (§2.2.2.2.2) plus the
-//                             `mc_timer_authentic` gate (§2.2.2.3.2.8).
-// - [`HasIpSecureSessions`] — per-session runtime state pool, sized by
-//                             `KnxNetIpDefinition::MAX_SECURE_SESSIONS`.
-//
-// None of them are part of [`KnxNetIpContext`](super::KnxNetIpContext) yet
-// — bundling them unconditionally would force every non-secure device
-// to write empty stubs. The eventual crypto path introduces
-// [`KnxNetIpSecureContext`] (defined below) as the secure-only combo.
 
-/// Per-device persistent IP-Secure secret material (PIDs 91–97 of the
-/// KNXnet/IP Parameter Object).
-pub trait HasIpSecureConfig {
-    /// PID 91 — Secure Backbone Key (16 B). AES-128 key for all
-    /// multicast SECURE_WRAPPER / TIMER_NOTIFY MAC + encryption.
-    /// Writing this resets `mc_timer` to 0 (§2.2.2.2.2).
-    fn backbone_key(&self) -> &[u8; 16];
-
-    /// PID 92 — Device Authentication Code (16 B). CCM key for the
-    /// SESSION_RESPONSE MAC (§2.3.1.3). Factory-default value is the
-    /// device's FDSK.
-    fn device_authentication_code(&self) -> &[u8; 16];
-
-    /// PID 93 — Password Hashes, indexed by User ID (1..=127).
-    /// `password_hash(1)` is the management user; `2..=127` are device-
-    /// specific roles. CCM key for `SESSION_AUTHENTICATE` MAC
-    /// (§2.3.1.4). Returns `None` for unprogrammed slots.
-    fn password_hash(&self, user_id: u8) -> Option<&[u8; 16]>;
-
-    /// PID 94 — Per-service-family security version. A non-zero value
-    /// means the family requires SECURE_WRAPPER; zero means plain
-    /// frames are accepted (§2.3.1.5).
-    fn secured_service_family(&self, fam: zweidraehte_proto::messages::knxip::substructs::ServiceFamily) -> u8;
-
-    /// PID 95 — Multicast latency tolerance in ms. Replay-window for
-    /// multicast `SECURE_WRAPPER`. Default 2000 ms (§2.3.1.6).
-    fn multicast_latency_tolerance(&self) -> u32;
-
-    /// PID 96 — Sync latency fraction (PDT_SCALING). Drives
-    /// `syncLatencyTolerance` in the TIMER_NOTIFY state machine
-    /// (§2.2.2.3.2.2). Default 10.2 % (`0x1A`).
-    fn sync_latency_fraction(&self) -> u8;
-
-    /// PID 97 — Tunnelling Users table. Returns the tunnelling-address
-    /// indices the given user ID is authorised for. User ID `1` is
-    /// implicit (mgmt user has access to all) and is **not** stored
-    /// in this table (§2.3.1.8).
-    fn tunnelling_user(&self, user_id: u8) -> impl Iterator<Item = u8>;
-}
-
-/// The 48-bit free-running multicast timer plus the
-/// `mc_timer_authentic` gate.
+/// Bridges the device state's KNX IP Secure configuration
+/// ([`IpSecureStateView`](crate::ip::IpSecureStateView), PIDs 91–97)
+/// plus the KNX serial number into the link-layer context.
 ///
-/// **NV-persistence (§2.2.4.2):** implementations must persist
-/// `mc_timer` to non-volatile storage at intervals ≤ 1 hour
-/// **measured in mc_timer time, not wall-clock**. On power-up, read
-/// the persisted T then act as if T+D had been used (where D is the
-/// persistence interval) before re-using.
-///
-/// **Reset semantics (§2.2.2.2.2):** writing `backbone_key` resets
-/// `mc_timer` to 0 and clears `mc_timer_authentic`.
-pub trait HasMcTimer {
-    /// Current 48-bit multicast timer value (only the low 48 bits are
-    /// used; `u64` is the convenient width for arithmetic).
-    fn mc_timer(&self) -> u64;
+/// Part of [`KnxNetIpContext`](super::KnxNetIpContext) unconditionally:
+/// the `StackContext` impl forwards to
+/// [`HasIpSecureView`](crate::ip::HasIpSecureView), whose default
+/// returns `None`, so non-secure IP devices satisfy the bound without
+/// carrying secret storage. The secure dispatch path treats `None` as
+/// "drop all secure traffic".
+pub trait IpSecureConfigContext {
+    /// The persisted IP Secure secrets, if the device carries them.
+    fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView>;
 
-    /// Update the multicast timer. May trigger an NV flush per the
-    /// persistence-interval rule.
-    fn set_mc_timer(&self, value: u64);
-
-    /// True once the first authentic `TIMER_NOTIFY` echo of our own
-    /// `(serial, tag)` round-trip has arrived (§2.2.2.3.2.8). While
-    /// false, multicast `SECURE_WRAPPER` payload must **not** be
-    /// forwarded to upper layers — roughly 17 s after power-up on a
-    /// typical Ethernet LAN.
-    fn mc_timer_authentic(&self) -> bool;
-
-    /// Set the `mc_timer_authentic` flag. Set to `true` on first
-    /// authenticated echo; reset to `false` on power-up and when
-    /// `backbone_key` changes.
-    fn set_mc_timer_authentic(&self, value: bool);
-}
-
-/// Per-session runtime state pool for unicast IP Secure sessions.
-///
-/// IP Secure unicast sessions are TCP-only (§2.2.3.3), so the pool is
-/// naturally sized at
-/// [`KnxNetIpDefinition::MAX_SECURE_SESSIONS`](super::definition::KnxNetIpDefinition::MAX_SECURE_SESSIONS),
-/// which defaults to `MAX_TCP_STREAMS`. Sessions are allocated on
-/// `SESSION_REQUEST`, freed on `STATUS_CLOSE` / timeout / TCP close.
-pub trait HasIpSecureSessions {
-    /// Allocate a fresh session slot and return a mutable handle.
-    /// Returns `None` if the pool is exhausted (server replies with
-    /// `STATUS_RESERVED` per §2.2.3.7.6).
-    fn allocate_session(&mut self) -> Option<&mut super::secure::IpSecureSessionSlot>;
-
-    /// Look up an active session by its server-assigned ID.
-    fn session_by_id(&mut self, session_id: u16) -> Option<&mut super::secure::IpSecureSessionSlot>;
-
-    /// Free a session slot. Called on `STATUS_CLOSE`, `STATUS_TIMEOUT`,
-    /// `STATUS_AUTHENTICATION_FAILED`, or when the underlying TCP
-    /// connection closes (§2.4.2 — all sessions on a closing TCP
-    /// connection are released implicitly).
-    fn release_session(&mut self, session_id: u16);
-}
-
-/// Supertrait alias bundling everything the IP Secure dispatch path
-/// will need on top of [`KnxNetIpContext`](super::KnxNetIpContext).
-/// Currently has no impls — used by the eventual SECURE_WRAPPER /
-/// SESSION_* dispatch arms.
-#[allow(dead_code)] // consumed once the IP Secure dispatch arms land
-pub(crate) trait KnxNetIpSecureContext:
-    super::KnxNetIpContext + HasIpSecureConfig + HasMcTimer + HasIpSecureSessions
-{
-}
-
-impl<T> KnxNetIpSecureContext for T where
-    T: super::KnxNetIpContext + HasIpSecureConfig + HasMcTimer + HasIpSecureSessions
-{
+    /// The device's KNX serial number — sender identity in outgoing
+    /// SECURE_WRAPPER security information blocks.
+    fn knx_serial_number(&self) -> [u8; 6];
 }

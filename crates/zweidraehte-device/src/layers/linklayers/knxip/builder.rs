@@ -171,7 +171,7 @@ where
         // Auto-derive supported services from feature traits
         // ====================================================================
 
-        let mut supported_services = Vec::<substructs::SupportedService, 5>::new();
+        let mut supported_services = Vec::<substructs::SupportedService, 6>::new();
 
         // Core v1: discovery, description, connection management over UDP.
         // Core v2 additionally requires TCP support (§9.2).
@@ -191,6 +191,13 @@ where
         }
         if let Some(svc) = <<D::Features as FeatureSet>::RemoteConfig as RemoteConfigFeature>::supported_service() {
             let _ = supported_services.push(svc);
+        }
+
+        // KNX IP Secure (family 09h, v1) — announced whenever the secure
+        // dispatch path is compiled in (03/08/09 §2.6.2.1).
+        if <<D::Features as FeatureSet>::IpSecure as super::secure::IpSecureFeature>::ENABLED {
+            let _ = supported_services
+                .push(substructs::SupportedService { family: substructs::ServiceFamily::Security, version: 1 });
         }
 
         // ====================================================================
@@ -343,6 +350,8 @@ where
             subnet_link,
             address_filter,
             interface_addr,
+            secure_sessions: super::secure::SessionPool::new(),
+            rng_fill: <D::Rng as crate::rng::Rng>::fill,
         }
     }
 }

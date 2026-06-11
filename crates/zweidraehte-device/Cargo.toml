@@ -66,6 +66,13 @@ log = ["dep:log", "zweidraehte-util/log", "zweidraehte-proto/log", "zweidraehte-
 std = ["zweidraehte-proto/std", "zweidraehte-platform/std", "critical-section/std"]
 linux = ["zweidraehte-platform/linux", "std"]
 knxip = ["zweidraehte-proto/knxip"]
+# KNX IP Secure unicast sessions on the KNX/IP link layer. Separate from
+# `knxip` because the X25519 handshake pulls in curve25519 — non-secure
+# IP builds must not pay the dependency. Without this feature the
+# `WithIpSecure` feature marker (and the secure feature-set aliases) do
+# not exist, so a secure device definition fails to compile rather than
+# silently dropping secure traffic.
+ip-secure = ["knxip", "zweidraehte-proto/ip-secure"]
 tp1 = []
 rf = []
 ip-interface = ["knxip", "tp1"]

@@ -116,6 +116,10 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
     /// Connection lifecycle messages (Connect, Disconnect, Connectionstate) are
     /// handled directly. Connection-oriented data frames are routed to the
     /// appropriate [`ConnectionTypeHandler`] via channel ID lookup.
+    /// `secure_session` is the IP Secure session the frame arrived in
+    /// (`None` for plain frames). Connections remember the session they
+    /// were created in; frames referencing a connection from outside
+    /// its session are rejected per 03/08/09 §2.2.3.4.
     pub async fn on_indication(
         &mut self,
         service_type: KNXnetIPServiceType,
@@ -123,20 +127,24 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
+        secure_session: Option<u16>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         match service_type {
             // Connection lifecycle — handled directly by the connection manager
-            KNXnetIPServiceType::ConnectRequest => self.handle_connect_request(data, origin, buffer_manager).await,
+            KNXnetIPServiceType::ConnectRequest => {
+                self.handle_connect_request(data, origin, buffer_manager, secure_session).await
+            }
             KNXnetIPServiceType::ConnectionstateRequest => {
-                self.handle_connectionstate_request(data, origin, buffer_manager).await
+                self.handle_connectionstate_request(data, origin, buffer_manager, secure_session).await
             }
             KNXnetIPServiceType::DisconnectRequest => {
-                self.handle_disconnect_request(data, origin, buffer_manager).await
+                self.handle_disconnect_request(data, origin, buffer_manager, secure_session).await
             }
 
             // Everything else: route to the handler via channel ID lookup
             _ => {
-                let responses = self.dispatch_to_handler(service_type, data, buffer_manager, ind_tx).await?;
+                let responses =
+                    self.dispatch_to_handler(service_type, data, buffer_manager, ind_tx, secure_session).await?;
                 Ok(ConnectionManagerResult::responses_only(responses))
             }
         }
@@ -153,6 +161,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         data: &[u8],
         buffer_manager: &DynBufferManager<'static>,
         ind_tx: DynamicSender<'_, IndicationMessage<Buffer<'static>>>,
+        secure_session: Option<u16>,
     ) -> Result<Vec<PendingResponse, MAX_RESPONSES>, ServerError> {
         // Connection header starts at offset 6 (after KNXnet/IP header).
         // Byte layout: struct_length(1), channel_id(1), sequence_or_reserved(1), status_or_reserved(1)
@@ -171,7 +180,17 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
             return Err(ServerError::InvalidMessage);
         };
 
-        let connection_type = self.connections[conn_idx].as_ref().expect("just verified Some").connection_type;
+        let conn_ref = self.connections[conn_idx].as_ref().expect("just verified Some");
+        let connection_type = conn_ref.connection_type;
+
+        // Secure-session binding (03/08/09 §2.2.3.4): data frames for a
+        // connection created within a secure session are only accepted
+        // through that same session; plain frames and frames from other
+        // sessions are ignored.
+        if conn_ref.secure_session_id != secure_session {
+            debug!("Data frame for channel {} from wrong security context, discarded", channel_id);
+            return Err(ServerError::InvalidMessage);
+        }
 
         // Verify the handler collection supports this service type for this connection type
         if !self.handlers.handles_service_type(connection_type, service_type) {
@@ -610,6 +629,26 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         }
     }
 
+    /// Close every connection created within the given IP Secure
+    /// session, without notifying the client (03/08/09 §2.2.3.5.2.4
+    /// actions A3/A5/A6: "close all contained secure connections,
+    /// without explicit notification").
+    pub fn close_secure_session_connections(&mut self, session_id: u16) -> Vec<TcpChannelEvent, MAX_CONNECTIONS> {
+        let mut tcp_events = Vec::new();
+        for slot in &mut self.connections {
+            let should_close = slot.as_ref().is_some_and(|ctx| ctx.secure_session_id == Some(session_id));
+            if should_close {
+                let ctx = slot.take().expect("just checked Some");
+                info!("Secure session {} closed, tearing down KNX/IP channel {}", session_id, ctx.channel_id);
+                self.handlers.close_connection(ctx.channel_id, ctx.connection_type);
+                if let ConnectionTransport::Tcp { tcp_idx } = ctx.transport {
+                    let _ = tcp_events.push(TcpChannelEvent::Removed { tcp_idx, channel_id: ctx.channel_id });
+                }
+            }
+        }
+        tcp_events
+    }
+
     // ========================================================================
     // Private: ConnectRequest
     // ========================================================================
@@ -619,6 +658,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
+        secure_session: Option<u16>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectRequest>() {
@@ -709,6 +749,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
             socket_idx,
             transport,
             pending_ack: None,
+            secure_session_id: secure_session,
         });
 
         // Build ConnectResponse with success
@@ -763,6 +804,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
+        secure_session: Option<u16>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<ConnectionstateRequest>() {
@@ -792,6 +834,9 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
                     ConnectionTransport::Tcp { .. } => true,
                     ConnectionTransport::Udp => source == ctx.control_endpoint,
                 };
+                // Referencing a connection from outside its secure
+                // session yields E_CONNECTION_ID (03/08/09 §2.2.3.4).
+                let source_ok = source_ok && ctx.secure_session_id == secure_session;
 
                 if source_ok {
                     ctx.last_activity = Instant::now();
@@ -833,6 +878,7 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         data: &[u8],
         origin: PacketOrigin,
         buffer_manager: &DynBufferManager<'static>,
+        secure_session: Option<u16>,
     ) -> Result<ConnectionManagerResult, ServerError> {
         let mut buf = data;
         let request = match buf.parse::<DisconnectRequest>() {
@@ -841,6 +887,20 @@ impl<H: ConnectionHandlers<N>, const N: usize, const MAX_CONNECTIONS: usize> Con
         };
 
         let channel_id = request.communication_channel_id;
+
+        // Referencing a connection from outside its secure session
+        // yields E_CONNECTION_ID instead of tearing it down
+        // (03/08/09 §2.2.3.4).
+        if self.find_connection_mut(channel_id).is_some_and(|ctx| ctx.secure_session_id != secure_session) {
+            debug!("Disconnect request for channel {} from wrong security context", channel_id);
+            let mut responses = Vec::new();
+            if let Some(mut buffer) = buffer_manager.try_alloc() {
+                let builder = DisconnectResponseBuilder::new(channel_id, ConnectionStatus::NoSuchConnectionID);
+                buffer.serialize(&builder);
+                let _ = responses.push(PendingResponse { buffer, target: origin.reply_target() });
+            }
+            return Ok(ConnectionManagerResult::responses_only(responses));
+        }
 
         // Find and remove the connection
         let (status, target, tcp_event) = match self.remove_connection(channel_id) {

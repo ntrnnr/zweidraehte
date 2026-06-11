@@ -71,6 +71,15 @@ pub struct ConnectionContext {
     /// Server->client frame awaiting an ACK. `None` when no frame is
     /// in flight or when the connection uses TCP (which has no ACKs).
     pub pending_ack: Option<PendingAck>,
+    /// The IP Secure session this connection was created in, if any.
+    ///
+    /// Per 03/08/09 §2.2.3.4, connections created within a secure
+    /// session only accept frames arriving through that same session;
+    /// CONNECTIONSTATE_REQUEST / DISCONNECT_REQUEST referencing the
+    /// channel from outside it are answered with `E_CONNECTION_ID`,
+    /// and data frames are discarded. Always `None` on non-secure
+    /// builds.
+    pub secure_session_id: Option<u16>,
 }
 
 impl ConnectionContext {

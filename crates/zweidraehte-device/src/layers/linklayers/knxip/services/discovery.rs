@@ -16,7 +16,7 @@ use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, Serv
 //        then multiple servers that handle the control endpoints of other service containers
 
 /// Maximum number of supported service families a discovery server can advertise
-const MAX_SUPPORTED_SERVICES: usize = 5;
+const MAX_SUPPORTED_SERVICES: usize = 6;
 
 /// Maximum number of DIBs we can collect for an extended search response
 const MAX_RESPONSE_DIBS: usize = 8;
@@ -249,6 +249,21 @@ impl DiscoveryServer {
 
         let additional_addresses = if include_knx_addresses { context.additional_individual_addresses() } else { &[] };
 
+        // Secured Service Families list (03/08/09 §2.6.2.2): collected
+        // before `dibs` so the borrow in the DIB builder outlives it.
+        let secured_families: Vec<SupportedService, 3> = context
+            .ip_secure()
+            .map(|config| {
+                [ServiceFamily::DeviceManagement, ServiceFamily::Tunneling, ServiceFamily::Routing]
+                    .into_iter()
+                    .filter_map(|family| {
+                        let version = config.secured_service_family(family);
+                        (version != 0).then_some(SupportedService { family, version })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         // Build the DIB list. Mandatory DIBs first, then optional.
         let mut dibs: Vec<DescriptionInformationBlockBuilder<'_>, MAX_RESPONSE_DIBS> = Vec::new();
 
@@ -257,6 +272,14 @@ impl DiscoveryServer {
             SupportedServiceFamiliesBuilder::new(&self.supported_services),
         ));
         let _ = dibs.push(DescriptionInformationBlockBuilder::ExtendedDeviceInformation(&extended_device_info));
+
+        // Included whenever at least one family requires SECURE_WRAPPER
+        // traffic per PID_SECURED_SERVICE_FAMILIES.
+        if !secured_families.is_empty() {
+            let _ = dibs.push(DescriptionInformationBlockBuilder::SecuredServiceFamilies(
+                SecuredServiceFamiliesBuilder::new(&secured_families),
+            ));
+        }
 
         if let Some(ref cfg) = ip_config {
             let _ = dibs.push(DescriptionInformationBlockBuilder::IpConfig(cfg));

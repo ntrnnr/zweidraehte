@@ -9,7 +9,7 @@ use crate::{
     context::{ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext, PropertyServiceContext},
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
-        RemoteRestartContext, RoutingMulticastRebindContext,
+        IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
     },
 };
 use zweidraehte_proto::messages::{buffers::Buffer, builder::IndicationMessage};
@@ -18,8 +18,10 @@ pub(crate) mod connections; // Connection-oriented state machines
 pub mod context; // IP-specific context traits
 pub mod definition; // KnxNetIpDefinition trait — link-layer bill of materials
 pub mod features; // Compile-time feature selection
-pub mod secure; // IP Secure feature skeleton (§2.2.1ff., shape only)
-pub(crate) mod services; // Connectionless service handlers
+pub mod secure; // IP Secure feature slot, session pool, per-session state
+pub(crate) mod services;
+#[cfg(feature = "ip-secure")]
+pub(crate) mod session_handler; // IP Secure session state machine (§2.2.3.5.2) // Connectionless service handlers
 
 mod builder;
 mod dispatch; // Frame routing and response sending
@@ -48,6 +50,7 @@ pub(crate) trait KnxNetIpContext:
     + IpAdditionalIndividualAddressContext
     + KnxIndividualAddressContext
     + RoutingMulticastRebindContext
+    + IpSecureConfigContext
 {
 }
 
@@ -62,6 +65,7 @@ impl<T> KnxNetIpContext for T where
         + IpAdditionalIndividualAddressContext
         + KnxIndividualAddressContext
         + RoutingMulticastRebindContext
+        + IpSecureConfigContext
 {
 }
 

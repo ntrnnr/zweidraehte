@@ -54,6 +54,14 @@ pub trait KnxNetIpDefinition: Copy + 'static {
     /// [`Features<...>`](super::features::Features).
     type Features: FeatureSet;
 
+    /// Random source for IP Secure ephemeral session keys.
+    ///
+    /// Defaults to [`NoRng`](crate::rng::NoRng), which panics if ever
+    /// invoked — IP Secure builds must set a real
+    /// [`Rng`](crate::rng::Rng) here (typically the same type as
+    /// `StackDefinition::Rng`). Non-secure builds never call it.
+    type Rng: crate::rng::Rng = crate::rng::NoRng;
+
     // ------------------------------------------------------------------
     // Derived sizing constants
     // ------------------------------------------------------------------

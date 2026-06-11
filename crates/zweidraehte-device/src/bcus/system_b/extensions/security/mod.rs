@@ -40,6 +40,10 @@
 mod augment;
 
 pub use augment::SecurityAugment;
+// Array-property read/write helpers shared with the IP Secure augment
+// (PIDs 93/97 use the same SecurityTable count semantics).
+#[cfg(feature = "ip-secure")]
+pub(in crate::bcus::system_b::extensions) use augment::{read_table_with_count_probe, write_security_table};
 use zweidraehte_proto::messages::knx::RequiredSecurity;
 
 use core::cell::{Cell, RefCell};

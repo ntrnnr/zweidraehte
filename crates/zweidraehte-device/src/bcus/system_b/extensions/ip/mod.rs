@@ -16,9 +16,17 @@
 //! [`Extension::create_augment`](crate::bcus::system_b::Extension::create_augment).
 
 mod augment;
+#[cfg(feature = "ip-secure")]
+mod ip_secure;
 mod tunnelling;
 
 pub use augment::IpAugment;
+#[cfg(feature = "ip-secure")]
+pub use ip_secure::{
+    EMPTY_PASSWORD_HASH, IpSecureAugment, IpSecureExtensionConfig, IpSecureExtensionState,
+    IpSecureInterfaceAugmentBundle, IpSecureInterfaceDeviceState, IpSecureInterfaceExtension,
+    IpSecureInterfaceExtensionFor, IpSecureResources,
+};
 pub use tunnelling::{TunnellingAugment, TunnellingExtension, TunnellingExtensionConfig};
 
 use core::cell::Cell;
@@ -362,6 +370,10 @@ impl<const CAPS: u16> HasRoutingMulticastRebind for IpExtensionState<CAPS> {
 /// this with a [`TunnellingExtension`] and overrides them.
 impl<const CAPS: u16> crate::ip::HasAdditionalIas for IpExtensionState<CAPS> {}
 
+/// No IP Secure secret storage on the plain IP extension — adopts the
+/// `None` default. The secure IP extension overrides this.
+impl<const CAPS: u16> crate::ip::HasIpSecureView for IpExtensionState<CAPS> {}
+
 // ============================================================================
 // Extension — unified persistence + augmentation
 // ============================================================================
@@ -547,6 +559,10 @@ impl<const N: usize, const CAPS: u16> crate::ip::HasAdditionalIas for IpInterfac
         self.tunnelling.contains(addr)
     }
 }
+
+/// No IP Secure secret storage on the plain interface extension —
+/// adopts the `None` default. The secure IP extension overrides this.
+impl<const N: usize, const CAPS: u16> crate::ip::HasIpSecureView for IpInterfaceExtension<N, CAPS> {}
 
 impl<const N: usize, const CAPS: u16> HasDomainAddress for IpInterfaceExtension<N, CAPS> {
     const DOMAIN_ADDRESS_LENGTH: usize = IpExtensionState::<CAPS>::DOMAIN_ADDRESS_LENGTH;

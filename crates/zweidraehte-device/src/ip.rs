@@ -124,6 +124,66 @@ pub trait HasAdditionalIas {
 }
 
 // ============================================================================
+// KNX IP Secure configuration view
+// ============================================================================
+
+/// Read access to the persisted KNX IP Secure secret material (PIDs
+/// 91–97 of the KNXnet/IP Parameter Object, 03/08/09 §2.3.1).
+///
+/// Key material is returned **by value** — the storage uses interior
+/// mutability (`Cell`/`RefCell`), so borrows could not escape the
+/// accessor anyway, and 16 bytes copy for free.
+pub trait IpSecureStateView {
+    /// PID 91 — Secure Backbone Key. AES-128 key for multicast
+    /// SECURE_WRAPPER / TIMER_NOTIFY (secure routing — not used until
+    /// routing support lands). All-zero means "not provisioned".
+    fn backbone_key(&self) -> [u8; 16];
+
+    /// PID 92 — Device Authentication Code: CCM key for the
+    /// SESSION_RESPONSE MAC (§2.3.1.3). Factory default is the FDSK.
+    fn device_authentication_code(&self) -> [u8; 16];
+
+    /// PID 93 — password hash for `user_id` (1 = management user,
+    /// 2..=127 device-specific). `None` for unprogrammed slots
+    /// (§2.3.1.4).
+    fn password_hash(&self, user_id: u8) -> Option<[u8; 16]>;
+
+    /// PID 94 — required security version for a service family. Zero
+    /// means plain frames are accepted; non-zero means the family only
+    /// accepts SECURE_WRAPPER traffic (§2.3.1.5).
+    fn secured_service_family(&self, family: zweidraehte_proto::messages::knxip::substructs::ServiceFamily) -> u8;
+
+    /// PID 95 — multicast latency tolerance in ms (replay window for
+    /// multicast SECURE_WRAPPER; default 2000, §2.3.1.6).
+    fn multicast_latency_tolerance_ms(&self) -> u16;
+
+    /// PID 96 — sync latency fraction (PDT_SCALING, default 0x1A ≙
+    /// 10.2 %, §2.3.1.7).
+    fn sync_latency_fraction(&self) -> u8;
+
+    /// PID 97 — whether `user_id` is authorised for the tunnelling
+    /// slot with the given 1-based tunnelling-address index. The
+    /// management user (1) is implicitly authorised for every slot and
+    /// never stored in the table (§2.3.1.8).
+    fn tunnelling_user_allowed(&self, user_id: u8, tunnelling_slot: u8) -> bool;
+}
+
+/// Capability gate for KNX IP Secure on the extension state.
+///
+/// Same shape as [`HasAdditionalIas`]: every IP extension state
+/// implements it (the default returns `None`), and only the secure
+/// extension overrides it to expose its [`IpSecureStateView`]. The
+/// KNX/IP link-layer context impl can therefore be written once with an
+/// `ES: HasIpSecureView` bound without forcing non-secure devices to
+/// carry secret storage.
+pub trait HasIpSecureView {
+    /// Borrow the IP Secure configuration, if this extension carries it.
+    fn ip_secure_view(&self) -> Option<&dyn IpSecureStateView> {
+        None
+    }
+}
+
+// ============================================================================
 // Constants
 // ============================================================================
 

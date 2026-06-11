@@ -64,14 +64,14 @@ pub trait FeatureSet {
     /// |  4  | Remote Config & Diagnosis         |
     /// |  5  | Object Server (not implemented)   |
     ///
-    /// Bit 7 ("Security") is reserved for the IP Secure announcement
-    /// once the dispatch path lands. We do **not** set it from
-    /// `IpSecure::ENABLED` yet — the bit must only be set when the
-    /// device can actually answer secure traffic.
+    /// Bit 7 ("Security") announces KNX IP Secure support and is set
+    /// from `IpSecure::ENABLED` — with the secure dispatch path wired,
+    /// an enabled feature set actually answers secure traffic.
     const KNXNETIP_DEVICE_CAPABILITIES: u16 = 0x0001 // Device Management always present
         | if Self::Routing::ENABLED { 1 << 2 } else { 0 }
         | if Self::Tunneling::ENABLED { 1 << 1 } else { 0 }
-        | if Self::RemoteConfig::ENABLED { 1 << 4 } else { 0 };
+        | if Self::RemoteConfig::ENABLED { 1 << 4 } else { 0 }
+        | if Self::IpSecure::ENABLED { 1 << 7 } else { 0 };
 }
 
 /// Bundle of feature marker types, parameterizing the KNX/IP link layer.
@@ -135,25 +135,15 @@ pub type KnxIpInterfaceUdp<const N: usize> = Features<NoRouting, WithRemoteConfi
 pub type KnxIpInterfaceTcp<const N: usize> =
     Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, NoIpSecure>;
 
-/// KNX IP Secure Interface (TCP, with IP Secure session pool).
+/// KNX IP Secure Interface (TCP, secure unicast sessions enabled).
 ///
-/// Session storage is allocated; crypto dispatch is not yet implemented
-/// (see [`super::secure`]).
-///
-/// # WARNING: IP Secure session handling is NOT implemented
-///
-/// Using this feature set does **not** enable KNX IP Secure. The `0x09xx`
-/// service-type range (`SECURE_WRAPPER`, `SESSION_REQUEST`,
-/// `SESSION_RESPONSE`, `SESSION_AUTHENTICATE`, `SESSION_STATUS`,
-/// `TIMER_NOTIFY`) is never dispatched — those frames are silently dropped.
-/// Only the per-session storage is reserved via
-/// [`WithIpSecure<N>`](super::secure::WithIpSecure); no authentication,
-/// encryption, or key exchange takes place.
-///
-/// This alias exists to allow the rest of the device definition to name an
-/// eventual secure-interface type without compile-time breakage. It must
-/// **not** be used in any context that requires actual KNX IP Secure
-/// compliance.
+/// Tunneling + remote config + TCP, with the `0x09xx` secure
+/// service-type range dispatched to the session state machine
+/// (`SESSION_REQUEST` handshake, `SECURE_WRAPPER` unwrap/wrap,
+/// secured-service-family enforcement). Only available with the
+/// `ip-secure` cargo feature. `N` is the tunneling slot count and the
+/// secure session pool size (sessions are TCP-only, 1:1 per stream).
+#[cfg(feature = "ip-secure")]
 pub type KnxIpSecureInterfaceTcp<const N: usize> =
     Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
 

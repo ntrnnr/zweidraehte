@@ -592,6 +592,7 @@ mod tests {
             None,
             None,
             0,
+            None,
         );
 
         let (frame, len) = reset_frame(selector, cmd);
@@ -653,6 +654,7 @@ mod tests {
             None,
             None,
             0,
+            None,
         );
 
         let requested = IpConfig {

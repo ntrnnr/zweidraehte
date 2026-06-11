@@ -208,6 +208,9 @@ pub struct ServerContext<'a> {
     /// always 0 in practice. The field is threaded through now so that
     /// multi-socket support can be enabled without changing the service API.
     pub socket_idx: usize,
+    /// KNX IP Secure configuration (PIDs 91–97), for the discovery
+    /// server's SecuredServiceFamilies DIB. `None` on non-secure devices.
+    ip_secure: Option<&'a dyn crate::ip::IpSecureStateView>,
 }
 
 impl<'a> ServerContext<'a> {
@@ -225,6 +228,7 @@ impl<'a> ServerContext<'a> {
         tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
         address_filter: Option<&'a dyn AddressFilter>,
         socket_idx: usize,
+        ip_secure: Option<&'a dyn crate::ip::IpSecureStateView>,
     ) -> Self {
         Self {
             buffer_manager,
@@ -239,6 +243,7 @@ impl<'a> ServerContext<'a> {
             tunneling_slot_info,
             address_filter,
             socket_idx,
+            ip_secure,
         }
     }
 
@@ -300,6 +305,11 @@ impl<'a> ServerContext<'a> {
     /// Present for routing devices; absent for tunneling-only servers.
     pub fn address_filter(&self) -> Option<&dyn AddressFilter> {
         self.address_filter
+    }
+
+    /// Get the KNX IP Secure configuration view, if the device is secure.
+    pub fn ip_secure(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
+        self.ip_secure
     }
 
     /// Send an indication to the network layer (L_Data.ind).

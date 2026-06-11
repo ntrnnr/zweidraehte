@@ -13,7 +13,7 @@ use embassy_sync::{
 };
 use embassy_time::{Duration, Instant};
 use zweidraehte_proto::messages::{
-    buffers::Buffer,
+    buffers::{Buffer, MessageBuffer},
     builder::{ConfirmationExt, IndicationMessage, RequestMessage},
     knxip::*,
 };
@@ -21,6 +21,7 @@ use zweidraehte_proto::messages::{
 use super::{
     KnxNetIpContext, PacketOrigin, PendingResponse, ResponseTarget, ServerContext, ServerError, connections,
     features::{self, RemoteConfigFeature, RoutingFeature, TcpFeature},
+    secure::{self, IpSecureFeature, SecureEnv, SecureFrameOutcome},
     services,
 };
 
@@ -91,6 +92,7 @@ pub(super) fn make_server_context<'a, RC: RemoteConfigFeature>(
         tunneling_slot_info,
         address_filter,
         socket_idx,
+        context.ip_secure_view(),
     )
 }
 
@@ -231,6 +233,70 @@ where
             PacketOrigin::Tcp { .. } => 0,
         };
 
+        // ================================================================
+        // IP Secure pre-stage: session handshake frames are consumed
+        // here; SECURE_WRAPPER frames are authenticated and decrypted,
+        // and the plaintext inner frame continues through the normal
+        // dispatch below with the session identity attached. The whole
+        // block folds away for `NoIpSecure`.
+        // ================================================================
+        let mut secure_inner: Option<Buffer<'static>> = None;
+        let mut secure_session: Option<(u16, u8)> = None;
+        if <F::IpSecure as IpSecureFeature>::ENABLED
+            && peek_service_type(buffer).is_ok_and(|st| secure::secure_service_types::is_secure(u16::from(st)))
+        {
+            let tcp_idx = match origin {
+                PacketOrigin::Tcp { tcp_idx, .. } => Some(tcp_idx),
+                PacketOrigin::Udp { .. } => None,
+            };
+            let env = SecureEnv {
+                config: self.context.ip_secure_view(),
+                serial_number: self.context.knx_serial_number(),
+                rng_fill: self.rng_fill,
+                now: Instant::now(),
+            };
+            // Decryption scratch comes from the buffer pool, not the
+            // stack, so the non-secure future stays small.
+            let Some(mut scratch) = self.context.buffer_manager().try_alloc() else {
+                warn!("No buffer for IP Secure frame processing, dropped");
+                return;
+            };
+            scratch.set_len(scratch.capacity());
+
+            let mut handshake_responses = secure::SecureResponses::new();
+            let outcome = <F::IpSecure as IpSecureFeature>::handle_secure_frame(
+                &mut self.secure_sessions,
+                buffer,
+                tcp_idx,
+                &env,
+                &mut scratch[..],
+                &mut handshake_responses,
+            );
+            for frame in &handshake_responses {
+                if let Some(buf) = self.context.buffer_manager().try_alloc_from_slice(frame) {
+                    response_channel.send(PendingResponse { buffer: buf, target: origin.reply_target() }).await;
+                }
+            }
+            match outcome {
+                SecureFrameOutcome::Handled { closed_session } => {
+                    if let Some(session_id) = closed_session {
+                        let tcp_events = self.connection_manager.close_secure_session_connections(session_id);
+                        self.apply_tcp_channel_events(&tcp_events);
+                    }
+                    return;
+                }
+                SecureFrameOutcome::Inner { len, session_id, user_id } => {
+                    scratch.set_len(len);
+                    secure_session = Some((session_id, user_id));
+                    secure_inner = Some(scratch);
+                }
+            }
+        }
+        let buffer: &[u8] = match &secure_inner {
+            Some(inner) => &inner[..],
+            None => buffer,
+        };
+
         match peek_service_type(buffer) {
             Ok(service_type) => {
                 debug!("  Service type: {:?}", service_type);
@@ -281,6 +347,21 @@ where
                     }
                 }
 
+                // Secured-service-family enforcement (03/08/09
+                // §2.2.1.4): once a family is marked secured in
+                // PID_SECURED_SERVICE_FAMILIES, its services are only
+                // accepted through an authenticated SECURE_WRAPPER —
+                // plain arrivals are discarded. Discovery stays plain.
+                if <F::IpSecure as IpSecureFeature>::ENABLED
+                    && secure_session.is_none()
+                    && let Some(config) = self.context.ip_secure_view()
+                    && let Some(family) = secured_family_of(service_type, buffer)
+                    && config.secured_service_family(family) != 0
+                {
+                    warn!("Dropping plain {:?} from {}: service family is secured", service_type, source);
+                    return;
+                }
+
                 match service_type.category() {
                     // Connection lifecycle and connection-oriented data go
                     // to the connection manager.
@@ -288,7 +369,14 @@ where
                         let inject_tx = self.subnet_inject_tx();
                         match self
                             .connection_manager
-                            .on_indication(service_type, buffer, origin, self.context.buffer_manager(), inject_tx)
+                            .on_indication(
+                                service_type,
+                                buffer,
+                                origin,
+                                self.context.buffer_manager(),
+                                inject_tx,
+                                secure_session.map(|(session_id, _)| session_id),
+                            )
                             .await
                         {
                             Ok(result) => {
@@ -432,11 +520,46 @@ where
                 let _ = self.udp_manager.send_to(socket_idx, data, destination).await;
             }
             ResponseTarget::Tcp { tcp_idx } => {
+                // IP Secure interception point: every plain frame leaving on
+                // a TCP stream that owns an authenticated session is wrapped
+                // here, regardless of which subsystem produced it (connect
+                // responses, tunneling indications, devmgmt frames, ACK
+                // retransmits — a retransmit deliberately gets a fresh
+                // wrapper sequence number). Frames already in the secure
+                // family (handshake replies, wrapped status, timeout
+                // notifications) pass through untouched.
+                let mut wrapped: Option<Buffer<'static>> = None;
+                if <F::IpSecure as IpSecureFeature>::ENABLED
+                    && peek_service_type(data).is_ok_and(|st| !secure::secure_service_types::is_secure(u16::from(st)))
+                    && <F::IpSecure as IpSecureFeature>::session_for_tcp(&self.secure_sessions, tcp_idx).is_some()
+                {
+                    let serial = self.context.knx_serial_number();
+                    let Some(mut out) = self.context.buffer_manager().try_alloc() else {
+                        warn!("No buffer to wrap secure response on TCP {}, dropped", tcp_idx);
+                        return;
+                    };
+                    out.set_len(out.capacity());
+                    let Some(len) = <F::IpSecure as IpSecureFeature>::wrap_outgoing(
+                        &mut self.secure_sessions,
+                        tcp_idx,
+                        data,
+                        &serial,
+                        &mut out[..],
+                    ) else {
+                        warn!("Failed to wrap secure response on TCP {}, dropped", tcp_idx);
+                        return;
+                    };
+                    out.set_len(len);
+                    wrapped = Some(out);
+                }
+                let data = wrapped.as_ref().map(|b| &b[..]).unwrap_or(data);
+
                 debug!("Sending {} byte response on TCP connection {}", data.len(), tcp_idx);
                 if <F::Tcp as TcpFeature>::write_to(&mut self.tcp_manager, tcp_idx, data).await.is_err() {
                     warn!("TCP write failed on connection {}, closing", tcp_idx);
                     let _ = <F::Tcp as TcpFeature>::close(&mut self.tcp_manager, tcp_idx);
                     self.connection_manager.on_tcp_closed(tcp_idx);
+                    let _ = <F::IpSecure as IpSecureFeature>::on_tcp_closed(&mut self.secure_sessions, tcp_idx);
                 }
             }
         }
@@ -452,5 +575,44 @@ where
             Some(bridge) => bridge.subnet_inject_tx,
             None => self.ind_tx,
         }
+    }
+}
+
+// ============================================================================
+// Secured-service-family mapping
+// ============================================================================
+
+/// Which securable service family (PID_SECURED_SERVICE_FAMILIES entry)
+/// a service type belongs to, for plain-frame rejection. `None` means
+/// the service is never gated: discovery and the Core lifecycle
+/// services stay reachable in plain (connection-session binding handles
+/// cross-context CONNECTIONSTATE/DISCONNECT references separately).
+///
+/// CONNECT_REQUEST is classified by its CRI connection type, because a
+/// single Core service opens connections of different families.
+fn secured_family_of(service_type: KNXnetIPServiceType, frame: &[u8]) -> Option<substructs::ServiceFamily> {
+    use KNXnetIPServiceType::*;
+    use zweidraehte_proto::util::packets::ParseBuffer;
+
+    match service_type {
+        DeviceConfigurationRequest | DeviceConfigurationAck => Some(substructs::ServiceFamily::DeviceManagement),
+        TunnelingRequest
+        | TunnelingAck
+        | TunnelingFeatureGet
+        | TunnelingFeatureResponse
+        | TunnelingFeatureSet
+        | TunnelingFeatureInfo => Some(substructs::ServiceFamily::Tunneling),
+        RoutingIndication | RoutingBusy | RoutingLostMessage | RoutingSystemBroadcast => {
+            Some(substructs::ServiceFamily::Routing)
+        }
+        ConnectRequest => {
+            let mut buf = frame;
+            match buf.parse::<zweidraehte_proto::messages::knxip::ConnectRequest>().ok()?.cri.connection_type() {
+                substructs::ConnectionType::DeviceManagement => Some(substructs::ServiceFamily::DeviceManagement),
+                substructs::ConnectionType::Tunnel => Some(substructs::ServiceFamily::Tunneling),
+                _ => None,
+            }
+        }
+        _ => None,
     }
 }

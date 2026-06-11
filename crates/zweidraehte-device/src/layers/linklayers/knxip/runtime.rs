@@ -17,10 +17,11 @@ use zweidraehte_proto::messages::{
 };
 
 use super::{
-    KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ServerError, SubnetIndication, SubnetLink,
-    connections,
+    KnxNetIpContext, KnxNetIpResources, PacketOrigin, PendingResponse, ResponseTarget, ServerError, SubnetIndication,
+    SubnetLink, connections,
     dispatch::{self, MAX_RETRY_QUEUE_SIZE, PendingRequest},
     features::{self, RoutingFeature, TcpFeature},
+    secure::{IpSecureFeature, SessionPool},
     services,
     transport::{TcpEvent, UdpEvent, UdpManager},
 };
@@ -105,6 +106,13 @@ pub struct KnxNetIp<
     /// from the rebind path without asking the platform for an
     /// interface lookup each time.
     pub(super) interface_addr: Ipv4Addr,
+    /// IP Secure session pool — zero-sized for `NoIpSecure` (slot type
+    /// `()`). Sized by `MAX_TCP_STREAMS` because secure sessions are
+    /// TCP-only with 1:1 stream affinity.
+    pub(super) secure_sessions: SessionPool<<F::IpSecure as IpSecureFeature>::SessionSlot, MAX_TCP_STREAMS>,
+    /// Random fill for IP Secure ephemeral key generation, from
+    /// `KnxNetIpDefinition::Rng`. Never invoked on non-secure builds.
+    pub(super) rng_fill: fn(&mut [u8]),
 }
 
 impl<
@@ -191,6 +199,28 @@ where
                 for event in tcp_idle_events {
                     if let TcpEvent::Closed { tcp_idx, .. } = &event {
                         self.connection_manager.on_tcp_closed(*tcp_idx);
+                        let _ = <F::IpSecure as IpSecureFeature>::on_tcp_closed(&mut self.secure_sessions, *tcp_idx);
+                    }
+                }
+            }
+
+            // IP Secure session expiry (03/08/09 §2.2.3.5.2.5 event E06
+            // → action A5): send a wrapped STATUS_TIMEOUT, close the
+            // KNX/IP connections created within the session, deallocate.
+            // Folds to nothing for `NoIpSecure`.
+            if <F::IpSecure as IpSecureFeature>::ENABLED {
+                let serial = self.context.knx_serial_number();
+                let expired =
+                    <F::IpSecure as IpSecureFeature>::tick(&mut self.secure_sessions, Instant::now(), &serial);
+                for session in expired {
+                    let tcp_events = self.connection_manager.close_secure_session_connections(session.session_id);
+                    self.apply_tcp_channel_events(&tcp_events);
+                    if let Some(buffer) = self.context.buffer_manager().try_alloc_from_slice(&session.status_frame) {
+                        self.send_response(PendingResponse {
+                            buffer,
+                            target: ResponseTarget::Tcp { tcp_idx: session.tcp_idx },
+                        })
+                        .await;
                     }
                 }
             }
@@ -214,12 +244,10 @@ where
                 None
             };
 
-            let next_timer = match (self.get_next_retry_time(), heartbeat_time) {
-                (Some(a), Some(b)) => Some(if a < b { a } else { b }),
-                (Some(a), None) => Some(a),
-                (None, Some(b)) => Some(b),
-                (None, None) => None,
-            };
+            // Earliest of: retry queue, heartbeat tick, IP Secure
+            // session deadline (None on non-secure builds).
+            let secure_deadline = <F::IpSecure as IpSecureFeature>::next_deadline(&self.secure_sessions);
+            let next_timer = [self.get_next_retry_time(), heartbeat_time, secure_deadline].into_iter().flatten().min();
 
             // Third transport arm: bus bridge indications from the TP1 bus.
             // In standalone mode (no bridge), this pends forever.
@@ -307,6 +335,10 @@ where
                     Either4::Second(TcpEvent::Closed { tcp_idx, .. }) => {
                         info!("TCP connection {} closed, tearing down KNX/IP channels", tcp_idx);
                         self.connection_manager.on_tcp_closed(tcp_idx);
+                        // §2.4.2: sessions opened on the stream close
+                        // implicitly; their connections share the
+                        // stream and died in `on_tcp_closed` above.
+                        let _ = <F::IpSecure as IpSecureFeature>::on_tcp_closed(&mut self.secure_sessions, tcp_idx);
                     }
 
                     // Bus bridge: TP1 bus indication to forward to tunnel clients

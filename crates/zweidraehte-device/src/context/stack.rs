@@ -26,9 +26,10 @@ use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetra
 #[cfg(feature = "knxip")]
 use crate::{
     HasAdditionalIas, HasIpExtensionState, HasPersistence, HasRoutingMulticastRebind, IpPlatform,
+    ip::HasIpSecureView,
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
-        RemoteRestartContext, RoutingMulticastRebindContext,
+        IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
     },
 };
 use crate::{
@@ -270,6 +271,26 @@ where
 
     fn mark_config_dirty(&self) {
         self.inner.state.mark_dirty();
+    }
+}
+
+/// Forward the extension state's KNX IP Secure configuration (PIDs
+/// 91–97) to the link layer. The `HasIpSecureView` bound is satisfied
+/// by every IP extension state — its default returns `None`, and only
+/// the secure IP extension overrides it — so this impl (and thereby the
+/// `KnxNetIpContext` blanket) stays unconditional for non-secure IP
+/// devices.
+#[cfg(feature = "knxip")]
+impl<D: IpCapableStack> IpSecureConfigContext for StackContext<'_, D>
+where
+    <D::State as HasExtensionState>::ES: HasIpSecureView,
+{
+    fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
+        self.inner.state.extension_state().ip_secure_view()
+    }
+
+    fn knx_serial_number(&self) -> [u8; 6] {
+        *self.inner.state.serial_number()
     }
 }
 
