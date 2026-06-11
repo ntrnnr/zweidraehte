@@ -341,20 +341,15 @@ impl<const CAPS: u16> HasGoSecurityView for IpExtensionState<CAPS> {}
 impl<const CAPS: u16> IpExtensionState<CAPS> {
     fn on_erase_manual(&self, code: EraseCode) {
         if matches!(code, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA) {
-            let defaults: IpExtensionConfig = IpExtensionConfig::default();
-            self.friendly_name.set(defaults.friendly_name);
-            self.friendly_name_len.set(defaults.friendly_name_len as usize);
-            self.configured_ip.set(Ipv4Addr::from(defaults.configured_ip));
-            self.configured_subnet.set(Ipv4Addr::from(defaults.configured_subnet));
-            self.configured_gateway.set(Ipv4Addr::from(defaults.configured_gateway));
-            self.ip_assignment_method.set(defaults.ip_assignment_method);
+            // The derive-generated `apply_config` resets every persisted
+            // field through its Cell — only the side-effect the field
+            // mapping can't express stays hand-written here.
+            let defaults = IpExtensionConfig::default();
             let default_mcast = Ipv4Addr::from(defaults.routing_multicast);
-            self.routing_multicast.set(default_mcast);
+            self.apply_config(defaults);
             // Factory reset must also rebind to the default group, via
             // the same path writes use.
             let _ = self.rebind_channel.try_send(default_mcast);
-            self.ttl.set(defaults.ttl);
-            self.project_installation_id.set(defaults.project_installation_id);
         }
     }
 }

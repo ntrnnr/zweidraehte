@@ -178,11 +178,9 @@ pub struct Stm32G0SecureAugments<'a> {
 
 impl HasSequenceStorage for Stm32G0SecureLightSwitch {
     type SeqStorage = Stm32G0SeqStorage;
-    // `create_seq_storage` is intentionally not overridden: the real store is
-    // built in `main` from the SPI2 FRAM peripheral and threaded through
-    // `StateInit` → `SecureResources`. `FramSeqStorage` owns real hardware so
-    // it cannot be fabricated from nothing anyway. The trait's default panics
-    // if ever called, which it never is for this StateInit-threading device.
+    // The trait only names the type; the real store is built in `main`
+    // from the SPI2 FRAM peripheral and threaded through `StateInit` →
+    // `SecureResources`.
 }
 
 zweidraehte_device::system_b_standard_stack! {

@@ -340,14 +340,22 @@ pub trait SequenceNumberStorage {
 
 /// Trait for stack definitions that provide sequence number storage.
 ///
-/// Only implemented by secure device stacks. Non-secure stacks don't
-/// need it. The [`SecureDeviceBuilder`] requires this bound.
+/// Only implemented by secure device stacks (it names the concrete
+/// `SeqStorage` type for the type system). Non-secure stacks don't need
+/// it. The [`SecureDeviceBuilder`] requires this bound.
+///
+/// The storage *instance* is always constructed by the device's `main`
+/// and threaded through [`StateInit`](crate::StackDefinition::StateInit)
+/// → [`SecureResources`](crate::bcus::system_b::SecureResources) —
+/// hardware-backed stores (an SPI FRAM, a flash sector handle) only
+/// exist there. The trait deliberately has no factory method; an earlier
+/// `create_seq_storage()` default existed and panicked on every device
+/// except the conformance harness, which now builds its shared-memory
+/// store through its own inherent function instead.
 ///
 /// # Related
 ///
-/// This trait sits on the [`StackDefinition`](crate::StackDefinition)
-/// impl and produces the concrete `SeqStorage` type once, at stack
-/// construction time. The runtime counterpart
+/// The runtime counterpart
 /// [`HasSeqStorage`](crate::bcus::system_b::HasSeqStorage)
 /// lives on the `SecureExtensionState` and exposes that same storage
 /// through `&self` so the S-AL layer and the PID 59 augment can borrow
@@ -357,30 +365,4 @@ pub trait SequenceNumberStorage {
 pub trait HasSequenceStorage {
     /// The concrete sequence number storage type.
     type SeqStorage: SequenceNumberStorage;
-
-    /// Create a new sequence storage instance, e.g., by loading
-    /// persisted values from flash or shared memory.
-    ///
-    /// # Two construction models
-    ///
-    /// This factory callback only fits devices whose `SeqStorage` can be
-    /// built from nothing — e.g. the conformance harness, which maps an
-    /// IPC shared-memory region with no peripheral handles. Real hardware
-    /// targets whose store needs a peripheral (an SPI FRAM, a flash sector
-    /// handle) cannot satisfy that — those handles only exist in `main`.
-    /// Such devices thread the already-constructed store through
-    /// [`StateInit`](crate::StackDefinition::StateInit) →
-    /// [`SecureResources`](crate::bcus::system_b::SecureResources) instead,
-    /// and never call this method.
-    ///
-    /// The default therefore panics: it exists so StateInit-threading
-    /// devices do not have to write an `unreachable!()` stub merely to
-    /// satisfy the bound. Override it only for the from-nothing model.
-    fn create_seq_storage() -> Self::SeqStorage {
-        unimplemented!(
-            "create_seq_storage is unused on this device: sequence storage is \
-             threaded through StateInit/SecureResources. Override this method \
-             only for devices that build their store from nothing."
-        )
-    }
 }

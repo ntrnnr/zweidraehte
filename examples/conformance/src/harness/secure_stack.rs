@@ -1073,8 +1073,17 @@ static SEQ_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
 impl HasSequenceStorage for IpcSecureConformanceTestStack {
     type SeqStorage = ShmSeqStorage;
+}
 
-    fn create_seq_storage() -> Self::SeqStorage {
+impl IpcSecureConformanceTestStack {
+    /// Build the shared-memory sequence storage from the pointer
+    /// installed by [`set_seq_shm_ptr`].
+    ///
+    /// The conformance harness is the one stack whose storage can be
+    /// built "from nothing" (a process-global shared-memory mapping);
+    /// hardware devices construct theirs in `main` from peripherals
+    /// and thread it through `StateInit` → `SecureResources`.
+    pub fn create_seq_storage() -> ShmSeqStorage {
         let ptr = *SEQ_PTR.get().expect("set_seq_shm_ptr() must be called before stack creation");
         unsafe { ShmSeqStorage::from_ptr(ptr as *mut u8) }
     }

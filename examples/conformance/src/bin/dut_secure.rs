@@ -18,7 +18,6 @@ use zweidraehte_conformance::harness::secure_stack::{
 use zweidraehte_conformance::harness::shm::SharedMemory;
 use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
 
-use zweidraehte_device::storage::HasSequenceStorage;
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
