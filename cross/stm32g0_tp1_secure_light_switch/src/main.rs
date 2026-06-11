@@ -176,8 +176,6 @@ pub struct Stm32G0SecureAugments<'a> {
     pub easter: EasterEggAugment,
 }
 
-impl SystemBStackDefinition for Stm32G0SecureLightSwitch {}
-
 impl HasSequenceStorage for Stm32G0SecureLightSwitch {
     type SeqStorage = Stm32G0SeqStorage;
     // `create_seq_storage` is intentionally not overridden: the real store is
@@ -187,76 +185,51 @@ impl HasSequenceStorage for Stm32G0SecureLightSwitch {
     // if ever called, which it never is for this StateInit-threading device.
 }
 
-impl StackDefinition for Stm32G0SecureLightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
+zweidraehte_device::system_b_standard_stack! {
+    stack: Stm32G0SecureLightSwitch,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: LightSwitchParams,
+    com_objects: LightSwitchComObjects,
+    link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
+    platform: (),
     // TP1 extension + Data Secure wrapper. `GRP`/`GO` are entry counts
     // (one group key slot per address table entry, one flag byte per
     // communication object), matching `SecureStateFor`'s invariant.
-    type ES =
-        SecureTp1ExtensionState<Stm32G0SeqStorage, { Self::ADT_ENTRIES }, P2P_SIZE, SIAT_SIZE, { Self::COT_ENTRIES }>;
-    // Flash-backed identity that carries the FDSK.
-    type Identity = FlashSecureIdentityData;
-    type State = Stm32G0SecureState;
-    type StateInit = SystemBStateInit<
-        Self::Identity,
-        <Stm32G0SecureState as HasDeviceConfig>::Config,
-        SecureResources<Tp1ExtensionState, Stm32G0SeqStorage>,
-    >;
-    type Mem = SystemBMemoryMap;
-    // `SecAugment` extends the interface-object list with the Security
-    // Object (IOT 0x11) that ETS uses to write group keys etc. It is
-    // produced by `state.extension_state().create_augment::<Self>(platform)`
-    // (see `create_augments` below) and bundled with `EasterEggAugment`
-    // into `Stm32G0SecureAugments` so the property hook chain reaches
-    // both via the macro-derived `Augment<D>` impl.
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = Stm32G0SecureAugments<'a>;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        Stm32G0SecureState::from_init(init)
-    }
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Self::default_interface_objects(state, platform, layer_ctx, augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Stm32G0SecureAugments {
+    extension_state: SecureTp1ExtensionState<
+        Stm32G0SeqStorage,
+        { Self::ADT_ENTRIES },
+        P2P_SIZE,
+        SIAT_SIZE,
+        { Self::COT_ENTRIES },
+    >,
+    state: Stm32G0SecureState,
+    al_extensions: zweidraehte_device::layers::application::services::SystemBSecureAlServices,
+    layer_builder: SecureDeviceBuilder,
+    // The FRAM sequence-number storage is built in `main` and threaded
+    // through `StateInit` as a construction-time resource.
+    resources: SecureResources<Tp1ExtensionState, Stm32G0SeqStorage>,
+    // `sec` extends the interface-object list with the Security Object
+    // (IOT 0x11) that ETS uses to write group keys etc.; the property
+    // hook chain reaches all three augments via the macro-derived
+    // `Augment<D>` impl on `Stm32G0SecureAugments`.
+    augments: {
+        bundle: Stm32G0SecureAugments,
+        create: |state, platform, _layer_ctx| Stm32G0SecureAugments {
             sec: state.extension_state().create_augment::<Self>(platform),
             diag: DiagnosticsAugment::<SecureGoSendPresent>::new(&state.operation_mode),
             easter: EasterEggAugment,
-        }
-    }
-
-    type AlExtensions = zweidraehte_device::layers::application::services::SystemBSecureAlServices;
-    type LayerBuilder = SecureDeviceBuilder;
-    // Non-crypto PRNG (see `stm32_common::rng`) — plugs directly into
-    // the Secure Application Layer's `S-A_Sync` challenge/nonce
-    // generation, no state-type newtype needed.
-    type Rng = Stm32CommonRng;
+        },
+    },
+    extra {
+        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+        // Flash-backed identity that carries the FDSK.
+        type Identity = FlashSecureIdentityData;
+        // Non-crypto PRNG (see `stm32_common::rng`) — plugs directly into
+        // the Secure Application Layer's `S-A_Sync` challenge/nonce
+        // generation, no state-type newtype needed.
+        type Rng = Stm32CommonRng;
+    },
 }
 
 // Import the full re-exported set from system_b so the ES alias

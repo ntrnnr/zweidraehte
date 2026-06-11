@@ -102,58 +102,29 @@ pub struct Stm32G0LightSwitchAugments<'a> {
     pub easter: EasterEggAugment,
 }
 
-impl SystemBStackDefinition for Stm32G0LightSwitch {}
-
-impl StackDefinition for Stm32G0LightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
-    type ES = Tp1ExtensionState;
-    type Identity = FlashIdentityData;
-    type State = Stm32G0State;
-    type StateInit = SystemBStateInit<Self::Identity, <Stm32G0State as HasDeviceConfig>::Config>;
-    type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = Stm32G0LightSwitchAugments<'a>;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        Stm32G0State::from_init(init)
-    }
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Self::default_interface_objects(state, platform, layer_ctx, augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Stm32G0LightSwitchAugments {
+zweidraehte_device::system_b_standard_stack! {
+    stack: Stm32G0LightSwitch,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: LightSwitchParams,
+    com_objects: LightSwitchComObjects,
+    link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
+    platform: (),
+    extension_state: Tp1ExtensionState,
+    state: Stm32G0State,
+    al_extensions: zweidraehte_device::layers::application::services::SystemBAlServices,
+    layer_builder: InsecureDeviceBuilder,
+    augments: {
+        bundle: Stm32G0LightSwitchAugments,
+        create: |state, platform, _layer_ctx| Stm32G0LightSwitchAugments {
             tp1: state.extension_state().create_augment::<Self>(platform),
             easter: EasterEggAugment,
-        }
-    }
-
-    type AlExtensions = zweidraehte_device::layers::application::services::SystemBAlServices;
-    type LayerBuilder = InsecureDeviceBuilder;
+        },
+    },
+    extra {
+        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+        type Identity = FlashIdentityData;
+    },
 }
 
 // ================================================================================

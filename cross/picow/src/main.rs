@@ -22,10 +22,7 @@ use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams, comm_objs::LightSwitchComObjects, easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::{
-    bcus::system_b::{
-        Extension, HasDeviceConfig, IpAugmentFor, IpExtensionFor, IpStateFor, SystemBInterfaceObjectsFor,
-        SystemBMemoryMap, SystemBStackDefinition, SystemBStateInit,
-    },
+    bcus::system_b::{Extension, IpAugmentFor, IpExtensionFor, IpStateFor, SystemBStackDefinition, SystemBStateInit},
     layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp},
     prelude::*,
 };
@@ -77,8 +74,6 @@ struct PicoWAugments<'a> {
     easter: EasterEggAugment,
 }
 
-impl SystemBStackDefinition for PicoWLightSwitch {}
-
 // IP-specific link-layer bill of materials. Routing-only UDP device,
 // so `MAX_TCP_STREAMS / MAX_TCP_CHANNELS` default to 0 and produce
 // zero-sized `TcpManager` storage. `MAX_UDP_SOCKETS = 3` covers
@@ -91,64 +86,31 @@ impl KnxNetIpDefinition for PicoWLightSwitch {
     const MAX_UDP_SOCKETS: usize = 3;
 }
 
-// `system_b_standard_stack!` would collapse this to one macro call if there
-// were no extra augments, but since `PicoWAugments` chains two augments (IP +
-// Easter egg) the macro cannot generate the correct `type Augments` / `create_augments`
-// bodies — the macro always emits the single-extension default. Devices that
-// chain multiple augments must hand-write `StackDefinition` until a future
-// macro extension supports a custom augment slot without conflicting with the
-// macro-generated default. (See `system_b_standard_stack!` docs.)
-impl StackDefinition for PicoWLightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<PicoWLightSwitch>;
-    type Platform = EmbassyNetworkInfo;
-    type ES = IpExtensionFor<KnxIpDeviceUdp>;
-    type Identity = rp_common::FlashIdentityData;
-    type State = PicoWState;
-    type StateInit = SystemBStateInit<Self::Identity, <PicoWState as HasDeviceConfig>::Config>;
-    type Mem = SystemBMemoryMap;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        PicoWState::from_init(init)
-    }
-
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = PicoWAugments<'a>;
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Self::default_interface_objects(state, platform, layer_ctx, augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        PicoWAugments { ip: state.extension_state().create_augment::<Self>(platform), easter: EasterEggAugment }
-    }
-
-    type AlExtensions = (
+zweidraehte_device::system_b_standard_stack! {
+    stack: PicoWLightSwitch,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: LightSwitchParams,
+    com_objects: LightSwitchComObjects,
+    link_layer_builder: KnxNetIpBuilder<PicoWLightSwitch>,
+    platform: EmbassyNetworkInfo,
+    extension_state: IpExtensionFor<KnxIpDeviceUdp>,
+    state: PicoWState,
+    al_extensions: (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
-    );
-    type LayerBuilder = InsecureIpDeviceBuilder;
+    ),
+    layer_builder: InsecureIpDeviceBuilder,
+    augments: {
+        bundle: PicoWAugments,
+        create: |state, platform, _layer_ctx| PicoWAugments {
+            ip: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        },
+    },
+    extra {
+        type Identity = rp_common::FlashIdentityData;
+    },
 }
 
 // ================================================================================
@@ -476,12 +438,7 @@ async fn main(spawner: Spawner) {
     // Features (routing + remote-config) and every numeric sizing knob
     // come from `PicoWLightSwitch`'s `KnxNetIpDefinition` impl. No more
     // `enable_*()` chain, no manually matched const generics.
-    let link_layer_builder = KnxNetIpBuilder::<PicoWLightSwitch>::new(
-        "wlan0",
-        local_ip,
-        control_endpoint,
-        socket_ctx,
-    );
+    let link_layer_builder = KnxNetIpBuilder::<PicoWLightSwitch>::new("wlan0", local_ip, control_endpoint, socket_ctx);
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<

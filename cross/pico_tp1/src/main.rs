@@ -75,62 +75,35 @@ struct PicoTp1Augments<'a> {
     easter: EasterEggAugment,
 }
 
-impl SystemBStackDefinition for PicoTp1LightSwitch {}
-
-impl StackDefinition for PicoTp1LightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    // The NCN5120 supports extended frames (248 bytes from its 256-byte
-    // buffer). Allocate compile-time buffers for the full extended range.
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    // Everything runs on the same single-threaded executor, so NoopRawMutex
-    // (the default) is sufficient. CriticalSectionRawMutex would only be
-    // needed if the KNX stack ran on a separate InterruptExecutor.
-    // type Mutex = NoopRawMutex;  // (default, no override needed)
-
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type LLB = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
-    type ES = Tp1ExtensionState;
-    type Identity = FlashIdentityData;
-    type State = PicoTp1State;
-    type StateInit = SystemBStateInit<Self::Identity, <PicoTp1State as HasDeviceConfig>::Config>;
-    type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = PicoTp1Augments<'a>;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        PicoTp1State::from_init(init)
-    }
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Self::default_interface_objects(state, platform, layer_ctx, augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        PicoTp1Augments { tp1: state.extension_state().create_augment::<Self>(platform), easter: EasterEggAugment }
-    }
-
-    type AlExtensions = zweidraehte_device::layers::application::services::SystemBAlServices;
-    type LayerBuilder = InsecureDeviceBuilder;
+zweidraehte_device::system_b_standard_stack! {
+    stack: PicoTp1LightSwitch,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: LightSwitchParams,
+    com_objects: LightSwitchComObjects,
+    link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
+    platform: (),
+    extension_state: Tp1ExtensionState,
+    state: PicoTp1State,
+    al_extensions: zweidraehte_device::layers::application::services::SystemBAlServices,
+    layer_builder: InsecureDeviceBuilder,
+    augments: {
+        bundle: PicoTp1Augments,
+        create: |state, platform, _layer_ctx| PicoTp1Augments {
+            tp1: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        },
+    },
+    extra {
+        // The NCN5120 supports extended frames (248 bytes from its 256-byte
+        // buffer). Allocate compile-time buffers for the full extended range.
+        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+        // Everything runs on the same single-threaded executor, so
+        // NoopRawMutex (the `Mutex` default) is sufficient.
+        // CriticalSectionRawMutex would only be needed if the KNX stack
+        // ran on a separate InterruptExecutor.
+        type Identity = FlashIdentityData;
+    },
 }
 
 // ================================================================================

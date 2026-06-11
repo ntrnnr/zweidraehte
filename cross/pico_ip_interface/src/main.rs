@@ -103,8 +103,6 @@ type Storage = RpFlashStorage<IpIfState, FlashIdentityData>;
 #[derive(Debug, Clone, Copy)]
 struct PicoIpInterface;
 
-impl SystemBStackDefinition for PicoIpInterface {}
-
 // IP-specific link-layer bill of materials. `KnxIpInterfaceTcp<N>`
 // pins routing+remote-config+tunneling+TCP. Every numeric sizing knob
 // derives from `TUNNEL_CAPACITY = N` via the trait's defaults; only
@@ -118,58 +116,25 @@ impl KnxNetIpDefinition for PicoIpInterface {
     type Features = KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>;
 }
 
-impl StackDefinition for PicoIpInterface {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = IpInterfaceParams;
-    type CO = IpInterfaceComObjects;
-    type LLB = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, PicoIpInterface>;
-    type Platform = EmbassyNetworkInfo;
-    type ES = IpInterfaceExtensionFor<KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>>;
-    type Identity = FlashIdentityData;
-    type State = IpIfState;
-    type StateInit = SystemBStateInit<Self::Identity, <IpIfState as HasDeviceConfig>::Config>;
-    type Mem = SystemBMemoryMap;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        IpIfState::from_init(init)
-    }
-
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = ExtensionAugmentFor<'a, Self>;
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Self::default_interface_objects(state, platform, layer_ctx, augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        state.extension_state().create_augment::<Self>(platform)
-    }
-
-    type AlExtensions = (
+zweidraehte_device::system_b_standard_stack! {
+    stack: PicoIpInterface,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: IpInterfaceParams,
+    com_objects: IpInterfaceComObjects,
+    link_layer_builder: IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, PicoIpInterface>,
+    platform: EmbassyNetworkInfo,
+    extension_state: IpInterfaceExtensionFor<KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>>,
+    state: IpIfState,
+    al_extensions: (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
-    );
-    type LayerBuilder = InsecureIpDeviceBuilder;
+    ),
+    layer_builder: InsecureIpDeviceBuilder,
+    extra {
+        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+        type Identity = FlashIdentityData;
+    },
 }
 
 // ================================================================================
@@ -483,8 +448,7 @@ async fn main(spawner: Spawner) {
     // and every numeric sizing knob come from `PicoIpInterface`'s
     // `KnxNetIpDefinition` impl. No `enable_*()` chain, no manually
     // matched const generics.
-    let knxip_builder =
-        KnxNetIpBuilder::<PicoIpInterface>::new("eth0", local_ip, control_endpoint, socket_ctx);
+    let knxip_builder = KnxNetIpBuilder::<PicoIpInterface>::new("eth0", local_ip, control_endpoint, socket_ctx);
 
     // Wrap TPUART + KNX/IP into a single composite link layer.
     let link_layer_builder = IpInterfaceLinkLayerBuilder::new(uart_tx, uart_rx, knxip_builder);

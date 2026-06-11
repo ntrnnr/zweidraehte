@@ -352,21 +352,34 @@ where
 /// `InterfaceObjects`, `create_interface_objects`, `Mem`, `StateInit`, and
 /// `create_state`.
 ///
+/// # Optional slots
+///
+/// - `resources: <type>` — third parameter of the generated
+///   `SystemBStateInit` (e.g. `SecureResources<Tp1ExtensionState, MySeq>`
+///   for Data Secure devices). Defaults to `()` when absent.
+/// - `augments: { bundle: <ident>, create: |state, platform, layer_ctx| <expr> }`
+///   — use a custom (usually `#[derive(ServiceRegistry)]`) augment bundle
+///   instead of the single-extension default. `bundle` is the bundle's
+///   type *name* (it must be generic over exactly one lifetime; the macro
+///   applies `<'a>` itself — a lifetime inside a captured type would not
+///   resolve across macro hygiene). The three closure-style idents bind
+///   `&'a Self::State`, `&'a Self::Platform`, and
+///   `&'a LayerContext<Self>` for use in the body expression; name an
+///   ident `_layer_ctx` (etc.) if unused. The extension's own augment is
+///   typically built in the body via
+///   `state.extension_state().create_augment::<Self>(platform)`.
+///
+/// Both slots, when present, must appear after `layer_builder` and before
+/// `extra { … }`, in the order `resources`, then `augments`.
+///
 /// # Limitations: items that require hand-writing `StackDefinition`
 ///
-/// The following scenarios require a fully hand-written impl because the macro
-/// always generates the corresponding items:
-///
-/// - **Custom augment chain** — the macro always emits
-///   `type Augments<'a> = ExtensionAugmentFor<'a, Self>` (the single-extension
-///   default). Devices that need `#[derive(ServiceRegistry)]` multi-augment
-///   bundles must hand-write the entire impl.
-/// - **Secure devices with `SecureResources`** — the macro generates
-///   `type StateInit = SystemBStateInit<Self::Identity, Config>` with `R = ()`.
-///   Stacks that need the third resource parameter must hand-write the impl.
-///   For a working example see `examples/conformance/src/harness/secure_stack.rs`.
 /// - **Non-standard `InterfaceObjects` wrapper** — the macro pins
 ///   `InterfaceObjects<'a>` to `SystemBInterfaceObjectsFor<'a, Self>`.
+/// - **Custom `Mem`, `State` newtype init, or `StateInit` shape** — the
+///   macro pins `Mem = SystemBMemoryMap`, `StateInit = SystemBStateInit`
+///   and `create_state = from_init`. The conformance DUTs (custom memory
+///   map + state newtype) are the canonical hand-written examples.
 ///
 /// ```rust,ignore
 /// system_b_standard_stack! {
@@ -381,6 +394,13 @@ where
 ///     state: DemoState,
 ///     al_extensions: (SystemBAlServices, DomainAddressService),
 ///     layer_builder: InsecureIpDeviceBuilder,
+///     augments: {
+///         bundle: DemoAugments,
+///         create: |state, platform, _layer_ctx| DemoAugments {
+///             ip: state.extension_state().create_augment::<Self>(platform),
+///             easter: EasterEggAugment,
+///         },
+///     },
 /// }
 /// ```
 #[macro_export]
@@ -397,6 +417,11 @@ macro_rules! system_b_standard_stack {
         state: $state:ty,
         al_extensions: $al_extensions:ty,
         layer_builder: $layer_builder:ty
+        $(, resources: $resources:ty)?
+        $(, augments: {
+            bundle: $aug_bundle:ident,
+            create: |$aug_state:ident, $aug_platform:ident, $aug_lctx:ident| $aug_body:expr $(,)?
+        })?
         $(, extra { $($extra:item)* })?
         $(,)?
     ) => {
@@ -420,9 +445,12 @@ macro_rules! system_b_standard_stack {
             type Mem = $crate::bcus::system_b::SystemBMemoryMap;
             // The config type is always derivable as `<State as HasDeviceConfig>::Config`,
             // so we project it here rather than requiring callers to spell it out.
+            // The optional `resources:` slot becomes the third parameter
+            // (construction-time resources, `()` when absent).
             type StateInit = $crate::bcus::system_b::SystemBStateInit<
                 Self::Identity,
-                <$state as $crate::bcus::system_b::HasDeviceConfig>::Config,
+                <$state as $crate::bcus::system_b::HasDeviceConfig>::Config
+                $(, $resources)?
             >;
 
             fn create_state(init: Self::StateInit) -> Self::State {
@@ -430,7 +458,6 @@ macro_rules! system_b_standard_stack {
             }
 
             type InterfaceObjects<'a> = $crate::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
-            type Augments<'a> = $crate::bcus::system_b::ExtensionAugmentFor<'a, Self>;
 
             fn create_interface_objects<'a>(
                 state: &'a Self::State,
@@ -447,23 +474,56 @@ macro_rules! system_b_standard_stack {
                 )
             }
 
-            fn create_augments<'a>(
-                state: &'a Self::State,
-                platform: &'a Self::Platform,
-                _layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
-            ) -> Self::Augments<'a>
-            where
-                Self::State: 'a,
-                Self::Platform: 'a,
-            {
-                // `extension_state()` comes from `HasExtensionState`; spell the
-                // trait explicitly so the macro doesn't depend on it being
-                // imported at the call site.
-                let es = <Self::State as $crate::HasExtensionState>::extension_state(state);
-                <$es as $crate::bcus::system_b::Extension<Self::Platform>>::create_augment::<Self>(es, platform)
-            }
+            $crate::system_b_standard_stack!(@augments $es $(, {
+                bundle: $aug_bundle,
+                create: |$aug_state, $aug_platform, $aug_lctx| $aug_body
+            })?);
 
             $($($extra)*)?
+        }
+    };
+
+    // ---- internal: default single-extension augment chain ----------------
+    (@augments $es:ty) => {
+        type Augments<'a> = $crate::bcus::system_b::ExtensionAugmentFor<'a, Self>;
+
+        fn create_augments<'a>(
+            state: &'a Self::State,
+            platform: &'a Self::Platform,
+            _layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
+        ) -> Self::Augments<'a>
+        where
+            Self::State: 'a,
+            Self::Platform: 'a,
+        {
+            // `extension_state()` comes from `HasExtensionState`; spell the
+            // trait explicitly so the macro doesn't depend on it being
+            // imported at the call site.
+            let es = <Self::State as $crate::HasExtensionState>::extension_state(state);
+            <$es as $crate::bcus::system_b::Extension<Self::Platform>>::create_augment::<Self>(es, platform)
+        }
+    };
+
+    // ---- internal: caller-supplied augment bundle -------------------------
+    (@augments $es:ty, {
+        bundle: $aug_bundle:ident,
+        create: |$aug_state:ident, $aug_platform:ident, $aug_lctx:ident| $aug_body:expr
+    }) => {
+        type Augments<'a> = $aug_bundle<'a>;
+
+        fn create_augments<'a>(
+            state: &'a Self::State,
+            platform: &'a Self::Platform,
+            layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
+        ) -> Self::Augments<'a>
+        where
+            Self::State: 'a,
+            Self::Platform: 'a,
+        {
+            let $aug_state = state;
+            let $aug_platform = platform;
+            let $aug_lctx = layer_ctx;
+            $aug_body
         }
     };
 }

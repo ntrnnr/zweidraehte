@@ -38,7 +38,9 @@ use zweidraehte_device::{
 };
 
 use embedded_common::DebouncedButton;
-use rp_common::{EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashIdentityData, RpFlashStorage, UdpPool};
+use rp_common::{
+    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashIdentityData, RpFlashStorage, UdpPool,
+};
 
 // ================================================================================
 // Device Definition
@@ -83,8 +85,6 @@ struct PicoEthAugments<'a> {
     easter: EasterEggAugment,
 }
 
-impl SystemBStackDefinition for PicoEthLightSwitch {}
-
 // IP-specific link-layer bill of materials. Routing-only UDP device
 // with three UDP sockets (discovery + control + routing).
 impl KnxNetIpDefinition for PicoEthLightSwitch {
@@ -93,57 +93,31 @@ impl KnxNetIpDefinition for PicoEthLightSwitch {
     const MAX_UDP_SOCKETS: usize = 3;
 }
 
-impl StackDefinition for PicoEthLightSwitch {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type LLB = KnxNetIpBuilder<PicoEthLightSwitch>;
-    type Platform = EmbassyNetworkInfo;
-    type ES = IpExtensionFor<KnxIpDeviceUdp>;
-    type Identity = FlashIdentityData;
-    type State = PicoEthState;
-    type StateInit = SystemBStateInit<Self::Identity, <PicoEthState as HasDeviceConfig>::Config>;
-    type Mem = SystemBMemoryMap;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        PicoEthState::from_init(init)
-    }
-
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = PicoEthAugments<'a>;
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        layer_ctx: &'a LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Self::default_interface_objects(state, platform, layer_ctx, augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        PicoEthAugments { ip: state.extension_state().create_augment::<Self>(platform), easter: EasterEggAugment }
-    }
-
-    type AlExtensions = (
+zweidraehte_device::system_b_standard_stack! {
+    stack: PicoEthLightSwitch,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: LightSwitchParams,
+    com_objects: LightSwitchComObjects,
+    link_layer_builder: KnxNetIpBuilder<PicoEthLightSwitch>,
+    platform: EmbassyNetworkInfo,
+    extension_state: IpExtensionFor<KnxIpDeviceUdp>,
+    state: PicoEthState,
+    al_extensions: (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
-    );
-    type LayerBuilder = InsecureIpDeviceBuilder;
+    ),
+    layer_builder: InsecureIpDeviceBuilder,
+    augments: {
+        bundle: PicoEthAugments,
+        create: |state, platform, _layer_ctx| PicoEthAugments {
+            ip: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        },
+    },
+    extra {
+        type Identity = FlashIdentityData;
+    },
 }
 
 // ================================================================================
@@ -542,7 +516,8 @@ async fn main(spawner: Spawner) {
     // Embassy-net stack init
     // ========================================================================
 
-    static NET_RESOURCES: StaticCell<NetStackResources<{ PicoEthLightSwitch::EMBASSY_NET_SOCKETS }>> = StaticCell::new();
+    static NET_RESOURCES: StaticCell<NetStackResources<{ PicoEthLightSwitch::EMBASSY_NET_SOCKETS }>> =
+        StaticCell::new();
     let (stack, net_runner) =
         embassy_net::new(net_device, net_config, NET_RESOURCES.init(NetStackResources::new()), seed);
 
@@ -596,12 +571,7 @@ async fn main(spawner: Spawner) {
     // Features (routing + remote-config) and every numeric sizing knob
     // come from `PicoEthLightSwitch`'s `KnxNetIpDefinition` impl. No
     // more `enable_*()` chain, no manually matched const generics.
-    let link_layer_builder = KnxNetIpBuilder::<PicoEthLightSwitch>::new(
-        "eth0",
-        local_ip,
-        control_endpoint,
-        socket_ctx,
-    );
+    let link_layer_builder = KnxNetIpBuilder::<PicoEthLightSwitch>::new("eth0", local_ip, control_endpoint, socket_ctx);
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<

@@ -70,12 +70,15 @@ pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x10];
 /// Empty parameter block. The IP Interface has no application-level
 /// parameters; all configuration is handled through interface object
 /// properties (individual addresses, IP settings, etc.).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, zerocopy::KnownLayout, zerocopy::Immutable, zerocopy::IntoBytes,
+)]
 #[repr(C)]
 pub struct IpInterfaceParams {
     // Intentionally empty — no application parameters.
     // A ZST (zero-sized type) with `#[repr(C)]` to satisfy the
-    // `ConstDefault` and serialization bounds required by the stack.
+    // `ConstDefault`, zerocopy, and serialization bounds required by
+    // `StackDefinition::P`.
     _private: (),
 }
 

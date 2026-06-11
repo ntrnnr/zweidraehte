@@ -96,65 +96,40 @@ pub struct Stm32G0KnxRfAugments<'a> {
     pub easter: EasterEggAugment,
 }
 
-impl SystemBStackDefinition for Stm32G0KnxRf {}
-
-impl StackDefinition for Stm32G0KnxRf {
-    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
-    // The configured RF APDU ceiling: sizes the pool buffers and is what PID 56
-    // reports (the device state inits the runtime limit to this). Far below the
-    // extended-frame 254, saving ~200 B/buffer. See `MAX_APDU_LENGTH_RF`.
-    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
-
-    type P = LightSwitchParams;
-    type CO = LightSwitchComObjects;
-    type LLB = KnxRfLinkLayerBuilder<Radio>;
-    type ES = RfExtensionState;
-    type Identity = FlashIdentityData;
-    type State = Stm32G0State;
-    type StateInit = SystemBStateInit<Self::Identity, <Stm32G0State as HasDeviceConfig>::Config>;
-    type Mem = SystemBMemoryMap;
-    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
-    type Augments<'a> = Stm32G0KnxRfAugments<'a>;
-
-    fn create_state(init: Self::StateInit) -> Self::State {
-        Stm32G0State::from_init(init)
-    }
-
-    fn create_interface_objects<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-        augments: &'a Self::Augments<'a>,
-    ) -> Self::InterfaceObjects<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Self::default_interface_objects(state, platform, layer_ctx, augments)
-    }
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where
-        Self::State: 'a,
-        Self::Platform: 'a,
-    {
-        Stm32G0KnxRfAugments { rf: state.extension_state().create_augment::<Self>(platform), easter: EasterEggAugment }
-    }
-
+zweidraehte_device::system_b_standard_stack! {
+    stack: Stm32G0KnxRf,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: LightSwitchParams,
+    com_objects: LightSwitchComObjects,
+    link_layer_builder: KnxRfLinkLayerBuilder<Radio>,
+    platform: (),
+    extension_state: RfExtensionState,
+    state: Stm32G0State,
     // RF devices add the domain-address management services ETS uses during
     // configuration: the serial-number variant (`DomainAddressService`) and the
     // programming-mode broadcast variant (`RfDomainAddressService`, RF-only).
-    type AlExtensions = (
+    al_extensions: (
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
         zweidraehte_device::layers::application::services::RfDomainAddressService,
-    );
-    type LayerBuilder = InsecureDeviceBuilder;
+    ),
+    layer_builder: InsecureDeviceBuilder,
+    augments: {
+        bundle: Stm32G0KnxRfAugments,
+        create: |state, platform, _layer_ctx| Stm32G0KnxRfAugments {
+            rf: state.extension_state().create_augment::<Self>(platform),
+            easter: EasterEggAugment,
+        },
+    },
+    extra {
+        // The configured RF APDU ceiling: sizes the pool buffers and is what
+        // PID 56 reports (the device state inits the runtime limit to this).
+        // Far below the extended-frame 254, saving ~200 B/buffer. See
+        // `MAX_APDU_LENGTH_RF`.
+        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
+        type Identity = FlashIdentityData;
+    },
 }
 
 // ================================================================================
