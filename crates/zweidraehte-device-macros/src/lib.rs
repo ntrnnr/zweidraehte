@@ -75,6 +75,18 @@ pub fn interface_object_augment(attr: TokenStream, item: TokenStream) -> TokenSt
 ///   `additional_object_count` / `additional_object_type_at`, and
 ///   participates in `poll_augments` / `next_augment_deadline`.
 ///
+/// - `#[service(flatten)]` — the field is itself a `ServiceRegistry`
+///   bundle whose members are spliced into this one.
+///
+/// - `#[service(lifecycle)]` — the field implements
+///   [`DeviceModel`](::zweidraehte_device::device_model::DeviceModel)
+///   and receives `init` / `drain_dm_events`.
+///
+/// - `#[service(channel)]` — the field is an async event source polled
+///   alongside the layers. At most **6** channel fields are supported
+///   per registry (the underlying `embassy_futures::select` arity);
+///   exceeding that is a compile error.
+///
 /// Field annotations are checked at compile time; an un-annotated
 /// field or one with an unknown annotation produces a clear compile
 /// error.

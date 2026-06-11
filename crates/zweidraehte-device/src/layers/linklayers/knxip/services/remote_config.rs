@@ -351,7 +351,7 @@ mod tests {
     use zweidraehte_proto::messages::knxip::{RemoteBasicConfigurationRequestBuilder, RemoteResetRequestBuilder};
 
     use crate::context::KnxIndividualAddressContext;
-    use crate::ip::IpStackState;
+    use crate::ip::IpStateView;
     use crate::layers::linklayers::knxip::context::{
         DeviceInfoContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
     };
@@ -419,7 +419,7 @@ mod tests {
         }
     }
 
-    impl IpStackState for FakeIpState {
+    impl IpStateView for FakeIpState {
         fn configured_ip_address(&self) -> Ipv4Addr {
             self.ip.get()
         }
@@ -473,7 +473,7 @@ mod tests {
         dirty: Cell<bool>,
     }
     impl IpConfigWriteContext for FakeIpConfigWrite {
-        fn ip_state_mut(&self) -> &dyn IpStackState {
+        fn ip_state_mut(&self) -> &dyn IpStateView {
             &self.state
         }
         fn mark_config_dirty(&self) {

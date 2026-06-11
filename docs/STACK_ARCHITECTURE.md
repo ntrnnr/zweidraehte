@@ -508,7 +508,7 @@ Accessors: `state()`, `layer_context()`, `interface_objects()`,
 The `IpCapableStack` bound
 ([`context/stack.rs`](../crates/zweidraehte-device/src/context/stack.rs))
 is a blanket-implemented alias that bundles
-`D::State: HasExtensionState<ES: IpStackState>` and
+`D::State: HasExtensionState<ES: IpStateView>` and
 `D::Platform: IpPlatform`, so IP-specific impls avoid repeating the
 where clause.
 
@@ -1119,8 +1119,8 @@ methods.
 
 | Trait | Role | Implemented by |
 |---|---|---|
-| `IpStackState` | Configured IP address, subnet, gateway, routing multicast, TTL, friendly name, project install ID, tunneling addresses (~20 accessors) | `IpExtensionState`, `IpAugment` |
-| `IpPlatformState: IpStackState` | Current (live) IP address/subnet/gateway/MAC, assignment method, capabilities | `IpAugment` (delegates to platform) |
+| `IpStateView` | Configured IP address, subnet, gateway, routing multicast, TTL, friendly name, project install ID, tunneling addresses (~20 accessors) | `IpExtensionState`, `IpAugment` |
+| `IpPlatformState: IpStateView` | Current (live) IP address/subnet/gateway/MAC, assignment method, capabilities | `IpAugment` (delegates to platform) |
 
 Also re-exported in `ip.rs`: the platform-provided
 `IpPlatform` (= `zweidraehte_platform::NetworkInfo`) and

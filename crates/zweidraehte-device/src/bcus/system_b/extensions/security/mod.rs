@@ -291,6 +291,8 @@ impl<const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> cor
     }
 }
 
+// These exist as functions (not consts) because `#[serde(default = "…")]`
+// can only name a function path.
 fn default_tool_key() -> [u8; 16] {
     [0u8; 16]
 }
@@ -330,6 +332,13 @@ impl<const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> Ext
 /// Holds security mode, tool key, load state, group key table, and
 /// GO security flags. Table data is behind `RefCell` for interior
 /// mutability during property writes.
+///
+/// The `from_config`/`to_config` glue is hand-written rather than
+/// using `#[derive(ExtensionState)]`: the derive maps plain
+/// `Cell`/`RefCell` fields one-to-one, but the `SecurityTable` fields
+/// here need FDSK seeding on construction and the type is not an
+/// `ExtensionState` itself (it is embedded inside
+/// [`SecureExtensionState`], which is).
 pub struct SecurityState<const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize> {
     security_mode_enabled: Cell<bool>,
     /// Active tool key. The KNX spec defines this as the negotiated key
@@ -1192,6 +1201,17 @@ pub struct SecureResources<Inner: ExtensionState, SEQ> {
     pub fdsk: [u8; 16],
 }
 
+/// Near-exhaustion threshold for the 6-byte (48-bit) tool sending
+/// SeqNr: `FF 00 00 00 00 00`. A factory reset re-initialises the
+/// counter only at or above this value (03/05/01 §6.1.4 + AN194).
+pub(crate) const SEQ_EXHAUSTION_THRESHOLD: u64 = 0xFF_0000_0000_00;
+
+/// Re-init target after a near-exhaustion factory reset. Must be
+/// non-zero (seq 0 is rejected per spec) but far below
+/// [`SEQ_EXHAUSTION_THRESHOLD`] so the counter has runway before the
+/// next reset is required.
+pub(crate) const SEQ_REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+
 impl<
     Inner: ExtensionState,
     SEQ: SequenceNumberStorage,
@@ -1248,23 +1268,17 @@ impl<
 
                 // Per spec 03/05/01 §6.1.4 + AN194: tool sending SeqNr
                 // is re-initialised on factory reset only when the stored
-                // value has reached the near-exhaustion threshold
-                // (0xFF0000000000h). Values below threshold are preserved
-                // across reset — receivers have already seen them and
-                // would reject any re-init with a lower value as a replay.
-                // The re-init target must be non-zero (seq==0 is rejected
-                // per spec) but *below* the threshold so the counter has
-                // runway before the next reset is required.
-                // Threshold is a 6-byte (48-bit) value: FF 00 00 00 00 00.
-                const THRESHOLD: u64 = 0xFF_0000_0000_00;
-                const REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+                // value has reached the near-exhaustion threshold.
+                // Values below threshold are preserved across reset —
+                // receivers have already seen them and would reject any
+                // re-init with a lower value as a replay.
                 use crate::layers::secure_application::outgoing::seq6_to_u64;
                 let mut storage = self.seq_storage.borrow_mut();
                 if let Ok(seq) = storage.load_sending_seq() {
                     // Re-initialise the single Sequence Number Sending only once it
                     // nears exhaustion (spec §5.x); below threshold it is preserved.
-                    if seq6_to_u64(&seq) >= THRESHOLD {
-                        let _ = storage.save_sending_seq(&REINIT_VALUE);
+                    if seq6_to_u64(&seq) >= SEQ_EXHAUSTION_THRESHOLD {
+                        let _ = storage.save_sending_seq(&SEQ_REINIT_VALUE);
                     }
                 }
             }

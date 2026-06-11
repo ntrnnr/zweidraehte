@@ -39,7 +39,7 @@ mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::{
     DEFAULT_MULTICAST_ADDR, HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpConfig, IpPlatform,
-    IpPlatformConfig, IpStackState, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
+    IpPlatformConfig, IpStateView, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
 };
 
 mod composition;

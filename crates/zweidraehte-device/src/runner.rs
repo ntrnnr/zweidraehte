@@ -5,7 +5,7 @@
 
 use embassy_futures::select::{Either, select, select3};
 use embassy_sync::{
-    blocking_mutex::raw::{NoopRawMutex, RawMutex},
+    blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicReceiver, DynamicSender},
 };
 use embassy_time::Timer;
@@ -236,14 +236,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 // Factory function
 // ============================================================================
 
-fn create_request_response_pair<M: RawMutex, MSG, const N: usize>(
-    channel: &'static Channel<M, MSG, N>,
-) -> (DynamicSender<'static, MSG>, DynamicReceiver<'static, MSG>) {
-    let sender: DynamicSender<'_, MSG> = channel.sender().into();
-    let receiver: DynamicReceiver<'_, MSG> = channel.receiver().into();
-    (sender, receiver)
-}
-
 /// Create a new KNX stack.
 ///
 /// The runner creates the [`LayerContext`](crate::context::layer::LayerContext)
@@ -318,9 +310,9 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
 
     let app_request_sender: DynamicSender<'static, _> = lctx.app_service_channel.sender().into();
 
-    // Discard the sender immediately since we don't need it. The channel is purely static
-    // and correctly managed by `LayerContext` and `try_send_restart_request`.
-    let (_restart_sender, restart_receiver) = create_request_response_pair::<D::Mutex, _, 1>(&lctx.restart_channel);
+    // Only the receiver side is taken here — the sending side is managed
+    // by `LayerContext::try_send_restart_request`.
+    let restart_receiver: DynamicReceiver<'static, _> = lctx.restart_channel.receiver().into();
 
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());

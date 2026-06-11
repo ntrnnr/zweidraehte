@@ -16,7 +16,7 @@
 use core::net::Ipv4Addr;
 
 use crate::{
-    IpPlatform, IpStackState, StackDefinition, StackState,
+    IpPlatform, IpStateView, StackDefinition, StackState,
     objects::interface::{
         FullPropertyWriteRequest, Ipv4Property, PropertyError, StatePropertyValue, WriteResponse,
         interface_object_augment, pid,

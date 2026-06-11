@@ -59,9 +59,14 @@ use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::builder::{ConfirmationExt, ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
-/// Largest CRC-stripped telegram / internal frame we handle, in octets. Sized
-/// to the RF physical layer's maximum on-air payload; the largest APDU a frame
-/// of which still fits is exposed as [`MAX_SUPPORTED_APDU`].
+/// Largest CRC-stripped telegram / internal frame we handle, in octets.
+///
+/// This is a chosen budget, not a wire constant: it must cover
+/// [`rf::TELEGRAM_HEADER_OVERHEAD`] plus the largest APDU the device may
+/// configure. 96 gives [`MAX_SUPPORTED_APDU`] comfortable headroom above
+/// the RF profile default
+/// [`MAX_APDU_LENGTH_RF`](zweidraehte_proto::config::MAX_APDU_LENGTH_RF)
+/// (55) that every current RF device uses.
 const RF_FRAME_BUF: usize = 96;
 
 /// Largest APDU (PID 56 / `MAX_APDU_LENGTH` value) whose Standard telegram still

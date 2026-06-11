@@ -385,6 +385,16 @@ impl Default for StateMachineContext {
 }
 
 impl StateMachineContext {
+    /// `reset_counter` threshold: values below mean the bus is OK. The
+    /// counter starts *at* the threshold ("not OK yet") and is zeroed by
+    /// the first successful reset indication; each failed reset attempt
+    /// increments it.
+    const BUS_OK_THRESHOLD: u8 = 10;
+
+    /// `reset_counter` value above which the bus is considered failed
+    /// (one spare attempt past [`BUS_OK_THRESHOLD`](Self::BUS_OK_THRESHOLD)).
+    const BUS_FAILED_THRESHOLD: u8 = 11;
+
     pub fn new() -> Self {
         Self {
             main_state: MainState::Init,
@@ -393,19 +403,20 @@ impl StateMachineContext {
             reg_read_state: RegisterReadState::new(),
             chip_type: ChipType::Unknown,
             chip_version: 0,
-            reset_counter: 10, // Start at 10 = bus not OK yet
+            reset_counter: Self::BUS_OK_THRESHOLD, // bus not OK yet
             prev_control_byte: 0xFF,
         }
     }
 
-    /// Check if bus is OK (reset_counter < 10)
+    /// Check if the bus is OK (`reset_counter` below the threshold).
     pub fn is_bus_ok(&self) -> bool {
-        self.reset_counter < 10
+        self.reset_counter < Self::BUS_OK_THRESHOLD
     }
 
-    /// Check if bus has failed (reset_counter > 11)
+    /// Check if the bus has failed (`reset_counter` past the failure
+    /// threshold).
     pub fn is_bus_failed(&self) -> bool {
-        self.reset_counter > 11
+        self.reset_counter > Self::BUS_FAILED_THRESHOLD
     }
 }
 
@@ -786,8 +797,7 @@ fn process_idle_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Acti
     }
     // L_Data indication (start of frame)
     else if (byte & 0x53) == L_DATA_IND {
-        // Check for repeated telegram (compare control byte ignoring repeat bit 5)
-        let is_repeated = ((byte ^ ctx.prev_control_byte) & !0x20) == 0;
+        let is_repeated = is_repeated_telegram(ctx.prev_control_byte, byte);
 
         ctx.main_state = MainState::ReceiveFrame;
         ctx.receive_state.reset();
@@ -1068,7 +1078,6 @@ pub fn process_send_event(ctx: &mut SendContext, event: SendEvent) -> SendAction
 
 /// Check if a telegram is a repeat of the previous one
 /// Compares control bytes ignoring the repeat flag (bit 5)
-#[allow(dead_code)] // Future: not yet used
 pub fn is_repeated_telegram(prev_ctrl: u8, new_ctrl: u8) -> bool {
     ((prev_ctrl ^ new_ctrl) & !0x20) == 0
 }

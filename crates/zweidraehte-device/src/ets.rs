@@ -138,14 +138,10 @@ pub struct EtsParamDef {
     /// Suffix text displayed after the parameter value (e.g., "s" for seconds)
     pub suffix: Option<&'static str>,
 
-    /// Offset in device memory (bytes).
-    /// For `no_memory` (virtual) parameters, this is typically 0 since they have no memory location.
+    /// Offset in device memory (bytes), which equals the offset in the
+    /// Rust parameter struct — virtual (`no_memory`) parameters are not
+    /// part of the struct and use 0.
     pub offset: u16,
-
-    /// Offset in the Rust struct (bytes).
-    /// Note: This is now always equal to `offset` since virtual parameters are no longer
-    /// included in Rust structs. Kept for compatibility.
-    pub rust_offset: u16,
 
     /// Size in bits
     pub size_bits: u8,
@@ -526,43 +522,6 @@ impl FlagOverrides {
     pub const fn new() -> Self {
         Self { read: None, write: None, communication: None, transmit: None, update: None, read_on_init: None }
     }
-
-    /// Check if any flags are overridden.
-    pub const fn has_overrides(&self) -> bool {
-        self.read.is_some()
-            || self.write.is_some()
-            || self.communication.is_some()
-            || self.transmit.is_some()
-            || self.update.is_some()
-            || self.read_on_init.is_some()
-    }
-}
-
-// ============================================================================
-// Traits for ETS Export
-// ============================================================================
-
-/// Trait for types that can provide ETS export metadata.
-///
-/// Implement this trait on your stack definition or device type to enable
-/// ETS export functionality.
-pub trait EtsExportable {
-    /// Get the device descriptor containing hardware and application info.
-    fn device_descriptor() -> &'static DeviceDescriptor;
-
-    /// Get the list of parameter definitions.
-    ///
-    /// Returns an empty slice if no parameters are defined.
-    fn parameters() -> &'static [EtsParamDef] {
-        &[]
-    }
-
-    /// Get the list of communication object definitions.
-    ///
-    /// Returns an empty slice if no communication objects are defined.
-    fn comm_objects() -> &'static [EtsCommObjectDef] {
-        &[]
-    }
 }
 
 // ============================================================================
@@ -695,7 +654,6 @@ macro_rules! ets_virtual_params {
                     display_name: $display,
                     suffix: None,
                     offset: 0,
-                    rust_offset: 0,
                     size_bits: ($size * 8) as u8,
                     bit_offset: 0,
                     param_type: $crate::ets::EtsParamType::String,
@@ -726,7 +684,6 @@ macro_rules! ets_virtual_params {
                     display_name: $display,
                     suffix: None,
                     offset: 0,
-                    rust_offset: 0,
                     size_bits: ($size * 8) as u8,
                     bit_offset: 0,
                     param_type: $crate::ets::EtsParamType::String,

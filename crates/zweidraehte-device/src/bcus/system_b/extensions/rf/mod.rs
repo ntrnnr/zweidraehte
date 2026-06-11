@@ -76,13 +76,6 @@ pub struct RfExtensionState {
     rf_domain_address: Cell<[u8; 6]>,
 }
 
-impl RfExtensionState {
-    /// Current RF Domain Address as a byte array (for property reads).
-    fn rf_domain_address_bytes(&self) -> [u8; 6] {
-        self.rf_domain_address.get()
-    }
-}
-
 // Plain RF has no Data Secure layer, so the `Plain` defaults are correct.
 impl HasGoSecurityView for RfExtensionState {}
 impl HasSecurityMode for RfExtensionState {}
@@ -112,7 +105,7 @@ pub struct RfAugment<'a> {
     // PID 56 — RF_DOMAIN_ADDRESS: 6-octet, RW, non-volatile.
     #[io(pid = pid::rf::RF_DOMAIN_ADDRESS, pdt = PDT_Generic06, access = RW,
          policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
-         read = |this: &Self| -> [u8; 6] { this.state.rf_domain_address_bytes() },
+         read = |this: &Self| -> [u8; 6] { this.state.rf_domain_address.get() },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              if data.len() < 6 {
                  return Err(PropertyError::BufferTooSmall);
@@ -173,10 +166,12 @@ impl HasDomainAddress for RfExtensionState {
     }
 
     fn set_domain_address(&self, addr: &[u8]) {
+        // Zero-pad short input, then store through the RF-specific
+        // setter so there is exactly one write path to the Cell.
         let mut doa = [0u8; 6];
         let n = addr.len().min(doa.len());
         doa[..n].copy_from_slice(&addr[..n]);
-        self.rf_domain_address.set(doa);
+        self.set_rf_domain_address(&doa);
     }
 }
 

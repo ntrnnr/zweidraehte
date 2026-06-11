@@ -6,7 +6,7 @@ use embassy_sync::channel::Channel;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 
-use crate::ip::IpStackState;
+use crate::ip::IpStateView;
 use crate::restart::RestartRequest;
 
 /// Provides access to dynamic device information for KNX/IP discovery.
@@ -15,7 +15,7 @@ use crate::restart::RestartRequest;
 /// can build fresh [`DeviceInformation`] on each discovery request,
 /// reflecting current programming mode, individual address, etc.
 ///
-/// Only implemented when the device state is `IpStackState`,
+/// Only implemented when the device state is `IpStateView`,
 /// since discovery is a KNX/IP-only concept.
 pub trait DeviceInfoContext {
     /// Build a [`DeviceInformation`] reflecting the current device state.
@@ -38,7 +38,7 @@ pub trait DeviceInfoContext {
 /// The remote diagnostic server (KNX 3/8/7) must include IP_CONFIG,
 /// IP_CUR_CONFIG, and KNX_ADDRESSES DIBs in its responses. This trait
 /// abstracts the data source so the server doesn't depend on
-/// `IpStackState` directly.
+/// `IpStateView` directly.
 ///
 /// Only relevant for KNX/IP devices. Implementations should query the
 /// device state and platform for current network configuration.
@@ -55,14 +55,14 @@ pub trait IpDiagnosticsContext {
 ///
 /// The read side stays on [`IpDiagnosticsContext`]; this trait is kept
 /// separate so the diagnostics interface remains read-only. The returned
-/// [`IpStackState`] exposes the `set_*` mutators (interior-mutable `Cell`
+/// [`IpStateView`] exposes the `set_*` mutators (interior-mutable `Cell`
 /// fields, hence a shared `&self`). A write must be followed by
 /// [`mark_config_dirty`](Self::mark_config_dirty) so the runtime persists
-/// the change — the `IpStackState` setters deliberately do not mark the
+/// the change — the `IpStateView` setters deliberately do not mark the
 /// device state dirty themselves.
 pub trait IpConfigWriteContext {
     /// Borrow the persisted IP extension state to apply configuration writes.
-    fn ip_state_mut(&self) -> &dyn IpStackState;
+    fn ip_state_mut(&self) -> &dyn IpStateView;
 
     /// Flag the device state as dirty so the runtime persists the IP
     /// configuration changes applied via [`ip_state_mut`](Self::ip_state_mut).

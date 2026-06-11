@@ -67,14 +67,6 @@ impl Outbox {
         self.count += 1;
     }
 
-    /// Peek at the service type of the next message without removing it.
-    pub fn peek_service_type(&self) -> Option<ServiceType> {
-        if self.count == 0 {
-            return None;
-        }
-        self.messages[self.head].as_ref().map(|m| m.service_type())
-    }
-
     /// Return `true` when the outbox has no messages queued.
     ///
     /// Used by async callers that need to wait for the stack to finish

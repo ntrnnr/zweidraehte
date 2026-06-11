@@ -234,7 +234,6 @@ pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte_device::ets::EtsParamDefExt
             display_name: "Object description",
             suffix: None,
             offset: 0,
-            rust_offset: 0,
             size_bits: 240, // 30 bytes
             bit_offset: 0,
             param_type: zweidraehte_device::ets::EtsParamType::String,
@@ -253,7 +252,6 @@ pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte_device::ets::EtsParamDefExt
             display_name: "Object description",
             suffix: None,
             offset: 0,
-            rust_offset: 0,
             size_bits: 240, // 30 bytes
             bit_offset: 0,
             param_type: zweidraehte_device::ets::EtsParamType::String,

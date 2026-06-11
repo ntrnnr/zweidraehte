@@ -159,6 +159,12 @@ pub trait DeviceModel {
     fn drain_dm_events(&mut self);
 
     /// Handle a lifecycle action produced by a run state transition.
+    ///
+    /// This is the dispatch primitive that [`init`](Self::init) and
+    /// [`drain_dm_events`](Self::drain_dm_events) feed — not an external
+    /// entry point. The composition layer drives the device model
+    /// exclusively through those two methods; call this directly only
+    /// when implementing a `DeviceModel` yourself.
     fn on_action(&mut self, action: RunAction);
 }
 

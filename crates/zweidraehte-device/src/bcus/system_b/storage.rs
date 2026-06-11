@@ -186,7 +186,7 @@ impl<A: ExtensionConfig, B: ExtensionConfig> ExtensionConfig for (A, B) {}
 /// This trait bridges the serializable config ([`ExtensionConfig`]) and
 /// the runtime representation with interior mutability (`Cell`/`RefCell`
 /// fields). The runtime form allows `&self` mutation through accessor
-/// traits (e.g., `IpStackState`, `HasMaxRetryCount`), while the config
+/// traits (e.g., `IpStateView`, `HasMaxRetryCount`), while the config
 /// form is what gets serialized.
 ///
 /// Devices that need multiple extension concerns (e.g., IP config +

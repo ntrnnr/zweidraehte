@@ -221,20 +221,10 @@ impl<const CAPS: u16> IpExtensionState<CAPS> {
         CAPS
     }
 
-    /// Build the IP config for persistence.
-    pub fn build_ip_config(&self) -> IpExtensionConfig {
-        IpExtensionConfig {
-            friendly_name: self.friendly_name.get(),
-            friendly_name_len: self.friendly_name_len.get() as u8,
-            configured_ip: self.configured_ip.get().octets(),
-            configured_subnet: self.configured_subnet.get().octets(),
-            configured_gateway: self.configured_gateway.get().octets(),
-            ip_assignment_method: self.ip_assignment_method.get(),
-            routing_multicast: self.routing_multicast.get().octets(),
-            ttl: self.ttl.get(),
-            project_installation_id: self.project_installation_id.get(),
-        }
-    }
+    // NOTE: persistence goes through the derive-generated
+    // `ExtensionState::to_config()`. A hand-written `build_ip_config`
+    // duplicate used to live here; it had no callers and was a silent
+    // drift hazard, so it was removed rather than kept in sync.
 
     /// Push the current configured IP/subnet/gateway to the platform.
     ///
@@ -553,7 +543,7 @@ impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N,
 /// paired [`TunnellingExtension`] and is exposed separately via
 /// [`HasAdditionalIas`](crate::ip::HasAdditionalIas).
 impl<const N: usize, const CAPS: u16> HasIpExtensionState for IpInterfaceExtension<N, CAPS> {
-    fn ip_state(&self) -> &dyn crate::ip::IpStackState {
+    fn ip_state(&self) -> &dyn crate::ip::IpStateView {
         &self.ip
     }
 }
@@ -639,10 +629,10 @@ pub type IpInterfaceDeviceState<
 > = SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, IpInterfaceExtensionFor<F>>;
 
 // ============================================================================
-// IpStackState — persisted config accessors (single canonical impl)
+// IpStateView — persisted config accessors (single canonical impl)
 // ============================================================================
 
-impl<const CAPS: u16> crate::ip::IpStackState for IpExtensionState<CAPS> {
+impl<const CAPS: u16> crate::ip::IpStateView for IpExtensionState<CAPS> {
     fn configured_ip_address(&self) -> Ipv4Addr {
         self.configured_ip.get()
     }
@@ -722,7 +712,7 @@ impl<const CAPS: u16> crate::ip::IpStackState for IpExtensionState<CAPS> {
 }
 
 impl<const CAPS: u16> HasIpExtensionState for IpExtensionState<CAPS> {
-    fn ip_state(&self) -> &dyn crate::ip::IpStackState {
+    fn ip_state(&self) -> &dyn crate::ip::IpStateView {
         self
     }
 }

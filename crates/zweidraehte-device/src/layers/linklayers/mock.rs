@@ -28,13 +28,20 @@ pub struct MockLinkLayer<'a, const N: usize, const C: usize = 8> {
     capture_sender: Option<Sender<'static, NoopRawMutex, CapturedLinkLayerMessage, C>>,
 }
 
+/// Capture buffer size for [`CapturedLinkLayerMessage`].
+///
+/// Large enough for every telegram the test suites assert on (standard
+/// frames; extended frames near the full APDU budget would be truncated
+/// — bump this if a test ever needs to capture one).
+pub const CAPTURE_BUF_SIZE: usize = 64;
+
 /// A captured message from the link layer (outgoing from stack to wire)
 #[derive(Debug, Clone)]
 pub struct CapturedLinkLayerMessage {
     /// The service type of the captured message
     pub service_type: ServiceType,
     /// The raw message bytes
-    pub data: heapless::Vec<u8, 64>,
+    pub data: heapless::Vec<u8, CAPTURE_BUF_SIZE>,
 }
 
 impl<'a, const N: usize, const C: usize> MockLinkLayer<'a, N, C> {

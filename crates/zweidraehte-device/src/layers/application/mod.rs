@@ -11,9 +11,10 @@
 //! - Property read/write for interface objects
 //! - Property description queries
 //!
-//! ## Device Management (A_DeviceDescriptor_*, A_Restart, etc.) - TODO
+//! ## Device Management (A_DeviceDescriptor_*, A_Restart, etc.)
 //! - Device descriptor read
-//! - Restart commands
+//! - Restart commands (validated here, executed by user code via the
+//!   restart channel)
 //! - Individual address read/write
 
 pub mod capabilities;

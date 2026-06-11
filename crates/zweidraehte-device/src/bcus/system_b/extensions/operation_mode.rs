@@ -53,6 +53,12 @@ use zweidraehte_proto::messages::knx::Priority;
 /// Holds the current operation mode, timeout deadline, and source filter.
 /// The timeout is tracked using `embassy_time::Instant` — when the
 /// deadline passes, the mode auto-returns to Normal.
+///
+/// Deliberately **not** an `ExtensionState` and never persisted:
+/// diagnostic mode is a transient maintenance state that must not
+/// survive a restart (a device always powers up in Normal mode), so it
+/// lives as a plain field on `SystemBDeviceState` outside the
+/// config-mirroring machinery.
 pub struct OperationModeState {
     mode: Cell<u8>,
     deadline: Cell<Option<Instant>>,
@@ -61,10 +67,20 @@ pub struct OperationModeState {
 
 impl Default for OperationModeState {
     fn default() -> Self {
-        // Normal mode (0x00), no active timeout, no source filter.
-        Self { mode: Cell::new(0x00), deadline: Cell::new(None), source_filter: Cell::new(None) }
+        Self { mode: Cell::new(MODE_NORMAL), deadline: Cell::new(None), source_filter: Cell::new(None) }
     }
 }
+
+/// Operation mode value: Normal (the power-on default).
+pub const MODE_NORMAL: u8 = 0x00;
+
+/// Operation mode value: Diagnostic. Auto-returns to [`MODE_NORMAL`]
+/// after [`OperationModeState::DIAGNOSTIC_TIMEOUT_SECS`].
+pub const MODE_DIAGNOSTIC: u8 = 0x01;
+
+/// `time_left` wire value meaning "no timeout running" (Normal mode).
+/// Actual countdowns are clamped to `0..=254` seconds.
+pub const TIME_LEFT_NONE: u8 = 0xFF;
 
 impl OperationModeState {
     /// Diagnostic-mode auto-return timeout. The spec mandates ≥ 30 s
@@ -82,7 +98,7 @@ impl OperationModeState {
     /// When switching to normal mode, clears the deadline and source filter.
     pub fn set_mode(&self, mode: u8) {
         self.mode.set(mode);
-        if mode == 0x01 {
+        if mode == MODE_DIAGNOSTIC {
             // Diagnostic mode: start timeout countdown.
             let deadline = Instant::now() + embassy_time::Duration::from_secs(Self::DIAGNOSTIC_TIMEOUT_SECS as u64);
             self.deadline.set(Some(deadline));
@@ -96,10 +112,10 @@ impl OperationModeState {
     /// Check if the diagnostic timeout has expired and auto-return to normal
     /// if so. Call this before reading the current state.
     fn check_timeout(&self) {
-        if self.mode.get() == 0x01 {
+        if self.mode.get() == MODE_DIAGNOSTIC {
             if let Some(deadline) = self.deadline.get() {
                 if Instant::now() >= deadline {
-                    self.mode.set(0x00);
+                    self.mode.set(MODE_NORMAL);
                     self.deadline.set(None);
                     self.source_filter.set(None);
                 }
@@ -109,8 +125,8 @@ impl OperationModeState {
 
     /// Compute the time_left value for the response.
     fn compute_time_left(&self) -> u8 {
-        if self.mode.get() == 0x00 {
-            return 0xFF; // Normal mode: no timeout.
+        if self.mode.get() == MODE_NORMAL {
+            return TIME_LEFT_NONE;
         }
         match self.deadline.get() {
             Some(deadline) => {
@@ -119,11 +135,12 @@ impl OperationModeState {
                     0
                 } else {
                     let remaining = (deadline - now).as_secs();
-                    // Clamp to 0-254 range (0xFF is reserved for "no timeout").
-                    remaining.min(254) as u8
+                    // Clamp below TIME_LEFT_NONE, which is reserved for
+                    // "no timeout".
+                    remaining.min((TIME_LEFT_NONE - 1) as u64) as u8
                 }
             }
-            None => 0xFF,
+            None => TIME_LEFT_NONE,
         }
     }
 }
@@ -131,7 +148,7 @@ impl OperationModeState {
 impl DiagnosticsContext for OperationModeState {
     fn is_diagnostic_mode(&self) -> bool {
         self.check_timeout();
-        self.mode.get() == 0x01
+        self.mode.get() == MODE_DIAGNOSTIC
     }
 
     fn operation_mode(&self) -> u8 {
@@ -383,13 +400,33 @@ pub struct DiagnosticsAugment<'a, GS = SecureGoSendAbsent> {
 // GO Diagnostics Response Helpers
 // ============================================================================
 
+/// `PID_OPERATION_MODE` success return code — the response carries the
+/// (possibly just changed) current operation mode.
+const RC_OM_CURRENT_MODE: u8 = 0x20;
+
+/// `PID_OPERATION_MODE` negative return code (`0x20 | 0x80` error bit).
+/// Every validation failure answers with this code and the *unchanged*
+/// current mode echoed back; the conformance 6.1.x expectations pin
+/// both values.
+const RC_OM_ERROR: u8 = 0xA0;
+
 /// Build a `PropertyBuf` carrying the three-byte `PID_OPERATION_MODE`
 /// response body (`[service_id, mode, time_left]`). Works for both the
-/// success (return code 0x20) and negative acknowledgement (0xA0)
+/// success ([`RC_OM_CURRENT_MODE`]) and negative ([`RC_OM_ERROR`])
 /// paths, which share the same data layout.
 fn operation_mode_buf<const N: usize>(service_id: u8, mode: u8, time_left: u8) -> PropertyBuf<N> {
     let mut scratch = [0u8; OperationModeResponse::LEN];
     PropertyBuf::new(OperationModeResponse { service_id, operation_mode: mode, time_left }.write(&mut scratch))
+}
+
+/// Build the negative `PID_OPERATION_MODE` response shared by all
+/// validation-failure paths: [`RC_OM_ERROR`] with the unchanged current
+/// mode echoed.
+fn operation_mode_reject(service_id: u8, current_mode: u8, current_time_left: u8) -> FunctionPropertyResult {
+    FunctionPropertyResult {
+        return_code: RC_OM_ERROR,
+        data: operation_mode_buf(service_id, current_mode, current_time_left),
+    }
 }
 
 /// Build a GO diagnostics success response (return code 0x21 —
@@ -426,54 +463,30 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         // Response format: [return_code, service_id, operation_mode, time_left]
-        // On error: [0xA0, service_id_echo, current_mode, current_time_left]
+        // On error: [RC_OM_ERROR, service_id_echo, current_mode, current_time_left]
 
         let current_mode = self.state.operation_mode();
         let current_time_left = self.state.time_left();
+        let reject = |service_id| operation_mode_reject(service_id, current_mode, current_time_left);
 
         // Validate data length: exactly 3 bytes (reserved + service_id + mode).
         if req.service_data.len() != 3 {
             let svc_id = if req.service_data.len() >= 2 { req.service_data[1] } else { 0x00 };
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(svc_id, current_mode, current_time_left),
-            };
+            return reject(svc_id);
         }
 
         let reserved = req.service_data[0];
         let service_id = req.service_data[1];
         let requested_mode = req.service_data[2];
 
-        // Validate reserved octet.
-        if reserved != 0x00 {
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(service_id, current_mode, current_time_left),
-            };
+        // Validate reserved octet and service ID, the requested mode
+        // value, and that the application is running — any failure
+        // echoes the unchanged current mode.
+        if reserved != 0x00 || service_id != 0x00 || requested_mode > MODE_DIAGNOSTIC {
+            return reject(service_id);
         }
-
-        // Validate service ID.
-        if service_id != 0x00 {
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(service_id, current_mode, current_time_left),
-            };
-        }
-
-        // Validate operation mode value.
-        if requested_mode > 0x01 {
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(service_id, current_mode, current_time_left),
-            };
-        }
-
-        // Check that the application is running.
         if !stack_state.app().borrow().is_running() {
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(service_id, current_mode, current_time_left),
-            };
+            return reject(service_id);
         }
 
         // Set the requested operation mode.
@@ -483,7 +496,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let new_time_left = self.state.time_left();
 
         FunctionPropertyResult {
-            return_code: 0x20, // E_OM_CURRENT_OPERATION_MODE
+            return_code: RC_OM_CURRENT_MODE,
             data: operation_mode_buf(service_id, new_mode, new_time_left),
         }
     }
@@ -499,40 +512,26 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
     ) -> FunctionPropertyResult {
         let current_mode = self.state.operation_mode();
         let current_time_left = self.state.time_left();
+        let reject = |service_id| operation_mode_reject(service_id, current_mode, current_time_left);
 
         // Validate data length: exactly 2 bytes (reserved + service_id).
         if req.service_data.len() != 2 {
             let svc_id = if !req.service_data.is_empty() { req.service_data[0] } else { 0x00 };
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(svc_id, current_mode, current_time_left),
-            };
+            return reject(svc_id);
         }
 
         let reserved = req.service_data[0];
         let service_id = req.service_data[1];
 
-        // Validate reserved octet.
-        if reserved != 0x00 {
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(service_id, current_mode, current_time_left),
-            };
-        }
-
-        // Validate service ID.
-        if service_id != 0x00 {
-            return FunctionPropertyResult {
-                return_code: 0xA0,
-                data: operation_mode_buf(service_id, current_mode, current_time_left),
-            };
+        if reserved != 0x00 || service_id != 0x00 {
+            return reject(service_id);
         }
 
         // State reads always succeed — even when the app is halted.
         // Per spec §4.4.1 and conformance test 6.1.11: reads return the
         // current state regardless of the Run State Machine.
         FunctionPropertyResult {
-            return_code: 0x20, // E_OM_CURRENT_OPERATION_MODE
+            return_code: RC_OM_CURRENT_MODE,
             data: operation_mode_buf(service_id, current_mode, current_time_left),
         }
     }
@@ -738,8 +737,10 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         }
 
         let flags = data[2];
-        // Validate flags: bits 2-6 must be zero.
-        if flags & 0x7C != 0 {
+        // Reserved bits 2-6 of the flags octet must be zero (bits 0-1
+        // select security and are validated below; bit 7 passes through).
+        const FLAGS_RESERVED_MASK: u8 = 0x7C;
+        if flags & FLAGS_RESERVED_MASK != 0 {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
         }
 

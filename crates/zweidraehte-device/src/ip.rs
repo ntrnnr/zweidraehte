@@ -34,12 +34,12 @@ use zweidraehte_proto::address::IndividualAddress;
 /// types like
 /// [`IpInterfaceExtension`](crate::bcus::system_b::IpInterfaceExtension)
 /// expose the inner state via [`HasIpExtensionState`] instead, so
-/// `IpStackState` has exactly one impl and never carries delegation.
+/// `IpStateView` has exactly one impl and never carries delegation.
 ///
 /// Generic context code that needs to read IP config bounds
 /// `ES: HasIpExtensionState` and calls `.ip_state()` to obtain a
-/// `&dyn IpStackState`.
-pub trait IpStackState {
+/// `&dyn IpStateView`.
+pub trait IpStateView {
     fn configured_ip_address(&self) -> Ipv4Addr;
     fn set_configured_ip_address(&self, addr: Ipv4Addr);
     fn configured_subnet_mask(&self) -> Ipv4Addr;
@@ -59,7 +59,7 @@ pub trait IpStackState {
     fn set_project_installation_id(&self, id: u16);
 }
 
-/// Accessor returning a borrowed `dyn IpStackState`.
+/// Accessor returning a borrowed `dyn IpStateView`.
 ///
 /// Implemented by every extension-state type that fronts a tunnelling
 /// or non-tunnelling IP device — directly by
@@ -75,7 +75,7 @@ pub trait IpStackState {
 /// `IpDiagnosticsContext`) that consume this.
 pub trait HasIpExtensionState {
     /// Borrow the persisted IP extension state.
-    fn ip_state(&self) -> &dyn IpStackState;
+    fn ip_state(&self) -> &dyn IpStateView;
 }
 
 // ============================================================================
@@ -88,7 +88,7 @@ pub trait HasIpExtensionState {
 /// Implemented by [`IpExtensionState`](crate::bcus::system_b::IpExtensionState)
 /// on the sender side and queried by the runtime's context impl to drain
 /// on the receiver side. Living on a dedicated trait keeps the channel
-/// out of [`IpStackState`]'s otherwise platform-agnostic API.
+/// out of [`IpStateView`]'s otherwise platform-agnostic API.
 pub trait HasRoutingMulticastRebind {
     /// Access the rebind channel (capacity 2, `NoopRawMutex`).
     fn routing_multicast_rebind_channel(

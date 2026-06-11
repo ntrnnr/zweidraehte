@@ -2,7 +2,6 @@
 //!
 //! [`StackState`] is the fundamental runtime abstraction for any KNX device,
 //! providing individual address, serial number, authorization, and
-//! providing individual address, serial number, authorization, and
 //! programming mode. It has no dependency on KNX/IP.
 
 use crate::config::MAX_APDU_LENGTH_EXTENDED;
