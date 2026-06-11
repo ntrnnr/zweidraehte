@@ -68,6 +68,16 @@ pub struct TcpConnectionState<S, const MAX_CHANNELS: usize, const TCP_BUF_SZ: us
     /// `BufferManager`-allocated `Buffer<'static>`. Replaces the
     /// per-call `[0u8; 512]` stack alloc.
     frame_buf: [u8; TCP_BUF_SZ],
+    /// Count of unconsumed bytes already in `read_buf[0..pending_len]`.
+    ///
+    /// One `read()` can deliver several whole KNX/IP frames coalesced in
+    /// a single TCP segment — common under IP Secure, where a client
+    /// streams keepalives and a wrapped request back-to-back. The
+    /// per-call loop returns only the first complete frame; the
+    /// remaining bytes are retained here and re-fed on the next
+    /// `read_one_connection` call before issuing a fresh `read()`, so no
+    /// frame is dropped.
+    pending_len: usize,
 }
 
 impl<S, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize> TcpConnectionState<S, MAX_CHANNELS, TCP_BUF_SZ> {
@@ -80,6 +90,7 @@ impl<S, const MAX_CHANNELS: usize, const TCP_BUF_SZ: usize> TcpConnectionState<S
             channel_ids: Vec::new(),
             read_buf: [0u8; TCP_BUF_SZ],
             frame_buf: [0u8; TCP_BUF_SZ],
+            pending_len: 0,
         }
     }
 
@@ -405,21 +416,28 @@ where
     // the frame reader as it consumes from `read_buf`. Both are
     // per-connection-stable storage — no per-call stack allocation, no
     // resource indirection.
-    let TcpConnectionState { stream, framer, read_buf, frame_buf, channel_ids, last_activity, .. } = conn;
+    let TcpConnectionState { stream, framer, read_buf, frame_buf, channel_ids, last_activity, pending_len, .. } = conn;
 
-    let n = match embedded_io_async::Read::read(stream, &mut read_buf[..]).await {
-        Ok(0) => return ConnectionReadResult::Closed(core::mem::take(channel_ids)),
-        Ok(n) => n,
-        Err(_e) => {
-            #[cfg(feature = "log")]
-            log::error!("TCP read error: {:?}", _e);
-            #[cfg(feature = "defmt")]
-            defmt::error!("TCP read error");
-            return ConnectionReadResult::Closed(core::mem::take(channel_ids));
+    // Drain bytes left over from a previous coalesced segment before
+    // issuing a new read; only block on the stream when nothing remains.
+    let n = if *pending_len > 0 {
+        core::mem::take(pending_len)
+    } else {
+        match embedded_io_async::Read::read(stream, &mut read_buf[..]).await {
+            Ok(0) => return ConnectionReadResult::Closed(core::mem::take(channel_ids)),
+            Ok(n) => {
+                *last_activity = Instant::now();
+                n
+            }
+            Err(_e) => {
+                #[cfg(feature = "log")]
+                log::error!("TCP read error: {:?}", _e);
+                #[cfg(feature = "defmt")]
+                defmt::error!("TCP read error");
+                return ConnectionReadResult::Closed(core::mem::take(channel_ids));
+            }
         }
     };
-
-    *last_activity = Instant::now();
 
     // Process the read data through the frame reader. `read_buf[..n]`
     // is the valid window of inbound bytes; `frame_buf` receives the
@@ -434,6 +452,14 @@ where
             FrameEvent::Frame(frame_len) => {
                 let mut buffer = buffer_manager.alloc().await;
                 buffer.push_slice(&frame_buf[..frame_len]);
+                // Retain any bytes after this frame (a coalesced
+                // follow-on frame) by shifting them to the front of
+                // `read_buf` for the next call.
+                let remaining = n - pos;
+                if remaining > 0 {
+                    read_buf.copy_within(pos..n, 0);
+                    *pending_len = remaining;
+                }
                 return ConnectionReadResult::Frame(buffer);
             }
             FrameEvent::NeedMoreData => break,
