@@ -50,9 +50,11 @@ pub mod comm_objs {
     use zweidraehte_device::objects::comm::ComObject;
     use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 
-    // Use #[ets(manual_impl)] to provide our own ComObjects implementation with hooks
+    // `bus_hook` keeps the derive-generated `ComObjects` dispatch but lets
+    // us write the `ComObjectBusHook` impl (the shadow-object mirroring)
+    // ourselves — see the hook impl below the module.
     #[derive(EtsComObjects)]
-    #[ets(manual_impl)]
+    #[ets(bus_hook)]
     pub struct ConformanceComObjects {
         // ================================================================
         // GO0-GO3: 1-bit main object and shadow objects (ASAP 1-4)
@@ -78,7 +80,11 @@ pub mod comm_objs {
         /// Bit 5: Read on Init
         /// Bit 6: Transmission Enable
         /// Bit 7: Update Enable (Read Response Update)
-        #[ets(index = 3)]
+        ///
+        /// Seeded with GO0's default flags byte so the shadow value is
+        /// sensible even before the first `prepare_read` recomputes it
+        /// from the live CoTab.
+        #[ets(index = 3, initial = DPT_Value_1_Ucount::from(0xDFu8))]
         pub go_2_config_flags: ComObject<DPT_Value_1_Ucount>,
 
         /// GO3: Value of GO0 as 8-bit (for reading/writing without affecting flags)
@@ -97,8 +103,9 @@ pub mod comm_objs {
         #[ets(index = 6)]
         pub go_1_byte3_comm_flags: ComObject<DPT_Value_1_Ucount>,
 
-        /// GO2_BYTE3: Configuration flags for GO0_BYTE3
-        #[ets(index = 7)]
+        /// GO2_BYTE3: Configuration flags for GO0_BYTE3 (same default
+        /// seed rationale as GO2).
+        #[ets(index = 7, initial = DPT_Value_1_Ucount::from(0xDFu8))]
         pub go_2_byte3_config_flags: ComObject<DPT_Value_1_Ucount>,
 
         /// GO3_BYTE3: Value of GO0_BYTE3 as 3-byte (for reading/writing without affecting flags)
@@ -158,12 +165,11 @@ pub mod comm_objs {
     }
 }
 
-// Manual ComObjects implementation with custom hooks for shadow objects
+// Custom bus hooks for the shadow objects (`#[ets(bus_hook)]` above).
 use comm_objs::{ConformanceComObjects, Index as CoIndex};
 use std::sync::atomic::{AtomicPtr, Ordering};
-use zweidraehte_device::objects::comm::{ComObjectBusHook, ComObjectInfo, ComObjectInfoMut};
+use zweidraehte_device::objects::comm::ComObjectBusHook;
 use zweidraehte_device::objects::tables::CommunicationObjectTable;
-use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 
 // ============================================================================
 // CoTab pointer for the ComObjectBusHook shadow objects
@@ -208,150 +214,8 @@ fn conformance_cot() -> Option<&'static RefCell<conformance_config::CoTab>> {
     unsafe { ptr.as_ref() }
 }
 
-impl ComObjects for ConformanceComObjects {
-    type Index = CoIndex;
-
-    fn new() -> Self {
-        Self {
-            // GO0-GO3: 1-bit main object and shadow objects
-            go_0: ComObject::new(DPT_Switch::from(false)),
-            go_1_comm_flags: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
-            go_2_config_flags: ComObject::new(DPT_Value_1_Ucount::from(0xDFu8)),
-            go_3_value: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
-            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects
-            go_0_byte3: ComObject::new(DPT_Colour_RGB::default()),
-            go_1_byte3_comm_flags: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
-            go_2_byte3_config_flags: ComObject::new(DPT_Value_1_Ucount::from(0xDFu8)),
-            go_3_byte3_value: ComObject::new(DPT_Colour_RGB::default()),
-            // Additional test objects
-            go_4: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
-            go_5_network_test: ComObject::new(DPT_Value_1_Ucount::from(0u8)),
-            go_6_transport_test: ComObject::new(DPT_Switch::from(false)),
-            // Security GO test objects
-            go_sec_0: ComObject::new(DPT_Switch::from(false)),
-            go_sec_1: ComObject::new(DPT_Switch::from(false)),
-            go_sec_3: ComObject::new(DPT_Switch::from(false)),
-            // Diagnostic test objects
-            go_diag_no_c: ComObject::new(DPT_Value_1_Ucount::from(0)),
-            go_diag_no_w: ComObject::new(DPT_Value_1_Ucount::from(0)),
-            go_diag_no_t: ComObject::new(DPT_Value_1_Ucount::from(0)),
-        }
-    }
-
-    fn info(&self, idx: u16) -> Option<ComObjectInfo<'_>> {
-        CoIndex::from_index(idx).map(|index| match index {
-            // GO0-GO3: 1-bit main object and shadow objects
-            CoIndex::Go0 => ComObjectInfo { status: &self.go_0.status, value: self.go_0.value.as_ref() },
-            CoIndex::Go1CommFlags => {
-                ComObjectInfo { status: &self.go_1_comm_flags.status, value: self.go_1_comm_flags.value.as_ref() }
-            }
-            CoIndex::Go2ConfigFlags => {
-                ComObjectInfo { status: &self.go_2_config_flags.status, value: self.go_2_config_flags.value.as_ref() }
-            }
-            CoIndex::Go3Value => {
-                ComObjectInfo { status: &self.go_3_value.status, value: self.go_3_value.value.as_ref() }
-            }
-            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects
-            CoIndex::Go0Byte3 => {
-                ComObjectInfo { status: &self.go_0_byte3.status, value: self.go_0_byte3.value.as_ref() }
-            }
-            CoIndex::Go1Byte3CommFlags => ComObjectInfo {
-                status: &self.go_1_byte3_comm_flags.status,
-                value: self.go_1_byte3_comm_flags.value.as_ref(),
-            },
-            CoIndex::Go2Byte3ConfigFlags => ComObjectInfo {
-                status: &self.go_2_byte3_config_flags.status,
-                value: self.go_2_byte3_config_flags.value.as_ref(),
-            },
-            CoIndex::Go3Byte3Value => {
-                ComObjectInfo { status: &self.go_3_byte3_value.status, value: self.go_3_byte3_value.value.as_ref() }
-            }
-            // Additional test objects
-            CoIndex::Go4 => ComObjectInfo { status: &self.go_4.status, value: self.go_4.value.as_ref() },
-            CoIndex::Go5NetworkTest => {
-                ComObjectInfo { status: &self.go_5_network_test.status, value: self.go_5_network_test.value.as_ref() }
-            }
-            CoIndex::Go6TransportTest => ComObjectInfo {
-                status: &self.go_6_transport_test.status,
-                value: self.go_6_transport_test.value.as_ref(),
-            },
-            CoIndex::GoSec0 => ComObjectInfo { status: &self.go_sec_0.status, value: self.go_sec_0.value.as_ref() },
-            CoIndex::GoSec1 => ComObjectInfo { status: &self.go_sec_1.status, value: self.go_sec_1.value.as_ref() },
-            CoIndex::GoSec3 => ComObjectInfo { status: &self.go_sec_3.status, value: self.go_sec_3.value.as_ref() },
-            CoIndex::GoDiagNoC => {
-                ComObjectInfo { status: &self.go_diag_no_c.status, value: self.go_diag_no_c.value.as_ref() }
-            }
-            CoIndex::GoDiagNoW => {
-                ComObjectInfo { status: &self.go_diag_no_w.status, value: self.go_diag_no_w.value.as_ref() }
-            }
-            CoIndex::GoDiagNoT => {
-                ComObjectInfo { status: &self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_ref() }
-            }
-        })
-    }
-
-    fn info_mut(&mut self, idx: u16) -> Option<ComObjectInfoMut<'_>> {
-        CoIndex::from_index(idx).map(|index| match index {
-            // GO0-GO3: 1-bit main object and shadow objects
-            CoIndex::Go0 => ComObjectInfoMut { status: &mut self.go_0.status, value: self.go_0.value.as_mut() },
-            CoIndex::Go1CommFlags => ComObjectInfoMut {
-                status: &mut self.go_1_comm_flags.status,
-                value: self.go_1_comm_flags.value.as_mut(),
-            },
-            CoIndex::Go2ConfigFlags => ComObjectInfoMut {
-                status: &mut self.go_2_config_flags.status,
-                value: self.go_2_config_flags.value.as_mut(),
-            },
-            CoIndex::Go3Value => {
-                ComObjectInfoMut { status: &mut self.go_3_value.status, value: self.go_3_value.value.as_mut() }
-            }
-            // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects
-            CoIndex::Go0Byte3 => {
-                ComObjectInfoMut { status: &mut self.go_0_byte3.status, value: self.go_0_byte3.value.as_mut() }
-            }
-            CoIndex::Go1Byte3CommFlags => ComObjectInfoMut {
-                status: &mut self.go_1_byte3_comm_flags.status,
-                value: self.go_1_byte3_comm_flags.value.as_mut(),
-            },
-            CoIndex::Go2Byte3ConfigFlags => ComObjectInfoMut {
-                status: &mut self.go_2_byte3_config_flags.status,
-                value: self.go_2_byte3_config_flags.value.as_mut(),
-            },
-            CoIndex::Go3Byte3Value => ComObjectInfoMut {
-                status: &mut self.go_3_byte3_value.status,
-                value: self.go_3_byte3_value.value.as_mut(),
-            },
-            // Additional test objects
-            CoIndex::Go4 => ComObjectInfoMut { status: &mut self.go_4.status, value: self.go_4.value.as_mut() },
-            CoIndex::Go5NetworkTest => ComObjectInfoMut {
-                status: &mut self.go_5_network_test.status,
-                value: self.go_5_network_test.value.as_mut(),
-            },
-            CoIndex::Go6TransportTest => ComObjectInfoMut {
-                status: &mut self.go_6_transport_test.status,
-                value: self.go_6_transport_test.value.as_mut(),
-            },
-            CoIndex::GoSec0 => {
-                ComObjectInfoMut { status: &mut self.go_sec_0.status, value: self.go_sec_0.value.as_mut() }
-            }
-            CoIndex::GoSec1 => {
-                ComObjectInfoMut { status: &mut self.go_sec_1.status, value: self.go_sec_1.value.as_mut() }
-            }
-            CoIndex::GoSec3 => {
-                ComObjectInfoMut { status: &mut self.go_sec_3.status, value: self.go_sec_3.value.as_mut() }
-            }
-            CoIndex::GoDiagNoC => {
-                ComObjectInfoMut { status: &mut self.go_diag_no_c.status, value: self.go_diag_no_c.value.as_mut() }
-            }
-            CoIndex::GoDiagNoW => {
-                ComObjectInfoMut { status: &mut self.go_diag_no_w.status, value: self.go_diag_no_w.value.as_mut() }
-            }
-            CoIndex::GoDiagNoT => {
-                ComObjectInfoMut { status: &mut self.go_diag_no_t.status, value: self.go_diag_no_t.value.as_mut() }
-            }
-        })
-    }
-}
+// `ComObjects` (the per-index dispatch) is derive-generated —
+// `#[ets(bus_hook)]` only leaves the `ComObjectBusHook` impl below to us.
 
 // ============================================================================
 // BCU1-style shadow-object hook

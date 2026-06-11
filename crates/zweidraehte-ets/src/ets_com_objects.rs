@@ -1,6 +1,7 @@
 use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::ParseStream;
+use syn::spanned::Spanned;
 use syn::{Attribute, Data, DeriveInput, Fields, Token};
 
 pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -135,6 +136,11 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
                     #ident: zweidraehte_device::objects::comm::ComObject::new(
                         zweidraehte_device::objects::comm::ComObjectStorage::new()
                     )
+                }
+            } else if let Some(initial) = &obj.attrs.initial {
+                // Explicit `#[ets(initial = …)]` seed value.
+                quote! {
+                    #ident: zweidraehte_device::objects::comm::ComObject::new(#initial)
                 }
             } else {
                 // Single-DPT objects (including same-DPT multi-ref) use the declared inner type
@@ -319,11 +325,20 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
         quote!()
     };
 
-    // Generate ComObjects impl unless manual_impl is set. Always also emit
-    // an empty `ComObjectBusHook` so the generated container satisfies the
-    // `StackDefinition::CO: ComObjects + ComObjectBusHook` bound — devices
-    // that need bus hooks override the trait manually alongside their own
-    // `ComObjects` impl.
+    // Generate ComObjects impl unless manual_impl is set. Unless the
+    // user opted into writing the hook themselves via `#[ets(bus_hook)]`,
+    // also emit an empty `ComObjectBusHook` so the generated container
+    // satisfies the `StackDefinition::CO: ComObjects + ComObjectBusHook`
+    // bound.
+    let hook_impl = if struct_attrs.bus_hook {
+        // User writes `impl ComObjectBusHook for #struct_name { … }`
+        // next to the derive; the standard dispatch is still generated.
+        quote!()
+    } else {
+        quote! {
+            impl zweidraehte_device::objects::comm::ComObjectBusHook for #struct_name {}
+        }
+    };
     let com_objects_impl = if struct_attrs.manual_impl {
         quote!()
     } else {
@@ -338,23 +353,19 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
                 }
 
                 fn info<'a>(&'a self, idx: u16) -> Option<zweidraehte_device::objects::comm::ComObjectInfo<'a>> {
-                    Index::from_index(idx).map(|index| match index {
+                    <Index as zweidraehte_device::objects::comm::ComObjectIndex>::from_index(idx).map(|index| match index {
                         #(#info_arms),*
                     })
                 }
 
                 fn info_mut<'a>(&'a mut self, idx: u16) -> Option<zweidraehte_device::objects::comm::ComObjectInfoMut<'a>> {
-                    Index::from_index(idx).map(|index| match index {
+                    <Index as zweidraehte_device::objects::comm::ComObjectIndex>::from_index(idx).map(|index| match index {
                         #(#info_mut_arms),*
                     })
                 }
             }
 
-            // Empty `ComObjectBusHook` impl — macro-generated devices rarely
-            // need bus-inbound side effects. Users that do want to override
-            // `prepare_read` / `handle_write` should set `#[ets(manual_impl)]`
-            // on the struct and write both traits themselves.
-            impl zweidraehte_device::objects::comm::ComObjectBusHook for #struct_name {}
+            #hook_impl
         }
     };
 
@@ -491,9 +502,16 @@ fn generate_module_based_impl(
     // Users can still use helper methods to get human-readable indices.
 
     // Generate ComObjects impl that forwards to the array elements.
-    // Also emit an empty `ComObjectBusHook` so the resulting type
-    // satisfies the `StackDefinition::CO` bound; manual_impl users must
-    // write both.
+    // Unless `#[ets(bus_hook)]` says the user writes the hook, also emit
+    // an empty `ComObjectBusHook` so the resulting type satisfies the
+    // `StackDefinition::CO` bound; manual_impl users must write both.
+    let hook_impl = if struct_attrs.bus_hook {
+        quote!()
+    } else {
+        quote! {
+            impl zweidraehte_device::objects::comm::ComObjectBusHook for #struct_name {}
+        }
+    };
     let com_objects_impl = if struct_attrs.manual_impl {
         quote!()
     } else {
@@ -522,7 +540,7 @@ fn generate_module_based_impl(
                 }
             }
 
-            impl zweidraehte_device::objects::comm::ComObjectBusHook for #struct_name {}
+            #hook_impl
         }
     };
 
@@ -835,6 +853,9 @@ fn to_title_case(s: &str) -> String {
 struct ComObjectsStructAttrs {
     /// Don't generate ComObjects trait impl
     manual_impl: bool,
+    /// Generate the ComObjects impl but skip the empty
+    /// `ComObjectBusHook` impl — the user writes the hook themselves.
+    bus_hook: bool,
     /// Selector enum type for generating variant struct
     selector_enum: Option<syn::Type>,
 }
@@ -860,6 +881,9 @@ struct ComObjectFieldAttrs {
     /// Marks this field as containing module instances (array of module comm objects).
     /// The type should be the module type (e.g., DimmerChannelModule).
     module_type: Option<syn::Type>,
+    /// Initial value expression used in the generated `ComObjects::new()`
+    /// instead of `<inner_ty>::default()` (e.g. a non-zero seed value).
+    initial: Option<syn::Expr>,
 }
 
 /// Selector value for when a ComObjectRef is active.
@@ -893,7 +917,7 @@ struct ComObjectRefAttrs {
 }
 
 fn parse_com_objects_struct_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectsStructAttrs> {
-    let mut result = ComObjectsStructAttrs { manual_impl: false, selector_enum: None };
+    let mut result = ComObjectsStructAttrs { manual_impl: false, bus_hook: false, selector_enum: None };
 
     for attr in attrs {
         if !attr.path().is_ident("ets") {
@@ -907,6 +931,8 @@ fn parse_com_objects_struct_attrs(attrs: &[Attribute]) -> syn::Result<ComObjects
 
                 if ident == "manual_impl" {
                     result.manual_impl = true;
+                } else if ident == "bus_hook" {
+                    result.bus_hook = true;
                 } else if ident == "selector_enum" {
                     input.parse::<Token![=]>()?;
                     result.selector_enum = Some(input.parse()?);
@@ -920,6 +946,14 @@ fn parse_com_objects_struct_attrs(attrs: &[Attribute]) -> syn::Result<ComObjects
         };
 
         syn::parse::Parser::parse2(parser, tokens)?;
+
+        if result.manual_impl && result.bus_hook {
+            return Err(syn::Error::new(
+                attr.span(),
+                "`bus_hook` is redundant with `manual_impl` — a manual impl already writes \
+                 `ComObjectBusHook` itself",
+            ));
+        }
     }
 
     Ok(result)
@@ -936,6 +970,7 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
         object_size: None,
         text_template: None,
         module_type: None,
+        initial: None,
     };
 
     for attr in attrs {
@@ -963,6 +998,9 @@ fn parse_com_object_field_attrs(attrs: &[Attribute]) -> syn::Result<ComObjectFie
                 } else if ident == "flags" {
                     input.parse::<Token![=]>()?;
                     result.flags = Some(parse_flags_expr(input)?);
+                } else if ident == "initial" {
+                    input.parse::<Token![=]>()?;
+                    result.initial = Some(input.parse()?);
                 } else if ident == "selector_param" {
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;
