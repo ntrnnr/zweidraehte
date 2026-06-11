@@ -32,7 +32,7 @@ use crate::layers::transport::TransportLayer;
 use crate::layers::transport::cemi::CemiTransportLayer;
 use crate::objects::comm::HasCommObjects;
 use crate::objects::interface::HasDomainAddress;
-use crate::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, LifecycleHook, ServiceCtx, ServiceRegistry};
+use crate::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, LifecycleHook, ServiceRegistry};
 use crate::storage::SequenceNumberStorage;
 
 // -----------------------------------------------------------------
@@ -50,7 +50,7 @@ struct ShimLayer {
 impl<D: StackDefinition> Layer<D> for ShimLayer {
     const HANDLES: &'static [ServiceType] = &[ServiceType::L_Data_Ind];
 
-    fn init(&mut self, _ctx: &ServiceCtx<'_, D>) {
+    fn init(&mut self) {
         self.init_called.set(true);
     }
 
@@ -58,24 +58,22 @@ impl<D: StackDefinition> Layer<D> for ShimLayer {
         None
     }
 
-    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {
+    fn poll(&mut self) {
         self.poll_called.set(true);
     }
 
-    fn process(&mut self, _msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &ServiceCtx<'_, D>) {
+    fn process(&mut self, _msg: KnxMessageBuffer<Buffer<'static>>) {
         self.process_calls.set(self.process_calls.get() + 1);
     }
 }
 
 // -----------------------------------------------------------------
-// Shim Augment with a single IO contribution and a poll deadline,
-// to exercise the lifecycle and IO-list aggregation paths.
+// Shim Augment with a single IO contribution, to exercise the
+// IO-list aggregation paths.
 // -----------------------------------------------------------------
 
 #[derive(Default)]
-struct ShimAugment {
-    poll_called: Cell<bool>,
-}
+struct ShimAugment;
 
 // Hand-written augment without `#[interface_object_augment]`. With
 // the single-trait surface, this is simply an `Augment<D>`
@@ -91,10 +89,6 @@ impl<D: StackDefinition> Augment<D> for ShimAugment {
             0 => Some(InterfaceObjectType::Security),
             _ => None,
         }
-    }
-
-    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {
-        self.poll_called.set(true);
     }
 }
 
@@ -132,10 +126,10 @@ struct ShimLifecycle {
 }
 
 impl<D: StackDefinition> LifecycleHook<D> for ShimLifecycle {
-    fn init(&mut self, _ctx: &ServiceCtx<'_, D>) {
+    fn init(&mut self) {
         self.init_calls.set(self.init_calls.get() + 1);
     }
-    fn drain_events(&mut self, _ctx: &ServiceCtx<'_, D>) {
+    fn drain_events(&mut self) {
         self.drain_calls.set(self.drain_calls.get() + 1);
     }
 }

@@ -19,7 +19,6 @@ use zweidraehte_proto::messages::knx::KnxMessageBuffer;
 
 use crate::definition::StackDefinition;
 use crate::router::DispatchTable;
-use crate::service::ctx::ServiceCtx;
 
 // =============================================================================
 // LayerRegistry
@@ -50,16 +49,15 @@ pub trait LayerRegistry<D: StackDefinition> {
     /// Route a wire message to the field that registered for this
     /// `ServiceType`. The router has already resolved the field index
     /// via [`Self::DISPATCH_TABLE`].
-    fn dispatch_wire(&mut self, idx: u8, msg: KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>);
+    fn dispatch_wire(&mut self, idx: u8, msg: KnxMessageBuffer<Buffer<'static>>);
 
     /// Initialise every `#[service(handler)]` field. Called once
-    /// before the router loop starts; `ctx.access` is
-    /// `AccessContext::default()`.
-    fn init_layers(&mut self, ctx: &ServiceCtx<'_, D>);
+    /// before the router loop starts.
+    fn init_layers(&mut self);
 
     /// Tick every `#[service(handler)]` field's `poll`. Called when
     /// the router's selected timer arm fires.
-    fn poll_layers(&mut self, ctx: &ServiceCtx<'_, D>);
+    fn poll_layers(&mut self);
 
     /// Earliest deadline across every `#[service(handler)]` field, or
     /// `None` if none of them have a pending timer.
@@ -93,14 +91,14 @@ pub trait LayerRegistry<D: StackDefinition> {
     /// Process a service input that [`recv_service_input`](Self::recv_service_input) resolved with.
     ///
     /// Default `match input {}` — works against the never type.
-    fn handle_service_input(&mut self, _input: Self::ServiceInput, _ctx: &ServiceCtx<'_, D>) {}
+    fn handle_service_input(&mut self, _input: Self::ServiceInput) {}
 
     /// Drain stack-level coordination events emitted during the
     /// dispatch cycle (e.g. DeviceModel transitions). Called after
     /// the outbox drain completes.
     ///
     /// Default no-op.
-    fn drain_events(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    fn drain_events(&mut self) {}
 }
 
 // =============================================================================
@@ -111,17 +109,14 @@ pub trait LayerRegistry<D: StackDefinition> {
 /// `Augment<D>` but still need an init pass and per-cycle drain.
 ///
 /// Used by `#[service(lifecycle)]` fields on a `#[derive(ServiceRegistry)]`
-/// stack. The macro emits one `LifecycleHook::init(&mut self.field, ctx)`
+/// stack. The macro emits one `LifecycleHook::init(&mut self.field)`
 /// call per lifecycle field at the top of `init_layers`, and one
-/// `LifecycleHook::drain_events(&mut self.field, ctx)` per field inside
+/// `LifecycleHook::drain_events(&mut self.field)` per field inside
 /// the generated `drain_events` override.
-///
-/// Implementors that don't need the context can ignore the parameter
-/// (e.g. `SystemBDeviceModel` does).
 pub trait LifecycleHook<D: StackDefinition> {
     /// Run once before the router loop starts.
-    fn init(&mut self, ctx: &ServiceCtx<'_, D>);
+    fn init(&mut self);
 
     /// Run after each dispatch cycle (after the outbox drain).
-    fn drain_events(&mut self, ctx: &ServiceCtx<'_, D>);
+    fn drain_events(&mut self);
 }

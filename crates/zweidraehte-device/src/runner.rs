@@ -11,16 +11,9 @@ use embassy_sync::{
 use embassy_time::Timer;
 
 use crate::{
-    StackState,
-    composition::LayerStackBuilder,
-    context::StackContext,
-    context::layer::LayerContext,
-    definition::StackDefinition,
-    inner::Inner,
-    layers::LinkLayerBuilderBase,
-    resources::StackResources,
-    service::{LayerRegistry, ServiceCtx},
-    stack_handle::Stack,
+    StackState, composition::LayerStackBuilder, context::StackContext, context::layer::LayerContext,
+    definition::StackDefinition, inner::Inner, layers::LinkLayerBuilderBase, resources::StackResources,
+    service::LayerRegistry, stack_handle::Stack,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -35,7 +28,6 @@ use zweidraehte_proto::messages::knx::ServiceType;
 /// You must call [`Runner::run()`] in a background task for the KNX stack to work.
 pub struct Runner<'d, D: StackDefinition> {
     pub(crate) stack: Stack<'d, D>,
-    pub(crate) interface_objects: &'d D::InterfaceObjects<'static>,
     pub(crate) link_layer_builder: D::LLB,
     pub(crate) link_layer_resources: &'d mut <D::LLB as LinkLayerBuilderBase>::Resources,
 }
@@ -90,32 +82,20 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // Layer construction (via LayerStackBuilder)
         // ================================================================
 
-        let stack_context = StackContext::new(self.stack.inner, self.interface_objects);
+        let stack_context = StackContext::new(self.stack.inner, self.stack.interface_objects);
 
         let mut layers = B::<D>::build(&stack_context, &layer_channels);
 
-        // Build a fresh `ServiceCtx` per call into the registry. The
-        // ctx carries `state`, `lctx`, and a default `AccessContext`
-        // for lifecycle / dispatch sites that aren't bound to an
-        // incoming request.
-        let make_ctx = || {
-            ServiceCtx::new(
-                &self.stack.inner.state,
-                self.stack.inner.layer_context,
-                ::zweidraehte_proto::access::AccessContext::default(),
-            )
-        };
-
         // Initialize all layers (e.g., AL starts read-on-init cycle if
         // the application is already running).
-        layers.init_layers(&make_ctx());
+        layers.init_layers();
 
         // Do one poll pass straight after init so the layers get a
         // chance to evaluate their startup state — the AL uses this
         // to either begin read-on-init or settle on "nothing to do"
         // without waiting for the first timer deadline (which may
         // never arrive on a DUT with no application loaded).
-        layers.poll_layers(&make_ctx());
+        layers.poll_layers();
 
         // ================================================================
         // Link layer task
@@ -184,11 +164,11 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                     }
                     embassy_futures::select::Either3::Third(third) => match third {
                         Either::First(input) => {
-                            layers.handle_service_input(input, &make_ctx());
+                            layers.handle_service_input(input);
                         }
                         Either::Second(_) => {
                             debug!("Router: timer expired, polling layers");
-                            layers.poll_layers(&make_ctx());
+                            layers.poll_layers();
                         }
                     },
                 }
@@ -213,7 +193,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
                         ll_req.send(RequestMessage::request(msg)).await;
                         embassy_futures::yield_now().await;
                     } else if let Some(layer_idx) = Layers::<'_, D>::DISPATCH_TABLE.get(st) {
-                        layers.dispatch_wire(layer_idx, msg, &make_ctx());
+                        layers.dispatch_wire(layer_idx, msg);
                     } else {
                         warn!("Router: no layer for {:?}, dropping", st);
                     }
@@ -221,7 +201,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 
                 // Handle side-effect events emitted during this dispatch cycle
                 // (e.g., run state machine transitions).
-                layers.drain_events(&make_ctx());
+                layers.drain_events();
             }
         };
 
@@ -318,7 +298,7 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
     let stack = Stack { inner, interface_objects, app_request_sender, restart_receiver };
-    let runner = Runner { stack, interface_objects, link_layer_builder, link_layer_resources };
+    let runner = Runner { stack, link_layer_builder, link_layer_resources };
 
     (stack, runner)
 }

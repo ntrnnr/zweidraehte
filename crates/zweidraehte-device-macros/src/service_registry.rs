@@ -309,7 +309,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let ident = h.ident;
         let idx_u8 = idx as u8;
         quote! {
-            #idx_u8 => ::zweidraehte_device::service::Layer::<D>::process(&mut self.#ident, msg, ctx),
+            #idx_u8 => ::zweidraehte_device::service::Layer::<D>::process(&mut self.#ident, msg),
         }
     });
 
@@ -318,16 +318,16 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // start polling.
     let lifecycle_init_calls = lifecycles.iter().map(|l| {
         let ident = l.ident;
-        quote! { ::zweidraehte_device::service::LifecycleHook::<D>::init(&mut self.#ident, ctx); }
+        quote! { ::zweidraehte_device::service::LifecycleHook::<D>::init(&mut self.#ident); }
     });
     let init_layer_calls = handlers.iter().map(|h| {
         let ident = h.ident;
-        quote! { ::zweidraehte_device::service::Layer::<D>::init(&mut self.#ident, ctx); }
+        quote! { ::zweidraehte_device::service::Layer::<D>::init(&mut self.#ident); }
     });
 
     let poll_layer_calls = handlers.iter().map(|h| {
         let ident = h.ident;
-        quote! { ::zweidraehte_device::service::Layer::<D>::poll(&mut self.#ident, ctx); }
+        quote! { ::zweidraehte_device::service::Layer::<D>::poll(&mut self.#ident); }
     });
 
     let next_layer_deadline_merges = handlers.iter().map(|h| {
@@ -353,11 +353,11 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let drain_calls = lifecycles.iter().map(|l| {
             let ident = l.ident;
             quote! {
-                ::zweidraehte_device::service::LifecycleHook::<D>::drain_events(&mut self.#ident, ctx);
+                ::zweidraehte_device::service::LifecycleHook::<D>::drain_events(&mut self.#ident);
             }
         });
         quote! {
-            fn drain_events(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
+            fn drain_events(&mut self) {
                 #( #drain_calls )*
             }
         }
@@ -531,11 +531,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 #recv_service_input_body
             }
 
-            fn handle_service_input(
-                &mut self,
-                input: Self::ServiceInput,
-                _ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
-            ) {
+            fn handle_service_input(&mut self, input: Self::ServiceInput) {
                 match input {
                     #( #handle_service_input_arms )*
                     #phantom_match_arm
@@ -562,7 +558,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     msg: ::zweidraehte_device::__macro_support::messages::knx::KnxMessageBuffer<
                         ::zweidraehte_device::__macro_support::messages::buffers::Buffer<'static>,
                     >,
-                    ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>,
                 ) {
                     match idx {
                         #( #dispatch_arms )*
@@ -573,12 +568,12 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     }
                 }
 
-                fn init_layers(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
+                fn init_layers(&mut self) {
                     #( #lifecycle_init_calls )*
                     #( #init_layer_calls )*
                 }
 
-                fn poll_layers(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
+                fn poll_layers(&mut self) {
                     #( #poll_layer_calls )*
                 }
 
@@ -777,26 +772,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
         }
     });
 
-    // Augment-side lifecycle. Both annotations call
-    // `Augment::poll_augments` / `next_augment_deadline` —
-    // single-augment fields get those directly from the
-    // `#[interface_object_augment]` codegen, nested-bundle fields
-    // get them from the recursive `#[derive(ServiceRegistry)]` impl.
-    let poll_calls = all_aug_idents.iter().map(|id| {
-        quote! { ::zweidraehte_device::service::Augment::<D>::poll_augments(&mut self.#id, ctx); }
-    });
-
-    let next_deadline_merges = all_aug_idents.iter().map(|id| {
-        quote! {
-            if let Some(d) = ::zweidraehte_device::service::Augment::<D>::next_augment_deadline(&self.#id) {
-                earliest = Some(match earliest {
-                    Some(e) if e < d => e,
-                    _ => d,
-                });
-            }
-        }
-    });
-
     // Every `#[service(augment)]` and `#[service(flatten)]` field
     // type must satisfy `Augment<D>`. This is one explicit
     // `where` bound per field in the emitted impl so any additional
@@ -904,17 +879,6 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
             ) -> u16 {
                 #descriptor_count_body
-            }
-
-            fn poll_augments(&mut self, ctx: &::zweidraehte_device::service::ServiceCtx<'_, D>) {
-                #( #poll_calls )*
-            }
-
-            fn next_augment_deadline(&self) -> ::core::option::Option<::embassy_time::Instant> {
-                let mut earliest: ::core::option::Option<::embassy_time::Instant> =
-                    ::core::option::Option::None;
-                #( #next_deadline_merges )*
-                earliest
             }
         }
     };

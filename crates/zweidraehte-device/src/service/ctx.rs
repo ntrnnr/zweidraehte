@@ -1,5 +1,10 @@
-//! [`ServiceCtx`] and [`AlCtx`] — the per-call contexts handed to the
-//! service traits.
+//! [`ServiceCtx`] and [`AlCtx`] — the per-request contexts handed to
+//! augment hooks and AL services.
+//!
+//! Both are built at dispatch time by the AL or the IO container,
+//! carrying the *request's* [`AccessContext`] — they are never threaded
+//! through the router or the [`Layer`](crate::service::Layer) trait
+//! (layers capture their environment at construction instead).
 //!
 //! - [`ServiceCtx`] is the lean, augment-friendly bundle: state,
 //!   layer context, access context. Anyone that can borrow these
@@ -39,8 +44,7 @@ use crate::layers::secure_application::SecureGroupDataProvider;
 /// most frequently used capability shortcuts (buffer manager, APDU
 /// budget helpers, capability senders) without forcing handlers to
 /// chase trait re-exports. To enqueue outgoing wire messages, call
-/// [`LayerContext::push_outbox`] /
-/// [`LayerContext::push_outbox_deferred`] directly on `ctx.lctx`.
+/// [`LayerContext::push_outbox`] directly on `ctx.lctx`.
 ///
 /// # Lifetime
 ///

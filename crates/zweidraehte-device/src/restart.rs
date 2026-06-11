@@ -120,12 +120,3 @@ impl RestartResponse {
         Self { error, process_time_100ms: 0 }
     }
 }
-
-// A `RestartHandler` trait (supports_erase_code / execute_reset /
-// flush_storage) used to live here. It was never consumed by the stack:
-// the application layer validates A_Restart itself (access policy +
-// erase-code checks in `handle_restart`) and hands the request to user
-// code via the restart channel, where the reset is applied with the
-// inherent `SystemBDeviceState::apply_erase_code` / reset methods. The
-// trait was deleted rather than kept as a second, diverging definition
-// of the same dispatch.

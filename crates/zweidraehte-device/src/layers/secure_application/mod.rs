@@ -38,7 +38,7 @@ use zweidraehte_proto::messages::{
 use crate::logging::{debug, warn};
 use crate::objects::tables::{AddressTable, LoadState};
 use crate::router::Outbox;
-use crate::service::{Layer, ServiceCtx};
+use crate::service::Layer;
 
 pub mod group_data;
 pub(crate) mod outgoing;
@@ -907,25 +907,25 @@ where
 {
     const HANDLES: &'static [ServiceType] = <ApplicationLayer<'_, D> as Layer<D>>::HANDLES;
 
-    fn init(&mut self, ctx: &ServiceCtx<'_, D>) {
+    fn init(&mut self) {
         // The inner AL's `init()` may queue ROI reads up front. The
         // same requirement applies: stamp + encrypt.
-        self.with_outbox_swap(|this| Layer::<D>::init(&mut this.inner, ctx));
+        self.with_outbox_swap(|this| Layer::<D>::init(&mut this.inner));
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
         Layer::<D>::next_deadline(&self.inner)
     }
 
-    fn poll(&mut self, ctx: &ServiceCtx<'_, D>) {
+    fn poll(&mut self) {
         // Read-on-init reads (`A_GroupValue_Read.req`) and any other
         // spontaneous emissions originating from the inner AL's poll
         // loop need the same encryption pass that frame-driven sends
         // get.
-        self.with_outbox_swap(|this| Layer::<D>::poll(&mut this.inner, ctx));
+        self.with_outbox_swap(|this| Layer::<D>::poll(&mut this.inner));
     }
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         match self.try_process_secure(msg) {
             SecureResult::Forward(msg) => {
                 // Run the inner AL inside the same outbox-swap window
@@ -939,7 +939,7 @@ where
                 // path reads `tool_key()` after `set_tool_key` has
                 // returned, so the WriteConRes for PID_TOOL_KEY
                 // encrypts with the newly-set key (TSSJ §3.8.13.1).
-                self.with_outbox_swap(|this| Layer::<D>::process(&mut this.inner, msg, ctx));
+                self.with_outbox_swap(|this| Layer::<D>::process(&mut this.inner, msg));
             }
             SecureResult::SyncResponse(msg) => {
                 // Sync response is already fully encrypted — push

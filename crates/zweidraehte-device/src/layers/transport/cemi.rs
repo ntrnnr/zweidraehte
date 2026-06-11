@@ -31,7 +31,7 @@
 use embassy_sync::channel::DynamicSender;
 
 use crate::StackDefinition;
-use crate::service::{Layer, ServiceCtx};
+use crate::service::Layer;
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
@@ -282,19 +282,19 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
     // Register for exactly the same ServiceTypes as the inner TransportLayer.
     const HANDLES: &'static [ServiceType] = <TransportLayer<'_, D, MAX_INCOMING, MAX_OUTGOING> as Layer<D>>::HANDLES;
 
-    fn init(&mut self, ctx: &ServiceCtx<'_, D>) {
-        Layer::<D>::init(&mut self.inner, ctx);
+    fn init(&mut self) {
+        Layer::<D>::init(&mut self.inner);
     }
 
     fn next_deadline(&self) -> Option<embassy_time::Instant> {
         Layer::<D>::next_deadline(&self.inner)
     }
 
-    fn poll(&mut self, ctx: &ServiceCtx<'_, D>) {
-        Layer::<D>::poll(&mut self.inner, ctx);
+    fn poll(&mut self) {
+        Layer::<D>::poll(&mut self.inner);
     }
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         // When cEMI TL is active, intercept connection-oriented requests
         // from AL and route them to the cEMI response channel instead of
         // the bus. Everything else always delegates to the inner TL.
@@ -308,7 +308,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
             }
         }
 
-        Layer::<D>::process(&mut self.inner, msg, ctx);
+        Layer::<D>::process(&mut self.inner, msg);
     }
 }
 

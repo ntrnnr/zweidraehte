@@ -87,13 +87,18 @@ where
 // StackContext
 // ============================================================================
 
-/// Runtime context passed to link layers during
+/// Construction-time context bundle — exists only inside
 /// [`Runner::run`](crate::Runner::run).
 ///
 /// Bundles references to [`Inner`] (state, platform, memory map) and
-/// [`InterfaceObjects`](crate::StackDefinition::InterfaceObjects) into a
-/// single value that link layers receive through
-/// [`LinkLayerBuilder::build_and_run`](crate::layers::LinkLayerBuilder::build_and_run).
+/// [`InterfaceObjects`](crate::StackDefinition::InterfaceObjects). Two
+/// consumers: layer constructors capture their long-lived references from
+/// it (`NetworkLayer::new(ctx)` etc.), and link layers receive it through
+/// [`LinkLayerBuilder::build_and_run`](crate::layers::LinkLayerBuilder::build_and_run)
+/// as the carrier of the context traits implemented below. It is *not* a
+/// per-request context — that role belongs to
+/// [`ServiceCtx`](crate::service::ServiceCtx) /
+/// [`AlCtx`](crate::service::AlCtx).
 ///
 /// See the module-level docs for why this is transient rather than a field
 /// on [`Inner`].

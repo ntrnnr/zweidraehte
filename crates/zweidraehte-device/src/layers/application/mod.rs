@@ -189,7 +189,7 @@ impl<D: StackDefinition> Layer<D> for ApplicationLayer<'_, D> {
         ServiceType::T_DataUnack_Con,
     ];
 
-    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &ServiceCtx<'_, D>) {
+    fn process(&mut self, mut msg: KnxMessageBuffer<Buffer<'static>>) {
         match msg.service_type() {
             // =================================================================
             // Confirmations from TL — complete pending group sends
@@ -272,7 +272,7 @@ impl<D: StackDefinition> Layer<D> for ApplicationLayer<'_, D> {
         self.group_data.next_deadline()
     }
 
-    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {
+    fn poll(&mut self) {
         self.group_data.poll();
     }
 }

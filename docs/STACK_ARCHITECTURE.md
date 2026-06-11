@@ -192,7 +192,6 @@ main
              · LL::conf      → push → drain
              · timer deadline → LayerStack::poll
              · service input → LayerStack::handle_service_input
-           flush_deferred() at end of dispatch cycle
 ```
 
 ---
@@ -264,12 +263,14 @@ methods are noise for the 80% of services that don't need them.
 //! crates/zweidraehte-device/src/service/traits.rs
 
 /// Wire-message handler. NL / TL / AL / SecureAL all implement this.
+/// No per-call context: layers capture their environment (`&D::State`,
+/// `&LayerContext<D>`, …) at construction from the `StackContext`.
 pub trait Layer<D: StackDefinition> {
     const HANDLES: &'static [ServiceType];
-    fn init(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    fn init(&mut self) {}
     fn next_deadline(&self) -> Option<Instant> { None }
-    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {}
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>);
+    fn poll(&mut self) {}
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>);
 }
 
 /// APCI fall-through extension inside the AL (Memory, Authorization,
@@ -287,8 +288,8 @@ pub trait ApciHandler<D: StackDefinition> {
 /// IP, Diagnostics, Tp1 etc. implement this.
 ///
 /// This is the same `Augment<D>` trait that the
-/// services-struct aggregator uses (see §3.2 below). All ten methods
-/// carry sensible defaults (`None` / `0` / no-op), so leaf augments
+/// services-struct aggregator uses (see §3.2 below). Every method
+/// carries a sensible default (`None` / `0`), so leaf augments
 /// override only the hooks they actually service.
 pub trait Augment<D: StackDefinition> {
     fn additional_object_count(&self) -> u16 { 0 }
@@ -299,8 +300,6 @@ pub trait Augment<D: StackDefinition> {
     fn property_value_write  (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_command   (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn function_property_state_read(&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
-    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {}
-    fn next_augment_deadline(&self) -> Option<Instant> { None }
 }
 ```
 
@@ -314,15 +313,13 @@ pub trait Augment<D: StackDefinition> {
   another service's `process()` and a `&mut self` would deadlock the
   borrow checker. Stateless handlers (most of them) need nothing;
   the few that hold state use `Cell<T>`.
-* `Augment::poll_augments` is `&mut self` — it ticks once
-  per router cycle, outside any `process()` call frame.
 
 #### Two contexts
 
 * `ServiceCtx<'a, D>` — lean: `state`, `lctx` (LayerContext),
   `access` (AccessContext for the request being processed). Carried
-  by every `Layer` / `Augment` method and the runner's
-  lifecycle hooks. Most callers only need this.
+  by `Augment`'s property hooks; constructed per-request by the AL
+  and the IO container with the request's real `AccessContext`.
 * `AlCtx<'a, D>` — rich: derefs to `ServiceCtx`, adds
   `interface_objects` and `memory_map`. Carried by
   `ApciHandler::try_handle_apci`, since AL extensions reach into
@@ -335,13 +332,12 @@ at compile time. A duplicate `ServiceType` across layer fields fails
 to compile — `DispatchTable::register` asserts that each slot is
 empty before writing.
 
-`Outbox` has two queues: a main ring buffer (capacity 8, enough for
-a full indication→response chain with headroom for side outputs)
-and a **deferred** queue (capacity 2) flushed at the end of a
-dispatch cycle. The deferred queue is used by augments that must
-send a bus telegram *after* the management response — e.g. GO
-diagnostics emitting a `GroupValue_Write` only after acknowledging
-the management command.
+`Outbox` is a single FIFO ring buffer (capacity 8, enough for a full
+indication→response chain with headroom for side outputs). Push order
+is drain order, so an augment that must send a bus telegram *after*
+the management response — e.g. GO diagnostics emitting a
+`GroupValue_Write` only after acknowledging the management command —
+simply pushes it after the response.
 
 #### Device-level registry trait — `LayerRegistry`
 
@@ -356,14 +352,14 @@ that implements the registry trait:
 /// fields. Built at compile time by the macro.
 pub trait LayerRegistry<D: StackDefinition> {
     const DISPATCH_TABLE: DispatchTable;
-    fn dispatch_wire(&mut self, idx: u8, msg: KnxMessageBuffer<…>, ctx: &ServiceCtx<'_, D>);
-    fn init_layers (&mut self, ctx: &ServiceCtx<'_, D>);
-    fn poll_layers (&mut self, ctx: &ServiceCtx<'_, D>);
+    fn dispatch_wire(&mut self, idx: u8, msg: KnxMessageBuffer<…>);
+    fn init_layers (&mut self);
+    fn poll_layers (&mut self);
     fn next_layer_deadline(&self) -> Option<Instant>;
     type ServiceInput = !;
     fn recv_service_input(&self) -> impl Future<Output = Self::ServiceInput> + '_ { pending() }
-    fn handle_service_input(&mut self, _input: Self::ServiceInput, _ctx: &ServiceCtx<'_, D>) {}
-    fn drain_events(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    fn handle_service_input(&mut self, _input: Self::ServiceInput) {}
+    fn drain_events(&mut self) {}
 }
 ```
 
@@ -375,9 +371,9 @@ hats: a leaf augment implements it directly, and a services struct
 that bundles augments implements an aggregating version emitted by
 `#[derive(ServiceRegistry)]`. The aggregator walks
 `#[service(augment | flatten)]` fields left-to-right; each property
-hook returns the first `Some`, IO list counts sum, lifecycle fans
-out across every field. There is no separate per-leaf trait — both
-authoring and aggregation use the same surface.
+hook returns the first `Some`, IO list counts sum. There is no
+separate per-leaf trait — both authoring and aggregation use the
+same surface.
 
 #### `#[derive(ServiceRegistry)]`
 
@@ -462,7 +458,7 @@ the `*Config` persistence vocabulary in §4. Contents:
 **Context traits provided:** `BufferManagerContext`.
 
 **Inherent helpers (no trait):** `push_outbox(msg)`,
-`push_outbox_deferred(msg)`, `publish_event(index, ComObjectEvent)`
+`publish_event(index, ComObjectEvent)`
 (publishes a CO event on `event_channel`), and
 `try_send_restart_request(RestartRequest) -> bool` (pushes a restart
 request onto `restart_channel`) are inherent methods on
@@ -472,11 +468,7 @@ context trait. The publish/restart helpers were trait methods
 (`EventPublisherContext` / `RestartPublisherContext`) until they were
 collapsed to inherent methods: each had a single impl on
 `LayerContext<D>` and no generic bound site, so the trait abstracted
-nothing. The deferred queue is flushed
-at the end of a dispatch cycle and is used by augments that must send
-a bus telegram *after* a management response has been emitted (e.g.
-GO diagnostics emitting a `GroupValue_Write` after acknowledging the
-management command).
+nothing.
 
 ### 3.4 `StackContext<'a, D>` — transient
 
@@ -580,8 +572,7 @@ All layers live under
 - AL requires: `BufferManagerContext`, `PropertyServiceHandler` on
   `InterfaceObjects`. Outbox writes, CO-event publishing, and restart
   requests use the inherent `LayerContext::push_outbox()` /
-  `push_outbox_deferred()` / `publish_event()` /
-  `try_send_restart_request()` helpers.
+  `publish_event()` / `try_send_restart_request()` helpers.
 - TL requires access to `HasConnectionAuth` on `D::State` for
   per-connection access levels.
 - Secure AL additionally requires `HasSecurityState` and
@@ -1097,9 +1088,9 @@ file, methods (short form), typical provider, and typical consumer.
 
 The outbox, CO-event publishing, and restart requests are **not**
 behind a context trait. `LayerContext<D>` exposes them as inherent
-helpers: `push_outbox(msg)` / `push_outbox_deferred(msg)` (augments
+helpers: `push_outbox(msg)` (augments
 that need to emit telegrams — security GO diagnostics, cyclic group
-writes — call those directly), `publish_event(index, ComObjectEvent)`
+writes — call it directly), `publish_event(index, ComObjectEvent)`
 (AL group-data handler; augments with `GroupDataProvider`), and
 `try_send_restart_request(RestartRequest) -> bool` (AL
 `handle_restart()`). The latter two were the `EventPublisherContext` /
@@ -1249,8 +1240,8 @@ pin each step to a specific handler.
 ```
 
 Observe how context flows: the AL holds `&LayerContext<D>` for
-`BufferManagerContext` + the inherent `push_outbox()` /
-`push_outbox_deferred()` helpers; each augment hook receives a
+the buffer manager + the inherent `push_outbox()` helper; each
+augment hook receives a
 fresh `&ServiceCtx<'_, D>` constructed in the IO container's
 dispatch.rs (carrying `state`, `lctx`, `access`); the link layer
 consumes `BufferManagerContext + ApduLengthContext` at build time

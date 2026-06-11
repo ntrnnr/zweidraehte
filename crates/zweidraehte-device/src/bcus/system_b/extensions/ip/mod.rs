@@ -221,11 +221,6 @@ impl<const CAPS: u16> IpExtensionState<CAPS> {
         CAPS
     }
 
-    // NOTE: persistence goes through the derive-generated
-    // `ExtensionState::to_config()`. A hand-written `build_ip_config`
-    // duplicate used to live here; it had no callers and was a silent
-    // drift hazard, so it was removed rather than kept in sync.
-
     /// Push the current configured IP/subnet/gateway to the platform.
     ///
     /// This is a low-level helper used internally by

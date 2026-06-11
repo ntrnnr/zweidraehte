@@ -1,12 +1,6 @@
 //! Shared-memory handle used to persist device state across DUT
-//! respawns.
-//!
-//! Historically this module also owned the tag-based IPC framing and
-//! `IpcLinkLayer`. Both have moved to
-//! [`super::framing`] + [`super::ipc_v2`] as part of the Phase-1
-//! protocol refactor. Only [`SharedMemory`] stays here because it is
-//! used by both the parent and the child and doesn't belong to the
-//! wire protocol.
+//! respawns. Used by both the parent and child processes; IPC framing
+//! and the link layer live in [`super::framing`] + [`super::ipc_v2`].
 //!
 //! # Layout
 //!

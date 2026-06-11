@@ -43,7 +43,7 @@ use crate::{
     context::StackContext,
     context::layer::LayerContext,
     objects::tables::{AddressTable, HasAddressTable, HasLoadStateMachine},
-    service::{Layer, ServiceCtx},
+    service::Layer,
 };
 use zweidraehte_proto::AccessSource;
 use zweidraehte_proto::HasConnectionAuth;
@@ -256,7 +256,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
         ServiceType::T_Data_Req,
     ];
 
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, _ctx: &ServiceCtx<'_, D>) {
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>) {
         match msg.service_type() {
             // =================================================================
             // Indications from Network Layer (upward)
@@ -300,7 +300,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize> L
         self.connections.next_timeout_deadline()
     }
 
-    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {
+    fn poll(&mut self) {
         self.check_timeouts();
     }
 }

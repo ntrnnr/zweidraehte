@@ -47,9 +47,8 @@ pub trait Layer<D: StackDefinition> {
     /// across the device's services struct.
     const HANDLES: &'static [ServiceType];
 
-    /// One-time setup. Called once before the router loop starts;
-    /// `ctx.access` is `AccessContext::default()`.
-    fn init(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    /// One-time setup. Called once before the router loop starts.
+    fn init(&mut self) {}
 
     /// Earliest time this layer wants [`poll`](Self::poll) called, or
     /// `None` if it has no pending timer.
@@ -58,12 +57,19 @@ pub trait Layer<D: StackDefinition> {
     }
 
     /// Called when [`next_deadline`](Self::next_deadline) has elapsed.
-    /// `ctx.access` is `AccessContext::default()`.
-    fn poll(&mut self, _ctx: &ServiceCtx<'_, D>) {}
+    fn poll(&mut self) {}
 
-    /// Process a routed wire message. Push outputs to
-    /// [`ServiceCtx::outbox`].
-    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>, ctx: &ServiceCtx<'_, D>);
+    /// Process a routed wire message. Push outputs via
+    /// [`LayerContext::push_outbox`](crate::context::LayerContext::push_outbox).
+    ///
+    /// Layers capture their environment (`&D::State`,
+    /// `&LayerContext<D>`, …) at construction from the
+    /// [`StackContext`](crate::context::StackContext); no per-call
+    /// context is passed. Per-request contexts
+    /// ([`ServiceCtx`](crate::service::ServiceCtx) /
+    /// [`AlCtx`](crate::service::AlCtx)) are built by the AL and the
+    /// IO container with the request's real `AccessContext`.
+    fn process(&mut self, msg: KnxMessageBuffer<Buffer<'static>>);
 }
 
 // =============================================================================
@@ -224,23 +230,6 @@ pub trait Augment<D: StackDefinition> {
     fn descriptor_count_for(&self, _object_type: InterfaceObjectType) -> u16 {
         0
     }
-
-    // -------------------------------------------------------------
-    // Augment-side lifecycle (defaults: no timer)
-    // -------------------------------------------------------------
-
-    /// Tick every augment that wants a timer. Aggregator impls fan
-    /// out across every `#[service(augment | flatten)]` field; leaf
-    /// impls drive their own state forward (e.g. Security's rekey
-    /// timer, Diagnostics' auto-revert). Default: no-op.
-    fn poll_augments(&mut self, _ctx: &ServiceCtx<'_, D>) {}
-
-    /// Earliest augment deadline. Aggregator impls take the `min`
-    /// across every field; leaf impls return their own pending
-    /// deadline, or `None` if none. Default: `None`.
-    fn next_augment_deadline(&self) -> Option<Instant> {
-        None
-    }
 }
 
 // =============================================================================
@@ -252,9 +241,3 @@ pub trait Augment<D: StackDefinition> {
 /// explicit `()` impl lets devices that don't use augments name `()`
 /// as their `StackDefinition::Augments` without any custom type.
 impl<D: StackDefinition> Augment<D> for () {}
-
-// A `&A: Augment<D>` shared-ref forwarding impl used to live here, solely so
-// the TP1 extension's `&'a Tp1ExtensionState` augment satisfied `Augment<D>`.
-// TP1 now hands out a by-value `Tp1Augment<'a>` like the other extensions, so
-// nothing borrows its augment through a shared ref any more and the forwarding
-// impl (whose `poll_augments` was a forced no-op) was removed as dead code.

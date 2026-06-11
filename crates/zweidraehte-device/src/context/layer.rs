@@ -12,7 +12,6 @@ use embassy_sync::{
     pubsub::{PubSubBehavior, PubSubChannel},
 };
 
-use super::traits::BufferManagerContext;
 use crate::{
     actor::Request,
     definition::StackDefinition,
@@ -31,12 +30,15 @@ use zweidraehte_proto::messages::{
 // LayerContext
 // ============================================================================
 
-/// Shared runtime infrastructure for the KNX protocol stack.
+/// Shared runtime infrastructure for the KNX protocol stack — the
+/// outbox, buffer manager, and inter-component channels.
 ///
-/// Contains message queues, event channels, buffer managers, and shared
-/// group-data bookkeeping. This is completely decoupled from `StackState`.
-/// Layers that need to publish events, send messages, or allocate buffers
-/// take a reference to this context.
+/// Despite the name, this serves more than the protocol layers: augments,
+/// the IO container, per-call [`ServiceCtx`](crate::service::ServiceCtx)
+/// bundles, and the user-facing [`Stack`](crate::Stack) handle all hold a
+/// reference to it. It is completely decoupled from `StackState` and is
+/// created *before* the state (see [`new()`](crate::new)) so
+/// `D::create_state` has working infrastructure from birth.
 pub struct LayerContext<D: StackDefinition> {
     pub buffer_manager: DynBufferManager<'static>,
     pub outbox: RefCell<Outbox>,
@@ -87,15 +89,5 @@ impl<D: StackDefinition> LayerContext<D> {
     /// Try sending a restart request to user code. Returns `true` if sent.
     pub fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
         self.restart_channel.try_send(request).is_ok()
-    }
-}
-
-// ============================================================================
-// Context Trait Implementations
-// ============================================================================
-
-impl<D: StackDefinition> BufferManagerContext for LayerContext<D> {
-    fn buffer_manager(&self) -> &DynBufferManager<'static> {
-        &self.buffer_manager
     }
 }

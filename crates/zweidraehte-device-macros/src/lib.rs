@@ -71,9 +71,8 @@ pub fn interface_object_augment(attr: TokenStream, item: TokenStream) -> TokenSt
 ///
 /// - `#[service(augment)]` — the field implements
 ///   [`Augment<D>`](::zweidraehte_device::service::Augment).
-///   It joins the property-hook chain, contributes to
-///   `additional_object_count` / `additional_object_type_at`, and
-///   participates in `poll_augments` / `next_augment_deadline`.
+///   It joins the property-hook chain and contributes to
+///   `additional_object_count` / `additional_object_type_at`.
 ///
 /// - `#[service(flatten)]` — the field is itself a `ServiceRegistry`
 ///   bundle whose members are spliced into this one.
