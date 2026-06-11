@@ -1216,9 +1216,32 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
     }
 
-    if suites.is_empty() {
+    // The socket-level KNX IP Secure suite lives outside the TP1 suite
+    // list; a filter can match it alone.
+    let ip_secure_matches = filters.is_empty()
+        || filters.iter().any(|f| {
+            matches_filter("ip_secure", f)
+                || zweidraehte_conformance::tests::ip_secure::tests().iter().any(|t| matches_filter(t.name, f))
+        });
+
+    if suites.is_empty() && !ip_secure_matches {
         println!("No suites or tests matched filters: {:?}", filters);
         std::process::exit(1);
+    }
+
+    // Filter matched only the IP Secure suite: skip the TP1 harness
+    // entirely and run the socket-level tests on their own.
+    if suites.is_empty() {
+        let owned_filters: Vec<String> = filters.iter().map(|f| f.to_string()).collect();
+        let (passed, failed) = zweidraehte_conformance::tests::ip_secure::run_all(&owned_filters);
+        println!("====================================================================");
+        println!("SUMMARY");
+        println!("====================================================================");
+        println!("  Total Tests:  {}", passed + failed);
+        println!("  Passed:       {} \u{2705}", passed);
+        println!("  Failed:       {} \u{274c}", failed);
+        println!("====================================================================");
+        std::process::exit(if failed > 0 { 1 } else { 0 });
     }
 
     if !filters.is_empty() {
@@ -1470,6 +1493,20 @@ async fn main(_spawner: embassy_executor::Spawner) {
         // frame.
         harness.discard_unsolicited();
     }
+
+    // ====================================================================
+    // KNX IP Secure suite — socket-level, runs its own DUT process per
+    // test (no TP1 IPC harness involvement).
+    // ====================================================================
+    let (ip_secure_passed, ip_secure_failed) = if ip_secure_matches {
+        let owned_filters: Vec<String> = filters.iter().map(|f| f.to_string()).collect();
+        zweidraehte_conformance::tests::ip_secure::run_all(&owned_filters)
+    } else {
+        (0, 0)
+    };
+    passed += ip_secure_passed;
+    failed += ip_secure_failed;
+    total_tests += ip_secure_passed + ip_secure_failed;
 
     println!("====================================================================");
     println!("SUMMARY");

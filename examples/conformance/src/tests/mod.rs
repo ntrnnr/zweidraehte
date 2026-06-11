@@ -5,6 +5,7 @@
 pub mod helpers;
 
 pub mod group_objects;
+pub mod ip_secure;
 pub mod load_state_machines;
 pub mod management;
 pub mod network_layer;

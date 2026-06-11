@@ -11,6 +11,7 @@
 
 pub mod frame_source;
 pub mod framing;
+pub mod ip_secure_stack;
 pub mod ipc;
 pub mod lifecycle;
 pub mod protocol;
