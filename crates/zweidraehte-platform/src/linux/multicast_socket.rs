@@ -25,6 +25,15 @@ impl UdpMulticastSocket {
         s.set_multicast_ttl_v4(options.multicast_ttl)?;
         s.set_multicast_loop_v4(options.loopback)?;
 
+        // Pin outgoing multicast to the configured interface
+        // (IP_MULTICAST_IF). SO_BINDTODEVICE below does not reliably
+        // steer multicast egress — without this, sends to a multicast
+        // group follow the default route and leave on the wrong
+        // interface with a foreign source address.
+        if let Some(interface_addr) = options.multicast_interface {
+            s.set_multicast_if_v4(&interface_addr)?;
+        }
+
         // Bind to specific interface using SO_BINDTODEVICE if specified
         if let Some(interface) = options.interface {
             #[cfg(target_os = "linux")]

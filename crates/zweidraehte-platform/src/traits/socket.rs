@@ -18,6 +18,13 @@ pub struct UdpSocketOptions {
     pub loopback: bool,
     /// Network interface name to bind to.
     pub interface: Option<&'static str>,
+    /// Interface address for *outgoing* multicast (`IP_MULTICAST_IF`).
+    ///
+    /// Without this, the kernel picks the egress interface from the
+    /// routing table — usually the default route, NOT the interface
+    /// the socket is bound to — and KNX routing multicast leaks onto
+    /// the wrong network with a foreign source address.
+    pub multicast_interface: Option<Ipv4Addr>,
 }
 
 impl Default for UdpSocketOptions {
@@ -29,6 +36,7 @@ impl Default for UdpSocketOptions {
             multicast_ttl: 32,
             loopback: true,
             interface: None,
+            multicast_interface: None,
         }
     }
 }

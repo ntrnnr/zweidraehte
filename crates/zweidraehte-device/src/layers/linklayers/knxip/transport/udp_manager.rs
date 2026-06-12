@@ -174,6 +174,10 @@ impl<T: IpTransport, const MAX_SOCKETS: usize> UdpManager<T, MAX_SOCKETS> {
             let options = UdpSocketOptions {
                 bind_addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, port),
                 interface: Some(interface_name),
+                // Keep outgoing multicast (routing indications,
+                // TIMER_NOTIFY) on the configured interface instead of
+                // the default route.
+                multicast_interface: Some(interface_addr),
                 ..Default::default()
             };
 
