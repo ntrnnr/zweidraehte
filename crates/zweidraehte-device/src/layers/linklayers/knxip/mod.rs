@@ -18,6 +18,8 @@ pub(crate) mod connections; // Connection-oriented state machines
 pub mod context; // IP-specific context traits
 pub mod definition; // KnxNetIpDefinition trait — link-layer bill of materials
 pub mod features; // Compile-time feature selection
+#[cfg(feature = "ip-secure")]
+pub(crate) mod multicast_handler; // Secure routing timer sync state machine (§2.2.2.3.2)
 pub mod secure; // IP Secure feature slot, session pool, per-session state
 pub(crate) mod services;
 #[cfg(feature = "ip-secure")]

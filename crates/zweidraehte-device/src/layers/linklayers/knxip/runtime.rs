@@ -1,7 +1,7 @@
 use core::future::pending;
 use core::net::Ipv4Addr;
 
-use embassy_futures::select::{Either, Either4, select, select4};
+use embassy_futures::select::{Either3, Either4, select3, select4};
 use embassy_sync::channel::DynamicSender;
 use embassy_time::{Duration, Instant, Timer};
 use heapless::Vec;
@@ -110,6 +110,9 @@ pub struct KnxNetIp<
     /// `()`). Sized by `MAX_TCP_STREAMS` because secure sessions are
     /// TCP-only with 1:1 stream affinity.
     pub(super) secure_sessions: SessionPool<<F::IpSecure as IpSecureFeature>::SessionSlot, MAX_TCP_STREAMS>,
+    /// Secure-routing multicast timer + sync state machine (03/08/09
+    /// §2.2.2) — zero-sized for `NoIpSecure`.
+    pub(super) mc_timer: <F::IpSecure as IpSecureFeature>::McTimerState,
     /// Random fill for IP Secure ephemeral key generation, from
     /// `KnxNetIpDefinition::Rng`. Never invoked on non-secure builds.
     pub(super) rng_fill: fn(&mut [u8]),
@@ -225,6 +228,42 @@ where
                 }
             }
 
+            // Secure routing maintenance (03/08/09 §2.2.2): keep the
+            // multicast timer sync tracking the secured-Routing config
+            // (§2.2.2.3.2.8 — active iff a multicast family requires
+            // security and the backbone key is provisioned) and drive
+            // its deadlines: E10 emits a TIMER_NOTIFY on the routing
+            // multicast group. Folds to nothing for `NoIpSecure`.
+            if <F::IpSecure as IpSecureFeature>::ENABLED && !self.routing_socket_indices.is_empty() {
+                let env = self.secure_env();
+                let secured = env.config.is_some_and(|config| {
+                    config.secured_service_family(substructs::ServiceFamily::Routing) != 0
+                        && config.backbone_key() != [0u8; 16]
+                });
+                let started = <F::IpSecure as IpSecureFeature>::mc_sync_started(&self.mc_timer);
+                if secured && !started {
+                    <F::IpSecure as IpSecureFeature>::mc_start_sync(&mut self.mc_timer, &env);
+                } else if !secured && started {
+                    <F::IpSecure as IpSecureFeature>::mc_stop_sync(&mut self.mc_timer);
+                }
+
+                if let Some(frame) = <F::IpSecure as IpSecureFeature>::mc_tick(&mut self.mc_timer, &env)
+                    && let Some(group) = F::Routing::multicast_addr(&self.routing)
+                    && let Some(buffer) = self.context.buffer_manager().try_alloc_from_slice(&frame)
+                {
+                    // §2.2.2.4.1: TIMER_NOTIFY goes to port 3671 on the
+                    // configured routing multicast address, out of the
+                    // socket joined to that group.
+                    let destination = core::net::SocketAddrV4::new(group, crate::ip::KNX_PORT);
+                    let socket_idx = self.routing_socket_indices.first().copied().unwrap_or(0);
+                    self.send_response(PendingResponse {
+                        buffer,
+                        target: ResponseTarget::Udp { destination, socket_idx },
+                    })
+                    .await;
+                }
+            }
+
             // ================================================================
             // Main select: UDP + TCP transport, req_rx, responses, timer
             // ================================================================
@@ -245,9 +284,12 @@ where
             };
 
             // Earliest of: retry queue, heartbeat tick, IP Secure
-            // session deadline (None on non-secure builds).
+            // session deadline, secure-routing timer-sync deadline
+            // (the latter two are None on non-secure builds).
             let secure_deadline = <F::IpSecure as IpSecureFeature>::next_deadline(&self.secure_sessions);
-            let next_timer = [self.get_next_retry_time(), heartbeat_time, secure_deadline].into_iter().flatten().min();
+            let mc_deadline = <F::IpSecure as IpSecureFeature>::mc_next_deadline(&self.mc_timer);
+            let next_timer =
+                [self.get_next_retry_time(), heartbeat_time, secure_deadline, mc_deadline].into_iter().flatten().min();
 
             // Third transport arm: bus bridge indications from the TP1 bus.
             // In standalone mode (no bridge), this pends forever.
@@ -276,14 +318,26 @@ where
             );
 
             // Fourth arm combines the periodic timer with the
-            // `IpExtensionState` rebind channel. `IpExtensionState::set_*`
-            // pushes the new IPv4 multicast group onto this channel from
+            // `IpExtensionState` rebind channel and the IP Secure
+            // sync-event channel. `IpExtensionState::set_*` pushes the
+            // new IPv4 multicast group onto the rebind channel from
             // the write-handler side; the runtime reacts here by calling
             // [`UdpManager::rebind_routing_multicast`] on its live
-            // sockets (03/02/06 §4.3.5.3.5.1). Either firing continues
-            // the loop: the timer reschedules, the rebind runs the IGMP
-            // leave/join and falls back into the select.
+            // sockets (03/02/06 §4.3.5.3.5.1). The sync-event channel
+            // carries backbone-key / secured-Routing changes from the
+            // property handlers (timer sync event E11 / start-stop).
+            // Any firing continues the loop: the timer reschedules, the
+            // rebind runs the IGMP leave/join, the sync event mutates
+            // the timer state, and each falls back into the select.
             let rebind_rx = self.context.routing_multicast_rebind_channel().receiver();
+            let mc_sync_event = async {
+                match self.context.ip_secure_view() {
+                    Some(view) if <F::IpSecure as IpSecureFeature>::ENABLED => {
+                        view.mc_sync_event_channel().receive().await
+                    }
+                    _ => pending().await,
+                }
+            };
             let timer_or_rebind = async {
                 let timer_future = async {
                     match next_timer {
@@ -291,20 +345,43 @@ where
                         None => pending::<()>().await,
                     }
                 };
-                select(timer_future, rebind_rx.receive()).await
+                select3(timer_future, rebind_rx.receive(), mc_sync_event).await
             };
 
             let result = select4(transport_future, req_rx.next(), response_channel.receive(), timer_or_rebind).await;
 
             match result {
                 // Timer expired (retry queue / heartbeat / TCP idle)
-                Either4::Fourth(Either::First(())) => {
+                Either4::Fourth(Either3::First(())) => {
                     trace!("KNX/IP timer expired");
                     continue;
                 }
                 // Rebind request from `IpExtensionState::set_*`
-                Either4::Fourth(Either::Second(new_addr)) => {
+                Either4::Fourth(Either3::Second(new_addr)) => {
                     self.apply_routing_multicast_rebind(new_addr);
+                    // Changing the multicast group is timer sync event
+                    // E11 → A7: restart the synchronization (without
+                    // the mc_timer reset, which only a backbone-key
+                    // change implies).
+                    if <F::IpSecure as IpSecureFeature>::mc_sync_started(&self.mc_timer) {
+                        let env = self.secure_env();
+                        <F::IpSecure as IpSecureFeature>::mc_start_sync(&mut self.mc_timer, &env);
+                    }
+                    continue;
+                }
+                // Backbone-key / secured-Routing change from the
+                // property handlers.
+                Either4::Fourth(Either3::Third(event)) => {
+                    match event {
+                        crate::ip::IpSecureSyncEvent::BackboneKeyChanged => {
+                            let env = self.secure_env();
+                            <F::IpSecure as IpSecureFeature>::mc_on_backbone_key_changed(&mut self.mc_timer, &env);
+                        }
+                        // Start/stop happens in the maintenance block at
+                        // the top of the loop; waking the select is all
+                        // this event needs to do.
+                        crate::ip::IpSecureSyncEvent::RoutingConfigChanged => {}
+                    }
                     continue;
                 }
 

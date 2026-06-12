@@ -366,6 +366,12 @@ impl RoutingServer {
         self.multicast_addr.set(addr);
     }
 
+    /// Current outbound routing multicast group — also the destination
+    /// of secure-routing TIMER_NOTIFY frames (03/08/09 §2.2.2.4.1).
+    pub fn multicast_addr(&self) -> Ipv4Addr {
+        self.multicast_addr.get()
+    }
+
     /// Get the current wait time before transmission is allowed
     pub fn get_wait_time(&mut self) -> u16 {
         self.timekeeper.get_wait_time()

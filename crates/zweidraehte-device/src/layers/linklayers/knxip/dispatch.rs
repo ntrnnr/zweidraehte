@@ -138,6 +138,20 @@ where
         (addr_buf, addr_count, tunnel_slots)
     }
 
+    /// Assemble the read-only environment for the IP Secure handlers.
+    ///
+    /// Borrows through the `'res` context reference (not `&self`), so
+    /// the caller can keep mutating link-layer state (e.g. `mc_timer`)
+    /// while the environment is alive.
+    pub(super) fn secure_env(&self) -> SecureEnv<'res> {
+        SecureEnv {
+            config: self.context.ip_secure_view(),
+            serial_number: self.context.knx_serial_number(),
+            rng_fill: self.rng_fill,
+            now: Instant::now(),
+        }
+    }
+
     /// Process expired retry requests.
     ///
     /// Only the routing server supports outgoing requests (`on_request`).
@@ -237,58 +251,100 @@ where
         // IP Secure pre-stage: session handshake frames are consumed
         // here; SECURE_WRAPPER frames are authenticated and decrypted,
         // and the plaintext inner frame continues through the normal
-        // dispatch below with the session identity attached. The whole
-        // block folds away for `NoIpSecure`.
+        // dispatch below with the session identity attached. UDP-side
+        // secure routing frames (TIMER_NOTIFY, multicast wrappers with
+        // session id 0000h) divert to the multicast timer sync instead
+        // of the session machinery. The whole block folds away for
+        // `NoIpSecure`.
         // ================================================================
         let mut secure_inner: Option<Buffer<'static>> = None;
         let mut secure_session: Option<(u16, u8)> = None;
+        let mut secure_multicast = false;
         if <F::IpSecure as IpSecureFeature>::ENABLED
-            && peek_service_type(buffer).is_ok_and(|st| secure::secure_service_types::is_secure(u16::from(st)))
+            && let Ok(secure_service) = peek_service_type(buffer)
+            && secure::secure_service_types::is_secure(u16::from(secure_service))
         {
-            let tcp_idx = match origin {
-                PacketOrigin::Tcp { tcp_idx, .. } => Some(tcp_idx),
-                PacketOrigin::Udp { .. } => None,
-            };
-            let env = SecureEnv {
-                config: self.context.ip_secure_view(),
-                serial_number: self.context.knx_serial_number(),
-                rng_fill: self.rng_fill,
-                now: Instant::now(),
-            };
-            // Decryption scratch comes from the buffer pool, not the
-            // stack, so the non-secure future stays small.
-            let Some(mut scratch) = self.context.buffer_manager().try_alloc() else {
-                warn!("No buffer for IP Secure frame processing, dropped");
-                return;
-            };
-            scratch.set_len(scratch.capacity());
-
-            let mut handshake_responses = secure::SecureResponses::new();
-            let outcome = <F::IpSecure as IpSecureFeature>::handle_secure_frame(
-                &mut self.secure_sessions,
-                buffer,
-                tcp_idx,
-                &env,
-                &mut scratch[..],
-                &mut handshake_responses,
+            let env = self.secure_env();
+            // §2.2.1.4.5: secure routing traffic only counts when it
+            // arrives on the routing endpoint (the UDP socket joined to
+            // the routing multicast group).
+            let on_routing_socket = matches!(
+                origin,
+                PacketOrigin::Udp { socket_idx, .. } if self.routing_socket_indices.contains(&socket_idx)
             );
-            for frame in &handshake_responses {
-                if let Some(buf) = self.context.buffer_manager().try_alloc_from_slice(frame) {
-                    response_channel.send(PendingResponse { buffer: buf, target: origin.reply_target() }).await;
+
+            if secure_service == KNXnetIPServiceType::TimerNotify {
+                // §2.2.2.4.1: TIMER_NOTIFY lives on the routing
+                // multicast endpoint; arrivals anywhere else (TCP, other
+                // sockets) are dropped. Never forwarded to services.
+                if on_routing_socket {
+                    <F::IpSecure as IpSecureFeature>::handle_timer_notify(&mut self.mc_timer, buffer, &env);
                 }
+                return;
             }
-            match outcome {
-                SecureFrameOutcome::Handled { closed_session } => {
-                    if let Some(session_id) = closed_session {
-                        let tcp_events = self.connection_manager.close_secure_session_connections(session_id);
-                        self.apply_tcp_channel_events(&tcp_events);
-                    }
+
+            if secure_service == KNXnetIPServiceType::SecureWrapper && on_routing_socket {
+                // Multicast wrapper (backbone key, session id 0000h).
+                // Decryption scratch comes from the buffer pool, not the
+                // stack, so the non-secure future stays small.
+                let Some(mut scratch) = self.context.buffer_manager().try_alloc() else {
+                    warn!("No buffer for IP Secure frame processing, dropped");
                     return;
+                };
+                scratch.set_len(scratch.capacity());
+                match <F::IpSecure as IpSecureFeature>::handle_multicast_wrapper(
+                    &mut self.mc_timer,
+                    buffer,
+                    &env,
+                    &mut scratch[..],
+                ) {
+                    Some(len) => {
+                        scratch.set_len(len);
+                        secure_multicast = true;
+                        secure_inner = Some(scratch);
+                    }
+                    None => return,
                 }
-                SecureFrameOutcome::Inner { len, session_id, user_id } => {
-                    scratch.set_len(len);
-                    secure_session = Some((session_id, user_id));
-                    secure_inner = Some(scratch);
+            } else {
+                // Unicast session path (TCP). UDP arrivals carry
+                // `tcp_idx = None` and are discarded inside (§2.2.3.3).
+                let tcp_idx = match origin {
+                    PacketOrigin::Tcp { tcp_idx, .. } => Some(tcp_idx),
+                    PacketOrigin::Udp { .. } => None,
+                };
+                let Some(mut scratch) = self.context.buffer_manager().try_alloc() else {
+                    warn!("No buffer for IP Secure frame processing, dropped");
+                    return;
+                };
+                scratch.set_len(scratch.capacity());
+
+                let mut handshake_responses = secure::SecureResponses::new();
+                let outcome = <F::IpSecure as IpSecureFeature>::handle_secure_frame(
+                    &mut self.secure_sessions,
+                    buffer,
+                    tcp_idx,
+                    &env,
+                    &mut scratch[..],
+                    &mut handshake_responses,
+                );
+                for frame in &handshake_responses {
+                    if let Some(buf) = self.context.buffer_manager().try_alloc_from_slice(frame) {
+                        response_channel.send(PendingResponse { buffer: buf, target: origin.reply_target() }).await;
+                    }
+                }
+                match outcome {
+                    SecureFrameOutcome::Handled { closed_session } => {
+                        if let Some(session_id) = closed_session {
+                            let tcp_events = self.connection_manager.close_secure_session_connections(session_id);
+                            self.apply_tcp_channel_events(&tcp_events);
+                        }
+                        return;
+                    }
+                    SecureFrameOutcome::Inner { len, session_id, user_id } => {
+                        scratch.set_len(len);
+                        secure_session = Some((session_id, user_id));
+                        secure_inner = Some(scratch);
+                    }
                 }
             }
         }
@@ -347,6 +403,17 @@ where
                     }
                 }
 
+                // §2.2.1.4.5: a multicast SECURE_WRAPPER may only carry
+                // KNXnet/IP Routing Service Family messages — anything
+                // else wrapped with the backbone key is discarded.
+                if secure_multicast && !multicast_wrapper_inner_allowed(service_type) {
+                    warn!(
+                        "Dropping {:?} from {}: not a routing service inside a multicast wrapper",
+                        service_type, source
+                    );
+                    return;
+                }
+
                 // Secured-service-family enforcement (03/08/09
                 // §2.2.1.4): once a family is marked secured in
                 // PID_SECURED_SERVICE_FAMILIES, its services are only
@@ -354,6 +421,7 @@ where
                 // plain arrivals are discarded. Discovery stays plain.
                 if <F::IpSecure as IpSecureFeature>::ENABLED
                     && secure_session.is_none()
+                    && !secure_multicast
                     && let Some(config) = self.context.ip_secure_view()
                     && let Some(family) = secured_family_of(service_type, buffer)
                     && config.secured_service_family(family) != 0
@@ -516,6 +584,39 @@ where
 
         match response.target {
             ResponseTarget::Udp { destination, socket_idx } => {
+                // Secure routing interception point (§2.2.1.4.5): with
+                // the Routing family secured, *all* sent Routing.ind
+                // frames must ride a multicast SECURE_WRAPPER — and
+                // none may go out plain, so a failed wrap (key missing,
+                // mc_timer not yet authentic) drops the frame instead
+                // of falling back. System broadcast frames stay plain
+                // by design (see `secured_family_of`).
+                let mut wrapped: Option<Buffer<'static>> = None;
+                if <F::IpSecure as IpSecureFeature>::ENABLED
+                    && peek_service_type(data) == Ok(KNXnetIPServiceType::RoutingIndication)
+                    && let Some(config) = self.context.ip_secure_view()
+                    && config.secured_service_family(substructs::ServiceFamily::Routing) != 0
+                {
+                    let env = self.secure_env();
+                    let Some(mut out) = self.context.buffer_manager().try_alloc() else {
+                        warn!("No buffer to wrap secure routing frame, dropped");
+                        return;
+                    };
+                    out.set_len(out.capacity());
+                    let Some(len) = <F::IpSecure as IpSecureFeature>::wrap_multicast_outgoing(
+                        &mut self.mc_timer,
+                        data,
+                        &env,
+                        &mut out[..],
+                    ) else {
+                        debug!("Routing frame not wrappable (secure routing not ready), dropped");
+                        return;
+                    };
+                    out.set_len(len);
+                    wrapped = Some(out);
+                }
+                let data = wrapped.as_ref().map(|b| &b[..]).unwrap_or(data);
+
                 debug!("Sending {} byte response to {} on socket {}", data.len(), destination, socket_idx);
                 let _ = self.udp_manager.send_to(socket_idx, data, destination).await;
             }
@@ -590,6 +691,21 @@ where
 ///
 /// CONNECT_REQUEST is classified by its CRI connection type, because a
 /// single Core service opens connections of different families.
+///
+/// Within the Routing family, only ROUTING_INDICATION is gated —
+/// §2.2.1.4.5 phrases the secure/plain exclusion exclusively in terms
+/// of `Routing.ind`:
+/// - ROUTING_SYSTEM_BROADCAST stays plain even with routing secured.
+///   03/02/06 §4.3.5.3.1 redefines only "broadcast frames" as wrapped
+///   `Routing.ind` under routing security and leaves IP System
+///   Broadcast Frames untouched; the §4.3.5.3.5.2 re-keying procedure
+///   (21-octet `A_DomainAddressSerialNumber_Write` carrying a *new*
+///   backbone key) depends on receiving them plain. Their sensitive
+///   payloads are protected one layer up by KNX Data Secure.
+/// - ROUTING_BUSY / ROUTING_LOST_MESSAGE are advisory flow-control
+///   frames carrying no KNX data; the spec does not extend the
+///   exclusion to them, and dropping plain ones would break congestion
+///   control with routers that emit them unwrapped.
 fn secured_family_of(service_type: KNXnetIPServiceType, frame: &[u8]) -> Option<substructs::ServiceFamily> {
     use KNXnetIPServiceType::*;
     use zweidraehte_proto::util::packets::ParseBuffer;
@@ -602,9 +718,7 @@ fn secured_family_of(service_type: KNXnetIPServiceType, frame: &[u8]) -> Option<
         | TunnelingFeatureResponse
         | TunnelingFeatureSet
         | TunnelingFeatureInfo => Some(substructs::ServiceFamily::Tunneling),
-        RoutingIndication | RoutingBusy | RoutingLostMessage | RoutingSystemBroadcast => {
-            Some(substructs::ServiceFamily::Routing)
-        }
+        RoutingIndication => Some(substructs::ServiceFamily::Routing),
         ConnectRequest => {
             let mut buf = frame;
             match buf.parse::<zweidraehte_proto::messages::knxip::ConnectRequest>().ok()?.cri.connection_type() {
@@ -615,4 +729,14 @@ fn secured_family_of(service_type: KNXnetIPServiceType, frame: &[u8]) -> Option<
         }
         _ => None,
     }
+}
+
+/// Which services may arrive inside a *multicast* SECURE_WRAPPER
+/// (backbone key, session id 0000h). §2.2.1.4.5 restricts multicast
+/// wrappers to the KNXnet/IP Routing Service Family; system broadcast
+/// is excluded because it always travels plain (see
+/// [`secured_family_of`]).
+fn multicast_wrapper_inner_allowed(service_type: KNXnetIPServiceType) -> bool {
+    use KNXnetIPServiceType::*;
+    matches!(service_type, RoutingIndication | RoutingBusy | RoutingLostMessage)
 }

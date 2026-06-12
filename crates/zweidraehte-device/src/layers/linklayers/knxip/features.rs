@@ -147,6 +147,14 @@ pub type KnxIpInterfaceTcp<const N: usize> =
 pub type KnxIpSecureInterfaceTcp<const N: usize> =
     Features<NoRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
 
+/// Secure KNX IP device: routing as the medium plus secure unicast
+/// sessions and secure routing. This is the 03/08/09 §2.5.1.1 "KNX IP
+/// end device" profile, where multicast communication (§2.2.2) is
+/// mandatory. `N` is the tunneling slot / secure session pool size.
+#[cfg(feature = "ip-secure")]
+pub type KnxIpSecureDeviceTcp<const N: usize> =
+    Features<WithRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
+
 // ============================================================================
 // Routing Feature
 // ============================================================================
@@ -190,6 +198,13 @@ pub trait RoutingFeature: 'static {
     /// changes (03/02/06 §4.3.5.3.5.1). Disabled-routing impls
     /// default to a no-op.
     fn set_multicast_addr(_server: &Self::Server, _addr: Ipv4Addr) {}
+
+    /// Current outbound routing multicast group — destination of
+    /// secure-routing TIMER_NOTIFY frames (03/08/09 §2.2.2.4.1).
+    /// `None` when routing is disabled.
+    fn multicast_addr(_server: &Self::Server) -> Option<Ipv4Addr> {
+        None
+    }
 }
 
 /// Routing is enabled — delegates to [`RoutingServer`].
@@ -252,6 +267,10 @@ impl RoutingFeature for WithRouting {
 
     fn set_multicast_addr(server: &Self::Server, addr: Ipv4Addr) {
         server.set_multicast_addr(addr);
+    }
+
+    fn multicast_addr(server: &Self::Server) -> Option<Ipv4Addr> {
+        Some(server.multicast_addr())
     }
 }
 

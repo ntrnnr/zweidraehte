@@ -351,6 +351,7 @@ where
             address_filter,
             interface_addr,
             secure_sessions: super::secure::SessionPool::new(),
+            mc_timer: Default::default(),
             rng_fill: <D::Rng as crate::rng::Rng>::fill,
         }
     }

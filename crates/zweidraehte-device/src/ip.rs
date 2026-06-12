@@ -127,6 +127,24 @@ pub trait HasAdditionalIas {
 // KNX IP Secure configuration view
 // ============================================================================
 
+/// Configuration events the secure-routing timer sync must react to,
+/// pushed from the property write handlers (AL task) to the KNX/IP
+/// link-layer runtime through [`IpSecureStateView::mc_sync_event_channel`].
+#[derive(Debug, Clone, Copy)]
+pub enum IpSecureSyncEvent {
+    /// PID 91 was written with a *different* key — event E11 of the
+    /// timer sync state machine (03/08/09 §2.2.2.3.2.5): the mc_timer
+    /// implicitly resets to 0 and the synchronization restarts.
+    /// Rewriting the identical key (spec event E12) does not fire this.
+    BackboneKeyChanged,
+    /// The required security version for the Routing service family
+    /// (PID 94) changed. Timer synchronization "shall only be active if
+    /// at least one service family using multicast communication is set
+    /// to require secure communication" (§2.2.2.3.2.8) — the runtime
+    /// starts or stops the sync accordingly.
+    RoutingConfigChanged,
+}
+
 /// Read access to the persisted KNX IP Secure secret material (PIDs
 /// 91–97 of the KNXnet/IP Parameter Object, 03/08/09 §2.3.1).
 ///
@@ -135,8 +153,8 @@ pub trait HasAdditionalIas {
 /// accessor anyway, and 16 bytes copy for free.
 pub trait IpSecureStateView {
     /// PID 91 — Secure Backbone Key. AES-128 key for multicast
-    /// SECURE_WRAPPER / TIMER_NOTIFY (secure routing — not used until
-    /// routing support lands). All-zero means "not provisioned".
+    /// SECURE_WRAPPER / TIMER_NOTIFY (secure routing). All-zero means
+    /// "not provisioned".
     fn backbone_key(&self) -> [u8; 16];
 
     /// PID 92 — Device Authentication Code: CCM key for the
@@ -166,6 +184,27 @@ pub trait IpSecureStateView {
     /// management user (1) is implicitly authorised for every slot and
     /// never stored in the table (§2.3.1.8).
     fn tunnelling_user_allowed(&self, user_id: u8, tunnelling_slot: u8) -> bool;
+
+    /// Persisted multicast-timer watermark (§2.2.4.2): the highest
+    /// mc_timer value guaranteed not to have been exceeded by any
+    /// frame this device sent. 0 means "never persisted with the
+    /// current backbone key" — on power-up such a device starts at
+    /// mc_timer = 0 instead of watermark + interval.
+    fn persisted_mc_timer(&self) -> u64;
+
+    /// Advance the persisted multicast-timer watermark. Called by the
+    /// link-layer runtime before it sends (and after it adopts) timer
+    /// values beyond the previous watermark, so the timer can never
+    /// run backwards across a power loss (§2.2.4.2).
+    fn set_persisted_mc_timer(&self, value: u64);
+
+    /// Channel through which the property write handlers notify the
+    /// link-layer runtime of secure-routing config changes (backbone
+    /// key rewrite, Routing security version flip). Mirrors the
+    /// [`HasRoutingMulticastRebind`] plumbing pattern.
+    fn mc_sync_event_channel(
+        &self,
+    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, IpSecureSyncEvent, 2>;
 }
 
 /// Capability gate for KNX IP Secure on the extension state.

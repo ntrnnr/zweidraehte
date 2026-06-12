@@ -70,6 +70,13 @@ pub struct IpSecureExtensionConfig<const MAX_PW: usize, const MAX_TU: usize> {
     pub sync_latency_fraction: u8,
     /// PID 97 — `(user_id, tunnelling_address_index)` pairs.
     pub tunnelling_users: SecurityTable<MAX_TU, 2>,
+    /// §2.2.4.2 — multicast-timer persistence watermark. The link-layer
+    /// runtime advances this before emitting timer values beyond the
+    /// previous watermark + interval, so the mc_timer can never run
+    /// backwards across a power loss. 0 = never synced with the
+    /// current backbone key.
+    #[serde(default)]
+    pub persisted_mc_timer: u64,
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> crate::bcus::system_b::ExtensionConfig
@@ -96,6 +103,7 @@ impl<const MAX_PW: usize, const MAX_TU: usize> Default for IpSecureExtensionConf
             multicast_latency_tolerance_ms: DEFAULT_MULTICAST_LATENCY_TOLERANCE_MS,
             sync_latency_fraction: DEFAULT_SYNC_LATENCY_FRACTION,
             tunnelling_users: SecurityTable::new(),
+            persisted_mc_timer: 0,
         }
     }
 }
@@ -123,8 +131,18 @@ pub struct IpSecureExtensionState<const MAX_PW: usize, const MAX_TU: usize> {
     multicast_latency_tolerance_ms: Cell<u16>,
     sync_latency_fraction: Cell<u8>,
     tunnelling_users: RefCell<SecurityTable<MAX_TU, 2>>,
+    persisted_mc_timer: Cell<u64>,
     /// Runtime-only: FDSK for DAC factory-reset re-seeding.
     fdsk: [u8; 16],
+    /// Runtime-only: wakes the link-layer runtime when the backbone
+    /// key or the Routing security version changes (timer sync events
+    /// E11 / start-stop, §2.2.2.3.2.8). Mirrors the routing-multicast
+    /// rebind channel plumbing.
+    mc_sync_events: embassy_sync::channel::Channel<
+        embassy_sync::blocking_mutex::raw::NoopRawMutex,
+        crate::ip::IpSecureSyncEvent,
+        2,
+    >,
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtensionState<MAX_PW, MAX_TU> {
@@ -151,7 +169,9 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
             multicast_latency_tolerance_ms: Cell::new(config.multicast_latency_tolerance_ms),
             sync_latency_fraction: Cell::new(config.sync_latency_fraction),
             tunnelling_users: RefCell::new(config.tunnelling_users),
+            persisted_mc_timer: Cell::new(config.persisted_mc_timer),
             fdsk: resources.fdsk,
+            mc_sync_events: embassy_sync::channel::Channel::new(),
         }
     }
 
@@ -166,6 +186,7 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
             multicast_latency_tolerance_ms: self.multicast_latency_tolerance_ms.get(),
             sync_latency_fraction: self.sync_latency_fraction.get(),
             tunnelling_users: self.tunnelling_users.borrow().clone(),
+            persisted_mc_timer: self.persisted_mc_timer.get(),
         }
     }
 
@@ -182,6 +203,8 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
             self.multicast_latency_tolerance_ms.set(defaults.multicast_latency_tolerance_ms);
             self.sync_latency_fraction.set(defaults.sync_latency_fraction);
             *self.tunnelling_users.borrow_mut() = defaults.tunnelling_users;
+            // The watermark belongs to the wiped backbone key (§2.2.4.2).
+            self.persisted_mc_timer.set(0);
         }
     }
 }
@@ -249,6 +272,27 @@ impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureStateView for IpSecureExt
             table.read_entries(i, 1, &mut entry).is_ok() && entry == [user_id, tunnelling_slot]
         })
     }
+
+    fn persisted_mc_timer(&self) -> u64 {
+        self.persisted_mc_timer.get()
+    }
+
+    fn set_persisted_mc_timer(&self, value: u64) {
+        // TODO: this only updates the in-memory mirror picked up by the
+        // next `to_config()` persistence pass — there is no explicit
+        // "save now" trigger towards the storage backend yet. §2.2.4.2
+        // wants the value durable before frames beyond the watermark go
+        // out; wire a persistence notification when a storage backend
+        // with on-demand saves exists.
+        self.persisted_mc_timer.set(value);
+    }
+
+    fn mc_sync_event_channel(
+        &self,
+    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, crate::ip::IpSecureSyncEvent, 2>
+    {
+        &self.mc_sync_events
+    }
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> HasIpSecureView for IpSecureExtensionState<MAX_PW, MAX_TU> {
@@ -289,9 +333,15 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
             }
             let mut key = [0u8; 16];
             key.copy_from_slice(&data[..16]);
-            this.state.backbone_key.set(key);
-            // TODO: §2.2.2.2.2 — writing the backbone key resets the
-            // multicast timer; wire this once secure routing lands.
+            // §2.2.2.2.2: writing a *different* key resets the
+            // multicast timer and restarts the sync (event E11);
+            // rewriting the identical key is event E12 — no action.
+            // The reset itself runs in the link-layer task, woken
+            // through the sync-event channel.
+            let changed = this.state.backbone_key.replace(key) != key;
+            if changed {
+                let _ = this.state.mc_sync_events.try_send(crate::ip::IpSecureSyncEvent::BackboneKeyChanged);
+            }
             Ok(WriteResponse::Echo)
         },
     )]
@@ -490,7 +540,12 @@ impl<'a, const MAX_PW: usize, const MAX_TU: usize> IpSecureAugment<'a, MAX_PW, M
         if version > 1 {
             return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
         }
-        cell.set(version);
+        let changed = cell.replace(version) != version;
+        // Flipping the Routing family starts or stops the multicast
+        // timer sync in the link layer (§2.2.2.3.2.8).
+        if changed && family == ServiceFamily::Routing {
+            let _ = self.state.mc_sync_events.try_send(crate::ip::IpSecureSyncEvent::RoutingConfigChanged);
+        }
         Some(FunctionPropertyResult::success_with_data(&[service_id]))
     }
 
