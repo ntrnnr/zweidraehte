@@ -27,7 +27,11 @@ use zweidraehte_proto::messages::knxip::{
 };
 use zweidraehte_proto::util::packets::{ParseBuffer, SerializablePacket, SerializeBuffer};
 
-use crate::harness::ip_secure_stack::{DUT_DEVICE_AUTH_CODE, DUT_USER1_PASSWORD_HASH, PORT_ENV};
+use crate::harness::ip_secure_stack::{
+    DUT_DEVICE_AUTH_CODE, DUT_USER1_PASSWORD_HASH, MCAST_ENV, PORT_ENV, SECURE_ROUTING_ENV,
+};
+
+pub mod multicast;
 
 // ============================================================================
 // Harness: DUT process + TCP client
@@ -45,33 +49,57 @@ const RECV_TIMEOUT: Duration = Duration::from_millis(1000);
 /// How long to wait when asserting that NO frame arrives.
 const SILENCE_TIMEOUT: Duration = Duration::from_millis(300);
 
+/// Which DUT flavour a test case needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DutMode {
+    /// Secure unicast sessions only (routing stays plain / unused).
+    SecureUnicast,
+    /// Secured Routing family with the Appendix A backbone key
+    /// provisioned — secure multicast routing tests.
+    SecureRouting,
+}
+
 pub struct IpSecureHarness {
     child: Child,
     pub port: u16,
+    /// Per-spawn routing multicast group (derived from the control
+    /// port so concurrent runs never share a group).
+    pub mcast_group: Ipv4Addr,
 }
 
 impl IpSecureHarness {
     /// Spawn a fresh DUT on a free loopback port and wait for its TCP
     /// listener to accept.
     pub fn spawn() -> Result<Self, String> {
+        Self::spawn_mode(DutMode::SecureUnicast)
+    }
+
+    pub fn spawn_mode(mode: DutMode) -> Result<Self, String> {
         // Reserve a free port, then release it for the DUT to bind.
         let port = {
             let probe =
                 std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|e| format!("probe port: {e}"))?;
             probe.local_addr().map_err(|e| e.to_string())?.port()
         };
+        // Test-local multicast group in 239.250.0.0/16 (administratively
+        // scoped) — keyed by the unique control port so the DUT's
+        // routing traffic never mixes with a real KNX installation or a
+        // concurrently running suite.
+        let mcast_group = Ipv4Addr::new(239, 250, (port >> 8) as u8, (port & 0xFF) as u8);
 
         let dut_path = std::env::current_exe()
             .map(|p| p.with_file_name("conformance-dut-ip-secure"))
             .map_err(|e| e.to_string())?;
         let child = Command::new(&dut_path)
             .env(PORT_ENV, port.to_string())
+            .env(MCAST_ENV, mcast_group.to_string())
+            .env(SECURE_ROUTING_ENV, if mode == DutMode::SecureRouting { "1" } else { "0" })
             .env("KNX_TIME_DIVISOR", TIME_DIVISOR.to_string())
             .env("RUST_LOG", std::env::var("DUT_LOG").unwrap_or_else(|_| "warn".into()))
             .spawn()
             .map_err(|e| format!("spawn {}: {e}", dut_path.display()))?;
 
-        let harness = Self { child, port };
+        let harness = Self { child, port, mcast_group };
 
         // Wait for the listener to come up.
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -295,24 +323,53 @@ fn tunnel_connect_request() -> Vec<u8> {
 pub struct IpSecureTest {
     pub name: &'static str,
     pub run: fn(&IpSecureHarness) -> Result<(), String>,
+    /// DUT flavour to spawn for this case.
+    pub mode: DutMode,
 }
 
 pub fn tests() -> Vec<IpSecureTest> {
-    vec![
-        IpSecureTest { name: "ip_secure_2_2_session_handshake", run: test_session_handshake },
-        IpSecureTest { name: "ip_secure_2_2_malformed_session_request", run: test_malformed_session_request },
-        IpSecureTest { name: "ip_secure_2_2_session_request_udp_ignored", run: test_session_request_udp_ignored },
-        IpSecureTest { name: "ip_secure_2_2_wrong_password_rejected", run: test_wrong_password },
-        IpSecureTest { name: "ip_secure_2_2_unknown_user_rejected", run: test_unknown_user },
-        IpSecureTest { name: "ip_secure_2_2_authentication_timeout", run: test_authentication_timeout },
-        IpSecureTest { name: "ip_secure_2_2_unauthenticated_frame", run: test_unauthenticated_frame },
-        IpSecureTest { name: "ip_secure_2_2_keepalive", run: test_keepalive },
-        IpSecureTest { name: "ip_secure_2_2_session_timeout", run: test_session_timeout },
-        IpSecureTest { name: "ip_secure_2_2_session_close", run: test_session_close },
-        IpSecureTest { name: "ip_secure_2_2_replay_rejected", run: test_replay_rejected },
-        IpSecureTest { name: "ip_secure_2_2_plain_connect_rejected", run: test_plain_connect_rejected },
-        IpSecureTest { name: "ip_secure_2_2_secure_tunnel_connect", run: test_secure_tunnel_connect },
-    ]
+    use DutMode::SecureUnicast;
+    let mut all = vec![
+        IpSecureTest { name: "ip_secure_2_2_session_handshake", run: test_session_handshake, mode: SecureUnicast },
+        IpSecureTest {
+            name: "ip_secure_2_2_malformed_session_request",
+            run: test_malformed_session_request,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_2_2_session_request_udp_ignored",
+            run: test_session_request_udp_ignored,
+            mode: SecureUnicast,
+        },
+        IpSecureTest { name: "ip_secure_2_2_wrong_password_rejected", run: test_wrong_password, mode: SecureUnicast },
+        IpSecureTest { name: "ip_secure_2_2_unknown_user_rejected", run: test_unknown_user, mode: SecureUnicast },
+        IpSecureTest {
+            name: "ip_secure_2_2_authentication_timeout",
+            run: test_authentication_timeout,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_2_2_unauthenticated_frame",
+            run: test_unauthenticated_frame,
+            mode: SecureUnicast,
+        },
+        IpSecureTest { name: "ip_secure_2_2_keepalive", run: test_keepalive, mode: SecureUnicast },
+        IpSecureTest { name: "ip_secure_2_2_session_timeout", run: test_session_timeout, mode: SecureUnicast },
+        IpSecureTest { name: "ip_secure_2_2_session_close", run: test_session_close, mode: SecureUnicast },
+        IpSecureTest { name: "ip_secure_2_2_replay_rejected", run: test_replay_rejected, mode: SecureUnicast },
+        IpSecureTest {
+            name: "ip_secure_2_2_plain_connect_rejected",
+            run: test_plain_connect_rejected,
+            mode: SecureUnicast,
+        },
+        IpSecureTest {
+            name: "ip_secure_2_2_secure_tunnel_connect",
+            run: test_secure_tunnel_connect,
+            mode: SecureUnicast,
+        },
+    ];
+    all.extend(multicast::tests());
+    all
 }
 
 /// 2.2.2-style: full handshake with the Appendix A key material.
@@ -559,7 +616,7 @@ pub fn run_all(filters: &[String]) -> (usize, usize) {
     for test in selected {
         // One fresh DUT process per test: full state isolation, no
         // cross-test session or sequence-number leakage.
-        let result = IpSecureHarness::spawn().and_then(|harness| (test.run)(&harness));
+        let result = IpSecureHarness::spawn_mode(test.mode).and_then(|harness| (test.run)(&harness));
         match result {
             Ok(()) => {
                 println!("  ✅ {}", test.name);

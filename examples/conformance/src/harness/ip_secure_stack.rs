@@ -30,7 +30,7 @@ use zweidraehte_device::bcus::system_b::{
 };
 use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
 use zweidraehte_device::layers::linklayers::knxip::{
-    KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureInterfaceTcp,
+    KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureDeviceTcp,
 };
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::objects::comm::{
@@ -59,9 +59,22 @@ pub const DUT_USER1_PASSWORD_HASH: [u8; 16] =
 /// Serial number of the IP Secure DUT.
 pub const IP_SECURE_SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
 
+/// Secure Backbone Key for secure-routing tests — the 03/08/09
+/// Appendix A.5/A.6 key `00 01 … 0f`.
+pub const DUT_BACKBONE_KEY: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+
 /// Environment variable carrying the DUT's KNXnet/IP port (the harness
 /// picks a free port per spawn; default 3671 for manual runs).
 pub const PORT_ENV: &str = "KNX_IPS_PORT";
+
+/// Environment variable carrying the routing multicast group. The
+/// harness derives a per-spawn group in 239.250.0.0/16 from the control
+/// port so concurrent runs never share a group; default 224.0.23.12.
+pub const MCAST_ENV: &str = "KNX_IPS_MCAST";
+
+/// Environment variable enabling secure routing in the DUT config
+/// (`1` = secured Routing family + provisioned [`DUT_BACKBONE_KEY`]).
+pub const SECURE_ROUTING_ENV: &str = "KNX_IPS_SECURE_ROUTING";
 
 /// Tunnelling slot count = secure session pool size.
 pub const TUNNEL_SLOTS: usize = 2;
@@ -176,7 +189,7 @@ impl NetworkConfig for LoopbackIpPlatform {
 // Stack definition
 // ============================================================================
 
-type Features = KnxIpSecureInterfaceTcp<TUNNEL_SLOTS>;
+type Features = KnxIpSecureDeviceTcp<TUNNEL_SLOTS>;
 
 pub type IpSecureDutExtension = IpSecureInterfaceExtensionFor<Features, MAX_PW, MAX_TU>;
 
@@ -261,4 +274,24 @@ pub fn default_dut_config() -> IpSecureDutDeviceConfig {
     secure.secured_tunnelling = 1;
     secure.secured_device_management = 1;
     config
+}
+
+/// Whether the spawning harness requested secure routing.
+pub fn secure_routing_enabled() -> bool {
+    std::env::var(SECURE_ROUTING_ENV).is_ok_and(|v| v == "1")
+}
+
+/// The routing multicast group for this DUT instance.
+pub fn dut_multicast_group() -> Ipv4Addr {
+    std::env::var(MCAST_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(zweidraehte_device::DEFAULT_MULTICAST_ADDR)
+}
+
+/// Secure the Routing family and provision the Appendix A backbone key
+/// (secure-routing test mode), pointing `PID_ROUTING_MULTICAST_ADDRESS`
+/// at the per-spawn test group.
+pub fn apply_secure_routing_config(config: &mut IpSecureDutDeviceConfig, group: Ipv4Addr) {
+    let ((ip, _tunnelling), secure) = &mut config.extension_config;
+    ip.routing_multicast = group.octets();
+    secure.secured_routing = 1;
+    secure.backbone_key = DUT_BACKBONE_KEY;
 }

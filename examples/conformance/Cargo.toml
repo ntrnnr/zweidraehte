@@ -27,6 +27,7 @@ serde_with = { workspace = true, features = ["macros"] }
 getrandom = "0.4.2"
 env_logger = { workspace = true }
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", features = ["linux"] }
+socket2 = "0.6.4"
 
 [[bin]]
 name = "conformance-runner"
