@@ -235,6 +235,14 @@ where
             // its deadlines: E10 emits a TIMER_NOTIFY on the routing
             // multicast group. Folds to nothing for `NoIpSecure`.
             if <F::IpSecure as IpSecureFeature>::ENABLED && !self.routing_socket_indices.is_empty() {
+                // §2.2.4.2: a received frame in the previous loop
+                // iteration may have advanced the persistence watermark
+                // (timer value adopted from a peer). Make it durable
+                // now, before anything else happens this iteration —
+                // the spec's "store immediately", deferred by at most
+                // one scheduler wake.
+                self.drain_mc_persist().await;
+
                 let env = self.secure_env();
                 let secured = env.config.is_some_and(|config| {
                     config.secured_service_family(substructs::ServiceFamily::Routing) != 0
@@ -251,6 +259,10 @@ where
                     && let Some(group) = F::Routing::multicast_addr(&self.routing)
                     && let Some(buffer) = self.context.buffer_manager().try_alloc_from_slice(&frame)
                 {
+                    // §2.2.4.2: the TIMER_NOTIFY carries the current
+                    // timer value — persist a watermark advance before
+                    // it goes out.
+                    self.drain_mc_persist().await;
                     // §2.2.2.4.1: TIMER_NOTIFY goes to port 3671 on the
                     // configured routing multicast address, out of the
                     // socket joined to that group.

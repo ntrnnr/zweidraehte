@@ -18,7 +18,6 @@
 //! Usage: `conformance-dut-ip-secure`
 
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::harness::ip_secure_stack::{
@@ -67,7 +66,7 @@ async fn main(spawner: Spawner) {
         KnxNetIpBuilder::<IpSecureDutStack>::new("lo", *control_endpoint.ip(), control_endpoint, ())
             .routing_multicast_addr(multicast_group);
 
-    let (_stack, runner) = zweidraehte_device::new(
+    let (stack, runner) = zweidraehte_device::new(
         STACK_RESOURCES.init(StackResources::new()),
         link_layer_builder,
         state_init,
@@ -77,7 +76,13 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
 
+    // Drain on-demand persist requests. The DUT keeps no persistent
+    // storage, but the IP Secure mc_timer watermark (03/08/09 §2.2.4.2)
+    // gates secure routing sends on the reply — never answering would
+    // wedge the link layer once a test advances the timer beyond the
+    // persistence window.
     loop {
-        Timer::after(Duration::from_secs(3600)).await;
+        let request = stack.receive_persist_request().await;
+        request.reply(()).await;
     }
 }

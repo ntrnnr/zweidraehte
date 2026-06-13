@@ -26,6 +26,7 @@ use core::cell::Cell;
 use embassy_sync::pubsub::{PubSubBehavior, PubSubChannel};
 
 use crate::{
+    context::LayerContext,
     definition::StackDefinition,
     lifecycle::LifecycleEvent,
     objects::{
@@ -181,17 +182,21 @@ pub trait DeviceModel {
 /// - Publishing [`LifecycleEvent`]s for user code
 pub struct SystemBDeviceModel<'a, D: StackDefinition> {
     state: &'a D::State,
-    lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1>,
+    layer_context: &'a LayerContext<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 }
 
 impl<'a, D: StackDefinition> SystemBDeviceModel<'a, D> {
     pub fn new(
         state: &'a D::State,
-        lifecycle_channel: &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1>,
+        layer_context: &'a LayerContext<D>,
         interface_objects: &'a D::InterfaceObjects<'static>,
     ) -> Self {
-        Self { state, lifecycle_channel, interface_objects }
+        Self { state, layer_context, interface_objects }
+    }
+
+    fn lifecycle_channel(&self) -> &'a PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1> {
+        &self.layer_context.lifecycle_channel
     }
 }
 
@@ -249,19 +254,26 @@ impl<D: StackDefinition> SystemBDeviceModel<'_, D> {
             (RunTarget::Application, RunAction::Started) => {
                 self.interface_objects.set_user_stopped(false);
                 self.state.comm_objects().borrow_mut().reset();
-                self.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStarted);
+                self.lifecycle_channel().publish_immediate(LifecycleEvent::ApplicationStarted);
+                // The application (re)starting is how an ETS download
+                // ends — a natural moment to save the freshly written
+                // configuration without waiting for the trailing
+                // restart. Also fires on the boot cascade, where the
+                // state was just loaded and the dirty check in user
+                // code's storage task turns it into a no-op.
+                self.layer_context.try_send_persist_request(crate::persist::PersistRequest::EtsDownloadComplete);
             }
             (RunTarget::Application, RunAction::Stopped) => {
                 self.interface_objects.set_user_stopped(true);
-                self.lifecycle_channel.publish_immediate(LifecycleEvent::ApplicationStopped);
+                self.lifecycle_channel().publish_immediate(LifecycleEvent::ApplicationStopped);
             }
             // PEI has no `user_stopped` flag and no associated comm objects —
             // only the lifecycle event is surfaced.
             (RunTarget::Pei, RunAction::Started) => {
-                self.lifecycle_channel.publish_immediate(LifecycleEvent::PeiStarted);
+                self.lifecycle_channel().publish_immediate(LifecycleEvent::PeiStarted);
             }
             (RunTarget::Pei, RunAction::Stopped) => {
-                self.lifecycle_channel.publish_immediate(LifecycleEvent::PeiStopped);
+                self.lifecycle_channel().publish_immediate(LifecycleEvent::PeiStopped);
             }
         }
     }

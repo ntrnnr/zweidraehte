@@ -35,6 +35,9 @@ pub use crate::objects::comm::{ComObject, ComObjectEvent, ComObjectIndex, ComObj
 // Stack-level lifecycle events
 pub use crate::lifecycle::LifecycleEvent;
 
+// On-demand persistence requests
+pub use crate::persist::PersistRequest;
+
 // Interface objects (traits + response/error types)
 pub use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, HasDeviceObject, HasMaxRetryCount, HasRoutingCount,

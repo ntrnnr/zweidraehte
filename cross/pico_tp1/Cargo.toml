@@ -28,7 +28,8 @@ devices = { path = "../../examples/devices", default-features = false, features 
 # Shared RP platform code
 rp-common = { path = "../rp-common", features = ["rp2040"] }
 # HAL-agnostic helpers (DebouncedButton, CortexMSystem)
-embedded-common = { path = "../embedded-common" }
+embedded-common = { path = "../embedded-common", features = ["tp1"] }
+embassy-sync = { workspace = true }
 
 [build-dependencies]
 dev-provisioning-build = { path = "../dev-provisioning-build" }

@@ -114,6 +114,36 @@ impl ChipType {
         self.supports_long_frames()
     }
 
+    /// The chip's autonomous busy-mode service bytes, as
+    /// `(activate, deactivate)`.
+    ///
+    /// In busy mode the transceiver answers addressed frames with a
+    /// BUSY acknowledge *by itself*, without MCU involvement — the only
+    /// way to keep BUSY responses flowing while the MCU is stalled in a
+    /// blocking flash erase/write (see
+    /// [`ChipBusyRequest`](super::busy::ChipBusyRequest)).
+    ///
+    /// - TPUART 1/2 and the TPUART-compatible E981.03:
+    ///   `U_ActivateBusymode` (0x21) / `U_ResetBusymode` (0x22). The
+    ///   chip auto-leaves busy mode after ~700 ms; our flash stalls are
+    ///   well inside, and the explicit reset is sent regardless.
+    /// - NCN5120/5121/5130: `U_SetBusy` (0x03) / `U_QuitBusy` (0x04).
+    ///   TODO: verify against the ON Semi datasheet (not in the repo)
+    ///   that these are the right codes and that busy responses do not
+    ///   additionally require the auto-acknowledge address
+    ///   (`U_SetAddress`) to be programmed — we acknowledge manually
+    ///   and never set it.
+    ///
+    /// `None` for unknown chips — the storage glue then has only the
+    /// software busy gate, which cannot answer during a full stall.
+    pub const fn busy_mode_commands(&self) -> Option<(u8, u8)> {
+        match self {
+            ChipType::Unknown => None,
+            ChipType::TpUart1 | ChipType::TpUart2 | ChipType::E981 => Some((0x21, 0x22)),
+            ChipType::Ncn5120 => Some((0x03, 0x04)),
+        }
+    }
+
     /// Human-readable name for the chip
     pub const fn name(&self) -> &'static str {
         match self {
@@ -195,6 +225,19 @@ mod tests {
         assert!(ChipType::TpUart2.supports_extended_frame_format());
         assert!(ChipType::Ncn5120.supports_extended_frame_format());
         assert!(ChipType::E981.supports_extended_frame_format());
+    }
+
+    #[test]
+    fn test_busy_mode_commands() {
+        // TPUART family + the TPUART-compatible E981: U_ActivateBusymode /
+        // U_ResetBusymode.
+        assert_eq!(ChipType::TpUart1.busy_mode_commands(), Some((0x21, 0x22)));
+        assert_eq!(ChipType::TpUart2.busy_mode_commands(), Some((0x21, 0x22)));
+        assert_eq!(ChipType::E981.busy_mode_commands(), Some((0x21, 0x22)));
+        // NCN5120 has its own service codes: U_SetBusy / U_QuitBusy.
+        assert_eq!(ChipType::Ncn5120.busy_mode_commands(), Some((0x03, 0x04)));
+        // Unknown chip: no autonomous busy mode.
+        assert_eq!(ChipType::Unknown.busy_mode_commands(), None);
     }
 
     #[test]

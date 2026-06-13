@@ -18,6 +18,7 @@ use crate::{
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse, group_data::GroupDataState},
     lifecycle::LifecycleEvent,
     objects::comm::{ComObjectEvent, ComObjects},
+    persist::PersistRequest,
     restart,
     router::Outbox,
 };
@@ -48,6 +49,14 @@ pub struct LayerContext<D: StackDefinition> {
     pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
     pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 
+    /// On-demand persistence requests towards user code's storage task.
+    /// Gated requests (03/08/09 §2.2.4.2 mc_timer watermark) embed a
+    /// reply the sender awaits; advisory notifications (ETS download
+    /// complete) are [`Request::fire_and_forget`] — same channel, and
+    /// the replier's `reply(())` is a no-op for them. Capacity 2: one
+    /// gated + one advisory in flight without blocking either sender.
+    pub persist_channel: Channel<D::Mutex, Request<PersistRequest, ()>, 2>,
+
     /// Bookkeeping shared between the application layer's built-in
     /// group-data handler and the
     /// [`GroupDataProvider`](crate::layers::application::group_data::GroupDataProvider)
@@ -66,6 +75,7 @@ impl<D: StackDefinition> LayerContext<D> {
             lifecycle_channel: PubSubChannel::new(),
             restart_channel: Channel::new(),
             app_service_channel: Channel::new(),
+            persist_channel: Channel::new(),
             group_data: GroupDataState::new(),
         }
     }
@@ -89,5 +99,13 @@ impl<D: StackDefinition> LayerContext<D> {
     /// Try sending a restart request to user code. Returns `true` if sent.
     pub fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
         self.restart_channel.try_send(request).is_ok()
+    }
+
+    /// Try sending an advisory (fire-and-forget) persistence
+    /// notification to user code. Returns `true` if sent. Losing one
+    /// (channel full) is acceptable — the dirty flag still gets the
+    /// data saved on the next poll/restart.
+    pub fn try_send_persist_request(&self, request: PersistRequest) -> bool {
+        self.persist_channel.try_send(Request::fire_and_forget(request)).is_ok()
     }
 }

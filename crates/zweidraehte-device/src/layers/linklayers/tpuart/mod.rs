@@ -51,9 +51,14 @@
 //! **Note**: Bus monitor mode is mutually exclusive with normal operation. Once enabled,
 //! a chip reset is required to return to normal mode.
 
-use embassy_futures::select::{Either4, select4};
-use embassy_sync::channel::DynamicSender;
+use core::sync::atomic::{AtomicBool, Ordering};
+
+use embassy_futures::select::{Either, Either4, select, select4};
+use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_time::{Instant, Timer};
+
+use crate::actor::Request;
+use busy::ChipBusyRequest;
 
 use crate::context::{AddressTableContext, KnxIndividualAddressContext, LinkLayerBufferContext, MaxRetryCountContext};
 use zweidraehte_proto::address::IndividualAddress;
@@ -67,6 +72,7 @@ use crate::layers::Inbox;
 use zweidraehte_proto::messages::builder::RequestMessage;
 
 pub mod busmon;
+pub mod busy;
 mod chip;
 mod state_machine;
 
@@ -152,6 +158,8 @@ pub struct TpUartLinkLayerBuilder<W, R, A = AutoAddressChecker> {
     uart_tx: W,
     uart_rx: R,
     address_checker: A,
+    busy_flag: Option<&'static AtomicBool>,
+    chip_busy_rx: Option<DynamicReceiver<'static, Request<ChipBusyRequest, ()>>>,
 }
 
 impl<W, R> TpUartLinkLayerBuilder<W, R, AutoAddressChecker> {
@@ -162,14 +170,32 @@ impl<W, R> TpUartLinkLayerBuilder<W, R, AutoAddressChecker> {
     /// and broadcasts. The checker is constructed from the stack context
     /// at build time.
     pub fn new(uart_tx: W, uart_rx: R) -> Self {
-        Self { uart_tx, uart_rx, address_checker: AutoAddressChecker }
+        Self { uart_tx, uart_rx, address_checker: AutoAddressChecker, busy_flag: None, chip_busy_rx: None }
     }
 }
 
 impl<W, R, A: AddressChecker> TpUartLinkLayerBuilder<W, R, A> {
     /// Create a builder with a custom [`AddressChecker`].
     pub fn with_address_checker(uart_tx: W, uart_rx: R, address_checker: A) -> Self {
-        Self { uart_tx, uart_rx, address_checker }
+        Self { uart_tx, uart_rx, address_checker, busy_flag: None, chip_busy_rx: None }
+    }
+}
+
+impl<W, R, A> TpUartLinkLayerBuilder<W, R, A> {
+    /// Answer addressed frames with a BUSY acknowledge while `flag` is
+    /// set (see [`busy`]). The storage task sets the flag around saves
+    /// so the remote sender's link layer retries instead of timing out.
+    pub fn with_busy_flag(mut self, flag: &'static AtomicBool) -> Self {
+        self.busy_flag = Some(flag);
+        self
+    }
+
+    /// Accept chip busy-mode rendezvous requests on `receiver` (see
+    /// [`busy::ChipBusyRequest`]). Required on platforms where a flash
+    /// save stalls the executor — the chip then answers BUSY by itself.
+    pub fn with_chip_busy_channel(mut self, receiver: DynamicReceiver<'static, Request<ChipBusyRequest, ()>>) -> Self {
+        self.chip_busy_rx = Some(receiver);
+        self
     }
 }
 
@@ -223,6 +249,8 @@ where
         // PID 52 format: busy_retry bits 6-4, nak_retry bits 2-0.
         let mrc = context.max_retry_count();
         ll.set_retry_config(RetryConfig::new(mrc & 0x07, (mrc >> 4) & 0x07));
+        ll.set_busy_flag(self.busy_flag);
+        ll.set_chip_busy_receiver(self.chip_busy_rx);
         async move { ll.run(req_rx).await }
     }
 }
@@ -271,6 +299,8 @@ where
         // PID 52 format: busy_retry bits 6-4, nak_retry bits 2-0.
         let mrc = context.max_retry_count();
         ll.set_retry_config(RetryConfig::new(mrc & 0x07, (mrc >> 4) & 0x07));
+        ll.set_busy_flag(self.busy_flag);
+        ll.set_chip_busy_receiver(self.chip_busy_rx);
         async move { ll.run(req_rx).await }
     }
 }
@@ -323,6 +353,12 @@ where
 
     // Previous control byte for repeat detection
     prev_control_byte: u8,
+
+    // Busy gating around storage saves (see the `busy` module): the
+    // software flag turns ACKs into BUSY acknowledges, the rendezvous
+    // channel arms the chip's autonomous busy mode for full stalls.
+    busy_flag: Option<&'static AtomicBool>,
+    chip_busy_rx: Option<DynamicReceiver<'static, Request<ChipBusyRequest, ()>>>,
 }
 
 /// Pending transmission waiting for link layer to become idle
@@ -394,12 +430,48 @@ where
             timeout_deadline: None,
             send_timeout_deadline: None,
             prev_control_byte: 0xFF,
+            busy_flag: None,
+            chip_busy_rx: None,
         }
     }
 
     /// Set the retry configuration
     pub fn set_retry_config(&mut self, config: RetryConfig) {
         self.retry_config = config;
+    }
+
+    /// Set the software busy flag (see [`busy`]).
+    pub fn set_busy_flag(&mut self, flag: Option<&'static AtomicBool>) {
+        self.busy_flag = flag;
+    }
+
+    /// Set the chip busy-mode rendezvous receiver (see [`busy`]).
+    pub fn set_chip_busy_receiver(&mut self, receiver: Option<DynamicReceiver<'static, Request<ChipBusyRequest, ()>>>) {
+        self.chip_busy_rx = receiver;
+    }
+
+    /// Arm or disarm the chip's autonomous busy mode on behalf of the
+    /// storage task (see [`busy`]). The reply is the requester's
+    /// guarantee that the command byte was handed to the UART before
+    /// it stalls the executor with a blocking flash operation.
+    async fn handle_chip_busy_request(&mut self, request: Request<ChipBusyRequest, ()>) {
+        match self.main_ctx.chip_type.busy_mode_commands() {
+            Some((activate, deactivate)) => {
+                let command = match request.get() {
+                    ChipBusyRequest::Activate => activate,
+                    ChipBusyRequest::Deactivate => deactivate,
+                };
+                debug!("TPUART: chip busy mode {:?} (0x{:02X})", request.get(), command);
+                self.uart_write(&[command]).await;
+            }
+            None => {
+                // Unknown chip: no busy-mode service. Reply anyway so
+                // the storage task proceeds — frames during the stall
+                // then go unacknowledged and rely on sender retries.
+                warn!("TPUART: chip busy mode unsupported on {:?}, save proceeds unprotected", self.main_ctx.chip_type);
+            }
+        }
+        request.reply(()).await;
     }
 
     /// Write bytes to the UART, logging them at trace level.
@@ -931,6 +1003,17 @@ where
         let (dst_hi, dst_lo, is_group) = extract_tp1_header_fields(header);
         let dst = IndividualAddress::from_bytes(&[dst_hi, dst_lo]);
         if self.address_checker.should_ack(header) {
+            // Busy gate around storage saves (see the `busy` module):
+            // answer BUSY instead of ACK so the sender's link layer
+            // retries until the save finishes. Unlike the System-B
+            // reference, which busy-answers every received frame, the
+            // gate applies only where we would have acknowledged —
+            // frames addressed to other devices stay untouched.
+            if self.busy_flag.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+                debug!("TPUART: device busy, BUSY for dst={} group={}", dst, is_group);
+                self.uart_write(&[U_BUSY_INF]).await;
+                return;
+            }
             debug!("TPUART: ACK frame dst={} group={}", dst, is_group);
             self.uart_write(&[U_ACK_INF]).await;
             self.main_ctx.receive_state.acked = true;
@@ -1121,7 +1204,27 @@ where
                 }
             };
 
-            match select4(timeout_future, self.uart_rx.read(&mut buf), req_rx.next(), send_ready_future).await {
+            // Chip busy-mode rendezvous from the storage task: shares
+            // the request arm of the select (both are rare external
+            // commands). Pends forever when no channel is wired. The
+            // receiver is copied out so the future doesn't borrow
+            // `self` alongside the mutable UART read.
+            let chip_busy_rx = self.chip_busy_rx;
+            let chip_busy_future = async {
+                match chip_busy_rx {
+                    Some(rx) => rx.receive().await,
+                    None => core::future::pending().await,
+                }
+            };
+
+            match select4(
+                timeout_future,
+                self.uart_rx.read(&mut buf),
+                select(req_rx.next(), chip_busy_future),
+                send_ready_future,
+            )
+            .await
+            {
                 Either4::First(_) => {
                     // Timer fired — dispatch to the state machine(s) whose
                     // deadline has been reached. The main and send SMs use
@@ -1160,7 +1263,7 @@ where
                         }
                     }
                 }
-                Either4::Third(msg) => {
+                Either4::Third(Either::First(msg)) => {
                     match msg.service_type() {
                         ServiceType::L_Data_Req => {
                             self.queue_transmission(msg.into_inner().into_inner()).await;
@@ -1170,6 +1273,9 @@ where
                             self.conf_tx.send(msg.into_inner().error().build()).await;
                         }
                     }
+                }
+                Either4::Third(Either::Second(chip_busy_req)) => {
+                    self.handle_chip_busy_request(chip_busy_req).await;
                 }
                 Either4::Fourth(_) => {
                     // Send pump: transmit the next frame byte

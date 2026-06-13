@@ -23,3 +23,13 @@ defmt = { workspace = true }
 # KNX platform traits (SystemControl) and shared ButtonEvent type
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
 zweidraehte-util = { path = "../../crates/zweidraehte-util" }
+
+# Busy gating around storage saves (BusyGuard): actor requests towards
+# the TPUART link layer's chip busy-mode rendezvous
+zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }
+embassy-sync = { workspace = true }
+
+[features]
+# BusyGate/BusyGuard talk to the TPUART link layer's busy machinery —
+# only TP1 targets need them (and the tpuart module they reference).
+tp1 = ["zweidraehte-device/tp1"]

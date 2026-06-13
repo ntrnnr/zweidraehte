@@ -20,7 +20,7 @@ use crate::{
             HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasRunStateMachine,
         },
     },
-    restart,
+    persist, restart,
 };
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
@@ -72,6 +72,7 @@ pub struct Stack<'d, D: StackDefinition> {
     pub(crate) app_request_sender:
         DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     pub(crate) restart_receiver: DynamicReceiver<'static, restart::RestartRequest>,
+    pub(crate) persist_receiver: DynamicReceiver<'static, Request<persist::PersistRequest, ()>>,
 }
 
 impl<'d, D: StackDefinition> Copy for Stack<'d, D> {}
@@ -580,6 +581,47 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// ```
     pub async fn receive_restart_request(&self) -> restart::RestartRequest {
         self.restart_receiver.receive().await
+    }
+
+    /// Receive the next on-demand persistence request from the stack.
+    ///
+    /// The stack asks for an immediate save when waiting for the next
+    /// periodic poll or restart would be wrong:
+    ///
+    /// - [`PersistRequest::McTimerWatermark`](persist::PersistRequest::McTimerWatermark):
+    ///   the KNX IP Secure multicast timer watermark advanced
+    ///   (03/08/09 §2.2.4.2). The link layer holds back the frame that
+    ///   would exceed the previously persisted watermark until the save
+    ///   is confirmed.
+    /// - [`PersistRequest::EtsDownloadComplete`](persist::PersistRequest::EtsDownloadComplete):
+    ///   an ETS download finished — a natural moment to save the new
+    ///   configuration.
+    ///
+    /// # Contract
+    ///
+    /// After attempting the save, **always** call
+    /// [`Request::reply`]`(())` — also when the save failed (log and
+    /// continue). Gated requesters are blocked until the reply arrives
+    /// (never replying wedges the KNX/IP send path, and dropping the
+    /// request without replying panics the requester — see
+    /// [`actor`](crate::actor) cancellation semantics); for advisory
+    /// fire-and-forget requests the reply is a no-op, so user code
+    /// needs no branching.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// loop {
+    ///     let request = stack.receive_persist_request().await;
+    ///     if stack.state().is_dirty() {
+    ///         if let Err(e) = storage.save(stack.state()) {
+    ///             warn!("Persist-on-demand save failed: {:?}", e);
+    ///         }
+    ///     }
+    ///     request.reply(()).await;
+    /// }
+    /// ```
+    pub async fn receive_persist_request(&self) -> Request<persist::PersistRequest, ()> {
+        self.persist_receiver.receive().await
     }
 
     /// Yield until the router's outbox has no pending messages.

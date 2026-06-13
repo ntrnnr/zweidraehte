@@ -3,6 +3,7 @@
 #![feature(never_type)]
 
 use core::cell::RefCell;
+use core::sync::atomic::AtomicBool;
 
 use defmt::*;
 use embassy_executor::Spawner;
@@ -27,12 +28,35 @@ use devices::light_switch::{
     easter_egg::EasterEggAugment,
 };
 
+use embassy_sync::channel::Channel;
 use zweidraehte_device::{
-    bcus::system_b::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder, prelude::*,
+    actor::Request,
+    bcus::system_b::*,
+    config::MAX_APDU_LENGTH_EXTENDED,
+    layers::linklayers::tpuart::{TpUartLinkLayerBuilder, busy::ChipBusyRequest},
+    prelude::*,
 };
 
-use embedded_common::DebouncedButton;
+use embedded_common::{BusyGate, DebouncedButton};
 use rp_common::{FlashIdentityData, RpFlashStorage};
+
+// ================================================================================
+// Busy gating for flash saves
+// ================================================================================
+
+// Flash sector erase on RP2040 stalls the entire CPU for ~45-73 ms (XIP
+// bus stall), freezing even the UART ISR — far beyond the ~1.7 ms TP1
+// acknowledge window. Saves therefore run behind the busy gate: the
+// software flag turns ACKs into BUSY acknowledges, and the rendezvous
+// channel arms the NCN5120's autonomous busy mode so the chip keeps
+// answering BUSY while the CPU is stalled. The remote sender's link
+// layer retries (busy_retry_count) until the save finishes.
+static BUSY_FLAG: AtomicBool = AtomicBool::new(false);
+static CHIP_BUSY: Channel<CriticalSectionRawMutex, Request<ChipBusyRequest, ()>, 1> = Channel::new();
+
+fn busy_gate() -> BusyGate {
+    BusyGate { flag: &BUSY_FLAG, chip_busy: Some(CHIP_BUSY.dyn_sender()) }
+}
 
 // ================================================================================
 // Interrupt Bindings
@@ -209,9 +233,14 @@ async fn restart_task(knx: Stack<'static, PicoTp1LightSwitch>, storage: &'static
             }
         }
 
-        // Persist the post-reset state before rebooting.
+        // Persist the post-reset state before rebooting. The busy gate
+        // matters even here: the bus keeps running while we save, and
+        // the A_Restart_Response may still be retried by the remote TL.
         if state.is_dirty() {
+            let gate = busy_gate();
+            let guard = gate.acquire().await;
             save_state(state, storage);
+            guard.release().await;
         }
 
         // Brief delay so the response can be sent on the wire.
@@ -235,6 +264,30 @@ fn save_state(state: &PicoTp1State, storage: &RefCell<Storage>) {
         Err(e) => {
             warn!("Flash save failed: {}", e);
         }
+    }
+}
+
+/// On-demand persistence handler.
+///
+/// The stack requests an immediate save when waiting for the restart
+/// handler would be wrong — at the end of an ETS download
+/// (`EtsDownloadComplete`) and for spec-mandated durability points.
+/// Every save runs behind the busy gate so TP1 traffic sees BUSY
+/// acknowledges instead of silence during the flash stall. The request
+/// is always answered (`reply(())`), even when the save failed — gated
+/// requesters inside the stack block until the reply.
+#[embassy_executor::task]
+async fn persist_task(knx: Stack<'static, PicoTp1LightSwitch>, storage: &'static RefCell<Storage>) -> ! {
+    loop {
+        let request = knx.receive_persist_request().await;
+        if knx.state().is_dirty() {
+            info!("Persist request — saving state");
+            let gate = busy_gate();
+            let guard = gate.acquire().await;
+            save_state(knx.state(), storage);
+            guard.release().await;
+        }
+        request.reply(()).await;
     }
 }
 
@@ -440,7 +493,9 @@ async fn main(spawner: Spawner) {
     // KNX stack
     // ========================================================================
 
-    let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx);
+    let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx)
+        .with_busy_flag(&BUSY_FLAG)
+        .with_chip_busy_channel(CHIP_BUSY.dyn_receiver());
 
     // Allocate stack resources in a static (embassy tasks need 'static).
     static KNX_RESOURCES: StaticCell<
@@ -485,6 +540,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(app_task(knx_stack, btn1_pin, btn2_pin)).expect("app_task spawnable once");
     spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
     spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
+    spawner.spawn(persist_task(knx_stack, storage)).expect("persist_task spawnable once");
     spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
 
     // ========================================================================
@@ -497,16 +553,12 @@ async fn main(spawner: Spawner) {
     let mut prog_led = Output::new(p.PIN_16, Level::Low);
     let mut led = Output::new(p.PIN_25, Level::Low);
 
-    // No periodic flash saves here. Flash sector erase on RP2040 stalls
-    // the entire CPU for ~45-73ms (XIP bus stall), which freezes all
-    // interrupt handling — including the UART ISR. At 19200 baud with
-    // FIFO disabled, a single byte time is ~573µs, so a 73ms stall
-    // causes massive UART overruns and frame loss.
-    //
-    // Instead, state is saved exclusively in `restart_task` right before
-    // reboot. ETS always sends A_Restart at the end of programming, so
-    // no configuration data is lost. For unexpected power loss, the
-    // device simply boots with the last saved state.
+    // No periodic dirty polling here: saves happen on demand in
+    // `persist_task` (EtsDownloadComplete after a download, plus any
+    // spec-mandated durability points) and in `restart_task` before a
+    // reboot. Both run behind the busy gate (see `BUSY_FLAG`/`CHIP_BUSY`
+    // above), so the flash stall no longer corrupts TP1 timing — remote
+    // senders receive BUSY acknowledges and retry.
 
     loop {
         led.toggle();

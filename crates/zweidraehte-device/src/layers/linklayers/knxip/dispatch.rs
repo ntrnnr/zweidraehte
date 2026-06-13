@@ -4,11 +4,13 @@
 
 use core::net::SocketAddrV4;
 
+use crate::actor::ActorRequest;
 use crate::layers::linklayers::knxip::context::{
     IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
 };
+use crate::persist::PersistRequest;
 use embassy_sync::{
-    blocking_mutex::raw::NoopRawMutex,
+    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
     channel::{Channel, DynamicSender},
 };
 use embassy_time::{Duration, Instant};
@@ -149,6 +151,23 @@ where
             serial_number: self.context.knx_serial_number(),
             rng_fill: self.rng_fill,
             now: Instant::now(),
+        }
+    }
+
+    /// 03/08/09 §2.2.4.2 durability gate: if the multicast timer flagged
+    /// a pending watermark persist, round-trip a gated
+    /// [`PersistRequest::McTimerWatermark`] through user code's storage
+    /// task and only return once the save is confirmed. The single
+    /// await point of the whole persistence gate — call it before any
+    /// frame carrying a timer value beyond the watermark leaves the
+    /// device, and once per runtime loop for receive-side advances.
+    pub(super) async fn drain_mc_persist(&mut self) {
+        if <F::IpSecure as IpSecureFeature>::mc_take_persist_pending(&mut self.mc_timer)
+            && let Some(gate) = self.context.persist_gate_sender()
+        {
+            // CriticalSectionRawMutex: the storage task may live on a
+            // different executor than the link layer.
+            ActorRequest::<CriticalSectionRawMutex, _, _>::request(&gate, PersistRequest::McTimerWatermark).await;
         }
     }
 
@@ -612,6 +631,11 @@ where
                         debug!("Routing frame not wrappable (secure routing not ready), dropped");
                         return;
                     };
+                    // §2.2.4.2: the wrap may have advanced the
+                    // persistence watermark; the frame is in `out` but
+                    // not yet on the wire — make the watermark durable
+                    // before the send below.
+                    self.drain_mc_persist().await;
                     out.set_len(len);
                     wrapped = Some(out);
                 }

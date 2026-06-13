@@ -41,6 +41,10 @@ subtle = { version = "2.6.1", default-features = false }
 
 [dev-dependencies]
 test-case = "3.3"
+# The persist-gate round-trip (mc_timer watermark, 03/08/09 §2.2.4.2)
+# uses CriticalSectionRawMutex reply channels; lib tests need the std
+# critical-section implementation to link.
+critical-section = { version = "1.2.0", features = ["std"] }
 # Used by the `extension_state_config_derive` test to assert the
 # `#[derive(ExtensionState)]`-generated `*Config` types serialize to the same
 # JSON (field names / serde defaults) as the hand-written structs they replaced,

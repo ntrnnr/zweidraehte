@@ -41,7 +41,8 @@ devices = { path = "../../examples/devices", default-features = false, features 
 # UidSeededRng, Stm32CommonSecureState)
 stm32-common = { path = "../stm32-common" }
 # HAL-agnostic helpers (DebouncedButton, CortexMSystem)
-embedded-common = { path = "../embedded-common" }
+embedded-common = { path = "../embedded-common", features = ["tp1"] }
+embassy-sync = { workspace = true }
 
 [build-dependencies]
 dev-provisioning-build = { path = "../dev-provisioning-build" }

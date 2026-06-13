@@ -100,13 +100,35 @@ fn backbone_key(env: &SecureEnv<'_>) -> Option<[u8; 16]> {
 // §2.2.4.2 persistence watermark
 // ============================================================================
 
-/// Persist the mc_timer before emitting (or after adopting) a value
-/// beyond `watermark + D`, so the timer cannot run backwards across a
-/// power loss.
-fn ensure_persisted(timer: &mut MulticastTimerState, env: &SecureEnv<'_>, value: u64) {
+/// Record that the mc_timer crossed the persistence window, so the
+/// timer cannot run backwards across a power loss.
+///
+/// Updates the persisted-value mirror eagerly and flags
+/// `timer.persist_pending`; the actual durable save is a gated
+/// round-trip through user code's storage task
+/// (`Stack::receive_persist_request`), performed by the runtime via
+/// [`IpSecureFeature::mc_take_persist_pending`](super::secure::IpSecureFeature::mc_take_persist_pending):
+///
+/// - **Send path** (`wrap_multicast_outgoing`, `mc_tick`): the runtime
+///   drains the flag *before* the produced frame leaves the device —
+///   the 03/08/09 §2.2.4.2 ordering guarantee.
+/// - **Receive path** (adopting a peer's newer value): drained at the
+///   top of the next runtime loop iteration. The spec's "store
+///   immediately" thus becomes "within one scheduler wake (and before
+///   any outgoing frame)" — losing power inside that window leaves the
+///   old, lower watermark behind, which is safe for outgoing replay
+///   protection (nothing beyond it was ever sent) and re-converges on
+///   the incoming side from the group's other members.
+///
+/// The watermark advances at most once per `PERSIST_INTERVAL_MS` of
+/// mc_timer time on the send path; the receive path can be forced more
+/// often by peers jumping the timer forward (wear-DoS consideration —
+/// rate-limiting is the storage backend's call).
+fn note_watermark(timer: &mut MulticastTimerState, env: &SecureEnv<'_>, value: u64) {
     if value > timer.persisted_watermark + PERSIST_INTERVAL_MS {
         if let Some(config) = env.config {
             config.set_persisted_mc_timer(value);
+            timer.persist_pending = true;
         }
         timer.persisted_watermark = value;
     }
@@ -212,6 +234,11 @@ pub(super) fn stop_sync(timer: &mut MulticastTimerState) {
 /// old key is invalidated, and the synchronization restarts (A7).
 pub(super) fn on_backbone_key_changed(timer: &mut MulticastTimerState, env: &SecureEnv<'_>) {
     if let Some(config) = env.config {
+        // Unlike the watermark advance in `ensure_persisted`, the reset
+        // to 0 is not gated on the storage round-trip: losing it leaves
+        // the *old* (higher) watermark behind, which errs in the safe
+        // never-decrease direction, and the PID 91 write that raised
+        // this event already marked the device state dirty.
         config.set_persisted_mc_timer(0);
     }
     timer.base = 0;
@@ -264,7 +291,7 @@ pub(super) fn handle_timer_notify(timer: &mut MulticastTimerState, frame: &[u8],
         && notify.message_tag == timer.own_notify_tag
     {
         timer.adopt_at_least(received, env.now);
-        ensure_persisted(timer, env, timer.current(env.now));
+        note_watermark(timer, env, timer.current(env.now));
         timer.mc_timer_authentic = true;
         timer.authentic_deadline = None;
         debug!("mc_timer authentic (own TIMER_NOTIFY echoed)");
@@ -274,7 +301,7 @@ pub(super) fn handle_timer_notify(timer: &mut MulticastTimerState, frame: &[u8],
         // E01: A1 + A9 + A3, both states end in SCHED_PERIODIC.
         TimerClass::Newer => {
             let current = timer.adopt_at_least(received, env.now);
-            ensure_persisted(timer, env, current);
+            note_watermark(timer, env, current);
             timer.is_time_keeper = false;
             timer.sync_state = McTimerSyncState::SchedPeriodic;
             schedule_periodic(timer, &params, env);
@@ -367,7 +394,7 @@ pub(super) fn handle_multicast_wrapper(
             let current = timer.adopt_at_least(received, env.now);
             // §2.2.4.2: a received value beyond the persistence window
             // must be persisted immediately.
-            ensure_persisted(timer, env, current);
+            note_watermark(timer, env, current);
             if timer.sync_state == McTimerSyncState::SchedPeriodic {
                 schedule_periodic(timer, &params, env);
             }
@@ -443,7 +470,7 @@ pub(super) fn wrap_multicast_outgoing(
     // §2.2.4.2: persist before emitting a timer value beyond the
     // persistence window.
     let value = timer.current(env.now);
-    ensure_persisted(timer, env, value);
+    note_watermark(timer, env, value);
 
     let seq_info = timer.seq_info(env.now);
     // The message tag differentiates two frames sent by the same device
@@ -492,7 +519,7 @@ pub(super) fn mc_tick(timer: &mut MulticastTimerState, env: &SecureEnv<'_>) -> O
     // value (never decreasing) and open the data path (§2.2.2.3.2.8).
     if timer.authentic_deadline.is_some_and(|deadline| deadline <= env.now) {
         let current = timer.adopt_at_least(timer.last_received_timer, env.now);
-        ensure_persisted(timer, env, current);
+        note_watermark(timer, env, current);
         timer.mc_timer_authentic = true;
         timer.authentic_deadline = None;
         debug!("mc_timer authentic (acquisition window elapsed)");
@@ -503,7 +530,7 @@ pub(super) fn mc_tick(timer: &mut MulticastTimerState, env: &SecureEnv<'_>) -> O
         timer.notify_deadline = None;
 
         let value = timer.current(env.now);
-        ensure_persisted(timer, env, value);
+        note_watermark(timer, env, value);
         let timer_value = timer.seq_info(env.now);
 
         // SCHED_PERIODIC → A5: own serial, fresh random tag (remembered
@@ -877,5 +904,37 @@ mod tests {
         wrap_multicast_outgoing(&mut timer, &INNER, &env2, &mut out).expect("wrap succeeds");
         // Still inside the new window — no further persist.
         assert_eq!(view.persisted.get(), PERSIST_INTERVAL_MS + 500_000);
+    }
+
+    /// 03/08/09 §2.2.4.2: a watermark advance updates the persisted
+    /// mirror eagerly and flags the pending durable save for the
+    /// runtime's drain (`mc_take_persist_pending` → gated round-trip);
+    /// values inside the window do neither. The blocks-until-reply
+    /// property of the drain is `ActorRequest` semantics, covered by
+    /// the persist-channel test in `crate::persist`.
+    #[test]
+    fn note_watermark_flags_pending_persist() {
+        let view = MockView::new();
+        let mut timer = started_timer(&view);
+        make_authentic(&mut timer);
+
+        // Within the window: no persist activity.
+        let env = env_at(&view, 1_000);
+        note_watermark(&mut timer, &env, 50_000);
+        assert!(!timer.persist_pending);
+        assert_eq!(view.persisted.get(), 0);
+
+        // Beyond watermark + D: mirror updated, pending flagged.
+        const JUMPED: u64 = PERSIST_INTERVAL_MS + 500_000;
+        note_watermark(&mut timer, &env, JUMPED);
+        assert!(timer.persist_pending);
+        assert_eq!(view.persisted.get(), JUMPED);
+        assert_eq!(timer.persisted_watermark, JUMPED);
+
+        // The receive path reaches it through the handlers too.
+        timer.persist_pending = false;
+        let frame = build_notify(JUMPED + PERSIST_INTERVAL_MS + 1, PEER_SERIAL, [0x12, 0x34]);
+        handle_timer_notify(&mut timer, &frame, &env);
+        assert!(timer.persist_pending, "adopted received value beyond the window flags the persist");
     }
 }

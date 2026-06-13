@@ -13,7 +13,7 @@
 //! device.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicI8, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI8, Ordering};
 
 use defmt::*;
 use embassy_executor::Spawner;
@@ -32,7 +32,7 @@ use embassy_stm32::{
     usart::{Config as UartConfig, Parity, Uart},
 };
 use embassy_time::{Duration, Timer};
-use embedded_common::DebouncedButton;
+use embedded_common::{BusyGate, DebouncedButton};
 use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read as _, Write as _};
@@ -52,6 +52,28 @@ use devices::light_switch::{
 use zweidraehte_device::{
     bcus::system_b::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder, prelude::*,
 };
+
+// ================================================================================
+// Busy gating for flash saves
+// ================================================================================
+
+// STM32G0 flash erase/program stalls any flash fetch on the single bank,
+// freezing code execution — far beyond the ~1.7 ms TP1 acknowledge
+// window. Saves therefore run behind the busy gate: the software flag
+// turns ACKs into BUSY acknowledges, and the rendezvous channel arms the
+// transceiver's autonomous busy mode so the chip keeps answering BUSY
+// while the CPU is stalled. The remote sender's link layer retries
+// (busy_retry_count) until the save finishes.
+static BUSY_FLAG: AtomicBool = AtomicBool::new(false);
+static CHIP_BUSY: embassy_sync::channel::Channel<
+    CriticalSectionRawMutex,
+    zweidraehte_device::actor::Request<zweidraehte_device::layers::linklayers::tpuart::busy::ChipBusyRequest, ()>,
+    1,
+> = embassy_sync::channel::Channel::new();
+
+fn busy_gate() -> BusyGate {
+    BusyGate { flag: &BUSY_FLAG, chip_busy: Some(CHIP_BUSY.dyn_sender()) }
+}
 
 // ================================================================================
 // Interrupt Bindings
@@ -307,7 +329,13 @@ async fn restart_task(knx: Stack<'static, Stm32G0LightSwitch>, storage: &'static
         }
 
         if state.is_dirty() {
+            // The busy gate matters even right before reboot: the bus
+            // keeps running while we save, and the A_Restart_Response
+            // may still be retried by the remote TL.
+            let gate = busy_gate();
+            let guard = gate.acquire().await;
             save_state(state, storage);
+            guard.release().await;
         }
 
         Timer::after(Duration::from_millis(100)).await;
@@ -326,6 +354,30 @@ fn save_state(state: &Stm32G0State, storage: &RefCell<Storage>) {
         Err(e) => {
             warn!("Flash save failed: {}", e);
         }
+    }
+}
+
+/// On-demand persistence handler.
+///
+/// The stack requests an immediate save when waiting for the restart
+/// handler would be wrong — at the end of an ETS download
+/// (`EtsDownloadComplete`) and for spec-mandated durability points.
+/// Every save runs behind the busy gate so TP1 traffic sees BUSY
+/// acknowledges instead of silence during the flash stall. The request
+/// is always answered (`reply(())`), even when the save failed — gated
+/// requesters inside the stack block until the reply.
+#[embassy_executor::task]
+async fn persist_task(knx: Stack<'static, Stm32G0LightSwitch>, storage: &'static RefCell<Storage>) -> ! {
+    loop {
+        let request = knx.receive_persist_request().await;
+        if knx.state().is_dirty() {
+            info!("Persist request — saving state");
+            let gate = busy_gate();
+            let guard = gate.acquire().await;
+            save_state(knx.state(), storage);
+            guard.release().await;
+        }
+        request.reply(()).await;
     }
 }
 
@@ -576,7 +628,9 @@ async fn main(spawner: Spawner) {
     let storage = &*STORAGE.init(RefCell::new(storage));
 
     // --- KNX stack -----------------------------------------------------------
-    let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx);
+    let link_layer_builder = TpUartLinkLayerBuilder::new(uart_tx, uart_rx)
+        .with_busy_flag(&BUSY_FLAG)
+        .with_chip_busy_channel(CHIP_BUSY.dyn_receiver());
 
     static KNX_RESOURCES: StaticCell<
         StackResources<
@@ -632,6 +686,7 @@ async fn main(spawner: Spawner) {
     spawner.spawn(app_task(knx_stack, user_btn_pin)).expect("app_task spawnable once");
     spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
     spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
+    spawner.spawn(persist_task(knx_stack, storage)).expect("persist_task spawnable once");
     spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
     spawner.spawn(debug_task(dbg_tx, dbg_rx)).expect("debug_task spawnable once");
     spawner.spawn(led_task(knx_stack, user_led_ch)).expect("led_task spawnable once");

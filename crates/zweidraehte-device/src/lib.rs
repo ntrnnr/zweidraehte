@@ -91,6 +91,7 @@ pub mod layers;
 pub mod lifecycle;
 pub mod memory;
 pub mod objects;
+pub mod persist;
 pub mod prelude;
 pub mod provisioning;
 pub mod restart;

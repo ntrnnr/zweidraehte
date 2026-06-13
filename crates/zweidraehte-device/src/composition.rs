@@ -298,11 +298,8 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
         let tl = TransportLayer::new(ctx);
         let al = ApplicationLayer::new(ctx);
 
-        let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state(),
-            &ctx.layer_context().lifecycle_channel,
-            ctx.interface_objects(),
-        );
+        let device_model =
+            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -337,11 +334,8 @@ where
         let seq_storage = ctx.state().extension_state().seq_storage();
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
-        let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state(),
-            &ctx.layer_context().lifecycle_channel,
-            ctx.interface_objects(),
-        );
+        let device_model =
+            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -482,11 +476,8 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
 
         let al = ApplicationLayer::new(ctx);
 
-        let device_model = device_model::SystemBDeviceModel::new(
-            ctx.state(),
-            &ctx.layer_context().lifecycle_channel,
-            ctx.interface_objects(),
-        );
+        let device_model =
+            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         let cemi_event_receiver = channels.event.receiver().into();
 

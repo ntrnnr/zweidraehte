@@ -220,6 +220,27 @@ fn save_state(state: &PicoWState, storage: &RefCell<Storage>) {
     }
 }
 
+/// On-demand persistence handler.
+///
+/// The stack requests an immediate save when waiting for the periodic
+/// poll or restart would be wrong — at the end of an ETS download
+/// (`EtsDownloadComplete`) and for spec-mandated durability points
+/// (e.g. the IP Secure mc_timer watermark, which gates secure routing
+/// sends on the reply). The signal is always answered (`done()`), even
+/// when the save failed — gated requesters inside the stack block
+/// until the reply.
+#[embassy_executor::task]
+async fn persist_task(knx: Stack<'static, PicoWLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
+    loop {
+        let request = knx.receive_persist_request().await;
+        if knx.state().is_dirty() {
+            info!("Persist request — saving state");
+            save_state(knx.state(), storage);
+        }
+        request.reply(()).await;
+    }
+}
+
 // ================================================================================
 // Identity load
 // ================================================================================
@@ -460,6 +481,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
     spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
+    spawner.spawn(persist_task(knx_stack, storage)).expect("persist_task spawnable once");
 
     info!("KNX/IP stack started");
     info!("  Manufacturer: {:04x}", LightSwitchDevice::MANUFACTURER_ID);

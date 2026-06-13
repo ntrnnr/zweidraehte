@@ -11,9 +11,15 @@ use embassy_sync::{
 use embassy_time::Timer;
 
 use crate::{
-    StackState, composition::LayerStackBuilder, context::StackContext, context::layer::LayerContext,
-    definition::StackDefinition, inner::Inner, layers::LinkLayerBuilderBase, resources::StackResources,
-    service::LayerRegistry, stack_handle::Stack,
+    StackState,
+    composition::LayerStackBuilder,
+    context::{StackContext, layer::LayerContext},
+    definition::StackDefinition,
+    inner::Inner,
+    layers::LinkLayerBuilderBase,
+    resources::StackResources,
+    service::LayerRegistry,
+    stack_handle::Stack,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
@@ -295,10 +301,15 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     // by `LayerContext::try_send_restart_request`.
     let restart_receiver: DynamicReceiver<'static, _> = lctx.restart_channel.receiver().into();
 
+    // Persist-on-demand receiver: gated requests come from the KNX/IP
+    // link layer (mc_timer watermark), advisory ones through
+    // `LayerContext::try_send_persist_request`.
+    let persist_receiver: DynamicReceiver<'static, _> = lctx.persist_channel.receiver().into();
+
     // Initialize link layer resources using the builder
     let link_layer_resources = resources.link_layer_resources.write(link_layer_builder.create_resources());
 
-    let stack = Stack { inner, interface_objects, app_request_sender, restart_receiver };
+    let stack = Stack { inner, interface_objects, app_request_sender, restart_receiver, persist_receiver };
     let runner = Runner { stack, link_layer_builder, link_layer_resources };
 
     (stack, runner)

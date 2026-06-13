@@ -20,8 +20,8 @@
 //! Do not try to collapse this back into `Inner`; a prior attempt hit
 //! exactly the self-referential wall.
 
-#[cfg(feature = "knxip")]
-use crate::HasExtensionState;
+use core::cell::RefCell;
+
 use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 #[cfg(feature = "knxip")]
 use crate::{
@@ -32,6 +32,8 @@ use crate::{
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
     },
 };
+#[cfg(feature = "knxip")]
+use crate::{HasExtensionState, actor::Request};
 use crate::{
     StackState,
     context::{
@@ -44,6 +46,8 @@ use crate::{
     objects::tables::HasAddressTable,
     prelude::PropertyServiceHandler,
 };
+#[cfg(feature = "knxip")]
+use embassy_sync::channel::DynamicSender;
 use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 // ============================================================================
@@ -292,6 +296,10 @@ where
     fn knx_serial_number(&self) -> [u8; 6] {
         *self.inner.state.serial_number()
     }
+
+    fn persist_gate_sender(&self) -> Option<DynamicSender<'static, Request<crate::persist::PersistRequest, ()>>> {
+        Some(self.inner.layer_context.persist_channel.sender().into())
+    }
 }
 
 /// Forward the remote-reset server's restart request onto the same restart
@@ -325,7 +333,7 @@ impl<D: StackDefinition> KnxIndividualAddressContext for StackContext<'_, D> {
 impl<D: StackDefinition> AddressTableContext for StackContext<'_, D> {
     type ADT = <D::State as HasAddressTable>::ADT;
 
-    fn address_table(&self) -> &core::cell::RefCell<Self::ADT> {
+    fn address_table(&self) -> &RefCell<Self::ADT> {
         self.inner.state.adt()
     }
 }

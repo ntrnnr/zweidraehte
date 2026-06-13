@@ -278,12 +278,11 @@ impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureStateView for IpSecureExt
     }
 
     fn set_persisted_mc_timer(&self, value: u64) {
-        // TODO: this only updates the in-memory mirror picked up by the
-        // next `to_config()` persistence pass — there is no explicit
-        // "save now" trigger towards the storage backend yet. §2.2.4.2
-        // wants the value durable before frames beyond the watermark go
-        // out; wire a persistence notification when a storage backend
-        // with on-demand saves exists.
+        // Only updates the in-memory mirror; the 03/08/09 §2.2.4.2
+        // durability gate lives in the multicast handler's
+        // `ensure_persisted`, which updates this cell and then blocks
+        // on a `PersistRequest::McTimerWatermark` round-trip through
+        // user code's storage task before the frame goes out.
         self.persisted_mc_timer.set(value);
     }
 

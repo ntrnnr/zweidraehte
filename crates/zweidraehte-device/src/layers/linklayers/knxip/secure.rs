@@ -237,7 +237,10 @@ pub trait IpSecureFeature: 'static {
     /// SECURE_WRAPPER (backbone key, mc_timer as sequence information;
     /// timer sync event E09). Returns the wrapper length in `out`, or
     /// `None` when wrapping is impossible (no key, buffer too small,
-    /// mc_timer not yet authentic).
+    /// mc_timer not yet authentic). May set the pending watermark
+    /// persist (03/08/09 §2.2.4.2) — the caller must drain it via
+    /// [`mc_take_persist_pending`](Self::mc_take_persist_pending)
+    /// *before* the wrapped frame is sent.
     fn wrap_multicast_outgoing(
         _timer: &mut Self::McTimerState,
         _plain: &[u8],
@@ -249,9 +252,22 @@ pub trait IpSecureFeature: 'static {
 
     /// Drive the timer sync deadlines: event E10 (notify timer expiry,
     /// returns the TIMER_NOTIFY frame to send on the routing multicast
-    /// endpoint) and the §2.2.2.3.2.8 authenticity-window expiry.
+    /// endpoint) and the §2.2.2.3.2.8 authenticity-window expiry. May
+    /// set the pending watermark persist — drain before sending the
+    /// returned frame.
     fn mc_tick(_timer: &mut Self::McTimerState, _env: &SecureEnv<'_>) -> Option<TimerNotifyFrame> {
         None
+    }
+
+    /// Take the pending 03/08/09 §2.2.4.2 watermark-persist flag.
+    ///
+    /// `true` means a watermark advance is owed a durable save: the
+    /// caller must round-trip a gated
+    /// [`PersistRequest::McTimerWatermark`](crate::persist::PersistRequest::McTimerWatermark)
+    /// through user code's storage task before any frame beyond the
+    /// watermark leaves the device.
+    fn mc_take_persist_pending(_timer: &mut Self::McTimerState) -> bool {
+        false
     }
 
     /// Earliest timer-sync deadline, for the runtime's select timer.
@@ -379,6 +395,10 @@ impl<const N: usize> IpSecureFeature for WithIpSecure<N> {
 
     fn mc_tick(timer: &mut Self::McTimerState, env: &SecureEnv<'_>) -> Option<TimerNotifyFrame> {
         super::multicast_handler::mc_tick(timer, env)
+    }
+
+    fn mc_take_persist_pending(timer: &mut Self::McTimerState) -> bool {
+        core::mem::take(&mut timer.persist_pending)
     }
 
     fn mc_next_deadline(timer: &Self::McTimerState) -> Option<Instant> {
@@ -717,6 +737,12 @@ pub struct MulticastTimerState {
     /// §2.2.4.2 persistence watermark mirror: sending or adopting a
     /// timer value beyond this requires persisting first.
     pub(super) persisted_watermark: u64,
+    /// Set by `note_watermark` when the watermark advanced and a
+    /// durable save is owed. Drained (gated round-trip through user
+    /// code's storage task) by the runtime before any frame beyond the
+    /// watermark leaves the device — see
+    /// [`IpSecureFeature::mc_take_persist_pending`].
+    pub(super) persist_pending: bool,
 }
 
 #[cfg(feature = "ip-secure")]
@@ -737,6 +763,7 @@ impl Default for MulticastTimerState {
             own_notify_tag: [0; 2],
             last_received_timer: 0,
             persisted_watermark: 0,
+            persist_pending: false,
         }
     }
 }

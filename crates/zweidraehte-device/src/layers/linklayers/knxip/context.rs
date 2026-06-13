@@ -1,11 +1,12 @@
 //! Context traits for KNX/IP link layer and services.
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::Channel;
+use embassy_sync::channel::{Channel, DynamicSender};
 
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 
+use crate::actor::Request;
 use crate::ip::IpStateView;
 use crate::restart::RestartRequest;
 
@@ -134,4 +135,12 @@ pub trait IpSecureConfigContext {
     /// The device's KNX serial number — sender identity in outgoing
     /// SECURE_WRAPPER security information blocks.
     fn knx_serial_number(&self) -> [u8; 6];
+
+    /// Sender for gated persist requests (03/08/09 §2.2.4.2 mc_timer
+    /// watermark). The default `None` skips the durability gate — only
+    /// mock contexts should rely on that; real stacks forward the
+    /// `LayerContext` persist gate channel.
+    fn persist_gate_sender(&self) -> Option<DynamicSender<'static, Request<crate::persist::PersistRequest, ()>>> {
+        None
+    }
 }

@@ -7,8 +7,12 @@
 //! embassy-stm32, ...) lives here so new embedded targets can reuse
 //! it without duplication.
 
+#[cfg(feature = "tp1")]
+pub mod busy_guard;
 pub mod button;
 pub mod system;
 
+#[cfg(feature = "tp1")]
+pub use busy_guard::{BusyGate, BusyGuard};
 pub use button::DebouncedButton;
 pub use system::{CortexMSystem, SystemError};
