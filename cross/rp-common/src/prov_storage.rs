@@ -17,7 +17,7 @@ use embassy_rp::peripherals::FLASH;
 
 use zweidraehte_device::provisioning::{self, PROV_BUF_LEN, ProvisioningError, ProvisioningRecord, tag};
 
-use crate::storage::{FLASH_SIZE, FlashError, FlashIdentityData, SECTOR_SIZE};
+use crate::storage::{FLASH_SIZE, FlashError, FlashIdentityData, FlashSecureIdentityData, SECTOR_SIZE};
 
 /// Offset of the provisioning sector — the very last 4 KiB sector of
 /// flash. Pinned at the top so the (growable) config region below
@@ -76,14 +76,21 @@ pub fn identity_from_record(rec: &ProvisioningRecord, unique_id: [u8; 8]) -> Fla
     FlashIdentityData { serial_number: rec.serial, mac: rec.mac, unique_id }
 }
 
-/// Stub for Data Secure RP2040 support.
+/// Build a [`FlashSecureIdentityData`] from a parsed record + the chip's
+/// SPI flash unique ID.
 ///
-/// No Data Secure RP2040 firmware target exists today — the function
-/// is here so the API surface lines up with `stm32-common` and so the
-/// future implementation has an obvious slot. It always returns
-/// [`ProvisioningError::MissingRequiredTag`] for FDSK.
-pub fn secure_identity_from_record(_rec: &ProvisioningRecord) -> Result<core::convert::Infallible, ProvisioningError> {
-    Err(ProvisioningError::MissingRequiredTag(tag::FDSK))
+/// The secure counterpart of [`identity_from_record`]: in addition to the
+/// serial / MAC / unique-ID triple it requires the `FDSK` tag (the
+/// Factory Default Setup Key) to be present in the record, failing with
+/// [`ProvisioningError::MissingRequiredTag`] otherwise. As with the
+/// insecure path, the `unique_id` is hardware state read by the caller
+/// (via `flash.blocking_unique_id()`), not part of the record.
+pub fn secure_identity_from_record(
+    rec: &ProvisioningRecord,
+    unique_id: [u8; 8],
+) -> Result<FlashSecureIdentityData, ProvisioningError> {
+    let fdsk = rec.fdsk.ok_or(ProvisioningError::MissingRequiredTag(tag::FDSK))?;
+    Ok(FlashSecureIdentityData { serial_number: rec.serial, mac: rec.mac, unique_id, fdsk })
 }
 
 // ================================================================================

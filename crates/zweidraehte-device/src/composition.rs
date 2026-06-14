@@ -453,6 +453,20 @@ where
 #[cfg(feature = "knxip")]
 pub type IpDeviceLayers<'a, D> = IpLayerStack<'a, D, ApplicationLayer<'a, D>>;
 
+/// Secure IP layer stack: `(NL, CemiTL<TL>, SecureAL<AL>)`.
+///
+/// The KNX/IP counterpart of [`StandardSecureDeviceLayers`]: it keeps
+/// the [`CemiTransportLayer`] that KNX/IP device-management connections
+/// need, but swaps the plain [`ApplicationLayer`] for
+/// [`SecureApplicationLayer`] so the device also speaks KNX Data Secure.
+/// This is the layer shape behind [`SecureIpDeviceBuilder`].
+///
+/// `P2P` mirrors [`StandardSecureDeviceLayers`] — [`NoP2p`] by default
+/// for group-only devices.
+#[cfg(feature = "knxip")]
+pub type SecureIpDeviceLayers<'a, D, P2P = NoP2p> =
+    IpLayerStack<'a, D, SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage, P2P>>;
+
 #[cfg(feature = "knxip")]
 impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
     pub fn with_cemi(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
@@ -489,5 +503,136 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
             app_rx: ctx.layer_context().app_service_channel.receiver().into(),
             cemi_rx: cemi_event_receiver,
         }
+    }
+}
+
+#[cfg(feature = "knxip")]
+impl<'a, D: StackDefinition + HasSequenceStorage, P2P: P2pFeature>
+    IpLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage, P2P>>
+where
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
+    <D::State as HasExtensionState>::ES:
+        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
+{
+    /// Construct the secure KNX/IP `(NL, CemiTL<TL>, SecureAL<AL>)` layer
+    /// stack. The cEMI TL wiring is identical to [`with_cemi`](Self::with_cemi);
+    /// only the AL slot differs (`SecureApplicationLayer` wrapping the
+    /// plain `ApplicationLayer`, as in
+    /// [`standard_secure`](StandardLayerStack::standard_secure)).
+    pub fn with_cemi_secure(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
+        debug_assert_eq!(
+            D::TL_MAX_INCOMING,
+            1,
+            "TL_MAX_INCOMING override has no effect with SecureIpDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
+        debug_assert_eq!(
+            D::TL_MAX_OUTGOING,
+            0,
+            "TL_MAX_OUTGOING override has no effect with SecureIpDeviceBuilder; \
+             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        );
+        let nl = NetworkLayer::new(ctx);
+        let transport_layer = TransportLayer::new(ctx);
+
+        let cemi_response_sender = channels.response.sender().into();
+        let tl = CemiTransportLayer::new(transport_layer, ctx.layer_context(), cemi_response_sender);
+
+        // KNX Data Secure wraps the plain application layer; the secure
+        // wrapper holds the persistent sequence-number storage from the
+        // device's secure extension state.
+        let application_layer = ApplicationLayer::new(ctx);
+        let seq_storage = ctx.state().extension_state().seq_storage();
+        let al = SecureApplicationLayer::new(application_layer, seq_storage);
+
+        let device_model =
+            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+
+        let cemi_event_receiver = channels.event.receiver().into();
+
+        Self {
+            nl,
+            tl,
+            al,
+            device_model,
+            app_rx: ctx.layer_context().app_service_channel.receiver().into(),
+            cemi_rx: cemi_event_receiver,
+        }
+    }
+}
+
+// ============================================================================
+// Secure IP Device Builder — (NL, CemiTL<TL>, SecureAL<AL>)
+// ============================================================================
+
+/// Builder for secure KNX/IP `(NL, CemiTL<TL>, SecureAL<AL>)` layer stacks.
+///
+/// The "cross" of [`InsecureIpDeviceBuilder`] and [`SecureDeviceBuilder`]:
+/// a device that needs **both** KNX/IP (so the cEMI transport wrapper and
+/// its [`CemiTransportLayerChannelPair`] are required) **and** KNX Data
+/// Secure (so the application layer is [`SecureApplicationLayer`]).
+///
+/// A plain [`SecureDeviceBuilder`] cannot serve this case: it requires
+/// `LLEndpoints<'a>: Default`, but the KNX/IP link layer's
+/// [`CemiTransportLayerEndpoints`] are not `Default` (they hold live
+/// channel ends), so it is structurally TP1/RF-only. This builder takes
+/// the cEMI channel/endpoint wiring from [`InsecureIpDeviceBuilder`] and
+/// the secure-AL substitution + security where-bounds from
+/// [`SecureDeviceBuilder`].
+///
+/// The `P2P` type parameter selects KNX Data Secure P2P support, exactly
+/// as on [`SecureDeviceBuilder`] — [`NoP2p`] (default) for group-only
+/// devices, [`WithP2p`](crate::layers::secure_application::WithP2p) for
+/// the full S-A_Sync protocol.
+///
+/// Use via `type LayerBuilder = SecureIpDeviceBuilder` (or
+/// `SecureIpDeviceBuilder<WithP2p>`) in a device's [`StackDefinition`].
+#[cfg(feature = "knxip")]
+pub struct SecureIpDeviceBuilder<P2P: P2pFeature = NoP2p> {
+    _phantom: core::marker::PhantomData<P2P>,
+}
+
+#[cfg(feature = "knxip")]
+impl<D: StackDefinition + HasSequenceStorage, P2P: P2pFeature> LayerStackBuilder<D> for SecureIpDeviceBuilder<P2P>
+where
+    // IP/cEMI bound — identical to `InsecureIpDeviceBuilder`.
+    D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>, LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>>,
+    // Security bounds — identical to `SecureDeviceBuilder`.
+    D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
+    <D::State as StackState>::Identity: SecureDeviceIdentity,
+    <D::State as HasExtensionState>::ES:
+        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
+    // Forbid `NoRng` on secure stacks (see `SecureDeviceBuilder` for the
+    // rationale): without this the first `S-A_Sync` would panic at runtime
+    // instead of failing to compile.
+    D::Rng: SecureRng,
+{
+    type Stack<'a>
+        = SecureIpDeviceLayers<'a, D, P2P>
+    where
+        D: 'a;
+    type Channels = CemiTransportLayerChannelPair;
+
+    fn build<'a>(
+        ctx: &'a StackContext<'a, D>,
+        channels: &'a CemiTransportLayerChannelPair,
+    ) -> SecureIpDeviceLayers<'a, D, P2P>
+    where
+        D: 'a,
+    {
+        IpLayerStack::with_cemi_secure(ctx, channels)
+    }
+
+    fn run_link_layer<'a>(
+        channels: &'a CemiTransportLayerChannelPair,
+        builder: D::LLB,
+        resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
+        context: &'a StackContext<'a, D>,
+        ind_tx: LlIndicationSender<'a>,
+        conf_tx: LlConfirmationSender<'a>,
+        req_rx: impl layers::Inbox<RequestMessage<Buffer<'static>>> + 'a,
+    ) -> impl core::future::Future<Output = !> + 'a {
+        builder.build_and_run(resources, context, channels.ll_endpoints(), ind_tx, conf_tx, req_rx)
     }
 }

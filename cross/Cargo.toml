@@ -17,6 +17,7 @@ members = [
     "tpuart_bridge",
     "picow",
     "pico_eth",
+    "pico_eth_secure_light_switch",
     "pico_tp1",
     "pico_ip_interface",
     "pico_blink",

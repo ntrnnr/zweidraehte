@@ -42,19 +42,65 @@
 //! rare config saves but would disrupt real-time KNX communication if
 //! done frequently.
 
+use core::cell::RefCell;
+
 use embassy_rp::flash::{self, Flash};
 use embassy_rp::peripherals::FLASH;
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::HasDeviceConfig;
-use zweidraehte_device::storage::DeviceIdentity;
+use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
 
 // ================================================================================
 // Constants
 // ================================================================================
 
-pub(crate) const FLASH_SIZE: usize = 2 * 1024 * 1024; // 2MB
-pub(crate) const SECTOR_SIZE: usize = 4096;
+pub const FLASH_SIZE: usize = 2 * 1024 * 1024; // 2MB
+pub const SECTOR_SIZE: usize = 4096;
+
+// -- Sequence-number log region ----------------------------------------------
+//
+// The wear-levelled Data Secure sequence-number store ([`crate::flash_seq`])
+// gets its own multi-sector region carved out *below* the config sector. Like
+// the config / provisioning regions these offsets are pure software convention
+// — the linker hands the whole flash to `FLASH` via `memory.x`. The full map
+// at the top of flash is:
+//
+// ```text
+// 0x1F6000 .. 0x1FE000  — Sequence-number log (KNXQ), 8 sectors = 32 KiB
+// 0x1FE000 .. 0x1FF000  — Config storage (KNXS)
+// 0x1FF000 .. 0x200000  — Provisioning sector (KNXP, write-once)
+// ```
+
+/// Number of 4 KiB sectors reserved for the sequence-number append log.
+///
+/// Eight sectors give the log ~341 records/sector × 8 ≈ 2700 appends before a
+/// single sector is re-erased, so even with the sending watermark disabled the
+/// flash endurance budget is comfortable.
+pub const SEQ_SECTOR_COUNT: usize = 8;
+
+/// Total byte size of the sequence-number log region.
+pub const SEQ_REGION_SIZE: usize = SEQ_SECTOR_COUNT * SECTOR_SIZE;
+
+/// Offset of the sequence-number log region from the start of flash.
+///
+/// Sits immediately below the config sector (which itself sits below the
+/// write-once provisioning sector), so growing either of the two top regions
+/// never disturbs the log's start address unless their sizes change.
+pub const SEQ_REGION_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE - SECTOR_SIZE - SEQ_REGION_SIZE) as u32;
+
+// Compile-time guard: the log region must not run into the config sector that
+// sits directly above it. (The config sector's own offset is
+// `FLASH_SIZE - SECTOR_SIZE - STORAGE_SIZE`, but `STORAGE_SIZE` is a per-device
+// const generic; the default 4 KiB is what the secure light switch uses, so we
+// check against that here. A device that enlarges its config region must also
+// move the log.)
+const _SEQ_REGION_FITS: () = {
+    assert!(
+        SEQ_REGION_OFFSET as usize + SEQ_REGION_SIZE <= FLASH_SIZE - SECTOR_SIZE - SECTOR_SIZE,
+        "sequence-number log region overlaps the config or provisioning sector",
+    );
+};
 
 // -- Config sector constants --------------------------------------------------
 
@@ -77,7 +123,17 @@ const CONFIG_HEADER_SIZE: usize = 6;
 /// size. Increase it if your device's serialized state exceeds the default
 /// 4 KiB (minus 6 bytes header).
 pub struct RpFlashStorage<S, I, const STORAGE_SIZE: usize = 4096> {
-    flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>,
+    /// Shared handle to the one `FLASH` peripheral.
+    ///
+    /// The RP2040 has a single `FLASH` peripheral, but this device needs flash
+    /// access from two independent owners: this config store (which lives
+    /// outside the KNX stack) and the wear-levelled sequence-number store
+    /// ([`crate::flash_seq::FlashSeqStorage`], which lives inside it). Both
+    /// borrow the same `&'static RefCell<Flash<…>>`. The `RefCell` is sound
+    /// because embassy's executor is single-threaded and every flash operation
+    /// is synchronous (`blocking_*`, never held across an `.await`), so two
+    /// borrows can never overlap.
+    flash: &'static RefCell<Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>>,
     identity: I,
     dirty: bool,
     _phantom: core::marker::PhantomData<S>,
@@ -104,8 +160,8 @@ impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
         );
     };
 
-    /// Create a new flash storage instance.
-    pub fn new(flash: Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>, identity: I) -> Self {
+    /// Create a new flash storage instance over a shared `Flash` handle.
+    pub fn new(flash: &'static RefCell<Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>>, identity: I) -> Self {
         // Force the compile-time validation constants to be evaluated.
         let _ = Self::_VALIDATE;
         Self { flash, identity, dirty: false, _phantom: core::marker::PhantomData }
@@ -131,7 +187,7 @@ where
     /// the result into the stack's `StateInit` envelope for state construction.
     pub fn load_config(&mut self) -> Result<Option<S::Config>, FlashError> {
         let mut region = [0u8; STORAGE_SIZE];
-        self.flash.blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
+        self.flash.borrow_mut().blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
 
         if region[0..4] != CONFIG_MAGIC {
             return Ok(None);
@@ -176,12 +232,14 @@ where
         buf[4..6].copy_from_slice(&(len as u16).to_le_bytes());
 
         // Erase the region, then write.
-        self.flash
+        let mut flash = self.flash.borrow_mut();
+        flash
             .blocking_erase(Self::STORAGE_OFFSET, Self::STORAGE_OFFSET + STORAGE_SIZE as u32)
             .map_err(|_| FlashError::EraseFailed)?;
-        self.flash
+        flash
             .blocking_write(Self::STORAGE_OFFSET, &buf[..CONFIG_HEADER_SIZE + len])
             .map_err(|_| FlashError::WriteFailed)?;
+        drop(flash);
 
         self.dirty = false;
         Ok(())
@@ -256,6 +314,69 @@ impl FlashIdentityData {
     ///
     /// Suitable for embassy-net's IGMP random delay and similar uses
     /// where a per-device seed is needed.
+    pub fn derive_seed(&self) -> u64 {
+        u64::from_le_bytes(self.unique_id)
+    }
+}
+
+/// Device identity for an RP2040 KNX **Data Secure** device.
+///
+/// The secure counterpart of [`FlashIdentityData`]: it carries the same
+/// serial / MAC / unique-ID triple **plus** the 16-byte Factory Default
+/// Setup Key (FDSK) that seeds the device's tool key and (for IP Secure)
+/// the Device Authentication Code. The FDSK lives in the `KNXP`
+/// provisioning record (the `FDSK` tag); see
+/// [`secure_identity_from_record`](crate::secure_identity_from_record).
+///
+/// This is the RP2040 analogue of `stm32-common`'s `FlashSecureIdentityData`;
+/// the difference is the extra `mac` / `unique_id` fields (IP devices need
+/// a MAC, and the seed comes from the SPI-flash unique ID rather than an
+/// on-chip UID register).
+#[derive(Debug, Clone, defmt::Format)]
+pub struct FlashSecureIdentityData {
+    /// KNX serial number: 2 bytes manufacturer ID (big-endian) + 4 bytes
+    /// device-specific.
+    pub serial_number: [u8; 6],
+
+    /// Ethernet MAC address from the `KNXP` record. `None` on devices
+    /// that don't need one — but IP Secure devices always do.
+    pub mac: Option<[u8; 6]>,
+
+    /// Raw 8-byte SPI flash unique ID. Read from hardware at boot for
+    /// per-device entropy seeds.
+    pub unique_id: [u8; 8],
+
+    /// Factory Default Setup Key (FDSK). Seeds the Data Secure tool key
+    /// and the IP Secure Device Authentication Code on first
+    /// commissioning.
+    pub fdsk: [u8; 16],
+}
+
+impl DeviceIdentity for FlashSecureIdentityData {
+    fn serial_number(&self) -> &[u8; 6] {
+        &self.serial_number
+    }
+}
+
+impl SecureDeviceIdentity for FlashSecureIdentityData {
+    fn fdsk(&self) -> &[u8; 16] {
+        &self.fdsk
+    }
+}
+
+impl FlashSecureIdentityData {
+    /// Return the MAC address sourced from the `KNXP` record.
+    ///
+    /// # Panics
+    /// Panics if the record had no MAC tag — wiring an Ethernet device
+    /// with a missing MAC is a configuration error the firmware cannot
+    /// recover from at boot.
+    pub fn mac_address(&self) -> [u8; 6] {
+        self.mac.expect("KNXP record missing MAC tag — re-provision this device")
+    }
+
+    /// Derive a deterministic `u64` seed from the unique ID. Same as
+    /// [`FlashIdentityData::derive_seed`].
     pub fn derive_seed(&self) -> u64 {
         u64::from_le_bytes(self.unique_id)
     }

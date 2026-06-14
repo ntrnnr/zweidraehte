@@ -76,6 +76,13 @@ impl LightSwitchDevice {
     /// different application ID so both secure and insecure RF variants
     /// coexist in a single knxprod catalogue.
     pub const APPLICATION_ID_RF_SECURE: u16 = 0x0304;
+    /// Application ID for the KNX/IP variant that supports **both** KNX IP
+    /// Secure and KNX Data Secure. Same mask version as the plain IP
+    /// variant (`SystemBKnxIp` / 0x57B0) — neither IP Secure nor Data
+    /// Secure is a distinct mask, they are System B / KNXnet/IP features —
+    /// but a different application ID so the secure and insecure IP
+    /// variants coexist in a single knxprod catalogue.
+    pub const APPLICATION_ID_IP_SECURE: u16 = 0x0305;
     pub const APPLICATION_VERSION: u8 = 0x02;
     pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
     pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
@@ -155,6 +162,29 @@ impl LightSwitchDevice {
             pei_type: Self::PEI_TYPE,
         }
     }
+
+    /// Build a device descriptor for the combined IP Secure + Data Secure
+    /// KNX/IP variant.
+    ///
+    /// Same mask version (`SystemBKnxIp` / 0x57B0) as the plain IP variant
+    /// — the mask version distinguishes neither IP Secure nor Data Secure
+    /// from their insecure counterparts — but uses
+    /// [`APPLICATION_ID_IP_SECURE`](Self::APPLICATION_ID_IP_SECURE) so both
+    /// variants coexist in the same knxprod catalogue. Pairs with the
+    /// `pico_eth_secure_light_switch` firmware.
+    pub const fn device_descriptor_secure_ip() -> DeviceDescriptor {
+        DeviceDescriptor {
+            mask_version: MaskVersion::SystemBKnxIp,
+            manufacturer_id: Self::MANUFACTURER_ID,
+            hardware_type: Self::HARDWARE_TYPE,
+            application_id: Self::APPLICATION_ID_IP_SECURE,
+            application_version: Self::APPLICATION_VERSION,
+            max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
+            max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
+            max_com_objects: Self::MAX_COM_OBJECTS,
+            pei_type: Self::PEI_TYPE,
+        }
+    }
 }
 
 /// Device descriptor for KNX/IP (mask version 57B0).
@@ -177,3 +207,8 @@ pub const DEVICE_DESCRIPTOR_TP1_SECURE: DeviceDescriptor = LightSwitchDevice::de
 /// [`DEVICE_DESCRIPTOR_TP1_SECURE`] so the secure RF variant can already
 /// be generated into the knxprod catalogue.
 pub const DEVICE_DESCRIPTOR_RF_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_secure_rf();
+
+/// Device descriptor for the combined IP Secure + Data Secure KNX/IP
+/// variant (mask version 57B0, application ID 0x0305). Pairs with the
+/// `pico_eth_secure_light_switch` firmware.
+pub const DEVICE_DESCRIPTOR_IP_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_secure_ip();

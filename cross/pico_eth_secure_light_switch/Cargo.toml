@@ -1,0 +1,50 @@
+[package]
+edition = "2024"
+name = "pico_eth_secure_light_switch"
+version = "0.1.0"
+
+# Secure sibling of `cross/pico_eth`: same W5500 Ethernet light switch,
+# but with KNX IP Secure (secure multicast routing) + KNX Data Secure
+# (encrypted group telegrams). The deltas vs. `pico_eth` are the
+# `ip-secure` feature on `zweidraehte-device`, a secure identity / RNG /
+# sequence-number store from `rp-common`, and `SecureIpDeviceBuilder` in
+# the stack definition.
+
+[dependencies]
+# Embassy core
+embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-rp = { workspace = true, features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
+embassy-futures = { workspace = true }
+embassy-net = { workspace = true, features = ["udp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
+
+# W5500 Ethernet driver
+embassy-net-wiznet = { workspace = true, features = ["defmt"] }
+embedded-hal-bus = { workspace = true, features = ["async"] }
+embedded-hal-async = { workspace = true }
+
+# Cortex-M / embedded
+cortex-m = { workspace = true, features = ["inline-asm"] }
+cortex-m-rt = { workspace = true }
+embedded-hal = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+static_cell = { workspace = true }
+
+# KNX stack and device definitions. `ip-secure` (which implies `knxip`)
+# pulls in the secure-routing dispatch path and the IP Secure PIDs.
+zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["defmt", "ip-secure"] }
+zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
+devices = { path = "../../examples/devices", default-features = false, features = ["defmt"] }
+
+# Shared RP platform code (FlashSecureIdentityData, RpCommonRng, RamSeqStorage)
+rp-common = { path = "../rp-common", features = ["rp2040"] }
+# HAL-agnostic helpers (DebouncedButton, CortexMSystem)
+embedded-common = { path = "../embedded-common" }
+
+[build-dependencies]
+dev-provisioning-build = { path = "../dev-provisioning-build" }
+
+[features]
+provision-on-boot = ["rp-common/provision-on-boot"]

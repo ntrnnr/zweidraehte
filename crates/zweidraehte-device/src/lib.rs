@@ -48,7 +48,9 @@ pub use composition::{
     StandardSecureDeviceLayers,
 };
 #[cfg(feature = "knxip")]
-pub use composition::{InsecureIpDeviceBuilder, IpDeviceLayers, IpLayerStack};
+pub use composition::{
+    InsecureIpDeviceBuilder, IpDeviceLayers, IpLayerStack, SecureIpDeviceBuilder, SecureIpDeviceLayers,
+};
 
 pub(crate) mod inner;
 

@@ -317,8 +317,18 @@ async fn main(spawner: Spawner) {
     // Device identity (from flash — read/provision before anything else)
     // ========================================================================
 
-    let mut flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    let identity_data = load_identity(&mut flash);
+    // `RpFlashStorage` borrows the `FLASH` peripheral through a shared
+    // `&'static RefCell` (so secure devices can share it with their
+    // sequence-number store). This device has no second flash consumer, but
+    // must satisfy the same API, so lift the handle into a `StaticCell` too.
+    let flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
+    static FLASH_CELL: StaticCell<
+        RefCell<
+            embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, flash::Blocking, { 2 * 1024 * 1024 }>,
+        >,
+    > = StaticCell::new();
+    let flash = &*FLASH_CELL.init(RefCell::new(flash));
+    let identity_data = load_identity(&mut flash.borrow_mut());
 
     let seed = identity_data.derive_seed();
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);

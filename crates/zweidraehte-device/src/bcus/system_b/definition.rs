@@ -266,6 +266,42 @@ where
     D: SystemBStackDefinition,
 = SecureStateFor<D, super::extensions::IpExtensionState<CAPS>, SEQ, P2P, SIAT>;
 
+/// KNX/IP **Secure-interface** Data Secure System B state for `D` — the state
+/// shape for a device that combines KNX IP Secure (secure routing / secure
+/// tunnelling, PIDs 91–97 + tunnelling-user table) **and** KNX Data Secure
+/// (encrypted group telegrams).
+///
+/// This is [`SecureIpStateFor`]'s sibling: rather than wrapping the plain
+/// [`IpExtensionState`](super::extensions::IpExtensionState), it wraps the
+/// IP **Secure** interface extension
+/// [`IpSecureInterfaceExtensionFor`](super::extensions::IpSecureInterfaceExtensionFor)
+/// (itself `IpInterfaceExtension` + the IP Secure secrets) as the `Inner` of
+/// the Data Secure wrapper, realising the composition documented on
+/// [`IpSecureInterfaceExtension`](super::extensions::IpSecureInterfaceExtension):
+/// `SecureExtensionState<IpSecureInterfaceExtension<...>, SEQ, ...>`.
+///
+/// `F` is the KNX/IP [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet)
+/// (it fixes the tunnelling capacity and KNXnet/IP device capabilities);
+/// `MAX_PW` / `MAX_TU` size the IP Secure password-hash and tunnelling-user
+/// tables; `P2P` / `SIAT` size the Data Secure P2P key table and Security
+/// Individual Address Table (see [`SecureTp1StateFor`] for the 03/03/07 §5.3
+/// `SIAT > 0` rationale). Pair it with
+/// `type LayerBuilder = SecureIpDeviceBuilder` and
+/// `resources: SecureResources<IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ>`.
+#[cfg(feature = "ip-secure")]
+pub type SecureIpInterfaceStateFor<
+    D,
+    F,
+    SEQ,
+    const P2P: usize,
+    const SIAT: usize,
+    const MAX_PW: usize,
+    const MAX_TU: usize,
+> where
+    D: SystemBStackDefinition,
+    F: crate::layers::linklayers::knxip::features::FeatureSet,
+= SecureStateFor<D, super::extensions::IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ, P2P, SIAT>;
+
 /// Generic Data Secure System B state for `D` wrapping an arbitrary inner
 /// medium extension `Inner`.
 ///

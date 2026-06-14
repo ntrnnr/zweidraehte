@@ -32,6 +32,10 @@ zweidraehte-util = { path = "../../crates/zweidraehte-util" }
 postcard = { workspace = true }
 serde = { workspace = true }
 
+# KNX Data Secure: RAM sequence-number store (heapless) + ChaCha20 CSPRNG.
+heapless = { workspace = true }
+chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
+
 [features]
 default = ["rp2040"]
 rp2040 = ["embassy-rp/rp2040"]

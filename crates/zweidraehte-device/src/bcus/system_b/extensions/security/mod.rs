@@ -1023,6 +1023,91 @@ forward_to_field! {
     } => self.inner
 }
 
+// ----------------------------------------------------------------------------
+// KNX/IP medium-accessor forwarding
+// ----------------------------------------------------------------------------
+//
+// The four KNX/IP link-layer accessor traits (`HasIpExtensionState`,
+// `HasRoutingMulticastRebind`, `HasAdditionalIas`, `HasIpSecureView`)
+// follow the same conditional-forwarding shape as the medium accessors
+// above (`HasDomainAddress` etc.): the impl applies only when `Inner`
+// itself provides the trait, so wrapping a TP1/RF extension simply
+// doesn't pick them up, while wrapping an IP (Secure) interface extension
+// does. They are hand-written rather than `forward_to_field!`-generated
+// because they return `&dyn` views / channel references and carry
+// default-bodied methods the macro doesn't model.
+//
+// These let `SecureExtensionState<IpSecureInterfaceExtension<...>, ...>`
+// (KNX Data Secure over KNX IP Secure, used by `SecureIpDeviceBuilder`)
+// satisfy the IP link layer's `ES` bounds — the composition documented on
+// `IpSecureInterfaceExtension`.
+
+#[cfg(feature = "knxip")]
+impl<
+    Inner: ExtensionState + crate::ip::HasIpExtensionState,
+    SEQ,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> crate::ip::HasIpExtensionState for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+{
+    fn ip_state(&self) -> &dyn crate::ip::IpStateView {
+        self.inner.ip_state()
+    }
+}
+
+#[cfg(feature = "knxip")]
+impl<
+    Inner: ExtensionState + crate::ip::HasRoutingMulticastRebind,
+    SEQ,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> crate::ip::HasRoutingMulticastRebind for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+{
+    fn routing_multicast_rebind_channel(
+        &self,
+    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::net::Ipv4Addr, 2> {
+        self.inner.routing_multicast_rebind_channel()
+    }
+}
+
+#[cfg(feature = "knxip")]
+impl<
+    Inner: ExtensionState + crate::ip::HasAdditionalIas,
+    SEQ,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> crate::ip::HasAdditionalIas for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+{
+    fn write_additional_ias_into(&self, buf: &mut [zweidraehte_proto::address::IndividualAddress]) -> usize {
+        self.inner.write_additional_ias_into(buf)
+    }
+
+    fn additional_ia_is_assigned(&self, addr: zweidraehte_proto::address::IndividualAddress) -> bool {
+        self.inner.additional_ia_is_assigned(addr)
+    }
+}
+
+#[cfg(feature = "knxip")]
+impl<
+    Inner: ExtensionState + crate::ip::HasIpSecureView,
+    SEQ,
+    const GRP: usize,
+    const P2P: usize,
+    const SIAT: usize,
+    const GO: usize,
+> crate::ip::HasIpSecureView for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+{
+    fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
+        self.inner.ip_secure_view()
+    }
+}
+
 impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
     HasSecurityState for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
 {

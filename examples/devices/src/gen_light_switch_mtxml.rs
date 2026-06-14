@@ -17,9 +17,9 @@ use std::path::PathBuf;
 use const_default::ConstDefault;
 
 use devices::light_switch::{
-    DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_RF, DEVICE_DESCRIPTOR_RF_SECURE, DEVICE_DESCRIPTOR_TP1,
-    DEVICE_DESCRIPTOR_TP1_SECURE, LightSwitchDevice, LightSwitchParams, comm_objs, params::LIGHT_SWITCH_VIRTUAL_PARAMS,
-    translations::LIGHT_SWITCH_TRANSLATIONS,
+    DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_IP_SECURE, DEVICE_DESCRIPTOR_RF, DEVICE_DESCRIPTOR_RF_SECURE,
+    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_SECURE, LightSwitchDevice, LightSwitchParams, comm_objs,
+    params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
 };
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
@@ -52,6 +52,10 @@ const SERIAL_NUMBER_RF_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x07];
 /// `stm32g0_knxrf_secure_light_switch` firmware composing the retransmitter
 /// extension.
 const SERIAL_NUMBER_RF_SECURE_RT: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x08];
+
+/// Hardware serial for the combined IP Secure + Data Secure KNX/IP
+/// variant. Pairs with the `pico_eth_secure_light_switch` firmware.
+const SERIAL_NUMBER_IP_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -232,11 +236,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_p2p_key_table_entries: Some(0),
     };
 
-    // Build a multi-device package: five application programs, five
-    // hardware definitions (IP, TP1, TP1-Secure, RF, RF-Secure), and a
-    // single catalog section with all five.
+    // Combined IP Secure + Data Secure KNX/IP variant: the secure analogue
+    // of `app_ip`. Pairs with the `pico_eth_secure_light_switch` firmware,
+    // which composes `SecureExtensionState<IpSecureInterfaceExtension<...>>`
+    // (KNX IP Secure) under `SecureIpDeviceBuilder` (KNX Data Secure).
+    //
+    // The emitted manufacturer XML is identical in *shape* to the TP1/RF
+    // secure variants — only `IsSecureEnabled` + the Data-Secure table sizes —
+    // and that is correct, for reasons worth spelling out so the next reader
+    // doesn't go hunting for missing IP-Secure markup:
+    //
+    //   * `IsSecureEnabled="true"` is the *generic* KNX-Secure-capable flag.
+    //     It is NOT Data-Secure-specific — IP-Secure-only interfaces set it
+    //     too (e.g. the MDT `IP Interface Secure`, which carries it on a
+    //     BCU1 mask with no Data Secure group infrastructure at all). Here
+    //     it rides on the Data-Secure group-key/SIAT table sizes below.
+    //   * KNX IP Secure *routing* (this device's IP-secure mode) has NO
+    //     representation in manufacturer `.knxprod`: the backbone key and
+    //     `IPRoutingBackboneSecurity` live exclusively in the ETS *project*
+    //     (`Installation/@IPRoutingBackboneKey` etc.), so there is nothing
+    //     to emit here. ETS provisions the secure backbone at install time.
+    //   * The IP-Secure feature that *would* surface in manufacturer XML is
+    //     secure *tunnelling* — `MaxTunnelingUserEntries` + `<BusInterface
+    //     AccessType="Tunneling">` (cf. the MDT/Weinzierl IP interfaces).
+    //     This device is routing-only (no tunnelling), so those are absent.
+    //
+    // Table sizes match `app_tp1_secure`: `SIAT > 0` per 03/03/07 §5.3 (the
+    // SIAT stores LastValidSeqNr per non-tool secure sender, group senders
+    // included), `P2P = 0` (no P2P key material).
+    let app_ip_secure = ApplicationProgramDef {
+        name: "LightSwitch2IPSecure",
+        device: &DEVICE_DESCRIPTOR_IP_SECURE,
+        params: LightSwitchParams::ETS_PARAMS_EXT,
+        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
+        param_defaults: param_bytes,
+        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
+        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+        union_fields: Some(LightSwitchParams::ETS_UNIONS),
+        channel_name: "General",
+        absolute_segment_address: None,
+        system7_layout: None,
+        application_hash: None,
+        non_reg_relevant_data_version: None,
+        replaces_versions: None,
+        application_data_hash: None,
+        page_layout: Some(LightSwitchDevice::page_layout()),
+        modules: None,
+        baggages: None,
+        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
+        is_secure_enabled: Some(true),
+        max_security_individual_address_entries: Some(32),
+        max_security_group_key_table_entries: Some(10),
+        max_security_p2p_key_table_entries: Some(0),
+    };
+
+    // Build a multi-device package: six application programs, six hardware
+    // definitions (IP, IP-Secure, TP1, TP1-Secure, RF, RF-Secure), and a
+    // single catalog section with all of them.
     let mut builder = KnxprodBuilder::new(LightSwitchDevice::MANUFACTURER_ID);
     let app_ip_ref = builder.application_program(&app_ip);
+    let app_ip_secure_ref = builder.application_program(&app_ip_secure);
     let app_tp1_ref = builder.application_program(&app_tp1);
     let app_tp1_secure_ref = builder.application_program(&app_tp1_secure);
     let app_rf_ref = builder.application_program(&app_rf);
@@ -258,6 +320,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             visible_description: None,
         }],
         application_programs: vec![app_ip_ref],
+    });
+
+    // Secure IP hardware: same KNXnet/IP enablement as `hw_ip_ref`, linked
+    // to the secure-enabled IP application program.
+    let hw_ip_secure_ref = builder.hardware(HardwareDef {
+        serial_number: SERIAL_NUMBER_IP_SECURE,
+        hardware_version: 1,
+        name: "2-Button Light Switch IP Secure",
+        bus_current: None,
+        is_ip_enabled: Some(true),
+        is_rf_retransmitter: None,
+        rf_rx_capabilities: None,
+        rf_tx_capabilities: None,
+        products: vec![ProductDef {
+            name: "Light Switch 2-fold (IP, Secure)",
+            order_number: "LS-0002-IP-SEC",
+            is_rail_mounted: false,
+            visible_description: None,
+        }],
+        application_programs: vec![app_ip_secure_ref],
     });
 
     let hw_tp1_ref = builder.hardware(HardwareDef {
@@ -371,6 +453,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 application_program: app_ip_ref,
             },
             CatalogEntryDef {
+                name: "Light Switch 2-fold (IP, Secure)",
+                hardware: hw_ip_secure_ref,
+                product_order_number: "LS-0002-IP-SEC",
+                application_program: app_ip_secure_ref,
+            },
+            CatalogEntryDef {
                 name: "Light Switch 2-fold (TP1)",
                 hardware: hw_tp1_ref,
                 product_order_number: "LS-0002-TP",
@@ -415,6 +503,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardware: hw_ip_ref,
             product_order_number: "LS-0002-IP",
             application_program: app_ip_ref,
+        });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch IP Secure",
+            hardware: hw_ip_secure_ref,
+            product_order_number: "LS-0002-IP-SEC",
+            application_program: app_ip_secure_ref,
         });
         builder.device_instance(DeviceInstanceDef {
             name: "2-Button Light Switch TP1",

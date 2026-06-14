@@ -332,10 +332,7 @@ impl UdpInner {
         SocketAddrV4::new(ip, self.local_port)
     }
 
-    async fn recv_from_v4(
-        &self,
-        buf: &mut [u8],
-    ) -> Result<(usize, SocketAddrV4, Option<Ipv4Addr>), UdpError> {
+    async fn recv_from_v4(&self, buf: &mut [u8]) -> Result<(usize, SocketAddrV4, Option<Ipv4Addr>), UdpError> {
         let mut socket = self.socket.borrow_mut();
         let result = socket
             .recv_from_with(|data, meta| {
@@ -533,12 +530,7 @@ impl<const N_UDP: usize, const N_TCP: usize> AsyncTcpListener for EmbassyTcpList
         // No socket is created at bind time; embassy-net allocates the
         // socket on each `accept()`. We capture the stack handle plus
         // the binary-owned pool here.
-        Ok(Self {
-            stack: ctx.stack,
-            pool: ctx.tcp_pool,
-            bind_addr: options.bind_addr,
-            _udp: core::marker::PhantomData,
-        })
+        Ok(Self { stack: ctx.stack, pool: ctx.tcp_pool, bind_addr: options.bind_addr, _udp: core::marker::PhantomData })
     }
 
     async fn accept(&self) -> Result<(Self::Stream, SocketAddrV4), Self::Error> {
