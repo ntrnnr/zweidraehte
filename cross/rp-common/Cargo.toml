@@ -27,6 +27,7 @@ critical-section = "1.2.0"
 zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
 zweidraehte-util = { path = "../../crates/zweidraehte-util" }
+embedded-common = { path = "../embedded-common" }
 
 # Serialization for flash storage
 postcard = { workspace = true }

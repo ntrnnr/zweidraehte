@@ -8,6 +8,7 @@ use core::cell::RefCell;
 
 use super::SecurityTable;
 use crate::StackDefinition;
+use crate::kvstore::SiatAccess;
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf,
     PropertyError, WriteResponse, interface_object_augment, pid,
@@ -47,13 +48,12 @@ use super::SecurityState;
 )]
 pub struct SecurityAugment<
     'a,
-    SEQ: SequenceNumberStorage,
+    SEQ: SequenceNumberStorage + SiatAccess,
     const GRP: usize,
     const P2P: usize,
-    const SIAT: usize,
     const GO: usize,
 > {
-    state: &'a SecurityState<GRP, P2P, SIAT, GO>,
+    state: &'a SecurityState<GRP, P2P, GO>,
     seq_storage: &'a RefCell<SEQ>,
 
     // PIDs are listed in spec-prescribed order (Profiles §9.1.2.6.4):
@@ -248,12 +248,12 @@ pub struct SecurityAugment<
     _test_failure_counters_io: (),
 }
 
-impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
-    SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
+impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: usize, const GO: usize>
+    SecurityAugment<'a, SEQ, GRP, P2P, GO>
 {
     /// Create a new security augment backed by the given state and
     /// sequence number storage.
-    pub fn new(state: &'a SecurityState<GRP, P2P, SIAT, GO>, seq_storage: &'a RefCell<SEQ>) -> Self {
+    pub fn new(state: &'a SecurityState<GRP, P2P, GO>, seq_storage: &'a RefCell<SEQ>) -> Self {
         Self { state, seq_storage }
     }
 }
@@ -265,8 +265,8 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
 // must return `None` so the augment chain can fall through.
 // ============================================================================
 
-impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
-    SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
+impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: usize, const GO: usize>
+    SecurityAugment<'a, SEQ, GRP, P2P, GO>
 {
     /// All Security PIDs are statically known — no runtime-conditional
     /// descriptors. Always falls through to the macro's static lookup.
@@ -303,8 +303,11 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
             // PID 53 GROUP_KEY_TABLE — array (18 bytes/entry).
             pid::security::GROUP_KEY_TABLE => read_table_with_count_probe(&self.state.grp_keys().borrow(), req, buf),
             // PID 54 SECURITY_INDIVIDUAL_ADDRESS_TABLE — array (8 bytes/entry).
+            // Sourced live from the sequence store (the single source of truth
+            // for each sender's Last Valid SeqNr, 03/05/01 §6.3.8), so a read
+            // reflects the per-frame updates, not a frozen ETS snapshot.
             pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
-                read_table_with_count_probe(&self.state.siat().borrow(), req, buf)
+                read_siat_from_store(&*self.seq_storage.borrow(), req, buf)
             }
             // PID 55 SECURITY_FAILURES_LOG — read-only at the value level;
             // accessed via FunctionPropertyStateRead.
@@ -388,9 +391,6 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                     _ => cur,
                 };
                 self.state.set_load_state(new_state);
-                if new_state == LoadState::Loaded && cur != LoadState::Loaded {
-                    self.state.seed_receiving_seqs(&mut *self.seq_storage.borrow_mut());
-                }
                 Ok(WriteResponse::byte(new_state.into()))
             }
             // PID 51 SECURITY_MODE — also writeable via plain value writes
@@ -411,8 +411,7 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
                 write_security_table(&mut table, req)
             }
             pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
-                let mut table = self.state.siat().borrow_mut();
-                write_security_table(&mut table, req)
+                write_siat_to_store(&mut *self.seq_storage.borrow_mut(), req)
             }
             pid::security::GO_SECURITY_FLAGS => {
                 let mut table = self.state.go_flags().borrow_mut();
@@ -571,8 +570,8 @@ impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const S
 // Private Helpers
 // ============================================================================
 
-impl<'a, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize>
-    SecurityAugment<'a, SEQ, GRP, P2P, SIAT, GO>
+impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: usize, const GO: usize>
+    SecurityAugment<'a, SEQ, GRP, P2P, GO>
 {
     /// Handle PID_SECURITY_MODE FunctionPropertyCommand.
     ///
@@ -687,4 +686,73 @@ pub(in crate::bcus::system_b::extensions) fn write_security_table<const N: usize
             Err(e) => Err(e),
         }
     }
+}
+
+/// PID 54 read against the live SIAT in the sequence store, using the same
+/// array-property protocol as [`read_table_with_count_probe`]: `start_idx == 0`
+/// returns the 2-byte entry count; `start_idx >= 1` returns `count` entries of
+/// 8 bytes (IA(2) + SeqNr(6)) starting at the 0-based offset `start_idx - 1`,
+/// in the store's IA-sorted order.
+fn read_siat_from_store<S: SiatAccess>(
+    store: &S,
+    req: &FullPropertyReadRequest,
+    buf: &mut [u8],
+) -> Result<usize, PropertyError> {
+    if req.start_idx == 0 {
+        if buf.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        buf[..2].copy_from_slice(&store.siat_count().to_be_bytes());
+        return Ok(2);
+    }
+    let start = req.start_idx - 1;
+    let total = store.siat_count();
+    if start >= total {
+        return Err(PropertyError::InvalidStartIndex);
+    }
+    let avail = total - start;
+    let to_read = req.count.min(avail);
+    let byte_count = to_read as usize * 8;
+    if buf.len() < byte_count {
+        return Err(PropertyError::BufferTooSmall);
+    }
+    for i in 0..to_read {
+        let (ia, seq) = store.siat_read_entry(start + i).expect("index < count");
+        let off = i as usize * 8;
+        buf[off..off + 2].copy_from_slice(&ia.to_be_bytes());
+        buf[off + 2..off + 8].copy_from_slice(&seq);
+    }
+    Ok(byte_count)
+}
+
+/// PID 54 write against the live SIAT in the sequence store. `start_idx == 0`
+/// is an element-count write (0 clears); `start_idx >= 1` writes 8-byte entries
+/// (IA(2) + SeqNr(6)) at the 0-based offset `start_idx - 1`. Mirrors
+/// [`write_security_table`]'s protocol, but the SIAT is the store's, not a
+/// `SecurityTable`. A store error maps to `InvalidPropertyId` (the property
+/// service has no flash-error code).
+fn write_siat_to_store<S: SiatAccess>(
+    store: &mut S,
+    req: &FullPropertyWriteRequest<'_>,
+) -> Result<WriteResponse, PropertyError> {
+    if req.start_idx == 0 {
+        if req.data.len() < 2 {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        let new_count = u16::from_be_bytes([req.data[0], req.data[1]]);
+        store.siat_set_count(new_count).map_err(|_| PropertyError::InvalidPropertyId)?;
+        return Ok(WriteResponse::Echo);
+    }
+    // Entry write(s): one or more contiguous 8-byte entries.
+    if req.data.is_empty() || req.data.len() % 8 != 0 {
+        return Err(PropertyError::TypeMismatch);
+    }
+    let start = req.start_idx - 1;
+    for (i, chunk) in req.data.chunks_exact(8).enumerate() {
+        let ia = u16::from_be_bytes([chunk[0], chunk[1]]);
+        let mut seq = [0u8; 6];
+        seq.copy_from_slice(&chunk[2..8]);
+        store.siat_write_entry(start + i as u16, ia, seq).map_err(|_| PropertyError::InvalidPropertyId)?;
+    }
+    Ok(WriteResponse::Echo)
 }

@@ -60,7 +60,7 @@ pub const SECTOR_SIZE: usize = 4096;
 
 // -- Sequence-number log region ----------------------------------------------
 //
-// The wear-levelled Data Secure sequence-number store ([`crate::flash_seq`])
+// The wear-levelled Data Secure sequence/SIAT store ([`crate::flash_seq`] / `RpWearLeveledKv`)
 // gets its own multi-sector region carved out *below* the config sector. Like
 // the config / provisioning regions these offsets are pure software convention
 // — the linker hands the whole flash to `FLASH` via `memory.x`. The full map
@@ -127,8 +127,8 @@ pub struct RpFlashStorage<S, I, const STORAGE_SIZE: usize = 4096> {
     ///
     /// The RP2040 has a single `FLASH` peripheral, but this device needs flash
     /// access from two independent owners: this config store (which lives
-    /// outside the KNX stack) and the wear-levelled sequence-number store
-    /// ([`crate::flash_seq::FlashSeqStorage`], which lives inside it). Both
+    /// outside the KNX stack) and the wear-levelled sequence/SIAT store
+    /// ([`crate::RpWearLeveledKv`], which lives inside it). Both
     /// borrow the same `&'static RefCell<Flash<…>>`. The `RefCell` is sound
     /// because embassy's executor is single-threaded and every flash operation
     /// is synchronous (`blocking_*`, never held across an `.await`), so two

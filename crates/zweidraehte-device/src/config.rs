@@ -408,7 +408,6 @@ macro_rules! knx_stack_config {
             pub fn create_security_config() -> $crate::bcus::system_b::SecurityExtensionConfig<
                 { Self::NUM_GROUP_ADDRS },
                 { Self::P2P_CAPACITY },
-                { Self::SIAT_CAPACITY },
                 { Self::NUM_COMM_OBJECTS },
             > {
                 use $crate::bcus::system_b::{SecurityExtensionConfig, SecurityTable};
@@ -452,7 +451,6 @@ macro_rules! knx_stack_config {
                     failures_log: Default::default(),
                     grp_keys,
                     p2p_keys: SecurityTable::new(),
-                    siat: SecurityTable::new(),
                     go_flags,
                 }
             }

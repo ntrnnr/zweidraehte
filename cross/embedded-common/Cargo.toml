@@ -29,7 +29,18 @@ zweidraehte-util = { path = "../../crates/zweidraehte-util" }
 zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }
 embassy-sync = { workspace = true }
 
+# Inline (no_alloc) collections for the persistence backends' RAM mirrors.
+heapless = { workspace = true }
+
+# A critical-section impl is required to link the host test binary (embassy
+# pulls critical-section in); embedded firmware gets the impl from cortex-m.
+critical-section = "1.2.0"
+
 [features]
 # BusyGate/BusyGuard talk to the TPUART link layer's busy machinery —
 # only TP1 targets need them (and the tpuart module they reference).
 tp1 = ["zweidraehte-device/tp1"]
+
+# Enabled by host-side tests only so the persistence backend tests can link
+# against a critical-section impl. Embedded firmware never sets this.
+test-host = ["critical-section/std"]

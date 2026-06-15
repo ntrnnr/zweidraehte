@@ -1,266 +1,233 @@
-//! FRAM-backed [`SequenceNumberStorage`] for KNX Data Secure.
+//! FRAM-backed [`KeyValueStore`] for KNX Data Secure persistence.
 //!
-//! Persists the regular and tool sending counters, the tool
-//! receiving counter, and a linear peer table of last-valid
-//! receiving counters on an FM25L16B SPI FRAM (see [`super::fram`]).
-//! Every `save_*` write-throughs directly to FRAM — no RAM shadow —
-//! so a power loss between `save_*` and the next outbound telegram
-//! cannot lose an update. FRAM writes have no cycle time and
-//! unlimited endurance, so doing this on every outbound secure
-//! frame is fine.
+//! Implements [`KeyValueStore`] over an FM25L16B SPI FRAM (see [`super::fram`]).
+//! FRAM is byte-addressable with no write-cycle time and unlimited endurance, so
+//! every write is a direct write-through — no wear-levelling needed. Wrap this in
+//! a typed view (`SiatStore<FramKv<..>, N, K>`) exactly like the flash backends.
 //!
 //! # Wire layout
 //!
-//! Adapted from the conformance harness's `ShmSeqStorage` (battle-
-//! tested by the conformance suite). 146 bytes worst-case at 16
-//! peer slots, out of 2 KiB available on the chip.
+//! The three KNX sequence-number kinds map onto a fixed linear layout:
 //!
 //! ```text
-//! Offset 0:   magic[4]            "SEQ\0"     first-boot detection
-//! Offset 4:   sending[6]                      single Sequence Number Sending
-//! Offset 10:  tool_receiving[6]               (all-zero = unset)
+//! Offset 0:   magic[4]            "SEQ\0"   first-boot detection
+//! Offset 4:   sending[6]                    NS_SENDING singleton
+//! Offset 10:  tool[6]                       NS_TOOL singleton (all-zero = unset)
 //! Offset 16:  peer_count[2]       big-endian u16
-//! Offset 18:  peer_entries[N]     each 8 bytes: peer_ia[2] + seq[6]
+//! Offset 18:  peer_entries[N]     each 8 bytes: ia[2] + seq[6]   (NS_SIAT)
 //! ```
 //!
-//! # First-boot behaviour
-//!
-//! On a fresh FRAM the magic bytes are random. `load_*` checks the
-//! magic first: if it's not `SEQ\0`, the loads return the same
-//! spec-default sentinels `ShmSeqStorage` uses — `[0,0,0,0,0,1]` for
-//! sending counters, `None` for receiving. The first `save_*` writes
-//! the magic (last, as a commit marker), and subsequent boots see
-//! the full persisted state.
-//!
-//! # Interior mutability
-//!
-//! The [`SequenceNumberStorage`] trait spells several loads as
-//! `&self` but an SPI transaction is inherently mutating (it drives
-//! CS and shifts bytes through the stateful bus). We wrap the FRAM
-//! driver in a [`RefCell`] so the `&self` methods can still hit the
-//! bus. Outside code already serialises `FramSeqStorage` access
-//! through a `RefCell` on the state type, and the embassy executor
-//! is single-threaded, so the inner `RefCell::borrow_mut()` can only
-//! fail if a future call path becomes reentrant — in which case we
-//! want the panic.
+//! On a blank FRAM the magic bytes are random; reads check it first and report a
+//! blank store (`get` → `None`, `for_each` → no entries). The first `put` writes
+//! the magic, so a `SiatStore` over a fresh FRAM boots to defaults.
 
 use core::cell::RefCell;
 
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
 
-use zweidraehte_device::storage::SequenceNumberStorage;
+use zweidraehte_device::kvstore::{KeyValueStore, NS_SENDING, NS_SIAT, NS_TOOL};
 
 use crate::fram::{Fm25l16b, FramError};
 
-// ============================================================================
-// Layout constants
-// ============================================================================
-
 const MAGIC: [u8; 4] = *b"SEQ\0";
 
-const OFFSET_MAGIC: u16 = 0;
-const OFFSET_SENDING: u16 = 4;
-const OFFSET_TOOL_RECV: u16 = 10;
-const OFFSET_PEER_COUNT: u16 = 16;
-const OFFSET_PEER_ENTRIES: u16 = 18;
+const OFF_MAGIC: u16 = 0;
+const OFF_SENDING: u16 = 4;
+const OFF_TOOL: u16 = 10;
+const OFF_PEER_COUNT: u16 = 16;
+const OFF_PEER_ENTRIES: u16 = 18;
+const PEER_ENTRY_SIZE: u16 = 8; // ia(2) + seq(6)
 
-const PEER_ENTRY_SIZE: u16 = 8; // 2 bytes IA + 6 bytes seq
-
-/// Spec-default sending sequence number when the FRAM is blank.
+/// FRAM-backed key-value store.
 ///
-/// Matches the `ShmSeqStorage` fallback in the conformance harness.
-/// The secure application layer treats `[0,0,0,0,0,1]` as "fresh
-/// device, no history" — ETS reconciles via `S-A_Sync`.
-const DEFAULT_SEND: [u8; 6] = [0, 0, 0, 0, 0, 1];
-
-// ============================================================================
-// Storage
-// ============================================================================
-
-/// FRAM-backed sequence-number storage.
-///
-/// `PEER_SLOTS` caps the linear peer table size. A typical field
-/// device talks to ETS plus a handful of neighbours, so the default
-/// of 16 is generous. Setting this higher only costs FRAM space
-/// (8 bytes per slot) and a slightly longer linear scan on every
-/// receive.
-pub struct FramSeqStorage<BUS, CS, const PEER_SLOTS: usize = 16> {
+/// `PEER_SLOTS` caps the per-IA SIAT table size; size it ≥ the device's
+/// authorized-sender count (an over-full table silently drops new entries).
+/// Default 16 fits the FM25L16B's 2 KiB with room to spare.
+pub struct FramKv<BUS, CS, const PEER_SLOTS: usize = 16> {
+    // The driver needs `&mut` for an SPI transaction, but `KeyValueStore::get`
+    // and `for_each` are `&self`. A `RefCell` bridges this; the embassy executor
+    // is single-threaded and every transaction is synchronous, so the inner
+    // borrow can only re-enter on a reentrant call path (which would be a bug).
     fram: RefCell<Fm25l16b<BUS, CS>>,
 }
 
-impl<BUS, CS, E, const PEER_SLOTS: usize> FramSeqStorage<BUS, CS, PEER_SLOTS>
+impl<BUS, CS, E, const PEER_SLOTS: usize> FramKv<BUS, CS, PEER_SLOTS>
 where
     BUS: SpiBus<u8, Error = E>,
     CS: OutputPin,
 {
-    /// Build on top of an already-configured FRAM driver.
-    pub const fn new(fram: Fm25l16b<BUS, CS>) -> Self {
-        // Static assertion: the full layout must fit into the chip.
-        // 24 bytes of header + PEER_SLOTS * 8 bytes of peer table.
+    /// Build over an already-configured FRAM driver.
+    pub fn new(fram: Fm25l16b<BUS, CS>) -> Self {
         assert!(
-            OFFSET_PEER_ENTRIES as usize + PEER_SLOTS * PEER_ENTRY_SIZE as usize <= crate::fram::CAPACITY as usize,
-            "FramSeqStorage peer table overflows the FM25L16B's 2 KiB capacity",
+            OFF_PEER_ENTRIES as usize + PEER_SLOTS * PEER_ENTRY_SIZE as usize <= crate::fram::CAPACITY as usize,
+            "FramKv peer table overflows the FM25L16B's 2 KiB capacity",
         );
         Self { fram: RefCell::new(fram) }
     }
 
-    // --------------------------------------------------------------------
-    // Magic-byte helpers
-    // --------------------------------------------------------------------
-
-    /// Check whether the FRAM has been initialised by a prior boot.
-    fn has_magic(fram: &mut Fm25l16b<BUS, CS>) -> Result<bool, FramError<E>> {
-        let mut buf = [0u8; 4];
-        fram.read(OFFSET_MAGIC, &mut buf)?;
-        Ok(buf == MAGIC)
-    }
-
-    /// Initialise a blank FRAM with zero'd defaults, writing magic
-    /// *last* as a commit marker.
-    ///
-    /// If we wrote magic first and crashed before zeroing peer_count,
-    /// the next boot would see valid magic and then scan up to 65535
-    /// garbage slots looking for peers. Writing magic last means a
-    /// half-initialised FRAM reads as "still uninitialised" on the
-    /// next boot — safe.
-    fn initialise_layout(fram: &mut Fm25l16b<BUS, CS>) -> Result<(), FramError<E>> {
-        fram.write(OFFSET_PEER_COUNT, &[0, 0])?;
-        fram.write(OFFSET_SENDING, &DEFAULT_SEND)?;
-        fram.write(OFFSET_TOOL_RECV, &[0u8; 6])?;
-        fram.write(OFFSET_MAGIC, &MAGIC)?;
-        Ok(())
-    }
-
-    /// Ensure the FRAM is initialised before a save; no-op on
-    /// subsequent calls. Used by every `save_*`.
-    fn ensure_initialised(fram: &mut Fm25l16b<BUS, CS>) -> Result<(), FramError<E>> {
-        if !Self::has_magic(fram)? {
-            Self::initialise_layout(fram)?;
-        }
-        Ok(())
-    }
-
-    // --------------------------------------------------------------------
-    // Peer-table helpers
-    // --------------------------------------------------------------------
-
-    fn peer_count(fram: &mut Fm25l16b<BUS, CS>) -> Result<u16, FramError<E>> {
-        let mut buf = [0u8; 2];
-        fram.read(OFFSET_PEER_COUNT, &mut buf)?;
-        Ok(u16::from_be_bytes(buf))
-    }
-
-    fn set_peer_count(fram: &mut Fm25l16b<BUS, CS>, count: u16) -> Result<(), FramError<E>> {
-        fram.write(OFFSET_PEER_COUNT, &count.to_be_bytes())
-    }
-
     fn peer_entry_offset(index: u16) -> u16 {
-        OFFSET_PEER_ENTRIES + index * PEER_ENTRY_SIZE
-    }
-
-    /// Linear scan: return the index of the slot holding `peer_ia`,
-    /// or `None` if absent.
-    fn find_peer(fram: &mut Fm25l16b<BUS, CS>, peer_ia: u16) -> Result<Option<u16>, FramError<E>> {
-        let count = Self::peer_count(fram)?;
-        let target = peer_ia.to_be_bytes();
-        for i in 0..count {
-            let mut ia = [0u8; 2];
-            fram.read(Self::peer_entry_offset(i), &mut ia)?;
-            if ia == target {
-                return Ok(Some(i));
-            }
-        }
-        Ok(None)
+        OFF_PEER_ENTRIES + index * PEER_ENTRY_SIZE
     }
 }
 
-// ============================================================================
-// SequenceNumberStorage impl
-// ============================================================================
+// All FRAM access goes through these free helpers taking `&mut Fm25l16b` so both
+// the `&self` (get/for_each) and `&mut self` (put/remove) trait methods share
+// one implementation via a `borrow_mut()`.
 
-impl<BUS, CS, E, const PEER_SLOTS: usize> SequenceNumberStorage for FramSeqStorage<BUS, CS, PEER_SLOTS>
+fn has_magic<BUS, CS, E>(fram: &mut Fm25l16b<BUS, CS>) -> Result<bool, FramError<E>>
+where
+    BUS: SpiBus<u8, Error = E>,
+    CS: OutputPin,
+{
+    let mut buf = [0u8; 4];
+    fram.read(OFF_MAGIC, &mut buf)?;
+    Ok(buf == MAGIC)
+}
+
+fn peer_count<BUS, CS, E>(fram: &mut Fm25l16b<BUS, CS>) -> Result<u16, FramError<E>>
+where
+    BUS: SpiBus<u8, Error = E>,
+    CS: OutputPin,
+{
+    let mut buf = [0u8; 2];
+    fram.read(OFF_PEER_COUNT, &mut buf)?;
+    Ok(u16::from_be_bytes(buf))
+}
+
+/// Offset of the entry for `ia`, or `None` if absent.
+fn find_peer<BUS, CS, E>(fram: &mut Fm25l16b<BUS, CS>, ia: u16) -> Result<Option<u16>, FramError<E>>
+where
+    BUS: SpiBus<u8, Error = E>,
+    CS: OutputPin,
+{
+    let count = peer_count(fram)?;
+    let target = ia.to_be_bytes();
+    for i in 0..count {
+        let off = OFF_PEER_ENTRIES + i * PEER_ENTRY_SIZE;
+        let mut stored = [0u8; 2];
+        fram.read(off, &mut stored)?;
+        if stored == target {
+            return Ok(Some(off));
+        }
+    }
+    Ok(None)
+}
+
+impl<BUS, CS, E, const PEER_SLOTS: usize> KeyValueStore for FramKv<BUS, CS, PEER_SLOTS>
 where
     BUS: SpiBus<u8, Error = E>,
     CS: OutputPin,
 {
     type Error = FramError<E>;
 
-    fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
+    fn get(&self, ns: u8, key: &[u8], buf: &mut [u8]) -> Result<Option<usize>, Self::Error> {
         let mut fram = self.fram.borrow_mut();
-        if !Self::has_magic(&mut fram)? {
-            return Ok(DEFAULT_SEND);
-        }
-        let mut seq = [0u8; 6];
-        fram.read(OFFSET_SENDING, &mut seq)?;
-        Ok(seq)
-    }
-
-    fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        let mut fram = self.fram.borrow_mut();
-        Self::ensure_initialised(&mut fram)?;
-        fram.write(OFFSET_SENDING, seq)?;
-        Ok(())
-    }
-
-    fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        let mut fram = self.fram.borrow_mut();
-        if !Self::has_magic(&mut fram)? {
+        if !has_magic(&mut fram)? {
             return Ok(None);
         }
-        match Self::find_peer(&mut fram, peer_ia)? {
-            Some(idx) => {
+        match ns {
+            NS_SENDING => {
+                fram.read(OFF_SENDING, &mut buf[..6])?;
+                Ok(Some(6))
+            }
+            NS_TOOL => {
                 let mut seq = [0u8; 6];
-                fram.read(Self::peer_entry_offset(idx) + 2, &mut seq)?;
-                Ok(Some(seq))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        let mut fram = self.fram.borrow_mut();
-        Self::ensure_initialised(&mut fram)?;
-        match Self::find_peer(&mut fram, peer_ia)? {
-            Some(idx) => {
-                // Update existing slot — overwrite the 6 seq bytes
-                // after the 2-byte IA prefix.
-                fram.write(Self::peer_entry_offset(idx) + 2, seq)?;
-            }
-            None => {
-                // Append new slot, silently drop if the table is
-                // full. Matches `RamSeqStorage`'s behaviour — a
-                // full table means the device is paired with more
-                // peers than it has room to remember, which only
-                // matters for replay-protection completeness and
-                // ETS will re-sync.
-                let count = Self::peer_count(&mut fram)?;
-                if (count as usize) < PEER_SLOTS {
-                    let offset = Self::peer_entry_offset(count);
-                    fram.write(offset, &peer_ia.to_be_bytes())?;
-                    fram.write(offset + 2, seq)?;
-                    Self::set_peer_count(&mut fram, count + 1)?;
+                fram.read(OFF_TOOL, &mut seq)?;
+                if seq == [0u8; 6] {
+                    Ok(None)
+                } else {
+                    buf[..6].copy_from_slice(&seq);
+                    Ok(Some(6))
                 }
             }
+            NS_SIAT => {
+                let ia = u16::from_be_bytes([key[0], key[1]]);
+                match find_peer(&mut fram, ia)? {
+                    Some(off) => {
+                        fram.read(off + 2, &mut buf[..6])?;
+                        Ok(Some(6))
+                    }
+                    None => Ok(None),
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn put(&mut self, ns: u8, key: &[u8], val: &[u8]) -> Result<(), Self::Error> {
+        let mut fram = self.fram.borrow_mut();
+        fram.write(OFF_MAGIC, &MAGIC)?;
+        match ns {
+            NS_SENDING => fram.write(OFF_SENDING, &val[..6]),
+            NS_TOOL => fram.write(OFF_TOOL, &val[..6]),
+            NS_SIAT => {
+                let ia = u16::from_be_bytes([key[0], key[1]]);
+                if let Some(off) = find_peer(&mut fram, ia)? {
+                    fram.write(off + 2, &val[..6])
+                } else {
+                    let count = peer_count(&mut fram)?;
+                    if (count as usize) < PEER_SLOTS {
+                        let off = Self::peer_entry_offset(count);
+                        fram.write(off, &ia.to_be_bytes())?;
+                        fram.write(off + 2, &val[..6])?;
+                        fram.write(OFF_PEER_COUNT, &(count + 1).to_be_bytes())?;
+                    }
+                    Ok(())
+                }
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn remove(&mut self, ns: u8, key: &[u8]) -> Result<(), Self::Error> {
+        if ns != NS_SIAT {
+            return Ok(());
+        }
+        let mut fram = self.fram.borrow_mut();
+        let ia = u16::from_be_bytes([key[0], key[1]]);
+        if let Some(off) = find_peer(&mut fram, ia)? {
+            let count = peer_count(&mut fram)?;
+            let last_off = Self::peer_entry_offset(count - 1);
+            if off != last_off {
+                let mut last = [0u8; PEER_ENTRY_SIZE as usize];
+                fram.read(last_off, &mut last)?;
+                fram.write(off, &last)?;
+            }
+            fram.write(OFF_PEER_COUNT, &(count - 1).to_be_bytes())?;
         }
         Ok(())
     }
 
-    fn load_tool_receiving_seq(&self) -> Result<Option<[u8; 6]>, Self::Error> {
+    fn for_each(&self, ns: u8, f: &mut dyn FnMut(&[u8], &[u8])) {
         let mut fram = self.fram.borrow_mut();
-        if !Self::has_magic(&mut fram)? {
-            return Ok(None);
+        if !has_magic(&mut fram).unwrap_or(false) {
+            return;
         }
-        let mut seq = [0u8; 6];
-        fram.read(OFFSET_TOOL_RECV, &mut seq)?;
-        // All-zero means unset (initial state — matches SHM impl).
-        if seq == [0u8; 6] { Ok(None) } else { Ok(Some(seq)) }
-    }
-
-    fn save_tool_receiving_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        let mut fram = self.fram.borrow_mut();
-        Self::ensure_initialised(&mut fram)?;
-        fram.write(OFFSET_TOOL_RECV, seq)?;
-        Ok(())
+        match ns {
+            NS_SENDING => {
+                let mut seq = [0u8; 6];
+                if fram.read(OFF_SENDING, &mut seq).is_ok() {
+                    f(&[0], &seq);
+                }
+            }
+            NS_TOOL => {
+                let mut seq = [0u8; 6];
+                if fram.read(OFF_TOOL, &mut seq).is_ok() && seq != [0u8; 6] {
+                    f(&[0], &seq);
+                }
+            }
+            NS_SIAT => {
+                let count = peer_count(&mut fram).unwrap_or(0);
+                for i in 0..count {
+                    let off = OFF_PEER_ENTRIES + i * PEER_ENTRY_SIZE;
+                    let mut entry = [0u8; PEER_ENTRY_SIZE as usize];
+                    if fram.read(off, &mut entry).is_ok() {
+                        f(&entry[0..2], &entry[2..8]);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 }

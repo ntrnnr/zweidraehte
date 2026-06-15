@@ -3,7 +3,7 @@
 //! 2 KiB byte-addressable FRAM, no write cycle time, unlimited
 //! endurance. Used to persist KNX Data Secure sequence numbers across
 //! power cycles so replay protection survives reboots (see
-//! [`FramSeqStorage`](super::fram_seq::FramSeqStorage)).
+//! [`FramKv`](super::fram_seq::FramKv)).
 //!
 //! The driver is deliberately minimal: WREN / READ / WRITE only. The
 //! chip's protection registers (BP0/BP1/WPEN) default to "no

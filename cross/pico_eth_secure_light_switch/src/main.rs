@@ -65,6 +65,7 @@ use devices::light_switch::{
 
 use zweidraehte_device::{
     bcus::system_b::*,
+    kvstore::SiatStore,
     layers::linklayers::knxip::{
         KnxNetIpBuilder, KnxNetIpDefinition,
         features::{Features, NoTcp, NoTunneling, WithRemoteConfig, WithRouting},
@@ -76,8 +77,8 @@ use zweidraehte_device::{
 
 use embedded_common::DebouncedButton;
 use rp_common::{
-    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashSecureIdentityData, FlashSeqStorage, RpCommonRng,
-    RpFlashStorage, UdpPool,
+    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashSecureIdentityData, RpCommonRng, RpFlashIo,
+    RpFlashStorage, RpWearLeveledKv, UdpPool,
 };
 
 // ================================================================================
@@ -110,18 +111,12 @@ const P2P_SIZE: usize = 0;
 /// Mirrors the secure TP1 light switch.
 const SIAT_SIZE: usize = 32;
 
-/// Per-peer receiving-counter capacity for the sequence-number store.
+/// SIAT capacity for the sequence/SIAT store.
 ///
-/// The seq store holds the *running* `LastValidSeqNr` for every secure sender
-/// — the same set the Security extension's SIAT authorizes and seeds (via
-/// `seed_receiving_seqs`). The two are the same data with opposite write
-/// frequencies: the SIAT lives in the rarely-written config blob and carries
-/// the ETS-configured authorization + initial seq; this store is the
-/// wear-levelled copy bumped on every accepted frame. Because a sender can only
-/// be in this store if the SIAT authorizes it, sizing this to `SIAT_SIZE`
-/// guarantees the store can hold every authorized sender — the overflow /
-/// silent-drop path (which would degrade an un-cached peer's replay protection)
-/// is then structurally unreachable.
+/// The store *is* the SIAT (single source of truth, 03/05/01 §6.3.8): it holds
+/// the live `LastValidSeqNr` for every secure sender, updated on every accepted
+/// frame and read live by PID 54. Sizing it to `SIAT_SIZE` lets it hold every
+/// authorized sender, so the overflow / silent-drop path is unreachable.
 const SEQ_CACHE: usize = SIAT_SIZE;
 
 /// IP Secure password-hash table capacity. One slot for the management
@@ -140,25 +135,21 @@ const MAX_TU: usize = 0;
 /// sizes the secure-session pool, which is unused here (no TCP) — `0`.
 type SecureRoutingUdp = Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp, WithIpSecure<0>>;
 
-/// Persistent sequence-number store: wear-levelled RP2040 internal flash,
-/// surviving power cycles. Uses the default sending-watermark (`K = 256`) and
-/// receiving lag threshold (`T = 16`) — see [`rp_common::flash_seq`] for the
-/// wear/replay-window trade-offs behind those knobs.
-type SeqStorage = FlashSeqStorage<SEQ_CACHE>;
+/// Live-record capacity of the wear-levelled flash log: the SIAT entries plus
+/// the two singleton sequence counters (sending watermark + tool).
+const SEQ_RECORDS: usize = SEQ_CACHE + 2;
+
+/// Persistent sequence/SIAT store: the SIAT view over the wear-levelled RP2040
+/// internal-flash key-value backend, surviving power cycles. `K = 256` keeps the
+/// hot sending counter off flash for 256 sends at a time.
+type SeqStorage = SiatStore<RpWearLeveledKv<SEQ_RECORDS>, SEQ_CACHE, 256>;
 
 /// Device state: System B tables + the Data-Secure wrapper around the IP
 /// **Secure** interface extension (PIDs 91–97). This is the
 /// `SecureExtensionState<IpSecureInterfaceExtension<...>, SEQ, ...>`
 /// composition realised through the `SecureIpInterfaceStateFor` alias.
-type PicoEthSecureState = SecureIpInterfaceStateFor<
-    PicoEthSecureLightSwitch,
-    SecureRoutingUdp,
-    SeqStorage,
-    P2P_SIZE,
-    SIAT_SIZE,
-    MAX_PW,
-    MAX_TU,
->;
+type PicoEthSecureState =
+    SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingUdp, SeqStorage, P2P_SIZE, MAX_PW, MAX_TU>;
 
 /// Flash storage handle, shared between the main loop (periodic save)
 /// and the restart handler (save before reset).
@@ -224,7 +215,6 @@ zweidraehte_device::system_b_standard_stack! {
         SeqStorage,
         { Self::ADT_ENTRIES },
         P2P_SIZE,
-        SIAT_SIZE,
         { Self::COT_ENTRIES },
     >,
     state: PicoEthSecureState,
@@ -545,7 +535,7 @@ async fn main(spawner: Spawner) {
 
     // The RP2040 has a single `FLASH` peripheral but two independent flash
     // consumers: the config store (`RpFlashStorage`, outside the KNX stack) and
-    // the wear-levelled sequence-number store (`FlashSeqStorage`, inside it).
+    // the wear-levelled sequence/SIAT store (`SiatStore`, inside it).
     // Lift the handle into a `&'static RefCell` so both can share it — sound
     // because the embassy executor is single-threaded and every flash op is
     // synchronous (`blocking_*`, never held across an `.await`).
@@ -685,9 +675,11 @@ async fn main(spawner: Spawner) {
     // (Security IO PID 56).
     //
     // Opening the seq store scans its flash region to recover the persisted
-    // counters. A scan failure is fatal — without durable counters the device
-    // cannot offer cross-reboot replay protection, so we refuse to boot.
-    let seq_storage = SeqStorage::new(flash).expect("open the flash sequence-number store");
+    // SIAT + counters. A scan failure is fatal — without durable counters the
+    // device cannot offer cross-reboot replay protection, so we refuse to boot.
+    let seq_storage: SeqStorage =
+        SiatStore::boot(RpWearLeveledKv::open(RpFlashIo::new(flash)).expect("open seq flash"))
+            .expect("boot the flash sequence/SIAT store");
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
     let resources =
         SecureResources { inner: zweidraehte_device::bcus::system_b::IpSecureResources { fdsk }, seq_storage, fdsk };

@@ -308,9 +308,9 @@ where
 fn _assert_augments_implement_augment<'a, D, SEQ>()
 where
     D: StackDefinition,
-    SEQ: SequenceNumberStorage + 'a,
+    SEQ: SequenceNumberStorage + crate::kvstore::SiatAccess + 'a,
     Tp1Augment<'a>: Augment<D>,
-    SecurityAugment<'a, SEQ, 8, 8, 16, 16>: Augment<D>,
+    SecurityAugment<'a, SEQ, 8, 8, 16>: Augment<D>,
 {
 }
 

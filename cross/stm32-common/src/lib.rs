@@ -14,7 +14,7 @@
 //!   reboot — bring-up only.
 //! - `fram` — `Fm25l16b` blocking driver for the Infineon FM25L16B
 //!   2 KiB SPI FRAM.
-//! - `fram_seq` — `FramSeqStorage`, a persistent
+//! - `fram_seq` — `FramKv`, a persistent
 //!   `SequenceNumberStorage` backed by the FRAM driver. Suitable for
 //!   production: write-through on every update, unlimited endurance.
 //! - `rng` — `Stm32CommonRng`, a *non-cryptographic* PRNG seeded
@@ -38,7 +38,7 @@ pub mod sx1211_adapter;
 pub mod uart;
 
 pub use fram::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
-pub use fram_seq::FramSeqStorage;
+pub use fram_seq::FramKv;
 #[cfg(feature = "provision-on-boot")]
 pub use prov_storage::synthesize_and_write;
 pub use prov_storage::{identity_from_record, read_provisioning, secure_identity_from_record, write_provisioning};

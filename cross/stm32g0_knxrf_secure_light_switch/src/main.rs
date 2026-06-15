@@ -45,7 +45,8 @@ use embedded_hal_async::digital::Wait;
 use knxrf::sx1211::Sx1211;
 use static_cell::StaticCell;
 use stm32_common::sx1211_adapter::Sx1211Adapter;
-use stm32_common::{FlashSecureIdentityData, Fm25l16b, FramSeqStorage, Stm32CommonRng, StmFlashStorage};
+use stm32_common::{FlashSecureIdentityData, Fm25l16b, FramKv, Stm32CommonRng, StmFlashStorage};
+use zweidraehte_device::kvstore::SiatStore;
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -97,7 +98,7 @@ const P2P_SIZE: usize = 0;
 
 /// SIAT capacity (Security Individual Address Table) — per 03/03/07 §5.3 it
 /// covers every non-tool secure sender, including group-only senders. Also sizes
-/// the FRAM peer slots in [`FramSeqStorage`].
+/// the FRAM peer slots in `FramKv`.
 const SIAT_SIZE: usize = 32;
 
 /// Concrete SX1211 transceiver: blocking SPI3 plus two GPIO chip-selects.
@@ -107,9 +108,9 @@ type Radio = Sx1211Adapter<Spi<'static, Blocking, Master>, Output<'static>, Outp
 type FramSpi = Spi<'static, Blocking, embassy_stm32::spi::mode::Master>;
 type FramCs = Output<'static>;
 /// Persistent sequence-number store on the FRAM.
-type Stm32G0SeqStorage = FramSeqStorage<FramSpi, FramCs, SIAT_SIZE>;
+type Stm32G0SeqStorage = SiatStore<FramKv<FramSpi, FramCs, SIAT_SIZE>, SIAT_SIZE, 1>;
 
-type Stm32G0SecureState = SecureRfStateFor<Stm32G0KnxRfSecure, Stm32G0SeqStorage, P2P_SIZE, SIAT_SIZE>;
+type Stm32G0SecureState = SecureRfStateFor<Stm32G0KnxRfSecure, Stm32G0SeqStorage, P2P_SIZE>;
 type Storage = StmFlashStorage<Stm32G0SecureState, FlashSecureIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
 
 #[derive(Debug, Clone, Copy)]
@@ -157,7 +158,6 @@ zweidraehte_device::system_b_standard_stack! {
         Stm32G0SeqStorage,
         { Self::ADT_ENTRIES },
         P2P_SIZE,
-        SIAT_SIZE,
         { Self::COT_ENTRIES },
     >,
     state: Stm32G0SecureState,
@@ -436,7 +436,8 @@ async fn main(spawner: Spawner) {
     static FRAM_WP: StaticCell<Output<'static>> = StaticCell::new();
     FRAM_WP.init(Output::new(p.PB9, Level::High, Speed::Low));
     let fram_driver = Fm25l16b::new(fram_spi, fram_cs);
-    let seq_storage: Stm32G0SeqStorage = FramSeqStorage::new(fram_driver);
+    let seq_storage: Stm32G0SeqStorage =
+        SiatStore::boot(FramKv::new(fram_driver)).expect("boot the FRAM sequence/SIAT store");
     info!("FRAM seq storage online (SPI2 @ 4 MHz, 2 KiB FM25L16B)");
 
     // --- Persistent storage --------------------------------------------------

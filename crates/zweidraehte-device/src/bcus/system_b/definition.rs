@@ -230,29 +230,29 @@ where
 /// (`GO = COT_SIZE`). Adding a new secure medium is therefore a one-line alias
 /// over `SecureStateFor` with the right inner extension — no need to restate
 /// the invariant.
-pub type SecureTp1StateFor<D, SEQ, const P2P: usize, const SIAT: usize>
+pub type SecureTp1StateFor<D, SEQ, const P2P: usize>
 where
     D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::Tp1ExtensionState, SEQ, P2P, SIAT>;
+= SecureStateFor<D, super::extensions::Tp1ExtensionState, SEQ, P2P>;
 
 /// KNX-RF Data Secure System B state for `D`. The RF analogue of
 /// [`SecureTp1StateFor`]; pairs [`RfExtensionState`](super::extensions::RfExtensionState)
 /// with the Data Secure wrapper. See [`SecureTp1StateFor`] for the `P2P`/`SIAT`
 /// sizing rationale (03/03/07 §5.3).
-pub type SecureRfStateFor<D, SEQ, const P2P: usize, const SIAT: usize>
+pub type SecureRfStateFor<D, SEQ, const P2P: usize>
 where
     D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::RfExtensionState, SEQ, P2P, SIAT>;
+= SecureStateFor<D, super::extensions::RfExtensionState, SEQ, P2P>;
 
 /// KNX-RF **retransmitter** Data Secure System B state for `D`. As
 /// [`SecureRfStateFor`], but the RF medium extension is wrapped in
 /// [`RfRetransmitterExtension`](super::extensions::RfRetransmitterExtension),
 /// adding the PID 57 / PID 74 retransmitter surface. Pair it with
 /// `type LLB = KnxRfLinkLayerBuilder<Radio, RetransmitEnabled>`.
-pub type SecureRfRetransmitterStateFor<D, SEQ, const P2P: usize, const SIAT: usize>
+pub type SecureRfRetransmitterStateFor<D, SEQ, const P2P: usize>
 where
     D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::RfRetransmitterExtension, SEQ, P2P, SIAT>;
+= SecureStateFor<D, super::extensions::RfRetransmitterExtension, SEQ, P2P>;
 
 /// KNX/IP Data Secure System B state for `D` using capability flags `CAPS`.
 /// The KNX/IP analogue of [`SecureTp1StateFor`]; pairs
@@ -261,10 +261,10 @@ where
 /// [`IpInterfaceExtension`](super::extensions::IpInterfaceExtension) and use
 /// [`SecureStateFor`] directly with that inner type.)
 #[cfg(feature = "knxip")]
-pub type SecureIpStateFor<D, SEQ, const CAPS: u16, const P2P: usize, const SIAT: usize>
+pub type SecureIpStateFor<D, SEQ, const CAPS: u16, const P2P: usize>
 where
     D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::IpExtensionState<CAPS>, SEQ, P2P, SIAT>;
+= SecureStateFor<D, super::extensions::IpExtensionState<CAPS>, SEQ, P2P>;
 
 /// KNX/IP **Secure-interface** Data Secure System B state for `D` — the state
 /// shape for a device that combines KNX IP Secure (secure routing / secure
@@ -289,18 +289,11 @@ where
 /// `type LayerBuilder = SecureIpDeviceBuilder` and
 /// `resources: SecureResources<IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ>`.
 #[cfg(feature = "ip-secure")]
-pub type SecureIpInterfaceStateFor<
-    D,
-    F,
-    SEQ,
-    const P2P: usize,
-    const SIAT: usize,
-    const MAX_PW: usize,
-    const MAX_TU: usize,
-> where
+pub type SecureIpInterfaceStateFor<D, F, SEQ, const P2P: usize, const MAX_PW: usize, const MAX_TU: usize>
+where
     D: SystemBStackDefinition,
     F: crate::layers::linklayers::knxip::features::FeatureSet,
-= SecureStateFor<D, super::extensions::IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ, P2P, SIAT>;
+= SecureStateFor<D, super::extensions::IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ, P2P>;
 
 /// Generic Data Secure System B state for `D` wrapping an arbitrary inner
 /// medium extension `Inner`.
@@ -313,7 +306,7 @@ pub type SecureIpInterfaceStateFor<
 /// [`SecureRfRetransmitterStateFor`], [`SecureIpStateFor`]) are thin
 /// wrappers that fix `Inner`; a future secure medium only needs to add
 /// one such wrapper (or use this alias directly).
-pub type SecureStateFor<D, Inner, SEQ, const P2P: usize, const SIAT: usize>
+pub type SecureStateFor<D, Inner, SEQ, const P2P: usize>
 where
     D: SystemBStackDefinition,
     Inner: super::ExtensionState,
@@ -327,7 +320,6 @@ where
         SEQ,
         { <D as SystemBStackDefinition>::ADT_ENTRIES },
         P2P,
-        SIAT,
         { <D as SystemBStackDefinition>::COT_ENTRIES },
     >,
 >;

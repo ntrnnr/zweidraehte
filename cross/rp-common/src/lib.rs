@@ -17,7 +17,7 @@ pub mod rng;
 pub mod storage;
 pub mod uart;
 
-pub use flash_seq::FlashSeqStorage;
+pub use flash_seq::{RpFlashIo, RpWearLeveledKv};
 pub use net::{
     EmbassyIpTransport, EmbassyIpTransportTcp, EmbassyTcpContext, EmbassyTcpListener, EmbassyTcpStream,
     EmbassyTcpStreamError, EmbassyUdpContext, EmbassyUdpSocket, EmbassyUdpSocketTcp, TcpError, TcpPool, UdpError,

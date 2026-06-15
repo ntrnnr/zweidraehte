@@ -10,6 +10,7 @@
 #[cfg(feature = "tp1")]
 pub mod busy_guard;
 pub mod button;
+pub mod persist;
 pub mod system;
 
 #[cfg(feature = "tp1")]

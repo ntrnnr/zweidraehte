@@ -205,9 +205,6 @@ fn test_3_3_4() -> TestCase {
     // Cleanup: Unload event (0x04) and table clears.
     const SEC_LOAD_UNLOADED: &str =
         "3C 60 #EDI #BDUT_ADDR 13 01 CE 00 11 00 10 05 01 00 01 04 00 00 00 00 00 00 00 00 00";
-    // Clear SIAT: write count=0.
-    const CLEAR_SIAT: &str = "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 36 01 00 00 00 00";
-    const CLEAR_SIAT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 00 00";
     // Clear P2P key table: write count=0.
     const CLEAR_P2P: &str = "3C 60 #EDI #BDUT_ADDR 0B 01 CE 00 11 00 10 34 01 00 00 00 00";
     const CLEAR_P2P_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 00 00";
@@ -254,14 +251,14 @@ fn test_3_3_4() -> TestCase {
                 },
                 TIMEOUT,
             ),
-            // Cleanup: revert security load state to Unloaded so subsequent tests
-            // (3.3.5 onward) aren't affected by the Loaded state. We also clear the
-            // SIAT and P2P key table entries by writing count=0.
-            comment("Cleanup: revert security state for subsequent tests"),
+            // Cleanup: revert security load state to Unloaded and clear the P2P
+            // key table so subsequent tests start clean. The #EDI SIAT entry is
+            // intentionally *left in place* (matching the official template,
+            // which performs no SIAT clear here) so test 3.3.15 can read it back
+            // and confirm the non-tool per-IA seqnr is 1.
+            comment("Cleanup: revert load state + clear P2P key table (keep #EDI SIAT entry)"),
             inject_secure_ac(SEC_LOAD_UNLOADED, "TK1"),
             expect_secure_ac(SEC_LOAD_RESP_OK, "TK1", TIMEOUT),
-            inject_secure_ac(CLEAR_SIAT, "TK1"),
-            expect_secure_ac(CLEAR_SIAT_OK, "TK1", TIMEOUT),
             inject_secure_ac(CLEAR_P2P, "TK1"),
             expect_secure_ac(CLEAR_P2P_OK, "TK1", TIMEOUT),
         ])
@@ -364,6 +361,14 @@ fn test_3_3_14() -> TestCase {
 fn test_3_3_15() -> TestCase {
     const HIGH_SEQ: u64 = 5_000_000_000;
 
+    // After the two tool syncs, read PID 54 entry 1 and check it still holds
+    // #EDI with non-tool LastValidSeqNr = 1 (written by 3.3.4). This is the
+    // template's read-back: it proves the *non-tool* per-IA seqnr is unaffected
+    // by the tool-access sync (the two counters are independent — NOTE 104) and
+    // that PID 54 reads return the live value from the store (03/05/01 §6.3.8).
+    const READ_SIAT_EDI: &str = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 36 01 00 01";
+    const READ_SIAT_EDI_SEQ1: &str = "3C 60 #BDUT_ADDR #EDI 11 01 CD 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 01";
+
     TestCase::new("3.3.15 correct S-A_Sync_Req-PDU – Sequence number local higher to that expected by BDUT – P2P")
         .with_steps(vec![
             wait(1500), // Sync rate limit.
@@ -374,25 +379,24 @@ fn test_3_3_15() -> TestCase {
             comment("Send sync req with SeqNr_local = 5,000,000,001 (increment)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", HIGH_SEQ + 1, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(HIGH_SEQ + 1), TIMEOUT),
-            // NOTE: The XML test also reads PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE
-            // to verify non-tool seq is unaffected by tool sync. We skip this
-            // secondary verification because it depends on test 3.3.4 having
-            // written the SIAT entry first (test ordering dependency).
+            comment("Read PID 54 entry 1: #EDI's non-tool seq is still 1 (set in 3.3.4)"),
+            inject_secure_ac(READ_SIAT_EDI, "TK1"),
+            expect_secure_ac(READ_SIAT_EDI_SEQ1, "TK1", TIMEOUT),
         ])
 }
 
 /// 3.3.16: SeqNr_local identical to that expected by BDUT.
 ///
-/// After 3.3.15, the DUT's stored tool receiving seq is 5,000,000,000.
-/// Sending SeqNr_local = 5,000,000,002 (one more than the last sync's
-/// 5,000,000,001) is "identical to expected" → DUT responds with the same.
+/// After 3.3.15, the DUT's stored tool receiving seq is 5,000,000,001.
+/// Sending SeqNr_local = 5,000,000,002 is "identical to expected" (the value
+/// the DUT next expects) → DUT responds with the same value.
 fn test_3_3_16() -> TestCase {
     const EXPECTED_SEQ: u64 = 5_000_000_002;
 
     TestCase::new("3.3.16 correct S-A_Sync_Req-PDU – Sequence number local identical to that expected by BDUT – P2P")
         .with_steps(vec![
             wait(1500), // Sync rate limit.
-            comment("Send sync req with SeqNr_local = 5,000,000,002 (matches stored + 1)"),
+            comment("Send sync req with SeqNr_local = 5,000,000,002 (identical to expected)"),
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", EXPECTED_SEQ, CHALLENGE_1),
             expect_sync_res_tool("TK1", CHALLENGE_1, None, Some(EXPECTED_SEQ), TIMEOUT),
         ])

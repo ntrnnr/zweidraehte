@@ -30,7 +30,7 @@
 //! # Sequence-number persistence
 //!
 //! Sequence numbers live on an external SPI FRAM (Infineon FM25L16B)
-//! wired to SPI2 — see [`FramSeqStorage`]. Every outbound secure
+//! wired to SPI2 — see `FramKv`. Every outbound secure
 //! frame writes the updated counter through to FRAM before the
 //! telegram goes on the bus, so cross-reboot replay protection holds
 //! even through power loss.
@@ -63,7 +63,8 @@ use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
 use stm32_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
-use stm32_common::{FlashSecureIdentityData, Fm25l16b, FramSeqStorage, Stm32CommonRng, StmFlashStorage};
+use stm32_common::{FlashSecureIdentityData, Fm25l16b, FramKv, Stm32CommonRng, StmFlashStorage};
+use zweidraehte_device::kvstore::SiatStore;
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -150,7 +151,7 @@ const P2P_SIZE: usize = 0;
 /// device still needs `SIAT > 0`. Sized to 32 to cover a realistic
 /// installation where up to 32 distinct KNX devices send secure group
 /// telegrams into this light switch. Also sizes the FRAM peer slots
-/// in [`FramSeqStorage`] since those persist the same seqnr values
+/// in `FramKv` since those persist the same seqnr values
 /// outside the power-cycle-volatile SIAT runtime state.
 const SIAT_SIZE: usize = 32;
 
@@ -162,17 +163,19 @@ const SIAT_SIZE: usize = 32;
 type FramSpi = Spi<'static, Blocking, embassy_stm32::spi::mode::Master>;
 
 /// Concrete CS output for the FRAM. Built from `'static` peripherals
-/// so the `FramSeqStorage` can live inside the `'static` stack state.
+/// so the store can live inside the `'static` stack state.
 type FramCs = Output<'static>;
 
-/// Full concrete type of the persistent sequence-number store.
-type Stm32G0SeqStorage = FramSeqStorage<FramSpi, FramCs, SIAT_SIZE>;
+/// Persistent sequence/SIAT store: the SIAT view over the FRAM key-value
+/// backend. FRAM has unlimited endurance, so `K = 1` (write-through, no
+/// sending-counter skip-ahead) — every counter update is durable immediately.
+type Stm32G0SeqStorage = SiatStore<FramKv<FramSpi, FramCs, SIAT_SIZE>, SIAT_SIZE, 1>;
 
 /// Runtime state alias — the vanilla secure TP1 state. The RNG that
 /// the Secure Application Layer consumes during `S-A_Sync` is plugged
 /// in via `type Rng = Stm32CommonRng;` on the stack definition below,
 /// so we don't need a newtype wrapper on the state type.
-type Stm32G0SecureState = SecureTp1StateFor<Stm32G0SecureLightSwitch, Stm32G0SeqStorage, P2P_SIZE, SIAT_SIZE>;
+type Stm32G0SecureState = SecureTp1StateFor<Stm32G0SecureLightSwitch, Stm32G0SeqStorage, P2P_SIZE>;
 
 type Storage = StmFlashStorage<Stm32G0SecureState, FlashSecureIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
 
@@ -220,7 +223,6 @@ zweidraehte_device::system_b_standard_stack! {
         Stm32G0SeqStorage,
         { Self::ADT_ENTRIES },
         P2P_SIZE,
-        SIAT_SIZE,
         { Self::COT_ENTRIES },
     >,
     state: Stm32G0SecureState,
@@ -620,7 +622,8 @@ async fn main(spawner: Spawner) {
     static FRAM_WP: StaticCell<Output<'static>> = StaticCell::new();
     FRAM_WP.init(Output::new(p.PB9, Level::High, Speed::Low));
     let fram_driver = Fm25l16b::new(fram_spi, fram_cs);
-    let seq_storage: Stm32G0SeqStorage = FramSeqStorage::new(fram_driver);
+    let seq_storage: Stm32G0SeqStorage =
+        SiatStore::boot(FramKv::new(fram_driver)).expect("boot the FRAM sequence/SIAT store");
     info!("FRAM seq storage online (SPI2 @ 4 MHz, 2 KiB FM25L16B)");
 
     // --- Persistent storage --------------------------------------------------
