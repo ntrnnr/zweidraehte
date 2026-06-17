@@ -31,8 +31,13 @@ defmt = { workspace = true }
 portable-atomic = { version = "1.5", features = ["critical-section"] }
 critical-section = "1.2.0"
 
-# Heapless collections — needed by the SIAT receive cache in `RamSeqStorage`.
+# Heapless collections — used by the SIAT view (`SiatStore`) and the KV mirror.
 heapless = { workspace = true }
+
+# Shared persistence backends and the FlashIo seam (the generic ConfigStore
+# the StmFlashStorage alias is built on, plus the wear-levelled / verbatim KV
+# backends used by other STM32 firmware).
+embedded-common = { path = "../embedded-common" }
 
 # KNX stack and platform traits
 zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }

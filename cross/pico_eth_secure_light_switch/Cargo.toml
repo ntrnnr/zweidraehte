@@ -38,7 +38,7 @@ zweidraehte-device = { path = "../../crates/zweidraehte-device", default-feature
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
 devices = { path = "../../examples/devices", default-features = false, features = ["defmt"] }
 
-# Shared RP platform code (FlashSecureIdentityData, RpCommonRng, RamSeqStorage)
+# Shared RP platform code (FlashSecureIdentityData, RpCommonRng, RpWearLeveledKv)
 rp-common = { path = "../rp-common", features = ["rp2040"] }
 # HAL-agnostic helpers (DebouncedButton, CortexMSystem)
 embedded-common = { path = "../embedded-common" }

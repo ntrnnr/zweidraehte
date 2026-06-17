@@ -420,7 +420,8 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             // PID 59 SEQUENCE_NUMBER_SENDING — the device's single Sequence Number
             // Sending (KNX 03/03/07 §5.x). ETS writes this to advance the counter
             // it expects the device to use for *all* outgoing secure frames (group
-            // and tool-access), so we apply it to both storage slots in lockstep.
+            // and tool-access); the store holds it as one singleton, so a single
+            // write through `save_sending_seq` covers every send path.
             pid::security::SEQUENCE_NUMBER_SENDING => {
                 if req.start_idx == 0 {
                     Ok(WriteResponse::Echo)
@@ -434,7 +435,12 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
                         return Some(Err(PropertyError::ValueOutOfRange));
                     }
                     let mut storage = self.seq_storage.borrow_mut();
-                    let _ = storage.save_sending_seq(&value);
+                    // Propagate a persistence failure (matching the SIAT writes):
+                    // if the counter isn't durably stored, ETS must not believe
+                    // it advanced — a silent drop desyncs ETS from the device.
+                    if storage.save_sending_seq(&value).is_err() {
+                        return Some(Err(PropertyError::InvalidPropertyId));
+                    }
                     Ok(WriteResponse::Echo)
                 }
             }
@@ -743,16 +749,17 @@ fn write_siat_to_store<S: SiatAccess>(
         store.siat_set_count(new_count).map_err(|_| PropertyError::InvalidPropertyId)?;
         return Ok(WriteResponse::Echo);
     }
-    // Entry write(s): one or more contiguous 8-byte entries.
+    // Entry write(s): one or more contiguous 8-byte entries. The store is
+    // IA-keyed, so the array index `req.start_idx` selects is not threaded
+    // through — each entry is upserted by its own IA.
     if req.data.is_empty() || req.data.len() % 8 != 0 {
         return Err(PropertyError::TypeMismatch);
     }
-    let start = req.start_idx - 1;
-    for (i, chunk) in req.data.chunks_exact(8).enumerate() {
+    for chunk in req.data.chunks_exact(8) {
         let ia = u16::from_be_bytes([chunk[0], chunk[1]]);
         let mut seq = [0u8; 6];
         seq.copy_from_slice(&chunk[2..8]);
-        store.siat_write_entry(start + i as u16, ia, seq).map_err(|_| PropertyError::InvalidPropertyId)?;
+        store.siat_write_entry(ia, seq).map_err(|_| PropertyError::InvalidPropertyId)?;
     }
     Ok(WriteResponse::Echo)
 }

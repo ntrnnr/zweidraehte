@@ -106,7 +106,7 @@ const FLASH_PAGE_SIZE: u32 = 2 * 1024;
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1;
 
 type Stm32G0State = Tp1StateFor<Stm32G0LightSwitch>;
-type Storage = StmFlashStorage<Stm32G0State, FlashIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
+type Storage = StmFlashStorage<Stm32G0State, FlashIdentityData>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0LightSwitch;
@@ -606,7 +606,7 @@ async fn main(spawner: Spawner) {
     info!("USART3 initialized (115200 8N1, PB2=TX, PB0=RX)");
 
     // --- Persistent storage --------------------------------------------------
-    let mut storage = Storage::new(flash_hw, identity_data);
+    let mut storage = stm32_common::stm_flash_storage::<Stm32G0State, _>(flash_hw, identity_data);
     let loaded_config = match storage.load_config() {
         Ok(Some(c)) => {
             info!("Loaded device config from flash");

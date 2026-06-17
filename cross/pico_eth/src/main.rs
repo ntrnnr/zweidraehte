@@ -494,7 +494,7 @@ async fn main(spawner: Spawner) {
     // runtime state. We need the IP assignment method to decide whether
     // to configure the embassy-net stack with DHCP or static IP before
     // creating it. load_config() deserializes the raw config for this.
-    let mut storage = RpFlashStorage::<PicoEthState, _>::new(flash, identity_data);
+    let mut storage = rp_common::rp_flash_storage::<PicoEthState, _>(flash, identity_data);
     let loaded_config = storage.load_config().ok().flatten();
     let ip_config = loaded_config.as_ref().map(|c| &c.extension_config);
 

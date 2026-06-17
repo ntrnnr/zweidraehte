@@ -31,11 +31,13 @@
 //!
 //! - `GRP`: Max Group Key Table entries (typically matches association table size)
 //! - `P2P`: Max P2P Key Table entries (zero for group-only secure devices)
-//! - `SIAT`: Max SIAT entries — LastValidSeqNr slots for every non-tool
-//!   secure sender IA (03/03/07 §5.3), so this must cover the union of
-//!   P2P + group-secure senders. Always strictly positive on a secure
-//!   device, even when `P2P = 0`.
 //! - `GO`: Max GO security flag entries (typically matches communication object count)
+//!
+//! The Security Individual Address Table is **not** a const generic on the
+//! secure extension. Its capacity is the `N` of the
+//! [`SiatStore`](crate::kvstore::SiatStore) chosen for the `SEQ` type parameter
+//! — the SIAT is the sequence store (one LastValidSeqNr slot per non-tool secure
+//! sender IA, 03/03/07 §5.3), not a separate table.
 
 mod augment;
 
@@ -52,8 +54,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::HasSecurityMode;
 use crate::StackDefinition;
-#[cfg(feature = "knxip")]
-use crate::bcus::system_b::IpExtensionState;
 use crate::bcus::system_b::{
     Extension, ExtensionConfig, ExtensionState, RfExtensionState, RfRetransmitterExtension, SystemBDeviceState,
     Tp1ExtensionState,
@@ -316,16 +316,15 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig for Se
 
 /// Runtime security state with interior mutability.
 ///
-/// Holds security mode, tool key, load state, group key table, and
-/// GO security flags. Table data is behind `RefCell` for interior
+/// Holds security mode, tool key, load state, the group-key, P2P-key, and
+/// GO-security-flag tables. Table data is behind `RefCell` for interior
 /// mutability during property writes.
 ///
-/// The `from_config`/`to_config` glue is hand-written rather than
-/// using `#[derive(ExtensionState)]`: the derive maps plain
-/// `Cell`/`RefCell` fields one-to-one, but the `SecurityTable` fields
-/// here need FDSK seeding on construction and the type is not an
-/// `ExtensionState` itself (it is embedded inside
-/// [`SecureExtensionState`], which is).
+/// The `from_config`/`to_config` glue is hand-written rather than using
+/// `#[derive(ExtensionState)]` because `SecurityState` is not itself an
+/// `ExtensionState` — it is embedded inside [`SecureExtensionState`], which is
+/// the top-level extension the derive applies to (and which seeds the FDSK in
+/// its own `from_config`).
 pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
     security_mode_enabled: Cell<bool>,
     /// Active tool key. The KNX spec defines this as the negotiated key
@@ -669,7 +668,11 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         self.security_mode_enabled.set(false);
         self.tool_key.set([0u8; 16]);
         self.load_state.set(LoadState::Unloaded);
+        // Clear all security key tables together (03/05/01 §6.3.4 groups P2P
+        // keys, group keys, and the SIAT as the security tables). The SIAT
+        // lives in the sequence store and is cleared on its own erase path.
         self.grp_keys.borrow_mut().clear();
+        self.p2p_keys.borrow_mut().clear();
         self.go_flags.borrow_mut().clear();
         self.failures_log.borrow_mut().clear();
         self.clear_security_report();
@@ -1184,6 +1187,21 @@ pub struct SecureResources<Inner: ExtensionState, SEQ> {
     pub fdsk: [u8; 16],
 }
 
+impl<Inner: ExtensionState, SEQ> SecureResources<Inner, SEQ>
+where
+    Inner::Resources: Default,
+{
+    /// Build resources for a leaf secure device whose inner medium extension
+    /// needs no resources of its own (`Inner::Resources` defaults — e.g. `()`
+    /// for TP1/RF). Mirrors [`SystemBStateInit::new`](crate::bcus::system_b::SystemBStateInit::new)
+    /// so the `inner: Default::default()` field never has to be spelled at the
+    /// call site. Devices whose inner *does* carry resources (e.g. the IP Secure
+    /// interface's `IpSecureResources`) construct the struct directly instead.
+    pub fn simple(seq_storage: SEQ, fdsk: [u8; 16]) -> Self {
+        Self { inner: Default::default(), seq_storage, fdsk }
+    }
+}
+
 /// Near-exhaustion threshold for the 6-byte (48-bit) tool sending
 /// SeqNr: `FF 00 00 00 00 00`. A factory reset re-initialises the
 /// counter only at or above this value (03/05/01 §6.1.4 + AN194).
@@ -1249,7 +1267,7 @@ impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const 
                 // Values below threshold are preserved across reset —
                 // receivers have already seen them and would reject any
                 // re-init with a lower value as a replay.
-                use crate::layers::secure_application::outgoing::seq6_to_u64;
+                use crate::kvstore::seq6_to_u64;
                 let mut storage = self.seq_storage.borrow_mut();
                 if let Ok(seq) = storage.load_sending_seq() {
                     // Re-initialise the single Sequence Number Sending only once it
@@ -1347,7 +1365,11 @@ where
 pub type SecureTp1ExtensionState<SEQ, const GRP: usize, const P2P: usize, const GO: usize> =
     SecureExtensionState<Tp1ExtensionState, SEQ, GRP, P2P, GO>;
 
-/// TP1 device state with Data Secure support.
+/// TP1 device state with Data Secure support, sized from raw table byte sizes.
+///
+/// Used where there is no [`SystemBStackDefinition`] to project sizes from (the
+/// conformance harness, pinned to a custom `Mem`); devices that have one size
+/// their state through `SecureTp1StateFor` in `definition.rs` instead.
 ///
 /// `GRP` (group key table capacity) and `GO` (GO security flags table
 /// capacity) are **entry counts** derived from the byte-size parameters:
@@ -1356,10 +1378,11 @@ pub type SecureTp1ExtensionState<SEQ, const GRP: usize, const P2P: usize, const 
 /// and the GO flags table one byte per communication object
 /// (`(COT_SIZE - 2) / 2`).
 ///
-/// `P2P` sizes the P2P Key Table. `SIAT` sizes the Security Individual
-/// Address Table — per 03/03/07 §5.3 this must cover the union of P2P
-/// and group-secure senders, so a device that does no P2P traffic but
-/// receives secure group telegrams still needs `SIAT > 0`.
+/// `P2P` sizes the P2P Key Table. The Security Individual Address Table is **not**
+/// a parameter here — its capacity is the `N` of the
+/// [`SiatStore`](crate::kvstore::SiatStore) chosen for `SEQ` (the SIAT lives in
+/// the sequence store, not as a const generic). Per 03/03/07 §5.3 that `N` must
+/// cover the union of P2P and group-secure senders.
 pub type SecureTp1DeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -1380,80 +1403,12 @@ pub type SecureTp1DeviceState<
 pub type SecureRfExtensionState<SEQ, const GRP: usize, const P2P: usize, const GO: usize> =
     SecureExtensionState<RfExtensionState, SEQ, GRP, P2P, GO>;
 
-/// KNX-RF device state with Data Secure support. The RF analogue of
-/// [`SecureTp1DeviceState`]; see its docs for the `GRP`/`GO`/`SIAT` sizing
-/// rationale (03/03/07 §5.3).
-pub type SecureRfDeviceState<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D,
-    SEQ,
-    const P2P: usize,
-> = SystemBDeviceState<
-    ADT_SIZE,
-    AST_SIZE,
-    COT_SIZE,
-    D,
-    SecureRfExtensionState<SEQ, { (ADT_SIZE - 2) / 2 }, P2P, { (COT_SIZE - 2) / 2 }>,
->;
-
 /// KNX-RF **retransmitter** extension state with Data Secure support. As
 /// [`SecureRfExtensionState`], but the wrapped inner extension is
 /// [`RfRetransmitterExtension`], so the device also gains the PID 57 / PID 74
 /// retransmitter surface (`SecureExtensionState<RfRetransmitterExtension<RfExtensionState>, …>`).
 pub type SecureRfRetransmitterExtensionState<SEQ, const GRP: usize, const P2P: usize, const GO: usize> =
     SecureExtensionState<RfRetransmitterExtension, SEQ, GRP, P2P, GO>;
-
-/// KNX-RF retransmitter device state with Data Secure support; the retransmitter
-/// analogue of [`SecureRfDeviceState`].
-pub type SecureRfRetransmitterDeviceState<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D,
-    SEQ,
-    const P2P: usize,
-> = SystemBDeviceState<
-    ADT_SIZE,
-    AST_SIZE,
-    COT_SIZE,
-    D,
-    SecureRfRetransmitterExtensionState<SEQ, { (ADT_SIZE - 2) / 2 }, P2P, { (COT_SIZE - 2) / 2 }>,
->;
-
-#[cfg(feature = "knxip")]
-/// KNX/IP extension state with Data Secure support.
-///
-/// Tunnelling-capable secure devices wrap
-/// [`IpInterfaceExtension`](super::IpInterfaceExtension) instead, so
-/// this typedef carries no tunnelling slot count.
-pub type SecureIpExtensionState<SEQ, const CAPS: u16, const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<IpExtensionState<CAPS>, SEQ, GRP, P2P, GO>;
-
-#[cfg(feature = "knxip")]
-/// KNX/IP device state with Data Secure support.
-///
-/// Like [`SecureTp1DeviceState`], `GRP` and `GO` are **entry counts**
-/// derived from the `ADT_SIZE`/`COT_SIZE` byte sizes. `P2P`, `SIAT`,
-/// and the IP-specific `CAPS` (capability flags) remain as independent
-/// parameters. See the `SecureTp1DeviceState` docs for the SIAT vs.
-/// P2P sizing rationale (03/03/07 §5.3).
-pub type SecureIpDeviceState<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D,
-    SEQ,
-    const P2P: usize,
-    const CAPS: u16,
-> = SystemBDeviceState<
-    ADT_SIZE,
-    AST_SIZE,
-    COT_SIZE,
-    D,
-    SecureIpExtensionState<SEQ, CAPS, { (ADT_SIZE - 2) / 2 }, P2P, { (COT_SIZE - 2) / 2 }>,
->;
 
 #[cfg(test)]
 mod tests {

@@ -25,10 +25,7 @@ pub use operation_mode::{
 
 pub mod security;
 pub use security::{
-    HasSecurityState, HasSeqStorage, SecureExtensionConfig, SecureExtensionState, SecureResources, SecureRfDeviceState,
-    SecureRfExtensionState, SecureRfRetransmitterDeviceState, SecureRfRetransmitterExtensionState,
-    SecureTp1DeviceState, SecureTp1ExtensionState, SecurityAugment, SecurityExtensionConfig, SecurityFailureType,
-    SecurityFailuresLog, SecurityState, SecurityTable,
+    HasSecurityState, HasSeqStorage, SecureExtensionConfig, SecureExtensionState, SecureResources,
+    SecureRfExtensionState, SecureRfRetransmitterExtensionState, SecureTp1DeviceState, SecureTp1ExtensionState,
+    SecurityAugment, SecurityExtensionConfig, SecurityFailureType, SecurityFailuresLog, SecurityState, SecurityTable,
 };
-#[cfg(feature = "knxip")]
-pub use security::{SecureIpDeviceState, SecureIpExtensionState};

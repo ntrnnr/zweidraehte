@@ -12,7 +12,6 @@ pub mod flash_seq;
 mod net;
 mod network_info;
 pub mod prov_storage;
-pub mod ram_seq;
 pub mod rng;
 pub mod storage;
 pub mod uart;
@@ -29,6 +28,5 @@ pub use prov_storage::synthesize_and_write;
 pub use prov_storage::{identity_from_record, secure_identity_from_record};
 #[cfg(feature = "rp2040")]
 pub use prov_storage::{read_provisioning, write_provisioning};
-pub use ram_seq::RamSeqStorage;
 pub use rng::RpCommonRng;
-pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, RpFlashStorage};
+pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, RpFlashStorage, rp_flash_storage};

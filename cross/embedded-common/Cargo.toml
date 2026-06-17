@@ -32,6 +32,11 @@ embassy-sync = { workspace = true }
 # Inline (no_alloc) collections for the persistence backends' RAM mirrors.
 heapless = { workspace = true }
 
+# Config-store codec: postcard-serialised device state in the flash config
+# region (the same format both per-crate stores used before unification).
+postcard = { workspace = true }
+serde = { workspace = true }
+
 # A critical-section impl is required to link the host test binary (embassy
 # pulls critical-section in); embedded firmware gets the impl from cortex-m.
 critical-section = "1.2.0"
@@ -42,5 +47,9 @@ critical-section = "1.2.0"
 tp1 = ["zweidraehte-device/tp1"]
 
 # Enabled by host-side tests only so the persistence backend tests can link
-# against a critical-section impl. Embedded firmware never sets this.
-test-host = ["critical-section/std"]
+# on the host. Pulls in a critical-section impl and an `embassy-time` driver
+# (the `embassy-time` dep emits `_embassy_time_now`); defmt's `_defmt_*`
+# symbols are satisfied by the no-op `#[defmt::global_logger]` in the test
+# module. Embedded firmware never sets this; it gets all three from the
+# cortex-m runtime / chip HAL / defmt-rtt.
+test-host = ["critical-section/std", "embassy-time/mock-driver"]

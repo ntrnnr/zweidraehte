@@ -48,14 +48,16 @@ use super::stack::{
 ///
 /// `GRP` and `GO` are not declared here — `SecureTp1DeviceState`
 /// derives them as entry counts from the `ADT_SIZE`/`COT_SIZE` byte
-/// sizes, and the explicit spellings below use
-/// `table_sizes::{ADT_ENTRIES, COT_ENTRIES}`. `P2P` (P2P Key Table)
-/// and `SIAT` (Security Individual Address Table) are independent per
-/// 03/03/07 §5.3.
+/// sizes. `P2P` is the P2P Key Table capacity. `SIAT` is **not** a const
+/// on the secure device state — it is the `N` of the `SiatStore` (the
+/// SIAT lives in the sequence store, here [`ShmSiatStore`]); the value
+/// below is passed as that `N` and must cover the union of P2P +
+/// group-secure senders (03/03/07 §5.3).
 pub mod sec_table_sizes {
     /// Max P2P Key Table entries.
     pub const P2P: usize = 8;
-    /// Max SIAT entries (union of P2P + group-secure senders).
+    /// Max SIAT entries — the `SiatStore` capacity (union of P2P +
+    /// group-secure senders).
     pub const SIAT: usize = 8;
 }
 
@@ -122,7 +124,7 @@ impl SecureConformanceState {
         let identity = StaticSecureIdentity::new(SECURE_SERIAL_NUMBER, SECURE_FDSK);
         let seq_storage = SiatStore::boot(IpcSecureConformanceTestStack::create_seq_storage())
             .expect("shm seq store boot is infallible");
-        let resources = SecureResources { inner: (), seq_storage, fdsk: SECURE_FDSK };
+        let resources = SecureResources::simple(seq_storage, SECURE_FDSK);
         let inner = SecureInnerState::new(identity, ConformanceComObjects::new(), resources);
 
         // Set the secure conformance test individual address (1.0.1 = 0x1001).
@@ -916,210 +918,55 @@ impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
 // Sequence Number Storage
 // ============================================================================
 
-use zweidraehte_device::kvstore::{KeyValueStore, NS_SENDING, NS_SIAT, NS_TOOL, SiatStore};
+use zweidraehte_device::kvstore::SiatStore;
+use zweidraehte_device::kvstore::packed_seq::{ByteRegion, PackedSeqStore};
 use zweidraehte_device::storage::HasSequenceStorage;
 
-/// Sequence number storage backed by shared memory.
+/// A [`ByteRegion`] over the `mmap(MAP_SHARED)` seq region, addressed by a raw
+/// pointer.
 ///
-/// Reads and writes directly to the `mmap(MAP_SHARED)` region at a fixed
-/// offset. Writes are immediately visible to the parent and survive child
-/// process restarts (the parent holds the memfd).
-///
-/// Layout at `ptr`: `[magic: 4B "SEQ\0"] [sending: 6B]`
-pub struct ShmSeqStorage {
+/// Reads and writes go directly to the mapping, so they are immediately visible
+/// to the parent and survive child-process restarts (the parent holds the
+/// memfd). The packed layout and all the offset/peer-table logic live in
+/// [`PackedSeqStore`]; this is purely the medium, the host-side twin of the
+/// embedded `FramRegion`.
+pub struct ShmRegion {
     ptr: *mut u8,
 }
 
-const SEQ_MAGIC: [u8; 4] = *b"SEQ\0";
-
 // SAFETY: The embassy executor is single-threaded — no concurrent access.
-unsafe impl Send for ShmSeqStorage {}
-unsafe impl Sync for ShmSeqStorage {}
+unsafe impl Send for ShmRegion {}
+unsafe impl Sync for ShmRegion {}
 
-impl ShmSeqStorage {
-    /// Create from a raw pointer to the 16-byte seq region in shared memory.
-    ///
+impl ShmRegion {
     /// # Safety
-    /// `ptr` must be valid for the lifetime of this storage and point to
-    /// at least 16 writable bytes in a `MAP_SHARED` region.
+    /// `ptr` must be valid for the lifetime of this region and point to at
+    /// least [`packed_seq::region_len(16)`](zweidraehte_device::kvstore::packed_seq::region_len)
+    /// writable bytes in a `MAP_SHARED` region.
     pub unsafe fn from_ptr(ptr: *mut u8) -> Self {
         Self { ptr }
     }
-
-    fn has_magic(&self) -> bool {
-        let mut magic = [0u8; 4];
-        unsafe { core::ptr::copy_nonoverlapping(self.ptr, magic.as_mut_ptr(), 4) };
-        magic == SEQ_MAGIC
-    }
-
-    fn write_magic(&mut self) {
-        unsafe { core::ptr::copy_nonoverlapping(SEQ_MAGIC.as_ptr(), self.ptr, 4) };
-    }
-
-    fn peer_count(&self) -> usize {
-        let mut count = [0u8; 2];
-        unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(SHM_PEER_COUNT_OFFSET), count.as_mut_ptr(), 2) };
-        u16::from_be_bytes(count) as usize
-    }
-
-    fn set_peer_count(&mut self, count: usize) {
-        let bytes = (count as u16).to_be_bytes();
-        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.ptr.add(SHM_PEER_COUNT_OFFSET), 2) };
-    }
 }
 
-// Shared memory layout for sequence number storage:
-//
-// Offset 0:   magic(4)            "SEQ\0"
-// Offset 4:   sending(6)          single Sequence Number Sending
-// Offset 10:  tool_receiving(6)   Tool access receiving SeqNr (last valid)
-// Offset 16:  peer_count(2)       Number of peer entries
-// Offset 18:  peer_entries[N]     N entries of: peer_ia(2) + last_valid_seq(6) = 8 bytes each
-//
-// Max 16 peers → total = 4+6+6+2+(16*8) = 146 bytes.
-const SHM_SENDING_OFFSET: usize = 4;
-const SHM_TOOL_RECV_OFFSET: usize = 10;
-const SHM_PEER_COUNT_OFFSET: usize = 16;
-const SHM_PEER_ENTRIES_OFFSET: usize = 18;
-const SHM_PEER_ENTRY_SIZE: usize = 8;
-const SHM_MAX_PEERS: usize = 16;
-
-impl ShmSeqStorage {
-    fn read_at(&self, offset: usize, buf: &mut [u8]) {
-        unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(offset), buf.as_mut_ptr(), buf.len()) };
-    }
-    fn write_at(&mut self, offset: usize, data: &[u8]) {
-        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(offset), data.len()) };
-    }
-    /// Offset of the peer entry for `ia`, or `None` if absent.
-    fn peer_offset(&self, ia: u16) -> Option<usize> {
-        let ia_bytes = ia.to_be_bytes();
-        for i in 0..self.peer_count() {
-            let offset = SHM_PEER_ENTRIES_OFFSET + i * SHM_PEER_ENTRY_SIZE;
-            let mut stored = [0u8; 2];
-            self.read_at(offset, &mut stored);
-            if stored == ia_bytes {
-                return Some(offset);
-            }
-        }
-        None
-    }
-}
-
-/// `KeyValueStore` over the shared-memory seq region. The namespaces map onto
-/// the existing fixed layout (sending / tool singletons + a per-IA peer table),
-/// so a `SiatStore` over this reconstructs the same data the old
-/// `SequenceNumberStorage` impl did, and the region stays parent-visible across
-/// DUT restarts.
-impl KeyValueStore for ShmSeqStorage {
+impl ByteRegion for ShmRegion {
     type Error = core::convert::Infallible;
 
-    fn get(&self, ns: u8, key: &[u8], buf: &mut [u8]) -> Result<Option<usize>, Self::Error> {
-        if !self.has_magic() {
-            return Ok(None);
-        }
-        match ns {
-            NS_SENDING => {
-                self.read_at(SHM_SENDING_OFFSET, &mut buf[..6]);
-                Ok(Some(6))
-            }
-            NS_TOOL => {
-                let mut seq = [0u8; 6];
-                self.read_at(SHM_TOOL_RECV_OFFSET, &mut seq);
-                if seq == [0u8; 6] {
-                    Ok(None) // all-zero = unset
-                } else {
-                    buf[..6].copy_from_slice(&seq);
-                    Ok(Some(6))
-                }
-            }
-            NS_SIAT => {
-                let ia = u16::from_be_bytes([key[0], key[1]]);
-                match self.peer_offset(ia) {
-                    Some(off) => {
-                        self.read_at(off + 2, &mut buf[..6]);
-                        Ok(Some(6))
-                    }
-                    None => Ok(None),
-                }
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn put(&mut self, ns: u8, key: &[u8], val: &[u8]) -> Result<(), Self::Error> {
-        self.write_magic();
-        match ns {
-            NS_SENDING => self.write_at(SHM_SENDING_OFFSET, &val[..6]),
-            NS_TOOL => self.write_at(SHM_TOOL_RECV_OFFSET, &val[..6]),
-            NS_SIAT => {
-                let ia = u16::from_be_bytes([key[0], key[1]]);
-                if let Some(off) = self.peer_offset(ia) {
-                    self.write_at(off + 2, &val[..6]);
-                } else {
-                    let count = self.peer_count();
-                    if count < SHM_MAX_PEERS {
-                        let off = SHM_PEER_ENTRIES_OFFSET + count * SHM_PEER_ENTRY_SIZE;
-                        self.write_at(off, &ia.to_be_bytes());
-                        self.write_at(off + 2, &val[..6]);
-                        self.set_peer_count(count + 1);
-                    }
-                }
-            }
-            _ => {}
-        }
+    fn read_at(&self, off: u16, buf: &mut [u8]) -> Result<(), Self::Error> {
+        unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(off as usize), buf.as_mut_ptr(), buf.len()) };
         Ok(())
     }
 
-    fn remove(&mut self, ns: u8, key: &[u8]) -> Result<(), Self::Error> {
-        // Only SIAT entries are removable (count truncation / clear). Remove by
-        // swapping the last entry into the freed slot and shrinking the count.
-        if ns != NS_SIAT {
-            return Ok(());
-        }
-        let ia = u16::from_be_bytes([key[0], key[1]]);
-        if let Some(off) = self.peer_offset(ia) {
-            let count = self.peer_count();
-            let last_off = SHM_PEER_ENTRIES_OFFSET + (count - 1) * SHM_PEER_ENTRY_SIZE;
-            if off != last_off {
-                let mut last = [0u8; SHM_PEER_ENTRY_SIZE];
-                self.read_at(last_off, &mut last);
-                self.write_at(off, &last);
-            }
-            self.set_peer_count(count - 1);
-        }
+    fn write_at(&mut self, off: u16, data: &[u8]) -> Result<(), Self::Error> {
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(off as usize), data.len()) };
         Ok(())
-    }
-
-    fn for_each(&self, ns: u8, f: &mut dyn FnMut(&[u8], &[u8])) {
-        if !self.has_magic() {
-            return;
-        }
-        match ns {
-            NS_SENDING => {
-                let mut seq = [0u8; 6];
-                self.read_at(SHM_SENDING_OFFSET, &mut seq);
-                f(&[0], &seq);
-            }
-            NS_TOOL => {
-                let mut seq = [0u8; 6];
-                self.read_at(SHM_TOOL_RECV_OFFSET, &mut seq);
-                if seq != [0u8; 6] {
-                    f(&[0], &seq);
-                }
-            }
-            NS_SIAT => {
-                for i in 0..self.peer_count() {
-                    let off = SHM_PEER_ENTRIES_OFFSET + i * SHM_PEER_ENTRY_SIZE;
-                    let mut entry = [0u8; SHM_PEER_ENTRY_SIZE];
-                    self.read_at(off, &mut entry);
-                    f(&entry[0..2], &entry[2..8]);
-                }
-            }
-            _ => {}
-        }
     }
 }
+
+/// Shared-memory sequence/SIAT store: [`PackedSeqStore`] over a [`ShmRegion`].
+///
+/// The mmap region is zero-filled by the kernel, which the layout relies on
+/// (the peer-count field reads 0 on first boot before any write).
+pub type ShmSeqStorage = PackedSeqStore<ShmRegion, 16>;
 
 /// Static pointer to the seq region in shared memory.
 /// Set by `dut_secure.rs` before stack creation.
@@ -1139,7 +986,7 @@ impl IpcSecureConformanceTestStack {
     /// and thread it through `StateInit` → `SecureResources`.
     pub fn create_seq_storage() -> ShmSeqStorage {
         let ptr = *SEQ_PTR.get().expect("set_seq_shm_ptr() must be called before stack creation");
-        unsafe { ShmSeqStorage::from_ptr(ptr as *mut u8) }
+        ShmSeqStorage::new(unsafe { ShmRegion::from_ptr(ptr as *mut u8) })
     }
 }
 
@@ -1228,7 +1075,7 @@ impl SecureConformanceState {
         // The SIAT lives in the (shared-memory) sequence store, which persists
         // across DUT restarts, so the store reconstructs the live SIAT on boot.
         let seq_storage = SiatStore::boot(seq_storage).expect("shm seq store boot is infallible");
-        let resources = SecureResources { inner: (), seq_storage, fdsk: SECURE_FDSK };
+        let resources = SecureResources::simple(seq_storage, SECURE_FDSK);
         let inner = SecureInnerState::from_config(identity, snapshot.inner, resources);
 
         Self {

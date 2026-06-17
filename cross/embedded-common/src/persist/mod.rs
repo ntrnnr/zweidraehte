@@ -24,7 +24,9 @@ pub const MAX_KEY: usize = 2;
 /// Maximum value width across all namespaces (SeqNr = 6 bytes).
 pub const MAX_VAL: usize = 6;
 
+mod config_store;
 mod flash_io;
+mod mirror;
 mod ram;
 mod verbatim;
 mod wear_leveled;
@@ -32,6 +34,7 @@ mod wear_leveled;
 #[cfg(test)]
 mod tests;
 
+pub use config_store::{ConfigStore, ConfigStoreError};
 pub use flash_io::FlashIo;
 pub use ram::RamKv;
 pub use verbatim::VerbatimKv;

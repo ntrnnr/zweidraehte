@@ -598,7 +598,7 @@ async fn main(spawner: Spawner) {
     // Persistent storage — peek at IP config before creating the stack
     // ========================================================================
 
-    let mut storage = RpFlashStorage::<PicoEthSecureState, _>::new(flash, identity_data.clone());
+    let mut storage = rp_common::rp_flash_storage::<PicoEthSecureState, _>(flash, identity_data.clone());
     let loaded_config = storage.load_config().ok().flatten();
     // The persisted IP config lives deeper than in `pico_eth`: the Data
     // Secure wrapper nests the medium config under `extension_config.inner`,

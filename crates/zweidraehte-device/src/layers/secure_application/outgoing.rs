@@ -34,16 +34,10 @@ use crate::storage::SequenceNumberStorage;
 /// value 1..255, must be non-zero — SeqNr 0 is ignored by the remote S-AL).
 pub(crate) const INITIAL_SENDING_SEQ: [u8; 6] = [0, 0, 0, 0, 0, 1];
 
-/// Decode a 6-octet big-endian sequence number to `u64`.
-pub(crate) fn seq6_to_u64(seq: &[u8; 6]) -> u64 {
-    u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]])
-}
-
-/// Encode the low 48 bits of `val` as a 6-octet big-endian sequence number.
-pub(crate) fn u64_to_seq6(val: u64) -> [u8; 6] {
-    let b = val.to_be_bytes();
-    [b[2], b[3], b[4], b[5], b[6], b[7]]
-}
+// The 6-octet ⇄ u64 sequence-number conversions live with the store
+// ([`crate::kvstore`]) — the SIAT is the single source of truth for sequence
+// state, so its codec is the one canonical copy.
+use crate::kvstore::{seq6_to_u64, u64_to_seq6};
 
 /// Reserve and persist the next sending sequence number.
 ///

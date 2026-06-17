@@ -37,7 +37,7 @@ zweidraehte-device = { path = "../../crates/zweidraehte-device", default-feature
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
 devices = { path = "../../examples/devices", default-features = false, features = ["defmt"] }
 
-# Shared STM32 platform code (DirectUart, StmFlashStorage, RamSeqStorage,
+# Shared STM32 platform code (DirectUart, StmFlashStorage, FramKv,
 # UidSeededRng, Stm32CommonSecureState)
 stm32-common = { path = "../stm32-common" }
 # HAL-agnostic helpers (DebouncedButton, CortexMSystem)

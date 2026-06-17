@@ -124,3 +124,46 @@ pub fn synthesize_and_write<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
     let record = ProvisioningRecord { serial, fdsk, mac };
     write_provisioning::<FLASH_SIZE, PAGE_SIZE>(flash, &record)
 }
+
+// ================================================================================
+// Secure-identity boot helper
+// ================================================================================
+
+/// Read the secure device identity (serial + FDSK) from the `KNXP` page — the
+/// boot step every secure STM32 firmware runs.
+///
+/// Production builds panic on a missing/invalid record. With `provision-on-boot`,
+/// a missing record is filled in by writing the supplied dev defaults and
+/// re-reading.
+///
+/// `dev_defaults` carries `(serial, fdsk, mac)` from the firmware's `build.rs`.
+/// Each device crate's `dev_provisioning` constants live in its own `OUT_DIR`,
+/// so they are passed in rather than referenced here. The parameter is read
+/// only under the feature; production callers pass `None` and the dev-synth arm
+/// is compiled out.
+pub fn load_secure_identity<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
+    flash: &mut Flash<'static, Blocking>,
+    #[cfg_attr(not(feature = "provision-on-boot"), allow(unused_variables))] dev_defaults: Option<(
+        [u8; 6],
+        [u8; 16],
+        [u8; 6],
+    )>,
+) -> FlashSecureIdentityData {
+    match read_provisioning::<FLASH_SIZE, PAGE_SIZE>(flash) {
+        Ok(rec) => secure_identity_from_record(&rec).unwrap_or_else(|e| defmt::panic!("KNXP missing FDSK: {:?}", e)),
+
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            defmt::warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            let (serial, fdsk, mac) = dev_defaults.expect("provision-on-boot requires dev defaults");
+            synthesize_and_write::<FLASH_SIZE, PAGE_SIZE>(flash, serial, Some(fdsk), Some(mac))
+                .expect("write dev KNXP");
+            let rec = read_provisioning::<FLASH_SIZE, PAGE_SIZE>(flash).expect("re-read freshly written KNXP");
+            secure_identity_from_record(&rec)
+                .unwrap_or_else(|e| defmt::panic!("KNXP missing FDSK after dev synth: {:?}", e))
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}

@@ -183,7 +183,7 @@ forward_to_field! {
 forward_to_field! {
     impl<[]> HasRfDomainAddress for RfRetransmitterExtension {
         out fn rf_domain_address(&self, out: &mut [u8; 6]);
-        out fn set_rf_domain_address(&self, addr: &[u8; 6]);
+        set fn set_rf_domain_address(&self, addr: &[u8; 6]);
     } => self.inner
 }
 
@@ -191,7 +191,7 @@ forward_to_field! {
     impl<[]> HasDomainAddress for RfRetransmitterExtension {
         const DOMAIN_ADDRESS_LENGTH: usize = <RfExtensionState as HasDomainAddress>::DOMAIN_ADDRESS_LENGTH;
         out fn domain_address(&self, buf: &mut [u8]);
-        out fn set_domain_address(&self, addr: &[u8]);
+        set fn set_domain_address(&self, addr: &[u8]);
     } => self.inner
 }
 

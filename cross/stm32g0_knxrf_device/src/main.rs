@@ -81,7 +81,7 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_RF;
 type Radio = Sx1211Adapter<Spi<'static, Blocking, Master>, Output<'static>, Output<'static>>;
 
 type Stm32G0State = RfStateFor<Stm32G0KnxRf>;
-type Storage = StmFlashStorage<Stm32G0State, FlashIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
+type Storage = StmFlashStorage<Stm32G0State, FlashIdentityData>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0KnxRf;
@@ -382,7 +382,7 @@ async fn main(spawner: Spawner) {
     let link_layer_builder = KnxRfLinkLayerBuilder::new(Sx1211Adapter::new(radio, pll_lock, threshold, irq0, data));
 
     // --- Persistent storage --------------------------------------------------
-    let mut storage = Storage::new(flash_hw, identity_data);
+    let mut storage = stm32_common::stm_flash_storage::<Stm32G0State, _>(flash_hw, identity_data);
     let loaded_config = match storage.load_config() {
         Ok(Some(c)) => {
             info!("Loaded device config from flash");

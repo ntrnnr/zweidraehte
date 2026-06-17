@@ -63,7 +63,7 @@ use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
 use stm32_common::uart::{DirectInterruptHandler, DirectUart, DirectUartRx, DirectUartTx};
-use stm32_common::{FlashSecureIdentityData, Fm25l16b, FramKv, Stm32CommonRng, StmFlashStorage};
+use stm32_common::{FlashSecureIdentityData, Fm25l16b, FramKv, Stm32CommonRng, StmFlashStorage, fram_kv};
 use zweidraehte_device::kvstore::SiatStore;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -177,7 +177,7 @@ type Stm32G0SeqStorage = SiatStore<FramKv<FramSpi, FramCs, SIAT_SIZE>, SIAT_SIZE
 /// so we don't need a newtype wrapper on the state type.
 type Stm32G0SecureState = SecureTp1StateFor<Stm32G0SecureLightSwitch, Stm32G0SeqStorage, P2P_SIZE>;
 
-type Storage = StmFlashStorage<Stm32G0SecureState, FlashSecureIdentityData, FLASH_SIZE, FLASH_PAGE_SIZE>;
+type Storage = StmFlashStorage<Stm32G0SecureState, FlashSecureIdentityData>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0SecureLightSwitch;
@@ -538,29 +538,15 @@ impl<P: InputPin + Wait> WaitForRelease for ReleaseWaiter<'_, P> {
 // first boot the unit looks identical to a factory-provisioned one.
 
 fn load_secure_identity(flash: &mut flash::Flash<'static, flash::Blocking>) -> FlashSecureIdentityData {
-    match stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash) {
-        Ok(rec) => stm32_common::secure_identity_from_record(&rec)
-            .unwrap_or_else(|e| defmt::panic!("KNXP missing FDSK: {:?}", e)),
+    // The boot logic is shared across all secure STM32 firmware
+    // (`stm32_common::load_secure_identity`); only the `provision-on-boot`
+    // dev defaults are device-local (rendered into this crate's `OUT_DIR`).
+    #[cfg(feature = "provision-on-boot")]
+    let dev_defaults = Some((dev_provisioning::DEV_SERIAL, dev_provisioning::DEV_FDSK, dev_provisioning::DEV_MAC));
+    #[cfg(not(feature = "provision-on-boot"))]
+    let dev_defaults = None;
 
-        #[cfg(feature = "provision-on-boot")]
-        Err(e) => {
-            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
-            stm32_common::synthesize_and_write::<FLASH_SIZE, FLASH_PAGE_SIZE>(
-                flash,
-                dev_provisioning::DEV_SERIAL,
-                Some(dev_provisioning::DEV_FDSK),
-                Some(dev_provisioning::DEV_MAC),
-            )
-            .expect("write dev KNXP");
-            let rec = stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash)
-                .expect("re-read freshly written KNXP");
-            stm32_common::secure_identity_from_record(&rec)
-                .unwrap_or_else(|e| defmt::panic!("KNXP missing FDSK after dev synth: {:?}", e))
-        }
-
-        #[cfg(not(feature = "provision-on-boot"))]
-        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
-    }
+    stm32_common::load_secure_identity::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash, dev_defaults)
 }
 
 // ================================================================================
@@ -623,11 +609,11 @@ async fn main(spawner: Spawner) {
     FRAM_WP.init(Output::new(p.PB9, Level::High, Speed::Low));
     let fram_driver = Fm25l16b::new(fram_spi, fram_cs);
     let seq_storage: Stm32G0SeqStorage =
-        SiatStore::boot(FramKv::new(fram_driver)).expect("boot the FRAM sequence/SIAT store");
+        SiatStore::boot(fram_kv(fram_driver)).expect("boot the FRAM sequence/SIAT store");
     info!("FRAM seq storage online (SPI2 @ 4 MHz, 2 KiB FM25L16B)");
 
     // --- Persistent storage --------------------------------------------------
-    let mut storage = Storage::new(flash_hw, identity_data.clone());
+    let mut storage = stm32_common::stm_flash_storage::<Stm32G0SecureState, _>(flash_hw, identity_data.clone());
     let loaded_config = match storage.load_config() {
         Ok(Some(c)) => {
             info!("Loaded device config from flash");
@@ -644,7 +630,7 @@ async fn main(spawner: Spawner) {
     };
 
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
-    let resources = SecureResources { inner: (), seq_storage, fdsk };
+    let resources = SecureResources::simple(seq_storage, fdsk);
     let state_init = SystemBStateInit { identity: identity_data, loaded_config, resources };
 
     static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();

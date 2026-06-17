@@ -255,25 +255,12 @@ where
 = SecureStateFor<D, super::extensions::RfRetransmitterExtension, SEQ, P2P>;
 
 /// KNX/IP Data Secure System B state for `D` using capability flags `CAPS`.
-/// The KNX/IP analogue of [`SecureTp1StateFor`]; pairs
-/// [`IpExtensionState`](super::extensions::IpExtensionState) with the Data
-/// Secure wrapper. (Tunnelling-capable secure devices wrap
-/// [`IpInterfaceExtension`](super::extensions::IpInterfaceExtension) and use
-/// [`SecureStateFor`] directly with that inner type.)
-#[cfg(feature = "knxip")]
-pub type SecureIpStateFor<D, SEQ, const CAPS: u16, const P2P: usize>
-where
-    D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::IpExtensionState<CAPS>, SEQ, P2P>;
-
 /// KNX/IP **Secure-interface** Data Secure System B state for `D` — the state
 /// shape for a device that combines KNX IP Secure (secure routing / secure
 /// tunnelling, PIDs 91–97 + tunnelling-user table) **and** KNX Data Secure
 /// (encrypted group telegrams).
 ///
-/// This is [`SecureIpStateFor`]'s sibling: rather than wrapping the plain
-/// [`IpExtensionState`](super::extensions::IpExtensionState), it wraps the
-/// IP **Secure** interface extension
+/// It wraps the IP **Secure** interface extension
 /// [`IpSecureInterfaceExtensionFor`](super::extensions::IpSecureInterfaceExtensionFor)
 /// (itself `IpInterfaceExtension` + the IP Secure secrets) as the `Inner` of
 /// the Data Secure wrapper, realising the composition documented on
@@ -283,9 +270,10 @@ where
 /// `F` is the KNX/IP [`FeatureSet`](crate::layers::linklayers::knxip::features::FeatureSet)
 /// (it fixes the tunnelling capacity and KNXnet/IP device capabilities);
 /// `MAX_PW` / `MAX_TU` size the IP Secure password-hash and tunnelling-user
-/// tables; `P2P` / `SIAT` size the Data Secure P2P key table and Security
-/// Individual Address Table (see [`SecureTp1StateFor`] for the 03/03/07 §5.3
-/// `SIAT > 0` rationale). Pair it with
+/// tables; `P2P` sizes the Data Secure P2P key table. The Security Individual
+/// Address Table is sized by the `N` of the [`SiatStore`](crate::kvstore::SiatStore)
+/// chosen for `SEQ`, not a const here (see [`SecureTp1StateFor`] for the
+/// 03/03/07 §5.3 rationale). Pair it with
 /// `type LayerBuilder = SecureIpDeviceBuilder` and
 /// `resources: SecureResources<IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ>`.
 #[cfg(feature = "ip-secure")]
@@ -303,7 +291,7 @@ where
 /// `GO = COT_ENTRIES`: one flag byte per communication object) and the
 /// ADT/AST/COT projection off `D::DEVICE`. The medium-specific aliases
 /// ([`SecureTp1StateFor`], [`SecureRfStateFor`],
-/// [`SecureRfRetransmitterStateFor`], [`SecureIpStateFor`]) are thin
+/// [`SecureRfRetransmitterStateFor`], [`SecureIpInterfaceStateFor`]) are thin
 /// wrappers that fix `Inner`; a future secure medium only needs to add
 /// one such wrapper (or use this alias directly).
 pub type SecureStateFor<D, Inner, SEQ, const P2P: usize>

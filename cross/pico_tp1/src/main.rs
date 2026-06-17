@@ -474,7 +474,7 @@ async fn main(spawner: Spawner) {
     // Flash storage for persistent device state (last 4 KiB sector).
     // The `flash` handle was used transiently for identity provisioning
     // above and is now passed to RpFlashStorage for config persistence.
-    let mut storage = RpFlashStorage::<PicoTp1State, _>::new(flash, identity_data);
+    let mut storage = rp_common::rp_flash_storage::<PicoTp1State, _>(flash, identity_data);
 
     let loaded_config = match storage.load_config() {
         Ok(Some(c)) => {

@@ -27,6 +27,13 @@ use heapless::Vec;
 
 use crate::storage::SequenceNumberStorage;
 
+// The packed fixed-offset sequence-state layout (SIAT + sending/tool counters),
+// shared by the FRAM (embedded) and shared-memory (conformance) stores. It
+// lives here, beside the trait, because both implementors are in different cargo
+// workspaces and the only crate both depend on is this one — and because it is
+// pure byte arithmetic, not a HAL backend.
+pub mod packed_seq;
+
 // ============================================================================
 // Namespaces
 // ============================================================================
@@ -92,11 +99,7 @@ pub trait KeyValueStore {
 
 /// Decode a 6-octet big-endian sequence number to `u64`.
 pub fn seq6_to_u64(seq: &[u8; 6]) -> u64 {
-    let mut v = 0u64;
-    for &b in seq {
-        v = (v << 8) | b as u64;
-    }
-    v
+    u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]])
 }
 
 /// Encode the low 48 bits of `val` as a 6-octet big-endian sequence number.
@@ -243,14 +246,14 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatStore<S, N, K> {
         self.entries.get(idx as usize).map(|e| (e.ia, e.seq))
     }
 
-    /// Write the entry at 0-based `idx` (PID 54 entry write).
+    /// Write a SIAT entry (PID 54 entry write).
     ///
     /// ETS writes the count first, then fills entries by index. Because the
-    /// mirror is IA-sorted, the persisted IA is what matters, not the index
-    /// slot: we upsert by IA. The `idx` is accepted for API symmetry and
-    /// bounds-checking against the declared count.
-    pub fn write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), S::Error> {
-        let _ = idx; // sorted by IA; index is positional only
+    /// mirror is IA-keyed and kept sorted, the persisted IA is the whole
+    /// identity of the entry — the array index ETS writes at carries no
+    /// information, so we simply upsert by IA. (This is why no `idx` is taken;
+    /// the index slot ETS chose is discarded by design.)
+    pub fn write_entry(&mut self, ia: u16, seq: [u8; 6]) -> Result<(), S::Error> {
         self.save_seq(ia, &seq)
     }
 
@@ -297,11 +300,14 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatStore<S, N, K> {
     /// is touched at most once per `K` sends (the post-reboot counter resumes
     /// from the watermark, never reusing a value).
     ///
-    /// A write that does **not** advance past the watermark is an authoritative
-    /// re-initialisation — a factory-reset re-init (03/05/01 §6.1.4) or an ETS
-    /// PID 59 write, both of which may set a *lower* value. These must be
-    /// persisted verbatim (the batching optimisation only applies to forward
-    /// increments), so we write `seq` and re-anchor the watermark there.
+    /// A write that goes **backward** relative to the current live value
+    /// (`seq < sending_live`) is an authoritative re-initialisation — a
+    /// factory-reset re-init (03/05/01 §6.1.4) or an ETS PID 59 write, both of
+    /// which may set a *lower* value. These are persisted verbatim (the batching
+    /// optimisation only applies to forward increments), re-anchoring the
+    /// watermark at `seq`. A forward step that stays within the current batch
+    /// window (`sending_live ≤ seq < watermark`) only advances the live value in
+    /// RAM — no backend write, since the durable watermark already covers it.
     pub fn save_sending(&mut self, seq: &[u8; 6]) -> Result<(), S::Error> {
         let next = seq6_to_u64(seq);
         if next >= self.sending_watermark {
@@ -358,8 +364,10 @@ pub trait SiatAccess {
     fn siat_contains(&self, ia: u16) -> bool;
     /// Entry at 0-based `idx` in IA-sorted order (PID 54 entry read).
     fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])>;
-    /// Write the entry at 0-based `idx` (PID 54 entry write).
-    fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error>;
+    /// Write a SIAT entry by IA (PID 54 entry write). The store is IA-keyed, so
+    /// the array index ETS writes at is not part of the call — see
+    /// [`SiatStore::write_entry`].
+    fn siat_write_entry(&mut self, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error>;
     /// Set the SIAT element count (PID 54 write at index 0; 0 clears).
     fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error>;
     /// Remove all entries (factory reset).
@@ -378,8 +386,8 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatAccess for SiatStore<S,
     fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])> {
         self.read_entry(idx)
     }
-    fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), S::Error> {
-        self.write_entry(idx, ia, seq)
+    fn siat_write_entry(&mut self, ia: u16, seq: [u8; 6]) -> Result<(), S::Error> {
+        self.write_entry(ia, seq)
     }
     fn siat_set_count(&mut self, count: u16) -> Result<(), S::Error> {
         self.set_count(count)

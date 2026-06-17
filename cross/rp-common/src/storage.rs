@@ -28,6 +28,10 @@
 //! ```
 //!
 //! The magic bytes guard against reading uninitialized flash (all 0xFF).
+//! The magic + length + postcard codec is shared with the STM32 target and
+//! lives once in [`embedded_common::persist::ConfigStore`]; [`RpFlashStorage`]
+//! is that store fixed to the RP2040 config-sector layout. RP2040 flash writes
+//! are byte-granular, so the config store uses `WRITE_ALIGN = 1` (no padding).
 //!
 //! # Wear Leveling
 //!
@@ -42,14 +46,11 @@
 //! rare config saves but would disrupt real-time KNX communication if
 //! done frequently.
 
-use core::cell::RefCell;
+use embedded_common::persist::ConfigStore;
 
-use embassy_rp::flash::{self, Flash};
-use embassy_rp::peripherals::FLASH;
-use serde::{Deserialize, Serialize};
-
-use zweidraehte_device::bcus::system_b::HasDeviceConfig;
 use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
+
+use crate::flash_seq::RpFlashIo;
 
 // ================================================================================
 // Constants
@@ -102,169 +103,52 @@ const _SEQ_REGION_FITS: () = {
     );
 };
 
-// -- Config sector constants --------------------------------------------------
+// -- Config sector layout -----------------------------------------------------
 
-const CONFIG_MAGIC: [u8; 4] = *b"KNXS";
-/// Header: 4 bytes magic + 2 bytes payload length.
-const CONFIG_HEADER_SIZE: usize = 6;
+/// Bytes reserved at the end of flash (above the provisioning sector) for the
+/// device config. One 4 KiB sector — the only size any current RP target uses.
+pub const RP_STORAGE_SIZE: usize = SECTOR_SIZE;
+
+/// Offset of the config sector from flash start: one sector below the
+/// write-once provisioning sector (which is the last sector on the chip).
+pub const RP_CONFIG_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE - RP_STORAGE_SIZE) as u32;
 
 // ================================================================================
 // RpFlashStorage
 // ================================================================================
 
-/// Persistent storage backed by RP2040/RP2350 internal flash.
+/// Persistent device-config storage on RP2040/RP2350 internal flash.
 ///
-/// `S` is the **runtime** state type (e.g., `PicoEthState`). The storage
-/// internally converts to/from the serializable [`S::Config`] form
-/// using the stored [`DeviceIdentity`].
+/// A [`ConfigStore`] over the [`RpFlashIo`] medium, fixed to the RP2040 config
+/// sector and `WRITE_ALIGN = 1` (RP2040 flash writes are byte-granular). Type
+/// parameters: `S` the runtime state (`S::Config` is the persisted form), `I`
+/// the device identity.
 ///
-/// `STORAGE_SIZE` controls how many bytes at the end of flash are reserved
-/// for device state. It must be a non-zero multiple of the 4 KiB sector
-/// size. Increase it if your device's serialized state exceeds the default
-/// 4 KiB (minus 6 bytes header).
-pub struct RpFlashStorage<S, I, const STORAGE_SIZE: usize = 4096> {
-    /// Shared handle to the one `FLASH` peripheral.
-    ///
-    /// The RP2040 has a single `FLASH` peripheral, but this device needs flash
-    /// access from two independent owners: this config store (which lives
-    /// outside the KNX stack) and the wear-levelled sequence/SIAT store
-    /// ([`crate::RpWearLeveledKv`], which lives inside it). Both
-    /// borrow the same `&'static RefCell<Flash<…>>`. The `RefCell` is sound
-    /// because embassy's executor is single-threaded and every flash operation
-    /// is synchronous (`blocking_*`, never held across an `.await`), so two
-    /// borrows can never overlap.
-    flash: &'static RefCell<Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>>,
+/// `RpFlashIo` shares the single `FLASH` peripheral with the wear-levelled
+/// sequence/SIAT store ([`crate::RpWearLeveledKv`]) via a `&'static RefCell`;
+/// soundness of that sharing is documented on [`RpFlashIo`].
+///
+/// A device whose serialized state exceeds one sector adds a sibling alias with
+/// a larger `RP_STORAGE_SIZE` (and must move the sequence-log region — see the
+/// `_SEQ_REGION_FITS` guard above, which only checks the default size).
+pub type RpFlashStorage<S, I> = ConfigStore<RpFlashIo, S, I, RP_CONFIG_OFFSET, RP_STORAGE_SIZE, 1>;
+
+/// This crate's flash error type — the shared config-store error.
+pub use embedded_common::persist::ConfigStoreError as FlashError;
+
+/// Build an [`RpFlashStorage`] over the shared `Flash` handle.
+///
+/// A free constructor because [`RpFlashStorage`] is a type alias (no inherent
+/// `new`): it wraps the shared `&'static RefCell<Flash>` in the [`RpFlashIo`]
+/// adapter first. The same handle is shared with the wear-levelled sequence
+/// store; see [`RpFlashIo`] for the soundness argument.
+pub fn rp_flash_storage<S, I>(
+    flash: &'static core::cell::RefCell<
+        embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, embassy_rp::flash::Blocking, FLASH_SIZE>,
+    >,
     identity: I,
-    dirty: bool,
-    _phantom: core::marker::PhantomData<S>,
-}
-
-impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE> {
-    /// Offset of the storage region from the start of flash.
-    ///
-    /// The provisioning sector occupies the last `SECTOR_SIZE` bytes,
-    /// so config storage starts `SECTOR_SIZE + STORAGE_SIZE` from the
-    /// flash end and grows toward lower addresses as `STORAGE_SIZE`
-    /// increases.
-    const STORAGE_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE - STORAGE_SIZE) as u32;
-
-    // Compile-time validation of the storage region size.
-    const _VALIDATE: () = {
-        assert!(STORAGE_SIZE > 0, "STORAGE_SIZE must be non-zero");
-        assert!(STORAGE_SIZE % SECTOR_SIZE == 0, "STORAGE_SIZE must be a multiple of the 4 KiB flash sector size",);
-        // Reserve room for both the config region *and* the trailing
-        // provisioning sector at the top of flash.
-        assert!(
-            STORAGE_SIZE + SECTOR_SIZE <= FLASH_SIZE,
-            "STORAGE_SIZE + provisioning sector exceeds total flash size",
-        );
-    };
-
-    /// Create a new flash storage instance over a shared `Flash` handle.
-    pub fn new(flash: &'static RefCell<Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>>, identity: I) -> Self {
-        // Force the compile-time validation constants to be evaluated.
-        let _ = Self::_VALIDATE;
-        Self { flash, identity, dirty: false, _phantom: core::marker::PhantomData }
-    }
-
-    /// Get the device identity used for restoring state.
-    pub fn identity(&self) -> &I {
-        &self.identity
-    }
-}
-
-impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE>
-where
-    S: HasDeviceConfig,
-    S::Config: Serialize + for<'de> Deserialize<'de>,
-{
-    /// Read and deserialize the persisted state from flash without
-    /// constructing the runtime state.
-    ///
-    /// This is useful for inspecting persisted configuration (e.g., the
-    /// IP assignment method) before the platform layer is fully
-    /// initialized. For the normal boot path, call this method and pass
-    /// the result into the stack's `StateInit` envelope for state construction.
-    pub fn load_config(&mut self) -> Result<Option<S::Config>, FlashError> {
-        let mut region = [0u8; STORAGE_SIZE];
-        self.flash.borrow_mut().blocking_read(Self::STORAGE_OFFSET, &mut region).map_err(|_| FlashError::ReadFailed)?;
-
-        if region[0..4] != CONFIG_MAGIC {
-            return Ok(None);
-        }
-
-        let len = u16::from_le_bytes([region[4], region[5]]) as usize;
-        if len == 0 || CONFIG_HEADER_SIZE + len > region.len() {
-            return Ok(None);
-        }
-
-        let payload = &region[CONFIG_HEADER_SIZE..CONFIG_HEADER_SIZE + len];
-        match postcard::from_bytes::<S::Config>(payload) {
-            Ok(persisted) => Ok(Some(persisted)),
-            Err(_) => {
-                defmt::warn!("Flash storage: postcard deserialization failed, returning None");
-                Ok(None)
-            }
-        }
-    }
-}
-
-impl<S, I, const STORAGE_SIZE: usize> RpFlashStorage<S, I, STORAGE_SIZE>
-where
-    S: HasDeviceConfig,
-    S::Config: Serialize + for<'de> Deserialize<'de>,
-    I: DeviceIdentity,
-{
-    /// Save the current runtime state to flash.
-    ///
-    /// Converts to the persisted form via [`HasDeviceConfig::to_config`],
-    /// serializes with postcard, then erases and writes the flash sector.
-    pub fn save(&mut self, state: &S) -> Result<(), FlashError> {
-        let persisted = state.to_config();
-
-        // Serialize into a stack buffer. Reserve header bytes at the front.
-        let mut buf = [0u8; STORAGE_SIZE];
-        buf[0..4].copy_from_slice(&CONFIG_MAGIC);
-
-        let payload = postcard::to_slice(&persisted, &mut buf[CONFIG_HEADER_SIZE..])
-            .expect("serialized state exceeds flash storage region — increase STORAGE_SIZE");
-        let len = payload.len();
-        buf[4..6].copy_from_slice(&(len as u16).to_le_bytes());
-
-        // Erase the region, then write.
-        let mut flash = self.flash.borrow_mut();
-        flash
-            .blocking_erase(Self::STORAGE_OFFSET, Self::STORAGE_OFFSET + STORAGE_SIZE as u32)
-            .map_err(|_| FlashError::EraseFailed)?;
-        flash
-            .blocking_write(Self::STORAGE_OFFSET, &buf[..CONFIG_HEADER_SIZE + len])
-            .map_err(|_| FlashError::WriteFailed)?;
-        drop(flash);
-
-        self.dirty = false;
-        Ok(())
-    }
-
-    /// Mark the storage as having unsaved changes.
-    pub fn mark_dirty(&mut self) {
-        self.dirty = true;
-    }
-
-    /// Returns whether there are unsaved changes.
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
-    }
-}
-
-// ================================================================================
-// Error type
-// ================================================================================
-
-#[derive(Debug, defmt::Format)]
-pub enum FlashError {
-    ReadFailed,
-    EraseFailed,
-    WriteFailed,
+) -> RpFlashStorage<S, I> {
+    RpFlashStorage::new(RpFlashIo::new(flash), identity)
 }
 
 // ================================================================================

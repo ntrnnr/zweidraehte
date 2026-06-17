@@ -95,12 +95,12 @@
 /// // and associated-const items are supported.
 /// forward_to_field! {
 ///     impl<[Inner: ExtensionState + HasDomainAddress, SEQ,
-///           const GRP: usize, const P2P: usize, const SIAT: usize, const GO: usize]>
-///         HasDomainAddress for SecureExtensionState<Inner, SEQ, GRP, P2P, SIAT, GO>
+///           const GRP: usize, const P2P: usize, const GO: usize]>
+///         HasDomainAddress for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
 ///     {
 ///         const DOMAIN_ADDRESS_LENGTH: usize = Inner::DOMAIN_ADDRESS_LENGTH;
 ///         out fn domain_address(&self, buf: &mut [u8]);
-///         out fn set_domain_address(&self, addr: &[u8]);
+///         set fn set_domain_address(&self, addr: &[u8]);
 ///     } => self.inner
 /// }
 /// ```

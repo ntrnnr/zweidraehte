@@ -439,7 +439,7 @@ async fn main(spawner: Spawner) {
     // Persistent storage
     // ========================================================================
 
-    let mut storage = RpFlashStorage::<IpIfState, _>::new(flash, identity_data);
+    let mut storage = rp_common::rp_flash_storage::<IpIfState, _>(flash, identity_data);
 
     let loaded_config = match storage.load_config() {
         Ok(Some(c)) => {
