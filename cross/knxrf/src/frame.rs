@@ -81,8 +81,7 @@ pub fn prepare_tx_buf(telegram: &[u8], onair: &mut [u8]) -> usize {
 /// word, the Manchester-encoded telegram (with per-block CRCs), and postamble —
 /// for the longest legal frame. Use it to size the buffer passed to
 /// [`build_tx_buf`].
-pub const TX_BUF_CAP: usize =
-    TX_PREAMBLE_LEN + SYNC_WORD.len() + 2 * MAX_ONAIR_LEN + TX_POSTAMBLE.len();
+pub const TX_BUF_CAP: usize = TX_PREAMBLE_LEN + SYNC_WORD.len() + 2 * MAX_ONAIR_LEN + TX_POSTAMBLE.len();
 
 /// Assemble the complete on-air byte sequence for `telegram` into `out` and
 /// return its length: the `0x55` preamble, the sync word, the

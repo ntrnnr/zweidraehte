@@ -87,8 +87,8 @@ const TX_DONE_TIMEOUT_MS: u64 = 500;
 /// overwritten with the current temperature before each transmit (the `0x0CC4`
 /// here, 24.4 °C, is just a placeholder).
 const TEMP_TELEGRAM: [u8; 20] = [
-    0x13, 0x44, 0xff, 0x02, 0x00, 0xfa, 0xb6, 0xab, 0xb2, 0x86, 0x00, 0x12, 0x01, 0x01, 0x00, 0xe3,
-    0x00, 0x80, 0x0c, 0xc4,
+    0x13, 0x44, 0xff, 0x02, 0x00, 0xfa, 0xb6, 0xab, 0xb2, 0x86, 0x00, 0x12, 0x01, 0x01, 0x00, 0xe3, 0x00, 0x80, 0x0c,
+    0xc4,
 ];
 /// Byte offset of the 2-byte DPT 9.001 temperature value within
 /// [`TEMP_TELEGRAM`].
@@ -125,10 +125,7 @@ enum TxError<E> {
 
 /// Wait (with a 50 ms cap) for the SX1211 PLL-lock pin to go high.
 async fn wait_pll_lock(pll_lock: &mut ExtiInput<'static>) -> bool {
-    matches!(
-        select(pll_lock.wait_for_high(), Timer::after(Duration::from_millis(50))).await,
-        Either::First(_)
-    )
+    matches!(select(pll_lock.wait_for_high(), Timer::after(Duration::from_millis(50))).await, Either::First(_))
 }
 
 #[embassy_executor::main]
@@ -224,12 +221,8 @@ async fn main(_spawner: Spawner) {
         // re-arming after a few quiet seconds. Until sync the FIFO stays empty
         // (Fifo_fill_method = 0), so the sync edge is also when it begins
         // filling.
-        match select3(
-            button.wait_for_falling_edge(),
-            irq0.wait_for_rising_edge(),
-            Timer::after(Duration::from_secs(5)),
-        )
-        .await
+        match select3(button.wait_for_falling_edge(), irq0.wait_for_rising_edge(), Timer::after(Duration::from_secs(5)))
+            .await
         {
             Either3::First(_) => {
                 // Button pressed: leave RX and transmit the current temperature.
@@ -240,8 +233,7 @@ async fn main(_spawner: Spawner) {
                 // Advance the LFN (mod 8) so consecutive frames aren't dropped
                 // as duplicate retransmissions.
                 lfn = (lfn + 1) & 0x07;
-                telegram[RF_INFO_OFFSET] =
-                    (telegram[RF_INFO_OFFSET] & !RF_INFO_LFN_MASK) | (lfn << 1);
+                telegram[RF_INFO_OFFSET] = (telegram[RF_INFO_OFFSET] & !RF_INFO_LFN_MASK) | (lfn << 1);
                 info!("button: transmitting {=i32} C (DPT 9.001, lfn={=u8})", temp_c, lfn);
                 match transmit(&mut radio, &telegram, &mut pll_lock, &mut threshold, &data).await {
                     Ok(()) => {
@@ -321,25 +313,13 @@ async fn main(_spawner: Spawner) {
         if ok {
             let mut out = [0u8; 96];
             match crc::verify_and_strip(&onair[..total], &mut out) {
-                Ok(n) => info!(
-                    "KNX-RF frame (rssi={=u8}, {=usize} bytes): {=[u8]:02x}",
-                    rssi,
-                    n,
-                    &out[..n]
-                ),
-                Err(_) => warn!(
-                    "block CRC fail (rssi={=u8}, len={=u8}); onair {=[u8]:02x}",
-                    rssi,
-                    len,
-                    &onair[..total]
-                ),
+                Ok(n) => info!("KNX-RF frame (rssi={=u8}, {=usize} bytes): {=[u8]:02x}", rssi, n, &out[..n]),
+                Err(_) => {
+                    warn!("block CRC fail (rssi={=u8}, len={=u8}); onair {=[u8]:02x}", rssi, len, &onair[..total])
+                }
             }
         } else {
-            warn!(
-                "decode failed (rssi={=u8}); raw FIFO {=[u8]:02x}",
-                rssi,
-                &raw[..nraw]
-            );
+            warn!("decode failed (rssi={=u8}); raw FIFO {=[u8]:02x}", rssi, &raw[..nraw]);
         }
     }
 }
@@ -459,11 +439,7 @@ where
     }
 
     // Tx-done arrives on the IRQ1 pin (same pin as the RX FIFO threshold).
-    let done = select(
-        threshold.wait_for_rising_edge(),
-        Timer::after(Duration::from_millis(TX_DONE_TIMEOUT_MS)),
-    )
-    .await;
+    let done = select(threshold.wait_for_rising_edge(), Timer::after(Duration::from_millis(TX_DONE_TIMEOUT_MS))).await;
     let _ = radio.stop();
     match done {
         Either::First(_) => Ok(()),
@@ -500,9 +476,7 @@ where
     let mut did_wait = false;
     if !threshold.is_high() {
         did_wait = true;
-        if let Either::Second(_) =
-            select(threshold.wait_for_rising_edge(), Timer::after(PAIR_TIMEOUT)).await
-        {
+        if let Either::Second(_) = select(threshold.wait_for_rising_edge(), Timer::after(PAIR_TIMEOUT)).await {
             return None;
         }
     }

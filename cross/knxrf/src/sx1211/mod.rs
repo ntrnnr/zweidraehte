@@ -67,11 +67,7 @@ where
     /// Wrap an SPI bus and the two chip-select pins. Both pins are expected to
     /// start high (inactive).
     pub fn new(spi: SPI, nss_cfg: NCFG, nss_data: NDATA) -> Self {
-        Self {
-            spi,
-            nss_cfg,
-            nss_data,
-        }
+        Self { spi, nss_cfg, nss_data }
     }
 
     /// Release the SPI bus and pins.
@@ -266,11 +262,7 @@ where
             }
             tries += 1;
             if tries >= 100 {
-                return Err(Sx1211Error::SpiVerify {
-                    reg: REG_RX_PARAM2,
-                    expected: RX_PARAM2_RX_READY,
-                    got,
-                });
+                return Err(Sx1211Error::SpiVerify { reg: REG_RX_PARAM2, expected: RX_PARAM2_RX_READY, got });
             }
         }
 
@@ -318,11 +310,7 @@ where
             }
             tries += 1;
             if tries >= 100 {
-                return Err(Sx1211Error::SpiVerify {
-                    reg: REG_RX_PARAM2,
-                    expected: RX_PARAM2_CCA,
-                    got,
-                });
+                return Err(Sx1211Error::SpiVerify { reg: REG_RX_PARAM2, expected: RX_PARAM2_CCA, got });
             }
         }
 
@@ -348,11 +336,7 @@ where
             }
             tries += 1;
             if tries >= 100 {
-                return Err(Sx1211Error::SpiVerify {
-                    reg: REG_RX_PARAM2,
-                    expected: RX_PARAM2_RX_READY,
-                    got,
-                });
+                return Err(Sx1211Error::SpiVerify { reg: REG_RX_PARAM2, expected: RX_PARAM2_RX_READY, got });
             }
         }
 
