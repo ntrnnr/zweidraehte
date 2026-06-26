@@ -11,6 +11,13 @@
 //! same source-address rule in reverse (DUT frames come from
 //! 127.0.0.1).
 //!
+//! On macOS this needs a one-time loopback alias, since only 127.0.0.1 is
+//! assigned to `lo0` by default (Linux treats all of 127/8 as local):
+//!
+//! ```text
+//! sudo ifconfig lo0 alias 127.0.0.2 up
+//! ```
+//!
 //! Spec timings (compressed by `KNX_TIME_DIVISOR` in the DUT):
 //! - `maxDelayInitialNotify` 10 s → 200 ms
 //! - `maxDelayTimeFollowerPeriodicNotify` ≈ 12.8 s → ≈ 257 ms
@@ -78,6 +85,19 @@ impl McastNet {
         // group on the loopback interface.
         let recv = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| e.to_string())?;
         recv.set_reuse_address(true).map_err(|e| e.to_string())?;
+        // macOS/BSD also need SO_REUSEPORT for the second bind to :3671 to
+        // succeed (the DUT's platform socket sets it too). Not on Linux: there
+        // SO_REUSEADDR already allows the dual bind, and SO_REUSEPORT would
+        // load-balance datagrams across the group so the harness could miss the
+        // DUT's frames.
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        recv.set_reuse_port(true).map_err(|e| e.to_string())?;
         recv.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, KNX_PORT).into())
             .map_err(|e| format!("bind :3671: {e}"))?;
         recv.join_multicast_v4(&group, &Ipv4Addr::LOCALHOST).map_err(|e| format!("join {group}: {e}"))?;

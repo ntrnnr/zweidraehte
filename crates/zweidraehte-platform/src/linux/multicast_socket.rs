@@ -22,6 +22,20 @@ impl UdpMulticastSocket {
         let s = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
 
         s.set_reuse_address(true)?;
+        // macOS/BSD require SO_REUSEPORT (not just SO_REUSEADDR) for two
+        // sockets to bind the same UDP port simultaneously — e.g. this device
+        // sharing the KNXnet/IP routing port with another local app or with
+        // the conformance harness. Linux shares the port with SO_REUSEADDR
+        // alone, and there SO_REUSEPORT changes multicast delivery semantics,
+        // so it is restricted to the platforms that need it.
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "openbsd"
+        ))]
+        s.set_reuse_port(true)?;
         s.set_multicast_ttl_v4(options.multicast_ttl)?;
         s.set_multicast_loop_v4(options.loopback)?;
 
