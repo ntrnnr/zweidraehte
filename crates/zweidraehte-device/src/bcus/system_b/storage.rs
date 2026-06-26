@@ -134,32 +134,6 @@ impl<I, C> SystemBStateInit<I, C, ()> {
 }
 
 // ============================================================================
-// HasDeviceConfig — bridge between runtime state and its serializable config
-// ============================================================================
-
-/// Trait for converting between runtime state and its serializable config.
-///
-/// Implemented by [`SystemBDeviceState`](super::SystemBDeviceState) to
-/// enable [`DeviceStorage`](crate::storage::DeviceStorage) backends to
-/// work with the runtime state type directly, internalizing the
-/// conversion to/from [`DeviceConfig`].
-///
-/// # Contract
-///
-/// - [`to_config`](Self::to_config) must capture all state that survives
-///   a power cycle.
-/// - `from_config` (inherent, on `SystemBDeviceState`) must restore
-///   state such that the device behaves identically to before the power
-///   cycle (modulo volatile state like programming mode and run state).
-pub trait HasDeviceConfig: Sized {
-    /// The serializable config type (device-level persisted form).
-    type Config: Serialize + for<'de> Deserialize<'de>;
-
-    /// Export current runtime state to a serializable config.
-    fn to_config(&self) -> Self::Config;
-}
-
-// ============================================================================
 // Extension config abstraction
 // ============================================================================
 

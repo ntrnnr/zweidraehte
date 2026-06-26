@@ -37,9 +37,10 @@ use zweidraehte_proto::NUM_AUTH_KEYS;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::{AccessContext, HasConnectionAuth};
 
+use crate::storage::HasDeviceConfig;
 use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
-use super::{DeviceConfig, ExtensionState, HasDeviceConfig, OperationModeState, SystemBStateInit};
+use super::{DeviceConfig, ExtensionState, OperationModeState, SystemBStateInit};
 
 // ============================================================================
 // Unified Device State

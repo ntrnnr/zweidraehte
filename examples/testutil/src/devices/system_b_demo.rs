@@ -56,7 +56,8 @@ impl core::fmt::Display for BeU16 {
         write!(f, "{}", self.get())
     }
 }
-use zweidraehte_device::bcus::system_b::{HasDeviceConfig, IpExtensionFor, IpStateFor};
+use zweidraehte_device::bcus::system_b::{IpExtensionFor, IpStateFor};
+use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;

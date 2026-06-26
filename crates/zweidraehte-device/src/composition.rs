@@ -9,7 +9,8 @@
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
-use crate::bcus::system_b::{HasSecurityState, HasSeqStorage};
+use crate::state::HasSecurityState;
+use crate::storage::HasSeqStorage;
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{
     CemiEvent, CemiTransportLayer, CemiTransportLayerChannelPair, CemiTransportLayerEndpoints,

@@ -23,7 +23,7 @@
 
 use crate::HasExtensionState;
 use crate::StackState;
-use crate::bcus::system_b::{HasSecurityState, SecurityFailureType};
+use crate::state::{HasSecurityState, SecurityFailureType};
 use crate::definition::StackDefinition;
 use crate::objects::tables::{HasAssociationTable, LoadState};
 use crate::prelude::HasAddressTable;

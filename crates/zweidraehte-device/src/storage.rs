@@ -15,7 +15,9 @@
 //! and [`IpExtensionConfig`](crate::bcus::system_b::IpExtensionConfig) remain
 //! in their respective BCU modules.
 
-use crate::bcus::system_b::HasDeviceConfig;
+use core::cell::RefCell;
+
+use serde::{Deserialize, Serialize};
 
 // ============================================================================
 // Device identity
@@ -120,6 +122,33 @@ impl SecureDeviceIdentity for StaticSecureIdentity {
     fn fdsk(&self) -> &[u8; 16] {
         &self.fdsk
     }
+}
+
+// ============================================================================
+// Runtime-state <-> config conversion
+// ============================================================================
+
+/// Trait for converting runtime state into its serializable config.
+///
+/// Implemented by a BCU's runtime state type (e.g.
+/// [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState)) so
+/// [`DeviceStorage`] backends can work with the runtime state directly,
+/// internalizing the conversion to/from the persisted config form.
+///
+/// # Contract
+///
+/// - [`to_config`](Self::to_config) must capture all state that survives a
+///   power cycle.
+/// - The matching restore path (an inherent `from_config` on the state type)
+///   must restore state such that the device behaves identically to before
+///   the power cycle (modulo volatile state like programming mode and run
+///   state).
+pub trait HasDeviceConfig: Sized {
+    /// The serializable config type (device-level persisted form).
+    type Config: Serialize + for<'de> Deserialize<'de>;
+
+    /// Export current runtime state to a serializable config.
+    fn to_config(&self) -> Self::Config;
 }
 
 // ============================================================================
@@ -355,8 +384,7 @@ pub trait SequenceNumberStorage {
 ///
 /// # Related
 ///
-/// The runtime counterpart
-/// [`HasSeqStorage`](crate::bcus::system_b::HasSeqStorage)
+/// The runtime counterpart [`HasSeqStorage`]
 /// lives on the `SecureExtensionState` and exposes that same storage
 /// through `&self` so the S-AL layer and the PID 59 augment can borrow
 /// it.
@@ -365,4 +393,26 @@ pub trait SequenceNumberStorage {
 pub trait HasSequenceStorage {
     /// The concrete sequence number storage type.
     type SeqStorage: SequenceNumberStorage;
+}
+
+/// Runtime accessor for a secure device's sequence number storage.
+///
+/// Exposes the storage owned by the secure extension state through `&self`
+/// so the Secure Application Layer and the PID 59 augment can borrow it.
+///
+/// # Related
+///
+/// This is the **extension-state-side** accessor. The corresponding
+/// **stack-definition-side** trait is [`HasSequenceStorage`], which lets a
+/// [`StackDefinition`](crate::StackDefinition) impl name the `SeqStorage`
+/// concrete type during stack construction. The two cooperate:
+/// `HasSequenceStorage` names the storage type, the storage instance lives
+/// inside the secure extension state, and `HasSeqStorage` exposes it through
+/// `&self` at runtime.
+pub trait HasSeqStorage {
+    /// The concrete sequence number storage type.
+    type SeqStorage: SequenceNumberStorage;
+
+    /// Borrow the sequence number storage RefCell.
+    fn seq_storage(&self) -> &RefCell<Self::SeqStorage>;
 }

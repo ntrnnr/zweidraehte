@@ -273,8 +273,7 @@ fn siat_over_verbatim() {
 // of any real `S::Config`.
 
 use serde::{Deserialize, Serialize};
-use zweidraehte_device::bcus::system_b::HasDeviceConfig;
-use zweidraehte_device::storage::DeviceIdentity;
+use zweidraehte_device::storage::{HasDeviceConfig, DeviceIdentity};
 
 use super::{ConfigStore, ConfigStoreError};
 

@@ -12,7 +12,8 @@
 use serde::{Deserialize, Serialize};
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_device::bcus::system_b::{HasDeviceConfig, IpExtensionFor, IpStateFor};
+use zweidraehte_device::bcus::system_b::{IpExtensionFor, IpStateFor};
+use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp};
 use zweidraehte_device::layers::transport::TlStyle;

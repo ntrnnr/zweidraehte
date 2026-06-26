@@ -465,7 +465,7 @@ macro_rules! system_b_standard_stack {
             // (construction-time resources, `()` when absent).
             type StateInit = $crate::bcus::system_b::SystemBStateInit<
                 Self::Identity,
-                <$state as $crate::bcus::system_b::HasDeviceConfig>::Config
+                <$state as $crate::storage::HasDeviceConfig>::Config
                 $(, $resources)?
             >;
 

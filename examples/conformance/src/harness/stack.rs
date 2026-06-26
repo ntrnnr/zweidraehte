@@ -1132,7 +1132,8 @@ impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_device::bcus::system_b::{DeviceConfig, HasDeviceConfig, Tp1ExtensionConfig};
+use zweidraehte_device::bcus::system_b::{DeviceConfig, Tp1ExtensionConfig};
+use zweidraehte_device::storage::HasDeviceConfig;
 
 /// The persisted state type for the inner `Tp1SystemBDeviceState`.
 type InnerDeviceConfig =

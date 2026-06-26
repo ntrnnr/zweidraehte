@@ -26,8 +26,9 @@ use core::net::{Ipv4Addr, SocketAddrV4};
 use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::bcus::system_b::{
-    HasDeviceConfig, IpSecureInterfaceExtensionFor, IpSecureResources, SystemBDeviceState, SystemBStackDefinition,
+    IpSecureInterfaceExtensionFor, IpSecureResources, SystemBDeviceState, SystemBStackDefinition,
 };
+use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
 use zweidraehte_device::layers::linklayers::knxip::{
     KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureDeviceTcp,

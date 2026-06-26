@@ -15,10 +15,10 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     HasExtensionState, HasSecurityMode, StackDefinition,
     bcus::system_b::{
-        DeviceConfig, ExtensionAugmentFor, HasDeviceConfig, SecureExtensionConfig, SecureResources,
-        SecureTp1DeviceState, SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig,
-        create_system_b_objects,
+        DeviceConfig, ExtensionAugmentFor, SecureExtensionConfig, SecureResources, SecureTp1DeviceState,
+        SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig, create_system_b_objects,
     },
+    storage::HasDeviceConfig,
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     memory::MemoryMap,

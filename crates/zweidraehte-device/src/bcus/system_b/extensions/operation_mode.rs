@@ -23,7 +23,8 @@ use core::cell::Cell;
 use embassy_time::Instant;
 
 use crate::HasExtensionState;
-use crate::bcus::system_b::{HasSecurityState, HasSeqStorage};
+use crate::state::HasSecurityState;
+use crate::storage::HasSeqStorage;
 use crate::layers::application::capabilities::{
     GroupValueAddressedSender, GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender,
 };

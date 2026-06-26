@@ -66,7 +66,8 @@ use crate::objects::interface::{
 };
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
-use crate::storage::SequenceNumberStorage;
+use crate::storage::{SequenceNumberStorage, HasSeqStorage};
+use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
 
 // ============================================================================
 // SecurityTable — const-generic fixed-capacity table
@@ -353,48 +354,6 @@ pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
 // Security Failures Log
 // ============================================================================
 
-/// Security failure type indices per KNX spec.
-///
-/// The failures log maintains 4 × 16-bit counters. Types 0–2 each map
-/// to their own counter; types 3 and 4 both increment counter 3 (the
-/// "access & role" counter). The type value is also stored in the per-entry
-/// ring buffer so that individual failures can be distinguished.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum SecurityFailureType {
-    /// Invalid SCF field (unsupported algorithm, reserved bits set).
-    ScfError = 0,
-    /// MAC verification failed (wrong key or tampered message).
-    CryptoError = 1,
-    /// Sequence number check failed (replay or out-of-order).
-    SeqNrError = 2,
-    /// Sender not found in Security Individual Address Table.
-    RoleError = 3,
-    /// Access denied by access policy after successful verification.
-    AccessError = 4,
-}
-
-/// A single failure log entry recording a security event.
-///
-/// Each entry stores the source address of the offending device, the first
-/// 9 bytes of the offending frame (for diagnostic purposes), and the
-/// failure type code (see [`SecurityFailureType`]).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct SecurityFailureEntry {
-    /// Source individual address of the offending message.
-    pub source_addr: u16,
-    /// First 9 bytes of the offending frame (zero-padded if shorter).
-    pub frame_fragment: [u8; 9],
-    /// Failure type code (discriminant of [`SecurityFailureType`]).
-    pub failure_type: u8,
-}
-
-impl Default for SecurityFailureEntry {
-    fn default() -> Self {
-        Self { source_addr: 0, frame_fragment: [0; 9], failure_type: 0 }
-    }
-}
-
 /// Security failures log with 4 × 16-bit counters and a ring buffer
 /// of recent failure entries.
 ///
@@ -677,101 +636,6 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         self.failures_log.borrow_mut().clear();
         self.clear_security_report();
     }
-}
-
-// ============================================================================
-// HasSecurityState — trait for accessing security state without const generics
-// ============================================================================
-
-/// Trait for device states that have KNX Data Secure support.
-///
-/// Provides access to the sending sequence number storage on the
-/// extension state. Used by the S-AL to borrow the `RefCell<SEQ>`
-/// that the augment also reads/writes for PID 59.
-///
-/// # Related
-///
-/// This is the **extension-state-side** accessor. The corresponding
-/// **stack-definition-side** trait is
-/// [`HasSequenceStorage`](crate::storage::HasSequenceStorage), which
-/// lets a [`StackDefinition`](crate::StackDefinition) impl produce the
-/// `SeqStorage` concrete type during stack construction. The two
-/// cooperate: `HasSequenceStorage` creates the storage once, it lives
-/// inside the `SecureExtensionState`, and `HasSeqStorage` exposes it
-/// through `&self` at runtime.
-pub trait HasSeqStorage {
-    /// The concrete sequence number storage type.
-    type SeqStorage: SequenceNumberStorage;
-
-    /// Borrow the sequence number storage RefCell.
-    fn seq_storage(&self) -> &RefCell<Self::SeqStorage>;
-}
-
-/// Provides access to security keys and flags without exposing the
-/// const-generic table sizes. The S-AL layer requires this trait on
-/// `D::State` to look up keys for decryption/encryption.
-///
-/// Implemented automatically for [`SystemBDeviceState`] when the extension
-/// state is [`SecureExtensionState`].
-///
-/// [`SystemBDeviceState`]: crate::bcus::system_b::SystemBDeviceState
-pub trait HasSecurityState {
-    /// Whether the device's Security Mode is currently enabled.
-    fn security_mode_enabled(&self) -> bool;
-
-    /// Current load state of the Security Interface Object.
-    ///
-    /// Per KNX spec 03/05/01 §6.3.4: security tables (P2P keys, group
-    /// keys, SIAT) are only evaluated by the S-AL when this is `Loaded`.
-    /// Tool Key and Security Mode are independent of load state.
-    fn security_load_state(&self) -> LoadState;
-
-    /// Get the 16-byte tool key.
-    fn tool_key(&self) -> [u8; 16];
-
-    /// Look up a group key by 1-based group address table index.
-    fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]>;
-
-    /// Look up GO security flags by 0-based group object index.
-    fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
-
-    /// Look up a P2P key and role bitmask by peer individual address.
-    ///
-    /// Returns `(key, roles)` where `roles` is a bitmask of R0-R15 from
-    /// bytes 18-19 of the P2P key table entry.
-    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)>;
-
-    /// Check whether a peer IA exists in the Security Individual Address Table.
-    fn is_in_siat(&self, peer_ia: u16) -> bool;
-
-    /// Record a security failure in the failures log and set bit 0 of
-    /// PID_SECURITY_REPORT (57) per 03/05/01 §6.3.11.4.
-    ///
-    /// `frame_fragment` should be the first bytes of the offending frame
-    /// (up to 9 bytes are stored per entry for diagnostic purposes).
-    ///
-    /// Returns `true` if bit 0 of PID_SECURITY_REPORT transitioned from
-    /// 0 to 1 as a result of this call — callers use this to decide
-    /// whether to emit a spontaneous `A_NetworkParameter_InfoReport`
-    /// broadcast (only the first failure after the tool last cleared
-    /// PID 57 triggers a fresh report).
-    #[must_use]
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool;
-
-    /// Current value of PID_SECURITY_REPORT (57).
-    fn security_report(&self) -> u8;
-
-    /// Whether PID_SECURITY_REPORT_CONTROL (58) is Enabled.
-    fn security_report_enabled(&self) -> bool;
-
-    /// Get the 4 × 16-bit failure counters serialized as 8 big-endian bytes.
-    fn failure_counters(&self) -> [u8; 8];
-
-    /// Get a failure entry by reverse index (0 = most recent).
-    fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry>;
-
-    /// Clear all failure counters and entries.
-    fn clear_failure_log(&self);
 }
 
 // Inherent construction / conversion methods.

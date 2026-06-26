@@ -22,8 +22,7 @@ use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use serde::{Serialize, de::DeserializeOwned};
-use zweidraehte_device::bcus::system_b::HasDeviceConfig;
-use zweidraehte_device::storage::DeviceIdentity;
+use zweidraehte_device::storage::{DeviceIdentity, HasDeviceConfig};
 
 /// JSON file-based storage for device state.
 ///

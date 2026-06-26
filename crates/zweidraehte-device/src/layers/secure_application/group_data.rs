@@ -25,7 +25,8 @@ use zweidraehte_proto::messages::{
 
 use crate::{
     HasExtensionState, StackDefinition, StackState,
-    bcus::system_b::{HasSecurityState, HasSeqStorage},
+    state::HasSecurityState,
+    storage::HasSeqStorage,
     context::layer::LayerContext,
     layers::application::capabilities::{GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender},
     logging::warn,
