@@ -23,7 +23,6 @@ use crate::{
     persist, restart,
 };
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 
 use embassy_sync::channel::DynamicReceiver;
 
@@ -476,37 +475,6 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.inner.layer_context.lifecycle_channel.dyn_subscriber().expect(
             "too many lifecycle subscribers: LayerContext lifecycle_channel allows at most 4; raise SUBS in context/layer.rs",
         )
-    }
-
-    /// Allocate a KNX message buffer from raw bytes.
-    ///
-    /// This is useful for testing and debugging, particularly with mock link layers
-    /// where you want to inject messages into the stack.
-    ///
-    /// # Arguments
-    /// * `msg` - Raw message bytes to allocate into a buffer
-    ///
-    /// # Returns
-    /// A `KnxMessageBuffer` that can be injected into a mock link layer
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// # async fn example(
-    /// #     stack: zweidraehte_device::Stack<'_, MyStackDef>,
-    /// #     mock_ll: zweidraehte_device::layers::linklayers::mock::MockLinkLayerHandle
-    /// # ) {
-    /// use zweidraehte_proto::messages::knx::ServiceType;
-    ///
-    /// // Allocate a message buffer
-    /// let msg = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81]).await;
-    ///
-    /// // Inject it into the mock link layer
-    /// mock_ll.inject(msg).await;
-    /// # }
-    /// ```
-    pub async fn alloc_message(&self, msg: &[u8]) -> KnxMessageBuffer<Buffer<'static>> {
-        let buffer = self.inner.layer_context.buffer_manager.alloc_from_slice(msg).await;
-        KnxMessageBuffer::new(buffer, zweidraehte_proto::messages::knx::ServiceType::L_Data_Ind)
     }
 
     /// Get the device's individual address.

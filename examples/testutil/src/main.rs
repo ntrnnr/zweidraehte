@@ -12,7 +12,7 @@ use env_logger::Env;
 use serde::{Deserialize, Serialize};
 use static_cell::StaticCell;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
+use zweidraehte_device::layers::linklayers::mock::{InjectedFrame, MockLinkLayerBuilder};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     HasSecurityMode,
@@ -23,7 +23,6 @@ use zweidraehte_device::{
     },
 };
 use zweidraehte_proto::dpt::DPT_Switch;
-use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
 
 #[derive(Debug, ConstDefault, IntoBytes, KnownLayout, Immutable)]
 #[repr(C)]
@@ -336,8 +335,7 @@ async fn main(spawner: Spawner) {
     > = StaticCell::new();
 
     // Create a channel for the mock link layer to receive injected messages
-    static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, KnxMessageBuffer<Buffer<'static>>, 8>> =
-        StaticCell::new();
+    static INJECTION_CHANNEL: StaticCell<Channel<NoopRawMutex, InjectedFrame, 8>> = StaticCell::new();
     let injection_channel = INJECTION_CHANNEL.init(Channel::new());
 
     // Create the mock link layer builder and handle
@@ -356,12 +354,10 @@ async fn main(spawner: Spawner) {
 
     // Inject messages using the mock link layer handle
     // GroupValueReadResponse for 1/0/4
-    let msg1 = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41]).await;
-    mock_ll_handle.inject(msg1).await;
+    mock_ll_handle.inject_bytes(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41]).await;
 
     // GroupValueWrite.Ind for 1/0/4
-    let msg2 = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81]).await;
-    mock_ll_handle.inject(msg2).await;
+    mock_ll_handle.inject_bytes(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x81]).await;
 
     let objects = stack.objects();
     let mut events = stack.events();
@@ -382,8 +378,7 @@ async fn main(spawner: Spawner) {
                 let inject_response = async {
                     Timer::after_millis(100).await;
                     // GroupValueResponse for 1/0/4 with value 0x01 (true)
-                    let response = stack.alloc_message(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41]).await;
-                    mock_ll_handle.inject(response).await;
+                    mock_ll_handle.inject_bytes(&[0xbc, 0x10, 0x1, 0x8, 0x4, 0xe0, 0x0, 0x41]).await;
                 };
 
                 // Run both concurrently: inject response while waiting for read to complete
