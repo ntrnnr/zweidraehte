@@ -182,6 +182,7 @@ macro_rules! forward_to_field {
 // textual macro scoping; no `use` re-export is needed.
 
 mod definition;
+mod device_model;
 mod device_state;
 mod extensions;
 mod memory_map;
@@ -189,6 +190,7 @@ mod objects;
 mod storage;
 
 pub use definition::*;
+pub use device_model::SystemBDeviceModel;
 pub use device_state::*;
 pub use extensions::*;
 pub use memory_map::*;

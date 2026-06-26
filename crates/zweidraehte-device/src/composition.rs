@@ -9,6 +9,7 @@
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
+use crate::bcus::system_b::SystemBDeviceModel;
 use crate::state::HasSecurityState;
 use crate::storage::HasSeqStorage;
 #[cfg(feature = "knxip")]
@@ -23,7 +24,6 @@ use crate::{
     actor::Request,
     context::StackContext,
     definition::StackDefinition,
-    device_model,
     layers::{
         self, LinkLayerBuilder,
         application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
@@ -252,7 +252,7 @@ where
     // non-System-B BCUs can compose their own lifecycle hook without forking
     // `StandardLayerStack`.
     #[service(lifecycle)]
-    device_model: device_model::SystemBDeviceModel<'a, D>,
+    device_model: SystemBDeviceModel<'a, D>,
 
     #[service(channel(dispatch = |stack, req| {
         stack.al.handle_app_request(&req);
@@ -300,7 +300,7 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
         let al = ApplicationLayer::new(ctx);
 
         let device_model =
-            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -336,7 +336,7 @@ where
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
         let device_model =
-            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -438,7 +438,7 @@ where
 
     // TODO: same `SystemBDeviceModel` coupling as in `StandardLayerStack` above.
     #[service(lifecycle)]
-    device_model: device_model::SystemBDeviceModel<'a, D>,
+    device_model: SystemBDeviceModel<'a, D>,
 
     #[service(channel(dispatch = |stack, req| {
         stack.al.handle_app_request(&req);
@@ -492,7 +492,7 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
         let al = ApplicationLayer::new(ctx);
 
         let device_model =
-            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         let cemi_event_receiver = channels.event.receiver().into();
 
@@ -548,7 +548,7 @@ where
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
         let device_model =
-            device_model::SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         let cemi_event_receiver = channels.event.receiver().into();
 
