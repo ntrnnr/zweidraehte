@@ -52,7 +52,7 @@ pub use composition::{
     InsecureIpDeviceBuilder, IpDeviceLayers, IpLayerStack, SecureIpDeviceBuilder, SecureIpDeviceLayers,
 };
 
-pub(crate) mod inner;
+pub(crate) mod stack_core;
 
 mod resources;
 pub use resources::StackResources;

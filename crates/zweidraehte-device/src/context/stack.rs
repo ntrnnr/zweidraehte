@@ -4,9 +4,9 @@
 //! scope and handed to link-layer builders through
 //! [`LinkLayerBuilder::build_and_run`](crate::layers::LinkLayerBuilder::build_and_run).
 //!
-//! # Why this is transient, not stored on `Inner`
+//! # Why this is transient, not stored on `StackCore`
 //!
-//! [`Inner`](crate::inner::Inner) owns the device
+//! [`StackCore`](crate::stack_core::StackCore) owns the device
 //! [`State`](crate::StackDefinition::State). The
 //! [`InterfaceObjects`](crate::StackDefinition::InterfaceObjects) container
 //! borrows from that state (`&'a D::State` for property accessors, table
@@ -42,7 +42,7 @@ use crate::{
         layer::LayerContext,
     },
     definition::StackDefinition,
-    inner::Inner,
+    stack_core::StackCore,
     objects::tables::HasAddressTable,
     prelude::PropertyServiceHandler,
 };
@@ -106,9 +106,9 @@ where
 /// [`AlCtx`](crate::service::AlCtx).
 ///
 /// See the module-level docs for why this is transient rather than a field
-/// on [`Inner`].
+/// on [`StackCore`].
 pub struct StackContext<'a, D: StackDefinition> {
-    pub(crate) inner: &'a Inner<D>,
+    pub(crate) inner: &'a StackCore<D>,
     pub(crate) interface_objects: &'a D::InterfaceObjects<'static>,
 }
 
@@ -116,7 +116,7 @@ impl<'a, D: StackDefinition> StackContext<'a, D> {
     /// Construct a new transient bundle. Caller (the
     /// [`Runner`](crate::Runner)) owns both references separately to avoid
     /// the self-referential problem described in the module docs.
-    pub(crate) fn new(inner: &'a Inner<D>, interface_objects: &'a D::InterfaceObjects<'static>) -> Self {
+    pub(crate) fn new(inner: &'a StackCore<D>, interface_objects: &'a D::InterfaceObjects<'static>) -> Self {
         Self { inner, interface_objects }
     }
 

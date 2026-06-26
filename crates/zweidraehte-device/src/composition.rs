@@ -83,10 +83,10 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
     /// from it.
     ///
     /// `()` when no extra channels are needed (standard TP1 devices).
-    type Channels: Default + 'static;
+    type InterLayerChannels: Default + 'static;
 
     /// Build the layer stack from a [`StackContext`] and the shared channels.
-    fn build<'a>(ctx: &'a StackContext<'a, D>, channels: &'a Self::Channels) -> Self::Stack<'a>
+    fn build<'a>(ctx: &'a StackContext<'a, D>, channels: &'a Self::InterLayerChannels) -> Self::Stack<'a>
     where
         D: 'a;
 
@@ -95,7 +95,7 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
     /// The builder knows how to connect its channel type to the link layer
     /// builder's [`LLEndpoints`](layers::LinkLayerBuilderBase::LLEndpoints).
     fn run_link_layer<'a>(
-        channels: &'a Self::Channels,
+        channels: &'a Self::InterLayerChannels,
         builder: D::LLB,
         resources: &'a mut <D::LLB as layers::LinkLayerBuilderBase>::Resources,
         context: &'a StackContext<'a, D>,
@@ -119,7 +119,7 @@ where
         = StandardDeviceLayers<'a, D>
     where
         D: 'a;
-    type Channels = ();
+    type InterLayerChannels = ();
 
     fn build<'a>(ctx: &'a StackContext<'a, D>, _channels: &'a ()) -> StandardDeviceLayers<'a, D>
     where
@@ -159,7 +159,7 @@ where
         = IpDeviceLayers<'a, D>
     where
         D: 'a;
-    type Channels = CemiTransportLayerChannelPair;
+    type InterLayerChannels = CemiTransportLayerChannelPair;
 
     fn build<'a>(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> IpDeviceLayers<'a, D>
     where
@@ -382,7 +382,7 @@ where
         = StandardSecureDeviceLayers<'a, D, P2P>
     where
         D: 'a;
-    type Channels = ();
+    type InterLayerChannels = ();
 
     fn build<'a>(ctx: &'a StackContext<'a, D>, _channels: &'a ()) -> StandardSecureDeviceLayers<'a, D, P2P>
     where
@@ -612,7 +612,7 @@ where
         = SecureIpDeviceLayers<'a, D, P2P>
     where
         D: 'a;
-    type Channels = CemiTransportLayerChannelPair;
+    type InterLayerChannels = CemiTransportLayerChannelPair;
 
     fn build<'a>(
         ctx: &'a StackContext<'a, D>,

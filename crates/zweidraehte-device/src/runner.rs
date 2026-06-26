@@ -15,7 +15,7 @@ use crate::{
     composition::LayerStackBuilder,
     context::{StackContext, layer::LayerContext},
     definition::StackDefinition,
-    inner::Inner,
+    stack_core::StackCore,
     layers::LinkLayerBuilderBase,
     resources::StackResources,
     service::LayerRegistry,
@@ -83,7 +83,7 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         type B<D> = <D as StackDefinition>::LayerBuilder;
         type Layers<'a, D> = <B<D> as LayerStackBuilder<D>>::Stack<'a>;
 
-        let layer_channels = <B<D> as LayerStackBuilder<D>>::Channels::default();
+        let layer_channels = <B<D> as LayerStackBuilder<D>>::InterLayerChannels::default();
 
         // ================================================================
         // Layer construction (via LayerStackBuilder)
@@ -276,11 +276,11 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     );
 
     // ================================================================
-    // Step 4: Create Inner and interface objects
+    // Step 4: Create StackCore and interface objects
     // ================================================================
 
-    let inner = Inner { state, platform, memory_map, layer_context: layer_ctx_static };
-    let inner: &'static Inner<D> = resources.inner.write(inner);
+    let inner = StackCore { state, platform, memory_map, layer_context: layer_ctx_static };
+    let inner: &'static StackCore<D> = resources.inner.write(inner);
 
     // Build the device-wide augment chain. Borrowed by the IO container
     // for the lifetime of the stack — must outlive interface_objects.

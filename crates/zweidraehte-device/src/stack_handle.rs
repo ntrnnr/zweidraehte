@@ -11,7 +11,7 @@ use crate::{
     ReadObjectError, StackState, UpdateObjectError,
     actor::{ActorRequest, Request},
     definition::StackDefinition,
-    inner::Inner,
+    stack_core::StackCore,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
     lifecycle::LifecycleEvent,
     objects::{
@@ -67,7 +67,7 @@ use embassy_sync::channel::DynamicReceiver;
 /// For a complete working example with all the trait implementations,
 /// see the `testutil` crate in this repository.
 pub struct Stack<'d, D: StackDefinition> {
-    pub(crate) inner: &'d Inner<D>,
+    pub(crate) inner: &'d StackCore<D>,
     pub(crate) interface_objects: &'d D::InterfaceObjects<'static>,
     pub(crate) app_request_sender:
         DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,

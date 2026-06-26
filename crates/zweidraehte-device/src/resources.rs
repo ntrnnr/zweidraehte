@@ -2,7 +2,7 @@
 
 use core::mem::MaybeUninit;
 
-use crate::{context::layer::LayerContext, definition::StackDefinition, inner::Inner, layers::LinkLayerBuilderBase};
+use crate::{context::layer::LayerContext, definition::StackDefinition, stack_core::StackCore, layers::LinkLayerBuilderBase};
 use zweidraehte_proto::messages::buffers::BufferManager;
 
 /// Pre-allocated resources for the KNX stack.
@@ -47,7 +47,7 @@ use zweidraehte_proto::messages::buffers::BufferManager;
 ///   management path can hold up to 4 buffers simultaneously, so values below
 ///   5 risk deadlocks under concurrent load.
 pub struct StackResources<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize = 8> {
-    pub(crate) inner: MaybeUninit<Inner<D>>,
+    pub(crate) inner: MaybeUninit<StackCore<D>>,
     pub(crate) buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>,
     pub(crate) buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>,
     pub(crate) layer_context: MaybeUninit<LayerContext<D>>,
