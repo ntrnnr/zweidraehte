@@ -35,6 +35,3 @@ pub use traits::{ApciHandler, Augment, Layer};
 /// device's services struct from `#[service(handler | augment)]`
 /// field annotations. See the macro documentation for usage.
 pub use zweidraehte_device_macros::ServiceRegistry;
-
-#[cfg(test)]
-mod derive_smoke;

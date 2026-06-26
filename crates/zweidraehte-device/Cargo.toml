@@ -41,6 +41,14 @@ subtle = { version = "2.6.1", default-features = false }
 
 [dev-dependencies]
 test-case = "3.3"
+# The `service_registry_smoke` integration test implements the `Layer` trait
+# against shim types, whose `next_deadline` returns
+# `Option<embassy_time::Instant>` and whose `process` takes proto message
+# buffers. The test crate needs both directly: the library does not re-export
+# `embassy-time`, and it exposes the proto modules only through a
+# `#[doc(hidden)]` macro-support module that is not public API.
+embassy-time = { workspace = true }
+zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
 # The persist-gate round-trip (mc_timer watermark, 03/08/09 §2.2.4.2)
 # uses CriticalSectionRawMutex reply channels; lib tests need the std
 # critical-section implementation to link.

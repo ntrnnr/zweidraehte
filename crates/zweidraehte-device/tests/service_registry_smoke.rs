@@ -6,6 +6,13 @@
 //! against the trait surface. End-to-end behaviour is covered by the
 //! conformance suite.
 
+// The `#[derive(ServiceRegistry)]` output uses const trait impls, so this
+// integration-test crate must enable the same nightly features the library
+// crate root declares (an integration test is its own crate and does not
+// inherit them).
+#![feature(const_trait_impl)]
+#![feature(const_convert)]
+#![feature(generic_const_exprs)]
 // The shim types exist purely for the type-level `_assert_*` bounds
 // below — nothing constructs them, by design.
 #![allow(dead_code)]
@@ -18,26 +25,27 @@ use zweidraehte_proto::messages::buffers::Buffer;
 use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 
 #[cfg(feature = "knxip")]
-use crate::IpPlatform;
-use crate::StackDefinition;
-use crate::StackState;
+use zweidraehte_device::IpPlatform;
+use zweidraehte_device::StackDefinition;
 #[cfg(feature = "knxip")]
-use crate::bcus::system_b::IpAugment;
-use crate::bcus::system_b::{SecurityAugment, Tp1Augment};
-use crate::layers::application::services::{
+use zweidraehte_device::StackState;
+#[cfg(feature = "knxip")]
+use zweidraehte_device::bcus::system_b::IpAugment;
+use zweidraehte_device::bcus::system_b::{SecurityAugment, Tp1Augment};
+use zweidraehte_device::layers::application::services::{
     adc::AdcService, address_serial::IndividualAddressSerialNumberService, authorization::AuthorizationService,
     domain_addr::DomainAddressService, function_property::FunctionPropertyService,
     manufacturer::UserManufacturerInfoService, memory::MemoryService, property_ext::PropertyExtValueService,
     system_network_parameter::SystemNetworkParameterService, user_memory::UserMemoryService,
 };
-use crate::layers::network::NetworkLayer;
-use crate::layers::transport::TransportLayer;
+use zweidraehte_device::layers::network::NetworkLayer;
+use zweidraehte_device::layers::transport::TransportLayer;
 #[cfg(feature = "knxip")]
-use crate::layers::transport::cemi::CemiTransportLayer;
-use crate::objects::comm::HasCommObjects;
-use crate::objects::interface::HasDomainAddress;
-use crate::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, LifecycleHook, ServiceRegistry};
-use crate::storage::SequenceNumberStorage;
+use zweidraehte_device::layers::transport::cemi::CemiTransportLayer;
+use zweidraehte_device::objects::comm::HasCommObjects;
+use zweidraehte_device::objects::interface::HasDomainAddress;
+use zweidraehte_device::service::{AlCtx, ApciHandler, Augment, Layer, LayerRegistry, LifecycleHook, ServiceRegistry};
+use zweidraehte_device::storage::SequenceNumberStorage;
 
 // -----------------------------------------------------------------
 // Shim Layer that handles a single, otherwise-unused ServiceType so
@@ -308,7 +316,7 @@ where
 fn _assert_augments_implement_augment<'a, D, SEQ>()
 where
     D: StackDefinition,
-    SEQ: SequenceNumberStorage + crate::kvstore::SiatAccess + 'a,
+    SEQ: SequenceNumberStorage + zweidraehte_device::kvstore::SiatAccess + 'a,
     Tp1Augment<'a>: Augment<D>,
     SecurityAugment<'a, SEQ, 8, 8, 16>: Augment<D>,
 {
