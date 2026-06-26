@@ -2,7 +2,7 @@
 //!
 //! [`StackState`] is the fundamental runtime abstraction for any KNX device,
 //! providing individual address, serial number, authorization, and
-//! programming mode. It has no dependency on KNX/IP.
+//! programming mode.
 
 use crate::config::MAX_APDU_LENGTH_EXTENDED;
 use crate::device_model::DeviceModelNotifier;
@@ -174,17 +174,6 @@ pub trait StackState {
     /// must be backed by the same storage. A no-op setter would cause PID
     /// 54 writes and the programming button to silently fail.
     fn set_programming_mode(&self, enabled: bool);
-
-    // =========================================================================
-    // KNX Data Secure
-    // =========================================================================
-    //
-    // `security_mode_enabled` / `log_access_denied` / `has_group_key` are
-    // **not** declared here. They live on [`HasSecurityMode`], which every
-    // device state satisfies and which [`CoreDeviceState`] bounds, so generic
-    // code reaches them through the same `D::State` it already has. Keeping
-    // them off `StackState` avoids declaring the same three methods (with the
-    // same default bodies) on two traits.
 }
 
 // ============================================================================

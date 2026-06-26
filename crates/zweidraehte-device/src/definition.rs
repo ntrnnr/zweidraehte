@@ -201,6 +201,7 @@ pub trait StackDefinition: Copy + 'static {
     /// `unsafe impl IntoBytes`.  See the `ApplicationImpl` documentation
     /// for the full safety contract.
     type P: ConstDefault + IntoBytes + KnownLayout + Immutable;
+
     /// Communication-object container. Must also implement
     /// [`ComObjectBusHook`](crate::objects::comm::ComObjectBusHook) —
     /// most devices pick up an empty impl (either written by hand or
@@ -208,6 +209,7 @@ pub trait StackDefinition: Copy + 'static {
     /// bus-inbound side effects (e.g. BCU1-style shadow objects)
     /// override the trait's default no-op methods.
     type CO: ComObjects + ComObjectBusHook;
+
     type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
 
     /// Medium extension providing both state persistence and interface
