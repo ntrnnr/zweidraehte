@@ -7,6 +7,42 @@
 use crate::messages::knx::offsets;
 
 // ============================================================================
+// Wire enums
+// ============================================================================
+
+create_protocol_enum!(
+    /// Erase codes for A_Restart Master Reset.
+    ///
+    /// These codes specify what data should be reset during a master reset operation.
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum EraseCode: u8 {
+        Basic,              0x00, "Basic restart";
+        Confirmed,          0x01, "Confirmed restart";
+        FactoryReset,       0x02, "Factory reset";
+        ResetIA,            0x03, "Reset IA";
+        ResetAP,            0x04, "Reset application program";
+        ResetParam,         0x05, "Reset parameters";
+        ResetLinks,         0x06, "Reset links";
+        FactoryResetKeepIA, 0x07, "Factory reset (keep IA)";
+        _, "Unknown erase code 0x{:x}";
+    }
+);
+
+create_protocol_enum!(
+    /// Error codes for A_Restart_Response.
+    ///
+    /// These codes indicate the result of a master reset operation.
+    #[derive(Eq, PartialEq, Copy, Clone)]
+    pub enum RestartError: u8 {
+        NoError,              0x00, "No error";
+        AccessDenied,         0x01, "Access denied";
+        UnsupportedEraseCode, 0x02, "Unsupported erase code";
+        InvalidChannel,       0x03, "Invalid channel number";
+        _, "Unknown error code 0x{:x}";
+    }
+);
+
+// ============================================================================
 // Restart (Request parsing)
 // ============================================================================
 
