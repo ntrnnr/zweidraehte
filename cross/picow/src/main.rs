@@ -367,8 +367,18 @@ async fn main(spawner: Spawner) {
     // WiFi connection
     // ========================================================================
 
-    let ssid = env!("WIFI_SSID");
-    let pass = env!("WIFI_PASS");
+    // WiFi credentials are baked in at compile time. We use `option_env!`
+    // rather than `env!` so that a bare `cargo build` succeeds without the
+    // variables set (e.g. for CI / build checks); the placeholder defaults
+    // obviously won't join a real network. For a flashable firmware, set
+    // `WIFI_SSID` and `WIFI_PASS` at build time:
+    //
+    //     WIFI_SSID=my-net WIFI_PASS=secret cargo build
+    //
+    // `build.rs` emits `rerun-if-env-changed` for both, so changing them
+    // forces a rebuild even though the source is untouched.
+    let ssid = option_env!("WIFI_SSID").unwrap_or("CHANGEME-SSID");
+    let pass = option_env!("WIFI_PASS").unwrap_or("CHANGEME-PASS");
     info!("Connecting to WiFi '{}' ...", ssid);
 
     loop {

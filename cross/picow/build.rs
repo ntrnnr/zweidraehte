@@ -14,6 +14,12 @@ fn main() {
 
     println!("cargo:rerun-if-changed=memory.x");
 
+    // WiFi credentials are read via `option_env!` in main.rs. Cargo does not
+    // track env vars consumed by `option_env!`, so declare them here to force
+    // a rebuild when they change between builds.
+    println!("cargo:rerun-if-env-changed=WIFI_SSID");
+    println!("cargo:rerun-if-env-changed=WIFI_PASS");
+
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tlink-rp.x");
