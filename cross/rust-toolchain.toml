@@ -1,0 +1,9 @@
+# Pinned nightly for the embedded `cross/` workspace — kept in sync with
+# the repo-root `rust-toolchain.toml`. See that file for the full
+# rationale (const-trait `impl const` syntax + const-eval of
+# generic_const_exprs-sized embassy task arguments both break on
+# nightly-2026-06-23).
+[toolchain]
+channel = "nightly-2026-06-01"
+components = ["rust-src", "rustfmt", "clippy"]
+targets = ["thumbv6m-none-eabi", "thumbv7m-none-eabi"]

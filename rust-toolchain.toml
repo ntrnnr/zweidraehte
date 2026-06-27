@@ -1,0 +1,26 @@
+# Pinned nightly. The stack relies on unstable const-trait features
+# (`const_trait_impl`, `const_convert`, `adt_const_params`,
+# `generic_const_exprs`) whose surface syntax and const-eval behaviour
+# still change between nightlies. 2026-06-01 is the newest nightly that
+# builds the whole workspace:
+#
+#   - It accepts the `impl const Trait` spelling. nightly-2026-06-23
+#     renamed it to `const impl Trait` (rust-lang/rust#143874), breaking
+#     the proto macros and DPT property-data impls.
+#   - Its const-evaluator still computes `align_of` of our
+#     `generic_const_exprs`-sized stack types, which the
+#     `#[embassy_executor::task]` macro needs for the secure cross
+#     binaries. 2026-06-23 regressed this into `Alignment` bound errors.
+#
+# These two constraints sit on opposite sides of the 06-01 -> 06-23
+# boundary, so they cannot share a newer pin; bumping embassy does not
+# help (the fault is the compiler's const-eval, not embassy).
+#
+# `channel` is host-agnostic: rustup resolves the correct host std
+# automatically, so host binaries (conformance-runner, testutil, gen_*)
+# build everywhere. `targets` lists ONLY the embedded cross-compilation
+# std libs the `cross/` workspace needs.
+[toolchain]
+channel = "nightly-2026-06-01"
+components = ["rust-src", "rustfmt", "clippy"]
+targets = ["thumbv6m-none-eabi", "thumbv7m-none-eabi"]
