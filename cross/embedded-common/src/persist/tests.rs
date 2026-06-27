@@ -5,9 +5,9 @@
 //! Bugs that rely on rewriting an already-written slot would corrupt under these
 //! rules, just as on hardware.
 //!
-//! The suite runs the same `KeyValueStore` behaviour over both backends, then a
-//! transparency test runs one `SiatStore` body over both — proving the typed
-//! view is agnostic to wear-levelling.
+//! The suite exercises the `KeyValueStore` behaviour of the wear-levelled
+//! backend (including reboot and rotation recovery), then runs a `SiatStore`
+//! body over it to prove the typed view round-trips through the backend.
 
 extern crate std;
 use std::cell::RefCell;
@@ -33,7 +33,7 @@ unsafe impl defmt::Logger for HostLogger {
 use zweidraehte_device::kvstore::{SiatStore, u64_to_seq6};
 
 use super::flash_io::FlashIo;
-use super::{KeyValueStore, VerbatimKv, WearLeveledKv};
+use super::{KeyValueStore, WearLeveledKv};
 
 // ============================================================================
 // MockFlash
@@ -114,18 +114,17 @@ impl FlashIo for MockFlash {
     }
 }
 
-// Concrete backend types over the test region.
+// Concrete backend type over the test region.
 type WlKv = WearLeveledKv<MockFlash, TEST_REGION_OFFSET, TEST_SECTOR_SIZE, TEST_SECTORS, 16>;
-type VbKv = VerbatimKv<MockFlash, TEST_REGION_OFFSET, TEST_REGION_SIZE, 16>;
 
 const NS: u8 = 0x01;
 
 // ============================================================================
-// KeyValueStore behaviour — run over both backends
+// KeyValueStore behaviour
 // ============================================================================
 
-/// Run a closure with a fresh instance of each backend, so one test body
-/// exercises both. Returns the post-test backing bytes for reboot checks.
+/// Run a closure with a fresh backend instance. Kept generic over the
+/// `KeyValueStore` so the same body could exercise a future backend.
 fn kv_get_absent_is_none<S: KeyValueStore>(mut s: S)
 where
     S::Error: core::fmt::Debug,
@@ -140,10 +139,6 @@ where
 #[test]
 fn get_put_wear_leveled() {
     kv_get_absent_is_none(WlKv::open(MockFlash::new()).unwrap());
-}
-#[test]
-fn get_put_verbatim() {
-    kv_get_absent_is_none(VbKv::open(MockFlash::new()).unwrap());
 }
 
 fn kv_overwrite_and_remove<S: KeyValueStore>(mut s: S)
@@ -162,10 +157,6 @@ where
 #[test]
 fn overwrite_remove_wear_leveled() {
     kv_overwrite_and_remove(WlKv::open(MockFlash::new()).unwrap());
-}
-#[test]
-fn overwrite_remove_verbatim() {
-    kv_overwrite_and_remove(VbKv::open(MockFlash::new()).unwrap());
 }
 
 #[test]
@@ -211,7 +202,7 @@ fn wear_leveled_crash_mid_rotation_falls_back() {
 }
 
 // ============================================================================
-// SiatStore transparency — one body, both backends
+// SiatStore over the wear-levelled backend
 // ============================================================================
 
 fn s6(v: u64) -> [u8; 6] {
@@ -219,7 +210,8 @@ fn s6(v: u64) -> [u8; 6] {
 }
 
 /// One SIAT body run over a backend opened from `backing`, then re-opened
-/// (reboot) to prove durability — identical for both wear-leveled and verbatim.
+/// (reboot) to prove durability. Kept generic over the `KeyValueStore` so the
+/// same body could exercise a future backend.
 fn siat_roundtrip<S, F>(backing: Backing, open: F)
 where
     S: KeyValueStore,
@@ -256,11 +248,6 @@ where
 fn siat_over_wear_leveled() {
     let backing = Backing::new();
     siat_roundtrip(backing, |f| WlKv::open(f).unwrap());
-}
-#[test]
-fn siat_over_verbatim() {
-    let backing = Backing::new();
-    siat_roundtrip(backing, |f| VbKv::open(f).unwrap());
 }
 
 // ============================================================================

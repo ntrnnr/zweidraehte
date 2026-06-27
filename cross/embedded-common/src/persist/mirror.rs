@@ -121,19 +121,10 @@ impl<const ENTRIES: usize> Mirror<ENTRIES> {
         }
     }
 
-    /// Iterate every entry across all namespaces — used by codecs that
-    /// serialise the whole mirror (verbatim region flush, wear-level rotation
-    /// snapshot).
+    /// Iterate every entry across all namespaces — used by the wear-level
+    /// rotation snapshot to serialise the whole live mirror into a fresh sector.
     pub fn iter(&self) -> impl Iterator<Item = &MirrorEntry> {
         self.entries.iter()
-    }
-
-    /// Number of live entries across all namespaces (the verbatim codec writes
-    /// it as the region's record count). No `is_empty` companion — the count is
-    /// used as a length to serialise, never as an emptiness test.
-    #[allow(clippy::len_without_is_empty)]
-    pub fn len(&self) -> usize {
-        self.entries.len()
     }
 }
 

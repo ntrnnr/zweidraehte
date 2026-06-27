@@ -1,17 +1,16 @@
-//! Flash-backed [`KeyValueStore`] implementations and the `FlashIo` seam.
+//! Flash-backed [`KeyValueStore`] implementation and the `FlashIo` seam.
 //!
 //! The [`KeyValueStore`] trait itself lives in the core crate
 //! (`zweidraehte_device::kvstore`) so the HAL-agnostic typed views (`SiatStore`)
-//! can use it without depending on this crate. Here we provide two backends over
-//! the [`FlashIo`] seam, both implementing that same trait so a typed view is
-//! agnostic to which it gets:
+//! can use it without depending on this crate. Here we provide the flash backend
+//! over the [`FlashIo`] seam:
 //!
 //! - [`WearLeveledKv`] — circular append-log; cheap per-record writes; for hot
 //!   data like the SIAT and the sequence counters.
-//! - [`VerbatimKv`] — single erase-rewrite region; whole-region rewrite per
-//!   write; for rarely-written tables/objects. Implements the *same*
-//!   `KeyValueStore` interface, so wear-levelling is an orthogonal,
-//!   construction-time choice.
+//!
+//! The ETS-programmed device configuration is a separate concern, persisted as a
+//! single blob by [`ConfigStore`] over the same `FlashIo` seam (it is not a
+//! `KeyValueStore`).
 //!
 //! Key/value widths are bounded so the wear-levelled slot stays a fixed 12 bytes
 //! (no_alloc). The current bounds cover the SIAT (key = IA, 2 bytes; value =
@@ -27,8 +26,6 @@ pub const MAX_VAL: usize = 6;
 mod config_store;
 mod flash_io;
 mod mirror;
-mod ram;
-mod verbatim;
 mod wear_leveled;
 
 #[cfg(test)]
@@ -36,6 +33,4 @@ mod tests;
 
 pub use config_store::{ConfigStore, ConfigStoreError};
 pub use flash_io::FlashIo;
-pub use ram::RamKv;
-pub use verbatim::VerbatimKv;
 pub use wear_leveled::WearLeveledKv;
