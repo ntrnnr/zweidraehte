@@ -167,10 +167,12 @@ pub struct IpInterfaceLinkLayerBuilder<
     const MAX_CHANNELS: usize = { <D as super::knxip::KnxNetIpDefinition>::MAX_TCP_CHANNELS },
     const TUNNEL_CAPACITY: usize = { <D as super::knxip::KnxNetIpDefinition>::TUNNEL_CAPACITY },
     const MAX_CONNECTIONS: usize = { <D as super::knxip::KnxNetIpDefinition>::MAX_CONNECTIONS },
+    const TCP_BUF_SZ: usize = { <D as super::knxip::KnxNetIpDefinition>::TCP_SCRATCH_BUF_SIZE },
 > {
     tpuart_tx: W,
     tpuart_rx: R,
-    knxip_builder: KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>,
+    knxip_builder:
+        KnxNetIpBuilder<D, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>,
 }
 
 impl<
@@ -182,9 +184,10 @@ impl<
     const MC: usize,
     const TC: usize,
     const MX: usize,
-> IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX>
+    const TBS: usize,
+> IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX, TBS>
 {
-    pub fn new(tpuart_tx: W, tpuart_rx: R, knxip_builder: KnxNetIpBuilder<D, MS, MTS, MC, TC, MX>) -> Self {
+    pub fn new(tpuart_tx: W, tpuart_rx: R, knxip_builder: KnxNetIpBuilder<D, MS, MTS, MC, TC, MX, TBS>) -> Self {
         Self { tpuart_tx, tpuart_rx, knxip_builder }
     }
 }
@@ -223,7 +226,8 @@ impl<
     const MC: usize,
     const TC: usize,
     const MX: usize,
-> LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX>
+    const TBS: usize,
+> LinkLayerBuilderBase for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX, TBS>
 {
     type Resources = IpInterfaceResources<D>;
     type LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>;
@@ -242,7 +246,8 @@ impl<
     const MC: usize,
     const TC: usize,
     const MX: usize,
-> LinkLayerCapabilities for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX>
+    const TBS: usize,
+> LinkLayerCapabilities for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX, TBS>
 {
     const KNXNETIP_DEVICE_CAPABILITIES: u16 = <D::Features as features::FeatureSet>::KNXNETIP_DEVICE_CAPABILITIES;
 }
@@ -253,8 +258,18 @@ impl<
 // - `KnxNetIpContext` for the KNX/IP server
 // - `AddressTableContext` for the address checker (group ACK decisions)
 
-impl<CTX, W, R, D, const MS: usize, const MTS: usize, const MC: usize, const TC: usize, const MX: usize>
-    LinkLayerBuilder<CTX> for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX>
+impl<
+    CTX,
+    W,
+    R,
+    D,
+    const MS: usize,
+    const MTS: usize,
+    const MC: usize,
+    const TC: usize,
+    const MX: usize,
+    const TBS: usize,
+> LinkLayerBuilder<CTX> for IpInterfaceLinkLayerBuilder<W, R, D, MS, MTS, MC, TC, MX, TBS>
 where
     CTX: KnxNetIpContext + AddressTableContext,
     W: embedded_io_async::Write + Send + 'static,

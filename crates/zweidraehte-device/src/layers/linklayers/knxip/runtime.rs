@@ -29,12 +29,13 @@ use super::{
 pub struct KnxNetIp<
     'res,
     T: IpTransport,
-    F: features::FeatureSet = features::DefaultFeatures,
-    const MAX_SOCKETS: usize = 4,
-    const MAX_TCP_STREAMS: usize = 1,
-    const MAX_CHANNELS: usize = 1,
-    const TUNNEL_CAPACITY: usize = 0,
-    const MAX_CONNECTIONS: usize = 1,
+    F: features::FeatureSet,
+    const MAX_SOCKETS: usize,
+    const MAX_TCP_STREAMS: usize,
+    const MAX_CHANNELS: usize,
+    const TUNNEL_CAPACITY: usize,
+    const MAX_CONNECTIONS: usize,
+    const TCP_BUF_SZ: usize,
 > where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
@@ -88,7 +89,7 @@ pub struct KnxNetIp<
     pub(super) cemi_response_receiver: Option<embassy_sync::channel::DynamicReceiver<'res, Buffer<'static>>>,
     /// TCP connection manager. Always present; without a bound listener
     /// it is a no-op.
-    pub(super) tcp_manager: <F::Tcp as TcpFeature>::Manager<T, MAX_TCP_STREAMS, MAX_CHANNELS, 512>,
+    pub(super) tcp_manager: <F::Tcp as TcpFeature>::Manager<T, MAX_TCP_STREAMS, MAX_CHANNELS, TCP_BUF_SZ>,
     /// Bus bridge for IP Interface composite mode.
     ///
     /// When `Some`, this KNX/IP instance is part of a composite link layer
@@ -127,7 +128,8 @@ impl<
     const MAX_CHANNELS: usize,
     const TUNNEL_CAPACITY: usize,
     const MAX_CONNECTIONS: usize,
-> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS>
+    const TCP_BUF_SZ: usize,
+> KnxNetIp<'res, T, F, MAX_SOCKETS, MAX_TCP_STREAMS, MAX_CHANNELS, TUNNEL_CAPACITY, MAX_CONNECTIONS, TCP_BUF_SZ>
 where
     <F::Tunneling as features::TunnelingFeature>::Tunnel: connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
     connections::CompositeHandlers<
