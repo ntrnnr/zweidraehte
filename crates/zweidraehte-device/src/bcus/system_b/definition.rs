@@ -490,6 +490,21 @@ macro_rules! system_b_standard_stack {
                 )
             }
 
+            // The System B device model and its constructor. `StackDefinition`
+            // is BCU-agnostic (no default), so both are named here.
+            type DeviceModel<'a> = $crate::bcus::system_b::SystemBDeviceModel<'a, Self>;
+
+            fn create_device_model<'a>(
+                state: &'a Self::State,
+                layer_context: &'a $crate::context::layer::LayerContext<Self>,
+                interface_objects: &'a Self::InterfaceObjects<'static>,
+            ) -> Self::DeviceModel<'a>
+            where
+                Self::State: 'a,
+            {
+                $crate::bcus::system_b::SystemBDeviceModel::new(state, layer_context, interface_objects)
+            }
+
             $crate::system_b_standard_stack!(@augments $es $(, {
                 bundle: $aug_bundle,
                 create: |$aug_state, $aug_platform, $aug_lctx| $aug_body

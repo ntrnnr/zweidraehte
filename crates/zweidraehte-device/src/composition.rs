@@ -9,7 +9,6 @@
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
-use crate::bcus::system_b::SystemBDeviceModel;
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{
     CemiEvent, CemiTransportLayer, CemiTransportLayerChannelPair, CemiTransportLayerEndpoints,
@@ -246,13 +245,10 @@ where
     #[service(handler)]
     al: AL,
 
-    // TODO: `SystemBDeviceModel` is hardcoded here, coupling this generic layer
-    // stack to the System B BCU. A future pass should parameterise the device
-    // model type on `StackDefinition` (or derive it from a trait bound) so
-    // non-System-B BCUs can compose their own lifecycle hook without forking
-    // `StandardLayerStack`.
+    /// Device-model lifecycle hook, supplied by the device via
+    /// [`StackDefinition::DeviceModel`] (defaults to the System B model).
     #[service(lifecycle)]
-    device_model: SystemBDeviceModel<'a, D>,
+    device_model: D::DeviceModel<'a>,
 
     #[service(channel(dispatch = |stack, req| {
         stack.al.handle_app_request(&req);
@@ -299,7 +295,7 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
         let tl = TransportLayer::new(ctx);
         let al = ApplicationLayer::new(ctx);
 
-        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -334,7 +330,7 @@ where
         let seq_storage = ctx.state().extension_state().seq_storage();
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
-        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -434,9 +430,10 @@ where
     #[service(handler)]
     al: AL,
 
-    // TODO: same `SystemBDeviceModel` coupling as in `StandardLayerStack` above.
+    /// Device-model lifecycle hook, supplied by the device via
+    /// [`StackDefinition::DeviceModel`] (defaults to the System B model).
     #[service(lifecycle)]
-    device_model: SystemBDeviceModel<'a, D>,
+    device_model: D::DeviceModel<'a>,
 
     #[service(channel(dispatch = |stack, req| {
         stack.al.handle_app_request(&req);
@@ -489,7 +486,7 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
 
         let al = ApplicationLayer::new(ctx);
 
-        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         let cemi_event_receiver = channels.event.receiver().into();
 
@@ -544,7 +541,7 @@ where
         let seq_storage = ctx.state().extension_state().seq_storage();
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
-        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         let cemi_event_receiver = channels.event.receiver().into();
 

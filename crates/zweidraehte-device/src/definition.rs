@@ -25,7 +25,7 @@ use crate::{
         interface::{HasDeviceObject, PropertyServiceHandler},
     },
     rng::{NoRng, Rng},
-    service::{ApciHandler, Augment},
+    service::{ApciHandler, Augment, LifecycleHook},
     state::CoreDeviceState,
     storage::{DeviceIdentity, StaticIdentity},
 };
@@ -369,6 +369,39 @@ pub trait StackDefinition: Copy + 'static {
     where
         Self::State: 'a,
         Self::Platform: 'a;
+
+    /// Device-model lifecycle hook run by the layer-stack router.
+    ///
+    /// Wired into [`StandardLayerStack`](crate::composition::StandardLayerStack)
+    /// and [`IpLayerStack`](crate::composition::IpLayerStack) as the
+    /// `#[service(lifecycle)]` field: its [`init`](LifecycleHook::init) runs
+    /// once before the router loop and [`drain_events`](LifecycleHook::drain_events)
+    /// after each dispatch cycle.
+    ///
+    /// No default — this trait is BCU-agnostic. System B devices get
+    /// `SystemBDeviceModel` from
+    /// [`system_b_standard_stack!`](crate::system_b_standard_stack); a
+    /// different BCU names its own hook here, paired with
+    /// [`create_device_model`](Self::create_device_model).
+    type DeviceModel<'a>: LifecycleHook<Self>
+    where
+        Self::State: 'a;
+
+    /// Construct the device model for a stack run.
+    ///
+    /// Called by the layer-stack builders before the router loop, with the
+    /// borrows the model holds for the stack's lifetime. Paired with
+    /// [`DeviceModel`](Self::DeviceModel); for the System B
+    /// `SystemBDeviceModel` this is
+    /// `SystemBDeviceModel::new(state, layer_context, interface_objects)`, which
+    /// [`system_b_standard_stack!`](crate::system_b_standard_stack) emits.
+    fn create_device_model<'a>(
+        state: &'a Self::State,
+        layer_context: &'a LayerContext<Self>,
+        interface_objects: &'a Self::InterfaceObjects<'static>,
+    ) -> Self::DeviceModel<'a>
+    where
+        Self::State: 'a;
 
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.

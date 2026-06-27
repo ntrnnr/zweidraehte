@@ -36,8 +36,8 @@ use static_cell::StaticCell;
 use zweidraehte_device::InsecureDeviceBuilder;
 use zweidraehte_device::StackDefinition;
 use zweidraehte_device::bcus::system_b::{
-    ExtensionAugmentFor, MemoryLayout, RfRetransmitterExtension, SystemBDeviceState, SystemBInterfaceObjectsFor,
-    SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects,
+    ExtensionAugmentFor, MemoryLayout, RfRetransmitterExtension, SystemBDeviceModel, SystemBDeviceState,
+    SystemBInterfaceObjectsFor, SystemBMemoryMap, SystemBStackDefinition, create_system_b_objects,
 };
 use zweidraehte_device::context::layer::LayerContext;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
@@ -176,6 +176,19 @@ impl StackDefinition for RfTestStack {
         Self::Platform: 'a,
     {
         create_system_b_objects::<Self, _>(state, layer_ctx, &RF_MEMORY_LAYOUT, augments)
+    }
+
+    type DeviceModel<'a> = SystemBDeviceModel<'a, Self>;
+
+    fn create_device_model<'a>(
+        state: &'a Self::State,
+        layer_context: &'a LayerContext<Self>,
+        interface_objects: &'a Self::InterfaceObjects<'static>,
+    ) -> Self::DeviceModel<'a>
+    where
+        Self::State: 'a,
+    {
+        SystemBDeviceModel::new(state, layer_context, interface_objects)
     }
 
     fn create_augments<'a>(

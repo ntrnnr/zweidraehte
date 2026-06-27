@@ -267,6 +267,19 @@ impl StackDefinition for MyKnxStack {
     {
     }
 
+    type DeviceModel<'a> = zweidraehte_device::bcus::system_b::SystemBDeviceModel<'a, Self>;
+
+    fn create_device_model<'a>(
+        state: &'a Self::State,
+        layer_context: &'a LayerContext<Self>,
+        interface_objects: &'a Self::InterfaceObjects<'static>,
+    ) -> Self::DeviceModel<'a>
+    where
+        Self::State: 'a,
+    {
+        zweidraehte_device::bcus::system_b::SystemBDeviceModel::new(state, layer_context, interface_objects)
+    }
+
     fn create_augments<'a>(
         _state: &'a Self::State,
         _platform: &'a Self::Platform,
