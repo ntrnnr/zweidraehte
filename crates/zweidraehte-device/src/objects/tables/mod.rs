@@ -12,6 +12,14 @@ use zweidraehte_proto::dpt::PDT_Generic08;
 use zweidraehte_proto::messages::knx::Priority;
 use zweidraehte_proto::util::{crc::crc16_ccitt, packets::BufferView};
 
+// The load/run-state machine *wire* enums are pure protocol values, so they live
+// in `zweidraehte-proto`. The state machines that consume them (`Table<T>`,
+// `RunnableApplication<T>`, the `Has*StateMachine` traits, `LoadAction`,
+// `RunAction`, `LoadError`) stay here. Re-exported so the device-side and
+// downstream `cross/` paths (`objects::tables::LoadState`, the prelude) keep
+// working without those crates taking a direct `zweidraehte-proto` dependency.
+pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, LoadState, RunEvent, RunState};
+
 // ============================================================================
 // Table Accessor Traits
 // ============================================================================
@@ -612,74 +620,9 @@ pub trait CommunicationObjectTable: HasLoadStateMachine {
     fn set_object_flags(&mut self, idx: u16, flags: ComObjectFlags) -> bool;
 }
 
-create_protocol_enum!(
-    #[derive(Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
-    pub enum LoadState: u8 {
-        Unloaded        , 0x00, "Unloaded";
-        Loaded          , 0x01, "Loaded";
-        Loading         , 0x02, "Loading";
-        Err             , 0x03, "Error";
-    }
-);
-
-create_protocol_enum!(
-    #[derive(Eq, PartialEq, Copy, Clone)]
-    pub enum LoadEvent: u8 {
-        NoOp                    , 0x00, "NoOp";
-        StartLoading            , 0x01, "StartLoading";
-        LoadCompleted           , 0x02, "LoadCompleted";
-        AdditionalLoadControls  , 0x03, "AdditionalLoadControls";
-        Unload                  , 0x04, "Unload";
-        Err                     , 0x05, "Error";
-        _,                              "Unknown Load Event 0x{:x}";
-    }
-);
-
 // ============================================================================
 // Run State Machine Types
 // ============================================================================
-
-// Run state machine states for the Application Program Object.
-//
-// The run state machine controls the execution state of the application program.
-// It interacts with the load state machine - the application can only run when loaded.
-//
-// States:
-// - `Halted` (0x00): Application is halted (not running). Default state when unloaded.
-// - `Running` (0x01): Application is running normally.
-// - `Ready` (0x02): Intermediate state - conditions being checked before running.
-// - `Terminated` (0x03): Application explicitly stopped via RUNCONTROL_STOP.
-create_protocol_enum!(
-    #[derive(Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
-    pub enum RunState: u8 {
-        Halted          , 0x00, "Halted";
-        Running         , 0x01, "Running";
-        Ready           , 0x02, "Ready";
-        Terminated      , 0x03, "Terminated";
-    }
-);
-
-// Run control events for PID_RUN_STATE_CONTROL (0x06).
-//
-// These events control the run state machine transitions:
-// - `Ready` (0x00): No operation - state remains unchanged.
-// - `Restart` (0x01): Restart the application.
-// - `Stop` (0x02): Stop the application. Transitions to Terminated state.
-// - `Loaded` (0x03): Internal event - signaled when load state machine completes loading.
-// - `Unloaded` (0x04): Internal event - signaled when load state machine unloads.
-// - `ReadyToRun` (0x05): Internal event - startup delay complete, can transition to Running.
-create_protocol_enum!(
-    #[derive(Eq, PartialEq, Copy, Clone)]
-    pub enum RunEvent: u8 {
-        Ready           , 0x00, "Ready";
-        Restart         , 0x01, "Restart";
-        Stop            , 0x02, "Stop";
-        Loaded          , 0x03, "Loaded";
-        Unloaded        , 0x04, "Unloaded";
-        ReadyToRun      , 0x05, "ReadyToRun";
-        _,                      "Unknown Run Event 0x{:x}";
-    }
-);
 
 /// Lifecycle action produced when the run state machine crosses the
 /// running/not-running boundary.
@@ -733,21 +676,6 @@ pub trait HasRunStateMachine {
         self.run_state() == RunState::Running
     }
 }
-
-create_protocol_enum!(
-    #[derive(Eq, PartialEq, Copy, Clone)]
-    pub enum LoadSegment: u8 {
-        AbsoluteData            , 0x00, "AbsoluteData";
-        AbsoluteStack           , 0x01, "AbsoluteStack";
-        AbsoluteTask            , 0x02, "AbsoluteTask";
-        AbsolutePointer         , 0x03, "AbsolutePointer";
-        TaskCtrl1               , 0x04, "TaskCtrl1";
-        TaskCtrl2               , 0x05, "TaskCtrl2";
-        RelativeData            , 0x0b, "RelativeData";
-        Err                     , 0x0c, "Error";
-        _,                              "Unknown Load Event 0x{:x}";
-    }
-);
 
 /// Action produced by a load state machine transition.
 ///

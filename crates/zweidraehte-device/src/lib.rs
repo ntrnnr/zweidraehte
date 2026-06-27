@@ -17,7 +17,6 @@ extern crate self as zweidraehte_device;
 
 #[macro_use]
 extern crate zweidraehte_util;
-#[macro_use]
 extern crate zweidraehte_proto;
 
 mod state;
