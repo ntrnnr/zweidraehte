@@ -155,6 +155,17 @@ pub type KnxIpSecureInterfaceTcp<const N: usize> =
 pub type KnxIpSecureDeviceTcp<const N: usize> =
     Features<WithRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
 
+/// KNX IP Secure routing device (UDP only): secure multicast routing +
+/// remote config + IP Secure, with no tunnelling and no TCP.
+///
+/// The routing-only secure profile — the secure multicast routing path of
+/// 03/08/09 §2.5.1.1 without the secure-unicast (tunnelling) session
+/// machinery. `N` sizes the `WithIpSecure` session pool; pass `0` when TCP
+/// is absent, since sessions are TCP-only.
+#[cfg(feature = "ip-secure")]
+pub type KnxIpSecureRoutingUdp<const N: usize> =
+    Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp, super::secure::WithIpSecure<N>>;
+
 // ============================================================================
 // Routing Feature
 // ============================================================================

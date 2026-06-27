@@ -68,8 +68,7 @@ use zweidraehte_device::{
     kvstore::SiatStore,
     layers::linklayers::knxip::{
         KnxNetIpBuilder, KnxNetIpDefinition,
-        features::{Features, NoTcp, NoTunneling, WithRemoteConfig, WithRouting},
-        secure::WithIpSecure,
+        features::KnxIpSecureRoutingUdp,
     },
     prelude::*,
     storage::{HasSequenceStorage, SecureDeviceIdentity},
@@ -128,12 +127,11 @@ const MAX_PW: usize = 1;
 /// secure tunnelling (routing-only secure).
 const MAX_TU: usize = 0;
 
-/// Feature set: KNX/IP routing + remote config + **IP Secure**, with no
-/// tunnelling and no TCP. This is the routing-only-secure profile — the
-/// secure multicast routing path of 03/08/09 §2.5.1.1 without the secure
-/// unicast (tunnelling) session machinery. `WithIpSecure`'s parameter
-/// sizes the secure-session pool, which is unused here (no TCP) — `0`.
-type SecureRoutingUdp = Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp, WithIpSecure<0>>;
+/// Feature set: the `KnxIpSecureRoutingUdp` preset — KNX/IP routing +
+/// remote config + **IP Secure**, with no tunnelling and no TCP. The
+/// preset's parameter sizes the secure-session pool, which is unused here
+/// (no TCP) — `0`.
+type SecureRoutingUdp = KnxIpSecureRoutingUdp<0>;
 
 /// Live-record capacity of the wear-levelled flash log: the SIAT entries plus
 /// the two singleton sequence counters (sending watermark + tool).
