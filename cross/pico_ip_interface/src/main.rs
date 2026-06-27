@@ -217,7 +217,11 @@ async fn restart_task(knx: Stack<'static, PicoIpInterface>, storage: &'static Re
                 info!("Factory reset (keeping individual address)");
                 state.factory_reset_keep_ia();
             }
-            EraseCode::ResetLinks | EraseCode::Other(_) => {
+            EraseCode::ResetLinks => {
+                info!("Resetting links (Group Address + Association tables)");
+                state.apply_erase_code(EraseCode::ResetLinks);
+            }
+            EraseCode::Other(_) => {
                 warn!("Unsupported erase code — ignoring");
             }
         }

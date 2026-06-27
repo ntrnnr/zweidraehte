@@ -109,9 +109,8 @@ async fn handle_restarts(stack: Stack<'static, DemoStack>) {
                 state.reset_parameters();
             }
             EraseCode::ResetLinks => {
-                // TODO: Check KNX spec — ResetLinks may be E-Mode only and not
-                // applicable to System B IP devices.
-                println!("ResetLinks not supported on this device — ignoring");
+                println!("Resetting links (Group Address + Association tables)...");
+                state.apply_erase_code(EraseCode::ResetLinks);
             }
             EraseCode::FactoryResetKeepIA => {
                 println!("Performing Factory Reset (keeping Individual Address)...");
