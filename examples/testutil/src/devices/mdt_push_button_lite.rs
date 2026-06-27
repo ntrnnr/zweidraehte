@@ -13,11 +13,11 @@ use serde::{Deserialize, Serialize};
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::bcus::system_b::{IpExtensionFor, IpStateFor};
-use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
+use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use zweidraehte_knxprod::ets_pages;
 use zweidraehte_proto::dpt::*;

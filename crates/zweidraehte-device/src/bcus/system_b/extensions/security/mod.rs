@@ -66,8 +66,8 @@ use crate::objects::interface::{
 };
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
-use crate::storage::{SequenceNumberStorage, HasSeqStorage};
 use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
+use crate::storage::{HasSeqStorage, SequenceNumberStorage};
 
 // ============================================================================
 // SecurityTable — const-generic fixed-capacity table

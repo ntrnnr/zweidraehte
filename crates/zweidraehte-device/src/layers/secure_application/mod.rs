@@ -15,11 +15,11 @@ use core::cell::{Cell, RefCell};
 use crate::{
     HasExtensionState, StackState,
     actor::Request,
-    state::{HasSecurityState, SecurityFailureType},
     definition::StackDefinition,
     layers::application::{ApplicationLayer, ApplicationLayerService, ApplicationLayerServiceResponse},
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
+    state::{HasSecurityState, SecurityFailureType},
     storage::{SecureDeviceIdentity, SequenceNumberStorage},
 };
 use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};

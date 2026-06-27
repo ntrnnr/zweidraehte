@@ -15,10 +15,10 @@ use crate::{
     composition::LayerStackBuilder,
     context::{StackContext, layer::LayerContext},
     definition::StackDefinition,
-    stack_core::StackCore,
     layers::LinkLayerBuilderBase,
     resources::StackResources,
     service::LayerRegistry,
+    stack_core::StackCore,
     stack_handle::Stack,
 };
 use zweidraehte_proto::messages::buffers::{Buffer, BufferManager};

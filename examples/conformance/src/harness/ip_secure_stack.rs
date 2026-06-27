@@ -28,7 +28,6 @@ use serde::{Deserialize, Serialize};
 use zweidraehte_device::bcus::system_b::{
     IpSecureInterfaceExtensionFor, IpSecureResources, SystemBDeviceState, SystemBStackDefinition,
 };
-use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
 use zweidraehte_device::layers::linklayers::knxip::{
     KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureDeviceTcp,
@@ -38,6 +37,7 @@ use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
 use zweidraehte_device::prelude::IpPlatform;
+use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_platform::{IpConfig, LinuxIpTransport, NetworkConfig};
 
 use super::secure_stack::GetrandomRng;

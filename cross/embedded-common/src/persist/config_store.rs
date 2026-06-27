@@ -25,7 +25,7 @@ use core::marker::PhantomData;
 
 use serde::{Deserialize, Serialize};
 
-use zweidraehte_device::storage::{HasDeviceConfig, DeviceIdentity};
+use zweidraehte_device::storage::{DeviceIdentity, HasDeviceConfig};
 
 use super::flash_io::FlashIo;
 

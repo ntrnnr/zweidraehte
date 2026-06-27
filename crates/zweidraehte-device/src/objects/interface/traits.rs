@@ -412,7 +412,7 @@ impl StatePropertyValue for PDT_Generic06 {
 pub struct Ipv4Property;
 
 // Ipv4Property uses the same wire format as PDT_UnsignedLong (4 bytes, ID 9)
-impl const zweidraehte_proto::dpt::PropertyDataDefinition for Ipv4Property {
+const impl zweidraehte_proto::dpt::PropertyDataDefinition for Ipv4Property {
     const SIZE: usize = 4;
     const ID: u8 = 9; // PDT_UnsignedLong
 }

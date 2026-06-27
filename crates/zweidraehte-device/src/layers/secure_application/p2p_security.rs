@@ -23,11 +23,11 @@
 
 use crate::HasExtensionState;
 use crate::StackState;
-use crate::state::{HasSecurityState, SecurityFailureType};
 use crate::definition::StackDefinition;
 use crate::objects::tables::{HasAssociationTable, LoadState};
 use crate::prelude::HasAddressTable;
 use crate::rng::Rng;
+use crate::state::{HasSecurityState, SecurityFailureType};
 use crate::storage::{SecureDeviceIdentity, SequenceNumberStorage};
 use zweidraehte_proto::crypto::{
     ccm,

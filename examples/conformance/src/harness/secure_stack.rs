@@ -18,7 +18,6 @@ use zweidraehte_device::{
         DeviceConfig, ExtensionAugmentFor, SecureExtensionConfig, SecureResources, SecureTp1DeviceState,
         SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig, create_system_b_objects,
     },
-    storage::HasDeviceConfig,
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     memory::MemoryMap,
@@ -28,6 +27,7 @@ use zweidraehte_device::{
     objects::tables::{
         Application, HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine, LoadEvent,
     },
+    storage::HasDeviceConfig,
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::{AccessPolicy, ClientRole, SecurityMode};

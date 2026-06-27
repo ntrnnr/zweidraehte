@@ -25,12 +25,12 @@ use zweidraehte_proto::messages::{
 
 use crate::{
     HasExtensionState, StackDefinition, StackState,
-    state::HasSecurityState,
-    storage::HasSeqStorage,
     context::layer::LayerContext,
     layers::application::capabilities::{GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender},
     logging::warn,
     objects::tables::HasAddressTable,
+    state::HasSecurityState,
+    storage::HasSeqStorage,
 };
 
 use super::outgoing;

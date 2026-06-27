@@ -42,9 +42,9 @@ use crate::{
         layer::LayerContext,
     },
     definition::StackDefinition,
-    stack_core::StackCore,
     objects::tables::HasAddressTable,
     prelude::PropertyServiceHandler,
+    stack_core::StackCore,
 };
 #[cfg(feature = "knxip")]
 use embassy_sync::channel::DynamicSender;

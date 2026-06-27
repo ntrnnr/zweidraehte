@@ -553,7 +553,7 @@ impl<T, const ID: u8, const N: usize> Default for PropertyData<T, ID, N> {
     }
 }
 
-impl<T, const ID: u8, const N: usize> const PropertyDataDefinition for PropertyData<T, ID, N> {
+const impl<T, const ID: u8, const N: usize> PropertyDataDefinition for PropertyData<T, ID, N> {
     const ID: u8 = ID;
     const SIZE: usize = N;
 }
@@ -2394,25 +2394,25 @@ impl From<MaxRetryCount> for [u8; 1] {
 // which needs the PDT type ID for property descriptors.
 
 /// DeviceControl uses PDT_GENERIC_01 (ID 0x11) - 1 byte
-impl const PropertyDataDefinition for DeviceControl {
+const impl PropertyDataDefinition for DeviceControl {
     const SIZE: usize = 1;
     const ID: u8 = 0x11; // PDT_GENERIC_01
 }
 
 /// ProgrammingMode uses PDT_GENERIC_01 (ID 0x11) - 1 byte
-impl const PropertyDataDefinition for ProgrammingMode {
+const impl PropertyDataDefinition for ProgrammingMode {
     const SIZE: usize = 1;
     const ID: u8 = 0x11; // PDT_GENERIC_01
 }
 
 /// RoutingCount uses PDT_UNSIGNED_CHAR (ID 0x02) - 1 byte
-impl const PropertyDataDefinition for RoutingCount {
+const impl PropertyDataDefinition for RoutingCount {
     const SIZE: usize = 1;
     const ID: u8 = 0x02; // PDT_UNSIGNED_CHAR
 }
 
 /// MaxRetryCount uses PDT_GENERIC_01 (ID 0x11) - 1 byte
-impl const PropertyDataDefinition for MaxRetryCount {
+const impl PropertyDataDefinition for MaxRetryCount {
     const SIZE: usize = 1;
     const ID: u8 = 0x11; // PDT_GENERIC_01
 }

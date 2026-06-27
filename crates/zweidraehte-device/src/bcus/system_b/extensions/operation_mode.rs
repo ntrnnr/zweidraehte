@@ -23,8 +23,6 @@ use core::cell::Cell;
 use embassy_time::Instant;
 
 use crate::HasExtensionState;
-use crate::state::HasSecurityState;
-use crate::storage::HasSeqStorage;
 use crate::layers::application::capabilities::{
     GroupValueAddressedSender, GroupValueEncoding, RequestedSecurity, SecureGroupValueAddressedSender,
 };
@@ -37,6 +35,8 @@ use crate::objects::tables::{
     HasCommunicationObjectTable, HasRunStateMachine,
 };
 use crate::service::ServiceCtx;
+use crate::state::HasSecurityState;
+use crate::storage::HasSeqStorage;
 use crate::{DiagnosticsContext, HasSecurityMode, StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};

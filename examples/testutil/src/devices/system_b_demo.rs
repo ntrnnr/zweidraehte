@@ -57,10 +57,10 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::bcus::system_b::{IpExtensionFor, IpStateFor};
-use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
+use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_platform::LinuxIpTransport;
 use zweidraehte_proto::dpt::*;
 

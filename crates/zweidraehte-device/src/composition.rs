@@ -10,14 +10,14 @@
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
 use crate::bcus::system_b::SystemBDeviceModel;
-use crate::state::HasSecurityState;
-use crate::storage::HasSeqStorage;
 #[cfg(feature = "knxip")]
 use crate::layers::transport::cemi::{
     CemiEvent, CemiTransportLayer, CemiTransportLayerChannelPair, CemiTransportLayerEndpoints,
 };
 use crate::rng::SecureRng;
 use crate::service::{Layer, LayerRegistry};
+use crate::state::HasSecurityState;
+use crate::storage::HasSeqStorage;
 use crate::storage::SecureDeviceIdentity;
 use crate::{HasExtensionState, StackState};
 use crate::{
@@ -299,8 +299,7 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
         let tl = TransportLayer::new(ctx);
         let al = ApplicationLayer::new(ctx);
 
-        let device_model =
-            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -335,8 +334,7 @@ where
         let seq_storage = ctx.state().extension_state().seq_storage();
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
-        let device_model =
-            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
     }
@@ -491,8 +489,7 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
 
         let al = ApplicationLayer::new(ctx);
 
-        let device_model =
-            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         let cemi_event_receiver = channels.event.receiver().into();
 
@@ -547,8 +544,7 @@ where
         let seq_storage = ctx.state().extension_state().seq_storage();
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
-        let device_model =
-            SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
+        let device_model = SystemBDeviceModel::new(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         let cemi_event_receiver = channels.event.receiver().into();
 

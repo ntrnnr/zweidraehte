@@ -11,7 +11,6 @@ use crate::{
     ReadObjectError, StackState, UpdateObjectError,
     actor::{ActorRequest, Request},
     definition::StackDefinition,
-    stack_core::StackCore,
     layers::application::{ApplicationLayerService, ApplicationLayerServiceResponse},
     lifecycle::LifecycleEvent,
     objects::{
@@ -21,6 +20,7 @@ use crate::{
         },
     },
     persist, restart,
+    stack_core::StackCore,
 };
 use zweidraehte_proto::address::IndividualAddress;
 
