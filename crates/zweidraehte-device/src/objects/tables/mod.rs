@@ -167,8 +167,8 @@ pub trait AddressTable: HasLoadStateMachine {
     fn max_entries(&self) -> usize;
     fn entry_count(&self) -> u16;
 
-    fn get_address(&self, tsap: u16) -> Option<GroupAddress>;
-    fn get_tsap(&self, address: GroupAddress) -> Option<u16>;
+    fn address(&self, tsap: u16) -> Option<GroupAddress>;
+    fn tsap(&self, address: GroupAddress) -> Option<u16>;
     fn contains(&self, address: GroupAddress) -> bool;
 }
 
@@ -182,7 +182,7 @@ pub trait AssociationTable: HasLoadStateMachine {
     }
 
     /// Gets the sending TSAP for a given ASAP
-    fn get_sending_tsap(&self, asap: u16) -> Option<u16>;
+    fn sending_tsap(&self, asap: u16) -> Option<u16>;
 
     fn tsaps_for_asap(&self, asap: u16) -> impl Iterator<Item = u16> + '_;
     fn asaps_for_tsap(&self, tsap: u16) -> impl Iterator<Item = u16> + '_;
@@ -610,7 +610,7 @@ pub trait CommunicationObjectTable: HasLoadStateMachine {
     fn max_entries(&self) -> usize;
     fn entry_count(&self) -> u16;
 
-    fn get_object(&self, idx: u16) -> Option<ComObjectTableEntry>;
+    fn object(&self, idx: u16) -> Option<ComObjectTableEntry>;
     fn object_type(&self, idx: u16) -> Option<ComObjectType>;
     fn object_flags(&self, idx: u16) -> Option<ComObjectFlags>;
 

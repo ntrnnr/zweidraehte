@@ -626,7 +626,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     } else {
         let calls = all_aug_idents.iter().map(|id| {
             quote! {
-                .or_else(|| ::zweidraehte_device::service::Augment::<D>::get_property_descriptor(
+                .or_else(|| ::zweidraehte_device::service::Augment::<D>::property_descriptor(
                     &self.#id, object_type, prop_id))
             }
         });
@@ -797,7 +797,7 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
             #( #flatten_field_bounds, )*
             #user_where_predicates
         {
-            fn get_property_descriptor(
+            fn property_descriptor(
                 &self,
                 object_type: ::zweidraehte_device::__macro_support::dpt::InterfaceObjectType,
                 prop_id: u16,

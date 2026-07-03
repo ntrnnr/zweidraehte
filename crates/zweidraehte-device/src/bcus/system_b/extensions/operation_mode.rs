@@ -320,7 +320,7 @@ where
 /// its own operation-mode state.
 // Both PIDs use PDT_FUNCTION and dispatch via FunctionPropertyCommand /
 // FunctionPropertyStateRead. The macro generates the descriptor table,
-// `get_property_descriptor`, `property_description_read`, and the
+// `property_descriptor`, `property_description_read`, and the
 // per-target object-type guards; the hand-written closures below carry
 // the imperative service-frame parsing logic.
 //
@@ -654,7 +654,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let cot = state.cot().borrow();
 
         // Validate GO exists.
-        let Some(entry) = cot.get_object(go_idx) else {
+        let Some(entry) = cot.object(go_idx) else {
             return FunctionPropertyResult {
                 return_code: 0xA1, // E_GD_GO_VOID
                 data: PropertyBuf::new(&[0x00]),
@@ -754,7 +754,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 
         // Validate that the GA exists in the device's address table.
         let ga = zweidraehte_proto::address::GroupAddress([data[3], data[4]]);
-        let tsap = ctx.state.adt().borrow().get_tsap(ga);
+        let tsap = ctx.state.adt().borrow().tsap(ga);
 
         let Some(tsap) = tsap else {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
@@ -866,7 +866,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let cot = ctx.state.cot().borrow();
 
         // Validate GO exists.
-        let Some(entry) = cot.get_object(go_idx) else {
+        let Some(entry) = cot.object(go_idx) else {
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
         };
 
@@ -880,7 +880,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         drop(cot);
 
         // Look up the sending TSAP for this ASAP.
-        let Some(tsap) = ctx.state.ast().borrow().get_sending_tsap(asap) else {
+        let Some(tsap) = ctx.state.ast().borrow().sending_tsap(asap) else {
             debug!("GO diag: no sending TSAP for ASAP {}", asap);
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
         };
@@ -965,7 +965,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 
         // Validate that the GA exists in the device's address table.
         let ga = zweidraehte_proto::address::GroupAddress([data[3], data[4]]);
-        let tsap = ctx.state.adt().borrow().get_tsap(ga);
+        let tsap = ctx.state.adt().borrow().tsap(ga);
 
         let Some(tsap) = tsap else {
             return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
@@ -1077,7 +1077,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
         let cot = ctx.state.cot().borrow();
 
-        let Some(entry) = cot.get_object(go_idx) else {
+        let Some(entry) = cot.object(go_idx) else {
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x00]) };
         };
 
@@ -1147,7 +1147,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let cot = state.cot().borrow();
 
         // Validate GO exists.
-        if cot.get_object(go_idx).is_none() {
+        if cot.object(go_idx).is_none() {
             return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x01]) };
         }
         drop(cot);

@@ -164,7 +164,7 @@ pub(crate) fn wrap_outgoing<ADT: AddressTable>(
     // verify the MAC. Also set the group address type bit in the CCM context.
     if matches!(st, ServiceType::T_GroupData_Req) {
         let tsap = ccm_ctx.dst;
-        if let Some(ga) = inputs.adt.get_address(tsap) {
+        if let Some(ga) = inputs.adt.address(tsap) {
             ccm_ctx.dst = u16::from_be_bytes(ga.0);
             ccm_ctx.addr_type = 0x80; // Group addressed
         }

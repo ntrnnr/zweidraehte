@@ -286,7 +286,7 @@ where
             // Augment-provided objects: query augment for the descriptor.
             _ => {
                 let obj_type = self.object_type_for(obj_idx)?;
-                self.augments.get_property_descriptor(obj_type, prop_id)
+                self.augments.property_descriptor(obj_type, prop_id)
             }
         }
     }

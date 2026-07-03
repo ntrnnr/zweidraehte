@@ -36,7 +36,7 @@ use super::SecurityState;
 /// all Security IO PIDs.
 //
 // Access policies per KNX Profiles v02.02.01, page 116. The macro
-// generates the descriptor table, `get_property_descriptor`,
+// generates the descriptor table, `property_descriptor`,
 // `property_description_read`, `additional_object_*`, and the dispatch
 // arms for the simple PIDs declared inline; the imperative handlers for
 // state-machine cascades, array tables, and function-property frames

@@ -407,7 +407,7 @@ where
         if addr_type != 0 {
             let tsap = ctx.dst; // Currently holds the TSAP, not the GA.
             let adt = self.inner.state().adt().borrow();
-            if let Some(ga) = adt.get_address(tsap) {
+            if let Some(ga) = adt.address(tsap) {
                 ctx.dst = u16::from_be_bytes(ga.0);
             }
         }

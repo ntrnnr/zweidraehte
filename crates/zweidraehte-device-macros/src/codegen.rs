@@ -367,12 +367,12 @@ pub(crate) fn gen_augment(
     // ----------------------------------------------------------------------
     // Descriptor table — single flat const slice across all targets. The
     // dispatch methods filter by object type at runtime; the descriptor
-    // lookup (get_property_descriptor) does the same.
+    // lookup (property_descriptor) does the same.
     // ----------------------------------------------------------------------
     let descriptor_entries = property_props.iter().map(|p| {
         let target = pid_target(p);
         let desc = descriptor_for(p, &default_target);
-        // Pair each descriptor with its target so `get_property_descriptor`
+        // Pair each descriptor with its target so `property_descriptor`
         // can filter. We encode the pair as `(target, descriptor)` in a
         // separate const so DESCRIPTORS itself stays a flat
         // `&[PropertyDescriptor]`, matching the hand-written augments.
@@ -475,7 +475,7 @@ pub(crate) fn gen_augment(
             /// type for each PID — the augment can target multiple types).
             ///
             /// This `const` is the single source of truth for descriptor
-            /// lookups. `get_property_descriptor` and
+            /// lookups. `property_descriptor` and
             /// `property_description_read` route through it.
             #[allow(clippy::type_complexity)]
             pub const DESCRIPTORS: &'static [(
@@ -490,7 +490,7 @@ pub(crate) fn gen_augment(
         impl #augment_impl_generics ::zweidraehte_device::service::Augment<D>
             for #ident #ty_generics #augment_where_clause
         {
-            fn get_property_descriptor(
+            fn property_descriptor(
                 &self,
                 object_type: ::zweidraehte_proto::dpt::InterfaceObjectType,
                 prop_id: u16,

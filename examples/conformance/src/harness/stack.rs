@@ -435,7 +435,7 @@ pub(crate) mod conformance_config {
             // TSAP numbers match the GA index in the sorted address table.
             //
             // IMPORTANT: For COs with separate receive/send GAs, the SENDING
-            // TSAP must come FIRST because get_sending_tsap() returns the
+            // TSAP must come FIRST because sending_tsap() returns the
             // first match for a given ASAP. This means the sending association
             // (12→CO12, 16→CO13) must appear before the receiving association
             // (2→CO12, 15→CO13).

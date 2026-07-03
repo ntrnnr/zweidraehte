@@ -316,7 +316,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                     && let DestinationAddress::Group(g) = msg.get_dest_addr()
                 {
                     let adt = self.state.adt().borrow();
-                    if adt.is_loaded() { adt.get_tsap(g) } else { None }
+                    if adt.is_loaded() { adt.tsap(g) } else { None }
                 } else {
                     None
                 };
@@ -515,7 +515,7 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 
         let dst_addr = {
             let adt = self.state.adt().borrow();
-            if adt.is_loaded() { adt.get_address(msg.get_connection_nr()) } else { None }
+            if adt.is_loaded() { adt.address(msg.get_connection_nr()) } else { None }
         };
 
         if let Some(dst_addr) = dst_addr {

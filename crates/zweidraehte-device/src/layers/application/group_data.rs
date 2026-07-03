@@ -182,7 +182,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         for asap in self.state.ast().borrow().asaps_for_tsap(ind.get_connection_nr()) {
             trace!("AL processing ASAP: {}", asap);
 
-            let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
+            let Some(cot_info) = self.state.cot().borrow().object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
             };
@@ -310,7 +310,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         for asap in self.state.ast().borrow().asaps_for_tsap(tsap) {
             trace!("AL processing GroupValueRead for ASAP: {}", asap);
 
-            let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
+            let Some(cot_info) = self.state.cot().borrow().object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
             };
@@ -347,7 +347,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // Use the ASAP's sending TSAP for the response destination.
             // For GOs with separate receive/send GAs, this differs from the
             // incoming TSAP (which is the receiving GA's TSAP).
-            let response_tsap = self.state.ast().borrow().get_sending_tsap(asap).unwrap_or(tsap);
+            let response_tsap = self.state.ast().borrow().sending_tsap(asap).unwrap_or(tsap);
 
             info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, response_tsap, object_size);
 
@@ -433,7 +433,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             return true; // Not an "app not running" error, just a config issue
         }
 
-        let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
+        let Some(cot_info) = self.state.cot().borrow().object(asap) else {
             error!("Invalid ASAP: {}", asap);
             return true; // Not an "app not running" error
         };
@@ -475,7 +475,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         // We only send to the first TSAP per spec.
         // Extract TSAP before entering the block to avoid holding the RefCell
         // borrow across the buffer allocation and transport layer awaits below.
-        let sending_tsap = self.state.ast().borrow().get_sending_tsap(asap);
+        let sending_tsap = self.state.ast().borrow().sending_tsap(asap);
         if let Some(tsap) = sending_tsap {
             trace!("AL found sending TSAP {} for ASAP {}", tsap, asap);
 
@@ -728,7 +728,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             let asap = cursor;
             cursor += 1;
 
-            let Some(cot_info) = self.state.cot().borrow().get_object(asap) else {
+            let Some(cot_info) = self.state.cot().borrow().object(asap) else {
                 continue;
             };
 
@@ -745,7 +745,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             }
 
             // 3. Object must be linked (has an association)
-            if self.state.ast().borrow().get_sending_tsap(asap).is_none() {
+            if self.state.ast().borrow().sending_tsap(asap).is_none() {
                 debug!("AL read-on-init: ASAP {} skipped (not linked)", asap);
                 continue;
             }

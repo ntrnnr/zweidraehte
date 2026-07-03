@@ -335,7 +335,7 @@ async fn main(spawner: Spawner) {
 
     println!("Address table contents:");
     for i in 1..=stored_data.addr_tab.entry_count() {
-        println!("{i}: {:?}", stored_data.addr_tab.get_address(i));
+        println!("{i}: {:?}", stored_data.addr_tab.address(i));
     }
 
     println!("Association table contents:");
@@ -346,7 +346,7 @@ async fn main(spawner: Spawner) {
 
     println!("Communication table contents:");
     for i in 1..=stored_data.co_tab.entry_count() {
-        println!("{i}: {:?}", stored_data.co_tab.get_object(i));
+        println!("{i}: {:?}", stored_data.co_tab.object(i));
     }
 
     static RESOURCES: StaticCell<

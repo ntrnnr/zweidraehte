@@ -18,7 +18,7 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
     ///
     /// Returns `None` for index 0 or beyond [`entry_count()`]
     /// (AssociationTable::entry_count) — the checked style of
-    /// `addr7::get_tsap`.
+    /// `addr7::tsap`.
     pub fn tsap(&self, idx: u16) -> Option<u16> {
         if idx == 0 || idx > self.entry_count() {
             return None;
@@ -208,7 +208,7 @@ impl<const N: usize> AssociationTable for Table<AssoTab6Impl<N>> {
     ///
     /// Returns `Some(tsap)` if a match is found, `None` otherwise.
     /// When the table is empty, it assumes a default mapping where TSAP == ASAP.
-    fn get_sending_tsap(&self, asap: u16) -> Option<u16> {
+    fn sending_tsap(&self, asap: u16) -> Option<u16> {
         trace!("Finding sending TSAP for ASAP {}", asap);
 
         let count = self.entry_count();

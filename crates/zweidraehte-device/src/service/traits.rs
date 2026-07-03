@@ -140,7 +140,7 @@ pub trait Augment<D: StackDefinition> {
     /// Used by the IO container to check access policies before
     /// dispatching reads/writes. Returns `None` if this augment
     /// doesn't handle `(object_type, prop_id)`.
-    fn get_property_descriptor(&self, _object_type: InterfaceObjectType, _prop_id: u16) -> Option<PropertyDescriptor> {
+    fn property_descriptor(&self, _object_type: InterfaceObjectType, _prop_id: u16) -> Option<PropertyDescriptor> {
         None
     }
 

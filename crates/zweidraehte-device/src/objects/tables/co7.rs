@@ -76,7 +76,7 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTab7Impl<N>> {
         U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get().min(self.max_entries() as u16)
     }
 
-    fn get_object(&self, idx: u16) -> Option<ComObjectTableEntry> {
+    fn object(&self, idx: u16) -> Option<ComObjectTableEntry> {
         self.com_object(idx).map(|desc| ComObjectTableEntry { object_type: desc.object_type, flags: desc.flags })
     }
 

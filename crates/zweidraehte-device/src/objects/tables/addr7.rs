@@ -43,7 +43,7 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
         U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get().min(self.max_entries() as u16)
     }
 
-    fn get_address(&self, tsap: u16) -> Option<GroupAddress> {
+    fn address(&self, tsap: u16) -> Option<GroupAddress> {
         //trace!("Getting address for TSAP {}", tsap);
 
         if tsap == 0 || tsap > self.entry_count() {
@@ -54,7 +54,7 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
         Some(self.addr(tsap as usize))
     }
 
-    fn get_tsap(&self, address: GroupAddress) -> Option<u16> {
+    fn tsap(&self, address: GroupAddress) -> Option<u16> {
         let mut low = 1;
         let mut high = self.entry_count();
 
@@ -77,7 +77,7 @@ impl<const N: usize> AddressTable for Table<AddrTab7Impl<N>> {
     }
 
     fn contains(&self, address: GroupAddress) -> bool {
-        self.get_tsap(address).is_some()
+        self.tsap(address).is_some()
     }
 }
 
