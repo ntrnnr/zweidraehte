@@ -3,7 +3,7 @@
 use core::cell::{Cell, RefCell};
 
 use zweidraehte_device::context::{
-    AddressTableContext, BufferManagerContext, KnxIndividualAddressContext, PropertyServiceContext,
+    AddressTableContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext,
 };
 use zweidraehte_device::layers::linklayers::knxip::context::{
     DeviceInfoContext, IpAdditionalIndividualAddressContext, IpDiagnosticsContext,
@@ -198,13 +198,13 @@ impl IpDiagnosticsContext for &mut MockContext {
     }
 }
 
-impl KnxIndividualAddressContext for &MockContext {
+impl IndividualAddressContext for &MockContext {
     fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress {
         zweidraehte_proto::address::IndividualAddress::new(0, 0, 0)
     }
 }
 
-impl KnxIndividualAddressContext for &mut MockContext {
+impl IndividualAddressContext for &mut MockContext {
     fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress {
         zweidraehte_proto::address::IndividualAddress::new(0, 0, 0)
     }

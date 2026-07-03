@@ -6,7 +6,7 @@ use embassy_sync::{
 };
 
 use crate::{
-    context::{ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext, PropertyServiceContext},
+    context::{ApduLengthContext, BufferManagerContext, IndividualAddressContext, PropertyServiceContext},
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
@@ -50,7 +50,7 @@ pub(crate) trait KnxNetIpContext:
     + IpConfigWriteContext
     + RemoteRestartContext
     + IpAdditionalIndividualAddressContext
-    + KnxIndividualAddressContext
+    + IndividualAddressContext
     + RoutingMulticastRebindContext
     + IpSecureConfigContext
 {
@@ -65,7 +65,7 @@ impl<T> KnxNetIpContext for T where
         + IpConfigWriteContext
         + RemoteRestartContext
         + IpAdditionalIndividualAddressContext
-        + KnxIndividualAddressContext
+        + IndividualAddressContext
         + RoutingMulticastRebindContext
         + IpSecureConfigContext
 {

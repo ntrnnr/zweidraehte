@@ -351,7 +351,7 @@ impl HasSecurityMode for () {}
 ///
 /// Implemented on `()` with no-op defaults so devices without diagnostics
 /// support can use `()` as their diagnostics context.
-pub trait DiagnosticsContext {
+pub trait DiagnosticsView {
     /// Whether the device is currently in diagnostic mode.
     fn is_diagnostic_mode(&self) -> bool {
         false
@@ -377,7 +377,7 @@ pub trait DiagnosticsContext {
     fn set_diagnostic_source_filter(&self, _ia: Option<u16>) {}
 }
 
-impl DiagnosticsContext for () {}
+impl DiagnosticsView for () {}
 
 /// Trait for device states that provide a diagnostics context.
 ///
@@ -385,7 +385,7 @@ impl DiagnosticsContext for () {}
 /// mode state without coupling to the concrete state type.
 pub trait HasDiagnosticsContext {
     /// The concrete diagnostics context type.
-    type Diagnostics: DiagnosticsContext;
+    type Diagnostics: DiagnosticsView;
 
     /// Get a reference to the diagnostics context.
     fn diagnostics(&self) -> &Self::Diagnostics;

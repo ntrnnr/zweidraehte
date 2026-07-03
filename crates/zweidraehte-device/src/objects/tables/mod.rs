@@ -87,7 +87,9 @@ pub trait HasPeiApplication {
 // ============================================================================
 
 pub trait TableMemory: ConstDefault + Sized {
-    fn max_size() -> usize;
+    /// The table's maximum byte capacity. An associated const (not a method)
+    /// so it is usable in const contexts and array sizes.
+    const MAX_SIZE: usize;
     fn data_ref(&self) -> &[u8];
     fn data_ref_mut(&mut self) -> &mut [u8];
 
@@ -859,7 +861,7 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
                         };
 
                         let req_mem_sz = data.requested_memory_size.get() as usize;
-                        if req_mem_sz <= T::max_size() {
+                        if req_mem_sz <= T::MAX_SIZE {
                             // Fill requested?
                             if data.mode & 1 != 0 {
                                 self.table.data_ref_mut()[..req_mem_sz].fill(data.fill);
@@ -947,9 +949,7 @@ impl<T: TableMemory> TableMemory for Table<T> {
         self.table.data_ref_mut()
     }
 
-    fn max_size() -> usize {
-        T::max_size()
-    }
+    const MAX_SIZE: usize = T::MAX_SIZE;
 
     fn read(&self, offset: usize, data: &mut [u8]) {
         self.table.read(offset, data)
@@ -1094,9 +1094,7 @@ impl<T: HasLoadStateMachine + TableMemory> TableMemory for RunnableApplication<T
         self.table.data_ref_mut()
     }
 
-    fn max_size() -> usize {
-        T::max_size()
-    }
+    const MAX_SIZE: usize = T::MAX_SIZE;
 
     fn read(&self, offset: usize, data: &mut [u8]) {
         self.table.read(offset, data)

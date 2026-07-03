@@ -10,7 +10,7 @@ use heapless::Vec;
 
 use core::cell::RefCell;
 
-use crate::context::KnxIndividualAddressContext;
+use crate::context::IndividualAddressContext;
 use crate::layers::linklayers::knxip::context::{
     DeviceInfoContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
 };
@@ -186,7 +186,7 @@ pub struct ServerContext<'a> {
     /// a caller-owned buffer with the correct capacity `N`.
     additional_addresses: &'a [IndividualAddress],
     /// KNX address context for primary + tunneling addresses.
-    knx_addresses: &'a dyn KnxIndividualAddressContext,
+    knx_addresses: &'a dyn IndividualAddressContext,
     /// Snapshot of tunneling slot status from the connection manager.
     /// Present when a tunneling handler is registered. Used by the
     /// discovery server to build the TunnelingInfo DIB.
@@ -224,7 +224,7 @@ impl<'a> ServerContext<'a> {
         ip_config_write: Option<&'a dyn IpConfigWriteContext>,
         restart_ctx: Option<&'a dyn RemoteRestartContext>,
         additional_addresses: &'a [IndividualAddress],
-        knx_addresses: &'a dyn KnxIndividualAddressContext,
+        knx_addresses: &'a dyn IndividualAddressContext,
         tunneling_slot_info: Option<(u16, &'a [substructs::TunnelingSlotInfo])>,
         address_filter: Option<&'a dyn AddressFilter>,
         socket_idx: usize,
@@ -288,7 +288,7 @@ impl<'a> ServerContext<'a> {
     }
 
     /// Get the KNX address context for primary and tunneling addresses.
-    pub fn knx_addresses(&self) -> &dyn KnxIndividualAddressContext {
+    pub fn knx_addresses(&self) -> &dyn IndividualAddressContext {
         self.knx_addresses
     }
 

@@ -350,7 +350,7 @@ mod tests {
     };
     use zweidraehte_proto::messages::knxip::{RemoteBasicConfigurationRequestBuilder, RemoteResetRequestBuilder};
 
-    use crate::context::KnxIndividualAddressContext;
+    use crate::context::IndividualAddressContext;
     use crate::ip::IpStateView;
     use crate::layers::linklayers::knxip::context::{
         DeviceInfoContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
@@ -392,7 +392,7 @@ mod tests {
 
     /// Fake KNX address source (needed by the config-ack response build).
     struct FakeKnxAddresses;
-    impl KnxIndividualAddressContext for FakeKnxAddresses {
+    impl IndividualAddressContext for FakeKnxAddresses {
         fn individual_address(&self) -> IndividualAddress {
             IndividualAddress::new(1, 1, 1)
         }

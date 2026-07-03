@@ -36,9 +36,8 @@ use crate::{
 use crate::{
     StackState,
     context::{
-        AddressTableContext, ApduLengthContext, BufferManagerContext, KnxIndividualAddressContext,
-        MaxRetryCountContext, PropertyServiceContext, RfDomainAddressContext, RfRetransmitterContext,
-        layer::LayerContext,
+        AddressTableContext, ApduLengthContext, BufferManagerContext, IndividualAddressContext, MaxRetryCountContext,
+        PropertyServiceContext, RfDomainAddressContext, RfRetransmitterContext, layer::LayerContext,
     },
     definition::StackDefinition,
     objects::tables::HasAddressTable,
@@ -330,7 +329,7 @@ where
 
 // Unconditional — `individual_address()` is on `StackState`, so this works
 // for both IP and TP1 devices.
-impl<D: StackDefinition> KnxIndividualAddressContext for StackContext<'_, D> {
+impl<D: StackDefinition> IndividualAddressContext for StackContext<'_, D> {
     fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress {
         self.inner.state.individual_address()
     }

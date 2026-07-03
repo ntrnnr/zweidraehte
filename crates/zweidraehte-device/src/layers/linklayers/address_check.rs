@@ -17,7 +17,7 @@
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
-use crate::context::KnxIndividualAddressContext;
+use crate::context::IndividualAddressContext;
 use crate::objects::tables::{AddressTable, HasLoadStateMachine};
 
 /// Trait for deciding whether an incoming frame is addressed to this device.
@@ -96,19 +96,16 @@ impl AddressChecker for AckAllChecker {
 /// Address checker for normal KNX devices.
 ///
 /// Accepts frames matching:
-/// - The device's own individual address (via [`KnxIndividualAddressContext`])
+/// - The device's own individual address (via [`IndividualAddressContext`])
 /// - Group addresses present in the loaded address table
 /// - Broadcast destination (`0.0.0` / `0/0/0`)
 pub struct DeviceAddressChecker<'a, ADT: AddressTable + HasLoadStateMachine> {
-    address_context: &'a dyn KnxIndividualAddressContext,
+    address_context: &'a dyn IndividualAddressContext,
     address_table: &'a core::cell::RefCell<ADT>,
 }
 
 impl<'a, ADT: AddressTable + HasLoadStateMachine> DeviceAddressChecker<'a, ADT> {
-    pub fn new(
-        address_context: &'a dyn KnxIndividualAddressContext,
-        address_table: &'a core::cell::RefCell<ADT>,
-    ) -> Self {
+    pub fn new(address_context: &'a dyn IndividualAddressContext, address_table: &'a core::cell::RefCell<ADT>) -> Self {
         Self { address_context, address_table }
     }
 }

@@ -20,7 +20,7 @@ extern crate zweidraehte_proto;
 
 mod state;
 pub use state::{
-    DiagnosticsContext, HasAuthorization, HasDiagnosticsContext, HasExtensionState, HasPersistence, HasSecurityMode,
+    DiagnosticsView, HasAuthorization, HasDiagnosticsContext, HasExtensionState, HasPersistence, HasSecurityMode,
     ReadObjectError, StackState, UpdateObjectError,
 };
 

@@ -55,9 +55,7 @@ impl<const N: usize> Table<CoTab7Impl<N>> {
 }
 
 impl<const N: usize> TableMemory for CoTab7Impl<N> {
-    fn max_size() -> usize {
-        N
-    }
+    const MAX_SIZE: usize = N;
     fn data_ref(&self) -> &[u8] {
         &self.data
     }

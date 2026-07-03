@@ -46,7 +46,7 @@ use embassy_futures::select::{Either, select};
 use embassy_sync::channel::DynamicSender;
 
 use crate::context::{
-    AddressTableContext, KnxIndividualAddressContext, LinkLayerBufferContext, RfDomainAddressContext,
+    AddressTableContext, IndividualAddressContext, LinkLayerBufferContext, RfDomainAddressContext,
     RfRetransmitterContext,
 };
 use crate::layers::linklayers::address_check::{AddressChecker, DeviceAddressChecker};
@@ -200,7 +200,7 @@ impl<R: RfTransceiver, P> LinkLayerCapabilities for KnxRfLinkLayerBuilder<R, P> 
 impl<R, CTX, P> LinkLayerBuilder<CTX> for KnxRfLinkLayerBuilder<R, P>
 where
     R: RfTransceiver + 'static,
-    CTX: LinkLayerBufferContext + RfDomainAddressContext + KnxIndividualAddressContext + AddressTableContext,
+    CTX: LinkLayerBufferContext + RfDomainAddressContext + IndividualAddressContext + AddressTableContext,
     // `P` is a zero-sized marker (`NoRetransmit` / `RetransmitEnabled`), so the
     // `'static` bound is trivially met and lets the run-loop future hold a
     // `PhantomData<P>` for the lifetime `'a`.
@@ -353,7 +353,7 @@ struct KnxRfLinkLayer<'a, R: RfTransceiver, CTX, P> {
 impl<R, CTX, P> KnxRfLinkLayer<'_, R, CTX, P>
 where
     R: RfTransceiver,
-    CTX: LinkLayerBufferContext + RfDomainAddressContext + KnxIndividualAddressContext + AddressTableContext,
+    CTX: LinkLayerBufferContext + RfDomainAddressContext + IndividualAddressContext + AddressTableContext,
     P: RetransmitPolicy<CTX>,
 {
     /// Event loop: race radio reception against transmit requests. Reception is

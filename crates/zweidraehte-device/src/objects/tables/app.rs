@@ -137,9 +137,7 @@ impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> TableMemory for Appl
         }
     }
 
-    fn max_size() -> usize {
-        core::mem::size_of::<D>()
-    }
+    const MAX_SIZE: usize = core::mem::size_of::<D>();
 
     fn read(&self, offset: usize, data: &mut [u8]) {
         let src = self.data_ref();

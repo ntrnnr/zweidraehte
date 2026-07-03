@@ -71,7 +71,7 @@ pub trait MaxRetryCountContext {
 }
 
 /// Provides the KNX primary individual address.
-pub trait KnxIndividualAddressContext {
+pub trait IndividualAddressContext {
     /// The device's primary individual address.
     fn individual_address(&self) -> zweidraehte_proto::address::IndividualAddress;
 }
@@ -94,7 +94,7 @@ pub trait AddressTableContext {
 /// link layer.
 ///
 /// Link layers never reach into interface objects directly; they read stack
-/// state through context traits like this one (cf. [`KnxIndividualAddressContext`]).
+/// state through context traits like this one (cf. [`IndividualAddressContext`]).
 /// The RF data-link layer needs both fields: the 6-octet RF Domain Address (RF
 /// Medium Object PID 56) for inbound Domain-Address acceptance and for the
 /// block-1 `SN/DoA` field when transmitting domain-addressed frames (AET=1),

@@ -60,7 +60,7 @@ use embassy_time::{Instant, Timer};
 use crate::actor::Request;
 use busy::ChipBusyRequest;
 
-use crate::context::{AddressTableContext, KnxIndividualAddressContext, LinkLayerBufferContext, MaxRetryCountContext};
+use crate::context::{AddressTableContext, IndividualAddressContext, LinkLayerBufferContext, MaxRetryCountContext};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
     buffers::{Buffer, MessageBuffer},
@@ -83,12 +83,12 @@ mod state_machine;
 /// a `DeviceAddressChecker` from the device state and to apply
 /// PID 52 (`MAX_RETRY_COUNT`) to the chip.
 pub(crate) trait TpuartContext:
-    LinkLayerBufferContext + KnxIndividualAddressContext + AddressTableContext + MaxRetryCountContext
+    LinkLayerBufferContext + IndividualAddressContext + AddressTableContext + MaxRetryCountContext
 {
 }
 
 impl<T> TpuartContext for T where
-    T: LinkLayerBufferContext + KnxIndividualAddressContext + AddressTableContext + MaxRetryCountContext
+    T: LinkLayerBufferContext + IndividualAddressContext + AddressTableContext + MaxRetryCountContext
 {
 }
 
@@ -113,7 +113,7 @@ use super::address_check::extract_header_fields as extract_tp1_header_fields;
 ///
 /// This is the default for [`TpUartLinkLayerBuilder::new`]. The builder's
 /// [`build_and_run`](super::super::LinkLayerBuilder::build_and_run) impl
-/// requires the context to provide [`KnxIndividualAddressContext`] and
+/// requires the context to provide [`IndividualAddressContext`] and
 /// [`AddressTableContext`](crate::context::AddressTableContext), and creates a [`DeviceAddressChecker`] that
 /// ACKs the device's own individual address, group addresses from the
 /// loaded address table, and broadcasts.
@@ -259,7 +259,7 @@ where
 //
 // AutoAddressChecker is NOT an AddressChecker — it's a marker that tells the
 // builder to construct a DeviceAddressChecker from the context at build time.
-// This requires the context to provide KnxIndividualAddressContext (individual address)
+// This requires the context to provide IndividualAddressContext (individual address)
 // and AddressTableContext (group address table).
 
 impl<W: Send + 'static, R: Send + 'static> super::super::LinkLayerBuilderBase

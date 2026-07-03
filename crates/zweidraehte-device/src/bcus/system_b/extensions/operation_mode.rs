@@ -13,7 +13,7 @@
 //!
 //! # Architecture
 //!
-//! - [`DiagnosticsContext`] — trait for querying diagnostic mode state
+//! - [`DiagnosticsView`] — trait for querying diagnostic mode state
 //! - [`HasDiagnosticsContext`] — trait for device states that provide diagnostics
 //! - [`OperationModeState`] — concrete state implementation
 //! - [`DiagnosticsAugment`] — interface object augment for PID 52 and PID 66
@@ -37,7 +37,7 @@ use crate::objects::tables::{
 use crate::service::ServiceCtx;
 use crate::state::HasSecurityState;
 use crate::storage::HasSeqStore;
-use crate::{DiagnosticsContext, HasSecurityMode, StackDefinition, StackState};
+use crate::{DiagnosticsView, HasSecurityMode, StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_proto::messages::apdu::go_diagnostics::{
@@ -146,7 +146,7 @@ impl OperationModeState {
     }
 }
 
-impl DiagnosticsContext for OperationModeState {
+impl DiagnosticsView for OperationModeState {
     fn is_diagnostic_mode(&self) -> bool {
         self.check_timeout();
         self.mode.get() == MODE_DIAGNOSTIC
