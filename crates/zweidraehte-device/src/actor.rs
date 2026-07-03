@@ -52,9 +52,7 @@ where
     R: 'static,
 {
     message: Option<M>,
-    /// `None` for fire-and-forget requests — every reply method becomes
-    /// a no-op, so the sender can enqueue without ever draining a reply.
-    reply_to: Option<&'static DynamicSender<'static, R>>,
+    reply_to: &'static DynamicSender<'static, R>,
 }
 
 // M and R must themselves be Send: if M or R contain e.g. *mut T, sending the
@@ -63,16 +61,7 @@ unsafe impl<M: Send, R: Send> Send for Request<M, R> {}
 
 impl<M, R> Request<M, R> {
     fn new(message: M, reply_to: &'static DynamicSender<'static, R>) -> Self {
-        Self { message: Some(message), reply_to: Some(reply_to) }
-    }
-
-    /// Construct a fire-and-forget request: it travels the same channel
-    /// as awaited requests, but the reply methods are no-ops, so the
-    /// replier can treat every request uniformly while the sender never
-    /// blocks. Used for advisory notifications (e.g.
-    /// [`PersistRequest::EtsDownloadComplete`](crate::persist::PersistRequest::EtsDownloadComplete)).
-    pub fn fire_and_forget(message: M) -> Self {
-        Self { message: Some(message), reply_to: None }
+        Self { message: Some(message), reply_to }
     }
 
     /// Process the message using a closure.
@@ -80,31 +69,20 @@ impl<M, R> Request<M, R> {
     /// The return value of the closure is used as the response.
     pub async fn process<F: FnOnce(M) -> R>(mut self, f: F) {
         let reply = f(self.message.take().unwrap());
-        if let Some(reply_to) = self.reply_to {
-            reply_to.send(reply).await;
-        }
+        self.reply_to.send(reply).await;
     }
 
     /// Reply to the request using the provided value.
-    ///
-    /// No-op for [`fire_and_forget`](Self::fire_and_forget) requests.
     pub async fn reply(self, value: R) {
-        if let Some(reply_to) = self.reply_to {
-            reply_to.send(value).await
-        }
+        self.reply_to.send(value).await
     }
 
     /// Reply to the request synchronously (non-blocking).
     ///
     /// Uses `try_send` on the underlying channel. Returns `Ok(())` if the
-    /// reply was delivered (always for
-    /// [`fire_and_forget`](Self::fire_and_forget) requests), or `Err` if
-    /// the channel was full.
+    /// reply was delivered, or `Err` if the channel was full.
     pub fn try_reply(&self, value: R) -> Result<(), embassy_sync::channel::TrySendError<R>> {
-        match self.reply_to {
-            Some(reply_to) => reply_to.try_send(value),
-            None => Ok(()),
-        }
+        self.reply_to.try_send(value)
     }
 
     /// Get a reference to the underlying message

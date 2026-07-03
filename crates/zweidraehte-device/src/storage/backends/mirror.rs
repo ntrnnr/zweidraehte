@@ -1,11 +1,11 @@
-//! The in-RAM mirror shared by every [`KeyValueStore`] backend.
+//! The in-RAM mirror backing [`WearLeveledKv`](super::WearLeveledKv).
 //!
-//! All three durable strategies — wear-levelled append-log, verbatim
-//! erase-rewrite, and the volatile RAM store — keep the *current* contents in a
-//! fixed-capacity `heapless::Vec` and serve `get`/`for_each` from it without
-//! touching the medium. Only the durable *backing* differs (append a slot,
-//! rewrite the region, or nothing). This module owns that common mirror so the
-//! backends carry only their medium-specific codec.
+//! The wear-levelled append-log keeps the *current* contents in a
+//! fixed-capacity `heapless::Vec` and serves `get`/`for_each` from it without
+//! touching flash; the log is only the durable backing. The mirror lives in
+//! its own module (rather than inside `wear_leveled`) so a future
+//! [`KeyValueStore`] backend that also wants a RAM mirror can share it —
+//! `PackedSeqStore` doesn't (FRAM reads are cheap enough to serve directly).
 //!
 //! Keys and values are stored inline at their maximum widths
 //! ([`MAX_KEY`]/[`MAX_VAL`]) with explicit lengths — no allocation.
@@ -81,9 +81,8 @@ impl<const ENTRIES: usize> Mirror<ENTRIES> {
     /// is *silently dropped*. Every backend shares this — callers must size
     /// `ENTRIES` ≥ their key-space (SIAT authorized-sender count + singletons).
     /// A dropped entry means a later `get` returns `None` for a key that
-    /// appeared to `put` successfully; this matches the prior sequence-store
-    /// policy and is acceptable only because the table is statically sized to
-    /// the device's provisioned partner count.
+    /// appeared to `put` successfully; that is acceptable only because the
+    /// table is statically sized to the device's provisioned partner count.
     pub fn upsert(&mut self, ns: u8, key: &[u8], val: &[u8]) {
         let e = MirrorEntry::new(ns, key, val);
         match self.find(ns, key) {

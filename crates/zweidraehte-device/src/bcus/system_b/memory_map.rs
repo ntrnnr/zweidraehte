@@ -55,14 +55,11 @@ impl MemoryLayout {
     /// - `max_co`: Maximum communication objects (determines COT size)
     /// - `max_app`: Maximum application data size
     pub const fn calculate(base_address: u16, max_addr: usize, max_asso: usize, max_co: usize, max_app: usize) -> Self {
-        // AddrTab7: 2-byte count + 2 bytes per entry
-        let adt_size = 2 + max_addr * 2;
-
-        // AssoTab6: 2-byte count + 4 bytes per entry (TSAP:2 + ASAP:2)
-        let ast_size = 2 + max_asso * 4;
-
-        // CoTab7: 2-byte count + 2 bytes per entry (type:1 + flags:1)
-        let cot_size = 2 + max_co * 2;
+        // The per-table byte-width formulas live in one place: `table_sizes`
+        // in this BCU's `storage` module (also the source of the `DeviceConfig`
+        // const generics). Reuse it so the memory map and the persisted config
+        // can never disagree on a table's on-wire size.
+        let (adt_size, ast_size, cot_size) = super::storage::table_sizes(max_addr, max_asso, max_co);
 
         // Application data
         let app_size = max_app;

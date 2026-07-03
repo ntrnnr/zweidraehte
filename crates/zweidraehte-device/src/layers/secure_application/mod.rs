@@ -20,7 +20,7 @@ use crate::{
     objects::tables::{AssociationTable, HasAssociationTable},
     prelude::HasAddressTable,
     state::{HasSecurityState, SecurityFailureType},
-    storage::{SecureDeviceIdentity, SequenceNumberStorage},
+    storage::{SecureDeviceIdentity, SequenceNumberStorage, SiatAccess},
 };
 use zweidraehte_proto::access::{AccessContext, AccessSource, ClientRole, SecurityMode};
 use zweidraehte_proto::address::GroupAddress;
@@ -122,7 +122,12 @@ pub(super) struct PendingSyncState {
 ///   [`NoP2p`]: no SIAT dispatch, no pending-sync tracker, no code —
 ///   LLVM elides the stubs through monomorphisation. Devices that need
 ///   P2P pass [`WithP2p`] explicitly.
-pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature = NoP2p> {
+pub struct SecureApplicationLayer<
+    'a,
+    D: StackDefinition,
+    SEQ: SequenceNumberStorage + SiatAccess,
+    P2P: P2pFeature = NoP2p,
+> {
     pub(super) inner: ApplicationLayer<'a, D>,
     /// Borrowed reference to the sequence number storage that lives on
     /// `SecureExtensionState`. Shared with the Security IO augment which
@@ -143,7 +148,9 @@ pub struct SecureApplicationLayer<'a, D: StackDefinition, SEQ: SequenceNumberSto
     pub(super) sync_rate_limit: embassy_time::Duration,
 }
 
-impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> SecureApplicationLayer<'a, D, SEQ, P2P> {
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature>
+    SecureApplicationLayer<'a, D, SEQ, P2P>
+{
     pub fn new(inner: ApplicationLayer<'a, D>, seq_storage: &'a RefCell<SEQ>) -> Self {
         Self {
             inner,
@@ -167,7 +174,8 @@ impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Secure
     }
 }
 
-impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> SecureApplicationLayer<'a, D, SEQ, P2P>
+impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature>
+    SecureApplicationLayer<'a, D, SEQ, P2P>
 where
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
@@ -427,9 +435,10 @@ where
             return SecureResult::Dropped;
         }
 
-        // Non-tool P2P communication requires the sender to be in the SIAT.
+        // Non-tool P2P communication requires the sender to be in the SIAT —
+        // checked against the storage-layer-owned store the SAL already holds.
         if !scf.tool_access && addr_type == 0 {
-            if !security_state.is_in_siat(src) {
+            if !self.seq_storage.borrow().siat_contains(src) {
                 warn!("S-AL: sender {:#06X} not in SIAT", src);
                 self.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
                 return SecureResult::Dropped;
@@ -898,7 +907,7 @@ where
     }
 }
 
-impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> Layer<D>
+impl<D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature> Layer<D>
     for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,

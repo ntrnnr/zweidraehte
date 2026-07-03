@@ -32,6 +32,10 @@ defmt = "1.0"
 log = "0.4"
 serde = { version = "1.0", default-features = false, features = ["derive"] }
 serde_with = { version = "3.12", default-features = false, features = ["macros"] }
+# no_std postcard codec for the ConfigStore device-config blob. Matches the
+# `cross/` workspace's `default-features = false` (no `use-std`) so the core
+# crate stays no_std.
+postcard = { version = "1.1", default-features = false }
 serde_json = "1.0"
 heapless = "0.9"
 replace_with = { version = "0.1", default-features = false }

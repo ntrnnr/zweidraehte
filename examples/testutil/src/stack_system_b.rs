@@ -204,6 +204,7 @@ async fn main(spawner: Spawner) {
         state_init,
         MockIpPlatform::default(),
         DemoStack::memory_map(),
+        (),
     );
 
     spawner.spawn(run_stack(runner)).unwrap();

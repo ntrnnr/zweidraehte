@@ -2,7 +2,6 @@
 #![no_main]
 #![feature(never_type)]
 
-use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use defmt::*;
@@ -11,7 +10,6 @@ use embassy_futures::select::{Either, select};
 use embassy_net::{DhcpConfig, Ipv4Cidr, StackResources as NetStackResources, StaticConfigV4};
 use embassy_net_wiznet::chip::W5500;
 use embassy_rp::{
-    flash,
     gpio::{Input, Level, Output, Pull},
     peripherals::SPI0,
     spi::{Async, Config as SpiConfig, Spi},
@@ -21,7 +19,6 @@ use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
-use zweidraehte_device::context::layer::LayerContext;
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -39,7 +36,8 @@ use zweidraehte_device::{
 
 use embedded_common::DebouncedButton;
 use rp_common::{
-    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashIdentityData, RpFlashStorage, UdpPool,
+    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashIdentityData, RpConfigRegion, RpFlash, RpFlashIo,
+    UdpPool,
 };
 
 // ================================================================================
@@ -64,21 +62,35 @@ const UDP_POOL_SIZE: usize = 3;
 /// Device state combining System B tables with IP link-layer state.
 type PicoEthState = IpStateFor<PicoEthLightSwitch, KnxIpDeviceUdp>;
 
-/// Flash storage handle, shared between the main loop (periodic save)
-/// and the restart handler (save before reset).
-type Storage = RpFlashStorage<PicoEthState, FlashIdentityData>;
+// ----------------------------------------------------------------------------
+// Storage layout — one config region on the shared RpFlash chip
+// ----------------------------------------------------------------------------
+
+// The device's storage memory map: a single config blob carrying this
+// device's state as its payload. The `Placed` entry derives its placement,
+// store type, and open() from the layout.
+use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
+
+// `pub`: the map reaches the public `StackDefinition` surface through
+// `DeviceStorage`'s `StoreOf` projection.
+pub struct StorageMap;
+type Cfg = Placed<RpConfigRegion<PicoEthState>, RpFlash, StorageMap>;
+impl StorageLayout for StorageMap {
+    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
+}
+type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
 // ----------------------------------------------------------------------------
 // StackDefinition
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
-struct PicoEthLightSwitch;
+pub struct PicoEthLightSwitch;
 
 /// Augment chain: IP medium augment (KNXnet/IP Parameter object) plus
 /// the Easter Egg demo augment.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
-struct PicoEthAugments<'a> {
+pub struct PicoEthAugments<'a> {
     #[service(augment)]
     ip: IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>,
     #[service(augment)]
@@ -117,6 +129,9 @@ zweidraehte_device::system_b_standard_stack! {
     },
     extra {
         type Identity = FlashIdentityData;
+        // The storage handle rides on the stack; the storage task pulls the
+        // config store out of it.
+        type Storage = &'static DeviceStorage;
     },
 }
 
@@ -187,108 +202,10 @@ async fn prog_task(knx: Stack<'static, PicoEthLightSwitch>, prog_btn_pin: Input<
     }
 }
 
-/// Restart handler — executes resets from ETS, persists state, and reboots.
-///
-/// When the KNX stack receives an A_Restart request (e.g. from ETS during
-/// programming or factory reset), this task:
-/// 1. Executes the appropriate reset based on the erase code
-/// 2. Saves the (possibly modified) state to flash
-/// 3. Sends the A_Restart_Response back to the stack
-/// 4. Triggers a Cortex-M system reset
-#[embassy_executor::task]
-async fn restart_task(knx: Stack<'static, PicoEthLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
-    use embedded_common::CortexMSystem;
-    use zweidraehte_device::restart::EraseCode;
-    use zweidraehte_platform::SystemControl;
-
-    loop {
-        let request = knx.receive_restart_request().await;
-        let state = knx.state();
-
-        info!("Restart request: erase_code={}", request.erase_code);
-
-        // The stack already sent the A_Restart_Response on the bus.
-        match request.erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => {
-                info!("Basic restart (no data reset)");
-            }
-            EraseCode::FactoryReset => {
-                info!("Factory reset — clearing all data");
-                state.factory_reset();
-            }
-            EraseCode::ResetIA => {
-                info!("Resetting individual address");
-                state.reset_individual_address();
-            }
-            EraseCode::ResetAP => {
-                info!("Resetting application program");
-                state.reset_application();
-            }
-            EraseCode::ResetParam => {
-                info!("Resetting parameters");
-                state.reset_parameters();
-            }
-            EraseCode::FactoryResetKeepIA => {
-                info!("Factory reset (keeping individual address)");
-                state.factory_reset_keep_ia();
-            }
-            EraseCode::ResetLinks => {
-                info!("Resetting links (Group Address + Association tables)");
-                state.apply_erase_code(EraseCode::ResetLinks);
-            }
-            EraseCode::Other(_) => {
-                warn!("Unsupported erase code — ignoring");
-            }
-        }
-
-        // Persist the post-reset state before rebooting.
-        if state.is_dirty() {
-            save_state(state, storage);
-        }
-
-        // Brief delay so the response can be sent on the wire.
-        Timer::after(Duration::from_millis(100)).await;
-
-        // Cortex-M system reset — does not return.
-        let mut system = CortexMSystem;
-        let Err(_e) = system.restart().await;
-        // unreachable on success, but the compiler needs the loop
-    }
-}
-
-/// Save device state to flash. Logs errors but does not propagate them
-/// (flash failure is non-fatal — the device continues with in-RAM state).
-fn save_state(state: &PicoEthState, storage: &RefCell<Storage>) {
-    match storage.borrow_mut().save(state) {
-        Ok(()) => {
-            state.clear_dirty();
-            info!("State saved to flash");
-        }
-        Err(e) => {
-            warn!("Flash save failed: {}", e);
-        }
-    }
-}
-
-/// On-demand persistence handler.
-///
-/// The stack requests an immediate save when waiting for the periodic
-/// poll or restart would be wrong — at the end of an ETS download
-/// (`EtsDownloadComplete`) and for spec-mandated durability points
-/// (e.g. the IP Secure mc_timer watermark, which gates secure routing
-/// sends on the reply). The signal is always answered (`done()`), even
-/// when the save failed — gated requesters inside the stack block
-/// until the reply.
-#[embassy_executor::task]
-async fn persist_task(knx: Stack<'static, PicoEthLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
-    loop {
-        let request = knx.receive_persist_request().await;
-        if knx.state().is_dirty() {
-            info!("Persist request — saving state");
-            save_state(knx.state(), storage);
-        }
-        request.reply(()).await;
-    }
+zweidraehte_device::storage_task! {
+    device: PicoEthLightSwitch,
+    system: embedded_common::CortexMSystem,
+    guard: zweidraehte_device::storage::NoSaveGuard,
 }
 
 /// Lifecycle event logger.
@@ -297,24 +214,7 @@ async fn persist_task(knx: Stack<'static, PicoEthLightSwitch>, storage: &'static
 /// programming completing (or unloading) via defmt.
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, PicoEthLightSwitch>) -> ! {
-    let mut events = knx.lifecycle_events();
-    loop {
-        match events.next_message_pure().await {
-            LifecycleEvent::ApplicationStarted => {
-                info!("Application STARTED — app is now running");
-            }
-            LifecycleEvent::ApplicationStopped => {
-                info!("Application STOPPED — app is no longer running");
-            }
-            LifecycleEvent::PeiStarted => {
-                info!("PEI STARTED");
-            }
-            LifecycleEvent::PeiStopped => {
-                info!("PEI STOPPED");
-            }
-            _ => {}
-        }
-    }
+    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
 }
 
 /// Main application task: handles button 1 and button 2 presses.
@@ -374,29 +274,7 @@ mod dev_provisioning {
     include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
 }
 
-fn load_identity(
-    flash: &mut embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, flash::Blocking, { 2 * 1024 * 1024 }>,
-) -> FlashIdentityData {
-    let mut unique_id = [0u8; 8];
-    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
-
-    match rp_common::read_provisioning(flash) {
-        Ok(rec) => rp_common::identity_from_record(&rec, unique_id),
-
-        #[cfg(feature = "provision-on-boot")]
-        Err(e) => {
-            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
-            rp_common::synthesize_and_write(flash, dev_provisioning::DEV_SERIAL, None, Some(dev_provisioning::DEV_MAC))
-                .expect("write dev KNXP");
-
-            let rec = rp_common::read_provisioning(flash).expect("re-read freshly written KNXP");
-            rp_common::identity_from_record(&rec, unique_id)
-        }
-
-        #[cfg(not(feature = "provision-on-boot"))]
-        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
-    }
-}
+rp_common::rp_identity_loader!(plain, fdsk: None, mac: Some(dev_provisioning::DEV_MAC));
 
 // ================================================================================
 // Button Release Adapter
@@ -428,17 +306,11 @@ async fn main(spawner: Spawner) {
     // Device identity (from flash — must happen before W5500 init for MAC)
     // ========================================================================
 
-    // `RpFlashStorage` borrows the `FLASH` peripheral through a shared
-    // `&'static RefCell` (so secure devices can share it with their
+    // The `Storage` `ConfigStore` borrows the `FLASH` peripheral through a
+    // shared `&'static RefCell` (so secure devices can share it with their
     // sequence-number store). This device has no second flash consumer, but
     // must satisfy the same API, so lift the handle into a `StaticCell` too.
-    let flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    static FLASH_CELL: StaticCell<
-        RefCell<
-            embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, flash::Blocking, { 2 * 1024 * 1024 }>,
-        >,
-    > = StaticCell::new();
-    let flash = &*FLASH_CELL.init(RefCell::new(flash));
+    let flash = rp_common::rp_flash_cell!(p.FLASH);
     let identity_data = load_identity(&mut flash.borrow_mut());
 
     let mac_addr = identity_data.mac_address();
@@ -497,9 +369,13 @@ async fn main(spawner: Spawner) {
     // Read the device config from flash WITHOUT constructing the full
     // runtime state. We need the IP assignment method to decide whether
     // to configure the embassy-net stack with DHCP or static IP before
-    // creating it. load_config() deserializes the raw config for this.
-    let mut storage = rp_common::rp_flash_storage::<PicoEthState, _>(flash, identity_data);
-    let loaded_config = storage.load_config().ok().flatten();
+    // creating it. The stores struct lives in a static so the storage task
+    // can reach it; each store sits behind its own RefCell, borrowed per
+    // call on the single-threaded executor.
+    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
+    let storage =
+        &*STORAGE.init(DeviceStorage::new(Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible")));
+    let loaded_config = storage.load_config();
     let ip_config = loaded_config.as_ref().map(|c| &c.extension_config);
 
     // ========================================================================
@@ -564,8 +440,8 @@ async fn main(spawner: Spawner) {
 
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
-    // Build state init from the device config loaded earlier (line 430).
-    let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
+    // Build state init from the device config loaded earlier.
+    let state_init = SystemBStateInit::new(identity_data, loaded_config);
 
     // Wait for an IP address. For static this is immediate; for DHCP
     // this waits for a lease.
@@ -580,12 +456,6 @@ async fn main(spawner: Spawner) {
     }
     let ip = stack.config_v4().expect("IP config available after wait loop");
     info!("IP ready: {}", ip.address);
-
-    // Put storage in a static RefCell so both the restart handler and the
-    // main loop can access it. Both run on the same single-threaded
-    // executor, so RefCell is safe (no concurrent borrow possible).
-    static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
-    let storage = &*STORAGE.init(RefCell::new(storage));
 
     // ========================================================================
     // KNX stack
@@ -626,6 +496,7 @@ async fn main(spawner: Spawner) {
         state_init,
         platform,
         PicoEthLightSwitch::memory_map(),
+        storage,
     );
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
@@ -651,12 +522,12 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(app_task(knx_stack, btn1_pin, btn2_pin)).expect("app_task spawnable once");
     spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
-    spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
-    spawner.spawn(persist_task(knx_stack, storage)).expect("persist_task spawnable once");
+    spawner.spawn(storage_task(knx_stack)).expect("storage_task spawnable once");
     spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
 
     // ========================================================================
-    // Main loop: heartbeat LED + programming mode LED + periodic save
+    // Main loop: heartbeat LED + programming mode LED (saves live in the
+    // storage task)
     // ========================================================================
 
     // The programming LED is driven here (not in prog_task) so it also
@@ -671,14 +542,6 @@ async fn main(spawner: Spawner) {
             prog_led.set_high();
         } else {
             prog_led.set_low();
-        }
-
-        // Periodically persist any state changes from ETS programming
-        // (table writes, parameter changes, address changes, etc.).
-        // The restart handler also saves before rebooting, but this
-        // catches changes that don't involve a restart.
-        if knx_stack.state().is_dirty() {
-            save_state(knx_stack.state(), storage);
         }
 
         Timer::after(Duration::from_millis(500)).await;

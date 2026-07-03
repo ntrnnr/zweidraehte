@@ -35,7 +35,7 @@
 //!
 //! The Security Individual Address Table is **not** a const generic on the
 //! secure extension. Its capacity is the `N` of the
-//! [`SiatStore`](crate::kvstore::SiatStore) chosen for the `SEQ` type parameter
+//! [`SiatStore`](crate::storage::views::SiatStore) chosen for the `SEQ` type parameter
 //! — the SIAT is the sequence store (one LastValidSeqNr slot per non-tool secure
 //! sender IA, 03/03/07 §5.3), not a separate table.
 
@@ -58,7 +58,6 @@ use crate::bcus::system_b::{
     Extension, ExtensionConfig, ExtensionState, RfExtensionState, RfRetransmitterExtension, SystemBDeviceState,
     Tp1ExtensionState,
 };
-use crate::kvstore::SiatAccess;
 use crate::logging::debug;
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
@@ -67,7 +66,8 @@ use crate::objects::interface::{
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
-use crate::storage::{HasSeqStorage, SequenceNumberStorage};
+use crate::storage::SequenceNumberStorage;
+use crate::storage::views::SiatAccess;
 
 // ============================================================================
 // SecurityTable — const-generic fixed-capacity table
@@ -716,18 +716,11 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for Se
 /// Devices that don't need Data Secure simply use the inner extension
 /// directly (e.g., `Tp1ExtensionState`). This wrapper is only used
 /// when security is desired.
-pub struct SecureExtensionState<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize> {
+pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> {
     /// The medium-specific extension state.
     pub inner: Inner,
     /// The security extension state.
     pub security: SecurityState<GRP, P2P, GO>,
-    /// Sequence number storage for sending counters.
-    ///
-    /// Shared between the Security IO augment (PID 59 read/write) and
-    /// the Secure Application Layer (frame encryption). Wrapped in
-    /// `RefCell` for interior mutability since both read and write
-    /// through shared references.
-    pub seq_storage: RefCell<SEQ>,
     /// Factory Default Setup Key.
     ///
     /// This is the *only* live copy of the FDSK in the device state.
@@ -736,19 +729,6 @@ pub struct SecureExtensionState<Inner: ExtensionState, SEQ, const GRP: usize, co
     /// (03/05/01 §6.1.4). `SystemBDeviceState` does not duplicate it;
     /// [`HasSecureIdentity::fdsk`] on the device state forwards here.
     fdsk: [u8; 16],
-}
-
-/// `SecureExtensionState` delegates `HasSecurityState` to its inner
-/// `SecurityState`, so that `SystemBDeviceState` with a secure extension
-/// can satisfy `HasSecurityState` through `HasExtensionState`.
-impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
-    HasSeqStorage for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
-{
-    type SeqStorage = SEQ;
-
-    fn seq_storage(&self) -> &RefCell<SEQ> {
-        &self.seq_storage
-    }
 }
 
 // The secure wrapper is transparent to the medium-specific accessor traits: it
@@ -768,9 +748,9 @@ impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const 
 // wrapper, so no `mark_dirty` suffix.
 forward_to_field! {
     impl<[
-        Inner: ExtensionState + HasMaxRetryCount, SEQ,
+        Inner: ExtensionState + HasMaxRetryCount,
         const GRP: usize, const P2P: usize, const GO: usize,
-    ]> HasMaxRetryCount for SecureExtensionState<Inner, SEQ, GRP, P2P, GO> {
+    ]> HasMaxRetryCount for SecureExtensionState<Inner, GRP, P2P, GO> {
         get fn max_retry_count(&self) -> u8;
         set fn set_max_retry_count(&self, value: u8);
     } => self.inner
@@ -778,9 +758,9 @@ forward_to_field! {
 
 forward_to_field! {
     impl<[
-        Inner: ExtensionState + HasDomainAddress, SEQ,
+        Inner: ExtensionState + HasDomainAddress,
         const GRP: usize, const P2P: usize, const GO: usize,
-    ]> HasDomainAddress for SecureExtensionState<Inner, SEQ, GRP, P2P, GO> {
+    ]> HasDomainAddress for SecureExtensionState<Inner, GRP, P2P, GO> {
         const DOMAIN_ADDRESS_LENGTH: usize = Inner::DOMAIN_ADDRESS_LENGTH;
         out fn domain_address(&self, buf: &mut [u8]);
         set fn set_domain_address(&self, addr: &[u8]);
@@ -789,9 +769,9 @@ forward_to_field! {
 
 forward_to_field! {
     impl<[
-        Inner: ExtensionState + HasRfDomainAddress, SEQ,
+        Inner: ExtensionState + HasRfDomainAddress,
         const GRP: usize, const P2P: usize, const GO: usize,
-    ]> HasRfDomainAddress for SecureExtensionState<Inner, SEQ, GRP, P2P, GO> {
+    ]> HasRfDomainAddress for SecureExtensionState<Inner, GRP, P2P, GO> {
         out fn rf_domain_address(&self, out: &mut [u8; 6]);
         set fn set_rf_domain_address(&self, addr: &[u8; 6]);
     } => self.inner
@@ -799,9 +779,9 @@ forward_to_field! {
 
 forward_to_field! {
     impl<[
-        Inner: ExtensionState + HasRfRetransmitter, SEQ,
+        Inner: ExtensionState + HasRfRetransmitter,
         const GRP: usize, const P2P: usize, const GO: usize,
-    ]> HasRfRetransmitter for SecureExtensionState<Inner, SEQ, GRP, P2P, GO> {
+    ]> HasRfRetransmitter for SecureExtensionState<Inner, GRP, P2P, GO> {
         get fn rf_retransmit_enabled(&self) -> bool;
         set fn set_rf_retransmit_enabled(&self, value: bool);
         get fn rf_repeat_counter_limit(&self) -> u8;
@@ -829,8 +809,8 @@ forward_to_field! {
 // `IpSecureInterfaceExtension`.
 
 #[cfg(feature = "knxip")]
-impl<Inner: ExtensionState + crate::ip::HasIpExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize>
-    crate::ip::HasIpExtensionState for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState + crate::ip::HasIpExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
+    crate::ip::HasIpExtensionState for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn ip_state(&self) -> &dyn crate::ip::IpStateView {
         self.inner.ip_state()
@@ -838,13 +818,8 @@ impl<Inner: ExtensionState + crate::ip::HasIpExtensionState, SEQ, const GRP: usi
 }
 
 #[cfg(feature = "knxip")]
-impl<
-    Inner: ExtensionState + crate::ip::HasRoutingMulticastRebind,
-    SEQ,
-    const GRP: usize,
-    const P2P: usize,
-    const GO: usize,
-> crate::ip::HasRoutingMulticastRebind for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState + crate::ip::HasRoutingMulticastRebind, const GRP: usize, const P2P: usize, const GO: usize>
+    crate::ip::HasRoutingMulticastRebind for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn routing_multicast_rebind_channel(
         &self,
@@ -854,8 +829,8 @@ impl<
 }
 
 #[cfg(feature = "knxip")]
-impl<Inner: ExtensionState + crate::ip::HasAdditionalIas, SEQ, const GRP: usize, const P2P: usize, const GO: usize>
-    crate::ip::HasAdditionalIas for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState + crate::ip::HasAdditionalIas, const GRP: usize, const P2P: usize, const GO: usize>
+    crate::ip::HasAdditionalIas for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn write_additional_ias_into(&self, buf: &mut [zweidraehte_proto::address::IndividualAddress]) -> usize {
         self.inner.write_additional_ias_into(buf)
@@ -867,16 +842,16 @@ impl<Inner: ExtensionState + crate::ip::HasAdditionalIas, SEQ, const GRP: usize,
 }
 
 #[cfg(feature = "knxip")]
-impl<Inner: ExtensionState + crate::ip::HasIpSecureView, SEQ, const GRP: usize, const P2P: usize, const GO: usize>
-    crate::ip::HasIpSecureView for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState + crate::ip::HasIpSecureView, const GRP: usize, const P2P: usize, const GO: usize>
+    crate::ip::HasIpSecureView for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
         self.inner.ip_secure_view()
     }
 }
 
-impl<Inner: ExtensionState, SEQ: SiatAccess, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState
-    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState
+    for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
@@ -900,10 +875,6 @@ impl<Inner: ExtensionState, SEQ: SiatAccess, const GRP: usize, const P2P: usize,
 
     fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)> {
         self.security.p2p_key_for_ia(peer_ia)
-    }
-
-    fn is_in_siat(&self, peer_ia: u16) -> bool {
-        self.seq_storage.borrow().siat_contains(peer_ia)
     }
 
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool {
@@ -947,8 +918,8 @@ impl<Inner: ExtensionState, SEQ: SiatAccess, const GRP: usize, const P2P: usize,
 // already implemented in [`SecureApplicationLayer::check_go_security_flags`].
 // Both sides consult `PID_GO_SECURITY_FLAGS` (0-based) for groups; both
 // must agree on the bit-to-level mapping below.
-impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize> HasGoSecurityView
-    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasGoSecurityView
+    for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn required_security_for_asap(&self, asap: u16) -> RequiredSecurity {
         // ASAPs are 1-based at the wire/property layer; the GO flags table is
@@ -1041,17 +1012,15 @@ impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO:
 /// a Data Secure device has an FDSK. The type system enforces this via
 /// the [`SecureDeviceIdentity`](crate::storage::SecureDeviceIdentity)
 /// bound at the device-state construction site.
-pub struct SecureResources<Inner: ExtensionState, SEQ> {
+pub struct SecureResources<Inner: ExtensionState> {
     /// Inner extension's own resources (e.g. `()` for TP1).
     pub inner: Inner::Resources,
-    /// Sequence-number storage handle (see [`SequenceNumberStorage`]).
-    pub seq_storage: SEQ,
     /// Factory Default Setup Key. Becomes the initial tool key on a
     /// factory-fresh device and is re-applied by `factory_reset`.
     pub fdsk: [u8; 16],
 }
 
-impl<Inner: ExtensionState, SEQ> SecureResources<Inner, SEQ>
+impl<Inner: ExtensionState> SecureResources<Inner>
 where
     Inner::Resources: Default,
 {
@@ -1061,27 +1030,16 @@ where
     /// so the `inner: Default::default()` field never has to be spelled at the
     /// call site. Devices whose inner *does* carry resources (e.g. the IP Secure
     /// interface's `IpSecureResources`) construct the struct directly instead.
-    pub fn simple(seq_storage: SEQ, fdsk: [u8; 16]) -> Self {
-        Self { inner: Default::default(), seq_storage, fdsk }
+    pub fn simple(fdsk: [u8; 16]) -> Self {
+        Self { inner: Default::default(), fdsk }
     }
 }
 
-/// Near-exhaustion threshold for the 6-byte (48-bit) tool sending
-/// SeqNr: `FF 00 00 00 00 00`. A factory reset re-initialises the
-/// counter only at or above this value (03/05/01 §6.1.4 + AN194).
-pub(crate) const SEQ_EXHAUSTION_THRESHOLD: u64 = 0xFF_0000_0000_00;
-
-/// Re-init target after a near-exhaustion factory reset. Must be
-/// non-zero (seq 0 is rejected per spec) but far below
-/// [`SEQ_EXHAUSTION_THRESHOLD`] so the counter has runway before the
-/// next reset is required.
-pub(crate) const SEQ_REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
-
-impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const P2P: usize, const GO: usize>
-    ExtensionState for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> ExtensionState
+    for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     type Config = SecureExtensionConfig<Inner::Config, GRP, P2P, GO>;
-    type Resources = SecureResources<Inner, SEQ>;
+    type Resources = SecureResources<Inner>;
 
     fn from_config(config: Self::Config, resources: Self::Resources) -> Self {
         let security = SecurityState::from_config(config.security);
@@ -1095,12 +1053,7 @@ impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const 
             security.reset_tool_key_to_fdsk(resources.fdsk);
         }
 
-        Self {
-            inner: Inner::from_config(config.inner, resources.inner),
-            security,
-            seq_storage: RefCell::new(resources.seq_storage),
-            fdsk: resources.fdsk,
-        }
+        Self { inner: Inner::from_config(config.inner, resources.inner), security, fdsk: resources.fdsk }
     }
 
     fn to_config(&self) -> Self::Config {
@@ -1125,21 +1078,11 @@ impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const 
                 // parameter plumbing from `SystemBDeviceState`.
                 self.security.reset_tool_key_to_fdsk(self.fdsk);
 
-                // Per spec 03/05/01 §6.1.4 + AN194: tool sending SeqNr
-                // is re-initialised on factory reset only when the stored
-                // value has reached the near-exhaustion threshold.
-                // Values below threshold are preserved across reset —
-                // receivers have already seen them and would reject any
-                // re-init with a lower value as a replay.
-                use crate::kvstore::seq6_to_u64;
-                let mut storage = self.seq_storage.borrow_mut();
-                if let Ok(seq) = storage.load_sending_seq() {
-                    // Re-initialise the single Sequence Number Sending only once it
-                    // nears exhaustion (spec §5.x); below threshold it is preserved.
-                    if seq6_to_u64(&seq) >= SEQ_EXHAUSTION_THRESHOLD {
-                        let _ = storage.save_sending_seq(&SEQ_REINIT_VALUE);
-                    }
-                }
+                // The sending-SeqNr near-exhaustion re-init (03/05/01 §6.1.4 +
+                // AN194) is the storage layer's slice of this erase: the
+                // stores struct's composed `StorageHooks::erase` handles it
+                // when the storage task applies the code to the durable
+                // regions.
             }
             EraseCode::ResetLinks => {
                 self.security.clear_security_report();
@@ -1149,8 +1092,8 @@ impl<Inner: ExtensionState, SEQ: SequenceNumberStorage, const GRP: usize, const 
     }
 }
 
-impl<Inner: ExtensionState, SEQ, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode
-    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode
+    for SecureExtensionState<Inner, GRP, P2P, GO>
 {
     fn security_mode_enabled(&self) -> bool {
         self.security.security_mode_enabled()
@@ -1195,28 +1138,35 @@ pub struct SecureAugmentBundle<
 }
 
 // ============================================================================
-// Extension trait — produces SecureAugmentBundle
+// Augment construction — pulls the SIAT store from the layer context
 // ============================================================================
 
-impl<Inner, Platform, SEQ, const GRP: usize, const P2P: usize, const GO: usize> Extension<Platform>
-    for SecureExtensionState<Inner, SEQ, GRP, P2P, GO>
-where
-    Inner: Extension<Platform>,
-    SEQ: SequenceNumberStorage + SiatAccess,
+impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
+    SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    type Augment<'a, D: StackDefinition>
-        = SecureAugmentBundle<'a, Inner::Augment<'a, D>, SEQ, GRP, P2P, GO>
+    /// Build the secure augment bundle: the inner medium augment plus the
+    /// [`SecurityAugment`] driving Security IO 0x11.
+    ///
+    /// An inherent method (not `Extension::create_augment`) because the
+    /// Security IO's SIAT/SeqNr PIDs need the storage-layer-owned sequence
+    /// store, pulled from the layer context's storage handle — a bound
+    /// (`D::Storage: HasSeqStore`) the `Extension` trait's method signature
+    /// cannot carry. Device `augments:` closures call this with the
+    /// `layer_ctx` they already receive.
+    pub fn create_secure_augment<'a, D, Platform>(
+        &'a self,
+        platform: &'a Platform,
+        layer_ctx: &'a crate::context::layer::LayerContext<D>,
+    ) -> SecureAugmentBundle<'a, Inner::Augment<'a, D>, crate::storage::SeqStorageFor<D>, GRP, P2P, GO>
     where
-        Self: 'a,
-        Platform: 'a;
-
-    fn create_augment<'a, D: StackDefinition>(&'a self, platform: &'a Platform) -> Self::Augment<'a, D>
-    where
-        Platform: 'a,
+        D: StackDefinition,
+        D::Storage: crate::storage::HasSeqStore,
+        Inner: Extension<Platform>,
     {
+        use crate::storage::HasSeqStore as _;
         SecureAugmentBundle {
             inner: self.inner.create_augment::<D>(platform),
-            security: SecurityAugment::new(&self.security, &self.seq_storage),
+            security: SecurityAugment::new(&self.security, layer_ctx.storage.seq_store()),
         }
     }
 }
@@ -1226,8 +1176,8 @@ where
 // ============================================================================
 
 /// TP1 extension state with Data Secure support.
-pub type SecureTp1ExtensionState<SEQ, const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<Tp1ExtensionState, SEQ, GRP, P2P, GO>;
+pub type SecureTp1ExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
+    SecureExtensionState<Tp1ExtensionState, GRP, P2P, GO>;
 
 /// TP1 device state with Data Secure support, sized from raw table byte sizes.
 ///
@@ -1244,7 +1194,7 @@ pub type SecureTp1ExtensionState<SEQ, const GRP: usize, const P2P: usize, const 
 ///
 /// `P2P` sizes the P2P Key Table. The Security Individual Address Table is **not**
 /// a parameter here — its capacity is the `N` of the
-/// [`SiatStore`](crate::kvstore::SiatStore) chosen for `SEQ` (the SIAT lives in
+/// [`SiatStore`](crate::storage::views::SiatStore) chosen for `SEQ` (the SIAT lives in
 /// the sequence store, not as a const generic). Per 03/03/07 §5.3 that `N` must
 /// cover the union of P2P and group-secure senders.
 pub type SecureTp1DeviceState<
@@ -1252,27 +1202,26 @@ pub type SecureTp1DeviceState<
     const AST_SIZE: usize,
     const COT_SIZE: usize,
     D,
-    SEQ,
     const P2P: usize,
 > = SystemBDeviceState<
     ADT_SIZE,
     AST_SIZE,
     COT_SIZE,
     D,
-    SecureTp1ExtensionState<SEQ, { (ADT_SIZE - 2) / 2 }, P2P, { (COT_SIZE - 2) / 2 }>,
+    SecureTp1ExtensionState<{ (ADT_SIZE - 2) / 2 }, P2P, { (COT_SIZE - 2) / 2 }>,
 >;
 
 /// KNX-RF extension state with Data Secure support. Wraps the RF Medium Object /
 /// Domain Address extension in the secure wrapper.
-pub type SecureRfExtensionState<SEQ, const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<RfExtensionState, SEQ, GRP, P2P, GO>;
+pub type SecureRfExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
+    SecureExtensionState<RfExtensionState, GRP, P2P, GO>;
 
 /// KNX-RF **retransmitter** extension state with Data Secure support. As
 /// [`SecureRfExtensionState`], but the wrapped inner extension is
 /// [`RfRetransmitterExtension`], so the device also gains the PID 57 / PID 74
 /// retransmitter surface (`SecureExtensionState<RfRetransmitterExtension<RfExtensionState>, …>`).
-pub type SecureRfRetransmitterExtensionState<SEQ, const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<RfRetransmitterExtension, SEQ, GRP, P2P, GO>;
+pub type SecureRfRetransmitterExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
+    SecureExtensionState<RfRetransmitterExtension, GRP, P2P, GO>;
 
 #[cfg(test)]
 mod tests {

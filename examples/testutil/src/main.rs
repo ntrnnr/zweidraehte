@@ -151,6 +151,12 @@ impl HasPersistence for MyState {
     fn mark_dirty(&self) {
         self.dirty.set(true);
     }
+    fn is_dirty(&self) -> bool {
+        self.dirty.get()
+    }
+    fn clear_dirty(&self) {
+        self.dirty.set(false);
+    }
 }
 
 impl HasAddressTable for MyState {
@@ -361,6 +367,7 @@ async fn main(spawner: Spawner) {
         stored_data,
         (), // platform (non-IP device)
         NoMemoryMap,
+        (), // storage (no stack-visible stores)
     );
 
     spawner.spawn(run_stack(runner)).unwrap();

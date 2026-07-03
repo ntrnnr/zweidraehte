@@ -28,7 +28,7 @@ use crate::objects::tables::{HasAssociationTable, LoadState};
 use crate::prelude::HasAddressTable;
 use crate::rng::Rng;
 use crate::state::{HasSecurityState, SecurityFailureType};
-use crate::storage::{SecureDeviceIdentity, SequenceNumberStorage};
+use crate::storage::{SecureDeviceIdentity, SequenceNumberStorage, SiatAccess};
 use zweidraehte_proto::crypto::{
     ccm,
     scf::{SecureServiceType, SecurityControlField},
@@ -59,7 +59,7 @@ use super::{PendingSyncState, SecureApplicationLayer, SecureResult, seq_to_u64, 
 /// sync requests anyway, having neither key nor SIAT entry for the
 /// sender) and routes through [`process_sync_request_p2p`] on
 /// [`WithP2p`].
-pub(super) fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>(
+pub(super) fn process_sync_request<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature>(
     sal: &SecureApplicationLayer<'a, D, SEQ, P2P>,
     mut msg: KnxMessageBuffer<Buffer<'static>>,
     scf: SecurityControlField,
@@ -179,7 +179,7 @@ where
 /// the SIAT check and P2P-key lookup that `NoP2p` devices cannot do,
 /// then hands off to [`build_sync_response_for`] to produce the
 /// encrypted response.
-pub(super) fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+pub(super) fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
     sal: &SecureApplicationLayer<'a, D, SEQ, WithP2p>,
     mut msg: KnxMessageBuffer<Buffer<'static>>,
     scf: SecurityControlField,
@@ -213,7 +213,7 @@ where
     if security_state.security_load_state() != LoadState::Loaded {
         return SecureResult::Dropped;
     }
-    if !security_state.is_in_siat(src) {
+    if !sal.seq_storage.borrow().siat_contains(src) {
         warn!("S-AL: sync req — sender {:#06X} not in SIAT", src);
         sal.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
         return SecureResult::Dropped;
@@ -257,7 +257,7 @@ where
 /// difference is key selection — everything from step 6 onward is
 /// identical.
 #[allow(clippy::too_many_arguments)]
-fn build_sync_response_for<'a, D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature>(
+fn build_sync_response_for<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature>(
     sal: &SecureApplicationLayer<'a, D, SEQ, P2P>,
     mut msg: KnxMessageBuffer<Buffer<'static>>,
     scf: SecurityControlField,
@@ -422,7 +422,7 @@ where
 ///
 /// If no pending sync exists, or if the response doesn't match (wrong
 /// source, wrong flags, expired), the frame is silently dropped.
-pub(super) fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+pub(super) fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
     sal: &SecureApplicationLayer<'a, D, SEQ, WithP2p>,
     msg: KnxMessageBuffer<Buffer<'static>>,
     scf: SecurityControlField,
@@ -574,7 +574,7 @@ where
 /// sending. Stores the pending sync state for matching the response.
 ///
 /// Returns `None` if key lookup fails or buffer allocation fails.
-pub(super) fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+pub(super) fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
     sal: &SecureApplicationLayer<'a, D, SEQ, WithP2p>,
     peer_ia: u16,
     tool_access: bool,

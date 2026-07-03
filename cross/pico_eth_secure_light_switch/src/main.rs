@@ -35,7 +35,6 @@
 //!   source. We oversample and condition it (see `rp_common::rng`), but
 //!   it is weaker than a real TRNG.
 
-use core::cell::RefCell;
 use core::net::{Ipv4Addr, SocketAddrV4};
 
 use defmt::*;
@@ -44,7 +43,6 @@ use embassy_futures::select::{Either, select};
 use embassy_net::{DhcpConfig, Ipv4Cidr, StackResources as NetStackResources, StaticConfigV4};
 use embassy_net_wiznet::chip::W5500;
 use embassy_rp::{
-    flash,
     gpio::{Input, Level, Output, Pull},
     peripherals::SPI0,
     spi::{Async, Config as SpiConfig, Spi},
@@ -65,19 +63,16 @@ use devices::light_switch::{
 
 use zweidraehte_device::{
     bcus::system_b::*,
-    kvstore::SiatStore,
-    layers::linklayers::knxip::{
-        KnxNetIpBuilder, KnxNetIpDefinition,
-        features::KnxIpSecureRoutingUdp,
-    },
+    layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureRoutingUdp},
     prelude::*,
-    storage::{HasSequenceStorage, SecureDeviceIdentity},
+    storage::SecureDeviceIdentity,
 };
 
 use embedded_common::DebouncedButton;
+use rp_common::storage::SECTOR_SIZE;
 use rp_common::{
-    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashSecureIdentityData, RpCommonRng, RpFlashIo,
-    RpFlashStorage, RpWearLeveledKv, UdpPool,
+    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashSecureIdentityData, RpCommonRng, RpConfigRegion,
+    RpFlash, RpFlashIo, RpMcTimerRegion, UdpPool,
 };
 
 // ================================================================================
@@ -137,33 +132,71 @@ type SecureRoutingUdp = KnxIpSecureRoutingUdp<0>;
 /// the two singleton sequence counters (sending watermark + tool).
 const SEQ_RECORDS: usize = SEQ_CACHE + 2;
 
-/// Persistent sequence/SIAT store: the SIAT view over the wear-levelled RP2040
-/// internal-flash key-value backend, surviving power cycles. `K = 256` keeps the
-/// hot sending counter off flash for 256 sends at a time.
-type SeqStorage = SiatStore<RpWearLeveledKv<SEQ_RECORDS>, SEQ_CACHE, 256>;
-
 /// Device state: System B tables + the Data-Secure wrapper around the IP
 /// **Secure** interface extension (PIDs 91–97). This is the
 /// `SecureExtensionState<IpSecureInterfaceExtension<...>, SEQ, ...>`
 /// composition realised through the `SecureIpInterfaceStateFor` alias.
 type PicoEthSecureState =
-    SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingUdp, SeqStorage, P2P_SIZE, MAX_PW, MAX_TU>;
+    SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingUdp, P2P_SIZE, MAX_PW, MAX_TU>;
 
-/// Flash storage handle, shared between the main loop (periodic save)
-/// and the restart handler (save before reset).
-type Storage = RpFlashStorage<PicoEthSecureState, FlashSecureIdentityData>;
+// ----------------------------------------------------------------------------
+// Storage layout — chips + auto-placed regions
+// ----------------------------------------------------------------------------
+
+use zweidraehte_device::storage::FlashSiatRegion;
+
+/// This device's SIAT + sequence-counter region: a six-sector append log on
+/// the internal flash (whole sectors — the wear log rotates through them),
+/// with `BATCH = 256` keeping the hot sending counter off flash for 256
+/// sends at a time. The region type is the single source of the extent, the
+/// `KNXR` magic, the mechanism, and the store capacities; the storage layer
+/// derives the offset, and the wear-levelled store plus the `SiatStore` view
+/// derive from the region.
+type SeqRegion = FlashSiatRegion<{ 6 * SECTOR_SIZE }, SEQ_RECORDS, SEQ_CACHE, 256>;
+
+// The device's storage memory map: a pure layout list — each `Placed` entry
+// names the shared [`RpFlash`] chip and a self-describing region, and
+// derives its placement, store type, and open() from the layout. No offset,
+// sector count, magic, or store type is hand-written, and a placement can
+// never end up at another region's entry.
+//
+// All three regions have stores-struct slots — the SIAT store is owned by
+// the stores struct too; the secure stack pulls it out through
+// `HasSeqStore`.
+use zweidraehte_device::storage::{Placed, RegionSpec, SecureIpStorage, StorageLayout, StoreOf};
+
+// `pub`: the map reaches the public `StackDefinition` surface through
+// `DeviceStorage`'s `StoreOf` projections.
+pub struct StorageMap;
+type Seq = Placed<SeqRegion, RpFlash, StorageMap>;
+type Mct = Placed<RpMcTimerRegion, RpFlash, StorageMap>;
+type Cfg = Placed<RpConfigRegion<PicoEthSecureState>, RpFlash, StorageMap>;
+impl StorageLayout for StorageMap {
+    const REGIONS: &'static [RegionSpec] = &[Seq::SPEC, Mct::SPEC, Cfg::SPEC];
+}
+type DeviceStorage = SecureIpStorage<StoreOf<Cfg>, StoreOf<Seq>, StoreOf<Mct>>;
 
 // ----------------------------------------------------------------------------
 // StackDefinition
 // ----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy)]
-struct PicoEthSecureLightSwitch;
+pub struct PicoEthSecureLightSwitch;
 
 /// Security augment type alias — produced by the secure extension for
 /// `PicoEthSecureLightSwitch`. It carries the Security IO (IOT 0x11) plus
 /// the IP medium + IP Secure objects.
-type SecAugment<'a> = ExtensionAugmentFor<'a, PicoEthSecureLightSwitch>;
+type SecAugment<'a> = SecureAugmentBundle<
+    'a,
+    <IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU> as Extension<EmbassyNetworkInfo>>::Augment<
+        'a,
+        PicoEthSecureLightSwitch,
+    >,
+    StoreOf<Seq>,
+    { <PicoEthSecureLightSwitch as SystemBStackDefinition>::ADT_ENTRIES },
+    P2P_SIZE,
+    { <PicoEthSecureLightSwitch as SystemBStackDefinition>::COT_ENTRIES },
+>;
 
 /// Augment chain: KNX Data Secure augment (Security IO 0x11) + the IP
 /// medium / IP Secure augment, plus the Easter Egg demo augment. The
@@ -171,7 +204,7 @@ type SecAugment<'a> = ExtensionAugmentFor<'a, PicoEthSecureLightSwitch>;
 /// wraps the IP Secure interface extension), so there is no separate
 /// `ip:` field as in the insecure `pico_eth`.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
-struct PicoEthSecureAugments<'a> {
+pub struct PicoEthSecureAugments<'a> {
     #[service(augment)]
     sec: SecAugment<'a>,
     #[service(augment)]
@@ -190,12 +223,6 @@ impl KnxNetIpDefinition for PicoEthSecureLightSwitch {
     const MAX_UDP_SOCKETS: usize = 3;
 }
 
-impl HasSequenceStorage for PicoEthSecureLightSwitch {
-    type SeqStorage = SeqStorage;
-    // The trait only names the type; the store is built in `main` and
-    // threaded through `StateInit` → `SecureResources`.
-}
-
 zweidraehte_device::system_b_standard_stack! {
     stack: PicoEthSecureLightSwitch,
     device: &DEVICE_DESCRIPTOR,
@@ -210,7 +237,6 @@ zweidraehte_device::system_b_standard_stack! {
     // `SecureStateFor`'s invariant.
     extension_state: SecureExtensionState<
         IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU>,
-        SeqStorage,
         { Self::ADT_ENTRIES },
         P2P_SIZE,
         { Self::COT_ENTRIES },
@@ -221,11 +247,11 @@ zweidraehte_device::system_b_standard_stack! {
     // The RAM sequence-number storage + the IP Secure FDSK seed are built
     // in `main` and threaded through `StateInit`. `SecureResources::inner`
     // is the IP Secure extension's own `IpSecureResources { fdsk }`.
-    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU>, SeqStorage>,
+    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU>>,
     augments: {
         bundle: PicoEthSecureAugments,
-        create: |state, platform, _layer_ctx| PicoEthSecureAugments {
-            sec: state.extension_state().create_augment::<Self>(platform),
+        create: |state, platform, layer_ctx| PicoEthSecureAugments {
+            sec: state.extension_state().create_secure_augment(platform, layer_ctx),
             easter: EasterEggAugment,
         },
     },
@@ -234,6 +260,10 @@ zweidraehte_device::system_b_standard_stack! {
         type Identity = FlashSecureIdentityData;
         // ROSC-seeded ChaCha20 CSPRNG (see `rp_common::rng`).
         type Rng = RpCommonRng;
+        // The device's stores struct, wired onto the LayerContext so the
+        // secure layers pull the SIAT store out of it through
+        // `HasSeqStore`.
+        type Storage = &'static DeviceStorage;
     },
 }
 
@@ -299,119 +329,16 @@ async fn prog_task(knx: Stack<'static, PicoEthSecureLightSwitch>, prog_btn_pin: 
     }
 }
 
-/// Restart handler — executes resets from ETS, persists state, and reboots.
-#[embassy_executor::task]
-async fn restart_task(knx: Stack<'static, PicoEthSecureLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
-    use embedded_common::CortexMSystem;
-    use zweidraehte_device::restart::EraseCode;
-    use zweidraehte_platform::SystemControl;
-
-    loop {
-        let request = knx.receive_restart_request().await;
-        let state = knx.state();
-
-        info!("Restart request: erase_code={}", request.erase_code);
-
-        // The stack already sent the A_Restart_Response on the bus.
-        match request.erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => {
-                info!("Basic restart (no data reset)");
-            }
-            EraseCode::FactoryReset => {
-                info!("Factory reset — clearing all data");
-                state.factory_reset();
-            }
-            EraseCode::ResetIA => {
-                info!("Resetting individual address");
-                state.reset_individual_address();
-            }
-            EraseCode::ResetAP => {
-                info!("Resetting application program");
-                state.reset_application();
-            }
-            EraseCode::ResetParam => {
-                info!("Resetting parameters");
-                state.reset_parameters();
-            }
-            EraseCode::FactoryResetKeepIA => {
-                info!("Factory reset (keeping individual address)");
-                state.factory_reset_keep_ia();
-            }
-            EraseCode::ResetLinks => {
-                info!("Resetting links (Group Address + Association tables)");
-                state.apply_erase_code(EraseCode::ResetLinks);
-            }
-            EraseCode::Other(_) => {
-                warn!("Unsupported erase code — ignoring");
-            }
-        }
-
-        if state.is_dirty() {
-            save_state(state, storage);
-        }
-
-        Timer::after(Duration::from_millis(100)).await;
-
-        let mut system = CortexMSystem;
-        let Err(_e) = system.restart().await;
-    }
-}
-
-/// Save device state to flash. Logs errors but does not propagate them
-/// (flash failure is non-fatal — the device continues with in-RAM state).
-fn save_state(state: &PicoEthSecureState, storage: &RefCell<Storage>) {
-    match storage.borrow_mut().save(state) {
-        Ok(()) => {
-            state.clear_dirty();
-            info!("State saved to flash");
-        }
-        Err(e) => {
-            warn!("Flash save failed: {}", e);
-        }
-    }
-}
-
-/// On-demand persistence handler.
-///
-/// The stack requests an immediate save when waiting for the periodic
-/// poll or restart would be wrong — at the end of an ETS download
-/// (`EtsDownloadComplete`) and for spec-mandated durability points (e.g.
-/// the IP Secure mc_timer watermark, which gates secure routing sends on
-/// the reply). The signal is always answered (`reply`), even when the save
-/// failed — gated requesters inside the stack block until the reply.
-#[embassy_executor::task]
-async fn persist_task(knx: Stack<'static, PicoEthSecureLightSwitch>, storage: &'static RefCell<Storage>) -> ! {
-    loop {
-        let request = knx.receive_persist_request().await;
-        if knx.state().is_dirty() {
-            info!("Persist request — saving state");
-            save_state(knx.state(), storage);
-        }
-        request.reply(()).await;
-    }
+zweidraehte_device::storage_task! {
+    device: PicoEthSecureLightSwitch,
+    system: embedded_common::CortexMSystem,
+    guard: zweidraehte_device::storage::NoSaveGuard,
 }
 
 /// Lifecycle event logger.
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, PicoEthSecureLightSwitch>) -> ! {
-    let mut events = knx.lifecycle_events();
-    loop {
-        match events.next_message_pure().await {
-            LifecycleEvent::ApplicationStarted => {
-                info!("Application STARTED — app is now running");
-            }
-            LifecycleEvent::ApplicationStopped => {
-                info!("Application STOPPED — app is no longer running");
-            }
-            LifecycleEvent::PeiStarted => {
-                info!("PEI STARTED");
-            }
-            LifecycleEvent::PeiStopped => {
-                info!("PEI STOPPED");
-            }
-            _ => {}
-        }
-    }
+    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
 }
 
 /// Main application task: handles button 1 and button 2 presses.
@@ -463,38 +390,11 @@ mod dev_provisioning {
     include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
 }
 
-/// Load the secure device identity (serial + MAC + FDSK) from the `KNXP`
-/// provisioning record. Unlike `pico_eth`'s insecure load, the record
-/// MUST carry the FDSK tag — a secure device cannot derive its tool key
-/// without it.
-fn load_identity(
-    flash: &mut embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, flash::Blocking, { 2 * 1024 * 1024 }>,
-) -> FlashSecureIdentityData {
-    let mut unique_id = [0u8; 8];
-    flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
-
-    match rp_common::read_provisioning(flash) {
-        Ok(rec) => rp_common::secure_identity_from_record(&rec, unique_id).expect("KNXP record missing FDSK"),
-
-        #[cfg(feature = "provision-on-boot")]
-        Err(e) => {
-            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
-            rp_common::synthesize_and_write(
-                flash,
-                dev_provisioning::DEV_SERIAL,
-                Some(dev_provisioning::DEV_FDSK),
-                Some(dev_provisioning::DEV_MAC),
-            )
-            .expect("write dev KNXP");
-
-            let rec = rp_common::read_provisioning(flash).expect("re-read freshly written KNXP");
-            rp_common::secure_identity_from_record(&rec, unique_id).expect("freshly written KNXP missing FDSK")
-        }
-
-        #[cfg(not(feature = "provision-on-boot"))]
-        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
-    }
-}
+// Load the secure device identity (serial + MAC + FDSK) from the `KNXP`
+// provisioning record. Unlike `pico_eth`'s insecure load, the record
+// MUST carry the FDSK tag — a secure device cannot derive its tool key
+// without it.
+rp_common::rp_identity_loader!(secure, fdsk: Some(dev_provisioning::DEV_FDSK), mac: Some(dev_provisioning::DEV_MAC));
 
 // ================================================================================
 // Button Release Adapter
@@ -536,18 +436,12 @@ async fn main(spawner: Spawner) {
     // ========================================================================
 
     // The RP2040 has a single `FLASH` peripheral but two independent flash
-    // consumers: the config store (`RpFlashStorage`, outside the KNX stack) and
-    // the wear-levelled sequence/SIAT store (`SiatStore`, inside it).
+    // consumers: the config store (the `Storage` `ConfigStore`, outside the KNX
+    // stack) and the wear-levelled sequence/SIAT store (`SiatStore`, inside it).
     // Lift the handle into a `&'static RefCell` so both can share it — sound
     // because the embassy executor is single-threaded and every flash op is
     // synchronous (`blocking_*`, never held across an `.await`).
-    let flash = embassy_rp::flash::Flash::<_, flash::Blocking, { 2 * 1024 * 1024 }>::new_blocking(p.FLASH);
-    static FLASH_CELL: StaticCell<
-        RefCell<
-            embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, flash::Blocking, { 2 * 1024 * 1024 }>,
-        >,
-    > = StaticCell::new();
-    let flash = &*FLASH_CELL.init(RefCell::new(flash));
+    let flash = rp_common::rp_flash_cell!(p.FLASH);
 
     let identity_data = load_identity(&mut flash.borrow_mut());
 
@@ -597,11 +491,32 @@ async fn main(spawner: Spawner) {
     }
 
     // ========================================================================
-    // Persistent storage — peek at IP config before creating the stack
+    // Persistent storage — open every store, then peek at the IP config
     // ========================================================================
 
-    let mut storage = rp_common::rp_flash_storage::<PicoEthSecureState, _>(flash, identity_data.clone());
-    let loaded_config = storage.load_config().ok().flatten();
+    // Opening the seq store scans its flash region to recover the persisted
+    // SIAT + counters. A scan failure is fatal — without durable counters the
+    // device cannot offer cross-reboot replay protection, so we refuse to boot.
+    //
+    // The IP Secure mc_timer watermark (03/08/09 §2.2.4.2) lives in its own
+    // wear-levelled region, *not* the config blob, so a forced persist is
+    // one ~12-byte append instead of a 4 KiB config erase+rewrite. A blank
+    // region yields watermark 0, which is the correct fresh-device start
+    // (the timer re-acquires from the group).
+    //
+    // The device's stores struct in its static home: config + SIAT + mc_timer,
+    // all three opened over copies of the one flash handle at their
+    // layout-derived placements. Each store sits behind its own RefCell,
+    // borrowed per call; the storage task drives it through the capability
+    // traits, and the secure stack pulls the SIAT store out via `HasSeqStore`.
+    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
+    let storage = &*STORAGE.init(DeviceStorage::new(
+        Cfg::open(RpFlashIo::new(flash)).expect("config open is infallible"),
+        Seq::open(RpFlashIo::new(flash)).expect("boot the flash sequence/SIAT store"),
+        Mct::open(RpFlashIo::new(flash)).expect("open mc_timer watermark store"),
+    ));
+    let loaded_config = storage.load_config();
+
     // The persisted IP config lives deeper than in `pico_eth`: the Data
     // Secure wrapper nests the medium config under `extension_config.inner`,
     // and the IP Secure interface extension nests the plain IP config under
@@ -669,22 +584,14 @@ async fn main(spawner: Spawner) {
 
     let platform = EmbassyNetworkInfo::new(stack, mac_addr, initial_ip_method);
 
-    // Build the Data Secure construction resources: the wear-levelled
-    // flash-backed sequence-number store, the IP Secure FDSK seed (`inner`),
+    // Build the Data Secure construction resources: the reference to the
+    // storage-layer-owned sequence store, the IP Secure FDSK seed (`inner`),
     // and the Data Secure tool-key FDSK seed. Both FDSK fields take the same
     // physical value from the device identity — one seeds the IP Secure Device
     // Authentication Code (PID 92), the other the Data Secure tool key
     // (Security IO PID 56).
-    //
-    // Opening the seq store scans its flash region to recover the persisted
-    // SIAT + counters. A scan failure is fatal — without durable counters the
-    // device cannot offer cross-reboot replay protection, so we refuse to boot.
-    let seq_storage: SeqStorage =
-        SiatStore::boot(RpWearLeveledKv::open(RpFlashIo::new(flash)).expect("open seq flash"))
-            .expect("boot the flash sequence/SIAT store");
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
-    let resources =
-        SecureResources { inner: zweidraehte_device::bcus::system_b::IpSecureResources { fdsk }, seq_storage, fdsk };
+    let resources = SecureResources { inner: zweidraehte_device::bcus::system_b::IpSecureResources { fdsk }, fdsk };
     let state_init = SystemBStateInit { identity: identity_data.clone(), loaded_config, resources };
 
     // Wait for an IP address.
@@ -699,9 +606,6 @@ async fn main(spawner: Spawner) {
     }
     let ip = stack.config_v4().expect("IP config available after wait loop");
     info!("IP ready: {}", ip.address);
-
-    static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
-    let storage = &*STORAGE.init(RefCell::new(storage));
 
     // ========================================================================
     // KNX stack
@@ -735,6 +639,7 @@ async fn main(spawner: Spawner) {
         state_init,
         platform,
         PicoEthSecureLightSwitch::memory_map(),
+        storage,
     );
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
@@ -758,12 +663,12 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(app_task(knx_stack, btn1_pin, btn2_pin)).expect("app_task spawnable once");
     spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
-    spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
-    spawner.spawn(persist_task(knx_stack, storage)).expect("persist_task spawnable once");
+    spawner.spawn(storage_task(knx_stack)).expect("storage_task spawnable once");
     spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
 
     // ========================================================================
-    // Main loop: heartbeat LED + programming mode LED + periodic save
+    // Main loop: heartbeat LED + programming mode LED (saves live in the
+    // storage task)
     // ========================================================================
 
     let mut prog_led = Output::new(p.PIN_16, Level::Low);
@@ -775,10 +680,6 @@ async fn main(spawner: Spawner) {
             prog_led.set_high();
         } else {
             prog_led.set_low();
-        }
-
-        if knx_stack.state().is_dirty() {
-            save_state(knx_stack.state(), storage);
         }
 
         Timer::after(Duration::from_millis(500)).await;

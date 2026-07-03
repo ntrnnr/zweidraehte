@@ -19,7 +19,9 @@
 //! the host-side `knx-provision` tool over SWD. Format and codec live
 //! in [`zweidraehte_device::provisioning`]; the read/write helpers and
 //! struct conversions live in [`crate::prov_storage`]. The config
-//! sector stores ETS-programmed device state via [`RpFlashStorage`].
+//! sector stores ETS-programmed device state via a
+//! [`ConfigStore`](zweidraehte_device::storage::ConfigStore) placed on the
+//! [`RpFlash`] chip.
 //!
 //! # Config Sector Format
 //!
@@ -29,8 +31,9 @@
 //!
 //! The magic bytes guard against reading uninitialized flash (all 0xFF).
 //! The magic + length + postcard codec is shared with the STM32 target and
-//! lives once in [`embedded_common::persist::ConfigStore`]; [`RpFlashStorage`]
-//! is that store fixed to the RP2040 config-sector layout. RP2040 flash writes
+//! lives once in [`zweidraehte_device::storage::ConfigStore`]; a device builds
+//! that store over [`RpFlashIo`] at its auto-derived offset on the [`RpFlash`]
+//! chip. RP2040 flash writes
 //! are byte-granular, so the config store uses `WRITE_ALIGN = 1` (no padding).
 //!
 //! # Wear Leveling
@@ -46,11 +49,11 @@
 //! rare config saves but would disrupt real-time KNX communication if
 //! done frequently.
 
-use embedded_common::persist::ConfigStore;
-
+use zweidraehte_device::storage::region::Chip;
 use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
 
 use crate::flash_seq::RpFlashIo;
+use crate::prov_storage::PROVISIONING_SECTOR_OFFSET;
 
 // ================================================================================
 // Constants
@@ -59,97 +62,147 @@ use crate::flash_seq::RpFlashIo;
 pub const FLASH_SIZE: usize = 2 * 1024 * 1024; // 2MB
 pub const SECTOR_SIZE: usize = 4096;
 
-// -- Sequence-number log region ----------------------------------------------
-//
-// The wear-levelled Data Secure sequence/SIAT store ([`crate::flash_seq`] / `RpWearLeveledKv`)
-// gets its own multi-sector region carved out *below* the config sector. Like
-// the config / provisioning regions these offsets are pure software convention
-// — the linker hands the whole flash to `FLASH` via `memory.x`. The full map
-// at the top of flash is:
-//
-// ```text
-// 0x1F6000 .. 0x1FE000  — Sequence-number log (KNXQ), 8 sectors = 32 KiB
-// 0x1FE000 .. 0x1FF000  — Config storage (KNXS)
-// 0x1FF000 .. 0x200000  — Provisioning sector (KNXP, write-once)
-// ```
-
-/// Number of 4 KiB sectors reserved for the sequence-number append log.
+/// Emit the shared flash handle every RP device builds identically: the
+/// blocking `embassy_rp` flash driver behind a `&'static RefCell`, so the
+/// config store and any other flash consumer (sequence store, mc_timer store)
+/// can alias the single `FLASH` peripheral. Expands to an expression yielding
+/// the `&'static RefCell<Flash<…>>`; the [`FLASH_SIZE`] const generic —
+/// otherwise repeated four times per device in the handle's type — is pinned
+/// here once.
 ///
-/// Eight sectors give the log ~341 records/sector × 8 ≈ 2700 appends before a
-/// single sector is re-erased, so even with the sending watermark disabled the
-/// flash endurance budget is comfortable.
-pub const SEQ_SECTOR_COUNT: usize = 8;
+/// ```ignore
+/// let flash = rp_common::rp_flash_cell!(p.FLASH);
+/// let identity_data = load_identity(&mut flash.borrow_mut());
+/// let storage = Storage::open_at(RpFlashIo::new(flash), identity_data.clone(), CONFIG);
+/// ```
+#[macro_export]
+macro_rules! rp_flash_cell {
+    ($flash_peri:expr) => {{
+        static __FLASH_CELL: ::static_cell::StaticCell<
+            ::core::cell::RefCell<
+                ::embassy_rp::flash::Flash<
+                    'static,
+                    ::embassy_rp::peripherals::FLASH,
+                    ::embassy_rp::flash::Blocking,
+                    { $crate::storage::FLASH_SIZE },
+                >,
+            >,
+        > = ::static_cell::StaticCell::new();
+        &*__FLASH_CELL.init(::core::cell::RefCell::new(::embassy_rp::flash::Flash::<
+            _,
+            ::embassy_rp::flash::Blocking,
+            { $crate::storage::FLASH_SIZE },
+        >::new_blocking($flash_peri)))
+    }};
+}
 
-/// Total byte size of the sequence-number log region.
-pub const SEQ_REGION_SIZE: usize = SEQ_SECTOR_COUNT * SECTOR_SIZE;
-
-/// Offset of the sequence-number log region from the start of flash.
+/// Emit the `load_identity` function every RP device otherwise copy-pastes:
+/// read the flash unique ID, parse the `KNXP` provisioning record, and — under
+/// the `provision-on-boot` feature — synthesize dev defaults from the caller's
+/// `dev_provisioning` module when the record is missing.
 ///
-/// Sits immediately below the config sector (which itself sits below the
-/// write-once provisioning sector), so growing either of the two top regions
-/// never disturbs the log's start address unless their sizes change.
-pub const SEQ_REGION_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE - SECTOR_SIZE - SEQ_REGION_SIZE) as u32;
+/// The first token picks the identity flavour (`plain` →
+/// [`FlashIdentityData`](crate::FlashIdentityData), `secure` →
+/// [`FlashSecureIdentityData`](crate::FlashSecureIdentityData) with a mandatory
+/// FDSK); `fdsk`/`mac` are the dev-default tags passed to
+/// [`synthesize_and_write`](crate::synthesize_and_write) (only evaluated under
+/// `provision-on-boot`, so referencing `dev_provisioning::…` is fine).
+///
+/// ```ignore
+/// rp_common::rp_identity_loader!(plain, fdsk: None, mac: Some(dev_provisioning::DEV_MAC));
+/// ```
+#[macro_export]
+macro_rules! rp_identity_loader {
+    (@fn $ret:ty, $convert:expr, $fdsk:expr, $mac:expr) => {
+        fn load_identity(
+            flash: &mut ::embassy_rp::flash::Flash<
+                'static,
+                ::embassy_rp::peripherals::FLASH,
+                ::embassy_rp::flash::Blocking,
+                { $crate::storage::FLASH_SIZE },
+            >,
+        ) -> $ret {
+            let mut unique_id = [0u8; 8];
+            flash.blocking_unique_id(&mut unique_id).expect("flash unique ID");
 
-// Compile-time guard: the log region must not run into the config sector that
-// sits directly above it. (The config sector's own offset is
-// `FLASH_SIZE - SECTOR_SIZE - STORAGE_SIZE`, but `STORAGE_SIZE` is a per-device
-// const generic; the default 4 KiB is what the secure light switch uses, so we
-// check against that here. A device that enlarges its config region must also
-// move the log.)
-const _SEQ_REGION_FITS: () = {
-    assert!(
-        SEQ_REGION_OFFSET as usize + SEQ_REGION_SIZE <= FLASH_SIZE - SECTOR_SIZE - SECTOR_SIZE,
-        "sequence-number log region overlaps the config or provisioning sector",
-    );
-};
+            #[allow(clippy::redundant_closure_call)]
+            match $crate::read_provisioning(flash) {
+                Ok(rec) => ($convert)(&rec, unique_id),
 
-// -- Config sector layout -----------------------------------------------------
+                #[cfg(feature = "provision-on-boot")]
+                Err(e) => {
+                    ::defmt::warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+                    $crate::synthesize_and_write(flash, dev_provisioning::DEV_SERIAL, $fdsk, $mac)
+                        .expect("write dev KNXP");
+                    let rec = $crate::read_provisioning(flash).expect("re-read freshly written KNXP");
+                    ($convert)(&rec, unique_id)
+                }
 
-/// Bytes reserved at the end of flash (above the provisioning sector) for the
-/// device config. One 4 KiB sector — the only size any current RP target uses.
+                #[cfg(not(feature = "provision-on-boot"))]
+                Err(e) => ::defmt::panic!("no valid KNXP record: {:?}", e),
+            }
+        }
+    };
+    (plain, fdsk: $fdsk:expr, mac: $mac:expr) => {
+        $crate::rp_identity_loader!(@fn $crate::FlashIdentityData, $crate::identity_from_record, $fdsk, $mac);
+    };
+    (secure, fdsk: $fdsk:expr, mac: $mac:expr) => {
+        $crate::rp_identity_loader!(
+            @fn $crate::FlashSecureIdentityData,
+            |rec, uid| $crate::secure_identity_from_record(rec, uid).expect("KNXP record missing FDSK"),
+            $fdsk,
+            $mac
+        );
+    };
+}
+
+/// Bytes the config blob occupies — one 4 KiB sector. A compile-time const
+/// because it sizes the `[u8; REGION_SIZE]` buffer inside
+/// [`ConfigStore`](zweidraehte_device::storage::ConfigStore); the region's
+/// *offset* is auto-derived by the storage layer from the placement list.
 pub const RP_STORAGE_SIZE: usize = SECTOR_SIZE;
 
-/// Offset of the config sector from flash start: one sector below the
-/// write-once provisioning sector (which is the last sector on the chip).
-pub const RP_CONFIG_OFFSET: u32 = (FLASH_SIZE - SECTOR_SIZE - RP_STORAGE_SIZE) as u32;
+/// The config region every RP device places — one flash sector, carrying
+/// the device's runtime state type `S` as its payload:
+///
+/// ```ignore
+/// type Cfg = Placed<RpConfigRegion<MyDeviceState>, RpFlash, StorageMap>;
+/// ```
+///
+/// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
+/// `Cfg::open(RpFlashIo::new(flash))`).
+pub type RpConfigRegion<S> = zweidraehte_device::storage::region::ConfigRegion<RP_STORAGE_SIZE, S>;
 
 // ================================================================================
-// RpFlashStorage
+// RpFlash — the storage layer's view of the RP2040 internal flash chip
 // ================================================================================
 
-/// Persistent device-config storage on RP2040/RP2350 internal flash.
+/// The RP2040/RP2350 internal flash, as a [`Chip`] the storage layer packs
+/// regions onto.
 ///
-/// A [`ConfigStore`] over the [`RpFlashIo`] medium, fixed to the RP2040 config
-/// sector and `WRITE_ALIGN = 1` (RP2040 flash writes are byte-granular). Type
-/// parameters: `S` the runtime state (`S::Config` is the persisted form), `I`
-/// the device identity.
+/// `BASE` is where the packed region span starts — pinned at `0x1F6000` so a
+/// secure device's three regions (SIAT log, mc_timer log, config blob) fit
+/// below the write-once provisioning sector, and a config-only device's single
+/// region lands at the same base. `CAPACITY` stops at
+/// [`PROVISIONING_SECTOR_OFFSET`] (the last sector, owned by
+/// [`crate::prov_storage`]) so the per-chip capacity guard protects it.
 ///
-/// `RpFlashIo` shares the single `FLASH` peripheral with the wear-levelled
-/// sequence/SIAT store ([`crate::RpWearLeveledKv`]) via a `&'static RefCell`;
-/// soundness of that sharing is documented on [`RpFlashIo`].
-///
-/// A device whose serialized state exceeds one sector adds a sibling alias with
-/// a larger `RP_STORAGE_SIZE` (and must move the sequence-log region — see the
-/// `_SEQ_REGION_FITS` guard above, which only checks the default size).
-pub type RpFlashStorage<S, I> = ConfigStore<RpFlashIo, S, I, RP_CONFIG_OFFSET, RP_STORAGE_SIZE, 1>;
+/// One shared chip serves every RP device: the config-only ones pack one
+/// region, the secure one packs three — the auto-packing derives each offset
+/// from the declared region sizes, so no device states an address.
+#[derive(Clone, Copy)]
+pub struct RpFlash;
+
+impl Chip for RpFlash {
+    const TAG: u32 = 0;
+    const BASE: u32 = 0x1F6000;
+    const CAPACITY: u32 = PROVISIONING_SECTOR_OFFSET;
+    const SECTOR_SIZE: u32 = SECTOR_SIZE as u32;
+    type Io = RpFlashIo;
+}
 
 /// This crate's flash error type — the shared config-store error.
-pub use embedded_common::persist::ConfigStoreError as FlashError;
-
-/// Build an [`RpFlashStorage`] over the shared `Flash` handle.
-///
-/// A free constructor because [`RpFlashStorage`] is a type alias (no inherent
-/// `new`): it wraps the shared `&'static RefCell<Flash>` in the [`RpFlashIo`]
-/// adapter first. The same handle is shared with the wear-levelled sequence
-/// store; see [`RpFlashIo`] for the soundness argument.
-pub fn rp_flash_storage<S, I>(
-    flash: &'static core::cell::RefCell<
-        embassy_rp::flash::Flash<'static, embassy_rp::peripherals::FLASH, embassy_rp::flash::Blocking, FLASH_SIZE>,
-    >,
-    identity: I,
-) -> RpFlashStorage<S, I> {
-    RpFlashStorage::new(RpFlashIo::new(flash), identity)
-}
+pub use zweidraehte_device::storage::ConfigStoreError as FlashError;
 
 // ================================================================================
 // Device identity (sourced from the KNXP provisioning sector)

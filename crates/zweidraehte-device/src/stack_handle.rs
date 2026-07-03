@@ -71,7 +71,7 @@ pub struct Stack<'d, D: StackDefinition> {
     pub(crate) app_request_sender:
         DynamicSender<'static, Request<ApplicationLayerService, ApplicationLayerServiceResponse>>,
     pub(crate) restart_receiver: DynamicReceiver<'static, restart::RestartRequest>,
-    pub(crate) persist_receiver: DynamicReceiver<'static, Request<persist::PersistRequest, ()>>,
+    pub(crate) persist_receiver: DynamicReceiver<'static, persist::PersistRequest>,
 }
 
 impl<'d, D: StackDefinition> Copy for Stack<'d, D> {}
@@ -507,6 +507,16 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self.inner.state
     }
 
+    /// The device's storage handle, as passed to [`new`](crate::new) and
+    /// carried on the [`LayerContext`](crate::context::layer::LayerContext).
+    ///
+    /// `D::Storage` is `Copy` (a `&'static` stores struct for devices with
+    /// storage, `()` otherwise); the storage task reaches the stores through
+    /// this instead of taking a second handle parameter.
+    pub fn storage(&self) -> D::Storage {
+        self.inner.layer_context.storage
+    }
+
     /// Receive the next restart request from the application layer.
     ///
     /// When the stack receives an A_Restart message from the KNX bus, it validates
@@ -551,44 +561,16 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.restart_receiver.receive().await
     }
 
-    /// Receive the next on-demand persistence request from the stack.
+    /// Receive the next advisory persistence notification from the stack.
     ///
-    /// The stack asks for an immediate save when waiting for the next
-    /// periodic poll or restart would be wrong:
-    ///
-    /// - [`PersistRequest::McTimerWatermark`](persist::PersistRequest::McTimerWatermark):
-    ///   the KNX IP Secure multicast timer watermark advanced
-    ///   (03/08/09 §2.2.4.2). The link layer holds back the frame that
-    ///   would exceed the previously persisted watermark until the save
-    ///   is confirmed.
-    /// - [`PersistRequest::EtsDownloadComplete`](persist::PersistRequest::EtsDownloadComplete):
-    ///   an ETS download finished — a natural moment to save the new
-    ///   configuration.
-    ///
-    /// # Contract
-    ///
-    /// After attempting the save, **always** call
-    /// [`Request::reply`]`(())` — also when the save failed (log and
-    /// continue). Gated requesters are blocked until the reply arrives
-    /// (never replying wedges the KNX/IP send path, and dropping the
-    /// request without replying panics the requester — see
-    /// [`actor`](crate::actor) cancellation semantics); for advisory
-    /// fire-and-forget requests the reply is a no-op, so user code
-    /// needs no branching.
-    ///
-    /// # Example
-    /// ```rust,ignore
-    /// loop {
-    ///     let request = stack.receive_persist_request().await;
-    ///     if stack.state().is_dirty() {
-    ///         if let Err(e) = storage.save(stack.state()) {
-    ///             warn!("Persist-on-demand save failed: {:?}", e);
-    ///         }
-    ///     }
-    ///     request.reply(()).await;
-    /// }
-    /// ```
-    pub async fn receive_persist_request(&self) -> Request<persist::PersistRequest, ()> {
+    /// Currently the single advisory is
+    /// [`PersistRequest::EtsDownloadComplete`](persist::PersistRequest::EtsDownloadComplete):
+    /// an ETS download finished — a natural moment to save the new
+    /// configuration instead of waiting for the next dirty poll. Nothing
+    /// blocks on the save; the dirty flag still gates the actual write.
+    /// The generic storage task drains this — user code only touches it
+    /// when running without one.
+    pub async fn receive_persist_request(&self) -> persist::PersistRequest {
         self.persist_receiver.receive().await
     }
 

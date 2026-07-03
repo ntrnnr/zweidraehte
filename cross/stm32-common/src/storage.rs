@@ -26,11 +26,12 @@
 //! # Config codec
 //!
 //! The magic + length + postcard codec is shared with the RP2040 target and
-//! lives once in [`embedded_common::persist::ConfigStore`]; [`StmFlashStorage`]
-//! is that store fixed to the STM32G0 layout (config offset / page size) and
-//! the family's 8-byte doubleword write granularity (`WRITE_ALIGN = 8`). The
-//! medium is the owned-`Flash` [`StmFlashIo`](crate::flash_io::StmFlashIo)
-//! adapter.
+//! lives once in [`zweidraehte_device::storage::ConfigStore`]; a device's
+//! [`StmConfigRegion`] opens that store over [`StmFlashIo`] at its
+//! auto-derived offset on the [`StmFlash`] chip. The family's 8-byte
+//! doubleword write granularity is a fact of the
+//! [`StmFlashIo`](crate::flash_io::StmFlashIo) adapter
+//! (`SectorIo::WRITE_ALIGN = 8`).
 //!
 //! # Flash Stall Warning
 //!
@@ -39,11 +40,8 @@
 //! save only in the restart handler — never periodically — so a stall
 //! cannot corrupt the TPUART UART timing.
 
-use embassy_stm32::flash::{Blocking, Flash};
-
-use embedded_common::persist::ConfigStore;
-
 use zweidraehte_device::provisioning;
+use zweidraehte_device::storage::region::Chip;
 use zweidraehte_device::storage::{DeviceIdentity, SecureDeviceIdentity};
 
 use crate::flash_io::StmFlashIo;
@@ -56,39 +54,52 @@ use crate::flash_io::StmFlashIo;
 pub const STM32G0_FLASH_SIZE: u32 = 512 * 1024;
 /// STM32G0 flash erase-page size.
 pub const STM32G0_PAGE_SIZE: u32 = 2 * 1024;
-/// Offset of the config page: two pages below the top of flash (the last page
-/// is the write-once provisioning page owned by [`crate::prov_storage`]).
-pub const STM32G0_CONFIG_OFFSET: u32 = STM32G0_FLASH_SIZE - 2 * STM32G0_PAGE_SIZE;
-/// Config region size — one erase page.
+/// Config region size — one erase page. A compile-time const because it sizes
+/// the `[u8; REGION_SIZE]` buffer inside
+/// [`ConfigStore`](zweidraehte_device::storage::ConfigStore); the region's
+/// *offset* is auto-derived by the storage layer from the placement list.
 pub const STM32G0_CONFIG_SIZE: usize = STM32G0_PAGE_SIZE as usize;
 
+/// The config region every STM32G0 device places — one erase page, carrying
+/// the device's runtime state type `S` as its payload:
+///
+/// ```ignore
+/// type Cfg = Placed<StmConfigRegion<MyDeviceState>, StmFlash, StorageMap>;
+/// ```
+///
+/// The store type and its `open` derive from the region (`StoreOf<Cfg>` /
+/// `Cfg::open(StmFlashIo::new(flash))`).
+pub type StmConfigRegion<S> = zweidraehte_device::storage::region::ConfigRegion<STM32G0_CONFIG_SIZE, S>;
+
 // ================================================================================
-// StmFlashStorage
+// StmFlash — the storage layer's view of the STM32G0 internal flash chip
 // ================================================================================
 
-/// Persistent device-config storage on STM32G0 internal flash.
+/// The STM32G0 internal flash, as a [`Chip`] the storage layer packs regions
+/// onto.
 ///
-/// A [`ConfigStore`] over the [`StmFlashIo`] medium, fixed to the STM32G0
-/// config region and the family's 8-byte doubleword write alignment. Type
-/// parameters: `S` the runtime state (`S::Config` is the persisted form),
-/// `I` the device identity.
+/// `BASE` is the config page — two pages below the top of flash; the last page
+/// is the write-once provisioning page owned by [`crate::prov_storage`]. Every
+/// STM32G0 device has exactly one flash region (the config blob); the FRAM-secure
+/// variants keep their SIAT on the separate [`Fram`](crate::fram_seq::Fram) chip,
+/// so a single-region pack lands the config at `BASE`. `CAPACITY` stops one page
+/// below the top so the per-chip guard protects the provisioning page.
 ///
-/// A new STM32 chip family with a different page size or flash size adds a
-/// sibling alias with its own `*_CONFIG_OFFSET`/`*_CONFIG_SIZE` constants
-/// rather than re-introducing flash-size generics (which a bare type alias
-/// can't compute over).
-pub type StmFlashStorage<S, I> = ConfigStore<StmFlashIo, S, I, STM32G0_CONFIG_OFFSET, STM32G0_CONFIG_SIZE, 8>;
+/// A new STM32 family with a different page/flash size adds a sibling `Chip`
+/// impl with its own `BASE`/`CAPACITY`.
+#[derive(Clone, Copy)]
+pub struct StmFlash;
+
+impl Chip for StmFlash {
+    const TAG: u32 = 0;
+    const BASE: u32 = STM32G0_FLASH_SIZE - 2 * STM32G0_PAGE_SIZE;
+    const CAPACITY: u32 = STM32G0_FLASH_SIZE - STM32G0_PAGE_SIZE;
+    const SECTOR_SIZE: u32 = STM32G0_PAGE_SIZE;
+    type Io = StmFlashIo;
+}
 
 /// This crate's flash error type — the shared config-store error.
-pub use embedded_common::persist::ConfigStoreError as FlashError;
-
-/// Build an [`StmFlashStorage`] over an owned `Flash` peripheral.
-///
-/// A free constructor because [`StmFlashStorage`] is a type alias (no inherent
-/// `new`): it wraps the `Flash` in the [`StmFlashIo`] adapter first.
-pub fn stm_flash_storage<S, I>(flash: Flash<'static, Blocking>, identity: I) -> StmFlashStorage<S, I> {
-    StmFlashStorage::new(StmFlashIo::new(flash), identity)
-}
+pub use zweidraehte_device::storage::ConfigStoreError as FlashError;
 
 // ================================================================================
 // Device identity (sourced from the KNXP provisioning page)
@@ -112,20 +123,24 @@ impl DeviceIdentity for FlashIdentityData {
     }
 }
 
+/// Derive a deterministic `u64` seed from the live STM32 factory UID.
+///
+/// Used for embassy-net's IGMP delay and other per-device entropy needs
+/// that don't require crypto-strength randomness. The UID is not stored in
+/// the provisioning record; the peripheral is read at call time.
+fn derive_seed_from_uid() -> u64 {
+    let uid = embassy_stm32::uid::uid();
+    let mut buf = [0u8; 8];
+    for (i, b) in buf.iter_mut().enumerate() {
+        *b = uid[i] ^ uid[(i + 4) % 12];
+    }
+    u64::from_le_bytes(buf)
+}
+
 impl FlashIdentityData {
-    /// Derive a deterministic `u64` seed from the live STM32 factory UID.
-    ///
-    /// Used for embassy-net's IGMP delay and other per-device entropy
-    /// needs that don't require crypto-strength randomness. The UID is
-    /// not stored in the provisioning record; the peripheral is read
-    /// at call time.
+    /// Deterministic per-device seed — see [`derive_seed_from_uid`].
     pub fn derive_seed(&self) -> u64 {
-        let uid = embassy_stm32::uid::uid();
-        let mut buf = [0u8; 8];
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = uid[i] ^ uid[(i + 4) % 12];
-        }
-        u64::from_le_bytes(buf)
+        derive_seed_from_uid()
     }
 }
 
@@ -153,14 +168,9 @@ impl SecureDeviceIdentity for FlashSecureIdentityData {
 }
 
 impl FlashSecureIdentityData {
-    /// Same as [`FlashIdentityData::derive_seed`].
+    /// Deterministic per-device seed — see [`derive_seed_from_uid`].
     pub fn derive_seed(&self) -> u64 {
-        let uid = embassy_stm32::uid::uid();
-        let mut buf = [0u8; 8];
-        for (i, b) in buf.iter_mut().enumerate() {
-            *b = uid[i] ^ uid[(i + 4) % 12];
-        }
-        u64::from_le_bytes(buf)
+        derive_seed_from_uid()
     }
 
     /// Hyphenated Base32 ETS label code. Thin shim over

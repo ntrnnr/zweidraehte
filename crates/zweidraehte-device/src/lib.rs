@@ -1,7 +1,6 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(const_trait_impl)]
 #![feature(const_convert)]
-#![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
 #![feature(never_type)]
 #![feature(associated_type_defaults)]
@@ -37,8 +36,8 @@ pub use rng::{NoRng, Rng, SecureRng};
 mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::{
-    DEFAULT_MULTICAST_ADDR, HasAdditionalIas, HasIpExtensionState, HasRoutingMulticastRebind, IpConfig, IpPlatform,
-    IpPlatformConfig, IpStateView, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
+    DEFAULT_MULTICAST_ADDR, HasAdditionalIas, HasIpExtensionState, HasIpSecureView, HasRoutingMulticastRebind,
+    IpConfig, IpPlatform, IpPlatformConfig, IpSecureStateView, IpStateView, KNX_PORT, SYSTEM_SETUP_MULTICAST_ADDRESS,
 };
 
 mod composition;
@@ -62,7 +61,8 @@ pub use runner::{Runner, new};
 mod stack_handle;
 pub use stack_handle::Stack;
 
-pub(crate) mod logging;
+#[doc(hidden)]
+pub mod logging;
 
 /// Macro-support re-exports for `#[derive(...)]` users.
 ///
@@ -88,7 +88,6 @@ pub mod config;
 pub mod context;
 pub mod device_model;
 pub mod ets;
-pub mod kvstore;
 pub mod layers;
 pub mod lifecycle;
 pub mod memory;

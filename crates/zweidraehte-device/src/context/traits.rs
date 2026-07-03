@@ -3,6 +3,12 @@
 //! This module defines trait-based interfaces for accessing stack resources.
 //! Layers depend only on the specific context traits they need, making them
 //! easier to test and more modular.
+//!
+//! The storage capabilities of `D::Storage` are not context traits — they
+//! live in [`crate::storage`] as [`HasConfigStore`](crate::storage::HasConfigStore),
+//! [`HasSeqStore`](crate::storage::HasSeqStore), and
+//! [`StorageHooks`](crate::storage::StorageHooks); consumers bound on them
+//! directly.
 
 use crate::objects::interface::PropertyServiceHandler;
 use crate::objects::tables::{AddressTable, HasLoadStateMachine};

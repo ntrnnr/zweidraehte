@@ -12,9 +12,7 @@ use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use crate::{
-    LayerStackBuilder,
-    bcus::system_b::Extension,
-    config,
+    LayerStackBuilder, config,
     context::StackContext,
     context::layer::LayerContext,
     ets, layers,
@@ -212,18 +210,22 @@ pub trait StackDefinition: Copy + 'static {
 
     type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
 
-    /// Medium extension providing both state persistence and interface
-    /// object augmentation.
+    /// Medium extension state (persistence + interface-object augmentation).
     ///
-    /// The `Extension<Platform>` trait covers both the `ExtensionState`
-    /// and `Augment<D>` concerns in one place: each extension knows how
-    /// to create its own augment given a reference to the platform.
+    /// Most extensions implement [`Extension`] so the default
+    /// [`create_augments`](Self::create_augments) path can build their
+    /// augment from the platform alone; the macro-emitted default bounds on
+    /// it at the use site. `SecureExtensionState` deliberately does not —
+    /// its Security IO augment needs the storage-layer-owned sequence store
+    /// from the layer context, so secure devices build their augment bundle
+    /// with `create_secure_augment(platform, layer_ctx)` in a custom
+    /// `augments:` block instead.
     ///
     /// Common choices:
     /// - `()` — no extension (mock/test devices)
     /// - [`Tp1ExtensionState`](crate::bcus::system_b::Tp1ExtensionState) — TP1 devices
     /// - [`IpExtensionState`](crate::bcus::system_b::IpExtensionState) — KNX/IP devices
-    type ES: Extension<Self::Platform>;
+    type ES;
 
     /// Unified device state containing both runtime state and tables.
     ///
@@ -255,6 +257,22 @@ pub trait StackDefinition: Copy + 'static {
     /// [`StackState::identity`](crate::StackState::identity) bounded on
     /// `SecureDeviceIdentity` at the call site.
     type Identity: DeviceIdentity = StaticIdentity;
+
+    /// The device's whole storage handle: e.g. `&'static ConfigStorage<…>`, pointing
+    /// at its stores struct ([`ConfigStorage`](crate::storage::ConfigStorage)
+    /// and friends, or a hand-written equivalent). Carried on the
+    /// [`LayerContext`](crate::context::layer::LayerContext) so stack
+    /// components pull the stores they need through the capability traits
+    /// (which forward through the reference — bounds read
+    /// `D::Storage: HasSeqStore`): the secure layers reach the sequence/SIAT
+    /// store through [`HasSeqStore`](crate::storage::HasSeqStore) on the
+    /// handle, and the storage task drives the config/mc_timer stores.
+    ///
+    /// Defaults to `()` for devices with no persistent storage at all (demo
+    /// stacks, the conformance DUTs' shm-persisted variants); `()` implements
+    /// no storage capability, so every storage-consuming bound stays a
+    /// compile-time gate.
+    type Storage: Copy + 'static = ();
 
     /// Constructor-args envelope passed to [`create_state`](Self::create_state).
     ///

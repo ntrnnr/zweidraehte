@@ -104,10 +104,9 @@ fn backbone_key(env: &SecureEnv<'_>) -> Option<[u8; 16]> {
 /// timer cannot run backwards across a power loss.
 ///
 /// Updates the persisted-value mirror eagerly and flags
-/// `timer.persist_pending`; the actual durable save is a gated
-/// round-trip through user code's storage task
-/// (`Stack::receive_persist_request`), performed by the runtime via
-/// [`IpSecureFeature::mc_take_persist_pending`](super::secure::IpSecureFeature::mc_take_persist_pending):
+/// `timer.persist_pending`; the runtime's `drain_mc_persist` writes the
+/// flagged value straight to the mc_timer store (via
+/// [`IpSecureFeature::mc_take_persist_value`](super::secure::IpSecureFeature::mc_take_persist_value)):
 ///
 /// - **Send path** (`wrap_multicast_outgoing`, `mc_tick`): the runtime
 ///   drains the flag *before* the produced frame leaves the device —
@@ -908,7 +907,7 @@ mod tests {
 
     /// 03/08/09 §2.2.4.2: a watermark advance updates the persisted
     /// mirror eagerly and flags the pending durable save for the
-    /// runtime's drain (`mc_take_persist_pending` → gated round-trip);
+    /// runtime's drain (`mc_take_persist_value` → gated round-trip);
     /// values inside the window do neither. The blocks-until-reply
     /// property of the drain is `ActorRequest` semantics, covered by
     /// the persist-channel test in `crate::persist`.

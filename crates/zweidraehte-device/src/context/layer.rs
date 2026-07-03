@@ -49,13 +49,10 @@ pub struct LayerContext<D: StackDefinition> {
     pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
     pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 
-    /// On-demand persistence requests towards user code's storage task.
-    /// Gated requests (03/08/09 §2.2.4.2 mc_timer watermark) embed a
-    /// reply the sender awaits; advisory notifications (ETS download
-    /// complete) are [`Request::fire_and_forget`] — same channel, and
-    /// the replier's `reply(())` is a no-op for them. Capacity 2: one
-    /// gated + one advisory in flight without blocking either sender.
-    pub persist_channel: Channel<D::Mutex, Request<PersistRequest, ()>, 2>,
+    /// Advisory persistence notifications towards the storage task (ETS
+    /// download complete). Plain values — nothing on this channel blocks
+    /// the sender; the dirty flag gates the actual write.
+    pub persist_channel: Channel<D::Mutex, PersistRequest, 2>,
 
     /// Bookkeeping shared between the application layer's built-in
     /// group-data handler and the
@@ -64,10 +61,18 @@ pub struct LayerContext<D: StackDefinition> {
     /// behind [`Cell`](core::cell::Cell), so a provider built from a
     /// shared reference can still advance the state.
     pub(crate) group_data: GroupDataState,
+
+    /// The device's whole storage handle (`()` when no stack component needs
+    /// the stores — see
+    /// [`StackDefinition::Storage`](crate::definition::StackDefinition::Storage)).
+    /// Lives here so consumers bounding on the storage capabilities (e.g.
+    /// `D::Storage: HasSeqStore`) reach the stores without going through
+    /// `D::State`.
+    pub storage: D::Storage,
 }
 
 impl<D: StackDefinition> LayerContext<D> {
-    pub fn new(buffer_manager: DynBufferManager<'static>) -> Self {
+    pub fn new(buffer_manager: DynBufferManager<'static>, storage: D::Storage) -> Self {
         Self {
             buffer_manager,
             outbox: RefCell::new(Outbox::new()),
@@ -77,6 +82,7 @@ impl<D: StackDefinition> LayerContext<D> {
             app_service_channel: Channel::new(),
             persist_channel: Channel::new(),
             group_data: GroupDataState::new(),
+            storage,
         }
     }
 }
@@ -101,11 +107,11 @@ impl<D: StackDefinition> LayerContext<D> {
         self.restart_channel.try_send(request).is_ok()
     }
 
-    /// Try sending an advisory (fire-and-forget) persistence
-    /// notification to user code. Returns `true` if sent. Losing one
-    /// (channel full) is acceptable — the dirty flag still gets the
-    /// data saved on the next poll/restart.
+    /// Try sending an advisory persistence notification to the storage
+    /// task. Returns `true` if sent. Losing one (channel full) is
+    /// acceptable — the dirty flag still gets the data saved on the next
+    /// poll/restart.
     pub fn try_send_persist_request(&self, request: PersistRequest) -> bool {
-        self.persist_channel.try_send(Request::fire_and_forget(request)).is_ok()
+        self.persist_channel.try_send(request).is_ok()
     }
 }

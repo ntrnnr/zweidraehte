@@ -8,7 +8,6 @@ use core::cell::RefCell;
 
 use super::SecurityTable;
 use crate::StackDefinition;
-use crate::kvstore::SiatAccess;
 use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf,
     PropertyError, WriteResponse, interface_object_augment, pid,
@@ -16,6 +15,7 @@ use crate::objects::interface::{
 use crate::objects::tables::{LoadEvent, LoadState};
 use crate::service::ServiceCtx;
 use crate::storage::SequenceNumberStorage;
+use crate::storage::views::SiatAccess;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,

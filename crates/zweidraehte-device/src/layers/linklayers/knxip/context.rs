@@ -1,12 +1,11 @@
 //! Context traits for KNX/IP link layer and services.
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, DynamicSender};
+use embassy_sync::channel::Channel;
 
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::knxip::substructs::{DeviceInformation, ExtendedDeviceInformation};
 
-use crate::actor::Request;
 use crate::ip::IpStateView;
 use crate::restart::RestartRequest;
 
@@ -136,11 +135,21 @@ pub trait IpSecureConfigContext {
     /// SECURE_WRAPPER security information blocks.
     fn knx_serial_number(&self) -> [u8; 6];
 
-    /// Sender for gated persist requests (03/08/09 §2.2.4.2 mc_timer
-    /// watermark). The default `None` skips the durability gate — only
-    /// mock contexts should rely on that; real stacks forward the
-    /// `LayerContext` persist gate channel.
-    fn persist_gate_sender(&self) -> Option<DynamicSender<'static, Request<crate::persist::PersistRequest, ()>>> {
-        None
+    /// The persisted mc_timer watermark (03/08/09 §2.2.4.2), read once
+    /// before multicast timer sync starts. Direct store access through the
+    /// storage handle — no message round-trip. Defaults to 0 for mock
+    /// contexts.
+    #[cfg(feature = "ip-secure")]
+    fn load_mc_timer(&self) -> u64 {
+        0
     }
+
+    /// Persist an advanced mc_timer watermark, synchronously — the caller
+    /// must not let a frame carrying a timer value beyond the previous
+    /// watermark leave before this returns ("store immediately", 03/08/09
+    /// §2.2.4.2). A save failure is logged and swallowed by the store:
+    /// wedging secure routing on a broken backend is worse than the bounded
+    /// replay-window risk. Defaults to a no-op for mock contexts.
+    #[cfg(feature = "ip-secure")]
+    fn save_mc_timer(&self, _value: u64) {}
 }

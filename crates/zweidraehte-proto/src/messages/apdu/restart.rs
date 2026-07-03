@@ -28,6 +28,17 @@ create_protocol_enum!(
     }
 );
 
+impl EraseCode {
+    /// Whether this code is one of the two factory-reset variants
+    /// (03/05/02 §3.7.1: `FactoryReset` (02h) resets to ex-factory state
+    /// including the IA, `FactoryResetKeepIA` (07h) everything but the
+    /// IA). The erase scopes of persistent security material (mc_timer
+    /// watermark, sending-SeqNr re-init) key off this grouping.
+    pub fn is_factory_reset(self) -> bool {
+        matches!(self, EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA)
+    }
+}
+
 create_protocol_enum!(
     /// Error codes for A_Restart_Response.
     ///

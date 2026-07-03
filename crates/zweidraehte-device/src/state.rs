@@ -268,6 +268,33 @@ pub trait HasPersistence {
     /// genuinely don't persist (e.g. ephemeral test fixtures) should
     /// provide an explicit empty body and document why.
     fn mark_dirty(&self);
+
+    /// Whether there are unsaved changes since the last successful save.
+    ///
+    /// The generic storage task reads this before saving the config blob.
+    /// Deliberately has **no default**: a default `false` would let a state
+    /// implement a real [`mark_dirty`](Self::mark_dirty) yet silently never
+    /// save (the task would always see "clean"). A non-persisting state
+    /// returns `false` explicitly, mirroring its empty `mark_dirty`.
+    fn is_dirty(&self) -> bool;
+
+    /// Clear the dirty flag after a successful save. Defaults to a no-op —
+    /// harmless even for persisting states (the flag would merely stay set
+    /// and force an extra save), unlike an `is_dirty` default, which would
+    /// suppress saves entirely.
+    fn clear_dirty(&self) {}
+
+    /// Apply a restart erase code to the runtime state.
+    ///
+    /// This is the state-side half of a restart: wiping the individual
+    /// address / tables / parameters / extension state per the code. The
+    /// durable-storage half (clearing the mc_timer watermark, re-saving the
+    /// config) is the storage task's `StorageHooks::erase`. Defaults
+    /// to a no-op for states with nothing to erase; `SystemBDeviceState`
+    /// forwards to its inherent `apply_erase_code`.
+    fn apply_erase_code(&self, code: crate::restart::EraseCode) {
+        let _ = code;
+    }
 }
 
 // ============================================================================
@@ -505,9 +532,6 @@ pub trait HasSecurityState {
     /// Returns `(key, roles)` where `roles` is a bitmask of R0-R15 from
     /// bytes 18-19 of the P2P key table entry.
     fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)>;
-
-    /// Check whether a peer IA exists in the Security Individual Address Table.
-    fn is_in_siat(&self, peer_ia: u16) -> bool;
 
     /// Record a security failure in the failures log and set bit 0 of
     /// PID_SECURITY_REPORT (57) per 03/05/01 §6.3.11.4.

@@ -243,6 +243,7 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     state_init: D::StateInit,
     platform: D::Platform,
     memory_map: D::Mem,
+    storage: D::Storage,
 ) -> (Stack<'static, D>, Runner<'static, D>) {
     // ================================================================
     // Step 1: Allocate buffers
@@ -256,7 +257,7 @@ pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize
     // Step 2: Create LayerContext (before the state)
     // ================================================================
 
-    let layer_context = LayerContext::new(buffer_manager.dyn_buffer_manager());
+    let layer_context = LayerContext::new(buffer_manager.dyn_buffer_manager(), storage);
     let layer_ctx_static: &'static LayerContext<D> = resources.layer_context.write(layer_context);
 
     // ================================================================

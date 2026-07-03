@@ -25,15 +25,14 @@ use core::cell::RefCell;
 use crate::objects::interface::{HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 #[cfg(feature = "knxip")]
 use crate::{
-    HasAdditionalIas, HasIpExtensionState, HasPersistence, HasRoutingMulticastRebind, IpPlatform,
+    HasAdditionalIas, HasExtensionState, HasIpExtensionState, HasPersistence, HasRoutingMulticastRebind, IpPlatform,
     ip::HasIpSecureView,
     layers::linklayers::knxip::context::{
         DeviceInfoContext, IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext,
         IpSecureConfigContext, RemoteRestartContext, RoutingMulticastRebindContext,
     },
+    storage::StorageHooks,
 };
-#[cfg(feature = "knxip")]
-use crate::{HasExtensionState, actor::Request};
 use crate::{
     StackState,
     context::{
@@ -46,8 +45,6 @@ use crate::{
     prelude::PropertyServiceHandler,
     stack_core::StackCore,
 };
-#[cfg(feature = "knxip")]
-use embassy_sync::channel::DynamicSender;
 use zweidraehte_proto::messages::buffers::DynBufferManager;
 
 // ============================================================================
@@ -283,11 +280,14 @@ where
 /// by every IP extension state — its default returns `None`, and only
 /// the secure IP extension overrides it — so this impl (and thereby the
 /// `KnxNetIpContext` blanket) stays unconditional for non-secure IP
-/// devices.
+/// devices. The `StorageHooks` bound is likewise satisfied by every
+/// storage handle (and by the storage-less `()`), and only the
+/// `ip-secure` mc_timer methods reach through it.
 #[cfg(feature = "knxip")]
 impl<D: IpCapableStack> IpSecureConfigContext for StackContext<'_, D>
 where
     <D::State as HasExtensionState>::ES: HasIpSecureView,
+    D::Storage: StorageHooks,
 {
     fn ip_secure_view(&self) -> Option<&dyn crate::ip::IpSecureStateView> {
         self.inner.state.extension_state().ip_secure_view()
@@ -297,8 +297,14 @@ where
         *self.inner.state.serial_number()
     }
 
-    fn persist_gate_sender(&self) -> Option<DynamicSender<'static, Request<crate::persist::PersistRequest, ()>>> {
-        Some(self.inner.layer_context.persist_channel.sender().into())
+    #[cfg(feature = "ip-secure")]
+    fn load_mc_timer(&self) -> u64 {
+        self.inner.layer_context.storage.load_mc_timer()
+    }
+
+    #[cfg(feature = "ip-secure")]
+    fn save_mc_timer(&self, value: u64) {
+        self.inner.layer_context.storage.save_mc_timer(value);
     }
 }
 

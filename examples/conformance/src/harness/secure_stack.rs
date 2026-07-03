@@ -15,8 +15,8 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     HasExtensionState, HasSecurityMode, StackDefinition,
     bcus::system_b::{
-        DeviceConfig, ExtensionAugmentFor, SecureExtensionConfig, SecureResources, SecureTp1DeviceState,
-        SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1ExtensionConfig, create_system_b_objects,
+        DeviceConfig, SecureAugmentBundle, SecureExtensionConfig, SecureResources, SecureTp1DeviceState,
+        SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1Augment, Tp1ExtensionConfig, create_system_b_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
@@ -92,7 +92,6 @@ type SecureInnerState = SecureTp1DeviceState<
     { table_sizes::AST },
     { table_sizes::COT },
     IpcSecureConformanceTestStack,
-    ShmSiatStore,
     { sec_table_sizes::P2P },
 >;
 
@@ -122,9 +121,7 @@ impl SecureConformanceState {
         app_table: Application<TestParameters>,
     ) -> Self {
         let identity = StaticSecureIdentity::new(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        let seq_storage = SiatStore::boot(IpcSecureConformanceTestStack::create_seq_storage())
-            .expect("shm seq store boot is infallible");
-        let resources = SecureResources::simple(seq_storage, SECURE_FDSK);
+        let resources = SecureResources::simple(SECURE_FDSK);
         let inner = SecureInnerState::new(identity, ConformanceComObjects::new(), resources);
 
         // Set the secure conformance test individual address (1.0.1 = 0x1001).
@@ -763,7 +760,14 @@ impl CertificationObjectAugment {
 // ============================================================================
 
 /// Type alias for the security augment produced by the extension.
-type SecAugment<'a> = ExtensionAugmentFor<'a, IpcSecureConformanceTestStack>;
+type SecAugment<'a> = SecureAugmentBundle<
+    'a,
+    Tp1Augment<'a>,
+    ShmSiatStore,
+    { table_sizes::ADT_ENTRIES },
+    { sec_table_sizes::P2P },
+    { table_sizes::COT_ENTRIES },
+>;
 
 /// Conformance-only "extras" beyond the security augment: the
 /// certification object the spec validation suite checks, plus a
@@ -806,7 +810,7 @@ pub enum SecureConformanceStateInit {
         app_table: Application<TestParameters>,
     },
     /// Restore from a previously-persisted snapshot.
-    Loaded { config: SecureConformanceDeviceConfig, seq_storage: ShmSeqStorage },
+    Loaded { config: SecureConformanceDeviceConfig },
 }
 
 /// Secure conformance test stack definition.
@@ -827,12 +831,12 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type ES = SecureTp1ExtensionState<
-        ShmSiatStore,
-        { table_sizes::ADT_ENTRIES },
-        { sec_table_sizes::P2P },
-        { table_sizes::COT_ENTRIES },
-    >;
+    type ES =
+        SecureTp1ExtensionState<{ table_sizes::ADT_ENTRIES }, { sec_table_sizes::P2P }, { table_sizes::COT_ENTRIES }>;
+    // The stores struct (here: just the shared-memory SIAT store), wired onto
+    // the LayerContext so the secure layers pull it out through
+    // `HasSeqStore`.
+    type Storage = &'static ConformanceSecureStorage;
     type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
     type StateInit = SecureConformanceStateInit;
@@ -870,16 +874,15 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     fn create_augments<'a>(
         state: &'a Self::State,
         platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
         Self::Platform: 'a,
     {
         use zweidraehte_device::HasExtensionState;
-        use zweidraehte_device::bcus::system_b::Extension;
         SecureConformanceAugments {
-            sec: state.extension_state().create_augment::<Self>(platform),
+            sec: state.extension_state().create_secure_augment(platform, layer_ctx),
             extras: ConformanceExtras {
                 cert: CertificationObjectAugment::new(),
                 diag: DiagnosticsAugment::<SecureGoSendPresent>::new(&state.inner.operation_mode),
@@ -892,9 +895,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
             SecureConformanceStateInit::Fresh { addr_tab, asso_tab, co_tab, app_table } => {
                 SecureConformanceState::new(addr_tab, asso_tab, co_tab, app_table)
             }
-            SecureConformanceStateInit::Loaded { config, seq_storage } => {
-                SecureConformanceState::from_device_config(config, seq_storage)
-            }
+            SecureConformanceStateInit::Loaded { config } => SecureConformanceState::from_device_config(config),
         }
     }
 
@@ -931,11 +932,11 @@ impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
 // Sequence Number Storage
 // ============================================================================
 
-use zweidraehte_device::kvstore::SiatStore;
-use zweidraehte_device::kvstore::packed_seq::{ByteRegion, PackedSeqStore};
-use zweidraehte_device::storage::HasSequenceStorage;
+use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
+use zweidraehte_device::storage::region::FramSiatRegion;
+use zweidraehte_device::storage::{HasSeqStore, SiatStore};
 
-/// A [`ByteRegion`] over the `mmap(MAP_SHARED)` seq region, addressed by a raw
+/// An [`ByteIo`] over the `mmap(MAP_SHARED)` seq region, addressed by a raw
 /// pointer.
 ///
 /// Reads and writes go directly to the mapping, so they are immediately visible
@@ -954,39 +955,83 @@ unsafe impl Sync for ShmRegion {}
 impl ShmRegion {
     /// # Safety
     /// `ptr` must be valid for the lifetime of this region and point to at
-    /// least [`packed_seq::region_len(16)`](zweidraehte_device::kvstore::packed_seq::region_len)
+    /// least [`packed_seq::region_len(16)`](zweidraehte_device::storage::backends::region_len)
     /// writable bytes in a `MAP_SHARED` region.
     pub unsafe fn from_ptr(ptr: *mut u8) -> Self {
         Self { ptr }
     }
 }
 
-impl ByteRegion for ShmRegion {
+impl ByteIo for ShmRegion {
     type Error = core::convert::Infallible;
 
-    fn read_at(&self, off: u16, buf: &mut [u8]) -> Result<(), Self::Error> {
+    fn read_at(&self, off: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
         unsafe { core::ptr::copy_nonoverlapping(self.ptr.add(off as usize), buf.as_mut_ptr(), buf.len()) };
         Ok(())
     }
 
-    fn write_at(&mut self, off: u16, data: &[u8]) -> Result<(), Self::Error> {
+    fn write_at(&mut self, off: u32, data: &[u8]) -> Result<(), Self::Error> {
         unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.add(off as usize), data.len()) };
         Ok(())
     }
 }
 
+/// The SIAT region the shared-memory store binds: the same write-in-place
+/// [`FramSiatRegion`] (`"KNXR"` magic) a FRAM device uses, sized to the
+/// 256-byte tail `SharedMemory` carves out (`region_len(16)` = 146 fits). It
+/// owns the whole tail at offset 0 (via `new()`), so it never appears in a
+/// `REGIONS` array — and its `BATCH` parameter is moot (the harness builds
+/// its `SiatStore` by hand with K = 0 for exact per-write persistence).
+type ShmSiatRegion = FramSiatRegion<256, 16>;
+
 /// Shared-memory sequence/SIAT store: [`PackedSeqStore`] over a [`ShmRegion`].
 ///
-/// The mmap region is zero-filled by the kernel, which the layout relies on
-/// (the peer-count field reads 0 on first boot before any write).
-pub type ShmSeqStorage = PackedSeqStore<ShmRegion, 16>;
+/// The mmap region is zero-filled by the kernel (and re-zeroed by
+/// `clear_seq_region` between suites), which the layout relies on: no magic
+/// yet means the store boots to defaults, and the peer-count field reads 0
+/// on first boot before any write.
+pub type ShmSeqStorage = PackedSeqStore<ShmRegion, ShmSiatRegion, 16>;
+
+// The bound region must cover the packed 16-slot layout within the shm tail.
+const _: () = assert!(region_len(16) <= 256);
 
 /// Static pointer to the seq region in shared memory.
 /// Set by `dut_secure.rs` before stack creation.
 static SEQ_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
-impl HasSequenceStorage for IpcSecureConformanceTestStack {
-    type SeqStorage = ShmSiatStore;
+/// The DUT's hand-written stores struct — the conformance twin of the
+/// stores structs (`SecureStorage` etc.) on real devices. Holds only
+/// the shared-memory SIAT store; the DUT's config persistence goes through
+/// its own shm snapshot path, not the storage task.
+pub struct ConformanceSecureStorage {
+    pub seq: core::cell::RefCell<ShmSiatStore>,
+}
+
+impl HasSeqStore for ConformanceSecureStorage {
+    type Seq = ShmSiatStore;
+    fn seq_store(&self) -> &core::cell::RefCell<ShmSiatStore> {
+        &self.seq
+    }
+}
+
+// The storage-side half of a restart erase, exactly what the macro-emitted
+// handle composes for a `seq:` store on real devices. The DUT's restart path
+// (`dut_common::flush_and_exit`) drives it through the same trait the
+// generic storage task uses.
+impl zweidraehte_device::storage::StorageHooks for ConformanceSecureStorage {
+    fn erase(&self, code: zweidraehte_device::restart::EraseCode) {
+        zweidraehte_device::storage::seq::erase_seq_on_factory_reset(&mut *self.seq.borrow_mut(), code);
+    }
+}
+
+/// Boot the SIAT store from the shm mapping and place it in its static home.
+/// Call once per DUT process, after [`set_seq_shm_ptr`], before
+/// `zweidraehte_device::new()`.
+pub fn init_secure_storage() -> &'static ConformanceSecureStorage {
+    static STORAGE: static_cell::StaticCell<ConformanceSecureStorage> = static_cell::StaticCell::new();
+    let seq =
+        SiatStore::boot(IpcSecureConformanceTestStack::create_seq_storage()).expect("shm seq store boot is infallible");
+    &*STORAGE.init(ConformanceSecureStorage { seq: core::cell::RefCell::new(seq) })
 }
 
 impl IpcSecureConformanceTestStack {
@@ -1083,12 +1128,9 @@ impl SecureConformanceDeviceConfig {
 }
 
 impl SecureConformanceState {
-    pub fn from_device_config(snapshot: SecureConformanceDeviceConfig, seq_storage: ShmSeqStorage) -> Self {
+    pub fn from_device_config(snapshot: SecureConformanceDeviceConfig) -> Self {
         let identity = StaticSecureIdentity::new(SECURE_SERIAL_NUMBER, SECURE_FDSK);
-        // The SIAT lives in the (shared-memory) sequence store, which persists
-        // across DUT restarts, so the store reconstructs the live SIAT on boot.
-        let seq_storage = SiatStore::boot(seq_storage).expect("shm seq store boot is infallible");
-        let resources = SecureResources::simple(seq_storage, SECURE_FDSK);
+        let resources = SecureResources::simple(SECURE_FDSK);
         let inner = SecureInnerState::from_config(identity, snapshot.inner, resources);
 
         Self {

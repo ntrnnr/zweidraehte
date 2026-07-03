@@ -1,32 +1,34 @@
-//! RP2040 internal-flash binding for the wear-levelled key-value store.
+//! RP2040 internal-flash medium adapter.
 //!
-//! The generic wear-levelled append log lives in
-//! [`embedded_common::persist::WearLeveledKv`]; this module provides the
-//! [`RpFlashIo`] adapter binding it to the `embassy_rp` blocking flash handle,
-//! plus the [`RpWearLeveledKv`] alias fixing the flash region from the layout
-//! constants in [`crate::storage`]. A secure device builds its sequence/SIAT
-//! store as `SiatStore<RpWearLeveledKv<N>, N, K>`.
+//! The generic storage backends live in the core crate; this module provides
+//! only the [`RpFlashIo`] adapter binding them to the `embassy_rp` blocking
+//! flash handle — the [`RpFlash`](crate::storage::RpFlash) chip's `Io`. A
+//! secure device declares its SIAT as a
+//! [`FlashSiatRegion`](zweidraehte_device::storage::FlashSiatRegion) on that
+//! chip; the wear-levelled store and `SiatStore` view derive from the region.
 //!
 //! Each erase/write suspends XIP and stalls all embassy tasks; the
-//! `SiatStore` watermark (`K`) keeps the hot sending-counter path off flash for
-//! `K` sends at a time. Reads go through the in-RAM mirror — no flash hit.
+//! `SiatStore` watermark (`BATCH`) keeps the hot sending-counter path off
+//! flash for `BATCH` sends at a time. Reads go through the in-RAM mirror —
+//! no flash hit.
 
 use core::cell::RefCell;
 
 use embassy_rp::flash::{self, Flash};
 use embassy_rp::peripherals::FLASH;
 
-use embedded_common::persist::{FlashIo, WearLeveledKv};
+use zweidraehte_device::storage::SectorIo;
 
-use crate::storage::{FLASH_SIZE, SECTOR_SIZE, SEQ_REGION_OFFSET, SEQ_SECTOR_COUNT};
+use crate::storage::FLASH_SIZE;
 
-/// [`FlashIo`] over the shared `embassy_rp` blocking flash handle.
+/// [`SectorIo`] over the shared `embassy_rp` blocking flash handle.
 ///
-/// The handle is shared (`&'static RefCell`) so the config store
-/// ([`crate::storage::RpFlashStorage`]) and this sequence store can both reach
-/// the single `FLASH` peripheral. The `RefCell` is sound under embassy's
-/// single-threaded executor — every flash op is synchronous (`blocking_*`,
-/// never held across an `.await`).
+/// The handle is shared (`&'static RefCell`) and `Copy` so the config store,
+/// the sequence store, and the mc_timer store can all reach the single
+/// `FLASH` peripheral — each region opens over its own copy. The `RefCell`
+/// is sound under embassy's single-threaded executor — every flash op is
+/// synchronous (`blocking_*`, never held across an `.await`).
+#[derive(Clone, Copy)]
 pub struct RpFlashIo {
     flash: &'static RefCell<Flash<'static, FLASH, flash::Blocking, FLASH_SIZE>>,
 }
@@ -37,7 +39,7 @@ impl RpFlashIo {
     }
 }
 
-impl FlashIo for RpFlashIo {
+impl SectorIo for RpFlashIo {
     type Error = embassy_rp::flash::Error;
 
     fn read(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
@@ -50,11 +52,3 @@ impl FlashIo for RpFlashIo {
         self.flash.borrow_mut().blocking_write(offset, data)
     }
 }
-
-/// Wear-levelled key-value store over the RP2040 sequence-number flash region
-/// (8 sectors below the config sector — see [`crate::storage`]).
-///
-/// `ENTRIES` is the live-record capacity (≥ SIAT entries + the two singleton
-/// sequence counters).
-pub type RpWearLeveledKv<const ENTRIES: usize> =
-    WearLeveledKv<RpFlashIo, SEQ_REGION_OFFSET, SECTOR_SIZE, SEQ_SECTOR_COUNT, ENTRIES>;

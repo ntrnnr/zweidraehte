@@ -30,7 +30,7 @@ use crate::{
     logging::warn,
     objects::tables::HasAddressTable,
     state::HasSecurityState,
-    storage::HasSeqStorage,
+    storage::HasSeqStore,
 };
 
 use super::outgoing;
@@ -59,8 +59,9 @@ impl<'a, D: StackDefinition> SecureGroupDataProvider<'a, D> {
 
 impl<D: StackDefinition> SecureGroupValueAddressedSender for SecureGroupDataProvider<'_, D>
 where
+    D::Storage: HasSeqStore,
     D::State: StackState + HasExtensionState + HasAddressTable,
-    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     fn send_group_write_tsap_secure(
         &self,
@@ -80,8 +81,9 @@ where
 
 impl<D: StackDefinition> SecureGroupDataProvider<'_, D>
 where
+    D::Storage: HasSeqStore,
     D::State: StackState + HasExtensionState + HasAddressTable,
-    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     /// Build and queue a secure `A_GroupValue_{Write,Read}`.
     ///
@@ -185,7 +187,7 @@ where
         // ============================================================
         // Reserve sending sequence number (group/table counter, not tool).
         // ============================================================
-        let Some(seq_nr) = outgoing::reserve_next_seq_nr(security_state.seq_storage(), false) else {
+        let Some(seq_nr) = outgoing::reserve_next_seq_nr(self.lctx.storage.seq_store(), false) else {
             warn!("SecureGroupDataProvider: sequence number overflow, dropping send");
             return;
         };

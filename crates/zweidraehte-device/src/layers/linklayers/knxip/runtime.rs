@@ -155,6 +155,13 @@ where
 
         let response_channel = self.resources.response_channel();
 
+        // Whether the runtime mc_timer has been seeded from its durable
+        // store. Seeded exactly once, right before the first sync start —
+        // never re-seeded, since the store can lag the runtime watermark
+        // and a lower re-seed would shrink the replay window.
+        #[cfg(feature = "ip-secure")]
+        let mut mc_timer_seeded = false;
+
         loop {
             // First, drain any pending responses to free their buffers
             // This is important because retry queue processing may need these buffers
@@ -243,7 +250,7 @@ where
                 // now, before anything else happens this iteration —
                 // the spec's "store immediately", deferred by at most
                 // one scheduler wake.
-                self.drain_mc_persist().await;
+                self.drain_mc_persist();
 
                 let env = self.secure_env();
                 let secured = env.config.is_some_and(|config| {
@@ -252,6 +259,17 @@ where
                 });
                 let started = <F::IpSecure as IpSecureFeature>::mc_sync_started(&self.mc_timer);
                 if secured && !started {
+                    // Seed the runtime timer from the durable watermark
+                    // before the first sync start, so secure routing
+                    // resumes above the last persisted value instead of
+                    // from 0 — a direct store read through the context.
+                    #[cfg(feature = "ip-secure")]
+                    if !mc_timer_seeded {
+                        mc_timer_seeded = true;
+                        if let Some(config) = env.config {
+                            config.set_persisted_mc_timer(self.context.load_mc_timer());
+                        }
+                    }
                     <F::IpSecure as IpSecureFeature>::mc_start_sync(&mut self.mc_timer, &env);
                 } else if !secured && started {
                     <F::IpSecure as IpSecureFeature>::mc_stop_sync(&mut self.mc_timer);
@@ -264,7 +282,7 @@ where
                     // §2.2.4.2: the TIMER_NOTIFY carries the current
                     // timer value — persist a watermark advance before
                     // it goes out.
-                    self.drain_mc_persist().await;
+                    self.drain_mc_persist();
                     // §2.2.2.4.1: TIMER_NOTIFY goes to port 3671 on the
                     // configured routing multicast address, out of the
                     // socket joined to that group.

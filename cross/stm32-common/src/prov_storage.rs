@@ -167,3 +167,82 @@ pub fn load_secure_identity<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
         Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
     }
 }
+
+/// Shared boot-identity loader for the non-secure STM32 firmware: read the
+/// `KNXP` provisioning record; under `provision-on-boot`, a missing record is
+/// filled in by writing the supplied dev serial (no FDSK, no MAC) and
+/// re-reading.
+///
+/// `dev_serial` carries the serial from the firmware's `build.rs` — the
+/// non-secure counterpart of [`load_secure_identity`]'s `dev_defaults`, with
+/// the same feature-gating rules.
+pub fn load_plain_identity<const FLASH_SIZE: u32, const PAGE_SIZE: u32>(
+    flash: &mut Flash<'static, Blocking>,
+    #[cfg_attr(not(feature = "provision-on-boot"), allow(unused_variables))] dev_serial: Option<[u8; 6]>,
+) -> FlashIdentityData {
+    match read_provisioning::<FLASH_SIZE, PAGE_SIZE>(flash) {
+        Ok(rec) => identity_from_record(&rec),
+
+        #[cfg(feature = "provision-on-boot")]
+        Err(e) => {
+            defmt::warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
+            let serial = dev_serial.expect("provision-on-boot requires a dev serial");
+            synthesize_and_write::<FLASH_SIZE, PAGE_SIZE>(flash, serial, None, None).expect("write dev KNXP");
+            let rec = read_provisioning::<FLASH_SIZE, PAGE_SIZE>(flash).expect("re-read freshly written KNXP");
+            identity_from_record(&rec)
+        }
+
+        #[cfg(not(feature = "provision-on-boot"))]
+        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
+    }
+}
+
+/// Emit the device-local boot-identity loader — the STM32 counterpart of
+/// `rp-common`'s `rp_identity_loader!`.
+///
+/// The flavour picks the identity shape and the emitted fn name: `plain` →
+/// `fn load_identity(…) -> FlashIdentityData`, `secure` →
+/// `fn load_secure_identity(…) -> FlashSecureIdentityData`. Both delegate to
+/// the shared boot logic ([`load_plain_identity`] / [`load_secure_identity`])
+/// with the G0 flash geometry consts; the only device-local piece is the
+/// `provision-on-boot` dev defaults, read from the caller's
+/// `dev_provisioning` module (rendered into each crate's `OUT_DIR` by its
+/// `build.rs`, which is why the macro references it unhygienically rather
+/// than taking the values as arguments).
+///
+/// ```ignore
+/// stm32_common::stm32_identity_loader!(secure);
+/// ```
+#[macro_export]
+macro_rules! stm32_identity_loader {
+    (plain) => {
+        fn load_identity(
+            flash: &mut ::embassy_stm32::flash::Flash<'static, ::embassy_stm32::flash::Blocking>,
+        ) -> $crate::FlashIdentityData {
+            #[cfg(feature = "provision-on-boot")]
+            let dev_serial = Some(dev_provisioning::DEV_SERIAL);
+            #[cfg(not(feature = "provision-on-boot"))]
+            let dev_serial = None;
+
+            $crate::load_plain_identity::<{ $crate::STM32G0_FLASH_SIZE }, { $crate::STM32G0_PAGE_SIZE }>(
+                flash, dev_serial,
+            )
+        }
+    };
+    (secure) => {
+        fn load_secure_identity(
+            flash: &mut ::embassy_stm32::flash::Flash<'static, ::embassy_stm32::flash::Blocking>,
+        ) -> $crate::FlashSecureIdentityData {
+            #[cfg(feature = "provision-on-boot")]
+            let dev_defaults =
+                Some((dev_provisioning::DEV_SERIAL, dev_provisioning::DEV_FDSK, dev_provisioning::DEV_MAC));
+            #[cfg(not(feature = "provision-on-boot"))]
+            let dev_defaults = None;
+
+            $crate::load_secure_identity::<{ $crate::STM32G0_FLASH_SIZE }, { $crate::STM32G0_PAGE_SIZE }>(
+                flash,
+                dev_defaults,
+            )
+        }
+    };
+}

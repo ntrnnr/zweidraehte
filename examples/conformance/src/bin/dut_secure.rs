@@ -85,8 +85,8 @@ async fn main(spawner: Spawner) {
     // the program; `seq_region_ptr` stays valid until `shm` is dropped
     // (at `process::exit`).
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let seq_storage = IpcSecureConformanceTestStack::create_seq_storage();
-    let state_init = SecureConformanceStateInit::Loaded { config: snapshot, seq_storage };
+    let storage = zweidraehte_conformance::harness::secure_stack::init_secure_storage();
+    let state_init = SecureConformanceStateInit::Loaded { config: snapshot };
 
     let shm = SHM.init(ShmCell::new(shm));
 
@@ -106,7 +106,8 @@ async fn main(spawner: Spawner) {
 
     let resources = STACK_RESOURCES.init(StackResources::new());
 
-    let (stack, runner) = zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap);
+    let (stack, runner) =
+        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage);
 
     // Publish the CoTab reference used by the conformance-specific
     // shadow-object hook (`ComObjectBusHook` impl on

@@ -11,8 +11,8 @@
 //!   shapes are both supported.
 //! - `fram` — `Fm25l16b` blocking driver for the Infineon FM25L16B
 //!   2 KiB SPI FRAM.
-//! - `fram_seq` — `FramKv`, a persistent
-//!   `SequenceNumberStorage` backed by the FRAM driver. Suitable for
+//! - `fram_seq` — the `Fram` chip descriptor and `FramRegion` `ByteIo`
+//!   handle the storage layer's FRAM regions open over. Suitable for
 //!   production: write-through on every update, unlimited endurance.
 //! - `rng` — `Stm32CommonRng`, a *non-cryptographic* PRNG seeded
 //!   from the STM32 factory UID plus boot-time ticks. Plugs into
@@ -36,11 +36,15 @@ pub mod uart;
 
 pub use flash_io::StmFlashIo;
 pub use fram::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
-pub use fram_seq::{FramKv, FramRegion, fram_kv};
+pub use fram_seq::{Fram, FramRegion, StmFramCs, StmFramSpi, StmSiatRegion};
 #[cfg(feature = "provision-on-boot")]
 pub use prov_storage::synthesize_and_write;
 pub use prov_storage::{
-    identity_from_record, load_secure_identity, read_provisioning, secure_identity_from_record, write_provisioning,
+    identity_from_record, load_plain_identity, load_secure_identity, read_provisioning, secure_identity_from_record,
+    write_provisioning,
 };
 pub use rng::Stm32CommonRng;
-pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, StmFlashStorage, stm_flash_storage};
+pub use storage::{
+    FlashError, FlashIdentityData, FlashSecureIdentityData, STM32G0_FLASH_SIZE, STM32G0_PAGE_SIZE, StmConfigRegion,
+    StmFlash,
+};

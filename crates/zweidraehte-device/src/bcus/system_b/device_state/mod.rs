@@ -432,7 +432,7 @@ impl<
     /// Apply an A_Restart master-reset erase code to this state.
     ///
     /// This is the canonical per-code dispatch for restart handling —
-    /// call it from the user-side restart task with the
+    /// call it from the storage task with the
     /// [`RestartRequest::erase_code`](crate::restart::RestartRequest::erase_code)
     /// the stack delivered. Beyond the individual `reset_*` methods it
     /// also notifies the extension state where the spec requires it:
@@ -673,6 +673,18 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 {
     fn mark_dirty(&self) {
         SystemBDeviceState::mark_dirty(self);
+    }
+
+    fn is_dirty(&self) -> bool {
+        SystemBDeviceState::is_dirty(self)
+    }
+
+    fn clear_dirty(&self) {
+        SystemBDeviceState::clear_dirty(self);
+    }
+
+    fn apply_erase_code(&self, code: crate::restart::EraseCode) {
+        SystemBDeviceState::apply_erase_code(self, code);
     }
 }
 

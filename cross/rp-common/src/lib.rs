@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(adt_const_params)]
 
 //! Shared platform code for RP2040/RP2350 KNX devices.
 //!
@@ -9,6 +10,7 @@
 //! there directly at every call site.
 
 pub mod flash_seq;
+pub mod mc_timer_store;
 mod net;
 mod network_info;
 pub mod prov_storage;
@@ -16,7 +18,8 @@ pub mod rng;
 pub mod storage;
 pub mod uart;
 
-pub use flash_seq::{RpFlashIo, RpWearLeveledKv};
+pub use flash_seq::RpFlashIo;
+pub use mc_timer_store::RpMcTimerRegion;
 pub use net::{
     EmbassyIpTransport, EmbassyIpTransportTcp, EmbassyTcpContext, EmbassyTcpListener, EmbassyTcpStream,
     EmbassyTcpStreamError, EmbassyUdpContext, EmbassyUdpSocket, EmbassyUdpSocketTcp, TcpError, TcpPool, UdpError,
@@ -29,4 +32,4 @@ pub use prov_storage::{identity_from_record, secure_identity_from_record};
 #[cfg(feature = "rp2040")]
 pub use prov_storage::{read_provisioning, write_provisioning};
 pub use rng::RpCommonRng;
-pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, RpFlashStorage, rp_flash_storage};
+pub use storage::{FlashError, FlashIdentityData, FlashSecureIdentityData, RpConfigRegion, RpFlash};

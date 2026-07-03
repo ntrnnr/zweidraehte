@@ -169,14 +169,16 @@ Key points:
 ```
 main
  ├─ load DeviceIdentity (serial number, optional FDSK)
- ├─ load DeviceConfig from DeviceStorage (may be None on first boot)
+ ├─ open stores (ConfigStore::open_at, SiatStore::boot, …),
+ │  STORAGE.init(ConfigStorage::new(…)) → &'static stores struct,
+ │  storage.load_config() (may be None on first boot)
  ├─ build D::StateInit { identity, optional loaded config }
  ├─ build link-layer builder (e.g. KnxNetIpBuilder, TpUartBuilder)
  │
  ├─ zweidraehte_device::new(resources, ll_builder, state_init,
- │                          platform, memory_map)
+ │                          platform, memory_map, storage)
  │    1. BufferManager::new → DynBufferManager
- │    2. LayerContext::new(buffer_manager)  (program-lifetime)
+ │    2. LayerContext::new(buffer_manager, storage)  (program-lifetime)
  │    3. D::create_state(state_init)        → D::State
  │    4. Inner { state, platform, memory_map, &layer_context }
  │    5. D::create_interface_objects(state, platform, layer_ctx)
@@ -453,6 +455,7 @@ the `*Config` persistence vocabulary in §4. Contents:
 | `restart_channel` | `Channel<Mutex, RestartRequest, 1>` | Restart requests from the stack to user binary. |
 | `app_service_channel` | `Channel<Mutex, Request<ApplicationLayerService, _>, 1>` | Actor-style requests *to* the AL from user code. |
 | `group_data` | `GroupDataState` | Shared bookkeeping between AL's built-in group handler and augment-held `GroupDataProvider`s. |
+| `storage` | `D::Storage` | The device's stores-struct handle (`&'static ConfigStorage<…>` etc.; `()` when unset). Layers pull stores from it through capability traits (e.g. `HasSeqStore`). |
 
 **Context traits provided:** none — the buffer manager is a plain
 `pub` field; `BufferManagerContext` is provided by `StackContext`.
@@ -572,8 +575,9 @@ All layers live under
   `publish_event()` / `try_send_restart_request()` helpers.
 - TL requires access to `HasConnectionAuth` on `D::State` for
   per-connection access levels.
-- Secure AL additionally requires `HasSecurityState` and
-  `HasSeqStorage` on `D::State`.
+- Secure AL additionally requires `HasSecurityState` on `D::State`
+  and the sequence store via `D::Storage: HasSeqStore` (the capability
+  forwards through the `&'static` stores-struct reference).
 
 ### 3.7 Link layers
 
@@ -859,7 +863,7 @@ that you don't want to hand-write.
 | `Tp1ExtensionState` | TP1 | `Tp1ExtensionConfig` | `()` | `Tp1Augment<'a>` | — |
 | `RfExtensionState` | KNX-RF | `RfExtensionConfig` | `()` | `RfAugment<'a>` | — |
 | `IpExtensionState<CAPS>` | KNX/IP | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
-| `SecureExtensionState<Inner, SEQ, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<InnerResources, SEQ>` | `(InnerAugment, SecurityAugment)` | — (needs `HasSequenceStorage`) |
+| `SecureExtensionState<Inner, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<InnerResources>` | `(InnerAugment, SecurityAugment)` | — (seq store comes from `D::Storage`) |
 | `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment` | — |
 
 #### Composing augments on a device
@@ -1002,25 +1006,96 @@ Use sites:
 
 ### 3.14 Identity and storage
 
-**File:**
-[`crates/zweidraehte-device/src/storage.rs`](../crates/zweidraehte-device/src/storage.rs)
+**Directory:**
+[`crates/zweidraehte-device/src/storage/`](../crates/zweidraehte-device/src/storage/)
 
-Identity is factory-fixed; storage is a pluggable persistence
-backend for the rest of the device config.
+Identity is factory-fixed; storage is the unified persistence layer.
+A device declares each durable region **once** — a `Placed<R, C, L>`
+alias naming the region marker (which carries the payload type,
+mechanism, and capacities), the chip, and the device's layout type —
+and everything else derives: the layout entry (`Placed::SPEC`, listed
+in the `StorageLayout` impl's `REGIONS`), the proven placement, the
+store type (`StoreOf<…>`), and the `open()`. The live stores group in
+one of the three stores structs (`ConfigStorage` / `SecureStorage` /
+`SecureIpStorage`) — one per real store combination, each carrying
+its capability impls as ordinary code.
 
-- `DeviceIdentity` — `serial_number() -> &[u8; 6]`.
-- `SecureDeviceIdentity: DeviceIdentity` — adds `fdsk() -> &[u8; 16]`.
-- `DeviceStorage` — `identity()`, `load_config() -> Option<Config>`,
-  `save(&State)`, `mark_dirty()`, `flush()`, `is_dirty()`.
-- `SequenceNumberStorage` — sending/receiving/tool-key sequence
-  persistence for Data Secure.
-- `HasSequenceStorage` — ties a `StackDefinition` to its seq-storage
-  provider (required by `SecureDeviceBuilder`).
+```rust
+pub struct StorageMap;
+type Cfg = Placed<StmConfigRegion<MyState>, StmFlash, StorageMap>;
+type Seq = Placed<StmSiatRegion<SIAT_SIZE>, FramChip, StorageMap>;
+impl StorageLayout for StorageMap {
+    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
+}
+type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
+// main(): DeviceStorage::new(Cfg::open(io)?, Seq::open(fram_io)?)
+```
 
-Built-in implementations: `NoStorage`, `StaticIdentity`,
-`StaticSecureIdentity`. Testutil adds `FileIdentity` and
-`JsonStorage`. Embedded targets typically implement their own
-flash-backed `DeviceStorage`.
+- `identity.rs` — `DeviceIdentity` (`serial_number() -> &[u8; 6]`),
+  `SecureDeviceIdentity: DeviceIdentity` (adds `fdsk() -> &[u8; 16]`),
+  plus the compile-time `StaticIdentity` / `StaticSecureIdentity`.
+  Testutil adds `FileIdentity`.
+- `region.rs` — the layout vocabulary: `Region` (SIZE + MAGIC +
+  KIND — the region knows which middleware is placed in it; the
+  flash-vs.-FRAM deployment choice for the SIAT and mc_timer is a
+  *marker* choice: `FlashSiatRegion` / `FramSiatRegion`,
+  `McTimerRegion` / `FramMcTimerRegion`, same magic each), `Chip`
+  (tag, base, capacity, sector size, and the `Copy` medium handle
+  type `Io` — copies of one handle serve every region on the chip),
+  `RegionSpec` / `RegionKind` (one declared entry as plain const
+  data, built by the `region_spec` const fn), and `region_placement`
+  (looks the entry up **by chip + region type** — tag + magic + size,
+  no index to drift, so the same region type may live on two chips —
+  and derives its prefix-sum offset; it fires `check_layout`'s
+  capacity / magic / tag / medium guards on every call,
+  const-panicking at the evaluation site). `RegionPlacement<R, C>` is
+  tagged with its *region and chip* at the type level and each
+  backend binds the same region as a generic parameter, so a store
+  can only be opened at its own region's placement — and the region
+  is the single source of the store's magic, extent, payload, and
+  capacities.
+- `layout.rs` — the device-facing declaration surface: `Stored<C>`
+  (the region ↔ store coupling: `type Store`, `open(io, placement)`;
+  implemented in core once per marker × medium contract, with the
+  medium as a bound on `C::Io`), `StorageLayout` (the ordered region
+  list as one associated const), `Placed<R, C, L>` (derives SPEC /
+  placement / open from its three names), and `StoreOf` (the slot
+  projection for the stores-struct alias). The layout proof fires at
+  `open()`'s monomorphization — a generic-assoc-const forcing, so a
+  bad layout is still a compile error.
+- `definition.rs` —
+  `HasDeviceConfig` (runtime state → serialisable config), the
+  `HasConfigStore` capability, `StorageHooks` (the per-combination
+  hooks), and the three stores structs `ConfigStorage` /
+  `SecureStorage` / `SecureIpStorage` with their hand-written
+  capability impls. A device with a different store combination
+  hand-writes its own struct + the same three impls (see the
+  conformance harness's `ConformanceSecureStorage`).
+- `kv.rs` — the `KeyValueStore` seam between backends and views.
+- `backends/` — `SectorIo` / `ByteIo` medium seams (the write
+  granularity is a `SectorIo` fact: `WRITE_ALIGN`, 8 on STM32
+  doubleword flash) and the HAL-free backends over them:
+  `WearLeveledKv`, `ConfigStore`, `PackedSeqStore`, and
+  `PackedWatermark` (the byte-medium mc_timer record).
+- `views.rs` — the typed security tables over the seam: `SiatStore`,
+  `McTimerStore`.
+- `seq.rs` — `SequenceNumberStorage` (sending/receiving/tool-key
+  sequence persistence for Data Secure) and `HasSeqStore` (typed
+  access to the seq store on the stores struct; its presence gates
+  the secure builders at compile time).
+- `task.rs` — the generic `storage_task` every device spawns (via the
+  `storage_task!` wrapper macro): restart handling, the advisory
+  ETS-download-complete save, and the periodic dirty-save poll, each
+  save behind an optional `SaveGuard` (TP1 busy gating). It takes the
+  storage handle from the stack (`knx.storage()`).
+
+The stores struct is carried on `StackDefinition::Storage`
+(`&'static ConfigStorage<…>` etc.; `()` only for stacks with no
+storage at all) and reaches every consumer through `LayerContext` and the
+capability/context traits, exactly like the other tables: the secure
+AL pulls the seq store via `HasSeqStore`, the KNX/IP Secure
+link layer reads/writes the mc_timer watermark directly through its
+context, and the storage task drives the config store.
 
 ---
 
@@ -1055,7 +1130,8 @@ ExtensionResources ┼──> ExtensionConfig ─────┼─> ExtensionSt
                               (MaybeUninit statics)
 ```
 
-- `DeviceStorage::load_config()` loads the optional `DeviceConfig`.
+- The device's config store (`ConfigStoreBackend::load_config`) loads
+  the optional `DeviceConfig`.
 - `StateInit` carries identity + optional `DeviceConfig`.
 - `create_state(StateInit)` calls `SystemBDeviceState::from_config`
   or `::new` (fresh).
@@ -1128,22 +1204,31 @@ reach `fdsk()`. RNG is a separate associated type
 `StackDefinition::Rng`; the `SecureDeviceBuilder` adds a `Rng:
 SecureRng` bound that rejects the default `NoRng` at compile time.
 
-### 5.5 Storage / identity (`storage.rs`)
+### 5.5 Storage / identity (`storage/`)
 
 | Trait | Methods | Typical impls |
 |---|---|---|
 | `DeviceIdentity` | `serial_number() -> &[u8;6]` | `StaticIdentity`, `FileIdentity`, embedded HAL wrappers |
 | `SecureDeviceIdentity: DeviceIdentity` | `fdsk() -> &[u8;16]` | `StaticSecureIdentity` |
-| `DeviceStorage` | `identity`, `load_config`, `save`, `flush` | `NoStorage`, `JsonStorage`, flash-backed impl |
+| `HasDeviceConfig` | `type Config; to_config()` — runtime state → serialisable config | `SystemBDeviceState` |
+| `ConfigStoreBackend` | `type State; type Config; save(&state)`, `load() -> Option<Config>` | `ConfigStore`, `NoStore` |
+| `McTimerStoreBackend` | `load`, `save`, `clear` | `McTimerStore` view (flash wear log), `PackedWatermark` (byte media), `NoStore` |
+| `HasConfigStore` | `save_config(&state)`, `load_config()` on the stores struct (`&self`, per-store `RefCell`) | the three stores structs (+ forwarded through `&`) |
+| `StorageHooks` | the per-combination hooks: `erase(code)` plus defaulted mc_timer watermark methods (overridden only by `SecureIpStorage`) | the three stores structs; `()` is the storage-less no-op |
+| `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `SiatStore` over `WearLeveledKv` / `PackedSeqStore`, shm store (conformance) |
+| `HasSeqStore` | `type Seq; seq_store() -> &RefCell<Seq>` | `SecureStorage` / `SecureIpStorage` (its absence on `ConfigStorage` gates the secure builders) |
 
-Dirty tracking is **not** on `DeviceStorage`. `SystemBDeviceState`
-exposes inherent `is_dirty()` / `mark_dirty()` / `clear_dirty()`
-methods; the binary's main loop polls `is_dirty()` and decides when
-to call `storage.save(&state)`. `mark_dirty()` is also the single
-method on the `HasPersistence` trait, called by property writes that
-mutate persisted state.
-| `SequenceNumberStorage` | sending / receiving / tool-key sequence persistence | `ShmSeqStorage` (Linux), RAM impl (tests) |
-| `HasSequenceStorage` | `type SeqStorage`, `create_seq_storage() -> SeqStorage` | Secure `StackDefinition` impls |
+Every capability forwards through `&T`, so bounds are written directly
+against the handle reference: `D::Storage: HasSeqStore` and the
+storage task's `D::Storage: HasConfigStore + StorageHooks`.
+
+Dirty tracking lives on the runtime state, not the stores.
+`SystemBDeviceState` exposes inherent `is_dirty()` / `mark_dirty()` /
+`clear_dirty()` methods; the storage task polls `is_dirty()` (and the
+advisory ETS-download-complete notification) and calls
+`save_config(&state)` through `HasConfigStore`. `mark_dirty()` is also
+the single method on the `HasPersistence` trait, called by property
+writes that mutate persisted state.
 
 ### 5.6 Extension-level (`bcus/system_b/storage.rs`)
 
@@ -1159,8 +1244,7 @@ mutate persisted state.
 
 | Trait | Role |
 |---|---|
-| `HasSeqStorage` | `type SeqStorage; seq_storage() -> &RefCell<SeqStorage>`. Extracted by the secure layer stack builder. |
-| `HasSecurityState` | Full API over group keys, P2P keys, GO flags, SIAT, tool key, failure counters / log. |
+| `HasSecurityState` | Full API over group keys, P2P keys, GO flags, tool key, failure counters / log. The SIAT lives on the storage-layer seq store (`HasSeqStore` on the stores struct), not here. |
 
 ### 5.8 Interface objects
 

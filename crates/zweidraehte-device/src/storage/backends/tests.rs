@@ -15,14 +15,17 @@ use std::rc::Rc;
 use std::vec;
 use std::vec::Vec;
 
-// The crate pulls in `defmt` unconditionally (for `defmt::warn!` /
-// `#[derive(defmt::Format)]`), which leaves the `_defmt_*` symbols undefined
-// when linking the host test binary. A no-op global logger satisfies them; the
-// tests assert on values, not log output, so dropping the bytes is fine. Only
-// compiled for `#[cfg(test)]`, never into firmware (which uses defmt-rtt).
+// When the host test binary is built with the `defmt` feature, the crate's
+// `defmt::*` log macros leave the `_defmt_*` symbols undefined at link time; a
+// no-op global logger satisfies them (the tests assert on values, not log
+// output, so dropping the bytes is fine). Without the feature the logging
+// facade is the silent no-op and no shim is needed — so gate it on `defmt`.
+// Only compiled for `#[cfg(test)]`, never into firmware (which uses defmt-rtt).
+#[cfg(feature = "defmt")]
 #[defmt::global_logger]
 struct HostLogger;
 
+#[cfg(feature = "defmt")]
 unsafe impl defmt::Logger for HostLogger {
     fn acquire() {}
     unsafe fn flush() {}
@@ -30,10 +33,17 @@ unsafe impl defmt::Logger for HostLogger {
     unsafe fn write(_bytes: &[u8]) {}
 }
 
-use zweidraehte_device::kvstore::{SiatStore, u64_to_seq6};
+use crate::storage::kv::{seq6_to_u64, u64_to_seq6};
+use crate::storage::views::SiatStore;
 
-use super::flash_io::FlashIo;
+use super::sector_io::SectorIo;
 use super::{KeyValueStore, WearLeveledKv};
+
+use crate::storage::region::FlashSiatRegion;
+
+/// The region marker the wear-levelled test stores bind — the single source
+/// of their `KNXR` sector-header magic, exactly as on a real device.
+type TestSiat = FlashSiatRegion<TEST_REGION_SIZE, 16, 16>;
 
 // ============================================================================
 // MockFlash
@@ -59,28 +69,41 @@ impl Backing {
     }
     /// A `MockFlash` view over the same bytes (a "reboot").
     fn reopen(&self) -> MockFlash {
-        MockFlash { backing: self.clone() }
+        self.reopen_aligned()
+    }
+    /// A reboot view with a chosen write alignment — for the `ConfigStore`
+    /// padding tests (the alignment is a fact of the `SectorIo` impl).
+    fn reopen_aligned<const WRITE_ALIGN: usize>(&self) -> MockFlashAligned<WRITE_ALIGN> {
+        MockFlashAligned { backing: self.clone() }
     }
     fn set_write_budget(&self, n: usize) {
         *self.write_budget.borrow_mut() = Some(n);
     }
 }
 
-struct MockFlash {
+/// The NOR mock, parameterised by its advertised write granularity (the
+/// bytes themselves accept any write — the alignment only steers the
+/// stores' padding math, which is what the tests observe).
+struct MockFlashAligned<const WRITE_ALIGN: usize> {
     backing: Backing,
 }
 
-impl MockFlash {
+/// The common byte-granular mock.
+type MockFlash = MockFlashAligned<1>;
+
+impl<const WRITE_ALIGN: usize> MockFlashAligned<WRITE_ALIGN> {
     fn new() -> Self {
-        MockFlash { backing: Backing::new() }
+        Self { backing: Backing::new() }
     }
     fn backing(&self) -> Backing {
         self.backing.clone()
     }
 }
 
-impl FlashIo for MockFlash {
+impl<const WRITE_ALIGN: usize> SectorIo for MockFlashAligned<WRITE_ALIGN> {
     type Error = ();
+
+    const WRITE_ALIGN: usize = WRITE_ALIGN;
 
     fn read(&mut self, offset: u32, buf: &mut [u8]) -> Result<(), ()> {
         let s = offset as usize;
@@ -114,10 +137,40 @@ impl FlashIo for MockFlash {
     }
 }
 
-// Concrete backend type over the test region.
-type WlKv = WearLeveledKv<MockFlash, TEST_REGION_OFFSET, TEST_SECTOR_SIZE, TEST_SECTORS, 16>;
+// Concrete backend type over the test region. Placement (offset/sector
+// size/sector count) is passed at `open` time; the magic comes from the
+// bound region type.
+type WlKv = WearLeveledKv<MockFlash, TestSiat, 16>;
+
+/// Open a `WlKv` at the standard test region.
+fn open_wl(io: MockFlash) -> Result<WlKv, ()> {
+    WearLeveledKv::open(io, TEST_REGION_OFFSET, TEST_SECTOR_SIZE, TEST_SECTORS)
+}
 
 const NS: u8 = 0x01;
+
+/// The capacity assert fires at `open` when the mirror could not compact into
+/// one sector at rotation (header slot + ENTRIES record slots must fit).
+#[test]
+#[should_panic(expected = "ENTRIES exceeds one sector's record slots")]
+fn wl_over_entries_construction_panics() {
+    // TEST_SECTOR_SIZE / SLOT_SIZE slots per sector, minus the header slot —
+    // an ENTRIES equal to the raw slot count is one too many.
+    const TOO_MANY: usize = TEST_SECTOR_SIZE / 12;
+    let _ = WearLeveledKv::<MockFlash, TestSiat, TOO_MANY>::open(
+        MockFlash::new(),
+        TEST_REGION_OFFSET,
+        TEST_SECTOR_SIZE,
+        TEST_SECTORS,
+    );
+}
+
+/// Rotation needs a spare sector; a single-sector region is refused at `open`.
+#[test]
+#[should_panic(expected = "at least two sectors")]
+fn wl_single_sector_construction_panics() {
+    let _ = WlKv::open(MockFlash::new(), TEST_REGION_OFFSET, TEST_SECTOR_SIZE, 1);
+}
 
 // ============================================================================
 // KeyValueStore behaviour
@@ -138,7 +191,7 @@ where
 
 #[test]
 fn get_put_wear_leveled() {
-    kv_get_absent_is_none(WlKv::open(MockFlash::new()).unwrap());
+    kv_get_absent_is_none(open_wl(MockFlash::new()).unwrap());
 }
 
 fn kv_overwrite_and_remove<S: KeyValueStore>(mut s: S)
@@ -156,14 +209,14 @@ where
 
 #[test]
 fn overwrite_remove_wear_leveled() {
-    kv_overwrite_and_remove(WlKv::open(MockFlash::new()).unwrap());
+    kv_overwrite_and_remove(open_wl(MockFlash::new()).unwrap());
 }
 
 #[test]
 fn wear_leveled_survives_reboot_and_rotation() {
     let flash = MockFlash::new();
     let backing = flash.backing();
-    let mut s = WlKv::open(flash).unwrap();
+    let mut s = open_wl(flash).unwrap();
     // Many writes to the same key force several rotations (341 slots/sector).
     for v in 0u64..1000 {
         s.put(NS, &[0, 1], &u64_to_seq6(v)).unwrap();
@@ -171,7 +224,7 @@ fn wear_leveled_survives_reboot_and_rotation() {
     s.put(NS, &[0, 2], &u64_to_seq6(42)).unwrap();
     drop(s);
     // Reboot over the same bytes: latest values survive across rotations.
-    let s2 = WlKv::open(backing.reopen()).unwrap();
+    let s2 = open_wl(backing.reopen()).unwrap();
     let mut buf = [0u8; 6];
     assert_eq!(s2.get(NS, &[0, 1], &mut buf).unwrap(), Some(6));
     assert_eq!(&buf, &u64_to_seq6(999));
@@ -183,7 +236,7 @@ fn wear_leveled_survives_reboot_and_rotation() {
 fn wear_leveled_crash_mid_rotation_falls_back() {
     let flash = MockFlash::new();
     let backing = flash.backing();
-    let mut s = WlKv::open(flash).unwrap();
+    let mut s = open_wl(flash).unwrap();
     s.put(NS, &[0, 1], &u64_to_seq6(7)).unwrap(); // committed in sector 0
     // Fill toward a rotation, then cut power partway through the next rotation's
     // writes (after erase, before header commit).
@@ -195,10 +248,53 @@ fn wear_leveled_crash_mid_rotation_falls_back() {
     drop(s);
     // Clean reboot: the half-written sector has no valid header → ignored; the
     // prior sector (holding key [0,1]=7) wins.
-    let s2 = WlKv::open(backing.reopen()).unwrap();
+    let s2 = open_wl(backing.reopen()).unwrap();
     let mut buf = [0u8; 6];
     assert_eq!(s2.get(NS, &[0, 1], &mut buf).unwrap(), Some(6));
     assert_eq!(&buf, &u64_to_seq6(7));
+}
+
+/// A power cut mid-append leaves a torn (non-blank, bad-CRC) slot. Recovery
+/// must skip it — not treat it as the end of the log — and must park the
+/// append cursor *past* it (NOR bits only clear, so re-programming the torn
+/// slot could never yield a valid record). The security-relevant case is the
+/// second reboot: records appended after the torn slot must survive replay,
+/// otherwise the sequence counters silently roll back.
+#[test]
+fn wear_leveled_torn_append_skipped_and_later_records_survive() {
+    let flash = MockFlash::new();
+    let backing = flash.backing();
+    let mut s = open_wl(flash).unwrap();
+    s.put(NS, &[0, 1], &u64_to_seq6(7)).unwrap(); // slot 1, committed
+    backing.set_write_budget(3); // power lost 3 bytes into the next append
+    let _ = s.put(NS, &[0, 1], &u64_to_seq6(8)); // slot 2, torn
+    drop(s);
+    backing.set_write_budget(usize::MAX);
+
+    // Reboot 1: the torn slot is skipped, the committed value is intact.
+    let mut s2 = open_wl(backing.reopen()).unwrap();
+    let mut buf = [0u8; 6];
+    assert_eq!(s2.get(NS, &[0, 1], &mut buf).unwrap(), Some(6));
+    assert_eq!(&buf, &u64_to_seq6(7));
+
+    // A fresh append must land *after* the torn slot, leaving its bytes
+    // untouched. (Blank region + first rotation puts the log in sector 0:
+    // slot 0 header, slot 1 = committed record, slot 2 = torn.)
+    let torn_range = || {
+        let start = TEST_REGION_OFFSET as usize + 2 * 12;
+        backing.bytes.borrow()[start..start + 12].to_vec()
+    };
+    let torn_before = torn_range();
+    s2.put(NS, &[0, 2], &u64_to_seq6(42)).unwrap();
+    assert_eq!(torn_range(), torn_before, "append re-programmed the torn slot");
+    drop(s2);
+
+    // Reboot 2: the record written beyond the torn slot survives replay.
+    let s3 = open_wl(backing.reopen()).unwrap();
+    assert_eq!(s3.get(NS, &[0, 1], &mut buf).unwrap(), Some(6));
+    assert_eq!(&buf, &u64_to_seq6(7));
+    assert_eq!(s3.get(NS, &[0, 2], &mut buf).unwrap(), Some(6));
+    assert_eq!(&buf, &u64_to_seq6(42));
 }
 
 // ============================================================================
@@ -247,11 +343,11 @@ where
 #[test]
 fn siat_over_wear_leveled() {
     let backing = Backing::new();
-    siat_roundtrip(backing, |f| WlKv::open(f).unwrap());
+    siat_roundtrip(backing, |f| open_wl(f).unwrap());
 }
 
 // ============================================================================
-// ConfigStore — the postcard-blob device-config store over FlashIo
+// ConfigStore — the postcard-blob device-config store over SectorIo
 // ============================================================================
 //
 // Exercised over the same NOR-faithful `MockFlash`. We use a trivial state
@@ -259,8 +355,8 @@ fn siat_over_wear_leveled() {
 // the codec and the WRITE_ALIGN padding are what we're checking, not the shape
 // of any real `S::Config`.
 
+use crate::storage::HasDeviceConfig;
 use serde::{Deserialize, Serialize};
-use zweidraehte_device::storage::{DeviceIdentity, HasDeviceConfig};
 
 use super::{ConfigStore, ConfigStoreError};
 
@@ -281,32 +377,25 @@ impl HasDeviceConfig for TestState {
     }
 }
 
-struct TestIdentity;
-impl DeviceIdentity for TestIdentity {
-    fn serial_number(&self) -> &[u8; 6] {
-        &[0xAA; 6]
-    }
-}
-
-// One sector region at offset 0 — satisfies MockFlash's sector-aligned erase.
+// One sector region; offset (0 here) is passed to `new` at construction.
+// The payload type is a marker parameter — the region *is* "a TestState
+// config blob", exactly as on a real device.
+type CfgRegion = crate::storage::region::ConfigRegion<TEST_SECTOR_SIZE, TestState>;
 type CfgStore<const WRITE_ALIGN: usize> =
-    ConfigStore<MockFlash, TestState, TestIdentity, 0, TEST_SECTOR_SIZE, WRITE_ALIGN>;
+    ConfigStore<MockFlashAligned<WRITE_ALIGN>, TestState, CfgRegion, TEST_SECTOR_SIZE>;
 
-/// Round-trip a config through save + reboot, for a given write alignment.
+/// Round-trip a config through save + reboot, for a given write alignment
+/// (a fact of the mock's `SectorIo` impl).
 fn config_roundtrips<const WRITE_ALIGN: usize>() {
     let backing = Backing::new();
-    let mut store: CfgStore<WRITE_ALIGN> = ConfigStore::new(backing.reopen(), TestIdentity);
-    assert!(!store.is_dirty());
+    let mut store: CfgStore<WRITE_ALIGN> = ConfigStore::new(backing.reopen_aligned(), 0);
 
     let state = TestState { cfg: TestConfig { a: 0xDEAD_BEEF, b: [1, 2, 3, 4, 5] } };
-    store.mark_dirty();
-    assert!(store.is_dirty());
     store.save(&state).unwrap();
-    assert!(!store.is_dirty(), "save clears the dirty flag");
     drop(store);
 
     // Reboot over the same bytes: the persisted config reads back identically.
-    let mut store2: CfgStore<WRITE_ALIGN> = ConfigStore::new(backing.reopen(), TestIdentity);
+    let mut store2: CfgStore<WRITE_ALIGN> = ConfigStore::new(backing.reopen_aligned(), 0);
     let loaded = store2.load_config().unwrap().expect("a config was saved");
     assert_eq!(loaded, TestConfig { a: 0xDEAD_BEEF, b: [1, 2, 3, 4, 5] });
 }
@@ -325,7 +414,7 @@ fn config_roundtrips_doubleword_padded() {
 
 #[test]
 fn config_blank_flash_reads_none() {
-    let mut store: CfgStore<1> = ConfigStore::new(MockFlash::new(), TestIdentity);
+    let mut store: CfgStore<1> = ConfigStore::new(MockFlash::new(), 0);
     // Erased flash is all 0xFF — no magic, so no config.
     assert!(store.load_config().unwrap().is_none());
 }
@@ -333,11 +422,11 @@ fn config_blank_flash_reads_none() {
 #[test]
 fn config_corrupt_magic_reads_none() {
     let backing = Backing::new();
-    let mut store: CfgStore<1> = ConfigStore::new(backing.reopen(), TestIdentity);
+    let mut store: CfgStore<1> = ConfigStore::new(backing.reopen(), 0);
     store.save(&TestState { cfg: TestConfig { a: 7, b: [0; 5] } }).unwrap();
     // Clobber the first magic byte; the store must treat it as absent.
     backing.bytes.borrow_mut()[0] = 0x00;
-    let mut store2: CfgStore<1> = ConfigStore::new(backing.reopen(), TestIdentity);
+    let mut store2: CfgStore<1> = ConfigStore::new(backing.reopen(), 0);
     assert!(store2.load_config().unwrap().is_none());
 }
 
@@ -345,4 +434,79 @@ fn config_corrupt_magic_reads_none() {
 fn config_error_type_is_exported() {
     // Smoke-check the re-exported error name resolves (call sites match on it).
     fn _accepts(_: ConfigStoreError) {}
+}
+
+// ============================================================================
+// Offset-placed wear-levelled store (mc_timer watermark pattern)
+// ============================================================================
+//
+// The IP-Secure mc_timer watermark store is a single-record `WearLeveledKv`
+// bound to its own region type (own magic) at its own absolute offset — the
+// offset is passed to `open` directly. These tests model that shape: a
+// 2-sector region starting at sector 2 of the shared MockFlash and a 6-byte
+// watermark value.
+
+/// Region base: sector 2 of the 4-sector MockFlash, leaving sectors 0..2
+/// outside the region to prove placement honours the offset.
+const MC_BASE: u32 = (TEST_SECTOR_SIZE * 2) as u32;
+
+const MC_NS: u8 = 0x10;
+const MC_KEY: &[u8] = &[0];
+
+/// The mc_timer-shaped region (`KNXM` magic) spanning the two test sectors.
+type TestMcRegion = crate::storage::region::McTimerRegion<{ TEST_SECTOR_SIZE * 2 }>;
+
+/// Single-record wear-levelled store; placement passed at `open`.
+type McKv = WearLeveledKv<MockFlash, TestMcRegion, 1>;
+fn open_mc(io: MockFlash) -> Result<McKv, ()> {
+    WearLeveledKv::open(io, MC_BASE, TEST_SECTOR_SIZE, 2)
+}
+
+/// A watermark written at the region offset reads back, survives a reboot, and
+/// physically lands at the region (not at flash offset 0).
+#[test]
+fn placed_watermark_roundtrips_and_lands_at_offset() {
+    let backing = Backing::new();
+    let mut store = open_mc(backing.reopen()).unwrap();
+
+    let watermark: u64 = 0x0000_1234_5678_9ABC & 0x0000_FFFF_FFFF_FFFF; // 48-bit
+    store.put(MC_NS, MC_KEY, &u64_to_seq6(watermark)).unwrap();
+
+    // Read back through the same store.
+    let mut buf = [0u8; 6];
+    assert_eq!(store.get(MC_NS, MC_KEY, &mut buf).unwrap(), Some(6));
+    assert_eq!(seq6_to_u64(&buf), watermark);
+
+    // Survives a reboot (re-open the same bytes at the same offset).
+    drop(store);
+    let reopened = open_mc(backing.reopen()).unwrap();
+    let mut buf2 = [0u8; 6];
+    assert_eq!(reopened.get(MC_NS, MC_KEY, &mut buf2).unwrap(), Some(6));
+    assert_eq!(seq6_to_u64(&buf2), watermark);
+
+    // Nothing was written below the region (sectors 0..2 stay erased).
+    let bytes = backing.bytes.borrow();
+    assert!(bytes[..MC_BASE as usize].iter().all(|&b| b == 0xFF), "data leaked below the region offset");
+}
+
+/// A SIAT-bound (`KNXR`) store opened over sectors already populated by an
+/// mc_timer-bound (`KNXM`) store sees nothing — the region-derived magic
+/// isolates regions that happen to share physical sectors across a firmware
+/// change. This is what lets the mc_timer store ignore stale sequence-log
+/// records in repurposed sectors.
+#[test]
+fn distinct_magic_ignores_foreign_records() {
+    let backing = Backing::new();
+
+    // Populate the region with the mc_timer-bound (`KNXM`) store.
+    let mut alt = open_mc(backing.reopen()).unwrap();
+    alt.put(MC_NS, MC_KEY, &u64_to_seq6(0xAABBCCDD)).unwrap();
+    drop(alt);
+
+    // Open the same sectors bound to the SIAT region (`KNXR`) — it must not
+    // adopt the `KNXM` sector header, so the record is invisible.
+    type ForeignKv = WearLeveledKv<MockFlash, FlashSiatRegion<{ TEST_SECTOR_SIZE * 2 }, 1, 1>, 1>;
+    let def = ForeignKv::open(backing.reopen(), MC_BASE, TEST_SECTOR_SIZE, 2).unwrap();
+    let mut buf = [0u8; 6];
+    assert_eq!(def.get(MC_NS, MC_KEY, &mut buf).unwrap(), None, "foreign-magic record was adopted");
 }

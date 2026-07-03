@@ -27,8 +27,8 @@
 //!   number, FDSK) that is not itself persisted. The `Init` suffix
 //!   distinguishes it from a serialisable `*Config`.
 //!
-//! The generic storage traits ([`DeviceStorage`](crate::storage::DeviceStorage),
-//! [`NoStorage`](crate::storage::NoStorage)) live in [`crate::storage`].
+//! The storage framework (the stores structs and the capability traits they
+//! implement) lives in [`crate::storage`].
 //!
 //! # Two Composition Paths
 //!

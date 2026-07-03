@@ -72,3 +72,32 @@ pub enum LifecycleEvent {
     ///   scenarios.
     ReadOnInitComplete,
 }
+
+/// Subscribe to the stack's lifecycle events and log each one, forever.
+///
+/// The shared body of the `lifecycle_task` every device firmware spawns —
+/// embassy tasks cannot be generic, so each binary keeps a monomorphic
+/// `#[embassy_executor::task]` wrapper that just awaits this:
+///
+/// ```ignore
+/// #[embassy_executor::task]
+/// async fn lifecycle_task(knx: Stack<'static, MyDevice>) -> ! {
+///     zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+/// }
+/// ```
+///
+/// A device that *reacts* to lifecycle transitions (rather than only logging
+/// them) writes its own loop over
+/// [`Stack::lifecycle_events()`](crate::Stack::lifecycle_events) instead.
+pub async fn lifecycle_event_logger<D: crate::definition::StackDefinition>(knx: crate::Stack<'static, D>) -> ! {
+    let mut events = knx.lifecycle_events();
+    loop {
+        match events.next_message_pure().await {
+            LifecycleEvent::ApplicationStarted => crate::logging::info!("Application STARTED"),
+            LifecycleEvent::ApplicationStopped => crate::logging::info!("Application STOPPED"),
+            LifecycleEvent::PeiStarted => crate::logging::info!("PEI STARTED"),
+            LifecycleEvent::PeiStopped => crate::logging::info!("PEI STOPPED"),
+            _ => {}
+        }
+    }
+}

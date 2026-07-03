@@ -230,29 +230,29 @@ where
 /// (`GO = COT_SIZE`). Adding a new secure medium is therefore a one-line alias
 /// over `SecureStateFor` with the right inner extension — no need to restate
 /// the invariant.
-pub type SecureTp1StateFor<D, SEQ, const P2P: usize>
+pub type SecureTp1StateFor<D, const P2P: usize>
 where
     D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::Tp1ExtensionState, SEQ, P2P>;
+= SecureStateFor<D, super::extensions::Tp1ExtensionState, P2P>;
 
 /// KNX-RF Data Secure System B state for `D`. The RF analogue of
 /// [`SecureTp1StateFor`]; pairs [`RfExtensionState`](super::extensions::RfExtensionState)
 /// with the Data Secure wrapper. See [`SecureTp1StateFor`] for the `P2P`/`SIAT`
 /// sizing rationale (03/03/07 §5.3).
-pub type SecureRfStateFor<D, SEQ, const P2P: usize>
+pub type SecureRfStateFor<D, const P2P: usize>
 where
     D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::RfExtensionState, SEQ, P2P>;
+= SecureStateFor<D, super::extensions::RfExtensionState, P2P>;
 
 /// KNX-RF **retransmitter** Data Secure System B state for `D`. As
 /// [`SecureRfStateFor`], but the RF medium extension is wrapped in
 /// [`RfRetransmitterExtension`](super::extensions::RfRetransmitterExtension),
 /// adding the PID 57 / PID 74 retransmitter surface. Pair it with
 /// `type LLB = KnxRfLinkLayerBuilder<Radio, RetransmitEnabled>`.
-pub type SecureRfRetransmitterStateFor<D, SEQ, const P2P: usize>
+pub type SecureRfRetransmitterStateFor<D, const P2P: usize>
 where
     D: SystemBStackDefinition,
-= SecureStateFor<D, super::extensions::RfRetransmitterExtension, SEQ, P2P>;
+= SecureStateFor<D, super::extensions::RfRetransmitterExtension, P2P>;
 
 /// KNX/IP Data Secure System B state for `D` using capability flags `CAPS`.
 /// KNX/IP **Secure-interface** Data Secure System B state for `D` — the state
@@ -271,17 +271,17 @@ where
 /// (it fixes the tunnelling capacity and KNXnet/IP device capabilities);
 /// `MAX_PW` / `MAX_TU` size the IP Secure password-hash and tunnelling-user
 /// tables; `P2P` sizes the Data Secure P2P key table. The Security Individual
-/// Address Table is sized by the `N` of the [`SiatStore`](crate::kvstore::SiatStore)
+/// Address Table is sized by the `N` of the [`SiatStore`](crate::storage::views::SiatStore)
 /// chosen for `SEQ`, not a const here (see [`SecureTp1StateFor`] for the
 /// 03/03/07 §5.3 rationale). Pair it with
 /// `type LayerBuilder = SecureIpDeviceBuilder` and
-/// `resources: SecureResources<IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ>`.
+/// `resources: SecureResources<IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>>`.
 #[cfg(feature = "ip-secure")]
-pub type SecureIpInterfaceStateFor<D, F, SEQ, const P2P: usize, const MAX_PW: usize, const MAX_TU: usize>
+pub type SecureIpInterfaceStateFor<D, F, const P2P: usize, const MAX_PW: usize, const MAX_TU: usize>
 where
     D: SystemBStackDefinition,
     F: crate::layers::linklayers::knxip::features::FeatureSet,
-= SecureStateFor<D, super::extensions::IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, SEQ, P2P>;
+= SecureStateFor<D, super::extensions::IpSecureInterfaceExtensionFor<F, MAX_PW, MAX_TU>, P2P>;
 
 /// Generic Data Secure System B state for `D` wrapping an arbitrary inner
 /// medium extension `Inner`.
@@ -294,7 +294,7 @@ where
 /// [`SecureRfRetransmitterStateFor`], [`SecureIpInterfaceStateFor`]) are thin
 /// wrappers that fix `Inner`; a future secure medium only needs to add
 /// one such wrapper (or use this alias directly).
-pub type SecureStateFor<D, Inner, SEQ, const P2P: usize>
+pub type SecureStateFor<D, Inner, const P2P: usize>
 where
     D: SystemBStackDefinition,
     Inner: super::ExtensionState,
@@ -305,7 +305,6 @@ where
     D,
     super::extensions::SecureExtensionState<
         Inner,
-        SEQ,
         { <D as SystemBStackDefinition>::ADT_ENTRIES },
         P2P,
         { <D as SystemBStackDefinition>::COT_ENTRIES },

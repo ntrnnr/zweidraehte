@@ -35,9 +35,9 @@ use crate::storage::SequenceNumberStorage;
 pub(crate) const INITIAL_SENDING_SEQ: [u8; 6] = [0, 0, 0, 0, 0, 1];
 
 // The 6-octet ⇄ u64 sequence-number conversions live with the store
-// ([`crate::kvstore`]) — the SIAT is the single source of truth for sequence
+// ([`crate::storage::views`]) — the SIAT is the single source of truth for sequence
 // state, so its codec is the one canonical copy.
-use crate::kvstore::{seq6_to_u64, u64_to_seq6};
+use crate::storage::kv::{seq6_to_u64, u64_to_seq6};
 
 /// Reserve and persist the next sending sequence number.
 ///

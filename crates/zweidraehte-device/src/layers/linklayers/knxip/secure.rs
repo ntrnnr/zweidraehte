@@ -239,7 +239,7 @@ pub trait IpSecureFeature: 'static {
     /// `None` when wrapping is impossible (no key, buffer too small,
     /// mc_timer not yet authentic). May set the pending watermark
     /// persist (03/08/09 §2.2.4.2) — the caller must drain it via
-    /// [`mc_take_persist_pending`](Self::mc_take_persist_pending)
+    /// [`mc_take_persist_value`](Self::mc_take_persist_value)
     /// *before* the wrapped frame is sent.
     fn wrap_multicast_outgoing(
         _timer: &mut Self::McTimerState,
@@ -259,15 +259,15 @@ pub trait IpSecureFeature: 'static {
         None
     }
 
-    /// Take the pending 03/08/09 §2.2.4.2 watermark-persist flag.
+    /// Take the pending 03/08/09 §2.2.4.2 watermark to persist.
     ///
-    /// `true` means a watermark advance is owed a durable save: the
-    /// caller must round-trip a gated
-    /// [`PersistRequest::McTimerWatermark`](crate::persist::PersistRequest::McTimerWatermark)
-    /// through user code's storage task before any frame beyond the
-    /// watermark leaves the device.
-    fn mc_take_persist_pending(_timer: &mut Self::McTimerState) -> bool {
-        false
+    /// `Some(value)` means a watermark advance is owed a durable save: the
+    /// caller must write it to the mc_timer store (the runtime's
+    /// `drain_mc_persist` does so straight through the storage handle on
+    /// its context) before any frame beyond the watermark leaves the
+    /// device.
+    fn mc_take_persist_value(_timer: &mut Self::McTimerState) -> Option<u64> {
+        None
     }
 
     /// Earliest timer-sync deadline, for the runtime's select timer.
@@ -397,8 +397,8 @@ impl<const N: usize> IpSecureFeature for WithIpSecure<N> {
         super::multicast_handler::mc_tick(timer, env)
     }
 
-    fn mc_take_persist_pending(timer: &mut Self::McTimerState) -> bool {
-        core::mem::take(&mut timer.persist_pending)
+    fn mc_take_persist_value(timer: &mut Self::McTimerState) -> Option<u64> {
+        core::mem::take(&mut timer.persist_pending).then_some(timer.persisted_watermark)
     }
 
     fn mc_next_deadline(timer: &Self::McTimerState) -> Option<Instant> {
@@ -741,7 +741,7 @@ pub struct MulticastTimerState {
     /// durable save is owed. Drained (gated round-trip through user
     /// code's storage task) by the runtime before any frame beyond the
     /// watermark leaves the device — see
-    /// [`IpSecureFeature::mc_take_persist_pending`].
+    /// [`IpSecureFeature::mc_take_persist_value`].
     pub(super) persist_pending: bool,
 }
 

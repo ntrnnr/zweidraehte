@@ -15,14 +15,11 @@
 //! implementing the stack's `RfTransceiver` trait, ported from
 //! `stm32g0_knxrf_playground`.
 
-use core::cell::RefCell;
-
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_stm32::{
     Config, bind_interrupts,
     exti::{self, ExtiInput},
-    flash,
     gpio::{Input, Level, Output, Pull, Speed},
     mode::Blocking,
     spi::{Config as SpiConfig, Spi, mode::Master},
@@ -34,8 +31,9 @@ use embedded_hal::digital::InputPin;
 use embedded_hal_async::digital::Wait;
 use knxrf::sx1211::Sx1211;
 use static_cell::StaticCell;
+use stm32_common::flash_io::StmFlashIo;
 use stm32_common::sx1211_adapter::Sx1211Adapter;
-use stm32_common::{FlashIdentityData, StmFlashStorage};
+use stm32_common::{FlashIdentityData, StmConfigRegion, StmFlash};
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
@@ -67,8 +65,6 @@ bind_interrupts!(struct Irqs {
 // ================================================================================
 
 // STM32G0B0RE — 512 KiB flash, 2 KiB erase page.
-const FLASH_SIZE: u32 = 512 * 1024;
-const FLASH_PAGE_SIZE: u32 = 2 * 1024;
 
 // ================================================================================
 // Device Definition
@@ -81,7 +77,24 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_RF;
 type Radio = Sx1211Adapter<Spi<'static, Blocking, Master>, Output<'static>, Output<'static>>;
 
 type Stm32G0State = RfStateFor<Stm32G0KnxRf>;
-type Storage = StmFlashStorage<Stm32G0State, FlashIdentityData>;
+
+// ----------------------------------------------------------------------------
+// Storage layout — one config region on the StmFlash chip
+// ----------------------------------------------------------------------------
+
+// The region declares its payload (this device's state) and derives its
+// placement, store type, and open() from the layout — the store type is
+// never spelled out.
+use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
+
+// `pub`: the map reaches the public `StackDefinition` surface through
+// `DeviceStorage`'s `StoreOf` projection.
+pub struct StorageMap;
+type Cfg = Placed<StmConfigRegion<Stm32G0State>, StmFlash, StorageMap>;
+impl StorageLayout for StorageMap {
+    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC];
+}
+type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct Stm32G0KnxRf;
@@ -129,6 +142,9 @@ zweidraehte_device::system_b_standard_stack! {
         // `MAX_APDU_LENGTH_RF`.
         const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
         type Identity = FlashIdentityData;
+        // The storage handle rides on the stack; the storage task pulls the
+        // config store out of it.
+        type Storage = &'static DeviceStorage;
     },
 }
 
@@ -172,81 +188,15 @@ async fn prog_task(knx: Stack<'static, Stm32G0KnxRf>, prog_btn_pin: ExtiInput<'s
     }
 }
 
-/// A_Restart handler: execute the requested reset, persist, delay so the
-/// A_Restart_Response reaches the wire, then trigger a Cortex-M system reset.
-#[embassy_executor::task]
-async fn restart_task(knx: Stack<'static, Stm32G0KnxRf>, storage: &'static RefCell<Storage>) -> ! {
-    use embedded_common::CortexMSystem;
-    use zweidraehte_device::restart::EraseCode;
-    use zweidraehte_platform::SystemControl;
-
-    loop {
-        let request = knx.receive_restart_request().await;
-        let state = knx.state();
-        info!("Restart request: erase_code={}", request.erase_code);
-
-        match request.erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => info!("Basic restart (no data reset)"),
-            EraseCode::FactoryReset => {
-                info!("Factory reset — clearing all data");
-                state.factory_reset();
-            }
-            EraseCode::ResetIA => {
-                info!("Resetting individual address");
-                state.reset_individual_address();
-            }
-            EraseCode::ResetAP => {
-                info!("Resetting application program");
-                state.reset_application();
-            }
-            EraseCode::ResetParam => {
-                info!("Resetting parameters");
-                state.reset_parameters();
-            }
-            EraseCode::FactoryResetKeepIA => {
-                info!("Factory reset (keeping individual address)");
-                state.factory_reset_keep_ia();
-            }
-            EraseCode::ResetLinks => {
-                info!("Resetting links (Group Address + Association tables)");
-                state.apply_erase_code(EraseCode::ResetLinks);
-            }
-            EraseCode::Other(_) => warn!("Unsupported erase code — ignoring"),
-        }
-
-        if state.is_dirty() {
-            save_state(state, storage);
-        }
-
-        Timer::after(Duration::from_millis(100)).await;
-
-        let mut system = CortexMSystem;
-        let Err(_e) = system.restart().await;
-    }
-}
-
-fn save_state(state: &Stm32G0State, storage: &RefCell<Storage>) {
-    match storage.borrow_mut().save(state) {
-        Ok(()) => {
-            state.clear_dirty();
-            info!("State saved to flash");
-        }
-        Err(e) => warn!("Flash save failed: {}", e),
-    }
+zweidraehte_device::storage_task! {
+    device: Stm32G0KnxRf,
+    system: embedded_common::CortexMSystem,
+    guard: zweidraehte_device::storage::NoSaveGuard,
 }
 
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, Stm32G0KnxRf>) -> ! {
-    let mut events = knx.lifecycle_events();
-    loop {
-        match events.next_message_pure().await {
-            LifecycleEvent::ApplicationStarted => info!("Application STARTED"),
-            LifecycleEvent::ApplicationStopped => info!("Application STOPPED"),
-            LifecycleEvent::PeiStarted => info!("PEI STARTED"),
-            LifecycleEvent::PeiStopped => info!("PEI STOPPED"),
-            _ => {}
-        }
-    }
+    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
 }
 
 /// Application task — a single user button (PC8) driving `Btn1`.
@@ -317,29 +267,10 @@ mod dev_provisioning {
     include!(concat!(env!("OUT_DIR"), "/dev_provisioning.rs"));
 }
 
-fn load_identity(flash: &mut flash::Flash<'static, flash::Blocking>) -> FlashIdentityData {
-    match stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash) {
-        Ok(rec) => stm32_common::identity_from_record(&rec),
-
-        #[cfg(feature = "provision-on-boot")]
-        Err(e) => {
-            warn!("no KNXP record ({:?}); writing dev defaults from build.rs", e);
-            stm32_common::synthesize_and_write::<FLASH_SIZE, FLASH_PAGE_SIZE>(
-                flash,
-                dev_provisioning::DEV_SERIAL,
-                None,
-                None,
-            )
-            .expect("write dev KNXP");
-            let rec = stm32_common::read_provisioning::<FLASH_SIZE, FLASH_PAGE_SIZE>(flash)
-                .expect("re-read freshly written KNXP");
-            stm32_common::identity_from_record(&rec)
-        }
-
-        #[cfg(not(feature = "provision-on-boot"))]
-        Err(e) => defmt::panic!("no valid KNXP record: {:?}", e),
-    }
-}
+// Boot logic is shared across all non-secure STM32 firmware; only the
+// `provision-on-boot` dev serial is device-local (rendered into this crate's
+// `OUT_DIR`).
+stm32_common::stm32_identity_loader!(plain);
 
 // ================================================================================
 // Entry point
@@ -351,8 +282,8 @@ async fn main(spawner: Spawner) {
     info!("STM32G0 KNX-RF light switch (SX1211) initializing");
 
     // --- Identity (from the KNXP provisioning page) -------------------------
-    let mut flash_hw = flash::Flash::new_blocking(p.FLASH);
-    let identity_data = load_identity(&mut flash_hw);
+    let flash = stm32_common::stm32_flash_cell!(p.FLASH);
+    let identity_data = load_identity(&mut flash.borrow_mut());
     info!("Serial: {=[u8]:02x}", identity_data.serial_number);
 
     // --- SX1211 radio on SPI3 -----------------------------------------------
@@ -386,26 +317,15 @@ async fn main(spawner: Spawner) {
     let link_layer_builder = KnxRfLinkLayerBuilder::new(Sx1211Adapter::new(radio, pll_lock, threshold, irq0, data));
 
     // --- Persistent storage --------------------------------------------------
-    let mut storage = stm32_common::stm_flash_storage::<Stm32G0State, _>(flash_hw, identity_data);
-    let loaded_config = match storage.load_config() {
-        Ok(Some(c)) => {
-            info!("Loaded device config from flash");
-            Some(c)
-        }
-        Ok(None) => {
-            info!("No stored config found, starting fresh");
-            None
-        }
-        Err(e) => {
-            warn!("Flash load failed: {}, starting fresh", e);
-            None
-        }
-    };
+    // The stores struct lives in a static so the storage task can reach it;
+    // each store sits behind its own RefCell, borrowed per call on the
+    // single-threaded executor.
+    static STORAGE: StaticCell<DeviceStorage> = StaticCell::new();
+    let storage =
+        &*STORAGE.init(DeviceStorage::new(Cfg::open(StmFlashIo::new(flash)).expect("config open is infallible")));
+    let loaded_config = storage.load_config();
 
-    let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
-
-    static STORAGE: StaticCell<RefCell<Storage>> = StaticCell::new();
-    let storage = &*STORAGE.init(RefCell::new(storage));
+    let state_init = SystemBStateInit::new(identity_data, loaded_config);
 
     // --- KNX stack -----------------------------------------------------------
     static KNX_RESOURCES: StaticCell<
@@ -421,6 +341,7 @@ async fn main(spawner: Spawner) {
         state_init,
         (),
         Stm32G0KnxRf::memory_map(),
+        storage,
     );
 
     spawner.spawn(knx_task(knx_runner)).expect("knx_task spawnable once");
@@ -435,7 +356,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(app_task(knx_stack, user_btn_pin)).expect("app_task spawnable once");
     spawner.spawn(prog_task(knx_stack, prog_btn_pin)).expect("prog_task spawnable once");
-    spawner.spawn(restart_task(knx_stack, storage)).expect("restart_task spawnable once");
+    spawner.spawn(storage_task(knx_stack)).expect("storage_task spawnable once");
     spawner.spawn(lifecycle_task(knx_stack)).expect("lifecycle_task spawnable once");
     spawner.spawn(led_task(knx_stack, user_led)).expect("led_task spawnable once");
 

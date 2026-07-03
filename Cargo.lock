@@ -6846,6 +6846,7 @@ dependencies = [
  "log",
  "paste",
  "portable-atomic",
+ "postcard",
  "replace_with",
  "serde",
  "serde_json",

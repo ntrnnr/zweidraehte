@@ -245,6 +245,15 @@ macro_rules! forward_system_b_state_traits {
             fn mark_dirty(&self) {
                 self.$field.mark_dirty();
             }
+            fn is_dirty(&self) -> bool {
+                self.$field.is_dirty()
+            }
+            fn clear_dirty(&self) {
+                self.$field.clear_dirty();
+            }
+            fn apply_erase_code(&self, code: $crate::restart::EraseCode) {
+                self.$field.apply_erase_code(code);
+            }
         }
 
         impl $crate::HasAuthorization for $outer {

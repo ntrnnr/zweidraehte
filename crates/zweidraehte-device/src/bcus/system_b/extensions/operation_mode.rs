@@ -36,7 +36,7 @@ use crate::objects::tables::{
 };
 use crate::service::ServiceCtx;
 use crate::state::HasSecurityState;
-use crate::storage::HasSeqStorage;
+use crate::storage::HasSeqStore;
 use crate::{DiagnosticsContext, HasSecurityMode, StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
@@ -196,7 +196,7 @@ pub enum SecureSendOutcome {
 /// [`SecureGoSendAbsent`], whose methods need no security state and report
 /// "no key" / "plain". A secure device composes it with
 /// [`SecureGoSendPresent`], whose impl is the only place the Data Secure
-/// bounds (`HasSecurityState + HasSeqStorage`) appear.
+/// bounds (`HasSecurityState` + the storage-handle `HasSeqStore`) appear.
 ///
 /// The trait is parameterised on `D` precisely so the two impls can differ in
 /// their `D`-bounds: `SecureGoSendAbsent` is unconditional, `SecureGoSendPresent`
@@ -271,8 +271,9 @@ pub struct SecureGoSendPresent;
 
 impl<D: StackDefinition> SecureGoSender<D> for SecureGoSendPresent
 where
+    D::Storage: HasSeqStore,
     D::State: StackState + HasExtensionState + HasAddressTable,
-    <D::State as HasExtensionState>::ES: HasSecurityState + HasSeqStorage,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     fn send_write_secure(
         ctx: &ServiceCtx<'_, D>,

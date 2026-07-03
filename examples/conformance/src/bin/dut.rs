@@ -108,7 +108,8 @@ async fn main(spawner: Spawner) {
 
     let resources = STACK_RESOURCES.init(StackResources::new());
 
-    let (stack, runner) = zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap);
+    let (stack, runner) =
+        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, ());
 
     // Publish the CoTab reference used by the conformance-specific
     // shadow-object hook (`ComObjectBusHook` impl on

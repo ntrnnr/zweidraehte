@@ -38,6 +38,9 @@ critical-section = { version = "1.2.0", optional = true }
 # wires up the implementation via `critical-section-impl`.
 portable-atomic = { version = "1.13.1", default-features = false, features = ["critical-section"] }
 subtle = { version = "2.6.1", default-features = false }
+# no_std codec for the ConfigStore device-config blob (moved here with the
+# storage backends from `embedded-common`).
+postcard = { workspace = true }
 
 [dev-dependencies]
 test-case = "3.3"

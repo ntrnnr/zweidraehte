@@ -70,13 +70,14 @@ pub struct IpSecureExtensionConfig<const MAX_PW: usize, const MAX_TU: usize> {
     pub sync_latency_fraction: u8,
     /// PID 97 — `(user_id, tunnelling_address_index)` pairs.
     pub tunnelling_users: SecurityTable<MAX_TU, 2>,
-    /// §2.2.4.2 — multicast-timer persistence watermark. The link-layer
-    /// runtime advances this before emitting timer values beyond the
-    /// previous watermark + interval, so the mc_timer can never run
-    /// backwards across a power loss. 0 = never synced with the
-    /// current backbone key.
-    #[serde(default)]
-    pub persisted_mc_timer: u64,
+    // The 03/08/09 §2.2.4.2 multicast-timer persistence watermark is
+    // intentionally *not* in this blob. It advances far more often than the
+    // ETS-written config (potentially per received frame under an
+    // adversarial peer), so riding the whole-config save would erase+rewrite
+    // the config sector on every advance. It lives in its own dedicated
+    // store (`mc_timer:` in the device's stores block), which the KNX/IP
+    // Secure link layer reads and writes directly through the storage
+    // handle on its context — see the runtime state below.
 }
 
 impl<const MAX_PW: usize, const MAX_TU: usize> crate::bcus::system_b::ExtensionConfig
@@ -103,7 +104,6 @@ impl<const MAX_PW: usize, const MAX_TU: usize> Default for IpSecureExtensionConf
             multicast_latency_tolerance_ms: DEFAULT_MULTICAST_LATENCY_TOLERANCE_MS,
             sync_latency_fraction: DEFAULT_SYNC_LATENCY_FRACTION,
             tunnelling_users: SecurityTable::new(),
-            persisted_mc_timer: 0,
         }
     }
 }
@@ -169,7 +169,13 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
             multicast_latency_tolerance_ms: Cell::new(config.multicast_latency_tolerance_ms),
             sync_latency_fraction: Cell::new(config.sync_latency_fraction),
             tunnelling_users: RefCell::new(config.tunnelling_users),
-            persisted_mc_timer: Cell::new(config.persisted_mc_timer),
+            // Seeded to 0 here; the KNX/IP Secure link layer reads the
+            // durable watermark from the mc_timer store (directly through
+            // the storage handle) right before its first sync start. A
+            // device without such a store (or a blank one) correctly starts
+            // at 0 and re-acquires the timer from the multicast group
+            // (03/08/09 §2.2.4.2).
+            persisted_mc_timer: Cell::new(0),
             fdsk: resources.fdsk,
             mc_sync_events: embassy_sync::channel::Channel::new(),
         }
@@ -186,7 +192,6 @@ impl<const MAX_PW: usize, const MAX_TU: usize> ExtensionState for IpSecureExtens
             multicast_latency_tolerance_ms: self.multicast_latency_tolerance_ms.get(),
             sync_latency_fraction: self.sync_latency_fraction.get(),
             tunnelling_users: self.tunnelling_users.borrow().clone(),
-            persisted_mc_timer: self.persisted_mc_timer.get(),
         }
     }
 
@@ -279,10 +284,9 @@ impl<const MAX_PW: usize, const MAX_TU: usize> IpSecureStateView for IpSecureExt
 
     fn set_persisted_mc_timer(&self, value: u64) {
         // Only updates the in-memory mirror; the 03/08/09 §2.2.4.2
-        // durability gate lives in the multicast handler's
-        // `ensure_persisted`, which updates this cell and then blocks
-        // on a `PersistRequest::McTimerWatermark` round-trip through
-        // user code's storage task before the frame goes out.
+        // durability lives in the runtime's `drain_mc_persist`, which
+        // writes the flagged value straight to the mc_timer store before
+        // the frame goes out.
         self.persisted_mc_timer.set(value);
     }
 

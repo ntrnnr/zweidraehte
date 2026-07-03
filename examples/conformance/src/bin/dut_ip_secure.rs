@@ -66,23 +66,22 @@ async fn main(spawner: Spawner) {
         KnxNetIpBuilder::<IpSecureDutStack>::new("lo", *control_endpoint.ip(), control_endpoint, ())
             .routing_multicast_addr(multicast_group);
 
-    let (stack, runner) = zweidraehte_device::new(
+    let (_stack, runner) = zweidraehte_device::new(
         STACK_RESOURCES.init(StackResources::new()),
         link_layer_builder,
         state_init,
         LoopbackIpPlatform,
         IpSecureDutStack::memory_map(),
+        (),
     );
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
 
-    // Drain on-demand persist requests. The DUT keeps no persistent
-    // storage, but the IP Secure mc_timer watermark (03/08/09 §2.2.4.2)
-    // gates secure routing sends on the reply — never answering would
-    // wedge the link layer once a test advances the timer beyond the
-    // persistence window.
-    loop {
-        let request = stack.receive_persist_request().await;
-        request.reply(()).await;
-    }
+    // The DUT keeps no persistent storage (`Storage = ()`): the IP Secure
+    // mc_timer watermark reads 0 and its writes vanish through the `()`
+    // storage hooks — safe here, because process-per-test isolation means
+    // no timer state survives to be replayed. The advisory persist channel
+    // needs no draining; an unread notification is simply dropped.
+    core::future::pending::<()>().await;
+    unreachable!("pending() never resolves");
 }

@@ -4,13 +4,11 @@
 
 use core::net::SocketAddrV4;
 
-use crate::actor::ActorRequest;
 use crate::layers::linklayers::knxip::context::{
     IpAdditionalIndividualAddressContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
 };
-use crate::persist::PersistRequest;
 use embassy_sync::{
-    blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex},
+    blocking_mutex::raw::NoopRawMutex,
     channel::{Channel, DynamicSender},
 };
 use embassy_time::{Duration, Instant};
@@ -155,20 +153,17 @@ where
         }
     }
 
-    /// 03/08/09 §2.2.4.2 durability gate: if the multicast timer flagged
-    /// a pending watermark persist, round-trip a gated
-    /// [`PersistRequest::McTimerWatermark`] through user code's storage
-    /// task and only return once the save is confirmed. The single
-    /// await point of the whole persistence gate — call it before any
-    /// frame carrying a timer value beyond the watermark leaves the
-    /// device, and once per runtime loop for receive-side advances.
-    pub(super) async fn drain_mc_persist(&mut self) {
-        if <F::IpSecure as IpSecureFeature>::mc_take_persist_pending(&mut self.mc_timer)
-            && let Some(gate) = self.context.persist_gate_sender()
-        {
-            // CriticalSectionRawMutex: the storage task may live on a
-            // different executor than the link layer.
-            ActorRequest::<CriticalSectionRawMutex, _, _>::request(&gate, PersistRequest::McTimerWatermark).await;
+    /// 03/08/09 §2.2.4.2 durability: if the multicast timer flagged a
+    /// pending watermark persist, write it to the mc_timer store —
+    /// synchronously, straight through the storage handle on the context.
+    /// Call it before any frame carrying a timer value beyond the
+    /// watermark leaves the device, and once per runtime loop for
+    /// receive-side advances. Compiles to nothing without the `ip-secure`
+    /// feature.
+    pub(super) fn drain_mc_persist(&mut self) {
+        #[cfg(feature = "ip-secure")]
+        if let Some(value) = <F::IpSecure as IpSecureFeature>::mc_take_persist_value(&mut self.mc_timer) {
+            self.context.save_mc_timer(value);
         }
     }
 
@@ -636,7 +631,7 @@ where
                     // persistence watermark; the frame is in `out` but
                     // not yet on the wire — make the watermark durable
                     // before the send below.
-                    self.drain_mc_persist().await;
+                    self.drain_mc_persist();
                     out.set_len(len);
                     wrapped = Some(out);
                 }

@@ -52,7 +52,7 @@ use crate::logging::info;
 use crate::objects::tables::HasAssociationTable;
 use crate::prelude::HasAddressTable;
 use crate::storage::SecureDeviceIdentity;
-use crate::storage::SequenceNumberStorage;
+use crate::storage::{SequenceNumberStorage, SiatAccess};
 
 use super::{PendingSyncState, SecureApplicationLayer, SecureResult};
 
@@ -130,7 +130,7 @@ pub trait P2pFeature: 'static {
     /// clear. Needs the P2P key table and SIAT, so it is gated behind
     /// the feature: [`NoP2p`] drops, [`WithP2p`] delegates to
     /// [`super::p2p_security::process_sync_request_p2p`].
-    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         msg: KnxMessageBuffer<Buffer<'static>>,
         scf: SecurityControlField,
@@ -146,7 +146,7 @@ pub trait P2pFeature: 'static {
 
     /// Dispatch an incoming S-A_Sync_Res that may resolve a pending
     /// DUT-initiated sync.
-    fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         msg: KnxMessageBuffer<Buffer<'static>>,
         scf: SecurityControlField,
@@ -162,7 +162,7 @@ pub trait P2pFeature: 'static {
     /// Initiate an outgoing S-A_Sync_Req to the given peer.
     ///
     /// For [`NoP2p`] returns `None` — group-only devices never sync.
-    fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         peer_ia: u16,
         tool_access: bool,
@@ -190,7 +190,7 @@ impl P2pFeature for NoP2p {
     const ENABLED: bool = false;
     type State = ();
 
-    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         _sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         _msg: KnxMessageBuffer<Buffer<'static>>,
         _scf: SecurityControlField,
@@ -206,7 +206,7 @@ impl P2pFeature for NoP2p {
         SecureResult::Dropped
     }
 
-    fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         _sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         _msg: KnxMessageBuffer<Buffer<'static>>,
         _scf: SecurityControlField,
@@ -221,7 +221,7 @@ impl P2pFeature for NoP2p {
         SecureResult::Dropped
     }
 
-    fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         _sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         _peer_ia: u16,
         _tool_access: bool,
@@ -247,7 +247,7 @@ impl P2pFeature for WithP2p {
     const ENABLED: bool = true;
     type State = WithP2pState;
 
-    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         msg: KnxMessageBuffer<Buffer<'static>>,
         scf: SecurityControlField,
@@ -263,7 +263,7 @@ impl P2pFeature for WithP2p {
         super::p2p_security::process_sync_request_p2p(sal, msg, scf, scf_byte, src, incoming_service_type)
     }
 
-    fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn process_sync_response<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         msg: KnxMessageBuffer<Buffer<'static>>,
         scf: SecurityControlField,
@@ -278,7 +278,7 @@ impl P2pFeature for WithP2p {
         super::p2p_security::process_sync_response(sal, msg, scf, scf_byte, src)
     }
 
-    fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage>(
+    fn initiate_sync<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         peer_ia: u16,
         tool_access: bool,

@@ -432,7 +432,7 @@ SystemBDeviceState<..., ES>          (runtime, interior mutability)
         v                                              ^
 DeviceConfig<..., ES::Config>        (serializable snapshot, serde)
         |                                              |
-        | DeviceStorage::save / load_config            |
+        | ConfigStoreBackend::save_config / load_config |
         v                                              |
 Storage backend (JSON file, flash, ...)  ─────────────┘
                                           (loaded snapshot reaches state via SystemBStateInit)
@@ -480,7 +480,7 @@ factory-fresh defaults.
 ### Dirty Tracking
 
 `SystemBDeviceState` tracks whether unsaved changes exist via
-inherent methods (these are **not** on `DeviceStorage`):
+inherent methods (these live on the state, **not** on the stores):
 
 ```rust
 state.is_dirty()    // Check if there are unsaved changes
@@ -488,8 +488,10 @@ state.mark_dirty()  // Called automatically by property writes (HasPersistence)
 state.clear_dirty() // Called after successful save
 ```
 
-The binary's main loop is responsible for polling `is_dirty()` and
-calling `DeviceStorage::save(&state)` when needed.
+On embedded targets the generic storage task (spawned via the
+`storage_task!` macro) polls `is_dirty()` and saves through
+`HasConfigStore::save_config`; a std binary without that task polls
+it in its own loop.
 
 ### Storage Backends
 
@@ -515,14 +517,19 @@ if stack.state().is_dirty() {
 }
 ```
 
-`DeviceStorage` itself has four methods: `identity()`,
-`load_config() -> Option<Self::State::Config>`, `save(&State)`, and
-`flush()`. Storage backends call `state.to_config()` internally
-inside `save()`; `load_config()` returns the deserialised
-`DeviceConfig` for the binary to slot into `SystemBStateInit`.
+Backends call `state.to_config()` internally inside their save;
+`load_config()` returns the deserialised `DeviceConfig` for the
+binary to slot into `SystemBStateInit`.
 
-**Embedded backends** (e.g. RP2040 flash) implement the same
-`DeviceStorage` trait but write sectors instead of files.
+**Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
+storage-layer backend traits (`ConfigStoreBackend`,
+`SequenceNumberStorage`, …) over the `SectorIo` / `ByteIo` medium
+seams and are wired into the macro-emitted stores struct via
+the layout consts (`region_spec`/`region_placement`) + a stores struct
+(`ConfigStorage` and friends) — see
+`docs/STACK_ARCHITECTURE.md` §3.14. The platform crates provide the
+ready-made pieces (`RpConfigStore` / `StmConfigStore`, the matching
+`*ConfigRegion` aliases, and `fram_siat_store!`).
 
 ## Defining a New Device
 
@@ -727,13 +734,17 @@ async fn main(spawner: Spawner) {
     );
     static RESOURCES: StaticCell<StackResources<MyDevice, BUF_SZ>> = StaticCell::new();
 
-    // 6. Create the stack. Five args, in this order.
+    // 6. Create the stack. Six args, in this order. The last is the
+    //    device's storage handle (a `&'static` stores struct such as
+    //    `ConfigStorage`); only a stack with no storage at all
+    //    passes `()`.
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
         state_init,
         platform,
         MyDevice::memory_map(),
+        (),
     );
 
     // 7. Spawn the stack runner.

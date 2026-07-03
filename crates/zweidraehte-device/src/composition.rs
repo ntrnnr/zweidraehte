@@ -16,7 +16,6 @@ use crate::layers::transport::cemi::{
 use crate::rng::SecureRng;
 use crate::service::{Layer, LayerRegistry};
 use crate::state::HasSecurityState;
-use crate::storage::HasSeqStorage;
 use crate::storage::SecureDeviceIdentity;
 use crate::{HasExtensionState, StackState};
 use crate::{
@@ -31,7 +30,7 @@ use crate::{
         transport::TransportLayer,
     },
     objects::tables::{HasAddressTable, HasAssociationTable},
-    storage::{HasSequenceStorage, SequenceNumberStorage},
+    storage::{HasSeqStore, SeqStorageFor, SequenceNumberStorage, SiatAccess},
 };
 
 use zweidraehte_proto::messages::buffers::Buffer;
@@ -200,7 +199,7 @@ impl<D: StackDefinition> HasAppRequest for ApplicationLayer<'_, D> {
     }
 }
 
-impl<D: StackDefinition, SEQ: SequenceNumberStorage, P2P: P2pFeature> HasAppRequest
+impl<D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature> HasAppRequest
     for SecureApplicationLayer<'_, D, SEQ, P2P>
 where
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
@@ -267,7 +266,7 @@ pub type StandardDeviceLayers<'a, D> = StandardLayerStack<'a, D, ApplicationLaye
 /// [`WithP2p`](crate::layers::secure_application::WithP2p) for
 /// devices that need S-A_Sync.
 pub type StandardSecureDeviceLayers<'a, D, P2P = NoP2p> =
-    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage, P2P>>;
+    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>;
 
 impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
@@ -301,13 +300,13 @@ impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> 
     }
 }
 
-impl<'a, D: StackDefinition + HasSequenceStorage, P2P: P2pFeature>
-    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage, P2P>>
+impl<'a, D: StackDefinition, P2P: P2pFeature>
+    StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>
 where
+    D::Storage: HasSeqStore,
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
-    <D::State as HasExtensionState>::ES:
-        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
@@ -327,7 +326,9 @@ where
         let tl = TransportLayer::new(ctx);
         let application_layer = ApplicationLayer::new(ctx);
 
-        let seq_storage = ctx.state().extension_state().seq_storage();
+        // The store is owned by the storage layer; pull it out of the handle
+        // carried on the `LayerContext` (`D::Storage: HasSeqStore` above).
+        let seq_storage = ctx.layer_context().storage.seq_store();
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
         let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
@@ -358,13 +359,13 @@ pub struct SecureDeviceBuilder<P2P: P2pFeature = NoP2p> {
     _phantom: core::marker::PhantomData<P2P>,
 }
 
-impl<D: StackDefinition + HasSequenceStorage, P2P: P2pFeature> LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
+impl<D: StackDefinition, P2P: P2pFeature> LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
+    D::Storage: HasSeqStore,
     D::State: HasExtensionState,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
-    <D::State as HasExtensionState>::ES:
-        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
     // Forbid `NoRng` on secure stacks. Without this, forgetting to
     // set `type Rng = …` would still compile (the default is
     // `NoRng`) and the first `S-A_Sync` would panic at runtime. The
@@ -461,7 +462,7 @@ pub type IpDeviceLayers<'a, D> = IpLayerStack<'a, D, ApplicationLayer<'a, D>>;
 /// for group-only devices.
 #[cfg(feature = "knxip")]
 pub type SecureIpDeviceLayers<'a, D, P2P = NoP2p> =
-    IpLayerStack<'a, D, SecureApplicationLayer<'a, D, <D as HasSequenceStorage>::SeqStorage, P2P>>;
+    IpLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>;
 
 #[cfg(feature = "knxip")]
 impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
@@ -502,13 +503,12 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
 }
 
 #[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition + HasSequenceStorage, P2P: P2pFeature>
-    IpLayerStack<'a, D, SecureApplicationLayer<'a, D, D::SeqStorage, P2P>>
+impl<'a, D: StackDefinition, P2P: P2pFeature> IpLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>
 where
+    D::Storage: HasSeqStore,
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
-    <D::State as HasExtensionState>::ES:
-        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     /// Construct the secure KNX/IP `(NL, CemiTL<TL>, SecureAL<AL>)` layer
     /// stack. The cEMI TL wiring is identical to [`with_cemi`](Self::with_cemi);
@@ -538,7 +538,9 @@ where
         // wrapper holds the persistent sequence-number storage from the
         // device's secure extension state.
         let application_layer = ApplicationLayer::new(ctx);
-        let seq_storage = ctx.state().extension_state().seq_storage();
+        // The store is owned by the storage layer; pull it out of the handle
+        // carried on the `LayerContext` (`D::Storage: HasSeqStore` above).
+        let seq_storage = ctx.layer_context().storage.seq_store();
         let al = SecureApplicationLayer::new(application_layer, seq_storage);
 
         let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
@@ -588,15 +590,15 @@ pub struct SecureIpDeviceBuilder<P2P: P2pFeature = NoP2p> {
 }
 
 #[cfg(feature = "knxip")]
-impl<D: StackDefinition + HasSequenceStorage, P2P: P2pFeature> LayerStackBuilder<D> for SecureIpDeviceBuilder<P2P>
+impl<D: StackDefinition, P2P: P2pFeature> LayerStackBuilder<D> for SecureIpDeviceBuilder<P2P>
 where
     // IP/cEMI bound — identical to `InsecureIpDeviceBuilder`.
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>, LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>>,
     // Security bounds — identical to `SecureDeviceBuilder`.
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,
     <D::State as StackState>::Identity: SecureDeviceIdentity,
-    <D::State as HasExtensionState>::ES:
-        HasSecurityState + HasSeqStorage<SeqStorage = <D as HasSequenceStorage>::SeqStorage>,
+    D::Storage: HasSeqStore,
+    <D::State as HasExtensionState>::ES: HasSecurityState,
     // Forbid `NoRng` on secure stacks (see `SecureDeviceBuilder` for the
     // rationale): without this the first `S-A_Sync` would panic at runtime
     // instead of failing to compile.

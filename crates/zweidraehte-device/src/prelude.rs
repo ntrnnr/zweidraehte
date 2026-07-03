@@ -59,9 +59,7 @@ pub use crate::objects::tables::{
 pub use crate::objects::tables::{ComObjectFlags, LoadEvent, RunEvent, Table, TableMemory};
 
 // Storage and identity
-pub use crate::storage::{
-    DeviceIdentity, DeviceStorage, NoStorage, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity,
-};
+pub use crate::storage::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 
 // Memory
 pub use crate::memory::{MemoryError, MemoryMap, NoMemoryMap};

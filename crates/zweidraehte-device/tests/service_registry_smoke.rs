@@ -316,7 +316,7 @@ where
 fn _assert_augments_implement_augment<'a, D, SEQ>()
 where
     D: StackDefinition,
-    SEQ: SequenceNumberStorage + zweidraehte_device::kvstore::SiatAccess + 'a,
+    SEQ: SequenceNumberStorage + zweidraehte_device::storage::SiatAccess + 'a,
     Tp1Augment<'a>: Augment<D>,
     SecurityAugment<'a, SEQ, 8, 8, 16>: Augment<D>,
 {

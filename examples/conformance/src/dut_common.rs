@@ -29,6 +29,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
+use zweidraehte_device::storage::StorageHooks;
 use zweidraehte_device::{Stack, StackDefinition, restart::EraseCode};
 
 use crate::harness::framing;
@@ -281,7 +282,7 @@ pub async fn bridge_lifecycle_to_ipc(
 ///   variant) — the method set is identical, but the concrete inner type
 ///   differs, so the dispatch can't be written generically against the outer
 ///   `State` type alone.
-pub trait ConformanceStack: StackDefinition + 'static {
+pub trait ConformanceStack: StackDefinition<Storage: StorageHooks> + 'static {
     /// The `Serialize + DeserializeOwned` snapshot type persisted in shared
     /// memory across restarts.
     type DeviceConfig: Serialize + DeserializeOwned;
@@ -401,7 +402,13 @@ async fn flush_and_exit<S: ConformanceStack>(
 ) -> ! {
     let state = stack.state();
     if let Some(code) = erase {
+        // State-side erase, then durable-storage-side erase — the same
+        // order as the generic storage task. For the secure DUT the
+        // storage hook applies the sending-SeqNr near-exhaustion re-init
+        // to the shm-backed seq store; the plain DUT's `()` storage
+        // no-ops.
         S::apply_erase_code(state, code);
+        stack.storage().erase(code);
     }
     let snapshot = S::to_device_config(state);
     flush_state(shm, &snapshot);
