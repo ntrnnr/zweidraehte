@@ -513,10 +513,10 @@ forward_to_field! {
     } => self.ip
 }
 
-impl<const N: usize, const CAPS: u16> HasRoutingMulticastRebind for IpInterfaceExtension<N, CAPS> {
-    fn routing_multicast_rebind_channel(&self) -> &RoutingMulticastRebindChannel {
-        self.ip.routing_multicast_rebind_channel()
-    }
+forward_to_field! {
+    impl<[const N: usize, const CAPS: u16]> HasRoutingMulticastRebind for IpInterfaceExtension<N, CAPS> {
+        ref fn routing_multicast_rebind_channel(&self) -> &RoutingMulticastRebindChannel;
+    } => self.ip
 }
 
 impl<const N: usize, const CAPS: u16> ExtensionState for IpInterfaceExtension<N, CAPS> {
@@ -564,16 +564,12 @@ impl<const N: usize, const CAPS: u16> crate::ip::HasAdditionalIas for IpInterfac
 /// adopts the `None` default. The secure IP extension overrides this.
 impl<const N: usize, const CAPS: u16> crate::ip::HasIpSecureView for IpInterfaceExtension<N, CAPS> {}
 
-impl<const N: usize, const CAPS: u16> HasDomainAddress for IpInterfaceExtension<N, CAPS> {
-    const DOMAIN_ADDRESS_LENGTH: usize = IpExtensionState::<CAPS>::DOMAIN_ADDRESS_LENGTH;
-
-    fn domain_address(&self, buf: &mut [u8]) {
-        self.ip.domain_address(buf);
-    }
-
-    fn set_domain_address(&self, addr: &[u8]) {
-        self.ip.set_domain_address(addr);
-    }
+forward_to_field! {
+    impl<[const N: usize, const CAPS: u16]> HasDomainAddress for IpInterfaceExtension<N, CAPS> {
+        const DOMAIN_ADDRESS_LENGTH: usize = IpExtensionState::<CAPS>::DOMAIN_ADDRESS_LENGTH;
+        out fn domain_address(&self, buf: &mut [u8]);
+        set fn set_domain_address(&self, addr: &[u8]);
+    } => self.ip
 }
 
 /// `Augment<D>` bundle for [`IpInterfaceExtension`].

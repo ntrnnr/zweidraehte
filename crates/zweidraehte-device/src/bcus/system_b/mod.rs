@@ -111,7 +111,9 @@
 /// `mark_dirty` post-hook fires). The keywords also keep the `fn name(&self`
 /// prefix — common to every form — unambiguous to the macro matcher.
 macro_rules! forward_to_field {
-    // Generic header (possibly empty `[]`), no `mark_dirty`.
+    // Generic header (possibly empty `[]`), no `mark_dirty`. `$trait` is an
+    // `ident`, so a cfg-gated impl that names the trait by a full path must
+    // import it first (macro fragments can't be a `path` before `for`).
     (
         impl<[$($generics:tt)*]> $trait:ident for $self_ty:ty {
             $($items:tt)*
@@ -148,6 +150,16 @@ macro_rules! forward_to_field {
     // `get`: returns by value, with or without arguments (never dirties —
     // a read forwards verbatim).
     (@items [$dirty:tt] $field:ident, get fn $method:ident(&self $(, $arg:ident: $arg_ty:ty)* $(,)?) -> $ret:ty; $($rest:tt)*) => {
+        fn $method(&self $(, $arg: $arg_ty)*) -> $ret {
+            self.$field.$method($($arg),*)
+        }
+        forward_to_field!(@items [$dirty] $field, $($rest)*);
+    };
+
+    // `ref`: returns a borrow of what the field's method returns (e.g. a
+    // `&Channel`). Like `get` but the return type is a reference; the borrow
+    // is forwarded verbatim, so it never dirties.
+    (@items [$dirty:tt] $field:ident, ref fn $method:ident(&self $(, $arg:ident: $arg_ty:ty)* $(,)?) -> $ret:ty; $($rest:tt)*) => {
         fn $method(&self $(, $arg: $arg_ty)*) -> $ret {
             self.$field.$method($($arg),*)
         }

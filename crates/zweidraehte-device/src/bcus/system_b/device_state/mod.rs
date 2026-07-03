@@ -643,25 +643,18 @@ impl<
 // lives — `()` / TP1 / RF give the plain defaults, `SecureExtensionState`
 // delegates to the Security IO. `CoreDeviceState` bounds `HasSecurityMode`, so
 // generic code still reaches these through `D::State`.
-impl<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D: StackDefinition,
-    ES: ExtensionState + HasSecurityMode,
-> HasSecurityMode for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
-{
-    fn security_mode_enabled(&self) -> bool {
-        self.extension_state.security_mode_enabled()
-    }
-
-    fn log_access_denied(&self, source_addr: u16) {
-        self.extension_state.log_access_denied(source_addr);
-    }
-
-    fn has_group_key(&self, tsap: u16) -> bool {
-        self.extension_state.has_group_key(tsap)
-    }
+forward_to_field! {
+    impl<[
+        const ADT_SIZE: usize,
+        const AST_SIZE: usize,
+        const COT_SIZE: usize,
+        D: StackDefinition,
+        ES: ExtensionState + HasSecurityMode,
+    ]> HasSecurityMode for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES> {
+        get fn security_mode_enabled(&self) -> bool;
+        out fn log_access_denied(&self, source_addr: u16);
+        get fn has_group_key(&self, tsap: u16) -> bool;
+    } => self.extension_state
 }
 
 // ============================================================================

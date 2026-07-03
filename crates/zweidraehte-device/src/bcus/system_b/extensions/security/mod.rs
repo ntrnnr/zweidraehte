@@ -817,15 +817,20 @@ impl<Inner: ExtensionState + crate::ip::HasIpExtensionState, const GRP: usize, c
     }
 }
 
+// The macro names the implemented trait by bare ident, so import it here
+// (under the same cfg gate as the impl).
 #[cfg(feature = "knxip")]
-impl<Inner: ExtensionState + crate::ip::HasRoutingMulticastRebind, const GRP: usize, const P2P: usize, const GO: usize>
-    crate::ip::HasRoutingMulticastRebind for SecureExtensionState<Inner, GRP, P2P, GO>
-{
-    fn routing_multicast_rebind_channel(
-        &self,
-    ) -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::net::Ipv4Addr, 2> {
-        self.inner.routing_multicast_rebind_channel()
-    }
+use crate::ip::HasRoutingMulticastRebind;
+
+#[cfg(feature = "knxip")]
+forward_to_field! {
+    impl<[
+        Inner: ExtensionState + HasRoutingMulticastRebind,
+        const GRP: usize, const P2P: usize, const GO: usize,
+    ]> HasRoutingMulticastRebind for SecureExtensionState<Inner, GRP, P2P, GO> {
+        ref fn routing_multicast_rebind_channel(&self)
+            -> &embassy_sync::channel::Channel<embassy_sync::blocking_mutex::raw::NoopRawMutex, core::net::Ipv4Addr, 2>;
+    } => self.inner
 }
 
 #[cfg(feature = "knxip")]

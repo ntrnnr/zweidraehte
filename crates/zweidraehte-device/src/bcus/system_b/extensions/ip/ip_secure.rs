@@ -655,12 +655,12 @@ forward_to_field! {
     } => self.ip
 }
 
-impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> HasRoutingMulticastRebind
-    for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU>
-{
-    fn routing_multicast_rebind_channel(&self) -> &super::RoutingMulticastRebindChannel {
-        self.ip.routing_multicast_rebind_channel()
-    }
+forward_to_field! {
+    impl<[
+        const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize,
+    ]> HasRoutingMulticastRebind for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU> {
+        ref fn routing_multicast_rebind_channel(&self) -> &super::RoutingMulticastRebindChannel;
+    } => self.ip
 }
 
 impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> HasIpExtensionState
@@ -691,18 +691,14 @@ impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> 
     }
 }
 
-impl<const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize> HasDomainAddress
-    for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU>
-{
-    const DOMAIN_ADDRESS_LENGTH: usize = IpInterfaceExtension::<N, CAPS>::DOMAIN_ADDRESS_LENGTH;
-
-    fn domain_address(&self, buf: &mut [u8]) {
-        self.ip.domain_address(buf);
-    }
-
-    fn set_domain_address(&self, addr: &[u8]) {
-        self.ip.set_domain_address(addr);
-    }
+forward_to_field! {
+    impl<[
+        const N: usize, const CAPS: u16, const MAX_PW: usize, const MAX_TU: usize,
+    ]> HasDomainAddress for IpSecureInterfaceExtension<N, CAPS, MAX_PW, MAX_TU> {
+        const DOMAIN_ADDRESS_LENGTH: usize = IpInterfaceExtension::<N, CAPS>::DOMAIN_ADDRESS_LENGTH;
+        out fn domain_address(&self, buf: &mut [u8]);
+        set fn set_domain_address(&self, addr: &[u8]);
+    } => self.ip
 }
 
 /// `Augment<D>` bundle: the plain IP-interface bundle (tunnelling + IP
