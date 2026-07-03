@@ -138,8 +138,16 @@ impl<D: StackDefinition> Layer<D> for NetworkLayer<'_, D> {
                 // back to the correct N_*_Con service type when it arrives.
                 // Multiple requests can be in-flight because TL sends
                 // fire-and-forget; the FIFO matches them in order.
+                //
+                // If the FIFO is full we must drop the outgoing frame rather
+                // than send it untracked: an untracked send still produces an
+                // L_Data_Con, which would then be matched against the *next*
+                // request's address type and mis-map every subsequent
+                // confirmation. Dropping is recoverable (TL change-of-state
+                // retransmit); a desynchronised FIFO is not.
                 if self.pending_addr_types.push_back(addr_type).is_err() {
-                    error!("NL pending address type queue full, dropping");
+                    error!("NL pending address type queue full, dropping outgoing frame");
+                    return;
                 }
 
                 debug!("NL -> LL: {:?}", msg);
@@ -165,7 +173,12 @@ impl<D: StackDefinition> Layer<D> for NetworkLayer<'_, D> {
 
                     msg.convert_hop_count_to_hop_count_type();
                 } else {
-                    warn!("NL received LL confirmation with no pending request");
+                    // No pending request means the FIFO and the link layer have
+                    // desynchronised (e.g. a con for a frame we dropped above).
+                    // Forwarding the unconverted L_Data_Con would push a service
+                    // type no upper layer handles, so drop it here instead.
+                    warn!("NL received LL confirmation with no pending request, dropping");
+                    return;
                 }
 
                 self.lctx.push_outbox(msg);
