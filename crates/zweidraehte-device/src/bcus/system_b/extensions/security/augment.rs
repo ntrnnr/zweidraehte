@@ -309,9 +309,15 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE => {
                 read_siat_from_store(&*self.seq_storage.borrow(), req, buf)
             }
-            // PID 55 SECURITY_FAILURES_LOG — read-only at the value level;
-            // accessed via FunctionPropertyStateRead.
-            pid::security::SECURITY_FAILURES_LOG => Err(PropertyError::InvalidPropertyId),
+            // PID 55 SECURITY_FAILURES_LOG — PDT_Function. Its value is read
+            // through FunctionPropertyStateRead, not a plain PropertyValue_Read.
+            // The property *exists* (it has a descriptor), so we must not answer
+            // a plain read with InvalidPropertyId — that maps to E_ADDRESS_VOID
+            // ("property absent") and misrepresents a present property. A plain
+            // read of a function property yields an empty value, mirroring the
+            // AL's own "not PDT_Function → empty response" handling in
+            // `services/function_property.rs`.
+            pid::security::SECURITY_FAILURES_LOG => Ok(0),
             // PID 59 SEQUENCE_NUMBER_SENDING — the device's single Sequence Number
             // Sending (KNX 03/03/07 §5.x), shared by group, P2P, broadcast and
             // tool-access sends. ETS reads this to learn what value to expect from
