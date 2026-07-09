@@ -15,7 +15,7 @@
 //! - [`backends`] — the HAL-free backends over the [`SectorIo`] / [`ByteIo`]
 //!   medium seams ([`WearLeveledKv`], [`ConfigStore`],
 //!   [`PackedSeqStore`](backends::PackedSeqStore),
-//!   [`PackedWatermark`](backends::PackedWatermark)) the `cross/` HAL
+//!   [`PackedWatermark`](backends::PackedWatermark)) the `firmware/` HAL
 //!   adapters drive
 //! - [`views`] — the typed security tables over the seam ([`SiatStore`],
 //!   [`McTimerStore`])

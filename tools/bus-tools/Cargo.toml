@@ -1,0 +1,30 @@
+[package]
+name = "bus-tools"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zweidraehte-device = { path = "../../crates/zweidraehte-device", features = ["log", "linux", "tp1", "usb"] }
+zweidraehte-proto = { path = "../../crates/zweidraehte-proto", features = ["log", "std"] }
+zweidraehte-platform = { path = "../../crates/zweidraehte-platform", features = ["log", "linux"] }
+zweidraehte-support = { path = "../../examples/support" }
+
+embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
+embassy-sync = { workspace = true, features = ["std"] }
+embassy-time = { workspace = true, features = ["std"] }
+
+env_logger = { workspace = true }
+log = { workspace = true }
+chrono = { workspace = true }
+
+[[bin]]
+name = "busmon"
+path = "src/busmon.rs"
+
+[[bin]]
+name = "tpuart"
+path = "src/tpuart.rs"
+
+[[bin]]
+name = "usb_test"
+path = "src/usb_test.rs"

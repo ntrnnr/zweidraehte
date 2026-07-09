@@ -17,9 +17,9 @@
 # help (the fault is the compiler's const-eval, not embassy).
 #
 # `channel` is host-agnostic: rustup resolves the correct host std
-# automatically, so host binaries (conformance-runner, testutil, gen_*)
+# automatically, so host binaries (conformance-runner, gen_*, tools)
 # build everywhere. `targets` lists ONLY the embedded cross-compilation
-# std libs the `cross/` workspace needs.
+# std libs the `firmware/` workspace needs.
 [toolchain]
 channel = "nightly-2026-06-01"
 components = ["rust-src", "rustfmt", "clippy"]

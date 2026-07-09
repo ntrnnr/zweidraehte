@@ -1,0 +1,55 @@
+[package]
+name = "rp-common"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Embassy core
+embassy-net = { workspace = true, features = ["udp", "tcp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-rp = { workspace = true, features = ["defmt", "unstable-pac"] }
+embassy-sync = { workspace = true }
+embassy-hal-internal = { workspace = true }
+
+# Embedded HAL traits
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+embedded-io-async = { workspace = true }
+embassy-futures = { workspace = true }
+
+# Cortex-M / embedded
+cortex-m = { workspace = true }
+defmt = { workspace = true }
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+critical-section = "1.2.0"
+
+# KNX stack and platform traits
+zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }
+zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
+zweidraehte-util = { path = "../../../crates/zweidraehte-util" }
+embedded-common = { path = "../../common/embedded-common" }
+
+# Serialization for flash storage
+postcard = { workspace = true }
+serde = { workspace = true }
+
+# KNX Data Secure: RAM sequence-number store (heapless) + ChaCha20 CSPRNG.
+heapless = { workspace = true }
+chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
+
+[features]
+default = ["rp2040"]
+rp2040 = ["embassy-rp/rp2040"]
+rp235xa = ["embassy-rp/rp235xa"]
+
+# Enabled by host-side tests only (`cargo test --features test-host`)
+# so the unit tests for `TcpPool` / `UdpPool` can link against a
+# `critical-section` impl. Embedded firmware never sets this — `cortex-m`
+# already provides the impl on hardware.
+test-host = ["critical-section/std"]
+
+# When enabled, missing or corrupt KNXP records on first boot are
+# silently filled in from compile-time constants emitted by the
+# firmware's `build.rs` (see ZZ_SERIAL_HEX / ZZ_FDSK_HEX / ZZ_MAC_HEX).
+# Off by default — production firmware refuses to boot without a record.
+provision-on-boot = []

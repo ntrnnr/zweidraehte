@@ -312,7 +312,7 @@ fn write_tlv(buf: &mut [u8], i: &mut usize, t: u8, value: &[u8]) -> Result<(), P
 //
 // Hyphenated Base32 encoding of the (serial || fdsk || crc4) tuple,
 // the de-facto label format ETS prompts for. Pulled into this module
-// (instead of `cross/stm32-common/src/storage.rs`) so the host
+// (instead of `firmware/stm32/common/src/storage.rs`) so the host
 // provisioning tool can produce label strings without a transitive
 // dependency on the embedded HAL.
 

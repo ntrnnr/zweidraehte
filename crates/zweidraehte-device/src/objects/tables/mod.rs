@@ -16,7 +16,7 @@ use zweidraehte_proto::util::{crc::crc16_ccitt, packets::BufferView};
 // in `zweidraehte-proto`. The state machines that consume them (`Table<T>`,
 // `RunnableApplication<T>`, the `Has*StateMachine` traits, `LoadAction`,
 // `RunAction`, `LoadError`) stay here. Re-exported so the device-side and
-// downstream `cross/` paths (`objects::tables::LoadState`, the prelude) keep
+// downstream `firmware/` paths (`objects::tables::LoadState`, the prelude) keep
 // working without those crates taking a direct `zweidraehte-proto` dependency.
 pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, LoadState, RunEvent, RunState};
 

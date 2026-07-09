@@ -2,7 +2,7 @@
 //!
 //! These backends are HAL-free: they speak only the [`SectorIo`] / [`ByteIo`]
 //! seams and integer arithmetic, so the HAL adapters that drive real media
-//! (`RpFlashIo`, `StmFlashIo`, `FramRegion` in the `cross/` workspace) plug in
+//! (`RpFlashIo`, `StmFlashIo`, `FramRegion` in the `firmware/` workspace) plug in
 //! from outside. Four backends sit here:
 //!
 //! - [`WearLeveledKv`] — circular append-log over [`SectorIo`]; cheap

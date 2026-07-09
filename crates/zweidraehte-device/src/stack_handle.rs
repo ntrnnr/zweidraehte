@@ -64,7 +64,7 @@ use embassy_sync::channel::DynamicReceiver;
 /// ```
 ///
 /// For a complete working example with all the trait implementations,
-/// see the `testutil` crate in this repository.
+/// see the `zweidraehte-support` crate in this repository.
 pub struct Stack<'d, D: StackDefinition> {
     pub(crate) inner: &'d StackCore<D>,
     pub(crate) interface_objects: &'d D::InterfaceObjects<'static>,

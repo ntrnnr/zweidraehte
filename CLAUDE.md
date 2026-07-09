@@ -57,7 +57,7 @@ The goal is to write a KNX device stack (and possibly more later) in Rust target
 The stack needs to be conformance compliant and generic enough so that we can replace different layers and servers in the stack for different use cases when building devices. It's best to stick to existing patterns where applicable.
 
 We are also working on a product definition XML generator. We are generating XML files based on rust macro code that defines the device, its parameters and communication objects as well as dynamic pages that are presented to the user when configuring the device in the ETS.
-We try to replicate a real existing MDT device that is defined in `manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml` using this framework in `examples/testutil/src/devices/mdt_push_button_lite.rs`.
+We try to replicate a real existing MDT device that is defined in `manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml` using this framework in `examples/devices/src/mdt_push_button_lite.rs`.
 We aim for an accurate replication by using our own DSL to ensure feature parity - the parameters, the enums, the comm objects and the dynamic pages that select different combinations of references and show/hide parameters and/or communication objects based on the currently selected configuration. After that we will start optimizing everything and ensure some quality of life improvements when defining all these structures in our DSL to make it easier to understand.
 The file in `manuf_tool_data/VC-EASY-03_MDT_KP_V35/M-0083/M-0083_A-0070-35-1740.xml` contains so-called module definitions that we still need to replicate conceptually with a small test device.
 For all these XML files, an XSD schema is available at `manuf_tool_data/knx_project.xsd` for reference and checking of correctness.
@@ -66,9 +66,10 @@ For all these XML files, an XSD schema is available at `manuf_tool_data/knx_proj
 
 ### Workspace Overview
 
-The project is organized as a Rust workspace with three top-level directories:
-`crates/` for libraries, `examples/` for testing and demo code, and `tools/`
-for standalone applications.
+The project is organized as a Rust workspace with `crates/` for libraries,
+`examples/` for device definitions and demo support code, `tools/` for
+standalone applications, and `conformance/` for the conformance test
+framework. `firmware/` holds the embedded targets in a separate workspace.
 
 ```
 crates/
@@ -81,14 +82,24 @@ crates/
   zweidraehte-util/          Embedded utility types (button input, etc.)
 
 examples/
-  conformance/             KNX conformance test framework
-  devices/                 Device definitions (light switch, IP interface)
-  testutil/                Test helpers, demo binaries, MTXML generators
+  devices/                 Device definitions (light switch, IP interface, demo
+                           devices) + MTXML generator and demo binaries
+  support/                 Host-side demo/test support (JSON storage,
+                           MockIpPlatform, keyboard/mock-context utilities)
+
+conformance/               KNX conformance test framework + runner
 
 tools/
   knxprod-tui/             TUI viewer for MTXML files
+  knx-provision/           Device provisioning via probe-rs
+  compare-programs/        Semantic MTXML comparison (generated vs. reference)
+  bus-tools/               Hardware utilities: busmon, tpuart, usb_test
 
-cross/                     Embedded targets (separate workspace)
+firmware/                  Embedded targets (separate workspace)
+  common/                  Chip-agnostic: embedded-common, knxrf (SX1211
+                           driver), dev-provisioning-build
+  stm32/                   stm32/common (HAL glue) + STM32G0 devices
+  rp2040/                  rp2040/common (HAL glue) + Pico devices
 ```
 
 ### Coding style
@@ -181,7 +192,7 @@ Subdirectories:
     - `objects/` - `SystemBObjects` container
     - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
-    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all cross devices use it)
+    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all firmware devices use it)
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
@@ -197,7 +208,7 @@ Subdirectories:
   - UDP multicast socket handling (for KNX/IP routing)
   - Network interface address resolution
 
-#### 4. Conformance Testing Crate (`examples/conformance`)
+#### 4. Conformance Testing Crate (`conformance/`)
 **Purpose**: KNX conformance test framework for validating stack compliance
 
 Run with: `cargo run --bin conformance-runner [test_name_filter]`
@@ -292,58 +303,73 @@ Key modules:
   - Conditional visibility logic
   - Parameter grouping and sections
 
-#### 7. Test Utilities Crate (`examples/testutil`)
-**Purpose**: Device definitions, test helpers, and demonstration tools
+#### 7. Device Definitions Crate (`examples/devices`, package `zweidraehte-devices`)
+**Purpose**: Device definitions (no_std, consumed by the firmware targets) plus
+host-side demo devices and generator/demo binaries. The library is named
+`devices` so both firmware mains and demo binaries write `use devices::...`.
 
-Key modules:
-- `lib.rs` - Library documentation and module exports
+Modules:
+- `light_switch/`, `ip_interface/` - no_std device definitions used by firmware
+- `mdt_push_button_lite.rs` - MDT Push Button Lite 55 replication (feature `demos`)
+- `module_test_device.rs` - Module test device, 4-channel dimmer (feature `demos`)
+- `system_b_demo.rs` - Demo System B device (feature `demos`)
 
-Subdirectories:
-- `devices/` - Device implementations
-  - `mdt_push_button_lite.rs` - MDT Push Button Lite 55 replication
-  - `system_b_demo.rs` - Demo System B device
-- `mock_platform.rs` - Shared `MockIpPlatform` (mock `IpPlatform`) for KNX/IP device demos and tests
-- `storage/` - State persistence backends (JSON-based)
-- `util/` - Helper utilities (keyboard input polling, mock context)
+Features: `demos` and `gen` are **default features** so the binaries below run
+without flags; firmware consumers use `default-features = false` and stay
+no_std/lean.
 
 Binaries (run with `cargo run --bin <name>`):
 - `stack_system_b` - System B device demo
-- `stack_knxip` - Full KNX/IP stack demo
-- `gen_mtxml` - Generate MTXML from device definitions
+- `gen_mtxml` - Generate MTXML from the demo System B device definition
+- `gen_light_switch_mtxml` / `gen_ip_interface_mtxml` - Firmware device MTXML
 - `gen_mdt_mtxml` - Generate MDT device MTXML
 - `gen_module_mtxml` - Generate module test device MTXML
-- `tpuart` - TPUART interface test
-- `knxip` - KNX/IP protocol test
+
+#### 7b. Demo Support Crate (`examples/support`, package `zweidraehte-support`)
+**Purpose**: Host-side (std/Linux) support code shared by the demo binaries
+and hardware tools. The library is named `support`.
+
+- `mock_platform.rs` - Shared `MockIpPlatform` (mock `IpPlatform`) for KNX/IP device demos and tests
+- `storage/` - State persistence backends (JSON-based): `JsonStorage`, `FileIdentity`
+- `util/` - Helper utilities (keyboard input polling, mock stack context)
+
+#### 7c. Hardware Tools Crate (`tools/bus-tools`)
+Binaries (run with `cargo run --bin <name>`):
 - `busmon` - Bus monitor utility
+- `tpuart` - TPUART interface test
 - `usb_test` - USB interface testing
 
-#### 8. Cross-Compilation Crate (`cross/`)
-**Purpose**: Embedded cross-compilation support (separate workspace)
+#### 8. Firmware Workspace (`firmware/`)
+**Purpose**: Embedded targets (separate workspace)
 
-**IMPORTANT**: The `cross/` directory is a separate Cargo workspace. To build
-embedded binaries, you must `cd` into the specific project directory first.
-Each project has its own `.cargo/config.toml` that sets the correct target
-(e.g., `thumbv6m-none-eabi` for the Pico W). Building with `-p picow` from
-the parent workspace or the `cross/` directory will use the wrong target and
-fail with confusing errors (e.g., missing `#[panic_handler]`, invalid
-registers).
+**IMPORTANT**: The `firmware/` directory is a separate Cargo workspace. To
+build embedded binaries, you must `cd` into the specific project directory
+first. Each project has its own `.cargo/config.toml` that sets the correct
+target (e.g., `thumbv6m-none-eabi` for the Pico W). Building with `-p <name>`
+from the parent workspace or the `firmware/` directory will use the wrong
+target and fail with confusing errors (e.g., missing `#[panic_handler]`,
+invalid registers).
 
 ```bash
 # Correct:
-cd cross/picow && cargo build
+cd firmware/rp2040/wifi_light_switch && cargo build
 
 # Wrong — uses host target, not thumbv6m-none-eabi:
-cd cross && cargo build -p picow
+cd firmware && cargo build -p pico_wifi_light_switch
 ```
 
-Contains:
-- `tpuart_bridge/` - TP-UART to other protocol bridges
-  - Embedded firmware for STM32
-  - Uses embassy async runtime, defmt logging, embassy-stm32 HAL
-- `picow/` - KNX/IP light switch device on Raspberry Pi Pico W
+Layout: `common/` holds chip-agnostic crates (`embedded-common`, the `knxrf`
+SX1211 driver, `dev-provisioning-build`); `stm32/` and `rp2040/` each hold a
+family `common/` HAL-glue crate plus the device projects. Directory names
+drop the chip prefix (`stm32/g0_blink`, `rp2040/eth`), package names keep it
+(`stm32g0_blink`, `pico_eth`).
+
+Notable device:
+- `rp2040/wifi_light_switch/` (package `pico_wifi_light_switch`) - KNX/IP
+  light switch device on Raspberry Pi Pico W
   - RP2040 + CYW43 WiFi, embassy async runtime
   - Uses `devices::light_switch` device definition
-  - Build with: `cd cross/picow && WIFI_SSID=x WIFI_PASS=y cargo build`
+  - Build with: `cd firmware/rp2040/wifi_light_switch && WIFI_SSID=x WIFI_PASS=y cargo build`
 
 ### Documentation (`/docs`)
 
@@ -398,11 +424,12 @@ reference.
 ```
 zweidraehte-proto          (no_std, pure protocol types)
   ├── zweidraehte-device   (no_std, device stack — re-exports proto)
-  │     ├── examples/conformance
-  │     ├── examples/testutil
+  │     ├── conformance/
   │     ├── examples/devices
-  │     └── cross/*
-  └── (future: zweidraehte-client)
+  │     ├── examples/support
+  │     ├── tools/bus-tools
+  │     └── firmware/*
+  └── zweidraehte-client
 
 zweidraehte-ets            (proc-macro, no runtime deps)
   └── zweidraehte-device
@@ -411,9 +438,9 @@ zweidraehte-device-macros  (proc-macro, no runtime deps)
   └── zweidraehte-device
 
 zweidraehte-knxprod        (std, XML generation)
-  ├── examples/testutil
-  ├── examples/devices
-  └── tools/knxprod-tui
+  ├── examples/devices     (feature "knxprod"/"demos")
+  ├── tools/knxprod-tui
+  └── tools/compare-programs
 
 zweidraehte-platform       (platform abstraction)
   ├── zweidraehte-proto
@@ -525,13 +552,13 @@ Generates MTXML files (ApplicationProgram1.mtxml, Hardware1.mtxml, Catalog1.mtxm
 ```bash
 cargo run --bin gen_mdt_mtxml
 ```
-Generates MTXML files from the MDT Push Button Lite device definition (`examples/testutil/src/devices/mdt_push_button_lite.rs`). Used for comparing against the real MDT reference XML.
+Generates MTXML files from the MDT Push Button Lite device definition (`examples/devices/src/mdt_push_button_lite.rs`). Used for comparing against the real MDT reference XML.
 
 **Generate Module Test Device MTXML**
 ```bash
 cargo run --bin gen_module_mtxml
 ```
-Generates MTXML files from the module test device definition (`examples/testutil/src/devices/module_test_device.rs`). Demonstrates KNX module support with a 4-channel dimmer device.
+Generates MTXML files from the module test device definition (`examples/devices/src/module_test_device.rs`). Demonstrates KNX module support with a 4-channel dimmer device.
 
 ### Device Demos & Testing
 
@@ -541,23 +568,11 @@ cargo run --bin stack_system_b
 ```
 Runs a demo System B device stack.
 
-**Run KNX/IP Stack Demo**
-```bash
-cargo run --bin stack_knxip
-```
-Runs a full KNX/IP stack demo with routing and tunneling support.
-
 **Run TPUART Interface Test**
 ```bash
 cargo run --bin tpuart
 ```
 Tests the TP-UART serial interface.
-
-**Run KNX/IP Protocol Test**
-```bash
-cargo run --bin knxip
-```
-Tests KNX/IP protocol functionality.
 
 **Run Bus Monitor**
 ```bash
@@ -570,12 +585,6 @@ Monitors KNX bus traffic.
 cargo run --bin usb_test
 ```
 Tests USB HID interface support.
-
-**Run Sequence Number Test**
-```bash
-cargo run --bin seqno_test
-```
-Tests sequence number handling.
 
 ### TUI Viewer
 

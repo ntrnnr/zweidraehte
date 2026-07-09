@@ -446,6 +446,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c6f81257d10a0f602a294ae4182251151ff97dbb504ef9afcdda4a64b24d9b4"
 
 [[package]]
+name = "bus-tools"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "embassy-executor",
+ "embassy-sync",
+ "embassy-time",
+ "env_logger",
+ "log",
+ "zweidraehte-device",
+ "zweidraehte-platform",
+ "zweidraehte-proto",
+ "zweidraehte-support",
+]
+
+[[package]]
 name = "by_address"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -659,6 +675,14 @@ dependencies = [
  "rustversion",
  "ryu",
  "static_assertions",
+]
+
+[[package]]
+name = "compare-programs"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "zweidraehte-knxprod",
 ]
 
 [[package]]
@@ -1156,21 +1180,6 @@ dependencies = [
  "quote",
  "rustc_version",
  "syn 2.0.116",
-]
-
-[[package]]
-name = "devices"
-version = "0.1.0"
-dependencies = [
- "const-default",
- "embassy-time",
- "env_logger",
- "serde",
- "zerocopy",
- "zweidraehte-device",
- "zweidraehte-knxprod",
- "zweidraehte-proto",
- "zweidraehte-util",
 ]
 
 [[package]]
@@ -5260,36 +5269,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "testutil"
-version = "0.1.0"
-dependencies = [
- "async-hid",
- "base64",
- "chrono",
- "const-default",
- "embassy-executor",
- "embassy-futures",
- "embassy-sync",
- "embassy-time",
- "embedded-io-async",
- "env_logger",
- "futures-lite",
- "libc",
- "log",
- "quick-xml",
- "regex",
- "serde",
- "serde_json",
- "static_cell",
- "zerocopy",
- "zweidraehte-conformance",
- "zweidraehte-device",
- "zweidraehte-knxprod",
- "zweidraehte-platform",
- "zweidraehte-proto",
-]
-
-[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6872,6 +6851,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "zweidraehte-devices"
+version = "0.1.0"
+dependencies = [
+ "const-default",
+ "embassy-executor",
+ "embassy-sync",
+ "embassy-time",
+ "env_logger",
+ "log",
+ "serde",
+ "static_cell",
+ "zerocopy",
+ "zweidraehte-device",
+ "zweidraehte-knxprod",
+ "zweidraehte-platform",
+ "zweidraehte-proto",
+ "zweidraehte-support",
+ "zweidraehte-util",
+]
+
+[[package]]
 name = "zweidraehte-ets"
 version = "0.1.0"
 dependencies = [
@@ -6948,6 +6948,19 @@ dependencies = [
  "zerocopy",
  "zweidraehte-platform",
  "zweidraehte-util",
+]
+
+[[package]]
+name = "zweidraehte-support"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "log",
+ "serde",
+ "serde_json",
+ "zweidraehte-device",
+ "zweidraehte-platform",
+ "zweidraehte-proto",
 ]
 
 [[package]]

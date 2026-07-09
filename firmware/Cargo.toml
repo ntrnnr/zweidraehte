@@ -1,0 +1,88 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "common/dev-provisioning-build",
+    "common/embedded-common",
+    "common/knxrf",
+    "stm32/common",
+    "stm32/g0_blink",
+    "stm32/g0_tp1_light_switch",
+    "stm32/g0_tp1_secure_light_switch",
+    "stm32/g0_knxrf_device",
+    "stm32/g0_knxrf_secure_light_switch",
+    "stm32/g0_knxrf_secure_retransmitter",
+    "rp2040/common",
+    "rp2040/blink",
+    "rp2040/eth",
+    "rp2040/eth_secure_light_switch",
+    "rp2040/tp1",
+    "rp2040/ip_interface",
+    "rp2040/wifi_light_switch",
+]
+
+[workspace.dependencies]
+# Embassy core
+embassy-executor = { version = "0.9", default-features = false }
+embassy-time = { version = "0.5", default-features = false }
+embassy-sync = { version = "0.7", default-features = false }
+embassy-futures = { version = "0.1", default-features = false }
+embassy-net = { version = "0.8", default-features = false }
+
+# Embassy HALs
+embassy-stm32 = { version = "0.5" }
+embassy-rp = { version = "0.9" }
+embassy-hal-internal = { version = "0.3" }
+
+# CYW43 WiFi driver (Pico W)
+cyw43 = { version = "0.6", default-features = false }
+cyw43-pio = { version = "0.9", default-features = false }
+
+# W5500 Ethernet driver
+embassy-net-wiznet = { version = "0.2", default-features = false }
+embedded-hal-bus = { version = "0.2", default-features = false }
+embedded-hal-async = { version = "1.0" }
+
+# Common embedded
+cortex-m = { version = "0.7" }
+cortex-m-rt = { version = "0.7" }
+embedded-hal = { version = "1.0" }
+# Pinned to 0.6 to match embassy-rp 0.9 — pico_tp1 passes BufferedUart
+# directly to TpUartLinkLayerBuilder, so the trait version must be consistent.
+# The 0.6→0.7 diff is minimal (flush() became required, defmt feature renamed)
+# and does not affect our usage.
+embedded-io-async = { version = "0.6" }
+defmt = "1.0"
+defmt-rtt = "1.0"
+panic-probe = { version = "1.0" }
+futures = { version = "0.3", default-features = false }
+static_cell = "2.1"
+static-alloc = "0.2"
+
+# Serialization (no_std)
+postcard = { version = "1.1", default-features = false }
+serde = { version = "1.0.228", default-features = false, features = ["derive"] }
+
+# KNX stack dependencies (needed when pulling in zweidraehte via path)
+heapless = "0.9"
+const-default = { version = "1.0", default-features = false, features = ["derive"] }
+zerocopy = { version = "0.8", features = ["derive"] }
+paste = "1.0"
+serde_with = { version = "3.12", default-features = false, features = ["macros"] }
+replace_with = { version = "0.1", default-features = false }
+
+# Build for minimal size on all embedded targets.
+# panic = "abort" is required for no_std — unwinding is not available.
+[profile.dev]
+incremental = false
+lto = true
+opt-level = "z"
+panic = "abort"
+
+[profile.release]
+incremental = false
+codegen-units = 1
+debug = true
+lto = true
+opt-level = "z"
+panic = "abort"

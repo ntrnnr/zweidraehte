@@ -12,7 +12,7 @@
 //! read/write adapter: the embedded FRAM (`FramRegion` in `stm32-common`) and
 //! the conformance harness's shared-memory region (`ShmSeqStorage`) share this
 //! one layout. Being HAL-free (only `read_at`/`write_at` and integer arithmetic)
-//! it lives in the core crate, the only crate both the FRAM store (a `cross/`
+//! it lives in the core crate, the only crate both the FRAM store (a `firmware/`
 //! workspace member) and the conformance store (the main workspace) depend on.
 //!
 //! # Layout

@@ -495,9 +495,9 @@ it in its own loop.
 
 ### Storage Backends
 
-**`JsonStorage`** (for Linux userspace, in `examples/testutil`):
+**`JsonStorage`** (for Linux userspace, in `examples/support`):
 ```rust
-use zweidraehte_testutil::storage::{FileIdentity, JsonStorage};
+use support::storage::{FileIdentity, JsonStorage};
 
 let identity = FileIdentity::load_or_provision("device_identity.json", SERIAL)?;
 let mut storage: JsonStorage<MyState, _> =

@@ -22,8 +22,8 @@ is shaped the way it is, *which* extension point to reach for, or
 ### 1.1 Goals
 
 - Run the same core stack on embedded `no_std + no alloc` targets
-  (the `cross/` subtree) and on embedded Linux userspace (the
-  `examples/testutil` binaries).
+  (the `firmware/` subtree) and on embedded Linux userspace (the
+  `examples/devices` demo binaries).
 - Be generic over link medium (TP1, KNX/IP, USB, IP-interface,
   mock), over BCU style (System B today; more later), and over
   per-device extensions (security, diagnostics, custom interface
@@ -1269,7 +1269,7 @@ memory map.
 
 | Trait | Methods | Implementations |
 |---|---|---|
-| `IpPlatform` | `current_ip_address`, `current_subnet_mask`, `current_default_gateway`, `mac_address`, `current_ip_assignment_method`, `ip_capabilities` | `LinuxIpTransport`, `MockIpPlatform` (testutil), `embassy-net` wrapper |
+| `IpPlatform` | `current_ip_address`, `current_subnet_mask`, `current_default_gateway`, `mac_address`, `current_ip_assignment_method`, `ip_capabilities` | `LinuxIpTransport`, `MockIpPlatform` (examples/support), `embassy-net` wrapper |
 | `IpPlatformConfig` | `apply_ip_config(&IpConfig) -> Result<_, Error>` | same |
 
 ---

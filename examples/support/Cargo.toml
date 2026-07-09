@@ -1,0 +1,17 @@
+[package]
+name = "zweidraehte-support"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "support"
+
+[dependencies]
+zweidraehte-device = { path = "../../crates/zweidraehte-device", features = ["log", "linux", "knxip"] }
+zweidraehte-proto = { path = "../../crates/zweidraehte-proto", features = ["log", "knxip", "std"] }
+zweidraehte-platform = { path = "../../crates/zweidraehte-platform", features = ["log", "linux"] }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+libc = { workspace = true }
+log = { workspace = true }

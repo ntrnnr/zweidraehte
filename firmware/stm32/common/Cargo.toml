@@ -1,0 +1,66 @@
+[package]
+name = "stm32-common"
+version = "0.1.0"
+edition = "2024"
+
+# STM32-specific shared code for KNX devices: direct-register UART
+# driver (for TPUART ACK timing), internal flash storage (plain and
+# Data-Secure identity records), a RAM-only sequence-number store, and
+# a small PRNG (`Stm32CommonRng`) that plugs into
+# `StackDefinition::Rng` for the Secure Application Layer's `S-A_Sync`
+# challenge generation. HAL-agnostic helpers (DebouncedButton,
+# CortexMSystem) live in embedded-common and are imported from there
+# directly at call sites.
+
+[dependencies]
+# Embassy core
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
+embassy-stm32 = { workspace = true, features = ["defmt", "unstable-pac"] }
+embassy-sync = { workspace = true }
+embassy-hal-internal = { workspace = true }
+
+# Embedded HAL traits
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+embedded-io-async = { workspace = true }
+embassy-futures = { workspace = true }
+
+# Cortex-M / embedded
+cortex-m = { workspace = true }
+defmt = { workspace = true }
+portable-atomic = { version = "1.5", features = ["critical-section"] }
+critical-section = "1.2.0"
+static_cell = { workspace = true }
+
+# Heapless collections — used by the SIAT view (`SiatStore`) and the KV mirror.
+heapless = { workspace = true }
+
+# Shared persistence backends and the FlashIo seam (the generic ConfigStore
+# the StmFlashStorage alias is built on, plus the wear-levelled / verbatim KV
+# backends used by other STM32 firmware).
+embedded-common = { path = "../../common/embedded-common" }
+
+# KNX stack and platform traits
+zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }
+zweidraehte-proto = { path = "../../../crates/zweidraehte-proto", default-features = false, features = ["defmt"] }
+zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
+
+# Serialization for flash storage
+postcard = { workspace = true }
+serde = { workspace = true }
+chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
+
+# SX1211 KNX-RF codec + driver (only pulled in by the `rf` feature).
+knxrf = { path = "../../common/knxrf", default-features = false, features = ["defmt"], optional = true }
+
+[features]
+# When enabled, missing or corrupt KNXP records on first boot are
+# silently filled in from compile-time constants emitted by the
+# firmware's `build.rs` (see ZZ_SERIAL_HEX / ZZ_FDSK_HEX / ZZ_MAC_HEX).
+# Off by default — production firmware refuses to boot without a record.
+provision-on-boot = []
+
+# KNX-RF support: the SX1211 transceiver adapter (`sx1211_adapter`) bridging the
+# blocking SX1211 driver to the device stack's async `RfTransceiver` trait.
+# Pulls in the `knxrf` codec/driver and the device stack's `rf` link layer.
+rf = ["dep:knxrf", "zweidraehte-device/rf"]

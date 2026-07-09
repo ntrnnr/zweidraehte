@@ -1118,7 +1118,7 @@ No firmware changes are needed for modules - your firmware just sees flat parame
 
 ### Complete Module Example
 
-See [testutil/src/devices/module_test_device.rs](../testutil/src/devices/module_test_device.rs) for a complete working example with:
+See [examples/devices/src/module_test_device.rs](../examples/devices/src/module_test_device.rs) for a complete working example with:
 - Module definition using `define_module!` macro
 - Communication objects with `#[derive(EtsComObjects)]`
 - Device params using `#[ets(module = ...)]` for automatic helpers

@@ -38,7 +38,7 @@ use zweidraehte_device::provisioning::{self, ProvisioningRecord, fdsk_string};
 //    much to erase before writing.
 //
 // The flash addresses come straight from the firmware's flash layout:
-// see `cross/stm32-common/src/storage.rs` and `cross/rp-common/src/storage.rs`.
+// see `firmware/stm32/common/src/storage.rs` and `firmware/rp2040/common/src/storage.rs`.
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum Target {

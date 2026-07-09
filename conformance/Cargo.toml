@@ -1,0 +1,46 @@
+[package]
+name = "zweidraehte-conformance"
+version = "0.1.0"
+edition = "2024"
+description = "KNX conformance testing framework"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "ip-secure", "conformance"] }
+zweidraehte-proto = { path = "../crates/zweidraehte-proto", features = ["log", "knxip", "ip-secure", "std"] }
+embassy-sync = { workspace = true }
+embassy-time = { workspace = true, features = ["std"] }
+embassy-futures = { workspace = true }
+embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
+const-default = { workspace = true }
+zerocopy = { workspace = true }
+static_cell = { workspace = true }
+paste = { workspace = true }
+heapless = { workspace = true }
+log = { workspace = true, features = ["std"] }
+async-io = "2"
+nix = { version = "0.29", features = ["mman", "fs"] }
+tempfile = "3"
+serde = { workspace = true, features = ["derive", "alloc", "std"] }
+postcard = { version = "1.1.3", features = ["alloc"] }
+serde_with = { workspace = true, features = ["macros"] }
+getrandom = "0.4.2"
+env_logger = { workspace = true }
+zweidraehte-platform = { path = "../crates/zweidraehte-platform", features = ["linux"] }
+socket2 = "0.6.4"
+
+[[bin]]
+name = "conformance-runner"
+path = "src/bin/runner.rs"
+
+[[bin]]
+name = "conformance-dut"
+path = "src/bin/dut.rs"
+
+[[bin]]
+name = "conformance-dut-secure"
+path = "src/bin/dut_secure.rs"
+
+[[bin]]
+name = "conformance-dut-ip-secure"
+path = "src/bin/dut_ip_secure.rs"
