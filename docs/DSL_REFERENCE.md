@@ -55,8 +55,11 @@ The DSL consists of derive macros and a declarative macro:
            ▼                     ▼                     ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                    Derive Macros (ets-macros)                   │
-│  Generates: ETS_PARAMS, ETS_VARIANTS, ETS_UNION_INFO,          │
-│             ETS_COMM_OBJECTS, Index enum                        │
+│  Generates: ETS_PARAMS, ETS_PARAMS_EXT, NUM_PARAMS,            │
+│             ETS_UNIONS (params) / ETS_UNION_INFO +              │
+│             ETS_SELECTOR_VARIANTS (unions), ETS_VARIANTS,       │
+│             ETS_COMM_OBJECTS, ETS_COMM_OBJECT_REFS,             │
+│             NUM_COMM_OBJECTS, Index enum                        │
 └──────────┬───────────────────────────────────────────────────────┘
            │
            ▼
@@ -141,7 +144,7 @@ The macro generates defaults as follows:
 | `skip` | Exclude from ETS output | For padding fields |
 | `string` | Treat `[u8; N]` as text | For text parameters |
 | `text_pattern = "..."` | ETS text template substituted with `{{0:default}}` against the parameter's own ParameterRef | `text_pattern = "{{0:Channel}}"` |
-| `text_source = "..."` | Mark this parameter as the text source for a module's text-substitution mechanism (V20 modules only) | `text_source = "channel_name"` |
+| `text_source` | Mark this parameter as the text source for a module's text-substitution mechanism (V20 modules only; bare flag) | `text_source` |
 
 ### Supported Field Types
 
@@ -264,8 +267,7 @@ ets_range_enum! {
 - `ETS_VARIANTS: &'static [EtsEnumVariant]`
 - `ETS_SIZE_BITS: u8`
 - `ETS_TYPE_NAME: &'static str`
-- `impl Default`
-- `impl ConstDefault`
+- `impl ConstDefault` (derive `Default` yourself if needed)
 
 ---
 
@@ -277,7 +279,7 @@ Use `#[derive(EtsEnum)]` for simple enums that appear as dropdowns in ETS.
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Default)]
-#[repr(u8)]  // Required: must have a primitive repr
+#[repr(u8)]  // Required: #[repr(u8)] or #[repr(u16)]
 pub enum SendMode {
     #[default]
     #[ets(display = "cyclic")]
@@ -314,7 +316,7 @@ impl ConstDefault for SendMode {
 | Attribute | Description |
 |-----------|-------------|
 | `display = "..."` | Text shown in ETS dropdown |
-| `#[default]` | Marks the default variant (also generates `ConstDefault`) |
+| `#[default]` | Marks the default variant: generates `ConstDefault` only — derive `Default` separately (`#[derive(EtsEnum, Default)]`) |
 
 ---
 
@@ -523,6 +525,41 @@ Use `{{param_name}}` or `{{param_name:default}}` for dynamic text:
 #[ets_ref(dpt = DPT_Switch, text = "{{channel_name:Channel 1}}: Switch")]
 ```
 
+### Further Attributes
+
+Field-level `#[ets(...)]`:
+
+- `initial = <expr>` — non-default seed value used in the generated
+  `new()` (e.g. `initial = DPT_SceneControl::activate(0)`); without it
+  the object starts at `ConstDefault::DEFAULT`.
+- `selector_param = "<param>"` — names the `EtsParams` field whose
+  value selects among this object's multi-DPT `#[ets_ref(when = …)]`
+  variants. Required on multi-DPT objects; the `when`-conditioned refs
+  attach to that parameter's ref in the generated XML. `selector_enum`
+  (struct level) instead controls the generated typed-accessor enum
+  for reading such objects at runtime.
+
+Struct-level `#[ets(...)]`:
+
+- `bus_hook` — the derive still generates the `ComObjects` dispatch
+  but leaves the `ComObjectBusHook` impl to you (custom reaction to
+  bus writes).
+- `manual_impl` — generate only the metadata (`ETS_COMM_OBJECTS`,
+  `Index`, …); you hand-write both the `ComObjects` impl and the bus
+  hook.
+
+### What Gets Generated
+
+- `Index` enum (one variant per object) implementing the
+  `ComObjectIndex` trait (`from_index(u16) -> Option<Self>`, from
+  `zweidraehte_device::objects::comm`)
+- `ETS_COMM_OBJECTS: &'static [EtsCommObjectDef]` and
+  `ETS_COMM_OBJECT_REFS: &'static [EtsCommObjectRefDef]`
+- `NUM_COMM_OBJECTS: usize`
+- `new()` seeding each object (honouring `initial = …`), plus the
+  `ComObjects` impl and bus hook unless `bus_hook` / `manual_impl`
+  opt out
+
 ---
 
 ## ets_pages! - Page Layout Macro
@@ -577,6 +614,8 @@ impl EtsPageLayout for MyDevice {
 |---------|---------|------------|
 | `param name` | Simple parameter reference | `<ParameterRefRef />` |
 | `param union::Variant.field` | Union field parameter | `<ParameterRefRef />` (with computed name) |
+| `params [a, b, c]` | Shorthand: several simple parameters at once | One `<ParameterRefRef />` per name |
+| `objs [x, y]` | Shorthand: several comm-object references at once | One `<ComObjectRefRef />` per name |
 | `selector union_field` | Union selector (shows selector + choose/when) | Selector param + choose block |
 
 #### Visual Keywords
@@ -776,7 +815,7 @@ Define comm objects FIRST with `#[derive(EtsComObjects)]`. This single type serv
 ETS metadata generation AND runtime storage:
 
 ```rust
-use ets_macros::EtsComObjects;
+use zweidraehte_device::prelude::*;
 use zweidraehte_device::objects::comm::{ComObject, ComObjectStorage};
 use zweidraehte_proto::dpt::*;
 
@@ -801,7 +840,7 @@ pub struct DimmerChannelObjects {
 Use the `define_module!` macro to define the module with its parameters:
 
 ```rust
-knxprod::define_module! {
+zweidraehte_knxprod::define_module! {
     pub module DimmerChannelModule {
         name = "DimmerChannel",
         description = "Dimmer channel module",
@@ -859,7 +898,9 @@ knxprod::define_module! {
 
 The macro generates:
 - `DimmerChannelModuleParams` - params struct with `#[derive(EtsParams)]`
-- `DIMMER_CHANNEL_MODULE_VIRTUAL_PARAMS` - virtual params constant
+- `DIMMER_CHANNEL_MODULE_VIRTUAL_PARAMS` - virtual params constant (naming
+  rule: the module struct name in SCREAMING_SNAKE_CASE plus
+  `_VIRTUAL_PARAMS`)
 - `DimmerChannelModule` - module struct implementing `KnxModule`
 
 ### Module Argument Types
@@ -878,7 +919,8 @@ args {
 | `param_offset` | `ParamOffset` | Base address for parameters (generates `BaseOffset`) |
 | `object_number` | `ObjectNumber` | Base index for comm objects (generates `BaseNumber`) |
 | `display(N)` | `Channel` | For `{{ArgName}}` text templates; N = values consumed per instance |
-| `value_base` | `ValueBase` | Base for enum/value parameters (generates `BaseValue`) |
+| `value_base(N)` | `ValueBase` | Base for enum/value parameters (generates `BaseValue`); N = allocation count |
+| `text(N)` | `Text` | String argument with max length N |
 | `custom` | `Custom` | Generic argument for other uses |
 
 The `display(N)` argument allocates N sequential values per instance. For example, `ChNo: display(1)` gives:
@@ -919,10 +961,15 @@ in block titles, comm object names, etc.
 
 ### Multi-Channel Module Instantiation
 
-For devices with multiple identical channels (e.g., 4-channel dimmer), use the `module_instances` helper with the `raw` keyword:
+For devices with multiple identical channels (e.g., 4-channel dimmer), use the `module_instances` helper with the `raw` keyword.
+
+Note: `module_instances()` fills the instance arguments by the fixed
+names `ParamBase`, `ObjBase`, and `ChNo` — the module's `args { }`
+block must use exactly those names (custom argument names are not
+supported by this helper):
 
 ```rust
-use knxprod::definition::module::module_instances;
+use zweidraehte_knxprod::definition::module::module_instances;
 
 impl EtsPageLayout for MyDevice {
     fn page_layout() -> PageStructure {
@@ -1041,7 +1088,7 @@ The module system generates:
 By default, the generator creates a simple layout with all module parameters and comm objects in a single `ParameterBlock`. For more control over the ETS UI presentation, use the `layout { }` block in `define_module!`:
 
 ```rust
-knxprod::define_module! {
+zweidraehte_knxprod::define_module! {
     pub module DimmerChannelModule {
         name = "DimmerChannel",
         // ... args, params, objects ...
@@ -1066,7 +1113,9 @@ knxprod::define_module! {
 
 #### Layout Block Syntax
 
-The `layout { }` block supports these elements:
+The `layout { }` block is parsed by the `ets_module_pages!` macro (a
+sibling of `ets_pages!` producing `ModuleLayoutElement`s; `define_module!`
+invokes it for you). It supports these elements:
 
 | Element | Syntax | Purpose |
 |---------|--------|---------|
@@ -1075,6 +1124,10 @@ The `layout { }` block supports these elements:
 | `obj` | `obj field_name` | Reference to comm object by field name |
 | `sep` | `sep "label"` | Visual separator with label |
 | `when` | `when @ selector { [value] => { ... } }` | Conditional visibility |
+
+Unlike `ets_pages!`, only the `when @param` form exists here — there is
+no bare `when union_field` arm that appends `_selector` to the name.
+Spell the selector parameter out explicitly.
 
 #### Conditional Visibility in Modules
 
@@ -1127,11 +1180,56 @@ See [examples/devices/src/module_test_device.rs](../examples/devices/src/module_
 
 ---
 
+## ets_virtual_params! - Device-Level Virtual Parameters
+
+Modules declare virtual parameters in their `virtual_params { }` block;
+for **device-level** (non-module) ETS-only parameters use the
+`ets_virtual_params!` macro from `zweidraehte_device`:
+
+```rust
+zweidraehte_device::ets_virtual_params! {
+    pub DEVICE_VIRTUAL_PARAMS {
+        device_name: String(50) => "Device name" [text_source],
+    }
+}
+```
+
+This emits a `const DEVICE_VIRTUAL_PARAMS: &[EtsParamDefExt]` describing
+parameters that exist only in ETS (no device memory). Supported type:
+`String(N)` (N bytes); the `[text_source]` modifier marks the `{{0}}`
+template source. Hand the constant to the `KnxprodBuilder` alongside the
+regular `ETS_PARAMS`.
+
+## ets_translations! - Translation Tables
+
+`ets_translations!` (also from `zweidraehte_device`) declares per-locale
+display-text overrides for enum variants, parameters, comm objects, and
+page/block titles, which the generator emits as MTXML `<Translations>`:
+
+```rust
+zweidraehte_device::ets_translations! {
+    pub MODULE_TRANSLATIONS_DE;
+
+    "de-DE" {
+        ChannelEnable::Disabled => "Deaktiviert",
+        ChannelEnable::Enabled  => "Aktiviert",
+        param device_name  => "Gerätename",
+        param enable_ch1   => "Kanal 1 aktivieren",
+        // obj / block entries follow the same arrow form
+    }
+}
+```
+
+Both `module_test_device.rs` and `mdt_push_button_lite.rs` use it; see
+those files for the full entry grammar.
+
+---
+
 ## Complete Example
 
 ```rust
-use knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
-use ets_macros::{EtsParams, EtsEnum, EtsUnion, EtsComObjects};
+use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
+use zweidraehte_device::prelude::*;  // re-exports the Ets* derives
 
 // Simple enum for dropdowns
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Default)]
@@ -1585,9 +1683,14 @@ pub enum OutputModeUnionDiscriminant {
     Scene = 2,
 }
 
-// Get just the discriminant
+// Get just the discriminant: match on the union — the discriminant
+// enum has no generated From impl.
 fn log_mode(params: &DeviceParams) {
-    let discriminant = OutputModeUnionDiscriminant::from(&params.output_mode);
+    let discriminant = match &params.output_mode {
+        OutputModeUnion::Switch(_) => OutputModeUnionDiscriminant::Switch,
+        OutputModeUnion::Dimmer(_) => OutputModeUnionDiscriminant::Dimmer,
+        OutputModeUnion::Scene(_) => OutputModeUnionDiscriminant::Scene,
+    };
     log!("Current mode: {:?}", discriminant);
 }
 ```
@@ -1899,8 +2002,9 @@ impl Device {
     }
 
     pub fn handle_group_telegram(&mut self, obj_index: u16) {
-        // Use generated Index enum
-        let index = Index::try_from(obj_index).ok();
+        // Use the generated Index enum via the ComObjectIndex trait
+        // (zweidraehte_device::objects::comm): from_index(u16) -> Option<Self>
+        let index = Index::from_index(obj_index);
 
         match index {
             Some(Index::SwitchInput) => {
@@ -1960,5 +2064,6 @@ pub enum MyEnum {
     First = 0,
     Second = 1,
 }
-// No manual impl needed!
+// No manual ConstDefault impl needed. `Default` still comes from its
+// own derive — EtsEnum does not generate it.
 ```

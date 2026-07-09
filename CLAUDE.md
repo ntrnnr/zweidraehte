@@ -152,13 +152,14 @@ Key modules:
   - `layer.rs` - `LayerContext<D>` (persistent shared runtime infrastructure, owned by `StackResources`)
   - `stack.rs` - `StackContext<'a, D>` (transient bundle assembled in `Runner::run`)
 - `resources.rs` - `StackResources<D, BUF_SZ, NUM_BUFS>` pre-allocated static storage
-- `inner.rs` - `Inner<D>` (owned core: state, platform, memory map, &layer_context)
-- `state.rs` - `StackState`, `HasAuthorization`, `HasSecureIdentity`, `HasPersistence`, `CoreDeviceState`
-- `storage.rs` - `DeviceIdentity`, `SecureDeviceIdentity`, `DeviceStorage`, `SequenceNumberStorage`, `HasSequenceStorage`
+- `stack_core.rs` - `StackCore<D>` (pub(crate) owned interior: state, platform, memory map, &layer_context)
+- `state.rs` - `StackState`, `HasAuthorization`, `HasPersistence`, `HasExtensionState`, `HasSecurityMode`, `HasDiagnosticsContext`, `DiagnosticsView`, `ReadObjectError`/`UpdateObjectError`
+- `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`, `ConfigStoreBackend`, `HasConfigStore`, `HasDeviceConfig`, `StorageHooks`; the bounded store handles (`ConfigStorage`, `SecureStorage`, `SecureIpStorage`) and the region-anchored layout vocabulary (`StorageLayout`, `Placed<R, C, L>`, `StoreOf<P>`, `Stored<C>`) in `layout.rs`/`region.rs`; backends in `backends/`; the storage task in `task.rs`
+- `prelude.rs` - One-stop re-exports for device authors (derive macros, core traits, common types)
 - `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
 - `config.rs` - Device-specific configuration macros (`knx_stack_config!`)
 - `ets.rs` - ETS integration, parameter export, derive macro re-exports
-- `ip.rs` - `IpStackState`, `IpPlatformState` (IP extension state traits), platform re-exports
+- `ip.rs` - IP extension view traits (`IpStateView`, `HasIpExtensionState`, `HasRoutingMulticastRebind`, `HasAdditionalIas`, `IpSecureStateView`, `HasIpSecureView`), platform re-exports
 - `actor.rs` - Lightweight request/response primitives (`Request<M, R>`, `ActorRequest`)
 - `device_model.rs` - `DeviceModelNotifier` and device-model lifecycle
 - `restart.rs` - Restart request types and erase codes
@@ -192,7 +193,7 @@ Subdirectories:
     - `objects/` - `SystemBObjects` container
     - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
-    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all firmware devices use it)
+    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all firmware devices use it). `#[macro_export]`ed, so it is invoked as `zweidraehte_device::system_b_standard_stack!` (crate root), not via the `bcus::system_b` path
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware

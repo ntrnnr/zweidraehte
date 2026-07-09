@@ -723,11 +723,12 @@ pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const P
     pub security: SecurityState<GRP, P2P, GO>,
     /// Factory Default Setup Key.
     ///
-    /// This is the *only* live copy of the FDSK in the device state.
-    /// It is consumed from [`SecureResources`] at construction and
-    /// re-applied to the security store on every factory reset
-    /// (03/05/01 §6.1.4). `SystemBDeviceState` does not duplicate it;
-    /// [`HasSecureIdentity::fdsk`] on the device state forwards here.
+    /// This is the extension's runtime copy of the FDSK. It is consumed
+    /// from [`SecureResources`] at construction and re-applied to the
+    /// security store on every factory reset (03/05/01 §6.1.4) — that
+    /// reseed happens in `on_erase`, which only sees `&self`, hence the
+    /// copy. The factory source stays on the device identity
+    /// ([`SecureDeviceIdentity::fdsk`](crate::storage::SecureDeviceIdentity::fdsk)).
     fdsk: [u8; 16],
 }
 

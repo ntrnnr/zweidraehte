@@ -43,10 +43,12 @@ each concrete device into the exact code it needs.
 The router's dispatch table is not looked up at runtime from a
 registry — it is a `const [u8; 256]` array built at compile time from
 each layer's `HANDLES` slice. A duplicate `ServiceType` registration
-fails to compile. Layer stacks are composed via the
-`impl_layer_stack!` macro over tuples up to eight layers, so
-`(NetworkLayer, TransportLayer, ApplicationLayer)` is a single
-compile-time type with a known dispatch shape.
+fails to compile. Layer stacks are concrete structs such as
+`StandardLayerStack<'a, D, AL>` (see `composition.rs`); their handler
+wiring is derived with `#[derive(ServiceRegistry)]`, and System B
+forwards traits through sub-structs with the `forward_to_field!`
+macro, so `(NetworkLayer, TransportLayer, ApplicationLayer)` is a
+single compile-time type with a known dispatch shape.
 
 ### 1.3 Three pillars
 
@@ -92,10 +94,10 @@ The stack has **two** context bundles with different lifetimes:
   link-layer builders and interface-object construction.
 
 The split is not stylistic — it is forced by the ownership graph.
-`Inner<D>` owns the device `State`. The `InterfaceObjects<'a>`
+`StackCore<D>` owns the device `State`. The `InterfaceObjects<'a>`
 container borrows from that state (address tables, device object, …).
 If a single context type stored both, it would be self-referential.
-So `Inner` owns state; `StackContext` is assembled as a pair of
+So `StackCore` owns state; `StackContext` is assembled as a pair of
 `&'a` references when needed; a prior attempt to fold the two back
 together hit exactly this wall and is warned against in
 [`context/stack.rs:8`](../crates/zweidraehte-device/src/context/stack.rs#L8).
@@ -103,15 +105,15 @@ together hit exactly this wall and is warned against in
 ```mermaid
 graph TB
   subgraph StackResources["StackResources&lt;D, BUF_SZ, NUM_BUFS&gt; — static"]
-    Inner["Inner&lt;D&gt;<br/>state · platform · memory_map · &amp;layer_context"]
+    StackCore["StackCore&lt;D&gt;<br/>state · platform · memory_map · &amp;layer_context"]
     LC["LayerContext&lt;D&gt;<br/>outbox · buffers · channels"]
     IO["InterfaceObjects&lt;'static&gt;<br/>borrows from state"]
     LLR["LinkLayer Resources"]
   end
-  Inner -->|references| LC
-  IO -.->|borrows| Inner
+  StackCore -->|references| LC
+  IO -.->|borrows| StackCore
   SC["StackContext&lt;'a, D&gt; — transient<br/>built in Runner::run"]
-  SC -->|&amp;'a| Inner
+  SC -->|&amp;'a| StackCore
   SC -->|&amp;'a| IO
 ```
 
@@ -173,18 +175,18 @@ main
  │  STORAGE.init(ConfigStorage::new(…)) → &'static stores struct,
  │  storage.load_config() (may be None on first boot)
  ├─ build D::StateInit { identity, optional loaded config }
- ├─ build link-layer builder (e.g. KnxNetIpBuilder, TpUartBuilder)
+ ├─ build link-layer builder (e.g. KnxNetIpBuilder, TpUartLinkLayerBuilder)
  │
  ├─ zweidraehte_device::new(resources, ll_builder, state_init,
  │                          platform, memory_map, storage)
  │    1. BufferManager::new → DynBufferManager
  │    2. LayerContext::new(buffer_manager, storage)  (program-lifetime)
  │    3. D::create_state(state_init)        → D::State
- │    4. Inner { state, platform, memory_map, &layer_context }
+ │    4. StackCore { state, platform, memory_map, &layer_context }
  │    5. D::create_interface_objects(state, platform, layer_ctx)
  │
  └─ Runner::run
-      ├─ Build StackContext<'a, D>  (transient: &Inner, &InterfaceObjects)
+      ├─ Build StackContext<'a, D>  (transient: &StackCore, &InterfaceObjects)
       ├─ D::LayerBuilder::build(&stack_context, &channels)
       ├─ LayerStack::init()
       │    — DeviceModel init, AL read-on-init, etc.
@@ -195,6 +197,17 @@ main
              · timer deadline → LayerStack::poll
              · service input → LayerStack::handle_service_input
 ```
+
+### 2.3 Related crates
+
+The device stack has a client-side sibling: `zweidraehte-client` is a
+KNX/IP tunneling **client** (std, Linux) for device management — it
+connects to an interface, manages the tunnel lifecycle (heartbeat,
+sequence numbers) in a background worker task, and exposes connected
+and unconnected management services (`device_descriptor_read`,
+`property_read`, …) over channels. It shares `zweidraehte-proto` with
+the device stack but none of the device-side machinery described in
+this document.
 
 ---
 
@@ -225,8 +238,8 @@ defines a zero-sized struct and implements `StackDefinition` for it.
 | `Platform` | — | `()` | IP platform (network config/query). |
 | `P` | `ConstDefault` | — | Application parameter struct. |
 | `CO` | `ComObjects` | — | Communication-object container. |
-| `LLB` | `LinkLayerBuilder<StackContext<Self>>` | — | Link-layer builder. |
-| `ES` | `Extension<Self::Platform>` | — | Medium extension (state + augment). |
+| `LLB` | `LinkLayerBuilderBase + for<'a> LinkLayerBuilder<StackContext<'a, Self>>` | — | Link-layer builder. |
+| `ES` | — | — | Medium extension (state + augment). Unbounded at the definition; call sites require `Extension<Self::Platform>`. |
 | `State` | `CoreDeviceState<Self::CO>` | — | Unified runtime state + tables. |
 | `Identity` | `DeviceIdentity` | `StaticIdentity` | Factory identity. Use `StaticSecureIdentity` for Data Secure. |
 | `StateInit` | — | — | Envelope passed to `create_state`. Not serialisable. |
@@ -296,7 +309,8 @@ pub trait ApciHandler<D: StackDefinition> {
 pub trait Augment<D: StackDefinition> {
     fn additional_object_count(&self) -> u16 { 0 }
     fn additional_object_type_at(&self, _index: u16) -> Option<InterfaceObjectType> { None }
-    fn get_property_descriptor(&self, _ot: InterfaceObjectType, _pid: u16) -> Option<PropertyDescriptor> { None }
+    fn property_descriptor(&self, _ot: InterfaceObjectType, _pid: u16) -> Option<PropertyDescriptor> { None }
+    fn descriptor_count_for(&self, _object_type: InterfaceObjectType) -> u16 { 0 }
     fn property_description_read(&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn property_value_read   (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
     fn property_value_write  (&self, _ctx: &ServiceCtx<'_, D>, …) -> Option<…> { None }
@@ -453,6 +467,7 @@ the `*Config` persistence vocabulary in §4. Contents:
 | `event_channel` | `PubSubChannel<Mutex, (CO::Index, ComObjectEvent), 4, 4, 1>` | CO value changes delivered to user code + logger. |
 | `lifecycle_channel` | `PubSubChannel<Mutex, LifecycleEvent, 4, 4, 1>` | Application lifecycle events. |
 | `restart_channel` | `Channel<Mutex, RestartRequest, 1>` | Restart requests from the stack to user binary. |
+| `persist_channel` | `Channel<Mutex, PersistRequest, 2>` | Advisory persist signals (e.g. ETS download complete) from the AL to the storage task. |
 | `app_service_channel` | `Channel<Mutex, Request<ApplicationLayerService, _>, 1>` | Actor-style requests *to* the AL from user code. |
 | `group_data` | `GroupDataState` | Shared bookkeeping between AL's built-in group handler and augment-held `GroupDataProvider`s. |
 | `storage` | `D::Storage` | The device's stores-struct handle (`&'static ConfigStorage<…>` etc.; `()` when unset). Layers pull stores from it through capability traits (e.g. `HasSeqStore`). |
@@ -462,9 +477,11 @@ the `*Config` persistence vocabulary in §4. Contents:
 
 **Inherent helpers (no trait):** `push_outbox(msg)`,
 `publish_event(index, ComObjectEvent)`
-(publishes a CO event on `event_channel`), and
+(publishes a CO event on `event_channel`),
 `try_send_restart_request(RestartRequest) -> bool` (pushes a restart
-request onto `restart_channel`) are inherent methods on
+request onto `restart_channel`), and
+`try_send_persist_request(PersistRequest) -> bool` (advisory persist
+signal onto `persist_channel`) are inherent methods on
 `LayerContext<D>` — consumers (layers, augments emitting telegrams)
 call them directly on the concrete context, without going through a
 context trait. A context trait would abstract nothing here: each
@@ -479,18 +496,18 @@ references:
 
 ```rust
 pub struct StackContext<'a, D: StackDefinition> {
-    inner: &'a Inner<D>,
+    inner: &'a StackCore<D>,
     interface_objects: &'a D::InterfaceObjects<'static>,
 }
 ```
 
 Accessors: `state()`, `layer_context()`, `interface_objects()`,
-`memory_map()`. See §1.4 for why this cannot fold into `Inner`.
+`memory_map()`. See §1.4 for why this cannot fold into `StackCore`.
 
 **Context traits provided** (all on `StackContext<'_, D>`):
 
 - Always: `BufferManagerContext`, `ApduLengthContext`,
-  `PropertyServiceContext`, `KnxIndividualAddressContext`,
+  `PropertyServiceContext`, `IndividualAddressContext`,
   `AddressTableContext`.
 - Conditional on `D::State: HasMaxRetryCount`: `MaxRetryCountContext`.
 - Under `feature = "knxip"` and `D: IpCapableStack`:
@@ -500,21 +517,21 @@ Accessors: `state()`, `layer_context()`, `interface_objects()`,
 The `IpCapableStack` bound
 ([`context/stack.rs`](../crates/zweidraehte-device/src/context/stack.rs))
 is a blanket-implemented alias that bundles
-`D::State: HasExtensionState<ES: IpStateView>` and
+`D::State: HasExtensionState<ES: HasIpExtensionState>` and
 `D::Platform: IpPlatform`, so IP-specific impls avoid repeating the
 where clause.
 
-### 3.5 `StackResources` and `Inner`
+### 3.5 `StackResources` and `StackCore`
 
 **Files:**
 [`resources.rs`](../crates/zweidraehte-device/src/resources.rs),
-[`inner.rs`](../crates/zweidraehte-device/src/inner.rs)
+[`stack_core.rs`](../crates/zweidraehte-device/src/stack_core.rs)
 
 `StackResources<D, BUF_SZ, NUM_BUFS>` is a struct of `MaybeUninit`
 fields placed in a `StaticCell`. Its fields are the entire physical
 footprint of the stack:
 
-- `inner: MaybeUninit<Inner<D>>`
+- `inner: MaybeUninit<StackCore<D>>`
 - `buffers: MaybeUninit<[[u8; BUF_SZ]; NUM_BUFS]>`
 - `buffer_manager: MaybeUninit<BufferManager<NUM_BUFS>>`
 - `layer_context: MaybeUninit<LayerContext<D>>`
@@ -524,7 +541,7 @@ footprint of the stack:
   can borrow `&'a D::Augments<'a>` across the stack's lifetime.
 - `interface_objects: MaybeUninit<D::InterfaceObjects<'static>>`
 
-`Inner<D>` is the owned core: `state: D::State`,
+`StackCore<D>` is the owned core: `state: D::State`,
 `platform: D::Platform`, `memory_map: D::Mem`,
 `layer_context: &'static LayerContext<D>` (reference, because the
 context lives in its own slot in `StackResources`).
@@ -579,6 +596,24 @@ All layers live under
   and the sequence store via `D::Storage: HasSeqStore` (the capability
   forwards through the `&'static` stores-struct reference).
 
+#### Layer-stack builders (`composition.rs`)
+
+A device never assembles `StandardLayerStack` by hand — it picks a
+`D::LayerBuilder: LayerStackBuilder<Self>` from
+[`composition.rs`](../crates/zweidraehte-device/src/composition.rs):
+
+| Builder | Layer shape | Use for |
+|---|---|---|
+| `InsecureDeviceBuilder` | `(NL, TL, ApplicationLayer)` | Plain TP1 / RF devices |
+| `InsecureIpDeviceBuilder` | `(NL, CemiTransportLayer<TL>, ApplicationLayer)` | Plain KNX/IP devices (cEMI framing between TL and link layer) |
+| `SecureDeviceBuilder<P2P = NoP2p>` | `(NL, TL, SecureApplicationLayer<ApplicationLayer>)` | KNX Data Secure devices; the `P2P: P2pFeature` parameter sizes point-to-point key slots |
+| `SecureIpDeviceBuilder<P2P>` | `(NL, CemiTL<TL>, SecureApplicationLayer<…>)` | Data Secure over KNX/IP |
+
+The builders are where compile-time guards live: `SecureDeviceBuilder`
+requires `D::Rng: SecureRng` (the default `NoRng` fails the bound), so
+forgetting to wire an RNG into a secure device is a compile error, not
+a runtime panic.
+
 ### 3.7 Link layers
 
 **Directory:**
@@ -592,7 +627,7 @@ router and link layer is three channels: `req` (router→LL), `ind`
 
 | Medium | Module | Async | Context traits consumed |
 |---|---|---|---|
-| TP1 (TPUART / NCN / Elmos) | `tpuart/` | yes | `BufferManagerContext`, `ApduLengthContext`, `MaxRetryCountContext`, `KnxIndividualAddressContext`, `AddressTableContext` |
+| TP1 (TPUART / NCN / Elmos) | `tpuart/` | yes | `BufferManagerContext`, `ApduLengthContext`, `MaxRetryCountContext`, `IndividualAddressContext`, `AddressTableContext` |
 | KNX/IP | `knxip/` | yes | `BufferManagerContext`, `ApduLengthContext`, `PropertyServiceContext` (device-management connection), `DeviceInfoContext`, `IpDiagnosticsContext`, `IpAdditionalIndividualAddressContext` |
 | KNX-RF (feature `rf`) | `knxrf/` | yes | `BufferManagerContext`, `RfDomainAddressContext`, `RfRetransmitterContext` (only with the `RetransmitEnabled` policy) |
 | USB (HID) | `usb/` | yes | `BufferManagerContext`, `ApduLengthContext`, `PropertyServiceContext` |
@@ -618,8 +653,8 @@ behaviour (03/02/05 §6.1.7) lives in the `RetransmitEnabled` policy, whose
 `LinkLayerBuilder` bound requires `CTX: RfRetransmitterContext`. A
 `StackContext` only implements that trait when `D::State:
 HasRfRetransmitter`, which only holds when the device composes the wrapper
-extension `RfRetransmitterExtension<Inner>` (Security-style; it adds the RF
-Medium Object's PID 57 and the Device Object's PID 74). So the *state +
+extension `RfRetransmitterExtension` (wraps `RfExtensionState`; it adds the
+RF Medium Object's PID 57 and the Device Object's PID 74). So the *state +
 interface-object surface* (the extension) and the *runtime behaviour* (the
 policy) are two independent opt-ins that the type system forces to agree:
 selecting the repeating link layer without the extension does not compile,
@@ -756,13 +791,13 @@ Key pieces:
   pins `Mem = SystemBMemoryMap`. Provides derived `ADT_SIZE`,
   `AST_SIZE`, `COT_SIZE` and default `memory_layout()` /
   `memory_map()`. Also provides type aliases (`Tp1StateFor<D>`,
-  `IpStateFor<D, Proto>`, `SecureTp1StateFor<D, SEQ, P2P>`, etc.)
+  `IpStateFor<D, Proto>`, `SecureTp1StateFor<D, P2P>`, etc.)
   that eliminate the repetition of `State` generic parameters.
 
 - **`device_state/mod.rs` — `SystemBDeviceState<…>`.** The concrete
   `State` type. Implements `StackState`, `HasPersistence`,
   `HasAuthorization`, `HasConnectionAuth`, `HasDeviceConfig`,
-  `DeviceModelNotifier`, `RestartHandler`, `HasExtensionState`, and
+  `DeviceModelNotifier`, `HasExtensionState`, and
   all `Has*Table` traits. Stores individual address, auth keys,
   routing count, programming mode, the four core tables, comm
   objects, diagnostics state, extension state, and per-connection
@@ -792,6 +827,50 @@ Key pieces:
   is how `create_interface_objects()` typically builds this — or
   call `Self::default_interface_objects(state, layer_ctx, augments)`
   on `SystemBStackDefinition` for the same wiring.
+
+#### `system_b_standard_stack!` — the standard `StackDefinition` impl
+
+Hand-writing `impl StackDefinition` repeats an always-identical
+System B shell (`Mem = SystemBMemoryMap`, table-size constants,
+`memory_layout()`, `StateInit` projection, the factory methods).
+The `system_b_standard_stack!` macro
+([`definition.rs`](../crates/zweidraehte-device/src/bcus/system_b/definition.rs),
+`#[macro_export]`ed at the crate root) emits both
+`impl SystemBStackDefinition` and `impl StackDefinition` from just the
+device-specific bill of materials:
+
+```rust
+zweidraehte_device::system_b_standard_stack! {
+    stack: MyDevice,
+    device: &DEVICE_DESCRIPTOR,
+    tl_style: TlStyle::Style1,
+    params: MyParams,
+    com_objects: MyComObjects,
+    link_layer_builder: TpUartLinkLayerBuilder<MyUartTx, MyUartRx>,
+    platform: (),
+    extension_state: Tp1ExtensionState,
+    state: Tp1StateFor<MyDevice>,
+    al_extensions: SystemBAlServices,
+    layer_builder: InsecureDeviceBuilder,
+}
+```
+
+Optional slots:
+
+- `resources: <type>` — construction-time resources threaded into
+  `StateInit` (e.g. `SecureResources<…>` carrying the FDSK).
+- `augments: { bundle: MyAugments, create: |state, platform, lctx| … }`
+  — a custom augment bundle; the macro emits `type Augments<'a>` and
+  `create_augments()` from it. Without this slot the medium
+  extension's own augment is projected directly.
+- `extra { … }` — verbatim items pasted into the `impl` block to
+  override any remaining defaults (`type Identity`, `type Rng`,
+  `type Mutex`, `const MAX_APDU_LENGTH`, …).
+
+All firmware devices use the macro; a fully hand-written
+`impl StackDefinition` is only needed for a non-standard
+`InterfaceObjects` wrapper, custom `Mem`, or custom `StateInit`
+shape (the conformance DUTs do this for `ConformanceMemoryMap`).
 
 ### 3.12 Extensions, augments, and `D::Augments<'a>`
 
@@ -852,7 +931,7 @@ hand-write theirs.)
 The `Extension` trait survives because it lets devices spell
 `<D::ES as Extension<D::Platform>>::Augment<'a, D>` as a clean type
 alias — useful when the augment type contains const generics
-derived from a `FeatureSet` (e.g. `IpAugment<'a, P, N, CAPS>`)
+derived from a `FeatureSet` (e.g. `IpAugment<'a, P, CAPS>`)
 that you don't want to hand-write.
 
 #### Concrete built-ins
@@ -863,8 +942,10 @@ that you don't want to hand-write.
 | `Tp1ExtensionState` | TP1 | `Tp1ExtensionConfig` | `()` | `Tp1Augment<'a>` | — |
 | `RfExtensionState` | KNX-RF | `RfExtensionConfig` | `()` | `RfAugment<'a>` | — |
 | `IpExtensionState<CAPS>` | KNX/IP | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
-| `SecureExtensionState<Inner, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<InnerResources>` | `(InnerAugment, SecurityAugment)` | — (seq store comes from `D::Storage`) |
-| `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment` | — |
+| `IpInterfaceExtension<N, CAPS>` | KNX/IP + tunneling server | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
+| `RfRetransmitterExtension` | KNX-RF retransmitter (wraps `RfExtensionState`) | `(RfExtensionConfig, RfRetransmitterConfig)` | `()` | RF augment + PID 57/74 surface | — |
+| `SecureExtensionState<Inner, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<Inner>` (generic over the inner `ExtensionState`; carries the FDSK) | `SecureAugmentBundle { inner, security }` (a `#[derive(ServiceRegistry)]` struct) | — (seq store comes from `D::Storage`) |
+| `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment<'a, GS = SecureGoSendAbsent>` | — |
 
 #### Composing augments on a device
 
@@ -968,10 +1049,17 @@ Several alias-helpers hide const-generic projection:
 | Alias | Hides | Located in |
 |---|---|---|
 | `Tp1StateFor<D>` | ADT/AST/COT sizes from `D::DEVICE` | `bcus/system_b/definition.rs` |
-| `IpStateFor<D, F>` | same + IP feature-set tunneling capacity & capability bits | same |
-| `SecureTp1StateFor<D, SEQ, P2P, SIAT>` | same + Data Secure const generics | same |
+| `IpStateFor<D, Proto>` | same + IP capability bits from the protocol marker | same |
+| `IpInterfaceStateFor<D, Proto>` | same, for the tunneling-capable `IpInterfaceExtension` | same |
+| `RfStateFor<D>` | same, for KNX-RF | same |
+| `SecureTp1StateFor<D, P2P>` | same + Data Secure point-to-point slot count | same |
+| `SecureRfStateFor<D, P2P>` | RF analogue of the above | same |
+| `SecureRfRetransmitterStateFor<D, P2P>` | same, with the RF retransmitter extension | same |
+| `SecureIpInterfaceStateFor<D, F, P2P, MAX_PW, MAX_TU>` | IP Secure tunneling interface const generics | same |
+| `SecureStateFor<D, Inner, P2P>` | Data Secure wrapper around an arbitrary inner extension | same |
+| `ExtensionAugmentFor<'a, D>` | the `D::ES` extension's augment projection | same |
 | `SystemBInterfaceObjectsFor<'a, D>` | `DefaultSystemBInterfaceObjects<'a, D, D::Augments<'a>>` | `bcus/system_b/objects/mod.rs` |
-| `IpAugmentFor<'a, P, F>` | `IpAugment` const generics from a `FeatureSet` | `bcus/system_b/extensions/ip/mod.rs` |
+| `IpAugmentFor<'a, P, F: FeatureSet>` | `IpAugment` const generics from a `FeatureSet` | `bcus/system_b/extensions/ip/mod.rs` |
 
 Each alias is right-sized: it spells the meaningful types and
 hides only the const-generic plumbing that's mechanically derived.
@@ -1022,19 +1110,21 @@ its capability impls as ordinary code.
 
 ```rust
 pub struct StorageMap;
-type Cfg = Placed<StmConfigRegion<MyState>, StmFlash, StorageMap>;
-type Seq = Placed<StmSiatRegion<SIAT_SIZE>, FramChip, StorageMap>;
+type Cfg = Placed<ConfigRegion<{ CONFIG_SIZE }, MyState>, StmFlash, StorageMap>;
+type Seq = Placed<FramSiatRegion<{ FRAM_CAPACITY }, SIAT_SIZE>, FramChip, StorageMap>;
 impl StorageLayout for StorageMap {
     const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
 }
 type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
 // main(): DeviceStorage::new(Cfg::open(io)?, Seq::open(fram_io)?)
+// (firmware family commons provide chip-sized aliases over these
+//  markers: StmConfigRegion<S>, RpConfigRegion<S>, StmSiatRegion<SLOTS>)
 ```
 
 - `identity.rs` — `DeviceIdentity` (`serial_number() -> &[u8; 6]`),
   `SecureDeviceIdentity: DeviceIdentity` (adds `fdsk() -> &[u8; 16]`),
   plus the compile-time `StaticIdentity` / `StaticSecureIdentity`.
-  Testutil adds `FileIdentity`.
+  `FileIdentity` (JSON-file backed) lives in `examples/support/src/storage/`.
 - `region.rs` — the layout vocabulary: `Region` (SIZE + MAGIC +
   KIND — the region knows which middleware is placed in it; the
   flash-vs.-FRAM deployment choice for the SIAT and mc_timer is a
@@ -1084,9 +1174,14 @@ type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
   access to the seq store on the stores struct; its presence gates
   the secure builders at compile time).
 - `task.rs` — the generic `storage_task` every device spawns (via the
-  `storage_task!` wrapper macro): restart handling, the advisory
-  ETS-download-complete save, and the periodic dirty-save poll, each
-  save behind an optional `SaveGuard` (TP1 busy gating). It takes the
+  `storage_task!` wrapper macro): restart handling (apply erase code,
+  persist, settle, reset via `SystemControl`), the advisory
+  ETS-download-complete save from `persist_channel`, and the periodic
+  dirty-save poll (`DIRTY_SAVE_POLL`, 1 s). Every save is wrapped in a
+  `SaveGuard`: `acquire()` arms the TP1 link layer's busy protections
+  before the executor-stalling flash write, and the returned
+  `SaveGuardToken`'s `release()` lowers them after; KNX/IP and RF
+  devices pass `NoSaveGuard`, which compiles away. The task takes the
   storage handle from the stack (`knx.storage()`).
 
 The stores struct is carried on `StackDefinition::Storage`
@@ -1109,7 +1204,7 @@ These suffixes carry stable meaning across the entire codebase:
 |---|---|---|---|---|
 | `*Config` | Persisted form. Round-trips through `serde`. | Yes | Owned, rebuilt wholesale | `DeviceConfig`, `Tp1ExtensionConfig`, `IpExtensionConfig`, `SecurityExtensionConfig<…>` |
 | `*State` | Runtime form with interior mutability (`Cell`, `RefCell`). Converts to/from `Config`. | No | `&self` mutation via accessors | `SystemBDeviceState`, `Tp1ExtensionState`, `IpExtensionState`, `SecurityState` |
-| `*Resources` | Non-persistent construction-time inputs: pre-allocated buffers, handles, factory-programmed keys (FDSK), platform references. | No | Moved in once at build time | `StackResources<D, BUF_SZ, NUM_BUFS>`, `SecureResources<Inner, SEQ>` |
+| `*Resources` | Non-persistent construction-time inputs: pre-allocated buffers, handles, factory-programmed keys (FDSK), platform references. | No | Moved in once at build time | `StackResources<D, BUF_SZ, NUM_BUFS>`, `SecureResources<Inner>` |
 | `*StateInit` | Envelope passed to `StackDefinition::create_state`. Not serialisable; bundles optional loaded `Config` + identity data. | No | Consumed by `create_state` | `DemoStateInit`, `MdtStateInit` |
 
 How they thread together:
@@ -1154,7 +1249,7 @@ file, methods (short form), typical provider, and typical consumer.
 | `LinkLayerBufferContext` | (blanket supertrait combining the two above) | blanket impl on any `BufferManagerContext + ApduLengthContext` | Link layers that want a single bound |
 | `PropertyServiceContext` | `property_handler() -> &dyn PropertyServiceHandler` | `StackContext<'a, D>` | KNX/IP Device Management connection; any LL-side management path |
 | `MaxRetryCountContext` | `max_retry_count() -> u8` | `StackContext<'a, D>` (conditional on `D::State: HasMaxRetryCount`) | TPUART during chip init |
-| `KnxIndividualAddressContext` | `individual_address() -> IndividualAddress` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
+| `IndividualAddressContext` | `individual_address() -> IndividualAddress` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
 | `AddressTableContext` | `type ADT`, `address_table() -> &RefCell<ADT>` | `StackContext<'a, D>` | TPUART `AutoAddressChecker` |
 
 The outbox, CO-event publishing, and restart requests are **not**
@@ -1180,8 +1275,11 @@ inherent.
 
 | Trait | Role | Implemented by |
 |---|---|---|
-| `IpStateView` | Configured IP address, subnet, gateway, routing multicast, TTL, friendly name, project install ID, tunneling addresses (~20 accessors) | `IpExtensionState`, `IpAugment` |
-| `IpPlatformState: IpStateView` | Current (live) IP address/subnet/gateway/MAC, assignment method, capabilities | `IpAugment` (delegates to platform) |
+| `IpStateView` | Configured IP address, subnet, gateway, routing multicast, TTL, friendly name, project install ID (~20 accessors); single impl, consumed as `&dyn IpStateView` | `IpExtensionState` |
+| `HasIpExtensionState` | Capability gate on extension states: `ip_state(&self) -> &dyn IpStateView` | `IpExtensionState`, `IpInterfaceExtension`, secure wrappers |
+| `HasRoutingMulticastRebind` | Access to the live-IGMP-rebind channel receiver | `IpExtensionState` |
+| `HasAdditionalIas` | Additional individual addresses (tunneling) | `TunnellingExtension` holders |
+| `IpSecureStateView` / `HasIpSecureView` | IP Secure view (backbone key state, latency tolerance, …) and its capability gate | IP Secure extension states |
 
 Also re-exported in `ip.rs`: the platform-provided
 `IpPlatform` (= `zweidraehte_platform::NetworkInfo`) and
@@ -1191,10 +1289,11 @@ Also re-exported in `ip.rs`: the platform-provided
 
 | Trait | Role | Implemented by |
 |---|---|---|
-| `StackState` | `individual_address`, `set_individual_address`, `serial_number`, `max_apdu_length` (get/set), `is_programming_mode`, `set_programming_mode`, `security_mode_enabled`, `log_access_denied`, `has_group_key` | `SystemBDeviceState<…>` |
+| `StackState` | `individual_address`, `set_individual_address`, `serial_number`, `max_apdu_length` (get/set), `is_programming_mode`, `set_programming_mode` | `SystemBDeviceState<…>` |
+| `HasSecurityMode` | `security_mode_enabled`, `log_access_denied`, `has_group_key` | `SystemBDeviceState<…>` (defaults: false / noop for non-secure) |
 | `HasAuthorization` | `max_access_levels`, `default_access_level`, `authorize(&[u8;4]) -> u8`, `key_write(level, key, ctx)` | `SystemBDeviceState<…>` |
 | `HasPersistence` | `mark_dirty()` | `SystemBDeviceState<…>` |
-| `CoreDeviceState<CO>` | supertrait bundle: `StackState + HasAuthorization + HasPersistence + HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasCommObjects<CO=CO> + HasDiagnosticsContext + HasConnectionAuth + HasRoutingCount + DeviceModelNotifier` | blanket over anything meeting all bounds |
+| `CoreDeviceState<CO>` | supertrait bundle: `StackState + HasAuthorization + HasPersistence + HasAddressTable + HasApplication + HasAssociationTable + HasCommunicationObjectTable + HasCommObjects<CO=CO> + HasDiagnosticsContext + HasConnectionAuth + HasRoutingCount + HasGoSecurityView + HasSecurityMode + DeviceModelNotifier` | blanket over anything meeting all bounds |
 
 **Secure identity story.** There is no separate `HasSecureIdentity`
 trait. `StackState::Identity` is a `DeviceIdentity` associated type;
@@ -1409,7 +1508,7 @@ augment — `RfExtensionState` + `RfAugment` is the template to copy.
    `build_and_run`.
 4. Inside `build_and_run`, pull the context traits you need —
    `BufferManagerContext` for allocation,
-   `KnxIndividualAddressContext` if you ACK by IA,
+   `IndividualAddressContext` if you ACK by IA,
    `AddressTableContext` if you filter by group,
    `PropertyServiceContext` if you implement management.
 5. Run your async task; communicate with the router over `req`

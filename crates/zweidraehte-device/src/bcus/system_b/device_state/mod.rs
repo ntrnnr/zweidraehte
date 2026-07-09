@@ -103,9 +103,7 @@ pub struct SystemBDeviceState<
     /// Owns the serial number and, for Data Secure devices, the FDSK —
     /// the latter is accessed via the
     /// [`SecureDeviceIdentity`](crate::storage::SecureDeviceIdentity)
-    /// extension trait and surfaces through the state's
-    /// [`HasSecureIdentity`](crate::HasSecureIdentity) impl only when
-    /// `D::Identity` implements it.
+    /// extension trait when `D::Identity` implements it.
     identity: D::Identity,
 
     /// Authorization keys for levels 0-2.

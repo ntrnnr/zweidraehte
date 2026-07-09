@@ -34,8 +34,11 @@ pub struct SystemBDeviceState<
 > {
     // Runtime (volatile)
     individual_address: Cell<IndividualAddress>,
-    serial_number: [u8; 6],
     programming_mode: Cell<bool>,
+
+    // Factory-programmed identity (serial number; FDSK for Data Secure).
+    // Serial number is read through `DeviceIdentity::serial_number()`.
+    identity: D::Identity,
 
     // ETS-loaded tables (persisted)
     adt: RefCell<Table<AddrTab7Impl<ADT_SIZE>>>,
@@ -102,22 +105,24 @@ type MyState = Tp1SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, MyStack>;
 ```
 
 Under the hood, `IpDeviceState` uses `IpExtensionFor<F>` as the extension
-state, which is a type alias for `IpExtensionState<N, CAPS>` with both
-const generics derived from `F`:
+state, a type alias for `IpExtensionState<CAPS>` with the capability
+bits derived from `F`:
 
 ```rust
-pub type IpExtensionFor<F: FeatureSet> = IpExtensionState<
-    { <F::Tunneling as TunnelingFeature>::CAPACITY },  // N
-    { F::KNXNETIP_DEVICE_CAPABILITIES },               // CAPS (PID 68)
->;
+pub type IpExtensionFor<F: FeatureSet> =
+    IpExtensionState<{ F::KNXNETIP_DEVICE_CAPABILITIES }>;  // CAPS (PID 68)
 
 pub type IpDeviceState<..., D: StackDefinition, F: FeatureSet> =
     SystemBDeviceState<..., D, IpExtensionFor<F>>;
 ```
 
-The low-level aliases `IpExtensionState<N, CAPS>` and
-`IpSystemBDeviceState<..., N, CAPS>` still exist for cases where you
-need explicit control over the const generics.
+Tunneling capacity is not part of `IpExtensionState`: devices that
+serve tunneling connections compose `IpInterfaceExtension<N, CAPS>`
+instead, which pairs `IpExtensionState<CAPS>` with a
+`TunnellingExtension<N>` (the additional individual addresses live on
+the latter). The low-level aliases `IpExtensionState<CAPS>` and
+`IpSystemBDeviceState<..., CAPS>` still exist for cases where you need
+explicit control over the const generics.
 
 ## Extensions
 
@@ -192,38 +197,43 @@ pub struct Tp1ExtensionState {
 }
 ```
 
-**`IpExtensionState<N, CAPS>`** — full IP configuration.
+**`IpExtensionState<CAPS>`** — full IP configuration.
 Implements `Extension<P>` for any `P: IpPlatform`. Creates an
-`IpAugment<'a, P, N, CAPS>` that combines the persisted config with the
+`IpAugment<'a, P, CAPS>` that combines the persisted config with the
 platform reference for IP property dispatch.
 
 ```rust
-pub struct IpExtensionState<const N: usize = 0, const CAPS: u16 = 0> {
-    friendly_name: Cell<[u8; 30]>,        // PID 70
-    configured_ip: Cell<Ipv4Addr>,        // PID 62
-    configured_subnet: Cell<Ipv4Addr>,    // PID 63
-    configured_gateway: Cell<Ipv4Addr>,   // PID 64
-    ip_assignment_method: Cell<u8>,       // PID 57
-    routing_multicast: Cell<Ipv4Addr>,    // PID 67
-    ttl: Cell<u8>,                        // PID 68
-    project_installation_id: Cell<u16>,   // PID 54
-    additional_individual_addresses: RefCell<heapless::Vec<IndividualAddress, N>>,
+pub struct IpExtensionState<const CAPS: u16 = 0> {
+    friendly_name: Cell<[u8; 30]>,        // PID 76
+    configured_ip: Cell<Ipv4Addr>,        // PID 60
+    configured_subnet: Cell<Ipv4Addr>,    // PID 61
+    configured_gateway: Cell<Ipv4Addr>,   // PID 62
+    ip_assignment_method: Cell<u8>,       // PID 55
+    routing_multicast: Cell<Ipv4Addr>,    // PID 66
+    ttl: Cell<u8>,                        // PID 67
+    project_installation_id: Cell<u16>,   // PID 51
+    // + runtime-only rebind channel for live IGMP re-joins
 }
 ```
 
-- `N` — maximum tunneling slot count (0 for non-tunneling devices)
 - `CAPS` — KNXnet/IP device capabilities bitfield (PID 68), compile-time
   constant derived from the link layer's `FeatureSet`
 
-You typically don't specify `N` or `CAPS` directly. Use
-`IpExtensionFor<F>` which derives both from a `FeatureSet` type.
-`IpAugmentFor<'a, P, F>` does the same for the augment type (needed
-when spelling out `InterfaceObjects` for devices with extra augments):
+Tunneling state is separate: devices that serve tunneling connections
+compose **`IpInterfaceExtension<N, CAPS>`**, which pairs
+`IpExtensionState<CAPS>` with a `TunnellingExtension<N>` holding the
+additional individual addresses (`N` = tunneling slot count).
+
+You typically don't specify `CAPS` directly. Use `IpExtensionFor<F>`
+(or `IpInterfaceExtensionFor<F>` for tunneling devices), which derives
+it from a `FeatureSet` type. `IpAugmentFor<'a, P, F>` does the same
+for the augment type (needed when spelling out `InterfaceObjects` for
+devices with extra augments):
 
 ```rust
 // These are equivalent:
 type ES = IpExtensionFor<KnxIpDeviceUdp>;
-type ES = IpExtensionState<0, 0x0015>;  // N=0, CAPS=routing+devmgmt+remoteconfig
+type ES = IpExtensionState<0x0015>;  // CAPS=routing+devmgmt+remoteconfig
 ```
 
 ### One Extension State Per Device
@@ -245,10 +255,10 @@ impl ExtensionState for MyBridgeState {
 }
 
 impl<P: IpPlatform> Extension<P> for MyBridgeState {
-    type Augment<'a, S: StackState> = MyBridgeAugment<'a, P>
+    type Augment<'a, D: StackDefinition> = MyBridgeAugment<'a, P>
     where Self: 'a, P: 'a;
 
-    fn create_augment<'a, S: StackState>(&'a self, platform: &'a P) -> Self::Augment<'a, S>
+    fn create_augment<'a, D: StackDefinition>(&'a self, platform: &'a P) -> Self::Augment<'a, D>
     where P: 'a {
         MyBridgeAugment { state: self, platform }
     }
@@ -432,7 +442,7 @@ SystemBDeviceState<..., ES>          (runtime, interior mutability)
         v                                              ^
 DeviceConfig<..., ES::Config>        (serializable snapshot, serde)
         |                                              |
-        | ConfigStoreBackend::save_config / load_config |
+        | ConfigStoreBackend::save / load               |
         v                                              |
 Storage backend (JSON file, flash, ...)  ─────────────┘
                                           (loaded snapshot reaches state via SystemBStateInit)
@@ -507,8 +517,10 @@ let mut storage: JsonStorage<MyState, _> =
 let loaded_config = storage.load_config()?;
 
 // Hand the optional snapshot into D::StateInit; the runner builds
-// the runtime state via D::create_state(state_init).
-let state_init = SystemBStateInit::new(storage.identity().clone(), loaded_config);
+// the runtime state via D::create_state(state_init). The stored
+// identity's serial number seeds the compile-time Identity type.
+let state_init =
+    SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
 
 // Periodic save loop
 if stack.state().is_dirty() {
@@ -524,12 +536,30 @@ binary to slot into `SystemBStateInit`.
 **Embedded backends** (RP2040 / STM32 flash, FRAM) implement the
 storage-layer backend traits (`ConfigStoreBackend`,
 `SequenceNumberStorage`, …) over the `SectorIo` / `ByteIo` medium
-seams and are wired into the macro-emitted stores struct via
-the layout consts (`region_spec`/`region_placement`) + a stores struct
-(`ConfigStorage` and friends) — see
-`docs/STACK_ARCHITECTURE.md` §3.14. The platform crates provide the
-ready-made pieces (`RpConfigStore` / `StmConfigStore`, the matching
-`*ConfigRegion` aliases, and `fram_siat_store!`).
+seams. A device declares each durable region once as a
+`Placed<Region, Chip, Layout>` alias; the store type and its `open()`
+derive from that declaration, and the live stores group in one of the
+bounded stores structs (`ConfigStorage` / `SecureStorage` /
+`SecureIpStorage`) referenced as `&'static` from
+`StackDefinition::Storage`:
+
+```rust
+pub struct StorageMap;
+type Cfg = Placed<StmConfigRegion<MyState>, StmFlash, StorageMap>;
+type Seq = Placed<StmSiatRegion<SIAT_SIZE>, FramChip, StorageMap>;
+impl StorageLayout for StorageMap {
+    const REGIONS: &'static [RegionSpec] = &[Cfg::SPEC, Seq::SPEC];
+}
+// main(): STORAGE.init(SecureStorage::new(Cfg::open(io)?, Seq::open(fram_io)?))
+```
+
+The firmware family commons provide the chip pieces: the `Chip`
+markers (`StmFlash`, `RpFlash`), the `Io` handles (`StmFlashIo`,
+`RpFlashIo`, FRAM), and chip-sized region aliases
+(`StmConfigRegion<S>`, `RpConfigRegion<S>`, `StmSiatRegion<SLOTS>`)
+over the core `ConfigRegion` / `FlashSiatRegion` / `FramSiatRegion`
+markers — see `docs/STACK_ARCHITECTURE.md` §3.14 for the full
+vocabulary.
 
 ## Defining a New Device
 
@@ -638,6 +668,16 @@ appears in both `link_layer_builder` (via `KnxNetIpDefinition::Features`) and
 `extension_state` — the single source of truth for the device's IP feature
 set.
 
+Three optional slots cover the common deviations:
+
+- `resources: <type>` — construction-time resources threaded into
+  `StateInit` (e.g. `SecureResources<…>` carrying the FDSK);
+- `augments: { bundle: …, create: |state, platform, lctx| … }` — a custom
+  augment bundle (next subsection);
+- `extra { … }` — verbatim items pasted into the `impl StackDefinition`
+  block to override remaining defaults (`type Identity`, `type Rng`,
+  `type Mutex`, `const MAX_APDU_LENGTH`, …).
+
 **TP1 device:**
 
 The same macro, with `extension_state: Tp1ExtensionState` and the TP1 link
@@ -647,10 +687,9 @@ changes.
 **With extra augments (e.g., EasterEggAugment):**
 
 When the device chains extra augments alongside the medium extension, spell
-`D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct. Because
-`system_b_standard_stack!` always generates `type Augments<'a>` and
-`create_augments`, a custom augment chain requires a fully hand-written
-`impl StackDefinition` (the macro cannot cover this case):
+`D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct and hand it to
+`system_b_standard_stack!` through its `augments:` slot (`IpAugmentFor<'a,
+P, F>` derives the augment's const generics from the `FeatureSet`):
 
 ```rust
 #[derive(zweidraehte_device::service::ServiceRegistry)]
@@ -659,34 +698,28 @@ pub struct MyDeviceAugments<'a> {
     #[service(augment)] easter: EasterEggAugment,
 }
 
-impl SystemBStackDefinition for MyDevice {}
-
-impl StackDefinition for MyDevice {
+zweidraehte_device::system_b_standard_stack! {
+    stack: MyDevice,
     // ... bill of materials items ...
-    type Augments<'a> = MyDeviceAugments<'a>;
-
-    fn create_augments<'a>(
-        state: &'a Self::State,
-        platform: &'a Self::Platform,
-        _lctx: &'a LayerContext<Self>,
-    ) -> Self::Augments<'a>
-    where Self::State: 'a, Self::Platform: 'a {
-        MyDeviceAugments {
+    augments: {
+        bundle: MyDeviceAugments,
+        create: |state, platform, _lctx| MyDeviceAugments {
             ip:     state.extension_state().create_augment::<Self>(platform),
             easter: EasterEggAugment,
-        }
-    }
-    // ... other items (Mem, StateInit, create_state, InterfaceObjects, ...) ...
+        },
+    },
 }
 ```
 
-The `#[derive(ServiceRegistry)]` macro emits the `Augment<D>` impl for the
-bundle, which the IO container calls into for property dispatch and IO list
-contributions. The macro is opt-in — a fully hand-written `impl
-StackDefinition` is the path for devices with a custom augment chain,
-a non-standard `InterfaceObjects` wrapper, or other deviations. See the
-"Augments" section above for the full story
-including `#[service(flatten)]` for nested composition.
+The macro emits `type Augments<'a> = MyDeviceAugments<'a>` and
+`create_augments()` from the slot; the `#[derive(ServiceRegistry)]` macro
+emits the `Augment<D>` impl for the bundle, which the IO container calls
+into for property dispatch and IO list contributions. A fully hand-written
+`impl StackDefinition` remains the path only for devices with a
+non-standard `InterfaceObjects` wrapper, a custom `Mem`, or a custom
+`StateInit` shape (the conformance DUTs do this for their
+`ConformanceMemoryMap`). See the "Augments" section above for the full
+story including `#[service(flatten)]` for nested composition.
 
 ### Step 5: Startup
 
@@ -845,12 +878,16 @@ This generates `pub struct MyConfig { pub counter: u32 }` (with
 - `#[config(serde_default = "path")]` — emit `#[serde(default = "path")]` on
   the config field.
 - `#[runtime_only]` — a field that is never persisted (rebuilt in
-  `from_config`).
+  `from_config`; `#[runtime_only(init = expr)]` for a non-`Default` init).
+- struct-level `resources = <type>` — sets `ExtensionState::Resources`
+  (defaults to `()`); the value arrives as `from_config`'s second argument.
 - struct-level `on_erase = manual` / `default = manual` — hand-write those
   two pieces when a field reset needs a side-effect, or the factory defaults
-  aren't per-field. (The composing `SecureExtensionState` and the
-  tuple-config retransmitter hand-write the whole impl — the derive is for
-  flat leaf extensions.)
+  aren't per-field. The derive also emits an inherent
+  `apply_config(&self, Config)` (in-place reset through interior
+  mutability) that `on_erase = manual` impls typically call. (The composing
+  `SecureExtensionState` and the tuple-config retransmitter hand-write the
+  whole impl — the derive is for flat leaf extensions.)
 
 ### 2. Define the augment
 
@@ -900,7 +937,7 @@ impl Extension<()> for MyExtension {
 ### 4. Wire it into the device
 
 ```rust
-type MyState = SystemBDeviceState<ADT, AST, COT, Params, MyExtension>;
+type MyState = SystemBDeviceState<ADT, AST, COT, MyDevice, MyExtension>;
 
 zweidraehte_device::system_b_standard_stack! {
     stack: MyDevice, device: &DEVICE_DESCRIPTOR, tl_style: TlStyle::Style1,
@@ -918,5 +955,5 @@ captures it.
 
 To compose this extension's augment with one or more extra augments
 (e.g. `EasterEggAugment`), wrap them in a `#[derive(ServiceRegistry)]`
-struct and override `type Augments<'a>` / `create_augments` via the macro's
-`extra { … }` block, as shown in the "Augments" section earlier.
+struct and hand it to the macro's `augments: { bundle, create }` slot,
+as shown in the "Augments" section earlier.
