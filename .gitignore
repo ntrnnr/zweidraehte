@@ -1,11 +1,6 @@
 target/
 out/
+.claude/
 
-# IDE / tool config that shouldn't ride along
-/.claude/
-
-# Captured logs
 *.log
-
-# mac OS metadata files
 .DS_Store

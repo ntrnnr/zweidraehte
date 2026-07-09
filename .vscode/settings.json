@@ -1,7 +1,7 @@
 {
     "rust-analyzer.linkedProjects": [
         "Cargo.toml",
-        "cross/Cargo.toml"
+        "firmware/Cargo.toml"
     ],
     "editor.formatOnSave": true,
     "rust-analyzer.cargo.features": "all"
