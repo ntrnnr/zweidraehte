@@ -4,3 +4,6 @@ out/
 
 *.log
 .DS_Store
+
+# Local RSA converter signing key (never commit — see LICENSING.md / keys.rs)
+converter_key.xml

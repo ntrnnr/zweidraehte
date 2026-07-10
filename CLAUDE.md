@@ -115,6 +115,14 @@ these files as they are copyrighted. The same applies to the KNX
 specification PDFs: `spec/` is a git-ignored local directory; consult
 it when present, but don't expect it to exist.
 
+Signing `.knxprod` packages needs the converter RSA private key, read
+at runtime from a git-ignored `converter_key.xml` at the workspace
+root (`.NET RSAKeyValue` format; see
+`crates/zweidraehte-knxprod/src/signing/keys.rs`). Never hardcode this
+key in source or commit the file. If it is absent, `--knxprod`
+generation fails with a "could not read the converter key file" error;
+the user must supply their own copy.
+
 ## Codebase Structure
 
 ### Workspace Overview

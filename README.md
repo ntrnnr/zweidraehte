@@ -184,6 +184,7 @@ cargo run --bin stack_system_b
 cargo run --bin conformance-runner [filter]
 
 # Generate MTXML / .knxprod from a device definition
+# (--knxprod needs a converter_key.xml — see "Signing key" below)
 cargo run --bin gen_mtxml -- --knxprod
 
 # Product database entries for the firmware devices (import into ETS)
@@ -212,6 +213,47 @@ layer, management, group objects, Data Secure, IP Secure, …). The
 runner rebuilds nothing itself — `cargo build` first so the DUT
 binaries are current. Timing-sensitive waits are compressed ~50× by
 default; pass `--realtime` to disable.
+
+### Signing key (`.knxprod` generation)
+
+ETS only imports a `.knxprod` whose application program is signed. KNX
+uses two RSA keys: the **certification** key, which signs officially
+certified products, and the **converter** key, which ETS uses to sign
+*converted legacy product definitions* (older formats migrated into the
+current `.knxprod` schema). Our generator emits current-schema programs
+and signs them with the converter key — that is what `--knxprod` uses.
+The converter key's public modulus/exponent are embedded in the source;
+its **private** components are not, and are read at runtime from a
+`converter_key.xml` file at the workspace root (falling back to the
+current directory).
+
+That file is **not** in this repository. Without it, `--knxprod` fails
+with `could not read the converter key file …`; plain MTXML generation
+still works. Supply your own `converter_key.xml` in .NET `RSAKeyValue`
+format:
+
+```xml
+<RSAKeyValue>
+  <Modulus>…</Modulus><Exponent>AQAB</Exponent>
+  <P>…</P><Q>…</Q><D>…</D>
+  <DP>…</DP><DQ>…</DQ><InverseQ>…</InverseQ>
+</RSAKeyValue>
+```
+
+Only `<P>`, `<Q>`, and `<D>` are read (the public parts are embedded and
+the CRT values are recomputed), but a full key from any .NET RSA export
+works as-is.
+
+The converter key is not one you invent: it is a fixed key inside ETS's
+signing library `Knx.Ets.XmlSigning.dll`, function
+`Knx.Ets.XmlSigning.XmlSigning.GetConverterRsaKey()`. How you extract it
+from there is left to you. The public modulus embedded in
+[`keys.rs`](crates/zweidraehte-knxprod/src/signing/keys.rs) identifies
+the correct key — whatever you obtain must match it, or ETS rejects the
+signature.
+
+Treat the resulting file like any private key: it stays local and
+git-ignored, never committed.
 
 ### Working with product data
 
