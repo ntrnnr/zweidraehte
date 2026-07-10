@@ -2,6 +2,7 @@
 name = "stm32-common"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 # STM32-specific shared code for KNX devices: direct-register UART
 # driver (for TPUART ACK timing), internal flash storage (plain and

@@ -2,6 +2,7 @@
 name = "dev-provisioning-build"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 # Tiny helper used from firmware `build.rs` files when the
 # `provision-on-boot` feature is enabled. Reads ZZ_SERIAL_HEX /

@@ -2,6 +2,7 @@
 name = "knxrf"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 description = "KNX-RF physical-layer codec and Semtech SX1211 transceiver driver (no_std, HAL-agnostic)"
 
 [dependencies]

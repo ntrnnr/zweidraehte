@@ -1,5 +1,6 @@
 [package]
 edition = "2024"
+license.workspace = true
 name = "stm32g0_tp1_light_switch"
 version = "0.1.0"
 

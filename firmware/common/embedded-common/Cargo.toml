@@ -2,6 +2,7 @@
 name = "embedded-common"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 # HAL-agnostic helpers shared across all embedded KNX targets
 # (embassy-rp, embassy-stm32, etc.). No chip-specific deps live here.

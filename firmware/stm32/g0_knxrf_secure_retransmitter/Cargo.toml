@@ -1,5 +1,6 @@
 [package]
 edition = "2024"
+license.workspace = true
 name = "stm32g0_knxrf_secure_retransmitter"
 version = "0.1.0"
 

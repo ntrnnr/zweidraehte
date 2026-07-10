@@ -21,6 +21,9 @@ members = [
     "rp2040/wifi_light_switch",
 ]
 
+[workspace.package]
+license = "AGPL-3.0-only"
+
 [workspace.dependencies]
 # Embassy core
 embassy-executor = { version = "0.9", default-features = false }

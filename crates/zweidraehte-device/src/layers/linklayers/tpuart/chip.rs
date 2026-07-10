@@ -127,12 +127,11 @@ impl ChipType {
     ///   `U_ActivateBusymode` (0x21) / `U_ResetBusymode` (0x22). The
     ///   chip auto-leaves busy mode after ~700 ms; our flash stalls are
     ///   well inside, and the explicit reset is sent regardless.
-    /// - NCN5120/5121/5130: `U_SetBusy` (0x03) / `U_QuitBusy` (0x04).
-    ///   TODO: verify against the ON Semi datasheet (not in the repo)
-    ///   that these are the right codes and that busy responses do not
-    ///   additionally require the auto-acknowledge address
-    ///   (`U_SetAddress`) to be programmed — we acknowledge manually
-    ///   and never set it.
+    /// - NCN5120/5121/5130: `U_SetBusy` (0x03) / `U_QuitBusy` (0x04),
+    ///   per the ON Semi datasheet.
+    ///   TODO: verify that busy responses do not additionally require
+    ///   the auto-acknowledge address (`U_SetAddress`) to be
+    ///   programmed — we acknowledge manually and never set it.
     ///
     /// `None` for unknown chips — the storage glue then has only the
     /// software busy gate, which cannot answer during a full stall.

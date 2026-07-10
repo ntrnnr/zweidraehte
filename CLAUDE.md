@@ -1,4 +1,31 @@
-We are building a KNX device stack. We can run a bunch of conformance tests by running `cargo run --bin conformance-runner`. You can pass test names or subset of names as a parameter to only run specific tests. Make sure to not truncate the output of a test run as it is possibly long. The conformance tests take a long while to run. If you need different output, pipe it into a file and then grep through it for what you need without running them over and over again. You can also give it a test suite name or part of it as the first argument to only run specific tests or test suites.
+# zweidraehte
+
+## Mission
+
+We are building a KNX device stack in Rust targeting both embedded
+devices in a no_std, no-alloc environment and embedded Linux userspace
+systems (and possibly more later).
+
+The stack needs to be conformance compliant and generic enough so that
+we can replace different layers and servers in the stack for different
+use cases when building devices. It's best to stick to existing
+patterns where applicable.
+
+We are also working on a product definition XML generator: device
+definitions in Rust macros (parameters, communication objects, dynamic
+ETS pages) from which we generate the MTXML/`.knxprod` files that ETS
+imports — one source of truth for firmware behaviour and the product
+database entry. See "Product definition generator" below.
+
+## Conformance testing
+
+Run the conformance tests with `cargo run --bin conformance-runner`.
+Pass a test name, suite name, or a substring of either as the first
+argument to run a subset. Do not truncate the output of a test run —
+it can be long. The tests take a long while; if you need to inspect
+the output, pipe it into a file once and grep that file instead of
+re-running the suite. Before running, rebuild the DUT binaries with
+`cargo build` — the runner spawns them as separate executables.
 
 ## Authoring conformance tests
 
@@ -52,15 +79,41 @@ rate-limit window is 1 s per spec and scales to ~20 ms in fast mode;
 tests between back-to-back syncs park `wait(1500)` which comfortably
 clears the window in both fast and realtime runs.
 
-The goal is to write a KNX device stack (and possibly more later) in Rust targeting both embedded devices in a no_std and no alloc environment and embedded Linux userspace systems.
+## Product definition generator & MDT replication
 
-The stack needs to be conformance compliant and generic enough so that we can replace different layers and servers in the stack for different use cases when building devices. It's best to stick to existing patterns where applicable.
+To prove the ETS DSL has feature parity with real products, we
+replicate an existing MDT device
+(`examples/devices/src/mdt_push_button_lite.rs`): the parameters, the
+enums, the comm objects, and the dynamic pages that select different
+combinations of references and show/hide parameters and/or
+communication objects based on the currently selected configuration.
+After parity, we optimize the DSL for readability and quality of life.
+Module definitions (reusable multi-channel blocks) are replicated
+conceptually with a small test device
+(`examples/devices/src/module_test_device.rs`).
 
-We are also working on a product definition XML generator. We are generating XML files based on rust macro code that defines the device, its parameters and communication objects as well as dynamic pages that are presented to the user when configuring the device in the ETS.
-We try to replicate a real existing MDT device that is defined in `manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml` using this framework in `examples/devices/src/mdt_push_button_lite.rs`.
-We aim for an accurate replication by using our own DSL to ensure feature parity - the parameters, the enums, the comm objects and the dynamic pages that select different combinations of references and show/hide parameters and/or communication objects based on the currently selected configuration. After that we will start optimizing everything and ensure some quality of life improvements when defining all these structures in our DSL to make it easier to understand.
-The file in `manuf_tool_data/VC-EASY-03_MDT_KP_V35/M-0083/M-0083_A-0070-35-1740.xml` contains so-called module definitions that we still need to replicate conceptually with a small test device.
-For all these XML files, an XSD schema is available at `manuf_tool_data/knx_project.xsd` for reference and checking of correctness.
+**The manufacturer reference material is NOT in the repository.** The
+vendor XML lives in a git-ignored local directory `manuf_tool_data/`
+that only exists on machines with a private copy (licensed vendor
+data). If present, the relevant files are:
+
+- `manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml`
+  — the MDT Push Button Lite reference that `mdt_push_button_lite.rs`
+  replicates.
+- `manuf_tool_data/VC-EASY-03_MDT_KP_V35/M-0083/M-0083_A-0070-35-1740.xml`
+  — contains the module definitions the module test device mirrors.
+- `manuf_tool_data/knx_project.xsd` — XSD schema for validating the
+  XML.
+
+If `manuf_tool_data/` is absent on this machine, generation still
+works (`gen_mdt_mtxml` etc.); only comparison tasks against the vendor
+XML are impossible. Skip them rather than hunting for the files, and
+advise the user that — if they want the comparisons — they must create
+`manuf_tool_data/` themselves and place the right XML files there
+(extracted from the vendor `.knxprod` packages); we cannot deliver
+these files as they are copyrighted. The same applies to the KNX
+specification PDFs: `spec/` is a git-ignored local directory; consult
+it when present, but don't expect it to exist.
 
 ## Codebase Structure
 
@@ -179,7 +232,7 @@ Subdirectories:
     - `tpuart/` - TP-UART serial interface (bus access, state machine, busmon)
     - `knxip/` - KNX/IP routing, tunneling, discovery, device management
     - `usb/` - USB HID interface support
-    - `ip_interface/` - External KNXnet/IP interface client (feature `ip-interface`)
+    - `ip_interface.rs` - Composite KNX/IP↔TP1 link layer for IP-interface products: tunneling server bridged to a TPUART bus (feature `ip-interface`)
     - `mock.rs` - Mock link layer for testing
 - `objects/` - KNX interface objects
   - `comm.rs` - Communication objects (group objects), `ComObjects` trait
@@ -534,7 +587,8 @@ Options:
 - `--no-text` - Skip text comparison
 - `--warn-missing` - Treat missing entities as warnings instead of errors
 
-Example:
+Example (needs the local `manuf_tool_data/` vendor files — see
+"Product definition generator & MDT replication" above):
 ```bash
 cargo run --bin compare_programs -- \
   --reference manuf_tool_data/MDT_KP_BE_01_Push_Button_Lite_55_63_V14/M-0083/M-0083_A-009B-14-E59D.xml \

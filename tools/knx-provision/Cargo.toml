@@ -3,7 +3,7 @@ name = "knx-provision"
 version = "0.1.0"
 edition = "2024"
 authors = ["Andreas Galauner <andreas@galauner.de>"]
-license = "Proprietary"
+license = "AGPL-3.0-only"
 description = "Host-side tool that writes a KNXP factory-provisioning record into a KNX device's flash over SWD."
 
 [dependencies]

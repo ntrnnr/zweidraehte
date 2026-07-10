@@ -1,5 +1,6 @@
 [package]
 edition = "2024"
+license.workspace = true
 name = "pico_ip_interface"
 version = "0.1.0"
 
