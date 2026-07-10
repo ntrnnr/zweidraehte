@@ -60,8 +60,21 @@ pub enum SigningError {
     #[error("XML parsing error: {0}")]
     XmlParse(#[from] quick_xml::DeError),
 
+    #[error("XML read error: {0}")]
+    XmlRead(#[from] quick_xml::Error),
+
     #[error("XML write error: {0}")]
     XmlWrite(String),
+
+    #[error("could not read the converter key file at {path}: {source}")]
+    ConverterKeyFile {
+        path: String,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("converter key file is missing the <{0}> element")]
+    ConverterKeyComponentMissing(&'static str),
 
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),

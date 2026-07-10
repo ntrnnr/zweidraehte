@@ -4,7 +4,7 @@
 //!
 //! - **KNX Certification Key** — the public key used to *verify* officially
 //!   certified products. Only the public modulus/exponent are needed.
-//! - **Converter Key** — the RSA key pair used to *sign* unofficial/converted
+//! - **Converter Key** — the RSA key pair used to *sign* converted legacy
 //!   products. Its public modulus/exponent are embedded here (they are not
 //!   sensitive), but the **private** components (`P`, `Q`, `D`) are loaded at
 //!   runtime from a local `converter_key.xml` file at the workspace root (see
@@ -28,7 +28,7 @@ const KNX_CERT_MODULUS: &str = "iv+3sqx5QJie+bm8nWvUt/WHfiVu9ZDggfq887TETgj9SO6M
 const KNX_CERT_EXPONENT: &str = "AQAB";
 
 /// Converter public key (from Knx.Ets.XmlSigning.dll - Knx.Ets.XmlSigning.XmlSigning.GetConverterRsaKey()).
-/// Used for verifying converted/unsigned products.
+/// Used for verifying converted legacy product definitions.
 const CONVERTER_MODULUS: &str = "zSjrmVmM+ULXdrFHiSZZo7PEHo/sXBIkjxHkqQbxEI2YE1SBq0dbEfqW3eDSdjLlpMy5Yx9hcMSnrmVUWh3PgBBQmzMBZpr/yJRny8UzB1pqTPyisWyfg7+NiAd1Ize4r/bQxKE4BaJ2wqEDwH8ggg2faxJ2/WReGVrrzJL2u00=";
 const CONVERTER_EXPONENT: &str = "AQAB";
 
@@ -140,7 +140,7 @@ pub fn get_knx_cert_public_key() -> Result<RsaPublicKey, SigningError> {
 
 /// Get the Converter public key.
 ///
-/// This key is used for converted/unofficial products.
+/// This key signs converted legacy product definitions.
 pub fn get_converter_public_key() -> Result<RsaPublicKey, SigningError> {
     let n = b64_to_biguint(CONVERTER_MODULUS)?;
     let e = b64_to_biguint(CONVERTER_EXPONENT)?;
@@ -149,7 +149,7 @@ pub fn get_converter_public_key() -> Result<RsaPublicKey, SigningError> {
 
 /// Get the Converter private key.
 ///
-/// This key is used for signing converted/unofficial products. The public
+/// This key signs converted legacy product definitions. The public
 /// modulus/exponent are embedded; the private components are read from
 /// `converter_key.xml`.
 pub fn get_converter_private_key() -> Result<RsaPrivateKey, SigningError> {
@@ -166,7 +166,7 @@ pub fn get_converter_private_key() -> Result<RsaPrivateKey, SigningError> {
 pub enum KeyType {
     /// KNX Certification key (official products)
     KnxCert,
-    /// Converter key (unofficial/converted products)
+    /// Converter key (converted legacy product definitions)
     Converter,
 }
 
