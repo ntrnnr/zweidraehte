@@ -1501,7 +1501,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "pico_eth"
+name = "pico_eth_ip_interface"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "dev-provisioning-build",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-net",
+ "embassy-net-wiznet",
+ "embassy-rp",
+ "embassy-time",
+ "embedded-common",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-hal-bus",
+ "panic-probe",
+ "rp-common",
+ "static_cell",
+ "zweidraehte-device",
+ "zweidraehte-devices",
+ "zweidraehte-platform",
+]
+
+[[package]]
+name = "pico_eth_light_switch"
 version = "0.1.0"
 dependencies = [
  "cortex-m",
@@ -1555,34 +1582,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pico_ip_interface"
-version = "0.1.0"
-dependencies = [
- "cortex-m",
- "cortex-m-rt",
- "defmt 1.0.1",
- "defmt-rtt",
- "dev-provisioning-build",
- "embassy-executor",
- "embassy-futures",
- "embassy-net",
- "embassy-net-wiznet",
- "embassy-rp",
- "embassy-time",
- "embedded-common",
- "embedded-hal 1.0.0",
- "embedded-hal-async",
- "embedded-hal-bus",
- "panic-probe",
- "rp-common",
- "static_cell",
- "zweidraehte-device",
- "zweidraehte-devices",
- "zweidraehte-platform",
-]
-
-[[package]]
-name = "pico_tp1"
+name = "pico_tp1_light_switch"
 version = "0.1.0"
 dependencies = [
  "cortex-m",

@@ -9,7 +9,7 @@
 //! are all identical to the Raspberry Pi Pico TP1 reference — this crate
 //! is the MCU-specific shell: clocks, pins, UART driver, flash storage.
 //!
-//! See `firmware/rp2040/tp1/` for the two-button Pi Pico version of the same
+//! See `firmware/rp2040/tp1_light_switch/` for the two-button Pi Pico version of the same
 //! device.
 
 use core::sync::atomic::{AtomicI8, Ordering};

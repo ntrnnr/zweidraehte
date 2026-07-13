@@ -423,8 +423,8 @@ cd firmware && cargo build -p pico_wifi_light_switch
 Layout: `common/` holds chip-agnostic crates (`embedded-common`, the `knxrf`
 SX1211 driver, `dev-provisioning-build`); `stm32/` and `rp2040/` each hold a
 family `common/` HAL-glue crate plus the device projects. Directory names
-drop the chip prefix (`stm32/g0_blink`, `rp2040/eth`), package names keep it
-(`stm32g0_blink`, `pico_eth`).
+drop the chip prefix (`stm32/g0_blink`, `rp2040/eth_light_switch`), package names keep it
+(`stm32g0_blink`, `pico_eth_light_switch`).
 
 Notable device:
 - `rp2040/wifi_light_switch/` (package `pico_wifi_light_switch`) - KNX/IP

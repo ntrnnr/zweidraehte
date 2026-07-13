@@ -1,7 +1,7 @@
 [package]
 edition = "2024"
 license.workspace = true
-name = "pico_tp1"
+name = "pico_eth_light_switch"
 version = "0.1.0"
 
 [dependencies]
@@ -10,27 +10,31 @@ embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-th
 embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-rp = { workspace = true, features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp2040"] }
 embassy-futures = { workspace = true }
+embassy-net = { workspace = true, features = ["udp", "dhcpv4", "medium-ethernet", "multicast", "defmt"] }
+
+# W5500 Ethernet driver
+embassy-net-wiznet = { workspace = true, features = ["defmt"] }
+embedded-hal-bus = { workspace = true, features = ["async"] }
+embedded-hal-async = { workspace = true }
 
 # Cortex-M / embedded
 cortex-m = { workspace = true, features = ["inline-asm"] }
 cortex-m-rt = { workspace = true }
 embedded-hal = { workspace = true }
-embedded-hal-async = { workspace = true }
 defmt = { workspace = true }
 defmt-rtt = { workspace = true }
 panic-probe = { workspace = true, features = ["print-defmt"] }
 static_cell = { workspace = true }
 
 # KNX stack and device definitions
-zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt", "tp1"] }
+zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt", "knxip"] }
 zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
 zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["defmt"] }
 
 # Shared RP platform code
 rp-common = { path = "../common", features = ["rp2040"] }
 # HAL-agnostic helpers (DebouncedButton, CortexMSystem)
-embedded-common = { path = "../../common/embedded-common", features = ["tp1"] }
-embassy-sync = { workspace = true }
+embedded-common = { path = "../../common/embedded-common" }
 
 [build-dependencies]
 dev-provisioning-build = { path = "../../common/dev-provisioning-build" }

@@ -14,10 +14,10 @@ members = [
     "stm32/g0_knxrf_secure_retransmitter",
     "rp2040/common",
     "rp2040/blink",
-    "rp2040/eth",
+    "rp2040/eth_light_switch",
     "rp2040/eth_secure_light_switch",
-    "rp2040/tp1",
-    "rp2040/ip_interface",
+    "rp2040/tp1_light_switch",
+    "rp2040/eth_ip_interface",
     "rp2040/wifi_light_switch",
 ]
 
@@ -50,7 +50,7 @@ embedded-hal-async = { version = "1.0" }
 cortex-m = { version = "0.7" }
 cortex-m-rt = { version = "0.7" }
 embedded-hal = { version = "1.0" }
-# Pinned to 0.6 to match embassy-rp 0.9 — pico_tp1 passes BufferedUart
+# Pinned to 0.6 to match embassy-rp 0.9 — pico_tp1_light_switch passes BufferedUart
 # directly to TpUartLinkLayerBuilder, so the trait version must be consistent.
 # The 0.6→0.7 diff is minimal (flush() became required, defmt feature renamed)
 # and does not affect our usage.

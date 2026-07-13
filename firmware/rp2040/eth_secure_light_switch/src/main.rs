@@ -8,7 +8,7 @@
 
 //! Raspberry Pi Pico + W5500 **KNX IP Secure + Data Secure** light switch.
 //!
-//! Secure sibling of [`pico_eth`](../pico_eth). Same hardware (W5500 SPI
+//! Secure sibling of [`pico_eth_light_switch`](../eth_light_switch). Same hardware (W5500 SPI
 //! Ethernet on an RP2040) and same application logic, but the stack adds
 //! two independent security mechanisms:
 //!
@@ -16,14 +16,14 @@
 //!   backbone is secured with `SecureGroupSync` + `SecureWrapper` once
 //!   ETS provisions a backbone key (PID 91) and enables the secured
 //!   Routing family (PID 94). Until then the device routes plain, exactly
-//!   like `pico_eth`. The feature set is routing-only secure
+//!   like `pico_eth_light_switch`. The feature set is routing-only secure
 //!   ([`SecureRoutingUdp`]) — no tunnelling, no TCP sessions.
 //! - **KNX Data Secure** — group telegrams are encrypted end-to-end via
 //!   the [`SecureApplicationLayer`], independent of the IP medium. Driven
 //!   by `SecureIpDeviceBuilder`.
 //!
 //! These are orthogonal: ETS can enable either, both, or neither. The
-//! plain-routing/plain-APDU factory default is the same as `pico_eth`.
+//! plain-routing/plain-APDU factory default is the same as `pico_eth_light_switch`.
 //!
 //! # Bring-up limitations (see `SESSION.md`)
 //!
@@ -202,7 +202,7 @@ type SecAugment<'a> = SecureAugmentBundle<
 /// medium / IP Secure augment, plus the Easter Egg demo augment. The
 /// secure augment bundles the IP augment internally (the secure extension
 /// wraps the IP Secure interface extension), so there is no separate
-/// `ip:` field as in the insecure `pico_eth`.
+/// `ip:` field as in the insecure `pico_eth_light_switch`.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct PicoEthSecureAugments<'a> {
     #[service(augment)]
@@ -391,7 +391,7 @@ mod dev_provisioning {
 }
 
 // Load the secure device identity (serial + MAC + FDSK) from the `KNXP`
-// provisioning record. Unlike `pico_eth`'s insecure load, the record
+// provisioning record. Unlike `pico_eth_light_switch`'s insecure load, the record
 // MUST carry the FDSK tag — a secure device cannot derive its tool key
 // without it.
 rp_common::rp_identity_loader!(secure, fdsk: Some(dev_provisioning::DEV_FDSK), mac: Some(dev_provisioning::DEV_MAC));
@@ -517,7 +517,7 @@ async fn main(spawner: Spawner) {
     ));
     let loaded_config = storage.load_config();
 
-    // The persisted IP config lives deeper than in `pico_eth`: the Data
+    // The persisted IP config lives deeper than in `pico_eth_light_switch`: the Data
     // Secure wrapper nests the medium config under `extension_config.inner`,
     // and the IP Secure interface extension nests the plain IP config under
     // `(ip_interface, ip_secure).0 = (ip, tunnelling)` → `.0 = ip`. So the

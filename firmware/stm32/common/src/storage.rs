@@ -36,7 +36,7 @@
 //! # Flash Stall Warning
 //!
 //! `blocking_erase` and `blocking_write` suspend CPU execution for several
-//! milliseconds per page. Following the same policy as `pico_tp1`, we
+//! milliseconds per page. Following the same policy as `pico_tp1_light_switch`, we
 //! save only in the restart handler — never periodically — so a stall
 //! cannot corrupt the TPUART UART timing.
 

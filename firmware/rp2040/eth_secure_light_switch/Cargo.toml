@@ -4,9 +4,9 @@ license.workspace = true
 name = "pico_eth_secure_light_switch"
 version = "0.1.0"
 
-# Secure sibling of `firmware/rp2040/eth`: same W5500 Ethernet light switch,
+# Secure sibling of `firmware/rp2040/eth_light_switch`: same W5500 Ethernet light switch,
 # but with KNX IP Secure (secure multicast routing) + KNX Data Secure
-# (encrypted group telegrams). The deltas vs. `pico_eth` are the
+# (encrypted group telegrams). The deltas vs. `pico_eth_light_switch` are the
 # `ip-secure` feature on `zweidraehte-device`, a secure identity / RNG /
 # sequence-number store from `rp-common`, and `SecureIpDeviceBuilder` in
 # the stack definition.
