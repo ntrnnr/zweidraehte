@@ -16,9 +16,11 @@
 //! [`stm32g0_tp1_secure_light_switch`](../stm32g0_tp1_secure_light_switch) is to
 //! the insecure TP1 device.
 //!
-//! # Bring-up limitations (same as the TP1 secure variant)
+//! # Security notes (same as the TP1 secure variant)
 //!
-//! - The FDSK is compiled into the firmware via `ZZ_FDSK_HEX` at build time.
+//! - The FDSK lives in plain flash: the `KNXP` provisioning record written by
+//!   `tools/knx-provision` over SWD (or, in `provision-on-boot` dev builds,
+//!   synthesized from build-time dev defaults, `ZZ_FDSK_HEX`-overridable).
 //! - The RNG is a non-crypto PRNG seeded from ADC noise on a floating PA0; the
 //!   G0B0 has no TRNG.
 //!

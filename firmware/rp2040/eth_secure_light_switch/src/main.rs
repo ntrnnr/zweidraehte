@@ -25,12 +25,14 @@
 //! These are orthogonal: ETS can enable either, both, or neither. The
 //! plain-routing/plain-APDU factory default is the same as `pico_eth_light_switch`.
 //!
-//! # Bring-up limitations (see `SESSION.md`)
+//! # Security notes
 //!
-//! - **FDSK is compiled into the firmware** (dev `provision-on-boot`
-//!   path) or written at provisioning time. Whoever can read the flash
-//!   can extract it. Production devices need provisioning-time writes
-//!   from a secure station.
+//! - **FDSK lives in plain flash.** Production units get it from the
+//!   `KNXP` provisioning record written by `tools/knx-provision` over
+//!   SWD; `provision-on-boot` dev builds synthesize the record from
+//!   build-time dev defaults (`ZZ_FDSK_HEX`-overridable). Either way
+//!   there is no readout protection — whoever can read the flash can
+//!   extract the key.
 //! - **RNG seed quality** — the RP2040 ROSC is a low-quality entropy
 //!   source. We oversample and condition it (see `rp_common::rng`), but
 //!   it is weaker than a real TRNG.

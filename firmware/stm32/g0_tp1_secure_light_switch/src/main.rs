@@ -16,12 +16,14 @@
 //!
 //! [sd]: zweidraehte_device::StackDefinition::Rng
 //!
-//! # Bring-up limitations (see `SESSION.md`)
+//! # Security notes
 //!
-//! - **FDSK is compiled into the firmware** via the `ZZ_FDSK_HEX`
-//!   env var at build time. Whoever can read the flash can extract
-//!   it. Production devices need provisioning-time writes from a
-//!   secure station.
+//! - **FDSK lives in plain flash.** Production units get it from the
+//!   `KNXP` provisioning record written by `tools/knx-provision` over
+//!   SWD; `provision-on-boot` dev builds synthesize the record from
+//!   build-time dev defaults (`ZZ_FDSK_HEX`-overridable). No readout
+//!   protection is configured — whoever can read the flash can
+//!   extract the key.
 //! - **RNG is not cryptographic**. G0B0 has no TRNG; we seed a
 //!   xoshiro from the factory UID + boot-time ticks. Session keys
 //!   derived from this are weak against an attacker who knows the

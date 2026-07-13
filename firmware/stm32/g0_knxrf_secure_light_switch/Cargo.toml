@@ -9,11 +9,10 @@ version = "0.1.0"
 # `firmware/stm32/g0_tp1_secure_light_switch` for the TP1 secure variant):
 # `SecureDeviceBuilder` instead of `InsecureDeviceBuilder`, the RF
 # medium extension wrapped in Data Secure, and a FRAM-backed
-# sequence-number store on SPI2. Build with:
-#
-#     ZZ_FDSK_HEX=$(openssl rand -hex 16) cargo build --release
-#
-# (or enable `provision-on-boot` for bench builds).
+# sequence-number store on SPI2. A plain `cargo build --release` needs
+# no FDSK env var: the firmware reads its FDSK from the `KNXP` flash
+# record written by `tools/knx-provision` over SWD. For bench builds,
+# enable `provision-on-boot` (optionally overriding `ZZ_FDSK_HEX`).
 
 [dependencies]
 # Embassy core

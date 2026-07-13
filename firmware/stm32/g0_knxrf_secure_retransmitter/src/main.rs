@@ -24,9 +24,11 @@
 //! role defaults to **off** (RF Medium Object PID 57 = false) until ETS enables
 //! it; the cascade-depth limit is Device Object PID 74 (default 0).
 //!
-//! # Bring-up limitations (same as the secure light switch)
+//! # Security notes (same as the secure light switch)
 //!
-//! - The FDSK is compiled into the firmware via `ZZ_FDSK_HEX` at build time.
+//! - The FDSK lives in plain flash: the `KNXP` provisioning record written by
+//!   `tools/knx-provision` over SWD (or, in `provision-on-boot` dev builds,
+//!   synthesized from build-time dev defaults, `ZZ_FDSK_HEX`-overridable).
 //! - The RNG is a non-crypto PRNG seeded from ADC noise on a floating PA0; the
 //!   G0B0 has no TRNG.
 //!

@@ -10,11 +10,10 @@ version = "0.1.0"
 # Object PID 74) and selects the `RetransmitEnabled` KNX-RF link-layer
 # policy, so the device repeats qualifying frames per 03/02/05 §6.1.7. The
 # retransmitter role defaults to *off* (PID 57 = false) until ETS enables
-# it. Build with:
-#
-#     ZZ_FDSK_HEX=$(openssl rand -hex 16) cargo build --release
-#
-# (or enable `provision-on-boot` for bench builds).
+# it. A plain `cargo build --release` needs no FDSK env var: the
+# firmware reads its FDSK from the `KNXP` flash record written by
+# `tools/knx-provision` over SWD. For bench builds, enable
+# `provision-on-boot` (optionally overriding `ZZ_FDSK_HEX`).
 
 [dependencies]
 # Embassy core
