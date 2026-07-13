@@ -24,14 +24,16 @@ impl ChipType {
     /// Maximum frame size supported by this chip (including control byte and checksum)
     ///
     /// TPUART1/2: 64 bytes (standard frames only)
-    /// NCN5120/E981: 256+ bytes (extended frames supported)
+    /// NCN5120: 256 bytes (extended frames supported)
+    /// E981: 264 bytes — the size of its transmit frame buffer
+    /// (E981.03 datasheet, RAM table: 0x000...0x107)
     pub const fn max_frame_size(&self) -> usize {
         match self {
             ChipType::Unknown => 23, // Conservative default - minimum APDU of 15 bytes + TP1 overhead
             ChipType::TpUart1 => 64,
             ChipType::TpUart2 => 64,
             ChipType::Ncn5120 => 256,
-            ChipType::E981 => 256,
+            ChipType::E981 => 264,
         }
     }
 
@@ -50,12 +52,14 @@ impl ChipType {
     /// Results:
     /// - Unknown: 15 bytes (23 - 8, conservative fallback for standard TP1)
     /// - TPUART1/2: 56 bytes (64 - 8)
-    /// - NCN5120/E981: 248 bytes (256 - 8)
+    /// - NCN5120: 248 bytes (256 - 8)
+    /// - E981: 254 bytes (264 - 8 = 256, capped by the EFF length octet)
     pub const fn max_apdu_length(&self) -> u16 {
         // TP1 EFF overhead: CTRL(1) + CTRL2(1) + SRC(2) + DST(2) + LEN(1) + CHK(1) = 8 bytes
         let max = self.max_frame_size() - 8;
-        // Cap at 254: the EFF length byte (1 byte, max 255) encodes TPCI + APDU,
-        // so max APDU = 255 - 1 = 254.
+        // Cap at 254: the EFF length octet counts the characters *after* the
+        // TPCI octet, values 0..=254 — 255 is reserved as an escape code
+        // (03/02/02 §2.2.5.6).
         if max > 254 { 254 } else { max as u16 }
     }
 
@@ -199,7 +203,7 @@ mod tests {
         assert_eq!(ChipType::TpUart1.max_frame_size(), 64);
         assert_eq!(ChipType::TpUart2.max_frame_size(), 64);
         assert_eq!(ChipType::Ncn5120.max_frame_size(), 256);
-        assert_eq!(ChipType::E981.max_frame_size(), 256);
+        assert_eq!(ChipType::E981.max_frame_size(), 264);
     }
 
     #[test]
@@ -210,9 +214,10 @@ mod tests {
         // TPUART1/2: 64 - 8 = 56
         assert_eq!(ChipType::TpUart1.max_apdu_length(), 56);
         assert_eq!(ChipType::TpUart2.max_apdu_length(), 56);
-        // NCN5120/E981: 256 - 8 = 248
+        // NCN5120: 256 - 8 = 248
         assert_eq!(ChipType::Ncn5120.max_apdu_length(), 248);
-        assert_eq!(ChipType::E981.max_apdu_length(), 248);
+        // E981: 264 - 8 = 256, capped at 254 by the EFF length octet
+        assert_eq!(ChipType::E981.max_apdu_length(), 254);
     }
 
     #[test]
