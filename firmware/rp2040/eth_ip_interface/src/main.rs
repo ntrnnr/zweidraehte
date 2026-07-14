@@ -9,7 +9,6 @@
 
 #![no_std]
 #![no_main]
-#![feature(never_type)]
 
 use core::net::{Ipv4Addr, SocketAddrV4};
 

@@ -234,7 +234,7 @@ fn rf_medium_object_index_scan_spans_both_augments() {
     // hands out is therefore also valid for 'static. Mirrors the conformance DUT.
     let dyn_bm: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_bm) };
 
-    let lctx = LayerContext::<RfTestStack>::new(dyn_bm);
+    let lctx = LayerContext::<RfTestStack>::new(dyn_bm, ());
     let state = RfTestStack::create_state(());
     let augments = RfTestStack::create_augments(&state, &(), &lctx);
     let objects = RfTestStack::create_interface_objects(&state, &(), &lctx, &augments);

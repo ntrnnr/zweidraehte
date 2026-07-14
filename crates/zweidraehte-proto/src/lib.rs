@@ -3,6 +3,10 @@
 #![feature(const_convert)]
 #![feature(adt_const_params)]
 #![feature(generic_const_exprs)]
+// generic_const_exprs is deliberate and load-bearing (const-generic buffer
+// sizing); the nightly toolchain is pinned with it in mind, so the blanket
+// "incomplete feature" lint is pure noise here.
+#![allow(incomplete_features)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

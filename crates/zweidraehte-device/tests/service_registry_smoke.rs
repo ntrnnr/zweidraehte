@@ -13,6 +13,8 @@
 #![feature(const_trait_impl)]
 #![feature(const_convert)]
 #![feature(generic_const_exprs)]
+// generic_const_exprs — same rationale as the crate root.
+#![allow(incomplete_features)]
 // The shim types exist purely for the type-level `_assert_*` bounds
 // below — nothing constructs them, by design.
 #![allow(dead_code)]

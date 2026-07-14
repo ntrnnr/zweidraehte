@@ -333,10 +333,8 @@ where
 /// bundle. Unlike the hand-written version it threads
 /// [`D::Platform`](StackDefinition::Platform) rather than hard-coding `()`, so
 /// it is correct for IP-platform secure devices too.
-pub type ExtensionAugmentFor<'a, D>
-where
-    D: StackDefinition,
-= <<D as StackDefinition>::ES as super::Extension<<D as StackDefinition>::Platform>>::Augment<'a, D>;
+pub type ExtensionAugmentFor<'a, D> =
+    <<D as StackDefinition>::ES as super::Extension<<D as StackDefinition>::Platform>>::Augment<'a, D>;
 
 // ============================================================================
 // system_b_standard_stack! — collapse the always-identical StackDefinition shell

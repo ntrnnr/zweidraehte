@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(never_type)]
 
 use defmt::*;
 use embassy_executor::Spawner;

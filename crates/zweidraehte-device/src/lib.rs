@@ -4,6 +4,10 @@
 #![feature(generic_const_exprs)]
 #![feature(never_type)]
 #![feature(associated_type_defaults)]
+// generic_const_exprs is deliberate and load-bearing (const-generic buffer
+// sizing); the nightly toolchain is pinned with it in mind, so the blanket
+// "incomplete feature" lint is pure noise here.
+#![allow(incomplete_features)]
 
 // Re-export paste for use in macros
 #[doc(hidden)]

@@ -1072,7 +1072,7 @@ mod tests {
 
     #[test]
     fn test_dimmer_comm_objects_creation() {
-        use crate::devices::module_test_device::comm_objs::DimmerCommObjects;
+        use crate::module_test_device::comm_objs::DimmerCommObjects;
         use zweidraehte_device::objects::comm::ComObjects;
 
         // Create the comm objects instance (this is what you pass to the stack)
@@ -1091,7 +1091,7 @@ mod tests {
 
     #[test]
     fn test_dimmer_comm_objects_index_helpers() {
-        use crate::devices::module_test_device::comm_objs::DimmerCommObjects;
+        use crate::module_test_device::comm_objs::DimmerCommObjects;
 
         // Use channel_object_index(instance, local_obj) where instance is 1-indexed
         // and local_obj is 0-indexed (0=switch, 1=dim_value, 2=status)
@@ -1103,7 +1103,7 @@ mod tests {
 
     #[test]
     fn test_dimmer_comm_objects_trait_access() {
-        use crate::devices::module_test_device::comm_objs::DimmerCommObjects;
+        use crate::module_test_device::comm_objs::DimmerCommObjects;
         use zweidraehte_device::objects::comm::{ComObjectStatus, ComObjects};
 
         let mut comm_objs = DimmerCommObjects::new();
@@ -1151,7 +1151,7 @@ mod tests {
         //! 4. Updating related objects (status)
         //! 5. Sending the status to the bus
 
-        use crate::devices::module_test_device::comm_objs::DimmerCommObjects;
+        use crate::module_test_device::comm_objs::DimmerCommObjects;
         use zweidraehte_device::objects::comm::{ComObjectStatus, ComObjects};
 
         // Setup: comm objects and params
@@ -1260,7 +1260,7 @@ mod tests {
     fn test_dimmer_comm_objects_typed_index() {
         //! Using the Index struct for type-safe object access.
 
-        use crate::devices::module_test_device::comm_objs::{DimmerCommObjects, Index};
+        use crate::module_test_device::comm_objs::{DimmerCommObjects, Index};
         use zweidraehte_device::objects::comm::{ComObjectIndex, ComObjects};
 
         let mut comm_objs = DimmerCommObjects::new();
