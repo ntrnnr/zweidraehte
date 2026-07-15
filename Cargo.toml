@@ -11,6 +11,7 @@ members = [
     "crates/zweidraehte-util",
     "examples/devices",
     "examples/support",
+    "examples/generators",
     "conformance",
     "tools/knxprod-tui",
     "tools/compare-programs",

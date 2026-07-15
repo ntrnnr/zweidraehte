@@ -1,0 +1,26 @@
+[package]
+edition = "2024"
+license.workspace = true
+name = "linux_eth_demo_device"
+version = "0.1.0"
+
+# Linux-hosted demo of the System B demo device (KNX/IP). Unlike the
+# MCU families this builds for the host target, so there is no
+# .cargo/config.toml — a plain `cargo build` in this directory works.
+
+[dependencies]
+# Embassy core (std flavour)
+embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
+embassy-time = { workspace = true, features = ["std"] }
+embassy-sync = { workspace = true, features = ["std"] }
+static_cell = { workspace = true }
+
+# Host logging
+env_logger = "0.11"
+log = "0.4"
+
+# KNX stack and device definitions
+zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["linux", "knxip", "log"] }
+zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", features = ["log", "linux"] }
+zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["demos"] }
+zweidraehte-support = { path = "../../../examples/support" }

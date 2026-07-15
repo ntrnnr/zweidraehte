@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 # The library keeps the short crate name so both the embedded firmware
-# mains and the demo binaries can keep writing `use devices::...`.
+# mains and the host-side consumers can keep writing `use devices::...`.
 [lib]
 name = "devices"
 
@@ -18,20 +18,17 @@ serde = { workspace = true }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod", optional = true }
 zweidraehte-platform = { path = "../../crates/zweidraehte-platform", features = ["log", "linux"], optional = true }
 zweidraehte-support = { path = "../support", optional = true }
-env_logger = { workspace = true, optional = true }
-log = { workspace = true, optional = true }
 embassy-time.workspace = true
-embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"], optional = true }
-embassy-sync = { workspace = true, features = ["std"], optional = true }
-static_cell = { workspace = true, optional = true }
 
 [features]
-default = ["gen", "demos"]
+# `demos` is default so `cargo test -p zweidraehte-devices` compiles the
+# demos-gated definition modules; firmware consumers use
+# `default-features = false` and stay no_std/lean.
+default = ["demos"]
 knxprod = ["dep:zweidraehte-knxprod"]
-gen = ["knxprod", "dep:env_logger"]
 defmt = ["zweidraehte-device/defmt", "zweidraehte-proto/defmt"]
 log = ["zweidraehte-device/log", "zweidraehte-proto/log"]
-# Host-side demo devices and the stack_system_b demo binary (std only).
+# Host-side demo/replication device definitions (std only).
 demos = [
     "knxprod",
     "log",
@@ -42,39 +39,4 @@ demos = [
     "embassy-time/std",
     "dep:zweidraehte-platform",
     "dep:zweidraehte-support",
-    "dep:env_logger",
-    "dep:log",
-    "dep:embassy-executor",
-    "dep:embassy-sync",
-    "dep:static_cell",
 ]
-
-[[bin]]
-name = "gen_light_switch_mtxml"
-path = "src/gen_light_switch_mtxml.rs"
-required-features = ["gen"]
-
-[[bin]]
-name = "gen_ip_interface_mtxml"
-path = "src/gen_ip_interface_mtxml.rs"
-required-features = ["gen"]
-
-[[bin]]
-name = "gen_mtxml"
-path = "src/gen_mtxml.rs"
-required-features = ["gen", "demos"]
-
-[[bin]]
-name = "gen_mdt_mtxml"
-path = "src/gen_mdt_mtxml.rs"
-required-features = ["gen", "demos"]
-
-[[bin]]
-name = "gen_module_mtxml"
-path = "src/gen_module_mtxml.rs"
-required-features = ["gen", "demos"]
-
-[[bin]]
-name = "stack_system_b"
-path = "src/stack_system_b.rs"
-required-features = ["demos"]

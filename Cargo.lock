@@ -6855,13 +6855,8 @@ name = "zweidraehte-devices"
 version = "0.1.0"
 dependencies = [
  "const-default",
- "embassy-executor",
- "embassy-sync",
  "embassy-time",
- "env_logger",
- "log",
  "serde",
- "static_cell",
  "zerocopy",
  "zweidraehte-device",
  "zweidraehte-knxprod",
@@ -6878,6 +6873,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.116",
+]
+
+[[package]]
+name = "zweidraehte-generators"
+version = "0.1.0"
+dependencies = [
+ "const-default",
+ "env_logger",
+ "zweidraehte-devices",
+ "zweidraehte-knxprod",
 ]
 
 [[package]]

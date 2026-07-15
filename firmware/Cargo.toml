@@ -5,6 +5,7 @@ members = [
     "common/dev-provisioning-build",
     "common/embedded-common",
     "common/knxrf",
+    "linux/eth_demo_device",
     "stm32/common",
     "stm32/g0_blink",
     "stm32/g0_tp1_light_switch",

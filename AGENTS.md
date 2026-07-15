@@ -143,8 +143,10 @@ crates/
   zweidraehte-util/          Embedded utility types (button input, etc.)
 
 examples/
-  devices/                 Device definitions (light switch, IP interface, demo
-                           devices) + MTXML generator and demo binaries
+  devices/                 Device definitions only (light switch, IP interface,
+                           demos-gated demo/replication devices) — no binaries
+  generators/              MTXML/.knxprod generator binaries (gen_mtxml,
+                           gen_mdt_mtxml, ...), one per device definition
   support/                 Host-side demo/test support (JSON storage,
                            MockIpPlatform, keyboard/mock-context utilities)
 
@@ -156,11 +158,12 @@ tools/
   compare-programs/        Semantic MTXML comparison (generated vs. reference)
   bus-tools/               Hardware utilities: busmon, tpuart, usb_test
 
-firmware/                  Embedded targets (separate workspace)
+firmware/                  Device targets (separate workspace)
   common/                  Chip-agnostic: embedded-common, knxrf (SX1211
                            driver), dev-provisioning-build
   stm32/                   stm32/common (HAL glue) + STM32G0 devices
   rp2040/                  rp2040/common (HAL glue) + Pico devices
+  linux/                   Host-target device shells (eth_demo_device)
 ```
 
 ### Coding style
@@ -366,9 +369,10 @@ Key modules:
   - Parameter grouping and sections
 
 #### 7. Device Definitions Crate (`examples/devices`, package `zweidraehte-devices`)
-**Purpose**: Device definitions (no_std, consumed by the firmware targets) plus
-host-side demo devices and generator/demo binaries. The library is named
-`devices` so both firmware mains and demo binaries write `use devices::...`.
+**Purpose**: Device definitions only — no binaries. The no_std definitions are
+consumed by the firmware targets; the demo/replication definitions (feature
+`demos`) by the generators and the Linux demo target. The library is named
+`devices` so all consumers write `use devices::...`.
 
 Modules:
 - `light_switch/`, `ip_interface/` - no_std device definitions used by firmware
@@ -376,18 +380,21 @@ Modules:
 - `module_test_device.rs` - Module test device, 4-channel dimmer (feature `demos`)
 - `system_b_demo.rs` - Demo System B device (feature `demos`)
 
-Features: `demos` and `gen` are **default features** so the binaries below run
-without flags; firmware consumers use `default-features = false` and stay
-no_std/lean.
+Features: `demos` is a **default feature** so `cargo test -p
+zweidraehte-devices` covers the demo definitions; firmware consumers use
+`default-features = false` and stay no_std/lean.
+
+#### 7b. Generators Crate (`examples/generators`, package `zweidraehte-generators`)
+**Purpose**: MTXML/.knxprod generator binaries — thin glue between a device
+definition and `KnxprodBuilder`. One binary per device, all in `src/bin/`.
 
 Binaries (run with `cargo run --bin <name>`):
-- `stack_system_b` - System B device demo
 - `gen_mtxml` - Generate MTXML from the demo System B device definition
 - `gen_light_switch_mtxml` / `gen_ip_interface_mtxml` - Firmware device MTXML
 - `gen_mdt_mtxml` - Generate MDT device MTXML
 - `gen_module_mtxml` - Generate module test device MTXML
 
-#### 7b. Demo Support Crate (`examples/support`, package `zweidraehte-support`)
+#### 7c. Demo Support Crate (`examples/support`, package `zweidraehte-support`)
 **Purpose**: Host-side (std/Linux) support code shared by the demo binaries
 and hardware tools. The library is named `support`.
 
@@ -395,14 +402,15 @@ and hardware tools. The library is named `support`.
 - `storage/` - State persistence backends (JSON-based): `JsonStorage`, `FileIdentity`
 - `util/` - Helper utilities (keyboard input polling, mock stack context)
 
-#### 7c. Hardware Tools Crate (`tools/bus-tools`)
+#### 7d. Hardware Tools Crate (`tools/bus-tools`)
 Binaries (run with `cargo run --bin <name>`):
 - `busmon` - Bus monitor utility
 - `tpuart` - TPUART interface test
 - `usb_test` - USB interface testing
 
 #### 8. Firmware Workspace (`firmware/`)
-**Purpose**: Embedded targets (separate workspace)
+**Purpose**: Device targets (separate workspace) — embedded MCU families plus
+`linux/` for host-target device shells
 
 **IMPORTANT**: The `firmware/` directory is a separate Cargo workspace. To
 build embedded binaries, you must `cd` into the specific project directory
@@ -424,9 +432,17 @@ Layout: `common/` holds chip-agnostic crates (`embedded-common`, the `knxrf`
 SX1211 driver, `dev-provisioning-build`); `stm32/` and `rp2040/` each hold a
 family `common/` HAL-glue crate plus the device projects. Directory names
 drop the chip prefix (`stm32/g0_blink`, `rp2040/eth_light_switch`), package names keep it
-(`stm32g0_blink`, `pico_eth_light_switch`).
+(`stm32g0_blink`, `pico_eth_light_switch`). `linux/` holds host-target device
+shells following the same `<medium>[_secure]_<role>` naming (package prefix
+`linux_`); these build with a plain `cargo build` in the project directory —
+no target override.
 
-Notable device:
+Notable devices:
+- `linux/eth_demo_device/` (package `linux_eth_demo_device`) - Linux-hosted
+  KNX/IP demo device
+  - Runs the `devices::system_b_demo` definition over `MockIpPlatform`
+    with JSON state persistence and keyboard interaction
+  - Run with: `cd firmware/linux/eth_demo_device && cargo run`
 - `rp2040/wifi_light_switch/` (package `pico_wifi_light_switch`) - KNX/IP
   light switch device on Raspberry Pi Pico W
   - RP2040 + CYW43 WiFi, embassy async runtime
@@ -501,6 +517,7 @@ zweidraehte-device-macros  (proc-macro, no runtime deps)
 
 zweidraehte-knxprod        (std, XML generation)
   ├── examples/devices     (feature "knxprod"/"demos")
+  ├── examples/generators
   ├── tools/knxprod-tui
   └── tools/compare-programs
 
@@ -625,11 +642,11 @@ Generates MTXML files from the module test device definition (`examples/devices/
 
 ### Device Demos & Testing
 
-**Run System B Demo Device**
+**Run System B Demo Device (Linux host target)**
 ```bash
-cargo run --bin stack_system_b
+cd firmware/linux/eth_demo_device && cargo run
 ```
-Runs a demo System B device stack.
+Runs the demo System B device stack on the host (firmware workspace).
 
 **Run TPUART Interface Test**
 ```bash
