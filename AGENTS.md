@@ -148,7 +148,7 @@ examples/
   generators/              MTXML/.knxprod generator binaries (gen_mtxml,
                            gen_mdt_mtxml, ...), one per device definition
   support/                 Host-side demo/test support (JSON storage,
-                           MockIpPlatform, keyboard/mock-context utilities)
+                           keyboard/mock-context utilities)
 
 conformance/               KNX conformance test framework + runner
 
@@ -398,7 +398,6 @@ Binaries (run with `cargo run --bin <name>`):
 **Purpose**: Host-side (std/Linux) support code shared by the demo binaries
 and hardware tools. The library is named `support`.
 
-- `mock_platform.rs` - Shared `MockIpPlatform` (mock `IpPlatform`) for KNX/IP device demos and tests
 - `storage/` - State persistence backends (JSON-based): `JsonStorage`, `FileIdentity`
 - `util/` - Helper utilities (keyboard input polling, mock stack context)
 
@@ -440,8 +439,8 @@ no target override.
 Notable devices:
 - `linux/eth_demo_device/` (package `linux_eth_demo_device`) - Linux-hosted
   KNX/IP demo device
-  - Runs the `devices::system_b_demo` definition over `MockIpPlatform`
-    with JSON state persistence and keyboard interaction
+  - Runs the `devices::system_b_demo` definition over the read-only
+    `LinuxIpPlatform` with JSON state persistence and keyboard interaction
   - Run with: `cd firmware/linux/eth_demo_device && cargo run`
 - `rp2040/wifi_light_switch/` (package `pico_wifi_light_switch`) - KNX/IP
   light switch device on Raspberry Pi Pico W

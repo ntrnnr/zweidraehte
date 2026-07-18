@@ -1,5 +1,5 @@
 mod error;
-pub use error::{Error, Result};
+pub use error::Error;
 
 mod serialport;
 pub use self::serialport::{AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx};
@@ -10,8 +10,8 @@ pub use self::multicast_socket::AsyncUdpMulticastSocket;
 mod tcp;
 pub use self::tcp::{AsyncLinuxTcpListener, AsyncTcpStream};
 
-mod interface;
-pub use self::interface::get_interface_address;
+mod network;
+pub use self::network::LinuxIpPlatform;
 
 mod system;
 pub use self::system::LinuxSystem;

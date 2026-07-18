@@ -1368,7 +1368,7 @@ memory map.
 
 | Trait | Methods | Implementations |
 |---|---|---|
-| `IpPlatform` | `current_ip_address`, `current_subnet_mask`, `current_default_gateway`, `mac_address`, `current_ip_assignment_method`, `ip_capabilities` | `LinuxIpTransport`, `MockIpPlatform` (examples/support), `embassy-net` wrapper |
+| `IpPlatform` | `current_ip_address`, `current_subnet_mask`, `current_default_gateway`, `mac_address`, `current_ip_assignment_method`, `ip_capabilities` | `LinuxIpPlatform` (read-only, zweidraehte-platform), `embassy-net` wrapper |
 | `IpPlatformConfig` | `apply_ip_config(&IpConfig) -> Result<_, Error>` | same |
 
 ---

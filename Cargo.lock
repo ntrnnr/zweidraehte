@@ -6860,9 +6860,7 @@ dependencies = [
  "zerocopy",
  "zweidraehte-device",
  "zweidraehte-knxprod",
- "zweidraehte-platform",
  "zweidraehte-proto",
- "zweidraehte-support",
  "zweidraehte-util",
 ]
 

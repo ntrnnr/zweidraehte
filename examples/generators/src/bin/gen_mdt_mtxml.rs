@@ -9,7 +9,7 @@ use std::env;
 use std::path::PathBuf;
 
 use devices::mdt_push_button_lite::{
-    DEVICE_DESCRIPTOR, MDT_TRANSLATIONS_DE, MdtParams, MdtStack, SERIAL_NUMBER, comm_objs,
+    DEVICE_DESCRIPTOR, MDT_TRANSLATIONS_DE, MdtParams, MdtPushButtonLiteDevice, SERIAL_NUMBER, comm_objs,
 };
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         non_reg_relevant_data_version: Some(28),
         replaces_versions: Some("18 19"),
         application_data_hash: None, // Hash changes with content, would be generated later
-        page_layout: Some(MdtStack::page_layout()),
+        page_layout: Some(MdtPushButtonLiteDevice::page_layout()),
         modules: None,
         baggages: None,
         translations: Some(MDT_TRANSLATIONS_DE),

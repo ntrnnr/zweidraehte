@@ -20,8 +20,6 @@ impl core::fmt::Display for Error {
 #[cfg(feature = "std")]
 impl std::error::Error for Error {}
 
-pub type Result<T> = core::result::Result<T, Error>;
-
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self::IOError(err)

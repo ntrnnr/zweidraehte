@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use const_default::ConstDefault;
 
-use devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, DemoStack, SERIAL_NUMBER, comm_objs};
+use devices::system_b_demo::{DEVICE_DESCRIPTOR, DemoParams, SERIAL_NUMBER, SystemBDemoDevice, comm_objs};
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         non_reg_relevant_data_version: None,
         replaces_versions: None,
         application_data_hash: None,
-        page_layout: Some(DemoStack::page_layout()),
+        page_layout: Some(SystemBDemoDevice::page_layout()),
         modules: None,
         baggages: None,
         translations: None,

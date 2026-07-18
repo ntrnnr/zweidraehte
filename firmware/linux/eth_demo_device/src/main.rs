@@ -1,11 +1,12 @@
 //! System B Device Test Utility
 //!
 //! Binary entry point for running the System B KNX/IP demo device.
-//! The device definition (parameters, comm objects, stack traits) lives in
-//! [`devices::system_b_demo`]; this file only contains the runtime
-//! logic: state persistence, restart handling, and the main event loop.
+//! The device definition (parameters, comm objects, page layout) lives in
+//! [`devices::system_b_demo`]; the Linux-specific stack wiring is in
+//! [`stack`], and this file contains the runtime logic: state
+//! persistence, restart handling, and the main event loop.
 //!
-//! Run with: `cargo run --bin stack_system_b`
+//! Run with: `cargo run` in this directory.
 
 use embassy_executor::Spawner;
 use embassy_sync::pubsub::WaitResult;
@@ -20,9 +21,15 @@ use zweidraehte_device::{
     restart::EraseCode,
 };
 
-use devices::system_b_demo::*;
+use devices::system_b_demo::{DEVICE_DESCRIPTOR, OutputConfig, SERIAL_NUMBER, SceneConfig};
 use support::storage::{FileIdentity, JsonStorage};
 use support::util::keyboard;
+
+mod stack;
+use stack::{DemoStack, DemoState};
+
+/// Network interface name for KNX/IP communication.
+const INTERFACE_NAME: &str = "knxdevbridgeif";
 
 /// Default path for the device state JSON file.
 const STATE_FILE_PATH: &str = "system_b_device_state.json";
@@ -180,11 +187,15 @@ async fn main(spawner: Spawner) {
     };
     let state_init = SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
 
-    // Create KNX/IP link layer
-    let control_endpoint = SocketAddrV4::new("192.168.1.200".parse().unwrap(), 3671);
+    // The read-only platform reports the host's actual network
+    // configuration to the stack (the OS owns networking, so KNX-driven
+    // reconfiguration is a no-op). It also gives us the interface address
+    // for the link layer's bind and control endpoint.
+    let platform = zweidraehte_platform::LinuxIpPlatform::new(INTERFACE_NAME);
+    let interface_addr = platform.current_ip_address();
+    assert!(!interface_addr.is_unspecified(), "interface {INTERFACE_NAME} not found or has no IPv4 address");
+    let control_endpoint = SocketAddrV4::new(interface_addr, 3671);
 
-    let interface_addr =
-        zweidraehte_platform::get_interface_address(INTERFACE_NAME).expect("Failed to get interface address");
     // Features (routing + remote-config + TCP) and sizing (UDP socket
     // pool, TCP stream count, etc.) all flow from `DemoStack`'s
     // `KnxNetIpDefinition` impl. No more enable_*() chain — features
@@ -202,7 +213,7 @@ async fn main(spawner: Spawner) {
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
         state_init,
-        MockIpPlatform::default(),
+        platform,
         DemoStack::memory_map(),
         (),
     );

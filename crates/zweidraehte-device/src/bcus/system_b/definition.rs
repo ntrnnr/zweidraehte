@@ -402,7 +402,7 @@ pub type ExtensionAugmentFor<'a, D> =
 ///     params: DemoParams,
 ///     com_objects: comm_objs::DemoComObjects,
 ///     link_layer_builder: KnxNetIpBuilder<DemoStack>,
-///     platform: MockIpPlatform,
+///     platform: LinuxIpPlatform,
 ///     extension_state: IpExtensionFor<KnxIpDeviceTcp>,
 ///     state: DemoState,
 ///     al_extensions: (SystemBAlServices, DomainAddressService),

@@ -16,8 +16,6 @@ const-default = { workspace = true }
 zerocopy = { workspace = true }
 serde = { workspace = true }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod", optional = true }
-zweidraehte-platform = { path = "../../crates/zweidraehte-platform", features = ["log", "linux"], optional = true }
-zweidraehte-support = { path = "../support", optional = true }
 embassy-time.workspace = true
 
 [features]
@@ -32,11 +30,6 @@ log = ["zweidraehte-device/log", "zweidraehte-proto/log"]
 demos = [
     "knxprod",
     "log",
-    "zweidraehte-device/linux",
-    "zweidraehte-device/knxip",
     "zweidraehte-proto/std",
-    "zweidraehte-proto/knxip",
     "embassy-time/std",
-    "dep:zweidraehte-platform",
-    "dep:zweidraehte-support",
 ]
