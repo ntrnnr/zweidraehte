@@ -7,3 +7,9 @@ out/
 
 # Local RSA converter signing key (never commit — see LICENSING.md / keys.rs)
 converter_key.xml
+
+# Host-target device runtime state (per-run; regenerated on first launch).
+# Written by the firmware/linux/* device shells next to their binary.
+*_device_state.json
+device_identity.json
+*_seq.bin

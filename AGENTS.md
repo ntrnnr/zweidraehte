@@ -163,7 +163,8 @@ firmware/                  Device targets (separate workspace)
                            driver), dev-provisioning-build
   stm32/                   stm32/common (HAL glue) + STM32G0 devices
   rp2040/                  rp2040/common (HAL glue) + Pico devices
-  linux/                   Host-target device shells (eth_demo_device)
+  linux/                   Host-target device shells (eth_light_switch,
+                           eth_secure_light_switch)
 ```
 
 ### Coding style
@@ -437,11 +438,20 @@ shells following the same `<medium>[_secure]_<role>` naming (package prefix
 no target override.
 
 Notable devices:
-- `linux/eth_demo_device/` (package `linux_eth_demo_device`) - Linux-hosted
-  KNX/IP demo device
-  - Runs the `devices::system_b_demo` definition over the read-only
-    `LinuxIpPlatform` with JSON state persistence and keyboard interaction
-  - Run with: `cd firmware/linux/eth_demo_device && cargo run`
+- `linux/eth_light_switch/` (package `linux_eth_light_switch`) - Linux-hosted
+  KNX/IP light switch
+  - Runs the shared `devices::light_switch` definition over the read-only
+    `LinuxIpPlatform` (UDP + TCP, routing + remote config, no tunnelling —
+    feature set `KnxIpDeviceTcp`) with JSON state persistence and keyboard
+    interaction
+  - Run with: `cd firmware/linux/eth_light_switch && cargo run`
+- `linux/eth_secure_light_switch/` (package `linux_eth_secure_light_switch`) -
+  the secure sibling: same light switch with KNX IP Secure (secure multicast
+  routing) + KNX Data Secure. Adds `GetrandomRng`, a `StaticSecureIdentity`
+  carrying the FDSK, and the file-backed sequence/SIAT store
+  `support::storage::LinuxSecureSeqStorage` (the host equivalent of the
+  embedded flash seq store — `SecureIpDeviceBuilder` needs `HasSeqStore`).
+  - Run with: `cd firmware/linux/eth_secure_light_switch && cargo run`
 - `rp2040/wifi_light_switch/` (package `pico_wifi_light_switch`) - KNX/IP
   light switch device on Raspberry Pi Pico W
   - RP2040 + CYW43 WiFi, embassy async runtime
@@ -641,11 +651,12 @@ Generates MTXML files from the module test device definition (`examples/devices/
 
 ### Device Demos & Testing
 
-**Run System B Demo Device (Linux host target)**
+**Run Light Switch Device (Linux host target)**
 ```bash
-cd firmware/linux/eth_demo_device && cargo run
+cd firmware/linux/eth_light_switch && cargo run          # plain KNX/IP
+cd firmware/linux/eth_secure_light_switch && cargo run   # IP Secure + Data Secure
 ```
-Runs the demo System B device stack on the host (firmware workspace).
+Runs the shared `light_switch` device stack on the host (firmware workspace).
 
 **Run TPUART Interface Test**
 ```bash

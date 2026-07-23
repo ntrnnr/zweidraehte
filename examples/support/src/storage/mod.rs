@@ -1,7 +1,9 @@
 //! Device State Storage
 //!
 //! Provides storage backends for persisting device configuration and
-//! device identity.
+//! device identity, plus a file-backed sequence-number/SIAT store
+//! ([`LinuxSecureSeqStorage`]) for host-target Data-Secure / IP-Secure
+//! devices.
 //!
 //! # Example
 //!
@@ -16,6 +18,9 @@
 
 mod file_identity;
 pub use file_identity::{FileIdentity, FileIdentityError};
+
+mod secure_seq;
+pub use secure_seq::{FileByteIo, LinuxSecureSeqStorage, LinuxSiatStore, SIAT_SLOTS};
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};

@@ -15,3 +15,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 libc = { workspace = true }
 log = { workspace = true }
+getrandom = "0.4"
+evdev = "0.13"
+zweidraehte-util = { version = "0.1.0", path = "../../crates/zweidraehte-util" }
+embassy-time = { workspace = true, features = ["std"] }
+embassy-sync = { workspace = true, features = ["std"] }
+embassy-futures.workspace = true

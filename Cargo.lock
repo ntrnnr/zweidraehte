@@ -1541,6 +1541,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "evdev"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25b686663ba7f08d92880ff6ba22170f1df4e83629341cba34cf82cd65ebea99"
+dependencies = [
+ "bitvec",
+ "cfg-if",
+ "libc",
+ "nix 0.29.0",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6957,6 +6969,11 @@ dependencies = [
 name = "zweidraehte-support"
 version = "0.1.0"
 dependencies = [
+ "embassy-futures",
+ "embassy-sync",
+ "embassy-time",
+ "evdev",
+ "getrandom 0.4.2",
  "libc",
  "log",
  "serde",
@@ -6964,6 +6981,7 @@ dependencies = [
  "zweidraehte-device",
  "zweidraehte-platform",
  "zweidraehte-proto",
+ "zweidraehte-util",
 ]
 
 [[package]]

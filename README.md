@@ -177,8 +177,8 @@ The workspace pins a nightly toolchain via `rust-toolchain.toml`
 `rustup` picks it up automatically.
 
 ```bash
-# Run the System B demo device (KNX/IP, mock-friendly)
-(cd firmware/linux/eth_demo_device && cargo run)
+# Run the KNX/IP light switch device (host target)
+(cd firmware/linux/eth_light_switch && cargo run)
 
 # Run the KNX conformance suite (long; accepts a name filter)
 cargo run --bin conformance-runner [filter]
@@ -338,7 +338,7 @@ previous two questions).
 
 **Which hardware do you recommend to get started?**
 
-You don't need any: `cd firmware/linux/eth_demo_device && cargo run` puts a KNX/IP device on
+You don't need any: `cd firmware/linux/eth_light_switch && cargo run` puts a KNX/IP device on
 your LAN that ETS can discover and program. The cheapest real hardware after
 that is a Raspberry Pi Pico W (or a Pico with a W5500 Ethernet board) running
 the KNX/IP firmware: still no KNX transceiver required. For the actual

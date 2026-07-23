@@ -1,0 +1,39 @@
+[package]
+edition = "2024"
+license.workspace = true
+name = "linux_eth_secure_light_switch"
+version = "0.1.0"
+
+# Secure sibling of `firmware/linux/eth_light_switch`: the same host-target
+# KNX/IP light switch, but with KNX IP Secure (secure multicast routing) + KNX
+# Data Secure (encrypted group telegrams). The host-target sibling of
+# `firmware/rp2040/eth_secure_light_switch`. The deltas vs. the plain Linux
+# target are the `ip-secure` feature on `zweidraehte-device`, a
+# `StaticSecureIdentity` carrying the FDSK, a `GetrandomRng`, the file-backed
+# `LinuxSecureSeqStorage` from `zweidraehte-support`, and `SecureIpDeviceBuilder`
+# in the stack definition.
+#
+# Unlike the MCU families this builds for the host target, so there is no
+# .cargo/config.toml — a plain `cargo build` in this directory works.
+
+[dependencies]
+# Embassy core (std flavour)
+embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
+embassy-time = { workspace = true, features = ["std"] }
+embassy-sync = { workspace = true, features = ["std"] }
+embassy-futures = { workspace = true }
+static_cell = { workspace = true }
+
+# Host logging
+env_logger = "0.11"
+log = "0.4"
+
+# KNX stack and device definitions. `ip-secure` (which implies `knxip`) pulls
+# in the secure-routing dispatch path and the IP Secure PIDs; the Data Secure
+# layers come from `SecureIpDeviceBuilder`.
+zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["linux", "ip-secure", "log"] }
+zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", features = ["log", "linux"] }
+zweidraehte-devices = { path = "../../../examples/devices", default-features = false }
+# Host support: JSON config storage, FileIdentity, GetrandomRng, and the
+# file-backed sequence/SIAT store (LinuxSecureSeqStorage).
+zweidraehte-support = { path = "../../../examples/support" }

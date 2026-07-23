@@ -1,9 +1,12 @@
 //! System B Demo Device Definition
 //!
 //! Device definition for a KNX/IP System B demo device: parameters,
-//! communication objects, and the ETS page layout. The transport-specific
-//! wiring (`StackDefinition`, state types, link layer, platform) lives in
-//! the binary that runs the device — `firmware/linux/eth_demo_device`.
+//! communication objects, and the ETS page layout. It is kept as a
+//! reference for ETS page-layout features not yet ported to the shared
+//! `light_switch` definition; the MTXML generator
+//! [`gen_mtxml`](../../../generators) renders it, and no firmware target
+//! runs it (the Linux host targets run `light_switch` instead — see
+//! `firmware/linux/eth_light_switch`).
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
@@ -83,8 +86,9 @@ pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
 /// Device metadata anchor for the demo device.
 ///
 /// Carries the transport-agnostic ETS artifacts (the [`EtsPageLayout`]
-/// impl below); the runnable `StackDefinition` is assembled in
-/// `firmware/linux/eth_demo_device`.
+/// impl below). It is consumed only by the `gen_mtxml` generator; no
+/// firmware target assembles a runnable `StackDefinition` from it (the
+/// Linux host targets run the shared `light_switch` definition instead).
 #[derive(Debug, Clone, Copy)]
 pub struct SystemBDemoDevice;
 
