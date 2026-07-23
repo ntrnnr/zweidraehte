@@ -204,6 +204,23 @@ pub struct ApplicationProgramDef<'a> {
     /// `ApplicationProgram/@IsSecureEnabled`. ETS only offers secure
     /// configuration options when this is `Some(true)`.
     pub is_secure_enabled: Option<bool>,
+    /// KNX IP Secure user-password table capacity. Emits
+    /// `ApplicationProgram/@MaxUserEntries`, which is how ETS learns how
+    /// many `PID_PASSWORD_HASHES` entries the device can hold.
+    ///
+    /// **Required on any IP Secure device.** ETS builds its IP security
+    /// config from this attribute alone — it never reads the capacity from
+    /// the device — and treats an absent attribute as `0`, failing the
+    /// download with "too many assigned users" before any bus traffic.
+    /// 03/08/09 §2.5.2 requires at least one entry (User ID 1, the
+    /// management user ETS itself authenticates as), so set this to at
+    /// least `1` and never above the firmware's `MAX_PW`.
+    pub max_user_entries: Option<u16>,
+    /// KNX IP Secure tunnelling-user table capacity (`PID_TUNNELLING_USERS`).
+    /// Emits `ApplicationProgram/@MaxTunnelingUserEntries`. Leave `None`
+    /// (default 0) on devices that do no secure tunnelling; must not exceed
+    /// the firmware's `MAX_TU`.
+    pub max_tunneling_user_entries: Option<u16>,
     /// Secure Individual Address Table (SIAT) capacity — one entry per
     /// configured P2P peer. Emits
     /// `ApplicationProgram/@MaxSecurityIndividualAddressEntries`. Must
@@ -472,6 +489,8 @@ pub(crate) struct ApplicationProgramConfig<'a> {
     pub additional_addresses_count: Option<u32>,
     pub ip_config: Option<&'a str>,
     pub is_secure_enabled: Option<bool>,
+    pub max_user_entries: Option<u16>,
+    pub max_tunneling_user_entries: Option<u16>,
     pub max_security_individual_address_entries: Option<u16>,
     pub max_security_group_key_table_entries: Option<u16>,
     pub max_security_p2p_key_table_entries: Option<u16>,

@@ -186,11 +186,23 @@ pub struct ApplicationProgram {
     pub ip_config: Option<String>,
 
     // KNX Data Secure attributes. Emitted only on devices that declare
-    // themselves secure-capable. The three table-size attrs bound what
-    // ETS will attempt to push to the device; they must not exceed the
-    // firmware's actual table capacities.
+    // themselves secure-capable. The table-size attrs bound what ETS will
+    // attempt to push to the device; they must not exceed the firmware's
+    // actual table capacities.
     #[serde(rename = "@IsSecureEnabled", skip_serializing_if = "Option::is_none")]
     pub is_secure_enabled: Option<bool>,
+    // KNX IP Secure user tables. ETS sizes its `AddIpSecurityConfigDataTask`
+    // from these *before* contacting the device, and both default to 0 when
+    // absent — so an IP Secure device that omits `MaxUserEntries` is rejected
+    // with "PID_PASSWORD_HASHES table overflow: required 1, available 0"
+    // ("too many assigned users") without a single frame on the bus.
+    // 03/08/09 §2.5.2 makes PID_PASSWORD_HASHES mandatory for every profile
+    // with a minimum of one entry (the management user), so a secure device
+    // must declare at least 1 here.
+    #[serde(rename = "@MaxUserEntries", skip_serializing_if = "Option::is_none")]
+    pub max_user_entries: Option<u16>,
+    #[serde(rename = "@MaxTunnelingUserEntries", skip_serializing_if = "Option::is_none")]
+    pub max_tunneling_user_entries: Option<u16>,
     #[serde(rename = "@MaxSecurityIndividualAddressEntries", skip_serializing_if = "Option::is_none")]
     pub max_security_individual_address_entries: Option<u16>,
     #[serde(rename = "@MaxSecurityGroupKeyTableEntries", skip_serializing_if = "Option::is_none")]
@@ -229,6 +241,8 @@ impl Default for ApplicationProgram {
             additional_addresses_count: None,
             ip_config: None,
             is_secure_enabled: None,
+            max_user_entries: None,
+            max_tunneling_user_entries: None,
             max_security_individual_address_entries: None,
             max_security_group_key_table_entries: None,
             max_security_p2p_key_table_entries: None,

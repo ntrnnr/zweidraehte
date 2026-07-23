@@ -97,6 +97,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional_addresses_count: None,
         ip_config: None,
         is_secure_enabled: None,
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
         max_security_individual_address_entries: None,
         max_security_group_key_table_entries: None,
         max_security_p2p_key_table_entries: None,
@@ -126,6 +128,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional_addresses_count: None,
         ip_config: None,
         is_secure_enabled: None,
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
         max_security_individual_address_entries: None,
         max_security_group_key_table_entries: None,
         max_security_p2p_key_table_entries: None,
@@ -166,6 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional_addresses_count: None,
         ip_config: None,
         is_secure_enabled: Some(true),
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
         max_security_individual_address_entries: Some(32),
         max_security_group_key_table_entries: Some(10),
         max_security_p2p_key_table_entries: Some(0),
@@ -198,6 +204,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional_addresses_count: None,
         ip_config: None,
         is_secure_enabled: None,
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
         max_security_individual_address_entries: None,
         max_security_group_key_table_entries: None,
         max_security_p2p_key_table_entries: None,
@@ -231,6 +239,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional_addresses_count: None,
         ip_config: None,
         is_secure_enabled: Some(true),
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
         max_security_individual_address_entries: Some(32),
         max_security_group_key_table_entries: Some(10),
         max_security_p2p_key_table_entries: Some(0),
@@ -256,10 +266,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //     `IPRoutingBackboneSecurity` live exclusively in the ETS *project*
     //     (`Installation/@IPRoutingBackboneKey` etc.), so there is nothing
     //     to emit here. ETS provisions the secure backbone at install time.
-    //   * The IP-Secure feature that *would* surface in manufacturer XML is
-    //     secure *tunnelling* — `MaxTunnelingUserEntries` + `<BusInterface
-    //     AccessType="Tunneling">` (cf. the MDT/Weinzierl IP interfaces).
-    //     This device is routing-only (no tunnelling), so those are absent.
+    //   * Secure *tunnelling* surfaces as `MaxTunnelingUserEntries` +
+    //     `<BusInterface AccessType="Tunneling">` (cf. the MDT/Weinzierl IP
+    //     interfaces). This device is routing-only, so tunnelling users are
+    //     `0` and the BusInterface is absent.
+    //   * `MaxUserEntries` is *not* tunnelling-specific and must be set here:
+    //     03/08/09 §2.5.2 makes `PID_PASSWORD_HASHES` mandatory (M) for every
+    //     IP Secure profile — including "KNX IP end device" — with a footnote
+    //     requiring at least one entry, because User ID 1 is the management
+    //     user ETS itself authenticates as. ETS sizes its IP security config
+    //     from this attribute alone and never asks the device, so omitting it
+    //     means ETS assumes `0` and aborts the download with "too many
+    //     assigned users" before sending a single frame.
     //
     // Table sizes match `app_tp1_secure`: `SIAT > 0` per 03/03/07 §5.3 (the
     // SIAT stores LastValidSeqNr per non-tool secure sender, group senders
@@ -288,6 +306,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional_addresses_count: None,
         ip_config: None,
         is_secure_enabled: Some(true),
+        // One user slot — the management user — matching the firmware's
+        // `MAX_PW = 1` on both secure light switches. `MAX_TU = 0` there, so
+        // no tunnelling users.
+        max_user_entries: Some(1),
+        max_tunneling_user_entries: Some(0),
         max_security_individual_address_entries: Some(32),
         max_security_group_key_table_entries: Some(10),
         max_security_p2p_key_table_entries: Some(0),

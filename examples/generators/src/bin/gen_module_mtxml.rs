@@ -61,6 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         additional_addresses_count: None,
         ip_config: None,
         is_secure_enabled: None,
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
         max_security_individual_address_entries: None,
         max_security_group_key_table_entries: None,
         max_security_p2p_key_table_entries: None,

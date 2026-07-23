@@ -668,6 +668,8 @@ impl<'a> KnxprodBuilder<'a> {
             additional_addresses_count: app.additional_addresses_count,
             ip_config: app.ip_config,
             is_secure_enabled: app.is_secure_enabled,
+            max_user_entries: app.max_user_entries,
+            max_tunneling_user_entries: app.max_tunneling_user_entries,
             max_security_individual_address_entries: app.max_security_individual_address_entries,
             max_security_group_key_table_entries: app.max_security_group_key_table_entries,
             max_security_p2p_key_table_entries: app.max_security_p2p_key_table_entries,

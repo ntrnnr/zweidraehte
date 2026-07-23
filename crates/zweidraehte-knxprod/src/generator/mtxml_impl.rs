@@ -187,6 +187,8 @@ impl MtxmlGenerator {
             additional_addresses_count: config.additional_addresses_count,
             ip_config: config.ip_config.map(|s| s.to_string()),
             is_secure_enabled: config.is_secure_enabled,
+            max_user_entries: config.max_user_entries,
+            max_tunneling_user_entries: config.max_tunneling_user_entries,
             max_security_individual_address_entries: config.max_security_individual_address_entries,
             max_security_group_key_table_entries: config.max_security_group_key_table_entries,
             max_security_p2p_key_table_entries: config.max_security_p2p_key_table_entries,
