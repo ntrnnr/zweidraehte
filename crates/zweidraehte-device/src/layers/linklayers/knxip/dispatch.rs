@@ -476,7 +476,12 @@ where
 
                     // Connectionless messages go directly to services.
                     ServiceCategory::Connectionless => {
-                        self.dispatch_to_services(service_type, buffer, source, socket_idx, response_channel).await;
+                        let tcp_idx = match origin {
+                            PacketOrigin::Tcp { tcp_idx, .. } => Some(tcp_idx),
+                            PacketOrigin::Udp { .. } => None,
+                        };
+                        self.dispatch_to_services(service_type, buffer, source, socket_idx, tcp_idx, response_channel)
+                            .await;
                     }
                 }
             }
@@ -497,6 +502,7 @@ where
         buffer: &[u8],
         source: SocketAddrV4,
         socket_idx: usize,
+        tcp_idx: Option<usize>,
         response_channel: &Channel<NoopRawMutex, PendingResponse, 16>,
     ) {
         let (addr_buf, addr_count, tunnel_slots) = self.address_and_tunnel_snapshot();
@@ -517,6 +523,9 @@ where
                 address_filter,
                 socket_idx,
             )
+            // Responses must mirror the request's transport; see
+            // `ServerContext::response_target`.
+            .with_tcp_origin(tcp_idx)
         };
 
         // Discovery server (always present)
@@ -527,7 +536,14 @@ where
                 KNXnetIPServiceType::SearchRequestExtended,
                 KNXnetIPServiceType::DescriptionRequest,
             ];
-            if discovery_service_types.contains(&service_type) && self.discovery_socket_indices.contains(&socket_idx) {
+            // A discovery/description request is in scope when it arrives on
+            // a UDP discovery socket, or over TCP: the control endpoint
+            // accepts both transports (03/08/02 §2.2), and DESCRIPTION_REQUEST
+            // in particular is expected to work over the client's own TCP
+            // connection (§7.6). TCP arrivals carry no meaningful UDP socket
+            // index, so the socket check does not apply to them.
+            let in_discovery_scope = tcp_idx.is_some() || self.discovery_socket_indices.contains(&socket_idx);
+            if discovery_service_types.contains(&service_type) && in_discovery_scope {
                 let context = make_ctx(self.ind_tx);
                 match self.discovery.on_indication(service_type, buffer, source, &context).await {
                     Ok(responses) => {

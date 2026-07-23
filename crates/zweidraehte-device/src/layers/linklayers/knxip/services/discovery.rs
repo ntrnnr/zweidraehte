@@ -10,7 +10,7 @@ use zweidraehte_proto::messages::{
 };
 use zweidraehte_proto::util::packets::ParseBuffer;
 
-use super::{KnxNetIpServer, PendingResponse, ResponseTarget, ServerContext, ServerError, resolve_hpai};
+use super::{KnxNetIpServer, PendingResponse, ServerContext, ServerError, resolve_hpai};
 
 // FIXME: Strictly speaking, we should only have one server that does discovery on 224.0.23.12:3671 and
 //        then multiple servers that handle the control endpoints of other service containers
@@ -88,10 +88,7 @@ impl DiscoveryServer {
 
         let destination = resolve_hpai(&request.discovery_endpoint, source);
 
-        Ok(PendingResponse {
-            buffer: response_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: context.socket_idx },
-        })
+        Ok(PendingResponse { buffer: response_buffer, target: context.response_target(destination) })
     }
 
     // ========================================================================
@@ -318,10 +315,8 @@ impl DiscoveryServer {
         let destination = resolve_hpai(&request.discovery_endpoint, source);
 
         let mut responses = Vec::new();
-        let _ = responses.push(PendingResponse {
-            buffer: response_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: context.socket_idx },
-        });
+        let _ =
+            responses.push(PendingResponse { buffer: response_buffer, target: context.response_target(destination) });
         Ok(responses)
     }
 
@@ -404,10 +399,7 @@ impl DiscoveryServer {
 
         let destination = resolve_hpai(&request.control_endpoint, source);
 
-        Ok(PendingResponse {
-            buffer: response_buffer,
-            target: ResponseTarget::Udp { destination, socket_idx: context.socket_idx },
-        })
+        Ok(PendingResponse { buffer: response_buffer, target: context.response_target(destination) })
     }
 }
 

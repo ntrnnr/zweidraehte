@@ -228,6 +228,15 @@ pub struct ServerContext<'a> {
     /// KNX IP Secure configuration (PIDs 91–97), for the discovery
     /// server's SecuredServiceFamilies DIB. `None` on non-secure devices.
     ip_secure: Option<&'a dyn crate::ip::IpSecureStateView>,
+    /// TCP stream index when this indication arrived over TCP, `None` for
+    /// UDP.
+    ///
+    /// The control endpoint accepts both transports (03/08/02 §2.2), and a
+    /// response must leave on the transport the request came in on: a client
+    /// blocked reading its TCP stream never sees a UDP reply. Services that
+    /// answer connectionlessly consult [`response_target`](Self::response_target)
+    /// rather than assuming UDP.
+    tcp_idx: Option<usize>,
 }
 
 impl<'a> ServerContext<'a> {
@@ -261,6 +270,28 @@ impl<'a> ServerContext<'a> {
             address_filter,
             socket_idx,
             ip_secure,
+            tcp_idx: None,
+        }
+    }
+
+    /// Mark this indication as having arrived over the TCP stream `tcp_idx`.
+    ///
+    /// Left unset for UDP arrivals, which is the default.
+    pub fn with_tcp_origin(mut self, tcp_idx: Option<usize>) -> Self {
+        self.tcp_idx = tcp_idx;
+        self
+    }
+
+    /// Where a connectionless response to this indication must be sent.
+    ///
+    /// Mirrors the request's transport: back down the originating TCP stream
+    /// when the request arrived over TCP (03/08/02 §7.6 expects the
+    /// DESCRIPTION_RESPONSE on the client's own TCP connection), otherwise to
+    /// `destination` on the UDP socket the request arrived on.
+    pub fn response_target(&self, destination: SocketAddrV4) -> ResponseTarget {
+        match self.tcp_idx {
+            Some(tcp_idx) => ResponseTarget::Tcp { tcp_idx },
+            None => ResponseTarget::Udp { destination, socket_idx: self.socket_idx },
         }
     }
 
