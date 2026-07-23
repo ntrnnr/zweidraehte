@@ -62,7 +62,6 @@ defmt-rtt = "1.0"
 panic-probe = { version = "1.0" }
 futures = { version = "0.3", default-features = false }
 static_cell = "2.1"
-static-alloc = "0.2"
 
 # Serialization (no_std)
 postcard = { version = "1.1", default-features = false }
@@ -70,11 +69,6 @@ serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 
 # KNX stack dependencies (needed when pulling in zweidraehte via path)
 heapless = "0.9"
-const-default = { version = "1.0", default-features = false, features = ["derive"] }
-zerocopy = { version = "0.8", features = ["derive"] }
-paste = "1.0"
-serde_with = { version = "3.12", default-features = false, features = ["macros"] }
-replace_with = { version = "0.1", default-features = false }
 
 # Build for minimal size on all embedded targets.
 # panic = "abort" is required for no_std — unwinding is not available.
