@@ -84,6 +84,14 @@ where
 // ============================================================================
 // Handlers
 // ============================================================================
+//
+// Both domain-address serial-number services accept **either** broadcast mode
+// (`T_SystemBroadcast_Ind` or `T_Broadcast_Ind`): per 03/02/06 KNX IP
+// §4.3.5.3.1 the device handles IP System Broadcast Frames and plain broadcast
+// Frames uniformly, and 03/03/07 Table 1 marks these services mandatory on both
+// `T_Data_Broadcast` and `T_Data_SystemBroadcast`. ETS assigns the routing
+// multicast address over plain broadcast (cEMI SB bit 0), which must be
+// accepted; responses go out in the same mode as the request.
 
 /// Handle `A_DomainAddressSerialNumber_Read.ind`.
 ///
@@ -97,11 +105,9 @@ where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
-    // Per spec 03/03/07 §3.3.6 the service runs on system broadcast
-    // communication mode — the AL accepts the request via
-    // `T_Data_SystemBroadcast.ind` and emits the response via
-    // `T_Data_SystemBroadcast.req`.
-    if ind.service_type() != ServiceType::T_SystemBroadcast_Ind {
+    // Accept either broadcast mode; the response mirrors the request's mode
+    // (03/02/06 §4.3.5.3.1). See the handlers-section note above.
+    if !matches!(ind.service_type(), ServiceType::T_SystemBroadcast_Ind | ServiceType::T_Broadcast_Ind) {
         warn!("AL DomainAddressSerialNumberRead with unexpected service type: {:?}", ind.service_type());
         return;
     }
@@ -126,8 +132,11 @@ where
         return;
     };
 
+    // No `with_service_type` override: `respond_to` maps the indication's mode
+    // to the matching request mode (`T_Broadcast_Ind → T_Broadcast_Req`,
+    // `T_SystemBroadcast_Ind → T_SystemBroadcast_Req`), so the response goes out
+    // in the same communication mode as the request (03/02/06 §4.3.5.3.1).
     let mut msg = MessageBuilder::respond_to(msg_buf, ind)
-        .with_service_type(ServiceType::T_SystemBroadcast_Req)
         .with_destination(DestinationAddress::Group(GroupAddress::from_bytes(&[0x00, 0x00])))
         .with_application(ApciCode::DomainAddressSerialNumberResponse)
         .build();
@@ -170,8 +179,10 @@ where
     D: StackDefinition,
     D::State: HasDomainAddress,
 {
-    // Per spec 03/03/07 §3.3.7 the service runs on system broadcast.
-    if ind.service_type() != ServiceType::T_SystemBroadcast_Ind {
+    // Accept either broadcast mode (03/02/06 §4.3.5.3.4 with §4.3.5.3.1). ETS
+    // assigns the routing multicast address over plain broadcast, so insisting
+    // on system broadcast alone would silently drop it. See the note above.
+    if !matches!(ind.service_type(), ServiceType::T_SystemBroadcast_Ind | ServiceType::T_Broadcast_Ind) {
         warn!("AL DomainAddressSerialNumberWrite with unexpected service type: {:?}", ind.service_type());
         return;
     }
