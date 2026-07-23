@@ -20,6 +20,7 @@ use zweidraehte_proto::messages::{
 
 use super::definition::KnxNetIpDefinition;
 use super::runtime::KnxNetIp;
+use super::secure::IpSecureFeature;
 use super::{
     EndpointType, KnxNetIpContext, KnxNetIpResources, SubnetLink, connections, features, services,
     transport::{SocketDescriptor, UdpManager},
@@ -144,6 +145,24 @@ where
     <<D::Features as FeatureSet>::Tunneling as TunnelingFeature>::Tunnel:
         connections::TunnelingConnectedHandler<TUNNEL_CAPACITY>,
 {
+    /// Conformance guard: a KNX IP Secure device must support TCP.
+    ///
+    /// 03/08/09 §2.5.1.1 makes *KNXnet/IP Core* **`v02`** mandatory for every
+    /// KNX IP Secure profile (bare `v02`; the table writes `(vnn)` for
+    /// optional features), and 03/08/02 Core §9.2 lists `IPV4_TCP` as
+    /// **Required** for a Core v2 server — Optional only in v1. Without TCP
+    /// the device announces `Core(v1)` (see `core_version` in `build`), ETS
+    /// falls back to a 15-byte APDU, and commissioning aborts at the 23-byte
+    /// secure exchange.
+    ///
+    /// `core::assert!` rather than `assert!`: the crate does
+    /// `#[macro_use] extern crate defmt`, whose `assert!` is not const.
+    const _GUARD_SECURE_NEEDS_TCP: () = core::assert!(
+        !<<D::Features as FeatureSet>::IpSecure as IpSecureFeature>::ENABLED
+            || <<D::Features as FeatureSet>::Tcp as TcpFeature>::ENABLED,
+        "KNX IP Secure requires TCP (Core v2): 03/08/09 §2.5.1.1 + 03/08/02 Core §9.2"
+    );
+
     /// Build the KnxNetIp link layer.
     ///
     /// 1. Auto-derives supported services from the feature set.
@@ -171,6 +190,10 @@ where
         MAX_CONNECTIONS,
         TCP_BUF_SZ,
     > {
+        // Associated consts are evaluated lazily, so the conformance guard
+        // only fires if something touches it. Every device reaches `build`.
+        let _ = Self::_GUARD_SECURE_NEEDS_TCP;
+
         // ====================================================================
         // Auto-derive supported services from feature traits
         // ====================================================================

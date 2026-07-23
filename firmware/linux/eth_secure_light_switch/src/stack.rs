@@ -11,7 +11,9 @@
 //!   secured with `SecureGroupSync` + `SecureWrapper` once ETS provisions a
 //!   backbone key and enables the secured Routing family. Until then the device
 //!   routes plain. The feature set is routing-only secure
-//!   ([`KnxIpSecureRoutingUdp`]) — no tunnelling, no TCP sessions.
+//!   ([`KnxIpSecureRoutingTcp`]) — no tunnelling, but TCP is present because
+//!   every KNX IP Secure profile must announce Core v2 (03/08/09 §2.5.1.1 +
+//!   03/08/02 Core §9.2).
 //! - **KNX Data Secure** — group telegrams are encrypted end-to-end via the
 //!   Secure Application Layer, independent of the IP medium. Driven by
 //!   [`SecureIpDeviceBuilder`].
@@ -25,15 +27,16 @@ use devices::light_switch::{
 };
 use zweidraehte_device::bcus::system_b::*;
 use zweidraehte_device::layers::linklayers::knxip::{
-    KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureRoutingUdp,
+    KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureRoutingTcp,
 };
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::storage::SeqStorageFor;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
 
-use support::storage::LinuxSecureSeqStorage;
+use support::storage::{FileSecureIdentity, JsonStorage, LinuxSiatStore};
 use support::util::GetrandomRng;
+use zweidraehte_device::storage::{SecureStorage, StaticIdentity};
 
 // ============================================================================
 // Capacity knobs
@@ -43,25 +46,34 @@ use support::util::GetrandomRng;
 /// zero — matches the RP2040 secure light switch (`P2P_SIZE = 0`).
 const P2P_SIZE: usize = 0;
 
-/// IP Secure password-hash table capacity. One slot for the management user
-/// (needed for the DAC / `SESSION_RESPONSE` path even though this routing-only
-/// device never accepts unicast sessions).
+/// IP Secure password-hash table capacity. One slot for the management user,
+/// which backs the DAC / `SESSION_RESPONSE` path.
 const MAX_PW: usize = 1;
 
 /// IP Secure tunnelling-user table capacity. Zero — this device does no secure
-/// tunnelling (routing-only secure).
+/// tunnelling (routing-only secure; tunnelling is optional for a KNX IP end
+/// device per 03/08/09 §2.5.1.1).
 const MAX_TU: usize = 0;
 
-/// Feature set: the `KnxIpSecureRoutingUdp` preset — KNX/IP routing + remote
-/// config + **IP Secure**, with no tunnelling and no TCP. The preset's
-/// parameter sizes the secure-session pool, unused here (no TCP) — `0`.
-type SecureRoutingUdp = KnxIpSecureRoutingUdp<0>;
+/// Feature set: the `KnxIpSecureRoutingTcp` preset — KNX/IP routing + remote
+/// config + **IP Secure** + TCP, without tunnelling. TCP is mandatory for a
+/// secure device (Core v2, 03/08/09 §2.5.1.1 + 03/08/02 §9.2), so the preset
+/// parameter sizes a real secure-session pool: one session, matching the one
+/// TCP stream `MAX_TCP_STREAMS` defaults to for a tunnel-less device.
+type SecureRoutingTcp = KnxIpSecureRoutingTcp<1>;
 
 /// Device state: System B tables + the Data-Secure wrapper around the IP
 /// **Secure** interface extension (PIDs 91–97), realised through the
 /// `SecureIpInterfaceStateFor` alias.
 pub type LightSwitchSecureState =
-    SecureIpInterfaceStateFor<LinuxEthSecureLightSwitch, SecureRoutingUdp, P2P_SIZE, MAX_PW, MAX_TU>;
+    SecureIpInterfaceStateFor<LinuxEthSecureLightSwitch, SecureRoutingTcp, P2P_SIZE, MAX_PW, MAX_TU>;
+
+/// On-stack persistent storage: the JSON-file config backend plus the
+/// file-backed sequence/SIAT store, in the framework's [`SecureStorage`]
+/// composite. It supplies `HasSeqStore` (how the secure layers reach the SIAT)
+/// *and* `HasConfigStore` + `StorageHooks`, so the shared `storage_task` drives
+/// config persistence and restart handling here as on the embedded targets.
+pub type LightSwitchSecureStorage = SecureStorage<JsonStorage<LightSwitchSecureState, StaticIdentity>, LinuxSiatStore>;
 
 // ============================================================================
 // StackDefinition
@@ -76,7 +88,7 @@ pub struct LinuxEthSecureLightSwitch;
 /// store, projected via `SeqStorageFor`.
 type SecAugment<'a> = SecureAugmentBundle<
     'a,
-    <IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU> as Extension<LinuxIpPlatform>>::Augment<
+    <IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU> as Extension<LinuxIpPlatform>>::Augment<
         'a,
         LinuxEthSecureLightSwitch,
     >,
@@ -99,13 +111,14 @@ pub struct LightSwitchSecureAugments<'a> {
     easter: EasterEggAugment,
 }
 
-// IP-specific link-layer bill of materials. Routing-only UDP device. `type
-// Rng` is required by `SecureIpDeviceBuilder` (`NoRng` is rejected) and feeds
-// the Secure Application Layer's `S-A_Sync` challenges plus IP Secure session
-// nonces.
+// IP-specific link-layer bill of materials. Routing-only device on UDP + TCP
+// (TCP is mandatory for a secure profile — see the feature-set alias above).
+// `type Rng` is required by `SecureIpDeviceBuilder` (`NoRng` is rejected) and
+// feeds the Secure Application Layer's `S-A_Sync` challenges plus IP Secure
+// session nonces.
 impl KnxNetIpDefinition for LinuxEthSecureLightSwitch {
     type Transport = LinuxIpTransport;
-    type Features = SecureRoutingUdp;
+    type Features = SecureRoutingTcp;
     type Rng = GetrandomRng;
 }
 
@@ -122,7 +135,7 @@ zweidraehte_device::system_b_standard_stack! {
     // byte per communication object), matching `SecureIpInterfaceStateFor`'s
     // invariant.
     extension_state: SecureExtensionState<
-        IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU>,
+        IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>,
         { Self::ADT_ENTRIES },
         P2P_SIZE,
         { Self::COT_ENTRIES },
@@ -133,7 +146,7 @@ zweidraehte_device::system_b_standard_stack! {
     // The IP Secure FDSK seed is built in `main` and threaded through
     // `StateInit`. `SecureResources::inner` is the IP Secure extension's own
     // `IpSecureResources { fdsk }`.
-    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU>>,
+    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>>,
     augments: {
         bundle: LightSwitchSecureAugments,
         create: |state, platform, layer_ctx| LightSwitchSecureAugments {
@@ -142,12 +155,16 @@ zweidraehte_device::system_b_standard_stack! {
         },
     },
     extra {
-        // Static secure identity carrying the FDSK.
-        type Identity = StaticSecureIdentity;
+        // File-backed secure identity: serial number + FDSK, provisioned to
+        // `secure_device_identity.json` on first run so the key is not baked
+        // into the binary.
+        type Identity = FileSecureIdentity;
         // OS CSPRNG (getrandom).
         type Rng = GetrandomRng;
-        // The file-backed sequence/SIAT store, wired onto the LayerContext so
-        // the secure layers pull the SIAT store out of it through `HasSeqStore`.
-        type Storage = &'static LinuxSecureSeqStorage;
+        // Config blob + the file-backed sequence/SIAT store, wired onto the
+        // LayerContext: the secure layers pull the SIAT store out through
+        // `HasSeqStore`, and the storage task the config through
+        // `HasConfigStore`.
+        type Storage = &'static LightSwitchSecureStorage;
     },
 }

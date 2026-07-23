@@ -155,16 +155,27 @@ pub type KnxIpSecureInterfaceTcp<const N: usize> =
 pub type KnxIpSecureDeviceTcp<const N: usize> =
     Features<WithRouting, WithRemoteConfig, WithTunneling<N>, WithTcp, super::secure::WithIpSecure<N>>;
 
-/// KNX IP Secure routing device (UDP only): secure multicast routing +
-/// remote config + IP Secure, with no tunnelling and no TCP.
+/// KNX IP Secure routing device (UDP + TCP): secure multicast routing +
+/// remote config + IP Secure, with TCP but **no** tunnelling.
 ///
-/// The routing-only secure profile — the secure multicast routing path of
-/// 03/08/09 §2.5.1.1 without the secure-unicast (tunnelling) session
-/// machinery. `N` sizes the `WithIpSecure` session pool; pass `0` when TCP
-/// is absent, since sessions are TCP-only.
+/// The routing-only flavour of the 03/08/09 §2.5.1.1 "KNX IP end device"
+/// profile. TCP is not optional here despite the absence of tunnelling:
+/// that profile table makes *KNXnet/IP Core* **`v02`** mandatory for every
+/// KNX IP Secure profile (bare `v02`, where `(v02)` would mean optional),
+/// and 03/08/02 Core §9.2 lists `IPV4_TCP` as **Required** for a Core v2
+/// server. A secure build without TCP would announce Core v1, which makes
+/// ETS fall back to a 15-byte APDU and abort commissioning at the 23-byte
+/// secure exchange.
+///
+/// Tunnelling, by contrast, *is* optional for a KNX IP end device (`(v02)`
+/// in the same table), which is why this preset omits it.
+///
+/// `N` sizes the `WithIpSecure` session pool. Sessions are TCP-only
+/// (§2.2.3.3) with a 1:1 session-per-stream affinity, so `N` must be at
+/// least 1.
 #[cfg(feature = "ip-secure")]
-pub type KnxIpSecureRoutingUdp<const N: usize> =
-    Features<WithRouting, WithRemoteConfig, NoTunneling, NoTcp, super::secure::WithIpSecure<N>>;
+pub type KnxIpSecureRoutingTcp<const N: usize> =
+    Features<WithRouting, WithRemoteConfig, NoTunneling, WithTcp, super::secure::WithIpSecure<N>>;
 
 // ============================================================================
 // Routing Feature

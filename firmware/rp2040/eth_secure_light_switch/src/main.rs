@@ -17,7 +17,9 @@
 //!   ETS provisions a backbone key (PID 91) and enables the secured
 //!   Routing family (PID 94). Until then the device routes plain, exactly
 //!   like `pico_eth_light_switch`. The feature set is routing-only secure
-//!   ([`SecureRoutingUdp`]) — no tunnelling, no TCP sessions.
+//!   ([`SecureRoutingTcp`]) — no tunnelling, but with TCP, which every KNX
+//!   IP Secure profile must provide (Core v2, 03/08/09 §2.5.1.1 +
+//!   03/08/02 Core §9.2).
 //! - **KNX Data Secure** — group telegrams are encrypted end-to-end via
 //!   the [`SecureApplicationLayer`], independent of the IP medium. Driven
 //!   by `SecureIpDeviceBuilder`.
@@ -65,7 +67,7 @@ use devices::light_switch::{
 
 use zweidraehte_device::{
     bcus::system_b::*,
-    layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureRoutingUdp},
+    layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureRoutingTcp},
     prelude::*,
     storage::SecureDeviceIdentity,
 };
@@ -73,8 +75,8 @@ use zweidraehte_device::{
 use embedded_common::DebouncedButton;
 use rp_common::storage::SECTOR_SIZE;
 use rp_common::{
-    EmbassyIpTransport, EmbassyNetworkInfo, EmbassyUdpContext, FlashSecureIdentityData, RpCommonRng, RpConfigRegion,
-    RpFlash, RpFlashIo, RpMcTimerRegion, UdpPool,
+    EmbassyIpTransportTcp, EmbassyNetworkInfo, EmbassyTcpContext, FlashSecureIdentityData, RpCommonRng, RpConfigRegion,
+    RpFlash, RpFlashIo, RpMcTimerRegion, TcpPool, UdpPool,
 };
 
 // ================================================================================
@@ -90,11 +92,13 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP_S
 // ================================================================================
 //
 // All sizes the KNX/IP, embassy-net, and Data Secure stacks need, named
-// once so the numbers don't drift apart. UDP-only routing device — no TCP.
+// once so the numbers don't drift apart. Routing device with no tunnelling,
+// but with TCP: mandatory for a KNX IP Secure profile (Core v2, 03/08/09
+// §2.5.1.1 + 03/08/02 §9.2).
 
 /// UDP buffer pool size — must match `<PicoEthSecureLightSwitch as
 /// KnxNetIpDefinition>::MAX_UDP_SOCKETS`. Three sockets cover discovery +
-/// control + routing on this UDP-only routing device.
+/// control + routing.
 const UDP_POOL_SIZE: usize = 3;
 
 /// P2P key table capacity. Group-only device with no secure P2P traffic,
@@ -116,19 +120,22 @@ const SIAT_SIZE: usize = 32;
 const SEQ_CACHE: usize = SIAT_SIZE;
 
 /// IP Secure password-hash table capacity. One slot for the management
-/// user (needed for the DAC / `SESSION_RESPONSE` path even though this
-/// routing-only device never accepts unicast sessions).
+/// user, which backs the DAC / `SESSION_RESPONSE` path.
 const MAX_PW: usize = 1;
 
 /// IP Secure tunnelling-user table capacity. Zero — this device does no
-/// secure tunnelling (routing-only secure).
+/// secure tunnelling (routing-only secure; tunnelling is optional for a
+/// KNX IP end device per 03/08/09 §2.5.1.1).
 const MAX_TU: usize = 0;
 
-/// Feature set: the `KnxIpSecureRoutingUdp` preset — KNX/IP routing +
-/// remote config + **IP Secure**, with no tunnelling and no TCP. The
-/// preset's parameter sizes the secure-session pool, which is unused here
-/// (no TCP) — `0`.
-type SecureRoutingUdp = KnxIpSecureRoutingUdp<0>;
+/// Feature set: the `KnxIpSecureRoutingTcp` preset — KNX/IP routing +
+/// remote config + **IP Secure** + TCP, with no tunnelling. TCP is not
+/// optional for a secure device: 03/08/09 §2.5.1.1 makes Core **v02**
+/// mandatory for every KNX IP Secure profile and 03/08/02 Core §9.2 makes
+/// `IPV4_TCP` Required at v2. The preset's parameter sizes the
+/// secure-session pool — one session, matching the single TCP stream a
+/// tunnel-less device gets.
+type SecureRoutingTcp = KnxIpSecureRoutingTcp<1>;
 
 /// Live-record capacity of the wear-levelled flash log: the SIAT entries plus
 /// the two singleton sequence counters (sending watermark + tool).
@@ -139,7 +146,7 @@ const SEQ_RECORDS: usize = SEQ_CACHE + 2;
 /// `SecureExtensionState<IpSecureInterfaceExtension<...>, SEQ, ...>`
 /// composition realised through the `SecureIpInterfaceStateFor` alias.
 type PicoEthSecureState =
-    SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingUdp, P2P_SIZE, MAX_PW, MAX_TU>;
+    SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingTcp, P2P_SIZE, MAX_PW, MAX_TU>;
 
 // ----------------------------------------------------------------------------
 // Storage layout — chips + auto-placed regions
@@ -190,7 +197,7 @@ pub struct PicoEthSecureLightSwitch;
 /// the IP medium + IP Secure objects.
 type SecAugment<'a> = SecureAugmentBundle<
     'a,
-    <IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU> as Extension<EmbassyNetworkInfo>>::Augment<
+    <IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU> as Extension<EmbassyNetworkInfo>>::Augment<
         'a,
         PicoEthSecureLightSwitch,
     >,
@@ -213,14 +220,18 @@ pub struct PicoEthSecureAugments<'a> {
     easter: EasterEggAugment,
 }
 
-// IP-specific link-layer bill of materials. Routing-only UDP device with
-// three UDP sockets (discovery + control + routing). `type Rng` is
+// IP-specific link-layer bill of materials. Routing-only device (no
+// tunnelling) with three UDP sockets (discovery + control + routing) plus
+// the TCP listener every secure profile must provide. `type Rng` is
 // required by `SecureIpDeviceBuilder` (`NoRng` is rejected) and feeds the
 // Secure Application Layer's `S-A_Sync` challenges plus IP Secure session
 // nonces.
 impl KnxNetIpDefinition for PicoEthSecureLightSwitch {
-    type Transport = EmbassyIpTransport<{ <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS }>;
-    type Features = SecureRoutingUdp;
+    type Transport = EmbassyIpTransportTcp<
+        { <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS },
+        { <Self as KnxNetIpDefinition>::MAX_TCP_STREAMS },
+    >;
+    type Features = SecureRoutingTcp;
     type Rng = RpCommonRng;
     const MAX_UDP_SOCKETS: usize = 3;
 }
@@ -238,7 +249,7 @@ zweidraehte_device::system_b_standard_stack! {
     // entry, one flag byte per communication object), matching
     // `SecureStateFor`'s invariant.
     extension_state: SecureExtensionState<
-        IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU>,
+        IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>,
         { Self::ADT_ENTRIES },
         P2P_SIZE,
         { Self::COT_ENTRIES },
@@ -249,7 +260,7 @@ zweidraehte_device::system_b_standard_stack! {
     // The RAM sequence-number storage + the IP Secure FDSK seed are built
     // in `main` and threaded through `StateInit`. `SecureResources::inner`
     // is the IP Secure extension's own `IpSecureResources { fdsk }`.
-    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingUdp, MAX_PW, MAX_TU>>,
+    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>>,
     augments: {
         bundle: PicoEthSecureAugments,
         create: |state, platform, layer_ctx| PicoEthSecureAugments {
@@ -619,7 +630,8 @@ async fn main(spawner: Spawner) {
     let control_endpoint = SocketAddrV4::new(local_ip, 3671);
 
     static UDP_POOL: UdpPool<UDP_POOL_SIZE> = UdpPool::new();
-    let socket_ctx = EmbassyUdpContext { stack, udp_pool: &UDP_POOL };
+    static TCP_POOL: TcpPool<{ PicoEthSecureLightSwitch::MAX_TCP_STREAMS }> = TcpPool::new();
+    let socket_ctx = EmbassyTcpContext { stack, udp_pool: &UDP_POOL, tcp_pool: &TCP_POOL };
 
     let link_layer_builder =
         KnxNetIpBuilder::<PicoEthSecureLightSwitch>::new("eth0", local_ip, control_endpoint, socket_ctx);

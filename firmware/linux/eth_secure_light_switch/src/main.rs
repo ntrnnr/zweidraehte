@@ -15,15 +15,18 @@
 //!
 //! # Security notes
 //!
-//! - **FDSK lives in a build-time constant.** This host shell uses a fixed dev
-//!   default ([`DEV_FDSK`]); a real deployment would provision a unique key.
-//!   There is no readout protection — whoever can read the process memory or
-//!   the sequence file can learn nothing secret from the file (it holds only
-//!   sequence numbers), but the FDSK in the binary is not protected.
-//! - **Sequence/SIAT durability.** The [`LinuxSecureSeqStorage`] persists the
-//!   sending counter, tool counter, and SIAT to a file so a restart cannot
-//!   replay already-seen frames. The IP-Secure multicast-timer watermark is
-//!   *not* persisted (it re-acquires from the group on the next sync).
+//! - **FDSK lives in the identity file.** The serial number and FDSK are
+//!   provisioned to `secure_device_identity.json` on first run (from
+//!   [`DEFAULT_SERIAL_NUMBER`] / [`DEFAULT_FDSK`]) and read back on every
+//!   later boot, so the key can be changed per device without a rebuild.
+//!   It is stored in plaintext with no readout protection — protect it with
+//!   file permissions; a real deployment provisions a unique key during
+//!   manufacturing.
+//! - **Sequence/SIAT durability.** The file-backed SIAT store
+//!   ([`support::storage::open_siat_store`]) persists the sending counter, tool
+//!   counter, and SIAT so a restart cannot replay already-seen frames. The
+//!   IP-Secure multicast-timer watermark is *not* persisted (it re-acquires
+//!   from the group on the next sync).
 //!
 //! Run with: `cargo run` in this directory.
 
@@ -39,20 +42,30 @@ use zweidraehte_device::bcus::system_b::{
 };
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::restart::EraseCode;
-use zweidraehte_device::storage::StaticSecureIdentity;
+use zweidraehte_device::storage::{HasConfigStore, NoSaveGuard, SecureDeviceIdentity, SecureStorage, StaticIdentity};
+use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
     LightSwitchDevice,
     app::{self, ButtonId, WaitForRelease},
 };
-use support::storage::{JsonStorage, LinuxSecureSeqStorage};
+use support::storage::{FileSecureIdentity, JsonStorage, open_siat_store};
 use support::util::{
     EvdevButton, EvdevButtonId, EvdevChannels, keyboard, open_keyboard, spawn_evdev_reader, terminal_key_to_button,
 };
 
 mod stack;
-use stack::{LightSwitchSecureState, LinuxEthSecureLightSwitch};
+use stack::{LightSwitchSecureState, LightSwitchSecureStorage, LinuxEthSecureLightSwitch};
+
+// All persistence (on-demand saves, the periodic dirty poll, restart handling)
+// runs through the framework's generic `storage_task`. `SecureStorage`'s
+// `StorageHooks::erase` also re-inits a near-exhausted sending counter on a
+// factory reset (03/05/01 §6.1.4), which the old hand-rolled handler never did.
+zweidraehte_device::storage_task! {
+    device: LinuxEthSecureLightSwitch,
+    system: LinuxSystem,
+    guard: NoSaveGuard,
+}
 
 /// Network interface name for KNX/IP communication.
 const INTERFACE_NAME: &str = "knxdevbridgeif";
@@ -64,31 +77,28 @@ const STATE_FILE_PATH: &str = "secure_light_switch_device_state.json";
 /// Path for the file-backed sequence/SIAT store.
 const SEQ_FILE_PATH: &str = "secure_light_switch_seq.bin";
 
-/// Factory serial number for the secure KNX/IP light switch — the serial the
-/// knxprod generator files under the IP-Secure hardware entry
-/// (`SERIAL_NUMBER_IP_SECURE` in `gen_light_switch_mtxml`).
-const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
+/// Path for the device identity file (serial number + FDSK).
+///
+/// Created automatically on first run from the defaults below; edit the file
+/// (or provision it ahead of time) to give the device a different serial or
+/// key without rebuilding. See [`FileSecureIdentity`].
+const IDENTITY_FILE_PATH: &str = "secure_device_identity.json";
 
-/// Dev-default Factory Default Setup Key. Seeds both the IP Secure Device
-/// Authentication Code (PID 92) and the Data Secure tool key (Security IO PID
-/// 56). **Not for production** — a real device provisions a unique FDSK.
-const DEV_FDSK: [u8; 16] =
+/// Default factory serial number, used only when provisioning a fresh
+/// [`IDENTITY_FILE_PATH`] — the serial the knxprod generator files under the
+/// IP-Secure hardware entry (`SERIAL_NUMBER_IP_SECURE` in
+/// `gen_light_switch_mtxml`).
+const DEFAULT_SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
+
+/// Dev-default Factory Default Setup Key, used only when provisioning a fresh
+/// [`IDENTITY_FILE_PATH`]. Seeds both the IP Secure Device Authentication Code
+/// (PID 92) and the Data Secure tool key (Security IO PID 56).
+///
+/// **Not for production** — every device that boots without an identity file
+/// gets this same key. A real device provisions a unique FDSK during
+/// manufacturing and prints it on the label for ETS.
+const DEFAULT_FDSK: [u8; 16] =
     [0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
-
-// ============================================================================
-// State Persistence
-// ============================================================================
-
-/// Save the current device config to JSON storage.
-fn save_state(state: &LightSwitchSecureState, storage: &mut JsonStorage<LightSwitchSecureState, StaticSecureIdentity>) {
-    match storage.save(state) {
-        Ok(()) => {
-            state.clear_dirty();
-            log::info!("State saved to {}", STATE_FILE_PATH);
-        }
-        Err(e) => log::error!("Failed to save state: {}", e),
-    }
-}
 
 // ============================================================================
 // Main Entry Point
@@ -98,79 +108,6 @@ fn save_state(state: &LightSwitchSecureState, storage: &mut JsonStorage<LightSwi
 async fn run_stack(runner: Runner<'static, LinuxEthSecureLightSwitch>) {
     println!("Running KNX/IP Secure light switch stack...");
     runner.run().await;
-}
-
-/// Restart handler task — executes resets, persists state, and triggers restart.
-#[embassy_executor::task]
-async fn handle_restarts(stack: Stack<'static, LinuxEthSecureLightSwitch>) {
-    println!("Restart handler task started");
-
-    // The loop body either performs a process re-exec (which doesn't return)
-    // or panics on failure, so it effectively runs at most once.
-    #[allow(clippy::never_loop)]
-    loop {
-        let request = stack.receive_restart_request().await;
-        let state = stack.state();
-
-        println!("\n********************************************");
-        println!("*** RESTART REQUEST RECEIVED ***");
-        println!("*** Erase Code: {} ***", request.erase_code);
-        println!("*** Channel: {} ***", request.channel);
-        println!("*** Access Level: {:?} ***", request.access_ctx);
-        println!("*** Needs Response: {} ***", request.needs_response);
-        println!("********************************************\n");
-
-        // The stack already sent the A_Restart_Response on the bus before
-        // delivering this request. We just need to execute the reset.
-        match request.erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => {
-                println!("Performing basic restart (no data reset)...");
-            }
-            EraseCode::FactoryReset => {
-                println!("Performing FACTORY RESET — all data will be cleared!");
-                state.factory_reset();
-            }
-            EraseCode::ResetIA => {
-                println!("Resetting Individual Address to 15.15.255...");
-                state.reset_individual_address();
-            }
-            EraseCode::ResetAP => {
-                println!("Resetting Application Program...");
-                state.reset_application();
-            }
-            EraseCode::ResetParam => {
-                println!("Resetting Parameters to defaults...");
-                state.reset_parameters();
-            }
-            EraseCode::ResetLinks => {
-                println!("Resetting links (Group Address + Association tables)...");
-                state.apply_erase_code(EraseCode::ResetLinks);
-            }
-            EraseCode::FactoryResetKeepIA => {
-                println!("Performing Factory Reset (keeping Individual Address)...");
-                state.factory_reset_keep_ia();
-            }
-            EraseCode::Other(code) => {
-                println!("Unsupported erase code: 0x{:02X} — ignoring", code);
-            }
-        }
-
-        // Persist the post-reset config before restarting so it survives the
-        // process re-exec. The sequence/SIAT store persists itself in place.
-        if state.is_dirty() {
-            let identity = StaticSecureIdentity::new(SERIAL_NUMBER, DEV_FDSK);
-            save_state(state, &mut JsonStorage::new(STATE_FILE_PATH, identity));
-        }
-
-        // Give the stack a moment to send the response on the bus.
-        embassy_time::Timer::after(Duration::from_millis(100)).await;
-
-        // Re-exec the process. This call does not return on success.
-        use zweidraehte_platform::SystemControl;
-        let mut system = zweidraehte_platform::LinuxSystem;
-        let Err(e) = system.restart().await;
-        panic!("Failed to restart: {:?}", e);
-    }
 }
 
 // ============================================================================
@@ -275,9 +212,11 @@ async fn main(spawner: Spawner) {
 
     println!("=== KNX/IP Secure Light Switch (Linux) ===\n");
 
-    // Static secure identity: serial + FDSK. On a real device the FDSK would be
-    // provisioned per unit; this host shell uses a dev default.
-    let identity = StaticSecureIdentity::new(SERIAL_NUMBER, DEV_FDSK);
+    // File-backed secure identity: serial + FDSK, provisioned with the dev
+    // defaults on first run. Editing the file (or provisioning it beforehand)
+    // changes the device's key without a rebuild.
+    let identity = FileSecureIdentity::load_or_provision(IDENTITY_FILE_PATH, DEFAULT_SERIAL_NUMBER, DEFAULT_FDSK)
+        .expect("load or provision secure device identity");
 
     println!("Device Configuration:");
     println!("  Mask Version: 57B0 (System B KNX/IP), IP Secure + Data Secure");
@@ -288,37 +227,37 @@ async fn main(spawner: Spawner) {
         LightSwitchDevice::APPLICATION_ID_IP_SECURE,
         LightSwitchDevice::APPLICATION_VERSION
     );
+    println!("  Identity file:   {}", IDENTITY_FILE_PATH);
+    // ETS needs this key to commission the device; print the same label + QR
+    // the `knx-provision` tool puts on physical device labels, so the operator
+    // can scan it instead of opening the identity file.
+    fdsk_label::print_label(identity.serial_number(), identity.fdsk(), "  ");
     println!();
 
-    // Boot the file-backed sequence/SIAT store, reconstructing the sending /
-    // tool counters and the SIAT from the file (defaults for a fresh file).
-    // A boot failure is fatal — without durable counters the device cannot
-    // offer cross-reboot replay protection, so we refuse to start.
-    static STORAGE: StaticCell<LinuxSecureSeqStorage> = StaticCell::new();
-    let seq_storage = &*STORAGE.init(LinuxSecureSeqStorage::open(SEQ_FILE_PATH).expect("open sequence/SIAT store"));
-
-    // Load device config (JSON, out-of-band — the secure builder needs only the
-    // seq store on the stack). The runtime state is constructed later by the
-    // runner via `create_state`. `StaticSecureIdentity` is not `Clone`, so the
-    // JSON storage gets its own instance built from the same constants.
-    let mut storage = JsonStorage::<LightSwitchSecureState, _>::new(
+    // Both persistent stores ride on the stack in one `SecureStorage` handle:
+    // the JSON config blob and the file-backed sequence/SIAT store. Booting the
+    // seq store reconstructs the sending / tool counters and the SIAT from the
+    // file (defaults for a fresh file); a boot failure is fatal — without
+    // durable counters the device cannot offer cross-reboot replay protection,
+    // so we refuse to start. The config backend keeps the serial only — it
+    // never touches the FDSK, which stays with the device identity.
+    let seq = open_siat_store(SEQ_FILE_PATH).expect("open sequence/SIAT store");
+    let config = JsonStorage::<LightSwitchSecureState, _>::new(
         STATE_FILE_PATH,
-        StaticSecureIdentity::new(SERIAL_NUMBER, DEV_FDSK),
+        StaticIdentity::new(*identity.serial_number()),
     );
-    let loaded_config = match storage.load_config() {
-        Ok(Some(config)) => {
-            println!("Loaded device config from {}", STATE_FILE_PATH);
-            Some(config)
-        }
-        Ok(None) => {
-            println!("No stored config found, starting fresh");
-            None
-        }
-        Err(e) => {
-            println!("Error loading device config: {}", e);
-            None
-        }
-    };
+    static STORAGE: StaticCell<LightSwitchSecureStorage> = StaticCell::new();
+    let storage = &*STORAGE.init(SecureStorage::new(config, seq));
+
+    // Load the persisted config once at boot to seed `create_state` (which the
+    // runner calls later, with access to the `LayerContext`). A blank or
+    // unreadable file yields `None` and the device boots from factory defaults.
+    let loaded_config = storage.load_config();
+    if loaded_config.is_some() {
+        println!("Loaded device config from {}", STATE_FILE_PATH);
+    } else {
+        println!("No stored config found, starting fresh");
+    }
 
     // Data Secure construction resources: the IP Secure FDSK seed (`inner`) and
     // the Data Secure tool-key FDSK seed. Both take the same physical value from
@@ -353,11 +292,13 @@ async fn main(spawner: Spawner) {
         state_init,
         platform,
         LinuxEthSecureLightSwitch::memory_map(),
-        seq_storage,
+        storage,
     );
 
     spawner.spawn(run_stack(runner)).unwrap();
-    spawner.spawn(handle_restarts(stack)).unwrap();
+    // The generic storage task owns restart handling and all persistence
+    // (on-demand saves, the ETS-download persist, and the periodic dirty poll).
+    spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     // Keyboard button emulation. `Some(channels)` = terminal fallback mode
     // (main loop injects edges); `None` = evdev drives the buttons.
@@ -386,8 +327,11 @@ async fn main(spawner: Spawner) {
                 }
                 'q' | 'Q' => {
                     println!("\nShutting down...");
+                    // Force a final synchronous save before exit — the storage
+                    // task's dirty poll may not fire before `process::exit`.
                     if stack.state().is_dirty() {
-                        save_state(stack.state(), &mut storage);
+                        storage.save_config(stack.state());
+                        stack.state().clear_dirty();
                     }
                     // The embassy `arch-std` executor's `run` is `-> !` and
                     // loops forever, so a returning `main` task never ends the
@@ -438,10 +382,6 @@ async fn main(spawner: Spawner) {
 
             println!("---------------------\n");
             last_print = embassy_time::Instant::now();
-
-            if stack.state().is_dirty() {
-                save_state(stack.state(), &mut storage);
-            }
         }
 
         match embassy_time::with_timeout(Duration::from_millis(100), events.next_message()).await {

@@ -37,3 +37,4 @@ zweidraehte-devices = { path = "../../../examples/devices", default-features = f
 # Host support: JSON config storage, FileIdentity, GetrandomRng, and the
 # file-backed sequence/SIAT store (LinuxSecureSeqStorage).
 zweidraehte-support = { path = "../../../examples/support" }
+zweidraehte-fdsk-label = { version = "0.1.0", path = "../../../crates/zweidraehte-fdsk-label" }
