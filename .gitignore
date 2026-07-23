@@ -12,4 +12,5 @@ converter_key.xml
 # Written by the firmware/linux/* device shells next to their binary.
 *_device_state.json
 device_identity.json
+secure_device_identity.json
 *_seq.bin

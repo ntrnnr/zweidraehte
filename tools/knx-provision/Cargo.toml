@@ -17,4 +17,4 @@ hex = "0.4"
 serde = { workspace = true, features = ["std"] }
 serde_json = { workspace = true }
 anyhow = "1"
-qrcode = { version = "0.14", default-features = false }
+zweidraehte-fdsk-label = { version = "0.1.0", path = "../../crates/zweidraehte-fdsk-label" }

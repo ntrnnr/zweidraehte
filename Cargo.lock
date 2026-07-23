@@ -2907,11 +2907,11 @@ dependencies = [
  "csv",
  "hex",
  "probe-rs",
- "qrcode",
  "rand 0.8.5",
  "serde",
  "serde_json",
  "zweidraehte-device",
+ "zweidraehte-fdsk-label",
 ]
 
 [[package]]
@@ -6883,6 +6883,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.116",
+]
+
+[[package]]
+name = "zweidraehte-fdsk-label"
+version = "0.1.0"
+dependencies = [
+ "qrcode",
+ "zweidraehte-device",
 ]
 
 [[package]]

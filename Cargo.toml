@@ -9,6 +9,7 @@ members = [
     "crates/zweidraehte-device-macros",
     "crates/zweidraehte-knxprod",
     "crates/zweidraehte-util",
+    "crates/zweidraehte-fdsk-label",
     "examples/devices",
     "examples/support",
     "examples/generators",

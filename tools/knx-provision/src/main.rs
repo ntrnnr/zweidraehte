@@ -25,7 +25,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, ValueEnum};
 use probe_rs::{MemoryInterface, Permissions, Session, SessionConfig, flashing};
 use rand::RngCore;
-use zweidraehte_device::provisioning::{self, ProvisioningRecord, fdsk_string};
+use zweidraehte_device::provisioning::{self, ProvisioningRecord};
 
 // ================================================================================
 // Target presets
@@ -174,11 +174,9 @@ fn main() -> Result<()> {
     println!("  serial: {}", hex::encode(record.serial));
 
     if let Some(f) = record.fdsk.as_ref() {
-        let label = fdsk_string(&record.serial, f);
-        let label_str = std::str::from_utf8(&label).expect("ASCII");
-        println!("  fdsk:   {} ({label_str})", hex::encode(f));
+        println!("  fdsk:   {} ({})", hex::encode(f), fdsk_label::label(&record.serial, f));
         if !args.no_qr {
-            print_fdsk_qr(label_str);
+            print_fdsk_qr(&record.serial, f);
         }
     }
 
@@ -404,11 +402,9 @@ fn read_back(args: &Args, target: &TargetInfo) -> Result<()> {
             println!("  serial: {}", hex::encode(rec.serial));
 
             if let Some(f) = rec.fdsk.as_ref() {
-                let label = fdsk_string(&rec.serial, f);
-                let label_str = std::str::from_utf8(&label).unwrap();
-                println!("  fdsk:   {} ({label_str})", hex::encode(f));
+                println!("  fdsk:   {} ({})", hex::encode(f), fdsk_label::label(&rec.serial, f));
                 if !args.no_qr {
-                    print_fdsk_qr(label_str);
+                    print_fdsk_qr(&rec.serial, f);
                 }
             }
 
@@ -469,10 +465,7 @@ fn write_label(record: &ProvisioningRecord, path: &PathBuf) -> Result<()> {
     use serde_json::json;
 
     let serial_hex = hex::encode_upper(record.serial);
-    let label = record.fdsk.as_ref().map(|f| {
-        let bytes = fdsk_string(&record.serial, f);
-        std::str::from_utf8(&bytes).expect("ASCII").to_string()
-    });
+    let label = record.fdsk.as_ref().map(|f| fdsk_label::label(&record.serial, f));
 
     let mac = record.mac.as_ref().map(format_mac);
     let value = json!({
@@ -495,40 +488,19 @@ fn random_fdsk() -> [u8; 16] {
     out
 }
 
-/// Render the FDSK label string as a QR code on the terminal.
+/// Render the FDSK label as a QR code on the terminal, indented by two spaces
+/// to align with the rest of the record fields (`  serial:`, `  fdsk:`, …).
 ///
-/// `label` is the hyphenated form (`XXXXXX-…-XXXXXX`) we display to
-/// humans, but ETS-style scanners expect the **dashless** 36-char
-/// Base32 payload, so we strip `-` before encoding. The displayed
-/// human-readable line keeps the dashes for readability; only the QR
-/// payload differs.
-///
-/// Uses `Dense1x2` unicode rendering: each terminal cell encodes two
-/// QR rows (▀ ▄ █ space) so the result looks roughly square at the
-/// typical 1:2 character aspect ratio. Quiet zone defaults are kept
-/// (4 modules) so phone cameras lock on without fiddling.
-fn print_fdsk_qr(label: &str) {
-    use qrcode::QrCode;
-    use qrcode::render::unicode::Dense1x2;
-
-    // 36 ASCII chars after stripping dashes — well within version-3
-    // capacity at even the highest error-correction level.
-    let payload: String = label.chars().filter(|c| *c != '-').collect();
-
-    // `QrCode::new` errors only on overflow / capacity-exceeded, which
-    // won't happen here; treat any error as non-fatal and skip the QR
-    // rather than aborting.
-    let code = match QrCode::new(payload.as_bytes()) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("  (QR render skipped: {e})");
-            return;
+/// The encoding lives in [`fdsk_label`], shared with the host-target device
+/// shells that print their own label at startup. A render failure is
+/// non-fatal — the human-readable label was already printed above.
+fn print_fdsk_qr(serial: &[u8; 6], fdsk: &[u8; 16]) {
+    match fdsk_label::qr_lines(serial, fdsk) {
+        Ok(lines) => {
+            for line in lines {
+                println!("  {line}");
+            }
         }
-    };
-    let rendered = code.render::<Dense1x2>().dark_color(Dense1x2::Light).light_color(Dense1x2::Dark).build();
-    // Indent each line by two spaces to align with the rest of the
-    // record fields ("  serial:", "  fdsk:", …).
-    for line in rendered.lines() {
-        println!("  {line}");
+        Err(e) => eprintln!("  (QR render skipped: {e})"),
     }
 }
