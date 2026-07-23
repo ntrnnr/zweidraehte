@@ -14,27 +14,29 @@
 //! plain on-disk durability instead, so we back the region with a fixed-size
 //! file and address it with `pread`/`pwrite`.
 //!
-//! # Why not the storage task / config store
+//! # How it reaches the stack
 //!
-//! The secure layer builders bound only `D::Storage: HasSeqStore` — not
-//! `HasConfigStore` or `StorageHooks` — so the seq store is the *only* piece
-//! that has to ride on the stack. Config persistence on these host targets
-//! stays out-of-band through [`JsonStorage`](super::JsonStorage), exactly as
-//! the insecure Linux device does, and the storage task is not spawned. The
-//! IP-Secure multicast-timer watermark (03/08/09 §2.2.4.2) is likewise not
-//! persisted here: its [`StorageHooks`] hooks keep their no-op defaults, so the
+//! [`open_siat_store`] yields the bare store; the device pairs it with a
+//! [`JsonStorage`](super::JsonStorage) config backend inside the framework's
+//! [`SecureStorage`](zweidraehte_device::storage::SecureStorage) composite,
+//! which supplies `HasSeqStore` (how the secure layers reach the SIAT),
+//! `HasConfigStore`, and the `StorageHooks` factory-reset erase. That one
+//! handle rides on the stack, so the shared `storage_task` drives config
+//! persistence and restart handling here exactly as it does on the embedded
+//! targets.
+//!
+//! The IP-Secure multicast-timer watermark (03/08/09 §2.2.4.2) is *not*
+//! persisted: `SecureStorage` keeps the mc_timer no-op defaults, so the
 //! watermark starts at 0 after a restart and the timer re-acquires from the
 //! group — acceptable, and it keeps the host store to a single file.
 
-use std::cell::RefCell;
 use std::fs::OpenOptions;
 use std::os::unix::fs::FileExt;
 use std::path::Path;
 
-use zweidraehte_device::restart::EraseCode;
+use zweidraehte_device::storage::SiatStore;
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
 use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{HasSeqStore, SiatStore, StorageHooks};
 
 // ============================================================================
 // Sizing
@@ -121,48 +123,22 @@ type LinuxSeqStorage = PackedSeqStore<FileByteIo, LinuxSiatRegion, PEER_SLOTS>;
 pub type LinuxSiatStore = SiatStore<LinuxSeqStorage, SIAT_SLOTS, 1>;
 
 // ============================================================================
-// Stores struct
+// Constructor
 // ============================================================================
 
-/// The device's persistent secure storage — a single file-backed SIAT store.
+/// Boot the SIAT store from the file at `path`, reconstructing the SIAT and
+/// sequence counters from its current contents (defaults for a fresh file).
 ///
-/// This is the host twin of the embedded stores structs (`SecureIpStorage`
-/// etc.) and of the conformance harness's `ConformanceSecureStorage`: it
-/// exposes the seq store through [`HasSeqStore`] (how the secure stack reaches
-/// it) and performs the storage-side half of a factory-reset erase through
-/// [`StorageHooks`]. Config persistence and the mc_timer watermark are handled
-/// elsewhere (see the module docs), so only `seq` lives here.
-pub struct LinuxSecureSeqStorage {
-    seq: RefCell<LinuxSiatStore>,
-}
-
-impl LinuxSecureSeqStorage {
-    /// Boot the SIAT store from the file at `path`, reconstructing the SIAT and
-    /// sequence counters from its current contents (defaults for a fresh file).
-    pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        let io = FileByteIo::open(path)?;
-        // `SiatStore::boot` reads through the packed layout; on a `FileByteIo`
-        // the only failure is I/O, surfaced here as `io::Error`.
-        let seq = SiatStore::boot(PackedSeqStore::new(io)).map_err(std::io::Error::other)?;
-        Ok(Self { seq: RefCell::new(seq) })
-    }
-}
-
-impl HasSeqStore for LinuxSecureSeqStorage {
-    type Seq = LinuxSiatStore;
-
-    fn seq_store(&self) -> &RefCell<LinuxSiatStore> {
-        &self.seq
-    }
-}
-
-impl StorageHooks for LinuxSecureSeqStorage {
-    fn erase(&self, code: EraseCode) {
-        // The seq-carrying half of a restart erase: on a factory reset, re-init
-        // the sending counter if it is near exhaustion (03/05/01 §6.1.4). The
-        // mc_timer no-op defaults on `StorageHooks` stand — it is not persisted.
-        zweidraehte_device::storage::seq::erase_seq_on_factory_reset(&mut *self.seq.borrow_mut(), code);
-    }
+/// The returned store is the `S` half of the framework's
+/// [`SecureStorage`](zweidraehte_device::storage::SecureStorage) composite:
+/// pair it with a config backend so the device's whole persistent state — the
+/// ETS config blob *and* the replay-protection counters — rides on the stack
+/// behind one handle, and the shared `storage_task` drives both.
+pub fn open_siat_store(path: impl AsRef<Path>) -> std::io::Result<LinuxSiatStore> {
+    let io = FileByteIo::open(path)?;
+    // `SiatStore::boot` reads through the packed layout; on a `FileByteIo`
+    // the only failure is I/O, surfaced here as `io::Error`.
+    SiatStore::boot(PackedSeqStore::new(io)).map_err(std::io::Error::other)
 }
 
 #[cfg(test)]
@@ -204,8 +180,7 @@ mod tests {
         // First boot: a fresh file starts at the default sending counter, then
         // we advance it and let the write flush to disk.
         {
-            let storage = LinuxSecureSeqStorage::open(&path).expect("first open");
-            let mut seq = storage.seq.borrow_mut();
+            let mut seq = open_siat_store(&path).expect("first open");
             seq.save_sending_seq(&[0, 0, 0, 0, 0x12, 0x34]).expect("save sending");
         }
 
@@ -217,8 +192,7 @@ mod tests {
         // that matters: the reloaded value is ≥ what we saved, never reset to
         // the tiny default.
         {
-            let storage = LinuxSecureSeqStorage::open(&path).expect("reopen");
-            let seq = storage.seq.borrow();
+            let seq = open_siat_store(&path).expect("reopen");
             assert_eq!(seq.load_sending_seq().expect("load sending"), [0, 0, 0, 0, 0x12, 0x35]);
         }
 

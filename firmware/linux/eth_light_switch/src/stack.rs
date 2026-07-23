@@ -19,11 +19,20 @@ use zweidraehte_device::bcus::system_b::{Extension, IpAugmentFor, IpExtensionFor
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
+use zweidraehte_device::storage::ConfigStorage;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
+
+use support::storage::{FileIdentity, JsonStorage};
 
 /// Unified state type. Table sizes derive from `DEVICE_DESCRIPTOR_IP`
 /// through the `SystemBStackDefinition` associated consts.
 pub type LightSwitchState = IpStateFor<LinuxEthLightSwitch, KnxIpDeviceTcp>;
+
+/// On-stack config store: the JSON-file config backend wrapped in the
+/// framework's [`ConfigStorage`] composite. Riding on the stack (rather than
+/// living in `main`) lets this device use the shared `storage_task` for restart
+/// handling and persistence, exactly like the embedded targets.
+pub type LightSwitchStorage = ConfigStorage<JsonStorage<LightSwitchState, FileIdentity>>;
 
 #[derive(Debug, Clone, Copy)]
 pub struct LinuxEthLightSwitch;
@@ -75,5 +84,12 @@ zweidraehte_device::system_b_standard_stack! {
             ip: state.extension_state().create_augment::<Self>(platform),
             easter: EasterEggAugment,
         },
+    },
+    extra {
+        // The JSON-file config store rides on the stack so the shared
+        // `storage_task` can pull it through `HasConfigStore` — restart
+        // handling and persistence go through one task, as on the embedded
+        // devices, instead of a hand-rolled restart handler in `main`.
+        type Storage = &'static LightSwitchStorage;
     },
 }

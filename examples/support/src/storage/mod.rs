@@ -2,8 +2,13 @@
 //!
 //! Provides storage backends for persisting device configuration and
 //! device identity, plus a file-backed sequence-number/SIAT store
-//! ([`LinuxSecureSeqStorage`]) for host-target Data-Secure / IP-Secure
-//! devices.
+//! ([`open_siat_store`]) for host-target Data-Secure / IP-Secure devices.
+//!
+//! [`JsonStorage`] implements the framework's
+//! [`ConfigStoreBackend`](zweidraehte_device::storage::ConfigStoreBackend), so
+//! a host device wraps it in `ConfigStorage` (config only) or `SecureStorage`
+//! (config + seq) and rides the shared `storage_task` for restart handling and
+//! persistence, just like the embedded targets.
 //!
 //! # Example
 //!
@@ -17,17 +22,17 @@
 //! ```
 
 mod file_identity;
-pub use file_identity::{FileIdentity, FileIdentityError};
+pub use file_identity::{FileIdentity, FileIdentityError, FileSecureIdentity};
 
 mod secure_seq;
-pub use secure_seq::{FileByteIo, LinuxSecureSeqStorage, LinuxSiatStore, SIAT_SLOTS};
+pub use secure_seq::{FileByteIo, LinuxSiatStore, SIAT_SLOTS, open_siat_store};
 
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
 
 use serde::{Serialize, de::DeserializeOwned};
-use zweidraehte_device::storage::{DeviceIdentity, HasDeviceConfig};
+use zweidraehte_device::storage::{ConfigStoreBackend, DeviceIdentity, HasDeviceConfig};
 
 /// JSON file-based storage for device state.
 ///
@@ -173,5 +178,119 @@ where
     /// Returns whether there are unsaved changes.
     pub fn is_dirty(&self) -> bool {
         self.dirty
+    }
+}
+
+/// Plug `JsonStorage` into the framework's storage vocabulary as the config
+/// backend of a [`ConfigStorage`](zweidraehte_device::storage::ConfigStorage)
+/// or [`SecureStorage`](zweidraehte_device::storage::SecureStorage). This lets
+/// the host-target Linux devices ride the same generic
+/// [`storage_task`](zweidraehte_device::storage) as the embedded devices —
+/// restart handling, the ETS-download persist, and the periodic dirty poll —
+/// instead of hand-rolling those in `main`.
+///
+/// The trait's error policy is "swallow with a warning", matching the flash
+/// backends: a failed save/load must not panic the storage task, and a device
+/// that can't read its config boots fresh. The framework composite wraps this
+/// in a `RefCell`, supplying the `&mut self` these methods want from the
+/// task's `&self` call sites.
+impl<S, I> ConfigStoreBackend for JsonStorage<S, I>
+where
+    S: HasDeviceConfig,
+    S::Config: Serialize + DeserializeOwned,
+    I: DeviceIdentity,
+{
+    type State = S;
+    type Config = S::Config;
+
+    fn save(&mut self, state: &S) {
+        if let Err(e) = JsonStorage::save(self, state) {
+            log::warn!("config save failed: {e}");
+        }
+    }
+
+    fn load(&mut self) -> Option<S::Config> {
+        // A blank file (`Ok(None)`) and a read/decode failure (`Err`) both mean
+        // "no usable config" — the device boots from factory defaults either
+        // way; only the failure is worth a warning.
+        match JsonStorage::load_config(self) {
+            Ok(config) => config,
+            Err(e) => {
+                log::warn!("config load failed: {e}");
+                None
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zweidraehte_device::storage::{ConfigStorage, HasConfigStore};
+
+    /// A unique temp path per test, avoiding a `tempfile` dependency. The
+    /// process id keeps concurrent test binaries from colliding.
+    fn temp_path(tag: &str) -> PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("zw-support-config-{}-{}.json", std::process::id(), tag));
+        p
+    }
+
+    /// Minimal stand-in for a device state: one counter that round-trips
+    /// through the persisted form.
+    struct TestState {
+        counter: u32,
+    }
+
+    #[derive(Serialize, serde::Deserialize, PartialEq, Debug)]
+    struct TestConfig {
+        counter: u32,
+    }
+
+    impl HasDeviceConfig for TestState {
+        type Config = TestConfig;
+        fn to_config(&self) -> TestConfig {
+            TestConfig { counter: self.counter }
+        }
+    }
+
+    /// A device's identity is irrelevant to the config blob, so the test uses
+    /// the simplest `DeviceIdentity` the framework offers.
+    fn identity() -> zweidraehte_device::storage::StaticIdentity {
+        zweidraehte_device::storage::StaticIdentity::new([1, 2, 3, 4, 5, 6])
+    }
+
+    /// The path the storage task actually drives: `save_config`/`load_config`
+    /// through `&self` on the `ConfigStorage` composite, backed by
+    /// `JsonStorage`'s `ConfigStoreBackend` impl.
+    #[test]
+    fn config_storage_round_trips_through_json_backend() {
+        let path = temp_path("roundtrip");
+        let _ = std::fs::remove_file(&path);
+
+        // A missing file is "boot fresh", not an error.
+        let storage = ConfigStorage::new(JsonStorage::<TestState, _>::new(&path, identity()));
+        assert_eq!(storage.load_config(), None, "absent file must load as None");
+
+        // `save_config` takes `&self` — exactly how the storage task calls it.
+        storage.save_config(&TestState { counter: 0x2A });
+
+        // A fresh handle over the same file recovers the persisted blob.
+        let reopened = ConfigStorage::new(JsonStorage::<TestState, _>::new(&path, identity()));
+        assert_eq!(reopened.load_config(), Some(TestConfig { counter: 0x2A }));
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// An undecodable file must not panic the storage task — it boots fresh.
+    #[test]
+    fn corrupt_config_file_loads_as_none() {
+        let path = temp_path("corrupt");
+        std::fs::write(&path, b"this is not json").expect("write corrupt file");
+
+        let storage = ConfigStorage::new(JsonStorage::<TestState, _>::new(&path, identity()));
+        assert_eq!(storage.load_config(), None, "undecodable file must load as None");
+
+        std::fs::remove_file(&path).ok();
     }
 }

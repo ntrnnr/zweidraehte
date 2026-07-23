@@ -17,11 +17,12 @@ use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::SocketAddrV4;
 use zweidraehte_device::prelude::*;
+use zweidraehte_device::storage::{ConfigStorage, HasConfigStore, NoSaveGuard};
 use zweidraehte_device::{
     bcus::system_b::{SystemBStackDefinition, SystemBStateInit},
     layers::linklayers::knxip::KnxNetIpBuilder,
-    restart::EraseCode,
 };
+use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
     LightSwitchDevice,
@@ -33,7 +34,18 @@ use support::util::{
 };
 
 mod stack;
-use stack::{LightSwitchState, LinuxEthLightSwitch};
+use stack::{LightSwitchStorage, LinuxEthLightSwitch};
+
+// All persistence (on-demand saves, the periodic dirty poll, restart handling)
+// runs through the framework's generic `storage_task`, spawned in `main`. This
+// monomorphic wrapper is what the embassy executor spawns — the same shape
+// every embedded device uses. KNX/IP saves never stall a link layer, so the
+// guard is `NoSaveGuard`; a re-exec on restart is `LinuxSystem`.
+zweidraehte_device::storage_task! {
+    device: LinuxEthLightSwitch,
+    system: LinuxSystem,
+    guard: NoSaveGuard,
+}
 
 /// Network interface name for KNX/IP communication.
 const INTERFACE_NAME: &str = "knxdevbridgeif";
@@ -55,21 +67,6 @@ const IDENTITY_FILE_PATH: &str = "device_identity.json";
 const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
 
 // ============================================================================
-// State Persistence
-// ============================================================================
-
-/// Save the current device state to JSON storage.
-fn save_state(state: &LightSwitchState, storage: &mut JsonStorage<LightSwitchState, FileIdentity>) {
-    match storage.save(state) {
-        Ok(()) => {
-            state.clear_dirty();
-            log::info!("State saved to {}", STATE_FILE_PATH);
-        }
-        Err(e) => log::error!("Failed to save state: {}", e),
-    }
-}
-
-// ============================================================================
 // Main Entry Point
 // ============================================================================
 
@@ -77,89 +74,6 @@ fn save_state(state: &LightSwitchState, storage: &mut JsonStorage<LightSwitchSta
 async fn run_stack(runner: Runner<'static, LinuxEthLightSwitch>) {
     println!("Running KNX/IP light switch stack...");
     runner.run().await;
-}
-
-/// Restart handler task — executes resets, persists state, and triggers restart.
-///
-/// When the stack receives an A_Restart message, this task:
-/// 1. Executes the appropriate reset based on the erase code
-/// 2. Saves the modified state to JSON
-/// 3. Waits briefly for the response to be sent on the bus
-/// 4. Re-execs the process via `LinuxSystem::restart()`
-#[embassy_executor::task]
-async fn handle_restarts(stack: Stack<'static, LinuxEthLightSwitch>) {
-    println!("Restart handler task started");
-
-    // The loop body either performs a process re-exec (which doesn't return)
-    // or panics on failure, so it effectively runs at most once.
-    #[allow(clippy::never_loop)]
-    loop {
-        let request = stack.receive_restart_request().await;
-        let state = stack.state();
-
-        println!("\n********************************************");
-        println!("*** RESTART REQUEST RECEIVED ***");
-        println!("*** Erase Code: {} ***", request.erase_code);
-        println!("*** Channel: {} ***", request.channel);
-        println!("*** Access Level: {:?} ***", request.access_ctx);
-        println!("*** Needs Response: {} ***", request.needs_response);
-        println!("********************************************\n");
-
-        // The stack already sent the A_Restart_Response on the bus before
-        // delivering this request. We just need to execute the reset.
-        match request.erase_code {
-            EraseCode::Basic | EraseCode::Confirmed => {
-                println!("Performing basic restart (no data reset)...");
-            }
-            EraseCode::FactoryReset => {
-                println!("Performing FACTORY RESET — all data will be cleared!");
-                state.factory_reset();
-            }
-            EraseCode::ResetIA => {
-                println!("Resetting Individual Address to 15.15.255...");
-                state.reset_individual_address();
-            }
-            EraseCode::ResetAP => {
-                println!("Resetting Application Program...");
-                state.reset_application();
-            }
-            EraseCode::ResetParam => {
-                println!("Resetting Parameters to defaults...");
-                state.reset_parameters();
-            }
-            EraseCode::ResetLinks => {
-                println!("Resetting links (Group Address + Association tables)...");
-                state.apply_erase_code(EraseCode::ResetLinks);
-            }
-            EraseCode::FactoryResetKeepIA => {
-                println!("Performing Factory Reset (keeping Individual Address)...");
-                state.factory_reset_keep_ia();
-            }
-            EraseCode::Other(code) => {
-                println!("Unsupported erase code: 0x{:02X} — ignoring", code);
-            }
-        }
-
-        // Persist the post-reset state before restarting so it survives the
-        // process re-exec.
-        if state.is_dirty() {
-            // Construct a temporary storage with the same identity for the
-            // restart handler. The identity file was already provisioned at
-            // startup, so this just re-reads it.
-            let identity = FileIdentity::load_or_provision(IDENTITY_FILE_PATH, SERIAL_NUMBER)
-                .expect("load device identity for restart save");
-            save_state(state, &mut JsonStorage::new(STATE_FILE_PATH, identity));
-        }
-
-        // Give the stack a moment to send the response on the bus.
-        embassy_time::Timer::after(Duration::from_millis(100)).await;
-
-        // Re-exec the process. This call does not return on success.
-        use zweidraehte_platform::SystemControl;
-        let mut system = zweidraehte_platform::LinuxSystem;
-        let Err(e) = system.restart().await;
-        panic!("Failed to restart: {:?}", e);
-    }
 }
 
 // ============================================================================
@@ -299,25 +213,25 @@ async fn main(spawner: Spawner) {
     );
     println!();
 
-    // Load device config from storage. The actual runtime state is constructed
-    // later by the runner via `create_state`, which has access to the
-    // `LayerContext`.
-    let mut storage = JsonStorage::<LightSwitchState, _>::new(STATE_FILE_PATH, identity);
-    let loaded_config = match storage.load_config() {
-        Ok(Some(config)) => {
-            println!("Loaded device config from {}", STATE_FILE_PATH);
-            Some(config)
-        }
-        Ok(None) => {
-            println!("No stored config found, starting fresh");
-            None
-        }
-        Err(e) => {
-            println!("Error loading device config: {}", e);
-            None
-        }
-    };
-    let state_init = SystemBStateInit::new(StaticIdentity::new(*storage.identity().serial_number()), loaded_config);
+    // The config store rides on the stack: wrap the JSON-file backend in the
+    // framework's `ConfigStorage` composite and promote it to `'static` so the
+    // shared `storage_task` (spawned below) can reach it through
+    // `HasConfigStore`. The serial is captured before the identity moves into
+    // the backend, to seed the runtime state's own identity.
+    let serial = *identity.serial_number();
+    static STORAGE: StaticCell<LightSwitchStorage> = StaticCell::new();
+    let storage = &*STORAGE.init(ConfigStorage::new(JsonStorage::new(STATE_FILE_PATH, identity)));
+
+    // Load the persisted config once at boot to seed `create_state` (which the
+    // runner calls later, with access to the `LayerContext`). A blank or
+    // unreadable file yields `None` and the device boots from factory defaults.
+    let loaded_config = storage.load_config();
+    if loaded_config.is_some() {
+        println!("Loaded device config from {}", STATE_FILE_PATH);
+    } else {
+        println!("No stored config found, starting fresh");
+    }
+    let state_init = SystemBStateInit::new(StaticIdentity::new(serial), loaded_config);
 
     // The read-only platform reports the host's actual network configuration
     // to the stack (the OS owns networking, so KNX-driven reconfiguration is a
@@ -351,11 +265,13 @@ async fn main(spawner: Spawner) {
         state_init,
         platform,
         LinuxEthLightSwitch::memory_map(),
-        (),
+        storage,
     );
 
     spawner.spawn(run_stack(runner)).unwrap();
-    spawner.spawn(handle_restarts(stack)).unwrap();
+    // The generic storage task owns restart handling and all persistence
+    // (on-demand saves, the ETS-download persist, and the periodic dirty poll).
+    spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     // Keyboard button emulation. `Some(channels)` means we are in terminal
     // fallback mode and the main loop below must inject button edges; `None`
@@ -389,8 +305,11 @@ async fn main(spawner: Spawner) {
                 }
                 'q' | 'Q' => {
                     println!("\nShutting down...");
+                    // Force a final synchronous save before exit — the storage
+                    // task's dirty poll may not fire before `process::exit`.
                     if stack.state().is_dirty() {
-                        save_state(stack.state(), &mut storage);
+                        storage.save_config(stack.state());
+                        stack.state().clear_dirty();
                     }
                     // The embassy `arch-std` executor's `run` is `-> !` and
                     // loops forever, so a returning `main` task never ends the
@@ -445,12 +364,6 @@ async fn main(spawner: Spawner) {
 
             println!("---------------------\n");
             last_print = embassy_time::Instant::now();
-
-            // Periodically persist any state changes from ETS programming (table
-            // writes, parameter changes, address changes, etc.).
-            if stack.state().is_dirty() {
-                save_state(stack.state(), &mut storage);
-            }
         }
 
         match embassy_time::with_timeout(Duration::from_millis(100), events.next_message()).await {
