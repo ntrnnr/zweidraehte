@@ -24,6 +24,7 @@
 use crate::HasExtensionState;
 use crate::StackState;
 use crate::definition::StackDefinition;
+use crate::layers::transport::CEMI_PSEUDO_ADDR;
 use crate::objects::tables::{HasAssociationTable, LoadState};
 use crate::prelude::HasAddressTable;
 use crate::rng::Rng;
@@ -360,7 +361,21 @@ where
     let response_scf_byte = response_scf.encode();
 
     // Swap src/dst for the response.
-    let device_addr = u16::from_be_bytes(sal.inner.state().individual_address().0);
+    //
+    // The source must be the address the *requester* used to reach us, not
+    // necessarily our bus address: the CCM nonce covers src/dst (see
+    // `block_b0` / `ctr_crypt`), so signing with a different address than the
+    // peer verifies against corrupts both the MAC and the keystream.
+    //
+    // On the bus those coincide. On the local cEMI device-management path
+    // they do not: that client has no bus address, so the cEMI TL synthesises
+    // the frame with source *and* destination `0.0.0` (`CEMI_PSEUDO_ADDR`),
+    // and the peer computes its MAC with `0.0.0` as our address. `0.0.0` is
+    // never a valid bus source, so a request arriving from it is
+    // unambiguously that local path and we answer as `0.0.0` too.
+    let cemi_pseudo = u16::from_be_bytes(CEMI_PSEUDO_ADDR.0);
+    let device_addr =
+        if src == cemi_pseudo { cemi_pseudo } else { u16::from_be_bytes(sal.inner.state().individual_address().0) };
     // For broadcast responses, the NL will rewrite dst to 0x0000 on the
     // wire — the CCM context must match what the receiver sees.
     let dst_for_response = if is_broadcast { 0x0000 } else { src };

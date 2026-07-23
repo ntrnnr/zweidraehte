@@ -33,6 +33,23 @@ pub mod cemi;
 mod connection;
 mod state_machine;
 
+/// Pseudo individual address used as the "source" of cEMI TL frames.
+///
+/// cEMI TL frames carry no addressing — the 6 reserved bytes are all zeros —
+/// so the cEMI Transport Layer synthesises frames with `0.0.0` in both the
+/// source and destination fields. `0.0.0` is never a valid bus source address,
+/// which makes it an unambiguous marker for "this came from the local
+/// device-management client rather than the bus".
+///
+/// It lives here rather than in [`cemi`] because the Secure Application Layer
+/// must recognise it even in builds without the `knxip` feature (a TP1 or RF
+/// Data Secure device compiles the same Secure AL). KNX Data Secure binds the
+/// source and destination into the CCM nonce, so a peer on this path computes
+/// its MACs with `0.0.0` as the device's address and responses must be signed
+/// the same way — see `secure_application::p2p_security`.
+pub const CEMI_PSEUDO_ADDR: zweidraehte_proto::address::IndividualAddress =
+    zweidraehte_proto::address::IndividualAddress::new(0, 0, 0);
+
 pub use connection::{Connection, ConnectionState, ConnectionTable};
 pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle, process_event};
 

@@ -269,14 +269,10 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
     }
 }
 
-/// Pseudo individual address used as the "source" for cEMI TL frames.
-///
-/// cEMI TL frames don't carry addressing — the 6 reserved bytes are all
-/// zeros. We use `0.0.0` as a placeholder source address. AL's `respond_to`
-/// will copy it as the response destination, but the CemiTransportLayer
-/// intercepts the response before it reaches the bus TL, so the address is
-/// never actually transmitted.
-const CEMI_PSEUDO_ADDR: IndividualAddress = IndividualAddress::new(0, 0, 0);
+// The pseudo source address for cEMI TL frames lives in the parent module so
+// the Secure AL can reference it without the `knxip` feature — see
+// `super::CEMI_PSEUDO_ADDR` for the rationale.
+use super::CEMI_PSEUDO_ADDR;
 
 // ============================================================================
 // Layer impl — delegates to inner TransportLayer with interception

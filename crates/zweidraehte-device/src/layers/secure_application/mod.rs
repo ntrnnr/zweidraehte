@@ -877,7 +877,26 @@ where
             st, key[0], key[1], tool_access, scf_byte
         );
 
-        let src = u16::from_be_bytes(self.inner.state().individual_address().0);
+        // The CCM nonce covers src/dst, so the source must be the address the
+        // peer will verify against — see the same reasoning in
+        // `p2p_security::build_sync_response_for`. On the local cEMI
+        // device-management path the client addresses us as `0.0.0`
+        // (`CEMI_PSEUDO_ADDR`) and computes its MACs with that, so an
+        // individually-addressed reply going back to `0.0.0` must be signed as
+        // `0.0.0` rather than with our bus address.
+        let src = {
+            let cemi_pseudo = u16::from_be_bytes(crate::layers::transport::CEMI_PSEUDO_ADDR.0);
+            let dst = {
+                let buf = msg.buf();
+                u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]])
+            };
+            let individually_addressed = matches!(st, ServiceType::T_Data_Req | ServiceType::T_DataUnack_Req);
+            if individually_addressed && dst == cemi_pseudo {
+                cemi_pseudo
+            } else {
+                u16::from_be_bytes(self.inner.state().individual_address().0)
+            }
+        };
         let adt = self.inner.state().adt().borrow();
 
         let inputs = outgoing::WrapInputs {
