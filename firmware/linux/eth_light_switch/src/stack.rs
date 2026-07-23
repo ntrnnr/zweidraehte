@@ -5,10 +5,12 @@
 //! the read-only [`LinuxIpPlatform`] reporting the host's actual network
 //! configuration (the OS owns networking, so `apply_ip_config` is a no-op).
 //!
-//! This is the host-target sibling of `firmware/rp2040/eth_light_switch`: same
-//! device definition and feature set (`KnxIpDeviceTcp` — routing + remote
-//! config + TCP, no tunnelling), just over `LinuxIpTransport` instead of
-//! embassy-net on a W5500.
+//! This is the host-target sibling of `firmware/rp2040/eth_light_switch`: the
+//! same device definition, but a different feature set. The RP2040 target is
+//! UDP-only (`KnxIpDeviceUdp`) because its embassy-net TCP is still a stub;
+//! this host target runs `KnxIpDeviceTcp` (routing + remote config + TCP, no
+//! tunnelling) over `LinuxIpTransport`, whose TCP listener/stream are a real
+//! `std::net` implementation.
 
 use devices::light_switch::{
     DEVICE_DESCRIPTOR_IP, LightSwitchParams, comm_objs::LightSwitchComObjects, easter_egg::EasterEggAugment,
@@ -37,10 +39,12 @@ pub struct LightSwitchAugments<'a> {
 }
 
 // IP-specific link-layer bill of materials. `KnxIpDeviceTcp` is a routing
-// device with no tunnelling, so `TUNNEL_CAPACITY = 0` and the derived TCP
-// stream/channel defaults collapse to 0. `MAX_UDP_SOCKETS` stays at the trait
-// default of 2 (discovery + routing share one multicast socket; unicast
-// control wants the second).
+// device with no tunnelling, so `TUNNEL_CAPACITY = 0`. Because TCP is enabled,
+// the derived `MAX_TCP_STREAMS` / `MAX_TCP_CHANNELS` defaults are `1` — the one
+// TCP connection every TCP-capable server must accept (03/08/02 Core §6.5),
+// carrying the Device Management connection ETS opens over TCP. `MAX_UDP_SOCKETS`
+// stays at the trait default of 2 (discovery + routing share one multicast
+// socket; unicast control wants the second).
 impl KnxNetIpDefinition for LinuxEthLightSwitch {
     type Transport = LinuxIpTransport;
     type Features = KnxIpDeviceTcp;

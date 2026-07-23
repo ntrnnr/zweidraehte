@@ -35,7 +35,7 @@
 
 use zweidraehte_platform::IpTransport;
 
-use super::features::FeatureSet;
+use super::features::{FeatureSet, TcpFeature};
 use super::secure::IpSecureFeature;
 
 /// Compile-time configuration for the KNX/IP link layer.
@@ -76,19 +76,38 @@ pub trait KnxNetIpDefinition: Copy + 'static {
 
     /// Maximum concurrent TCP connections accepted by the listener.
     ///
-    /// Default: [`TUNNEL_CAPACITY`](Self::TUNNEL_CAPACITY) — worst case
-    /// every tunnel comes in over a different TCP connection. Override
-    /// when you accept more management/discovery TCP clients than you
-    /// have tunnel slots.
-    const MAX_TCP_STREAMS: usize = Self::TUNNEL_CAPACITY;
+    /// Default when TCP is enabled: [`TUNNEL_CAPACITY`](Self::TUNNEL_CAPACITY),
+    /// but never below `1` — 03/08/02 Core §6.5 requires a TCP-capable
+    /// server to "support at least one single TCP connection at a time".
+    /// A tunnelling device already has `TUNNEL_CAPACITY ≥ 1` (worst case
+    /// every tunnel over its own TCP connection); a routing device has
+    /// `TUNNEL_CAPACITY = 0` and would otherwise advertise TCP yet accept
+    /// nothing, so it gets the one mandated slot for the Device Management
+    /// connection ETS opens over TCP. When TCP is disabled the count is
+    /// `0`, collapsing the `TcpManager` storage to zero bytes. Override
+    /// when you accept more management/discovery TCP clients than you have
+    /// tunnel slots.
+    const MAX_TCP_STREAMS: usize = if <<Self::Features as FeatureSet>::Tcp as TcpFeature>::ENABLED {
+        if Self::TUNNEL_CAPACITY > 0 { Self::TUNNEL_CAPACITY } else { 1 }
+    } else {
+        0
+    };
 
     /// Maximum KNX/IP channel IDs tracked per TCP stream.
     ///
-    /// Default: [`TUNNEL_CAPACITY`](Self::TUNNEL_CAPACITY) — worst case
-    /// one client multiplexes every tunnel over a single TCP stream.
-    /// Override (downward) to save per-stream RAM if your deployment
-    /// caps multiplexing per client.
-    const MAX_TCP_CHANNELS: usize = Self::TUNNEL_CAPACITY;
+    /// Default when TCP is enabled: [`TUNNEL_CAPACITY`](Self::TUNNEL_CAPACITY),
+    /// but never below `1` — a single TCP connection carries at least the
+    /// one plain KNXnet/IP (Device Management) channel it multiplexes
+    /// (03/08/02 Core §6.5). A routing device with no tunnels still needs
+    /// that one channel slot, so a `0` here would silently drop the
+    /// management channel from the stream's tracking. `0` when TCP is
+    /// disabled. Override (downward) to save per-stream RAM if your
+    /// deployment caps multiplexing per client.
+    const MAX_TCP_CHANNELS: usize = if <<Self::Features as FeatureSet>::Tcp as TcpFeature>::ENABLED {
+        if Self::TUNNEL_CAPACITY > 0 { Self::TUNNEL_CAPACITY } else { 1 }
+    } else {
+        0
+    };
 
     /// Maximum concurrent KNX/IP connections managed by the connection
     /// manager (Device Management + tunneling slots combined).
