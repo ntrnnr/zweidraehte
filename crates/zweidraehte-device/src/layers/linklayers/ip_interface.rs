@@ -349,9 +349,10 @@ where
 
             // Construct address filter for routing frames. The IP interface
             // uses the same filter as standalone — RoutingIndications only
-            // go to the local NL, not to tunnel clients.
-            let routing_filter =
-                super::knxip::types::RoutingAddressFilter::new(context.individual_address(), context.address_table());
+            // go to the local NL, not to tunnel clients. The filter reads the
+            // individual address live from the context, so an ETS address
+            // write takes effect immediately without a stack restart.
+            let routing_filter = super::knxip::types::RoutingAddressFilter::new(context);
 
             let mut knxip = self.knxip_builder.build(
                 &resources.knxip,

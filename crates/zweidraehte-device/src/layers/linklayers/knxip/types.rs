@@ -10,7 +10,7 @@ use heapless::Vec;
 
 use core::cell::RefCell;
 
-use crate::context::IndividualAddressContext;
+use crate::context::{AddressTableContext, IndividualAddressContext};
 use crate::layers::linklayers::knxip::context::{
     DeviceInfoContext, IpConfigWriteContext, IpDiagnosticsContext, RemoteRestartContext,
 };
@@ -126,21 +126,38 @@ pub trait AddressFilter {
 /// Accepts frames addressed to the device's individual address, group
 /// addresses present in the loaded address table, and broadcasts. This
 /// is the same logic as `DeviceAddressChecker::should_ack` for TPUART.
+///
+/// The individual address is read **live** from [`IndividualAddressContext`]
+/// on every frame, not snapshotted at construction: ETS assigns a new
+/// individual address via `A_IndividualAddress_Write` and then immediately
+/// verifies it by addressing the device at the *new* address (03/05/02 §2.3).
+/// A snapshot taken at link-layer startup would still hold the device's
+/// power-on address (a virgin device's 15.15.255) and silently drop that
+/// verification, so the first-time assignment would fail.
 pub struct RoutingAddressFilter<'a, ADT> {
-    individual_address: IndividualAddress,
+    ia_ctx: &'a dyn IndividualAddressContext,
     address_table: &'a RefCell<ADT>,
 }
 
-impl<'a, ADT> RoutingAddressFilter<'a, ADT> {
-    pub fn new(individual_address: IndividualAddress, address_table: &'a RefCell<ADT>) -> Self {
-        Self { individual_address, address_table }
+impl<'a, ADT: AddressTable + HasLoadStateMachine> RoutingAddressFilter<'a, ADT> {
+    /// Build the filter from the stack context. Both the live individual
+    /// address and the address table are drawn from the same `context`, so the
+    /// caller passes it once. `AddressTableContext` is not object-safe (it has
+    /// an associated `ADT`), so the context is taken generically and the table
+    /// projected out here; the individual-address side keeps the object-safe
+    /// `&dyn` for the per-frame lookup.
+    pub fn new<C>(context: &'a C) -> Self
+    where
+        C: IndividualAddressContext + AddressTableContext<ADT = ADT>,
+    {
+        Self { ia_ctx: context, address_table: context.address_table() }
     }
 }
 
 impl<ADT: AddressTable + HasLoadStateMachine> AddressFilter for RoutingAddressFilter<'_, ADT> {
     fn accepts(&self, dest: DestinationAddress) -> bool {
         match dest {
-            DestinationAddress::Individual(addr) => addr == self.individual_address,
+            DestinationAddress::Individual(addr) => addr == self.ia_ctx.individual_address(),
             DestinationAddress::Group(ga) => {
                 let table = self.address_table.borrow();
                 table.is_loaded() && (table.entry_count() == 0 || table.contains(ga))
@@ -391,4 +408,69 @@ pub(crate) trait KnxNetIpServer {
         message: &KnxMessageBuffer<Buffer<'static>>,
         context: &ServerContext<'a>,
     ) -> Result<Vec<PendingResponse, 4>, ServerError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::objects::tables::{AddrTab7Impl, Table};
+    use const_default::ConstDefault;
+    use core::cell::Cell;
+
+    /// A minimal stack-context stand-in whose individual address can change
+    /// after the filter is built — modelling ETS assigning a new IA at runtime
+    /// via `A_IndividualAddress_Write`. Also carries an (empty) address table so
+    /// it satisfies `RoutingAddressFilter::new`'s `AddressTableContext` bound.
+    struct StubContext {
+        ia: Cell<IndividualAddress>,
+        table: RefCell<Table<AddrTab7Impl<8>>>,
+    }
+
+    impl StubContext {
+        fn new(ia: IndividualAddress) -> Self {
+            Self { ia: Cell::new(ia), table: RefCell::new(Table::DEFAULT) }
+        }
+    }
+
+    impl IndividualAddressContext for StubContext {
+        fn individual_address(&self) -> IndividualAddress {
+            self.ia.get()
+        }
+    }
+
+    impl AddressTableContext for StubContext {
+        type ADT = Table<AddrTab7Impl<8>>;
+        fn address_table(&self) -> &RefCell<Self::ADT> {
+            &self.table
+        }
+    }
+
+    /// The filter must read the individual address **live** on every frame, not
+    /// snapshot it at construction: a virgin device boots at 15.15.255, ETS
+    /// writes a new IA, then verifies by addressing the device at the new IA
+    /// (03/05/02 §2.3). If the filter froze the old IA, that verify frame would
+    /// be dropped and first-time assignment would fail.
+    #[test]
+    fn accepts_individual_reflects_live_address_change() {
+        let virgin = IndividualAddress::new(15, 15, 255);
+        let assigned = IndividualAddress::new(0, 0, 1);
+
+        let ctx = StubContext::new(virgin);
+        let filter = RoutingAddressFilter::new(&ctx);
+
+        // Before assignment: accepts the boot address, not the (future) new one.
+        assert!(filter.accepts(DestinationAddress::Individual(virgin)));
+        assert!(!filter.accepts(DestinationAddress::Individual(assigned)));
+
+        // ETS assigns the new IA — no filter rebuild.
+        ctx.ia.set(assigned);
+
+        // The filter must now accept the new IA (and reject the old one).
+        assert!(filter.accepts(DestinationAddress::Individual(assigned)));
+        assert!(!filter.accepts(DestinationAddress::Individual(virgin)));
+
+        // Broadcast is always accepted regardless of the current IA.
+        assert!(filter.accepts(DestinationAddress::Broadcast));
+        assert!(filter.accepts(DestinationAddress::SystemBroadcast));
+    }
 }

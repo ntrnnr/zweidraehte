@@ -429,8 +429,10 @@ where
         // Build the address filter while the concrete context type is
         // still in scope — `RoutingAddressFilter` needs the typed address
         // table, which `self.build(...)` erases to `&dyn KnxNetIpContext`.
-        let address_filter =
-            super::types::RoutingAddressFilter::new(context.individual_address(), context.address_table());
+        // The filter reads the individual address live from the context on
+        // every frame (see `RoutingAddressFilter`), so an ETS address write
+        // takes effect immediately without a stack restart.
+        let address_filter = super::types::RoutingAddressFilter::new(context);
         async move {
             let mut link_layer =
                 self.build(resources, context, ll_endpoints, ind_tx, conf_tx, None, Some(&address_filter));
