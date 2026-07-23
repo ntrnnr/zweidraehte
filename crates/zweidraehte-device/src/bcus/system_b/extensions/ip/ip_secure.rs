@@ -523,15 +523,23 @@ impl<'a, const MAX_PW: usize, const MAX_TU: usize> IpSecureAugment<'a, MAX_PW, M
             return None;
         }
 
-        // service_data = [ServiceID, ServiceInfo...] (the reserved octet
-        // 10 is consumed by the framing layer before this hook).
-        let Some(&service_id) = req.service_data.first() else {
+        // §2.3.1.5.4.1 Figure 23 — octets 10..13, which is what `service_data`
+        // spans here:
+        //   [0] reserved (00h)   [1] ServiceID   [2] Service Family ID
+        //   [3] Security Version
+        //
+        // The leading reserved octet is real on this property: ETS's
+        // `Command=00000301` arrives as a 4-byte `service_data`. Note that the
+        // Security object's function properties (e.g. PID 51, 03/05/01) have
+        // no such octet and start at ServiceID — the layout is per-property,
+        // not a shared framing rule, so the two handlers legitimately differ.
+        let Some(&service_id) = req.service_data.get(1) else {
             return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
         };
         if service_id != 0x00 {
             return Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) });
         }
-        let (Some(&family_id), Some(&version)) = (req.service_data.get(1), req.service_data.get(2)) else {
+        let (Some(&family_id), Some(&version)) = (req.service_data.get(2), req.service_data.get(3)) else {
             return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
         };
 
@@ -564,13 +572,15 @@ impl<'a, const MAX_PW: usize, const MAX_TU: usize> IpSecureAugment<'a, MAX_PW, M
             return None;
         }
 
-        let Some(&service_id) = req.service_data.first() else {
+        // §2.3.1.5.5.1 Figure 26 — same leading reserved octet as the write:
+        //   [0] reserved (00h)   [1] ServiceID   [2] Service Family ID
+        let Some(&service_id) = req.service_data.get(1) else {
             return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
         };
         if service_id != 0x00 {
             return Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) });
         }
-        let Some(&family_id) = req.service_data.get(1) else {
+        let Some(&family_id) = req.service_data.get(2) else {
             return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
         };
 
