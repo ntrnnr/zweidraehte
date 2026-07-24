@@ -9,7 +9,7 @@
 //!   per-record writes; for hot data like the SIAT and sequence counters.
 //! - [`ConfigStore`] — a single postcard blob (magic + length + payload) over
 //!   [`SectorIo`] for the ETS-programmed device configuration. Erase+rewrite,
-//!   not a [`KeyValueStore`](crate::storage::kv::KeyValueStore) — config
+//!   not a [`KeyValueStore`] — config
 //!   writes are rare.
 //! - [`PackedSeqStore`] — the fixed packed sequence-state layout over
 //!   [`ByteIo`] (FRAM, shared memory); write-in-place, no erase.

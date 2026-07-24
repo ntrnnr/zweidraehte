@@ -76,7 +76,7 @@ pub trait IpConfigWriteContext {
 /// one unified path, rather than needing a second reset hook.
 ///
 /// Only IP stacks implement this; the runtime reaches it through
-/// [`KnxNetIpContext`](super::KnxNetIpContext).
+/// `KnxNetIpContext`.
 pub trait RemoteRestartContext {
     /// Publish a restart request. Returns `true` if it was enqueued
     /// (the channel has depth 1; a full channel means a restart is already
@@ -90,7 +90,7 @@ pub trait RemoteRestartContext {
 /// (03/02/06 §4.3.5.3.5.1).
 ///
 /// Only IP stacks implement this; the runtime reaches it through
-/// [`KnxNetIpContext`](super::KnxNetIpContext).
+/// `KnxNetIpContext`.
 pub trait RoutingMulticastRebindContext {
     /// The channel drained by the KNX/IP runtime's main select loop.
     fn routing_multicast_rebind_channel(&self) -> &Channel<NoopRawMutex, core::net::Ipv4Addr, 2>;
@@ -121,7 +121,7 @@ pub trait IpAdditionalIndividualAddressContext {
 /// ([`IpSecureStateView`](crate::ip::IpSecureStateView), PIDs 91–97)
 /// plus the KNX serial number into the link-layer context.
 ///
-/// Part of [`KnxNetIpContext`](super::KnxNetIpContext) unconditionally:
+/// Part of `KnxNetIpContext` unconditionally:
 /// the `StackContext` impl forwards to
 /// [`HasIpSecureView`](crate::ip::HasIpSecureView), whose default
 /// returns `None`, so non-secure IP devices satisfy the bound without

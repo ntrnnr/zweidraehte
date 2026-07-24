@@ -74,7 +74,7 @@ use super::views::{McTimerStore, SiatStore};
 /// Devices normally reach this through [`Placed`], which supplies the
 /// layout-derived placement; hand-assembled setups may call
 /// [`open`](Self::open) with a placement from
-/// [`region_placement`](super::region::region_placement) directly.
+/// [`region_placement`] directly.
 pub trait Stored<C: Chip>: Region + Sized {
     /// The concrete store/middleware `open` yields — e.g. the config blob
     /// codec, or the SIAT view over its medium-appropriate backend.

@@ -1,6 +1,6 @@
 //! Secure-aware group-addressed sender.
 //!
-//! Sibling of [`GroupDataProvider`](crate::layers::application::group_data::GroupDataProvider)
+//! Sibling of `GroupDataProvider`
 //! for the KNX Data Secure path. Builds a full secure
 //! `T_GroupData_Req` frame (SCF + SeqNr + encrypted/authenticated
 //! payload + MAC) and queues it on the outbox.

@@ -383,8 +383,8 @@ where
 
 /// Type alias for [`SystemBObjects`] that auto-fills the associated type projections.
 ///
-/// This is the TP1 counterpart to [`DefaultKnxIpInterfaceObjects`]. It provides
-/// 6 interface objects (no IP Parameter Object).
+/// This is the TP1 default: it provides 6 interface objects (no IP
+/// Parameter Object).
 pub type DefaultSystemBInterfaceObjects<'a, D, A = ()> = SystemBObjects<
     'a,
     D,

@@ -244,11 +244,11 @@ impl ExtensionState for () {
 ///
 /// # Implementations
 ///
-/// - [`()`] — no extension, no augment
-/// - [`Tp1ExtensionState`](super::extensions::tp1::Tp1ExtensionState) — creates a
-///   [`Tp1Augment`](super::extensions::tp1::Tp1Augment) borrowing self
-/// - [`IpExtensionState`](super::extensions::ip::IpExtensionState) — creates an
-///   [`IpAugment`](super::extensions::ip::IpAugment) from self + platform
+/// - `()` — no extension, no augment
+/// - [`Tp1ExtensionState`](crate::bcus::system_b::Tp1ExtensionState) — creates a
+///   [`Tp1Augment`](crate::bcus::system_b::Tp1Augment) borrowing self
+/// - [`IpExtensionState`](crate::bcus::system_b::IpExtensionState) — creates an
+///   [`IpAugment`](crate::bcus::system_b::IpAugment) from self + platform
 pub trait Extension<Platform = ()>: ExtensionState {
     /// The augment type this extension creates.
     ///
@@ -300,7 +300,7 @@ impl Extension<()> for () {
 /// must remember. It's serialized to storage when changes occur.
 ///
 /// Plays the same role at the device level that `*ExtensionConfig` plays
-/// at the extension level (see the [vocabulary block](self) at the top
+/// at the extension level (see the vocabulary block at the top
 /// of this module).
 ///
 /// # Generic Parameters
@@ -310,7 +310,7 @@ impl Extension<()> for () {
 /// - `AST_SIZE`: Association table size (typically 2 + MAX_ASSO * 4)
 /// - `COT_SIZE`: Group object table size (typically 2 + MAX_CO * 2)
 /// - `P`: Application parameters type
-/// - `E`: Extension-specific persistent config (e.g., [`IpExtensionConfig`]
+/// - `E`: Extension-specific persistent config (e.g., [`IpExtensionConfig`](crate::bcus::system_b::IpExtensionConfig)
 ///   for KNX/IP devices, `()` for plain TP1 devices)
 ///
 /// Use [`table_sizes`] to calculate the const generics from max entry counts.
@@ -364,7 +364,8 @@ pub struct DeviceConfig<
     /// Extension-specific persistent configuration.
     ///
     /// The type depends on the device's extension state (`E` parameter).
-    /// Examples: [`IpExtensionConfig`] for KNX/IP, [`Tp1ExtensionConfig`]
+    /// Examples: [`IpExtensionConfig`](crate::bcus::system_b::IpExtensionConfig) for KNX/IP,
+    /// [`Tp1ExtensionConfig`](crate::bcus::system_b::Tp1ExtensionConfig)
     /// for TP1 with retry count, `()` for no extensions, or a tuple of
     /// configs for composed extension states.
     pub extension_config: E,

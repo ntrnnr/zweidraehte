@@ -91,8 +91,8 @@ impl ComObjectStatus {
     /// - Bit 1: Write/Transmit request pending
     /// - Bit 0: Error flag (1 = error, 0 = ok)
     ///
-    /// This is a **best-effort** inverse of [`to_flags_byte()`]
-    /// (Self::to_flags_byte): the BCU1 byte cannot represent every
+    /// This is a **best-effort** inverse of [`to_flags_byte`](Self::to_flags_byte):
+    /// the BCU1 byte cannot represent every
     /// status variant distinctly, so three variants do not round-trip:
     ///
     /// - `Busy` parses back as `WriteRequest` (both encode `0x02`),
@@ -503,7 +503,7 @@ pub trait HasCommObjects {
 /// Layer reads the stamp at outbox drain and applies the §5.5.3.x decision
 /// tree (03/03/07) — encrypt with the appropriate key, or send plaintext.
 ///
-/// All methods default to [`RequiredSecurity::Plain`]. Insecure device
+/// All methods default to [`RequiredSecurity::Plain`](zweidraehte_proto::messages::knx::RequiredSecurity::Plain). Insecure device
 /// states satisfy the trait with an empty `impl` block:
 ///
 /// ```ignore

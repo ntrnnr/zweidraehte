@@ -3,6 +3,15 @@ name = "zweidraehte-device"
 version = "0.1.0"
 edition = "2024"
 
+# Document the full API surface. Many public items (KNX/IP, IP Secure, the
+# IP-interface link layer) are feature-gated, so their intra-doc links only
+# resolve when those features are on. `--all-features` cannot be used because
+# `defmt` and `log` are mutually exclusive and `defmt` does not cover the Linux
+# platform types, so we enable every capability feature plus `std` and no
+# logger. Keep this in sync with the `cargo doc` invocation used locally.
+[package.metadata.docs.rs]
+features = ["knxip", "ip-secure", "tp1", "rf", "ip-interface", "std"]
+
 [dependencies]
 zweidraehte-util = { path = "../zweidraehte-util", default-features = false }
 zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }

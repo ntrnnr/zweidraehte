@@ -114,7 +114,7 @@ use super::address_check::extract_header_fields as extract_tp1_header_fields;
 /// This is the default for [`TpUartLinkLayerBuilder::new`]. The builder's
 /// [`build_and_run`](super::super::LinkLayerBuilder::build_and_run) impl
 /// requires the context to provide [`IndividualAddressContext`] and
-/// [`AddressTableContext`](crate::context::AddressTableContext), and creates a [`DeviceAddressChecker`] that
+/// [`AddressTableContext`], and creates a [`DeviceAddressChecker`] that
 /// ACKs the device's own individual address, group addresses from the
 /// loaded address table, and broadcasts.
 ///

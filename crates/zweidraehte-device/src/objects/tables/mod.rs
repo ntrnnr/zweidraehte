@@ -98,7 +98,7 @@ pub trait TableMemory: ConstDefault + Sized {
     /// The default impl is an **unchecked** `copy_from_slice` and will panic
     /// if `offset + data.len()` exceeds `data_ref().len()`. Table types
     /// whose backing storage has meaningful bounds (e.g.,
-    /// [`ApplicationImpl`](super::app::ApplicationImpl) wrapping a typed
+    /// [`ApplicationImpl`](crate::objects::tables::app::ApplicationImpl) wrapping a typed
     /// struct) override this with a saturating variant.
     fn read(&self, offset: usize, data: &mut [u8]) {
         data.copy_from_slice(&self.data_ref()[offset..offset + data.len()]);

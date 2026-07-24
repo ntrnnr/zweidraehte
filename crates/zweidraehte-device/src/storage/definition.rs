@@ -10,7 +10,7 @@
 //!   routing)
 //!
 //! Each struct's type parameters are bounded by the store contracts, and each
-//! carries hand-written [`HasConfigStore`] / [`HasSeqStore`](super::seq::HasSeqStore)
+//! carries hand-written [`HasConfigStore`] / [`HasSeqStore`]
 //! / [`StorageHooks`] impls with exactly its combination's erase behavior.
 //! The generic storage task drives any handle through those bounds. The
 //! secure-builder gate is structural: [`ConfigStorage`] has no `HasSeqStore`
@@ -259,7 +259,7 @@ use super::views::SiatAccess;
 /// The stores of a **config-only** device: just the ETS config blob.
 ///
 /// No sequence store — and therefore no
-/// [`HasSeqStore`](super::seq::HasSeqStore) impl, which is what rejects the
+/// [`HasSeqStore`] impl, which is what rejects the
 /// secure builders for these devices at compile time.
 pub struct ConfigStorage<C: ConfigStoreBackend> {
     /// The config-blob store, opened at the device's `CONFIG` placement.

@@ -67,7 +67,7 @@ use super::{DeviceConfig, ExtensionState, OperationModeState, SystemBStateInit};
 ///
 /// **Link-Layer State:**
 /// - For KNX/IP devices: IP configuration (friendly name, configured IP, etc.)
-/// - For TP1 devices: [`Tp1ExtensionState`] (PID_MAX_RETRY_COUNT)
+/// - For TP1 devices: [`Tp1ExtensionState`](crate::bcus::system_b::Tp1ExtensionState) (PID_MAX_RETRY_COUNT)
 ///
 /// # Persistence
 ///
@@ -83,7 +83,8 @@ use super::{DeviceConfig, ExtensionState, OperationModeState, SystemBStateInit};
 /// - `D`: Stack definition — provides `D::P` (parameters) and `D::CO`
 ///   (communication objects) as well as mutex types for channels
 /// - `ES`: Extension state — link-layer config and/or augment state (e.g.,
-///   [`IpExtensionState`] for KNX/IP, [`Tp1ExtensionState`] for TP1, `()` for plain TP1)
+///   [`IpExtensionState`](crate::bcus::system_b::IpExtensionState) for KNX/IP,
+///   [`Tp1ExtensionState`](crate::bcus::system_b::Tp1ExtensionState) for TP1, `()` for plain TP1)
 pub struct SystemBDeviceState<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
@@ -167,7 +168,7 @@ pub struct SystemBDeviceState<
     /// Holds the actual data values for each communication object plus
     /// their transmission status. Bus-inbound hooks (`prepare_read` /
     /// `handle_write`) are implemented on the concrete `D::CO` type via
-    /// the [`ComObjectBusHook`] trait — any context the hook needs must
+    /// the [`ComObjectBusHook`](crate::objects::comm::ComObjectBusHook) trait — any context the hook needs must
     /// be held inside `D::CO` itself.
     pub comm_objs: RefCell<D::CO>,
 
@@ -246,7 +247,7 @@ impl<
     /// - `comm_objs`: Communication objects (group object values + status).
     ///   Any bus-inbound hook state (e.g. `CoTab` references used by
     ///   conformance-style shadow objects) must live inside `comm_objs`
-    ///   itself — see [`ComObjectBusHook`].
+    ///   itself — see [`ComObjectBusHook`](crate::objects::comm::ComObjectBusHook).
     /// - `extension_resources`: Non-serialisable resources required by
     ///   the extension state. `()` for non-secure devices;
     ///   [`SecureResources`] for Data Secure devices — the FDSK lives in

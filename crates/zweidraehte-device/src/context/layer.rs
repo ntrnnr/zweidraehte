@@ -64,7 +64,7 @@ pub struct LayerContext<D: StackDefinition> {
 
     /// The device's whole storage handle (`()` when no stack component needs
     /// the stores — see
-    /// [`StackDefinition::Storage`](crate::definition::StackDefinition::Storage)).
+    /// [`StackDefinition::Storage`]).
     /// Lives here so consumers bounding on the storage capabilities (e.g.
     /// `D::Storage: HasSeqStore`) reach the stores without going through
     /// `D::State`.

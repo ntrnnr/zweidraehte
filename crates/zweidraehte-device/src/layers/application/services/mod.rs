@@ -1,7 +1,7 @@
 //! Application layer services.
 //!
 //! Each service handles a group of APCI codes that can be composed into
-//! a device's [`Services`](crate::StackDefinition::Services) tuple. The
+//! a device's [`AlExtensions`](crate::StackDefinition::AlExtensions) tuple. The
 //! AL dispatches unrecognized APCIs (those not handled by built-in
 //! handlers) through the services tuple via
 //! [`ApciHandler`](crate::service::ApciHandler).

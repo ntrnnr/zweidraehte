@@ -417,7 +417,7 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
 /// This interface object is required by the KNX specification and ETS, but its
 /// state transitions have no side effects on device operation. It exists purely
 /// so that ETS can load/unload it during device programming without errors.
-/// See [`PeiApplication`] for background on why PEI is vestigial.
+/// See [`PeiApplication`](crate::objects::tables::PeiApplication) for background on why PEI is vestigial.
 ///
 /// The object exposes the same properties as [`ApplicationProgramObject`] but
 /// reports a different object type (0x0005 instead of 0x0004).
@@ -440,7 +440,7 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     /// Virtual address to assign during RelativeData allocation (typically 0 for PEI)
     pub alloc_address: u32,
     /// Notifier for DeviceModel events. PEI RSM transitions are surfaced as
-    /// [`LifecycleEvent::PeiStarted`] / [`LifecycleEvent::PeiStopped`](crate::lifecycle::LifecycleEvent)
+    /// [`LifecycleEvent::PeiStarted`](crate::lifecycle::LifecycleEvent::PeiStarted) / [`LifecycleEvent::PeiStopped`](crate::lifecycle::LifecycleEvent::PeiStopped)
     /// even though PEI has no required side effects on device operation —
     /// this is purely for observability of the full ETS programming cascade.
     pub notifier: &'a dyn DeviceModelNotifier,

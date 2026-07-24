@@ -12,7 +12,7 @@
 //!   layer at construction.
 //! - [`stack`]: the transient [`StackContext<'a, D>`](stack::StackContext)
 //!   assembled at [`Runner::run`](crate::Runner::run) scope. Bundles
-//!   references to [`StackCore`](crate::stack_core::StackCore) and the interface
+//!   references to `StackCore` (state, platform, memory map) and the interface
 //!   objects for link-layer builders. See [`stack`] for why this is
 //!   transient.
 //!

@@ -113,7 +113,7 @@ impl<'a, D: StackDefinition> ServiceCtx<'a, D> {
     /// Capability handle for outgoing group-value reads/writes by ASAP.
     ///
     /// Builds a transient
-    /// [`GroupDataProvider`] backed by the current state and layer
+    /// `GroupDataProvider` backed by the current state and layer
     /// context. Persistent bookkeeping (pending sends, read-on-init
     /// progress) lives on the shared [`LayerContext`], so per-call
     /// construction is cheap.

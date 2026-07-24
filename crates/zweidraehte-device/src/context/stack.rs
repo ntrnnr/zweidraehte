@@ -6,7 +6,7 @@
 //!
 //! # Why this is transient, not stored on `StackCore`
 //!
-//! [`StackCore`](crate::stack_core::StackCore) owns the device
+//! `StackCore` owns the device
 //! [`State`](crate::StackDefinition::State). The
 //! [`InterfaceObjects`](crate::StackDefinition::InterfaceObjects) container
 //! borrows from that state (`&'a D::State` for property accessors, table
@@ -91,7 +91,7 @@ where
 /// Construction-time context bundle — exists only inside
 /// [`Runner::run`](crate::Runner::run).
 ///
-/// Bundles references to [`Inner`] (state, platform, memory map) and
+/// Bundles references to the stack core (state, platform, memory map) and
 /// [`InterfaceObjects`](crate::StackDefinition::InterfaceObjects). Two
 /// consumers: layer constructors capture their long-lived references from
 /// it (`NetworkLayer::new(ctx)` etc.), and link layers receive it through
@@ -102,7 +102,7 @@ where
 /// [`AlCtx`](crate::service::AlCtx).
 ///
 /// See the module-level docs for why this is transient rather than a field
-/// on [`StackCore`].
+/// on `StackCore`.
 pub struct StackContext<'a, D: StackDefinition> {
     pub(crate) inner: &'a StackCore<D>,
     pub(crate) interface_objects: &'a D::InterfaceObjects<'static>,

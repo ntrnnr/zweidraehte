@@ -51,7 +51,7 @@ const _: () = core::assert!(1 + 1 + MAX_KEY + 1 + MAX_VAL + 1 <= SLOT_SIZE, "rec
 /// Wear-levelled key-value store over `ENTRIES` live records, `SECTORS` flash
 /// sectors of `SECTOR_SIZE` bytes starting at `REGION_OFFSET`.
 ///
-/// The RAM [`Mirror`] is the authoritative current contents; the flash log is
+/// The RAM `Mirror` is the authoritative current contents; the flash log is
 /// the durable backing. `get`/`for_each` read the mirror (no flash I/O);
 /// `put`/`remove` append one slot and rotate+compact when a sector fills. Only
 /// the slot codec and rotation below are wear-level-specific — the mirror is
@@ -62,7 +62,7 @@ const _: () = core::assert!(1 + 1 + MAX_KEY + 1 + MAX_VAL + 1 <= SLOT_SIZE, "rec
 /// Rotation compacts the *entire* live mirror into one fresh sector (header
 /// slot + `ENTRIES` record slots), so `ENTRIES` must fit:
 /// `ENTRIES <= sector_size / SLOT_SIZE - 1`, and there must be at least two
-/// sectors to rotate between. [`open`](Self::open) asserts both — a violation
+/// sectors to rotate between. `open` asserts both — a violation
 /// would otherwise surface as silent corruption of the *next* region when a
 /// full mirror rotates past the sector boundary.
 pub struct WearLeveledKv<F: SectorIo, R: Region, const ENTRIES: usize> {

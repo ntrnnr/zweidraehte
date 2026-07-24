@@ -7,7 +7,7 @@
 //!
 //! # Architecture
 //!
-//! Interface objects (specifically [`ApplicationProgramObject`](crate::objects::interface::standard::ApplicationProgramObject))
+//! Interface objects (specifically [`ApplicationProgramObject`](crate::objects::interface::ApplicationProgramObject))
 //! post [`DeviceModelEvent`]s to the shared device state via the
 //! [`DeviceModelNotifier`] trait. The composition layer drains these each
 //! dispatch cycle:
@@ -46,7 +46,7 @@ pub enum RunTarget {
 /// Events sent to the DeviceModel for lifecycle orchestration.
 ///
 /// Posted synchronously by interface objects (e.g.
-/// [`ApplicationProgramObject`](crate::objects::interface::standard::ApplicationProgramObject))
+/// [`ApplicationProgramObject`](crate::objects::interface::ApplicationProgramObject))
 /// via [`DeviceModelNotifier::notify`]. Drained by
 /// [`DeviceModel::drain_dm_events`] after each dispatch cycle.
 #[derive(Debug, Clone, Copy)]

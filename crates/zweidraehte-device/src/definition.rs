@@ -212,7 +212,7 @@ pub trait StackDefinition: Copy + 'static {
 
     /// Medium extension state (persistence + interface-object augmentation).
     ///
-    /// Most extensions implement [`Extension`] so the default
+    /// Most extensions implement [`Extension`](crate::bcus::system_b::Extension) so the default
     /// [`create_augments`](Self::create_augments) path can build their
     /// augment from the platform alone; the macro-emitted default bounds on
     /// it at the use site. `SecureExtensionState` deliberately does not —
@@ -278,7 +278,7 @@ pub trait StackDefinition: Copy + 'static {
     ///
     /// This is a construction-time envelope, not a serialisable `*Config`
     /// (see the vocabulary block at the top of
-    /// [`bcus::system_b::storage`](crate::bcus::system_b::storage)). It
+    /// `bcus::system_b::storage`). It
     /// bundles the inputs `create_state` needs to produce a runtime
     /// `Self::State`: typically an optional
     /// [`DeviceConfig`](crate::bcus::system_b::DeviceConfig) snapshot

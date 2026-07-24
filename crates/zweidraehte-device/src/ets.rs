@@ -530,7 +530,7 @@ impl FlagOverrides {
 
 /// Trait for types that carry DPT information.
 ///
-/// This is implemented for [`DatapointType`](zweidraehte_proto::dpt::DatapointType) to allow
+/// This is implemented for [`DatapointType`] to allow
 /// extracting DPT main/sub numbers at compile time.
 pub trait HasDptInfo {
     /// DPT main type number

@@ -58,7 +58,7 @@ use core::marker::PhantomData;
 /// choices in its `REGIONS` array).
 ///
 /// Implemented by the small reusable region marker types ([`ConfigRegion`],
-/// [`SiatRegion`], [`McTimerRegion`]). The region is the single source of
+/// [`FlashSiatRegion`] / [`FramSiatRegion`], [`McTimerRegion`]). The region is the single source of
 /// truth the rest of the layer hangs off: [`region_spec`] reads all three
 /// consts to build a layout entry, [`region_placement`] identifies the entry
 /// by `MAGIC`+`SIZE`, and the stores bind a `R: Region` parameter to read
@@ -73,7 +73,7 @@ pub trait Region {
     const MAGIC: u32;
     /// The store middleware placed in this region. For most regions a fixed
     /// fact of the type; the SIAT exposes it as a const parameter
-    /// ([`SiatRegion<SIZE, K>`](SiatRegion)) because flash vs. FRAM is a
+    /// ([`FlashSiatRegion`] / [`FramSiatRegion`]) because flash vs. FRAM is a
     /// per-device deployment choice.
     const KIND: RegionKind;
 }

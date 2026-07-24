@@ -643,12 +643,12 @@ where
 
     /// Handle an application service request, intercepting sync requests.
     ///
-    /// `SyncRequest` is handled here by calling [`initiate_sync`]. All other
+    /// `SyncRequest` is handled here by calling `initiate_sync`. All other
     /// requests are forwarded to the inner [`ApplicationLayer`] inside an
     /// outbox-swap window so any spontaneous outbound frames the inner AL
     /// pushes (e.g. a `T_GroupData_Req` from
-    /// [`ApplicationLayer::send_group_value_request`]) flow through
-    /// [`Self::try_encrypt_outgoing`] before they hit the shared outbox.
+    /// `ApplicationLayer::send_group_value_request`) flow through
+    /// `try_encrypt_outgoing` before they hit the shared outbox.
     /// Without the swap the spontaneous send would bypass the S-AL entirely
     /// and go out plaintext even when the originating GO's
     /// `PID_GO_SECURITY_FLAGS` requires Auth/AuthConf.

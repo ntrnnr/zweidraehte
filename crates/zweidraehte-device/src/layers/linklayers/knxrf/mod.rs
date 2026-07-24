@@ -70,7 +70,7 @@ use zweidraehte_proto::messages::knx::{KnxMessageBuffer, ServiceType};
 const RF_FRAME_BUF: usize = 96;
 
 /// Largest APDU (PID 56 / `MAX_APDU_LENGTH` value) whose Standard telegram still
-/// fits [`RF_FRAME_BUF`]. The link layer advertises whatever the device puts in
+/// fits `RF_FRAME_BUF`. The link layer advertises whatever the device puts in
 /// [`StackDefinition::MAX_APDU_LENGTH`](crate::StackDefinition::MAX_APDU_LENGTH)
 /// (the same value the pool buffers are sized from); a device whose ceiling
 /// exceeds this cannot frame its own telegrams on RF, so it should compile-time

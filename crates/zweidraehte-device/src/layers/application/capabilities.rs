@@ -8,9 +8,9 @@
 //! capability.
 //!
 //! Today the built-in capability provider is
-//! [`GroupDataProvider`](super::group_data::GroupDataProvider). Additional
+//! `GroupDataProvider`. Additional
 //! capabilities will appear here as they're introduced; they all follow the
-//! [`HasX`] pattern used elsewhere in the codebase (e.g.
+//! `HasX` pattern used elsewhere in the codebase (e.g.
 //! [`HasAddressTable`](crate::objects::tables::HasAddressTable)).
 
 use zweidraehte_proto::messages::knx::Priority;

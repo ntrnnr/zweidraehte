@@ -183,7 +183,7 @@ pub type KnxIpSecureRoutingTcp<const N: usize> =
 
 /// Compile-time feature slot for KNX/IP Routing.
 ///
-/// The enabled variant ([`WithRouting`]) stores a [`RoutingServer`] and
+/// The enabled variant ([`WithRouting`]) stores a `RoutingServer` and
 /// delegates all dispatch calls. The disabled variant ([`NoRouting`])
 /// uses `Server = ()` and returns empty results from all methods.
 pub trait RoutingFeature: 'static {
@@ -229,7 +229,7 @@ pub trait RoutingFeature: 'static {
     }
 }
 
-/// Routing is enabled — delegates to [`RoutingServer`].
+/// Routing is enabled — delegates to `RoutingServer`.
 pub struct WithRouting;
 
 impl RoutingFeature for WithRouting {
@@ -368,7 +368,7 @@ pub trait RemoteConfigFeature: 'static {
     fn handles(service_type: KNXnetIPServiceType, socket_idx: usize, server_socket_indices: &[usize]) -> bool;
 }
 
-/// Remote config is enabled — delegates to [`RemoteConfigurationServer`].
+/// Remote config is enabled — delegates to `RemoteConfigurationServer`.
 pub struct WithRemoteConfig;
 
 impl RemoteConfigFeature for WithRemoteConfig {
@@ -462,10 +462,10 @@ impl RemoteConfigFeature for NoRemoteConfig {
 /// Compile-time feature slot for KNX/IP Tunneling.
 ///
 /// Controls whether the connection manager includes a
-/// [`TunnelConnectionHandler`](super::connections::TunnelConnectionHandler) and whether tunneling connections can
+/// `TunnelConnectionHandler` and whether tunneling connections can
 /// be accepted. The associated `Tunnel` type selects the concrete
-/// [`TunnelingConnectedHandler`](super::connections::TunnelingConnectedHandler) implementation for the tunneling slot
-/// in [`CompositeHandlers`](super::connections::CompositeHandlers).
+/// `TunnelingConnectedHandler` implementation for the tunneling slot
+/// in `CompositeHandlers`.
 #[allow(private_interfaces)] // build_handlers takes &dyn KnxNetIpContext (pub(crate)), but that's fine — only called internally
 pub trait TunnelingFeature: 'static {
     const ENABLED: bool;
@@ -480,7 +480,7 @@ pub trait TunnelingFeature: 'static {
 
     /// Per-feature static storage carried inside [`KnxNetIpResources`](super::KnxNetIpResources).
     ///
-    /// `()` for `NoTunneling` (zero bytes), [`TunnelOccupancy`](super::connections::TunnelOccupancy)
+    /// `()` for `NoTunneling` (zero bytes), `TunnelOccupancy`
     /// for `WithTunneling<N>`. Stored once at the resource level so it
     /// outlives the runtime and can be shared by reference with a
     /// composite address checker (see `IpInterfaceAddressChecker`).
@@ -588,7 +588,7 @@ use zweidraehte_platform::IpTransport;
 /// Compile-time feature slot for TCP transport.
 ///
 /// The associated `Manager<...>` type is the concrete owner of TCP
-/// state. [`WithTcp`] maps it to the real [`TcpManager`]; [`NoTcp`]
+/// state. [`WithTcp`] maps it to the real `TcpManager`; [`NoTcp`]
 /// maps it to [`NoTcpManager`] — a ZST whose every dispatch method
 /// returns the empty/idle answer. LLVM monomorphises the `NoTcp` path
 /// down to nothing: the field disappears, the select-arm folds to

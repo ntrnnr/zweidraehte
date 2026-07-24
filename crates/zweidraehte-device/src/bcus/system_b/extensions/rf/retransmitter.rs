@@ -44,7 +44,7 @@
 //!
 //! # Composition
 //!
-//! Like [`SecureExtensionState`](super::super::extensions::security) it stacks
+//! Like [`SecureExtensionState`](crate::bcus::system_b::SecureExtensionState) it stacks
 //! both ways:
 //!
 //! ```text

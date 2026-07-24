@@ -511,7 +511,7 @@ pub trait PropertyServiceHandler {
     ///
     /// The extended-services wire carries `object_instance` as 12 bits
     /// (spec 03_03_07 §3.4.3.2), so the default delegates straight to
-    /// [`resolve_object_index`] without narrowing.
+    /// [`resolve_object_index`](Self::resolve_object_index) without narrowing.
     fn resolve_ext_object_index(&self, object_type: u16, object_instance: u16) -> Option<u16> {
         self.resolve_object_index(object_type, object_instance)
     }

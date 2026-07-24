@@ -31,7 +31,7 @@
 //! - Both remaining dispatch methods have bodies that return
 //!   `SecureResult::Dropped` / `None` immediately. After inlining the
 //!   calls become no-ops.
-//! - The P2P-specific sync handlers in [`super::p2p_security`] are
+//! - The P2P-specific sync handlers in `p2p_security` are
 //!   only monomorphised when `WithP2p` is used.
 
 use core::cell::Cell;
@@ -129,7 +129,7 @@ pub trait P2pFeature: 'static {
     /// [`SecureApplicationLayer`] when the SCF's tool-access flag is
     /// clear. Needs the P2P key table and SIAT, so it is gated behind
     /// the feature: [`NoP2p`] drops, [`WithP2p`] delegates to
-    /// [`super::p2p_security::process_sync_request_p2p`].
+    /// `p2p_security::process_sync_request_p2p`.
     fn process_sync_request_p2p<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess>(
         sal: &SecureApplicationLayer<'a, D, SEQ, Self>,
         msg: KnxMessageBuffer<Buffer<'static>>,
@@ -240,7 +240,7 @@ impl P2pFeature for NoP2p {
 // WithP2p — enabled variant
 // ============================================================================
 
-/// P2P enabled. Delegates to the real handlers in [`super::p2p_security`].
+/// P2P enabled. Delegates to the real handlers in `p2p_security`.
 pub struct WithP2p;
 
 impl P2pFeature for WithP2p {

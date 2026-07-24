@@ -3,12 +3,12 @@
 //! [`PackedSeqStore`] holds exactly what the secure stack persists — the two
 //! singleton sequence counters (sending, tool) and the per-IA SIAT table — at
 //! fixed offsets behind a magic, and exposes them through [`KeyValueStore`] so
-//! a [`SiatStore`](super::SiatStore) sits on it like any other backend. The
+//! a [`SiatStore`](crate::storage::SiatStore) sits on it like any other backend. The
 //! layout is the storage format, not a general-purpose map: the namespaces,
 //! widths, and offsets are all sequence-number-specific.
 //!
 //! It is parameterised over the [`ByteIo`] seam (see
-//! [`byte_io`](super::byte_io)) so a backing medium reduces to a thin
+//! `byte_io`) so a backing medium reduces to a thin
 //! read/write adapter: the embedded FRAM (`FramRegion` in `stm32-common`) and
 //! the conformance harness's shared-memory region (`ShmSeqStorage`) share this
 //! one layout. Being HAL-free (only `read_at`/`write_at` and integer arithmetic)
@@ -67,7 +67,7 @@ pub const fn region_len(peer_slots: usize) -> usize {
 
 /// The sending/tool counters and the SIAT table in the packed [layout](self)
 /// over any [`ByteIo`]. Implements [`KeyValueStore`] so a
-/// [`SiatStore`](super::SiatStore) can drive it like any other backend.
+/// [`SiatStore`](crate::storage::SiatStore) can drive it like any other backend.
 ///
 /// `R` is the bound [`Region`] — the single source of the blank-medium
 /// magic. `PEER_SLOTS` caps the per-IA SIAT table; size it ≥ the device's

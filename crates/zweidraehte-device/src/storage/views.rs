@@ -43,7 +43,7 @@ struct SiatEntry {
 /// the single source of truth and a PID 54 read return the live value.
 ///
 /// * `N` — SIAT capacity (≥ the device's authorized-sender count; an over-full
-///   table silently drops new entries — see [`Mirror::upsert`]'s capacity
+///   table silently drops new entries — see `Mirror::upsert`'s capacity
 ///   policy).
 /// * `K` — sending-counter skip-ahead watermark: flash is touched only once per
 ///   `K` sends (the counter resumes from the watermark after a reboot, never

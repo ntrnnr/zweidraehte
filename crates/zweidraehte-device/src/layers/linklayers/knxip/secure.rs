@@ -2,7 +2,7 @@
 //!
 //! Compile-time feature slot plus the per-session state vocabulary. The
 //! actual handshake / wrapper state machine lives in
-//! [`super::session_handler`] and is only compiled with the `ip-secure`
+//! `session_handler` and is only compiled with the `ip-secure`
 //! cargo feature — without it, [`WithIpSecure`] does not exist and a
 //! secure device definition fails to compile instead of silently
 //! dropping secure traffic.
@@ -137,7 +137,7 @@ impl<S: Default, const N: usize> Default for SessionPool<S, N> {
 /// to a no-op that LLVM eliminates. The enabled variant
 /// (`WithIpSecure<N>`, `ip-secure` feature only) carves out `N` real
 /// [`IpSecureSessionSlot`]s and routes the hooks to
-/// [`super::session_handler`].
+/// `session_handler`.
 #[allow(private_interfaces)] // dispatch hooks take crate-internal types, same as TunnelingFeature
 pub trait IpSecureFeature: 'static {
     /// Whether IP Secure is enabled in this build.

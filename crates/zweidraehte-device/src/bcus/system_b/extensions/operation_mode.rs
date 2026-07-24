@@ -14,7 +14,7 @@
 //! # Architecture
 //!
 //! - [`DiagnosticsView`] — trait for querying diagnostic mode state
-//! - [`HasDiagnosticsContext`] — trait for device states that provide diagnostics
+//! - [`HasDiagnosticsContext`](crate::HasDiagnosticsContext) — trait for device states that provide diagnostics
 //! - [`OperationModeState`] — concrete state implementation
 //! - [`DiagnosticsAugment`] — interface object augment for PID 52 and PID 66
 
@@ -316,7 +316,7 @@ where
 /// Telegram emission is done through the shared [`ServiceCtx`]
 /// (outbox + buffer manager accessors) or, for the `transmit`
 /// diagnostic that maps onto a normal CO send, through the
-/// [`GroupValueSender`] capability. The augment itself holds only
+/// [`GroupValueSender`](crate::layers::application::capabilities::GroupValueSender) capability. The augment itself holds only
 /// its own operation-mode state.
 // Both PIDs use PDT_FUNCTION and dispatch via FunctionPropertyCommand /
 // FunctionPropertyStateRead. The macro generates the descriptor table,

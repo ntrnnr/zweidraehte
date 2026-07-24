@@ -233,7 +233,7 @@ pub use storage::*;
 /// generated: wrappers usually exist precisely to customise those (a
 /// fixed APDU length, a custom device-model notification slot, …) —
 /// hand-write them next to the macro call. For forwarding a single
-/// trait with hand-picked items, use [`forward_to_field!`] instead.
+/// trait with hand-picked items, use `forward_to_field!` instead.
 ///
 /// ```rust,ignore
 /// forward_system_b_state_traits!(impl ConformanceState => self.inner: InnerState);

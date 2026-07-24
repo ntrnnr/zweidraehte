@@ -124,9 +124,9 @@ pub trait LinkLayerCapabilities {
 /// | Mock | *(none — `impl<CTX> LinkLayerBuilder<CTX>`)* | `()` |
 /// | USB | [`LinkLayerBufferContext`](crate::context::LinkLayerBufferContext) | `()` |
 /// | TPUART | [`LinkLayerBufferContext`](crate::context::LinkLayerBufferContext) | `()` |
-/// | KNX/IP | [`KnxNetIpContext`](crate::layers::linklayers::knxip::KnxNetIpContext) | [`CemiTransportLayerEndpoints`](crate::context::CemiTransportLayerEndpoints) |
+/// | KNX/IP | `KnxNetIpContext` | [`CemiTransportLayerEndpoints`](crate::context::CemiTransportLayerEndpoints) |
 ///
-/// At stack level the concrete context is [`StackContext`](crate::StackContext),
+/// At stack level the concrete context is [`StackContext`](crate::context::StackContext),
 /// which implements `BufferManagerContext`, `ApduLengthContext`, and
 /// `PropertyServiceContext`, so it satisfies all implementations.
 ///

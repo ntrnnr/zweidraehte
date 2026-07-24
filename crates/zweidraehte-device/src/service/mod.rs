@@ -8,7 +8,7 @@
 //!   (`init` / `poll` / `next_deadline`). Captures its environment
 //!   (`&State`, `&LayerContext`) at construction — no per-call context.
 //! - [`ApciHandler`] — APCI fall-through extensions composed into the
-//!   AL via [`StackDefinition::Services`](crate::StackDefinition::Services).
+//!   AL via [`StackDefinition::AlExtensions`](crate::StackDefinition::AlExtensions).
 //!   `&self`, no lifecycle. Receives an [`AlCtx`] per call.
 //! - [`Augment`] — interface-object property hooks plus
 //!   optional IO-list contribution. Used both for individual augments

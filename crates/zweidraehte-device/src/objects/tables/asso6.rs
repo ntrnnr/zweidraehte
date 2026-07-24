@@ -16,9 +16,8 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
     /// Get the TSAP (Transport Service Access Point) at the given
     /// **1-based** index.
     ///
-    /// Returns `None` for index 0 or beyond [`entry_count()`]
-    /// (AssociationTable::entry_count) — the checked style of
-    /// `addr7::tsap`.
+    /// Returns `None` for index 0 or beyond [`entry_count`](Self::entry_count) —
+    /// the checked style of `addr7::tsap`.
     pub fn tsap(&self, idx: u16) -> Option<u16> {
         if idx == 0 || idx > self.entry_count() {
             return None;
@@ -32,8 +31,7 @@ impl<const N: usize> Table<AssoTab6Impl<N>> {
     /// Get the ASAP (Application Service Access Point) at the given
     /// **1-based** index.
     ///
-    /// Returns `None` for index 0 or beyond [`entry_count()`]
-    /// (AssociationTable::entry_count).
+    /// Returns `None` for index 0 or beyond [`entry_count`](Self::entry_count).
     pub fn asap(&self, idx: u16) -> Option<u16> {
         if idx == 0 || idx > self.entry_count() {
             return None;

@@ -65,7 +65,7 @@ pub(crate) type RoutingMulticastRebindChannel = Channel<NoopRawMutex, Ipv4Addr, 
 /// Persisted IP configuration (for KNX/IP devices).
 ///
 /// All IP-specific settings that can be configured via ETS or
-/// the IP Parameter Object. Implements [`ExtensionConfig`] so it
+/// the IP Parameter Object. Implements [`ExtensionConfig`](crate::bcus::system_b::ExtensionConfig) so it
 /// can be used as the `E` parameter of
 /// [`DeviceConfig`](crate::bcus::system_b::DeviceConfig).
 ///
