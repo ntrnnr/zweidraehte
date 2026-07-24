@@ -406,7 +406,7 @@ where
         // Only KNX RF-Ready asynchronous data frames (frame-type nibble 0x0,
         // 0x8, 0x9). BiBat / RF-Multi control frames are not handled.
         if !matches!(meta.frame_type, 0x0 | 0x8 | 0x9) {
-            trace!("KNX-RF: non-RF-Ready frame type {=u8:#x} dropped", meta.frame_type);
+            trace!("KNX-RF: non-RF-Ready frame type {:#x} dropped", meta.frame_type);
             return;
         }
 
@@ -453,7 +453,7 @@ where
         P::maybe_retransmit(&mut self.radio, dup, telegram, &meta, self.context).await;
 
         if dup {
-            trace!("KNX-RF: duplicate LFN {=u8} from {=u16:#06x} dropped", meta.lfn, src);
+            trace!("KNX-RF: duplicate LFN {} from {:#06x} dropped", meta.lfn, src);
             return;
         }
 
@@ -466,10 +466,7 @@ where
         // frames it cannot itself receive — and only gates local up-delivery.
         let max_internal = max_outgoing_msg_len(self.context.max_apdu_length(), false);
         if meta.internal_len > max_internal {
-            trace!(
-                "KNX-RF: over-length frame ({=usize} > {=usize}) dropped from up-delivery",
-                meta.internal_len, max_internal
-            );
+            trace!("KNX-RF: over-length frame ({} > {}) dropped from up-delivery", meta.internal_len, max_internal);
             return;
         }
 
