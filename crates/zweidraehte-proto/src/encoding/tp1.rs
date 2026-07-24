@@ -16,7 +16,8 @@
 //!  +---+---+---+---+---+---+---+---+
 //!  |FT | 0 | RF| 1 | PR| PR| 0 | 0 |
 //!  +---+---+---+---+---+---+---+---+
-//!  FT  = Frame Type (0: standard, 1: extended)
+//!  FT  = Frame Type (1: standard, 0: extended) — per 03/02/02 §2.2.4, a
+//!        L_Data_Standard Frame carries FT = 1 in the control field.
 //!  0   = Always 0
 //!  RF  = Repeat Flag (0: repeat, 1: do not repeat)
 //!  1   = Always 1
@@ -44,9 +45,11 @@
 //!  Bit breakdown for Control Field (CTRL):
 //!    7   6   5   4   3   2   1   0
 //!  +---+---+---+---+---+---+---+---+
-//!  | 1 | 0 | RF| 1 | PR| PR| 0 | 0 |
+//!  |FT | 0 | RF| 1 | PR| PR| 0 | 0 |
 //!  +---+---+---+---+---+---+---+---+
-//!  1   = Frame Type (1: extended)
+//!  FT  = Frame Type (0: extended) — a L_Data_Extended Frame carries FT = 0
+//!        (per 03/02/02 §2.2.5); an on-wire extended control octet is e.g.
+//!        0x1C / 0x3C.
 //!  0   = Always 0
 //!  RF  = Repeat Flag (0: repeat, 1: do not repeat)
 //!  1   = Always 1
@@ -76,7 +79,9 @@
 //!  +---+---+---+---+---+---+---+---+
 //!  |FT | - | R | SB| PR| PR| A | C |
 //!  +---+---+---+---+---+---+---+---+
-//!  FT  = Frame Type (bit 7, 0: standard, 1: extended)
+//!  FT  = Frame Type (bit 7, 1: standard, 0: extended) — same convention as
+//!        the TP1 wire and the cEMI L_Data control field (03/02/02 §2.2.4);
+//!        e.g. 0xBC for a standard frame, 0x1C/0x3C for extended
 //!      -   = (bit 6, unused)
 //!      R   = Repeat Flag (bit 5)
 //!      SB  = System Broadcast (bit 4)
