@@ -214,6 +214,41 @@ where
 }
 
 // ============================================================================
+// Shared layer-stack assembly helpers
+// ============================================================================
+
+/// Assert that the device left the TL connection limits at their defaults.
+///
+/// TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
+/// generics in the built-in layer-stack constructors once
+/// `generic_const_exprs` no longer overflows for trait consts forwarded
+/// through where-clauses.
+///
+/// Until then, non-default values of `TL_MAX_INCOMING` / `TL_MAX_OUTGOING`
+/// are silently ignored by every constructor in this module. These asserts
+/// catch an accidental override at runtime; honouring the consts requires a
+/// custom [`LayerStackBuilder`] that passes them to `TransportLayer::new`.
+///
+/// `builder` names the builder in the panic message so the device author
+/// knows which one dropped the override. In release builds the whole body
+/// compiles away.
+#[inline]
+fn debug_assert_default_tl_limits<D: StackDefinition>(builder: &'static str) {
+    debug_assert_eq!(
+        D::TL_MAX_INCOMING,
+        1,
+        "TL_MAX_INCOMING override has no effect with {builder}; \
+         write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+    );
+    debug_assert_eq!(
+        D::TL_MAX_OUTGOING,
+        0,
+        "TL_MAX_OUTGOING override has no effect with {builder}; \
+         write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+    );
+}
+
+// ============================================================================
 // Standard Layer Stack — (NL, TL, AL)
 // ============================================================================
 
@@ -268,35 +303,29 @@ pub type StandardDeviceLayers<'a, D> = StandardLayerStack<'a, D, ApplicationLaye
 pub type StandardSecureDeviceLayers<'a, D, P2P = NoP2p> =
     StandardLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>;
 
-impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
-    /// Construct the standard `(NL, TL, AL)` layer stack.
-    pub fn standard(ctx: &'a StackContext<'a, D>) -> Self {
-        // TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
-        // generics here once `generic_const_exprs` no longer overflows for trait
-        // consts forwarded through where-clauses.
-        //
-        // Until then, non-default values of TL_MAX_INCOMING / TL_MAX_OUTGOING are
-        // silently ignored. The asserts below catch an accidental override at
-        // runtime; a custom LayerStackBuilder is required to honour them.
-        debug_assert_eq!(
-            D::TL_MAX_INCOMING,
-            1,
-            "TL_MAX_INCOMING override has no effect with InsecureDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
-        debug_assert_eq!(
-            D::TL_MAX_OUTGOING,
-            0,
-            "TL_MAX_OUTGOING override has no effect with InsecureDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
+impl<'a, D: StackDefinition, AL: Layer<D> + HasAppRequest> StandardLayerStack<'a, D, AL> {
+    /// Assemble the stack around an already-built application layer.
+    ///
+    /// Everything except the AL slot is identical between the plain and the
+    /// Data Secure variants, so both public constructors build their `al`
+    /// and delegate here. Keeping the wiring in one place means a change to
+    /// the NL/TL/device-model/`app_rx` plumbing cannot land in one variant
+    /// and miss the other.
+    fn from_al(ctx: &'a StackContext<'a, D>, al: AL) -> Self {
         let nl = NetworkLayer::new(ctx);
         let tl = TransportLayer::new(ctx);
-        let al = ApplicationLayer::new(ctx);
 
         let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
 
         Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
+    }
+}
+
+impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
+    /// Construct the standard `(NL, TL, AL)` layer stack.
+    pub fn standard(ctx: &'a StackContext<'a, D>) -> Self {
+        debug_assert_default_tl_limits::<D>("PlainDeviceBuilder");
+        Self::from_al(ctx, ApplicationLayer::new(ctx))
     }
 }
 
@@ -310,30 +339,15 @@ where
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
-        debug_assert_eq!(
-            D::TL_MAX_INCOMING,
-            1,
-            "TL_MAX_INCOMING override has no effect with SecureDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
-        debug_assert_eq!(
-            D::TL_MAX_OUTGOING,
-            0,
-            "TL_MAX_OUTGOING override has no effect with SecureDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
-        let nl = NetworkLayer::new(ctx);
-        let tl = TransportLayer::new(ctx);
-        let application_layer = ApplicationLayer::new(ctx);
+        debug_assert_default_tl_limits::<D>("SecureDeviceBuilder");
 
-        // The store is owned by the storage layer; pull it out of the handle
-        // carried on the `LayerContext` (`D::Storage: HasSeqStore` above).
+        // KNX Data Secure wraps the plain application layer. The store is
+        // owned by the storage layer; pull it out of the handle carried on
+        // the `LayerContext` (`D::Storage: HasSeqStore` above).
         let seq_storage = ctx.layer_context().storage.seq_store();
-        let al = SecureApplicationLayer::new(application_layer, seq_storage);
+        let al = SecureApplicationLayer::new(ApplicationLayer::new(ctx), seq_storage);
 
-        let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
-
-        Self { nl, tl, al, device_model, app_rx: ctx.layer_context().app_service_channel.receiver().into() }
+        Self::from_al(ctx, al)
     }
 }
 
@@ -465,31 +479,22 @@ pub type SecureIpDeviceLayers<'a, D, P2P = NoP2p> =
     IpLayerStack<'a, D, SecureApplicationLayer<'a, D, SeqStorageFor<D>, P2P>>;
 
 #[cfg(feature = "knxip")]
-impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
-    pub fn with_cemi(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
-        debug_assert_eq!(
-            D::TL_MAX_INCOMING,
-            1,
-            "TL_MAX_INCOMING override has no effect with InsecureIpDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
-        debug_assert_eq!(
-            D::TL_MAX_OUTGOING,
-            0,
-            "TL_MAX_OUTGOING override has no effect with InsecureIpDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
+impl<'a, D: StackDefinition, AL: Layer<D> + HasAppRequest> IpLayerStack<'a, D, AL> {
+    /// Assemble the KNX/IP stack around an already-built application layer.
+    ///
+    /// The cEMI TL wrapper, device model, and both channel receivers are
+    /// identical between the plain and Data Secure variants; only the AL
+    /// slot differs. Same rationale as
+    /// [`StandardLayerStack::from_al`] — a change to the cEMI channel
+    /// wiring must not be able to land in one variant and miss the other.
+    fn from_al(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair, al: AL) -> Self {
         let nl = NetworkLayer::new(ctx);
         let transport_layer = TransportLayer::new(ctx);
 
         let cemi_response_sender = channels.response.sender().into();
         let tl = CemiTransportLayer::new(transport_layer, ctx.layer_context(), cemi_response_sender);
 
-        let al = ApplicationLayer::new(ctx);
-
         let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
-
-        let cemi_event_receiver = channels.event.receiver().into();
 
         Self {
             nl,
@@ -497,8 +502,16 @@ impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
             al,
             device_model,
             app_rx: ctx.layer_context().app_service_channel.receiver().into(),
-            cemi_rx: cemi_event_receiver,
+            cemi_rx: channels.event.receiver().into(),
         }
+    }
+}
+
+#[cfg(feature = "knxip")]
+impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
+    pub fn with_cemi(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
+        debug_assert_default_tl_limits::<D>("PlainIpDeviceBuilder");
+        Self::from_al(ctx, channels, ApplicationLayer::new(ctx))
     }
 }
 
@@ -516,45 +529,17 @@ where
     /// plain `ApplicationLayer`, as in
     /// [`standard_secure`](StandardLayerStack::standard_secure)).
     pub fn with_cemi_secure(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
-        debug_assert_eq!(
-            D::TL_MAX_INCOMING,
-            1,
-            "TL_MAX_INCOMING override has no effect with SecureIpDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
-        debug_assert_eq!(
-            D::TL_MAX_OUTGOING,
-            0,
-            "TL_MAX_OUTGOING override has no effect with SecureIpDeviceBuilder; \
-             write a custom LayerStackBuilder that passes the const to TransportLayer::new"
-        );
-        let nl = NetworkLayer::new(ctx);
-        let transport_layer = TransportLayer::new(ctx);
-
-        let cemi_response_sender = channels.response.sender().into();
-        let tl = CemiTransportLayer::new(transport_layer, ctx.layer_context(), cemi_response_sender);
+        debug_assert_default_tl_limits::<D>("SecureIpDeviceBuilder");
 
         // KNX Data Secure wraps the plain application layer; the secure
         // wrapper holds the persistent sequence-number storage from the
-        // device's secure extension state.
-        let application_layer = ApplicationLayer::new(ctx);
-        // The store is owned by the storage layer; pull it out of the handle
-        // carried on the `LayerContext` (`D::Storage: HasSeqStore` above).
+        // device's secure extension state. The store is owned by the
+        // storage layer; pull it out of the handle carried on the
+        // `LayerContext` (`D::Storage: HasSeqStore` above).
         let seq_storage = ctx.layer_context().storage.seq_store();
-        let al = SecureApplicationLayer::new(application_layer, seq_storage);
+        let al = SecureApplicationLayer::new(ApplicationLayer::new(ctx), seq_storage);
 
-        let device_model = D::create_device_model(ctx.state(), ctx.layer_context(), ctx.interface_objects());
-
-        let cemi_event_receiver = channels.event.receiver().into();
-
-        Self {
-            nl,
-            tl,
-            al,
-            device_model,
-            app_rx: ctx.layer_context().app_service_channel.receiver().into(),
-            cemi_rx: cemi_event_receiver,
-        }
+        Self::from_al(ctx, channels, al)
     }
 }
 

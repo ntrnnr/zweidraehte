@@ -158,10 +158,10 @@ impl PropertyExtValueResponse {
         object_instance: u16,
         prop_id: u16,
         start_idx: u16,
-        return_code: u8,
+        return_code: PropertyReturnCode,
     ) {
         PropertyExtValueHeader::write_header(buf, object_type, object_instance, prop_id, 0, start_idx);
-        buf[offsets::MSG_APCI + 10] = return_code;
+        buf[offsets::MSG_APCI + 10] = return_code.into();
     }
 
     /// Compute total message length for a given data size.
@@ -193,10 +193,10 @@ impl PropertyExtValueWriteConRes {
         prop_id: u16,
         count: u8,
         start_idx: u16,
-        return_code: u8,
+        return_code: PropertyReturnCode,
     ) {
         PropertyExtValueHeader::write_header(buf, object_type, object_instance, prop_id, count, start_idx);
-        buf[offsets::MSG_APCI + 10] = return_code;
+        buf[offsets::MSG_APCI + 10] = return_code.into();
     }
 
     /// Write an error response: count=0, 1-byte return code.
@@ -206,10 +206,10 @@ impl PropertyExtValueWriteConRes {
         object_instance: u16,
         prop_id: u16,
         start_idx: u16,
-        return_code: u8,
+        return_code: PropertyReturnCode,
     ) {
         PropertyExtValueHeader::write_header(buf, object_type, object_instance, prop_id, 0, start_idx);
-        buf[offsets::MSG_APCI + 10] = return_code;
+        buf[offsets::MSG_APCI + 10] = return_code.into();
     }
 
     /// Message length for a WriteConRes (header + 1 byte return code).
@@ -220,26 +220,46 @@ impl PropertyExtValueWriteConRes {
 // Return Codes (spec section 3.4.5.5)
 // ============================================================================
 
-/// Return codes for extended property service responses.
-///
-/// These are defined in spec 03_03_07 section 3.4.5.5 "Return Codes".
-#[allow(dead_code)]
-pub mod return_code {
-    pub const E_SUCCESS: u8 = 0x00;
-    pub const E_ACCESS_WRITE_ONLY: u8 = 0xFA;
-    pub const E_ACCESS_READ_ONLY: u8 = 0xFB;
-    pub const E_ACCESS_DENIED: u8 = 0xFC;
-    pub const E_ADDRESS_VOID: u8 = 0xFD;
-    pub const E_DATA_TYPE_CONFLICT: u8 = 0xFE;
-    pub const E_ERROR: u8 = 0xFF;
-    pub const E_LENGTH_EXCEEDS_MAX_APDU_LENGTH: u8 = 0xF4;
-    pub const E_DATA_OVERFLOW: u8 = 0xF5;
-    pub const E_DATA_MIN: u8 = 0xF6;
-    pub const E_DATA_MAX: u8 = 0xF7;
-    pub const E_DATA_VOID: u8 = 0xF8;
-    pub const E_TEMPORARILY_NOT_AVAILABLE: u8 = 0xF9;
-    pub const E_MEMORY_ERROR: u8 = 0xF1;
-}
+crate::create_protocol_enum!(
+    /// Return codes for property service responses (spec 03/03/07 §3.4.5.5
+    /// "Return Codes").
+    ///
+    /// This is the *generic* property-service code space, used by the
+    /// extended property services and by
+    /// [`FunctionPropertyResult`](crate::messages::apdu::function_property)
+    /// for ordinary function properties.
+    ///
+    /// It is **not** the only code space that can appear in a function
+    /// property response: `PID_OPERATION_MODE` and `PID_GO_DIAGNOSTICS`
+    /// answer with the disjoint `E_GD_*` / `E_OM_*` codes modelled by
+    /// [`GoDiagReturnCode`](crate::messages::apdu::go_diagnostics::GoDiagReturnCode),
+    /// which overlap this table numerically (e.g. `0x20`, `0xA1`) while
+    /// meaning something entirely different. Always pick the enum that
+    /// matches the property being answered.
+    ///
+    /// Codes arrive off the wire, so unrecognised values round-trip through
+    /// `Other` rather than failing to parse.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum PropertyReturnCode: u8 {
+        Success, 0x00, "E_SUCCESS";
+        MemoryError, 0xF1, "E_MEMORY_ERROR";
+        CommandInvalid, 0xF2, "E_COMMAND_INVALID";
+        CommandImpossible, 0xF3, "E_COMMAND_IMPOSSIBLE";
+        LengthExceedsMaxApduLength, 0xF4, "E_LENGTH_EXCEEDS_MAX_APDU_LENGTH";
+        DataOverflow, 0xF5, "E_DATA_OVERFLOW";
+        DataMin, 0xF6, "E_DATA_MIN";
+        DataMax, 0xF7, "E_DATA_MAX";
+        DataVoid, 0xF8, "E_DATA_VOID";
+        TemporarilyNotAvailable, 0xF9, "E_TEMPORARILY_NOT_AVAILABLE";
+        AccessWriteOnly, 0xFA, "E_ACCESS_WRITE_ONLY";
+        AccessReadOnly, 0xFB, "E_ACCESS_READ_ONLY";
+        AccessDenied, 0xFC, "E_ACCESS_DENIED";
+        AddressVoid, 0xFD, "E_ADDRESS_VOID";
+        DataTypeConflict, 0xFE, "E_DATA_TYPE_CONFLICT";
+        Error, 0xFF, "E_ERROR";
+        _, "Unknown property return code 0x{:x}";
+    }
+);
 
 // ============================================================================
 // Function Property Extended Header
@@ -308,6 +328,13 @@ pub struct FunctionPropertyExtResponse;
 
 impl FunctionPropertyExtResponse {
     /// Write a response with return code and optional data.
+    ///
+    /// `return_code` stays a raw `u8` rather than
+    /// [`PropertyReturnCode`]: a function property answers from whichever
+    /// code space its property defines, and `PID_OPERATION_MODE` /
+    /// `PID_GO_DIAGNOSTICS` use the disjoint
+    /// [`GoDiagReturnCode`](crate::messages::apdu::go_diagnostics::GoDiagReturnCode)
+    /// table. Callers convert from the enum that matches their property.
     pub fn write(buf: &mut [u8], object_type: u16, object_instance: u16, prop_id: u16, return_code: u8, data: &[u8]) {
         FunctionPropertyExtHeader::write_header(buf, object_type, object_instance, prop_id);
         buf[offsets::MSG_APCI + 7] = return_code;
@@ -548,7 +575,7 @@ mod tests {
     #[test]
     fn error_response_format() {
         let mut buf = [0u8; 20];
-        PropertyExtValueResponse::write_error(&mut buf, 0x0011, 0x001, 12, 1, return_code::E_ADDRESS_VOID);
+        PropertyExtValueResponse::write_error(&mut buf, 0x0011, 0x001, 12, 1, PropertyReturnCode::AddressVoid);
 
         let hdr = PropertyExtValueHeader::parse(&buf).expect("parse should succeed");
         assert_eq!(hdr.object_type, 0x0011);
@@ -556,27 +583,27 @@ mod tests {
         assert_eq!(hdr.prop_id, 12);
         assert_eq!(hdr.count, 0); // error indicator
         assert_eq!(hdr.start_idx, 1);
-        assert_eq!(hdr.data(&buf)[0], return_code::E_ADDRESS_VOID);
+        assert_eq!(hdr.data(&buf)[0], u8::from(PropertyReturnCode::AddressVoid));
     }
 
     #[test]
     fn write_con_res_error() {
         let mut buf = [0u8; 20];
-        PropertyExtValueWriteConRes::write_error(&mut buf, 0x0000, 0x001, 54, 1, return_code::E_ACCESS_DENIED);
+        PropertyExtValueWriteConRes::write_error(&mut buf, 0x0000, 0x001, 54, 1, PropertyReturnCode::AccessDenied);
 
         let hdr = PropertyExtValueHeader::parse(&buf).expect("parse should succeed");
         assert_eq!(hdr.count, 0);
-        assert_eq!(hdr.data(&buf)[0], return_code::E_ACCESS_DENIED);
+        assert_eq!(hdr.data(&buf)[0], u8::from(PropertyReturnCode::AccessDenied));
     }
 
     #[test]
     fn write_con_res_success() {
         let mut buf = [0u8; 20];
-        PropertyExtValueWriteConRes::write_success(&mut buf, 0x0011, 0x001, 56, 1, 1, return_code::E_SUCCESS);
+        PropertyExtValueWriteConRes::write_success(&mut buf, 0x0011, 0x001, 56, 1, 1, PropertyReturnCode::Success);
 
         let hdr = PropertyExtValueHeader::parse(&buf).expect("parse should succeed");
         assert_eq!(hdr.count, 1);
-        assert_eq!(hdr.data(&buf)[0], return_code::E_SUCCESS);
+        assert_eq!(hdr.data(&buf)[0], u8::from(PropertyReturnCode::Success));
     }
 
     #[test]

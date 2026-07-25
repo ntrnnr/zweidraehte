@@ -430,6 +430,19 @@ impl StateMachineContext {
 /// Most state transitions produce 1-4 actions, so capacity of 8 is sufficient.
 pub type ActionBuffer = heapless::Vec<MainAction, 8>;
 
+/// Push an action emitted by a state transition.
+///
+/// Both action buffers ([`ActionBuffer`], capacity 8, and
+/// [`SendActionBuffer`], capacity 4) are sized for the largest number of
+/// actions any single transition emits, so overflow is a bug in this
+/// module — a transition gained actions without the capacity being raised
+/// — not a runtime condition. Panicking is therefore correct; this helper
+/// exists so the reason is stated once instead of at every call site.
+#[inline]
+fn push<T, const N: usize>(actions: &mut heapless::Vec<T, N>, action: T) {
+    actions.push(action).ok().expect("action buffer capacity exceeds the largest per-transition action count");
+}
+
 // ============================================================================
 // Main State Machine Logic
 // ============================================================================
@@ -445,9 +458,9 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
         (MainState::Init, MainEvent::Timer) => {
             // Start reset sequence
             ctx.main_state = MainState::SendReset;
-            actions.push(MainAction::SendByte(U_RESET_REQ)).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_RESET)).unwrap();
-            actions.push(MainAction::IncrementResetCounter).unwrap();
+            push(&mut actions, MainAction::SendByte(U_RESET_REQ));
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_RESET));
+            push(&mut actions, MainAction::IncrementResetCounter);
         }
         (MainState::Init, MainEvent::ReceivedByte(_)) | (MainState::Init, MainEvent::ReceiveError) => {
             // Ignore bytes before initialization
@@ -458,16 +471,16 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
         // =====================================================================
         (MainState::SendReset, MainEvent::Timer) => {
             // Timeout, retry reset
-            actions.push(MainAction::SendByte(U_RESET_REQ)).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_RESET)).unwrap();
-            actions.push(MainAction::IncrementResetCounter).unwrap();
+            push(&mut actions, MainAction::SendByte(U_RESET_REQ));
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_RESET));
+            push(&mut actions, MainAction::IncrementResetCounter);
         }
         (MainState::SendReset, MainEvent::ReceivedByte(U_RESET_IND)) => {
             // Got reset indication, start chip detection
             ctx.main_state = MainState::Config;
             ctx.config_state = ConfigState::ReadVersion;
-            actions.push(MainAction::SendVersionRequest).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+            push(&mut actions, MainAction::SendVersionRequest);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_VERSION));
         }
         (MainState::SendReset, MainEvent::ReceivedByte(_)) | (MainState::SendReset, MainEvent::ReceiveError) => {
             // Ignore other bytes, keep waiting
@@ -492,8 +505,8 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
         (MainState::Idle, MainEvent::Timer) => {
             // Keepalive timeout, request state to check bus health
             ctx.main_state = MainState::Error;
-            actions.push(MainAction::SendStateRequest).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_RESET)).unwrap();
+            push(&mut actions, MainAction::SendStateRequest);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_RESET));
         }
         (MainState::Idle, MainEvent::ReceivedByte(byte)) => {
             process_idle_byte(ctx, byte, &mut actions);
@@ -507,30 +520,30 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
                 ctx.main_state = MainState::WaitRegRes;
                 ctx.reg_read_state.reset();
                 ctx.reg_read_state.expected_bytes = 2;
-                actions.push(MainAction::SendE981RegRead { address }).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_REGISTER)).unwrap();
+                push(&mut actions, MainAction::SendE981RegRead { address });
+                push(&mut actions, MainAction::StartTimer(TIMEOUT_REGISTER));
             } else {
                 // Chip doesn't support register read
-                actions.push(MainAction::RegisterOperationFailed).unwrap();
+                push(&mut actions, MainAction::RegisterOperationFailed);
             }
         }
         (MainState::Idle, MainEvent::WriteRegister { address, value }) => {
             match ctx.chip_type {
                 ChipType::E981 => {
                     // E981: 16-bit address space (upper 2 bits + lower 8 bits)
-                    actions.push(MainAction::SendE981RegWrite { address, value }).unwrap();
+                    push(&mut actions, MainAction::SendE981RegWrite { address, value });
                     // Write is fire-and-forget, no state change needed
-                    actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+                    push(&mut actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
                 }
                 ChipType::Ncn5120 => {
                     // NCN5120: only 2-bit address (masked from lower bits)
-                    actions.push(MainAction::SendNcn5120RegWrite { address: (address & 0x03) as u8, value }).unwrap();
+                    push(&mut actions, MainAction::SendNcn5120RegWrite { address: (address & 0x03) as u8, value });
                     // Write is fire-and-forget, no state change needed
-                    actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+                    push(&mut actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
                 }
                 _ => {
                     // Chip doesn't support register write
-                    actions.push(MainAction::RegisterOperationFailed).unwrap();
+                    push(&mut actions, MainAction::RegisterOperationFailed);
                 }
             }
         }
@@ -541,9 +554,9 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
         (MainState::ReceiveFrame, MainEvent::Timer) => {
             // Inter-byte timeout - frame incomplete, invalidate
             ctx.main_state = MainState::Invalidate;
-            actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
-            actions.push(MainAction::ClearReceiveState).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_INVALIDATE)).unwrap();
+            push(&mut actions, MainAction::ReleaseReceiveBuffer);
+            push(&mut actions, MainAction::ClearReceiveState);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_INVALIDATE));
         }
         (MainState::ReceiveFrame, MainEvent::ReceivedByte(byte)) => {
             process_receive_byte(ctx, byte, &mut actions);
@@ -552,9 +565,9 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
             // RX error during frame reception - send BUSY to signal we can't process,
             // then enter invalidation state to wait for bus silence
             ctx.main_state = MainState::Invalidate;
-            actions.push(MainAction::SendBusy).unwrap();
-            actions.push(MainAction::MarkFrameInvalid).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_INVALIDATE)).unwrap();
+            push(&mut actions, MainAction::SendBusy);
+            push(&mut actions, MainAction::MarkFrameInvalid);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_INVALIDATE));
         }
 
         // =====================================================================
@@ -564,8 +577,8 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
             // Timeout waiting for register response
             ctx.reg_read_state.reset();
             ctx.main_state = MainState::Idle;
-            actions.push(MainAction::RegisterOperationFailed).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+            push(&mut actions, MainAction::RegisterOperationFailed);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
         }
         (MainState::WaitRegRes, MainEvent::ReceivedByte(byte)) => {
             ctx.reg_read_state.received_bytes += 1;
@@ -573,24 +586,24 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
             // For E981: first byte is response indicator (0xF1), second byte is value
             if ctx.reg_read_state.received_bytes == 1 {
                 // First byte - should be E981_REG_READ_RESP (0xF1), ignore it
-                actions.push(MainAction::StartTimer(TIMEOUT_REGISTER)).unwrap();
+                push(&mut actions, MainAction::StartTimer(TIMEOUT_REGISTER));
             } else if ctx.reg_read_state.received_bytes >= ctx.reg_read_state.expected_bytes {
                 // All bytes received, the last byte is the actual register value
                 ctx.reg_read_state.value = byte;
                 ctx.main_state = MainState::Idle;
-                actions.push(MainAction::RegisterReadComplete { value: byte }).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+                push(&mut actions, MainAction::RegisterReadComplete { value: byte });
+                push(&mut actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
             } else {
                 // More bytes expected
                 ctx.reg_read_state.value = byte;
-                actions.push(MainAction::StartTimer(TIMEOUT_REGISTER)).unwrap();
+                push(&mut actions, MainAction::StartTimer(TIMEOUT_REGISTER));
             }
         }
         (MainState::WaitRegRes, MainEvent::ReceiveError) => {
             ctx.reg_read_state.reset();
             ctx.main_state = MainState::Idle;
-            actions.push(MainAction::RegisterOperationFailed).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+            push(&mut actions, MainAction::RegisterOperationFailed);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
         }
         (MainState::WaitRegRes, MainEvent::ReadRegister { .. })
         | (MainState::WaitRegRes, MainEvent::WriteRegister { .. }) => {
@@ -603,9 +616,9 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
         (MainState::Error, MainEvent::Timer) => {
             // Timeout in error state, try reset
             ctx.main_state = MainState::SendReset;
-            actions.push(MainAction::SendByte(U_RESET_REQ)).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_RESET)).unwrap();
-            actions.push(MainAction::IncrementResetCounter).unwrap();
+            push(&mut actions, MainAction::SendByte(U_RESET_REQ));
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_RESET));
+            push(&mut actions, MainAction::IncrementResetCounter);
         }
         (MainState::Error, MainEvent::ReceivedByte(byte)) => {
             // Any byte received in Error state recovers to Idle unconditionally,
@@ -625,19 +638,19 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
             // Invalidation period over (3ms silence), return to idle
             // Release buffer if allocated, clear state, start keepalive
             ctx.main_state = MainState::Idle;
-            actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
-            actions.push(MainAction::ClearReceiveState).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+            push(&mut actions, MainAction::ReleaseReceiveBuffer);
+            push(&mut actions, MainAction::ClearReceiveState);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
         }
         (MainState::Invalidate, MainEvent::ReceivedByte(_)) => {
             // Discard bytes, mark frame invalid, and reset the invalidation timer
-            actions.push(MainAction::MarkFrameInvalid).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_INVALIDATE)).unwrap();
+            push(&mut actions, MainAction::MarkFrameInvalid);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_INVALIDATE));
         }
         (MainState::Invalidate, MainEvent::ReceiveError) => {
             // Ignore error, mark frame invalid, stay in invalidate
-            actions.push(MainAction::MarkFrameInvalid).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_INVALIDATE)).unwrap();
+            push(&mut actions, MainAction::MarkFrameInvalid);
+            push(&mut actions, MainAction::StartTimer(TIMEOUT_INVALIDATE));
         }
 
         // =====================================================================
@@ -645,7 +658,7 @@ pub fn process_main_event(ctx: &mut StateMachineContext, event: MainEvent) -> Ac
         // =====================================================================
         (_, MainEvent::ReadRegister { .. }) | (_, MainEvent::WriteRegister { .. }) => {
             // Register operations only allowed in Idle state
-            actions.push(MainAction::RegisterOperationFailed).unwrap();
+            push(&mut actions, MainAction::RegisterOperationFailed);
         }
     }
 
@@ -664,13 +677,13 @@ fn process_config_timeout(ctx: &mut StateMachineContext, actions: &mut ActionBuf
             // U_VERSION_REQ first (ignored by NCN5120, answered by TPUART2),
             // then NCN5120_SYS_STATE_REQ (answered by NCN5120 with 0x4B).
             ctx.config_state = ConfigState::CheckNCN5120;
-            actions.push(MainAction::SendNcn5120SysStateRequest).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_NCN5120_PROBE)).unwrap();
+            push(actions, MainAction::SendNcn5120SysStateRequest);
+            push(actions, MainAction::StartTimer(TIMEOUT_NCN5120_PROBE));
         }
         ConfigState::CheckNCN5120 => {
             // No NCN5120 response either, assume TPUART1
             ctx.chip_type = ChipType::TpUart1;
-            actions.push(MainAction::SetChipType(ChipType::TpUart1)).unwrap();
+            push(actions, MainAction::SetChipType(ChipType::TpUart1));
             finish_config(ctx, actions);
         }
         ConfigState::WaitTimeout | ConfigState::RcvSecondByte | ConfigState::RcvNCN5120 => {
@@ -687,25 +700,25 @@ fn process_config_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Ac
             if byte == E981_PRODUCT_ID_IND {
                 ctx.config_state = ConfigState::RcvSecondByte;
                 ctx.chip_type = ChipType::E981;
-                actions.push(MainAction::SetChipType(ChipType::E981)).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+                push(actions, MainAction::SetChipType(ChipType::E981));
+                push(actions, MainAction::StartTimer(TIMEOUT_VERSION));
             }
             // TPUART1: responds with State.ind instead of Version.ind
             else if (byte & U_STATE_IND_MASK) == U_STATE_IND {
                 ctx.chip_type = ChipType::TpUart1;
                 ctx.chip_version = 0;
                 ctx.config_state = ConfigState::WaitTimeout;
-                actions.push(MainAction::SetChipType(ChipType::TpUart1)).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+                push(actions, MainAction::SetChipType(ChipType::TpUart1));
+                push(actions, MainAction::StartTimer(TIMEOUT_VERSION));
             }
             // TPUART2: Version indication
             else if (byte & U_VERSION_IND_MASK) == U_VERSION_IND {
                 ctx.chip_type = ChipType::TpUart2;
                 ctx.chip_version = byte & 0x1F;
                 ctx.config_state = ConfigState::WaitTimeout;
-                actions.push(MainAction::SetChipType(ChipType::TpUart2)).unwrap();
-                actions.push(MainAction::SetChipVersion(ctx.chip_version)).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+                push(actions, MainAction::SetChipType(ChipType::TpUart2));
+                push(actions, MainAction::SetChipVersion(ctx.chip_version));
+                push(actions, MainAction::StartTimer(TIMEOUT_VERSION));
             }
             // Unknown response, will timeout and try NCN5120
         }
@@ -713,8 +726,8 @@ fn process_config_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Ac
             // E981 second byte is the version
             ctx.chip_version = byte;
             ctx.config_state = ConfigState::WaitTimeout;
-            actions.push(MainAction::SetChipVersion(byte)).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+            push(actions, MainAction::SetChipVersion(byte));
+            push(actions, MainAction::StartTimer(TIMEOUT_VERSION));
         }
         ConfigState::CheckNCN5120 => {
             // We sent [0x20, 0x0D] on the wire. Possible responses:
@@ -725,39 +738,39 @@ fn process_config_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Ac
             if byte == NCN5120_SYS_STATE_IND {
                 ctx.chip_type = ChipType::Ncn5120;
                 ctx.config_state = ConfigState::RcvNCN5120;
-                actions.push(MainAction::SetChipType(ChipType::Ncn5120)).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_NCN5120_PROBE)).unwrap();
+                push(actions, MainAction::SetChipType(ChipType::Ncn5120));
+                push(actions, MainAction::StartTimer(TIMEOUT_NCN5120_PROBE));
             } else if (byte & U_VERSION_IND_MASK) == U_VERSION_IND {
                 // TPUART2 responded to the 0x20 version request
                 ctx.chip_type = ChipType::TpUart2;
                 ctx.chip_version = byte & 0x1F;
                 ctx.config_state = ConfigState::WaitTimeout;
-                actions.push(MainAction::SetChipType(ChipType::TpUart2)).unwrap();
-                actions.push(MainAction::SetChipVersion(ctx.chip_version)).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+                push(actions, MainAction::SetChipType(ChipType::TpUart2));
+                push(actions, MainAction::SetChipVersion(ctx.chip_version));
+                push(actions, MainAction::StartTimer(TIMEOUT_VERSION));
             } else if (byte & U_STATE_IND_MASK) == U_STATE_IND {
                 // U_State.ind (likely protocol error from NCN5120 reacting to 0x20).
                 // Ignore it and keep waiting for the 0x4B response to 0x0D.
-                actions.push(MainAction::StartTimer(TIMEOUT_NCN5120_PROBE)).unwrap();
+                push(actions, MainAction::StartTimer(TIMEOUT_NCN5120_PROBE));
             } else {
                 // Unexpected byte — restart detection from scratch
                 // (full link-layer restart on non-0x4B)
                 ctx.main_state = MainState::SendReset;
-                actions.push(MainAction::SendByte(U_RESET_REQ)).unwrap();
-                actions.push(MainAction::StartTimer(TIMEOUT_RESET)).unwrap();
-                actions.push(MainAction::IncrementResetCounter).unwrap();
+                push(actions, MainAction::SendByte(U_RESET_REQ));
+                push(actions, MainAction::StartTimer(TIMEOUT_RESET));
+                push(actions, MainAction::IncrementResetCounter);
             }
         }
         ConfigState::RcvNCN5120 => {
             // NCN5120 second byte received
             ctx.config_state = ConfigState::WaitTimeout;
-            actions.push(MainAction::StartTimer(TIMEOUT_VERSION)).unwrap();
+            push(actions, MainAction::StartTimer(TIMEOUT_VERSION));
         }
         ConfigState::WaitTimeout => {
             // Unexpected byte during wait, restart config
             ctx.main_state = MainState::SendReset;
-            actions.push(MainAction::SendByte(U_RESET_REQ)).unwrap();
-            actions.push(MainAction::StartTimer(TIMEOUT_RESET)).unwrap();
+            push(actions, MainAction::SendByte(U_RESET_REQ));
+            push(actions, MainAction::StartTimer(TIMEOUT_RESET));
         }
     }
 }
@@ -765,10 +778,10 @@ fn process_config_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Ac
 fn finish_config(ctx: &mut StateMachineContext, actions: &mut ActionBuffer) {
     ctx.main_state = MainState::Idle;
     ctx.reset_counter = 0; // Bus is now OK
-    actions.push(MainAction::ResetBusFailureCounter).unwrap();
-    actions.push(MainAction::ConfigureRetryCounts).unwrap();
-    actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
-    actions.push(MainAction::InitComplete).unwrap();
+    push(actions, MainAction::ResetBusFailureCounter);
+    push(actions, MainAction::ConfigureRetryCounts);
+    push(actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
+    push(actions, MainAction::InitComplete);
 }
 
 // ============================================================================
@@ -779,21 +792,21 @@ fn process_idle_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Acti
     // State indication
     if (byte & U_STATE_IND_MASK) == U_STATE_IND {
         // Reset keepalive timer
-        actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+        push(actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
 
         // Check for errors in state indication
         // SC=0x80 (slave collision), RE=0x40 (receive error), TE=0x20 (transmit error),
         // PE=0x10 (protocol error), TW=0x08 (temperature warning)
         if (byte & 0xF8) != 0 {
             // Any error/warning flags set - reset the send state machine
-            actions.push(MainAction::ResetSendStateMachine).unwrap();
+            push(actions, MainAction::ResetSendStateMachine);
         }
     }
     // L_Data confirmation
     else if (byte & L_DATA_CON_MASK) == L_DATA_CON {
         let ack = (byte & 0x80) != 0;
-        actions.push(MainAction::SendSmConfirmation { ack }).unwrap();
-        actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+        push(actions, MainAction::SendSmConfirmation { ack });
+        push(actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
     }
     // L_Data indication (start of frame)
     else if (byte & 0x53) == L_DATA_IND {
@@ -806,19 +819,19 @@ fn process_idle_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut Acti
         ctx.receive_state.is_repeated = is_repeated;
         ctx.receive_state.is_extended = (byte & 0x80) != 0x80;
 
-        actions.push(MainAction::AllocReceiveBuffer).unwrap();
-        actions.push(MainAction::StoreReceivedByte(byte)).unwrap();
-        actions.push(MainAction::StoreControlByte(byte)).unwrap();
+        push(actions, MainAction::AllocReceiveBuffer);
+        push(actions, MainAction::StoreReceivedByte(byte));
+        push(actions, MainAction::StoreControlByte(byte));
         if is_repeated {
-            actions.push(MainAction::MarkAsRepeatedFrame).unwrap();
+            push(actions, MainAction::MarkAsRepeatedFrame);
         }
-        actions.push(MainAction::StartTimer(TIMEOUT_INTER_BYTE)).unwrap();
+        push(actions, MainAction::StartTimer(TIMEOUT_INTER_BYTE));
     }
     // L_Poll_Data indication
     else if byte == 0xF0 {
         // Poll data not supported, go to invalidate
         ctx.main_state = MainState::Invalidate;
-        actions.push(MainAction::StartTimer(TIMEOUT_INVALIDATE)).unwrap();
+        push(actions, MainAction::StartTimer(TIMEOUT_INVALIDATE));
     }
     // Unknown byte - ignore. This intentionally includes an out-of-context
     // E981_PRODUCT_ID_IND (0xFE): the product-ID indication only occurs as a
@@ -840,9 +853,9 @@ fn process_receive_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut A
     if recv.bytes_received >= max_frame_size {
         // Frame too large, invalidate
         ctx.main_state = MainState::Invalidate;
-        actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
-        actions.push(MainAction::ClearReceiveState).unwrap();
-        actions.push(MainAction::StartTimer(TIMEOUT_INVALIDATE)).unwrap();
+        push(actions, MainAction::ReleaseReceiveBuffer);
+        push(actions, MainAction::ClearReceiveState);
+        push(actions, MainAction::StartTimer(TIMEOUT_INVALIDATE));
         return;
     }
 
@@ -851,12 +864,12 @@ fn process_receive_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut A
     // Note: Full comparison happens when we have 6+ bytes
 
     recv.bytes_received += 1;
-    actions.push(MainAction::StoreReceivedByte(byte)).unwrap();
-    actions.push(MainAction::StartTimer(TIMEOUT_INTER_BYTE)).unwrap();
+    push(actions, MainAction::StoreReceivedByte(byte));
+    push(actions, MainAction::StartTimer(TIMEOUT_INTER_BYTE));
 
     // After 4 bytes, notify send state machine (for echo detection)
     if recv.bytes_received == 4 {
-        actions.push(MainAction::SendSmFrameStart).unwrap();
+        push(actions, MainAction::SendSmFrameStart);
     }
 
     // After 6 bytes (header complete), parse header and decide on ACK
@@ -867,7 +880,7 @@ fn process_receive_byte(ctx: &mut StateMachineContext, byte: u8, actions: &mut A
         // 2. Extract destination address and check if it's a group address
         // 3. If group address: check address table, send ACK if found
         // 4. Check if this is an echo of our transmission
-        actions.push(MainAction::ParseHeaderAndCheckAck).unwrap();
+        push(actions, MainAction::ParseHeaderAndCheckAck);
     }
 
     // Check if we have received the expected length
@@ -885,23 +898,23 @@ fn complete_frame_reception(ctx: &mut StateMachineContext, actions: &mut ActionB
     if recv.is_echo {
         // This was an echo of our transmission — notify the send SM,
         // then release the receive buffer (echo data is not forwarded).
-        actions.push(MainAction::SendSmFrameComplete).unwrap();
-        actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
+        push(actions, MainAction::SendSmFrameComplete);
+        push(actions, MainAction::ReleaseReceiveBuffer);
     } else if recv.is_repeated {
         // Repeated telegram, drop it
-        actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
+        push(actions, MainAction::ReleaseReceiveBuffer);
     } else if recv.acked {
         // Frame addressed to us (we ACKed it) — forward to network layer.
         // Checksum validation done by action executor.
-        actions.push(MainAction::IndicationToNetwork).unwrap();
+        push(actions, MainAction::IndicationToNetwork);
     } else {
         // Frame not addressed to us — drop it.
-        actions.push(MainAction::ReleaseReceiveBuffer).unwrap();
+        push(actions, MainAction::ReleaseReceiveBuffer);
     }
 
     ctx.main_state = MainState::Idle;
-    actions.push(MainAction::ClearReceiveState).unwrap();
-    actions.push(MainAction::StartTimer(TIMEOUT_KEEPALIVE)).unwrap();
+    push(actions, MainAction::ClearReceiveState);
+    push(actions, MainAction::StartTimer(TIMEOUT_KEEPALIVE));
 }
 
 // ============================================================================
@@ -992,9 +1005,9 @@ pub fn process_send_event(ctx: &mut SendContext, event: SendEvent) -> SendAction
         (SendState::Idle, SendEvent::StartTransmission) => {
             ctx.state = SendState::Sending;
             ctx.byte_index = 0;
-            actions.push(SendAction::StartSendTimer).unwrap();
+            push(&mut actions, SendAction::StartSendTimer);
             let is_last = ctx.byte_index + 1 >= ctx.total_bytes;
-            actions.push(SendAction::SendByte { index: ctx.byte_index, is_last }).unwrap();
+            push(&mut actions, SendAction::SendByte { index: ctx.byte_index, is_last });
         }
         (SendState::Idle, _) => {
             // Ignore other events in idle
@@ -1007,22 +1020,22 @@ pub fn process_send_event(ctx: &mut SendContext, event: SendEvent) -> SendAction
             ctx.byte_index += 1;
             if ctx.byte_index < ctx.total_bytes {
                 let is_last = ctx.byte_index + 1 >= ctx.total_bytes;
-                actions.push(SendAction::SendByte { index: ctx.byte_index, is_last }).unwrap();
+                push(&mut actions, SendAction::SendByte { index: ctx.byte_index, is_last });
             } else {
                 // All bytes sent, wait for echo
                 ctx.state = SendState::WaitingForEcho;
-                actions.push(SendAction::FrameSendingComplete).unwrap();
+                push(&mut actions, SendAction::FrameSendingComplete);
             }
         }
         (SendState::Sending, SendEvent::Timeout) => {
             ctx.reset();
-            actions.push(SendAction::StopSendTimer).unwrap();
-            actions.push(SendAction::TransmissionComplete { success: false }).unwrap();
+            push(&mut actions, SendAction::StopSendTimer);
+            push(&mut actions, SendAction::TransmissionComplete { success: false });
         }
         (SendState::Sending, SendEvent::Cancel) => {
             ctx.reset();
-            actions.push(SendAction::StopSendTimer).unwrap();
-            actions.push(SendAction::TransmissionComplete { success: false }).unwrap();
+            push(&mut actions, SendAction::StopSendTimer);
+            push(&mut actions, SendAction::TransmissionComplete { success: false });
         }
         (SendState::Sending, _) => {}
 
@@ -1038,13 +1051,13 @@ pub fn process_send_event(ctx: &mut SendContext, event: SendEvent) -> SendAction
         }
         (SendState::WaitingForEcho, SendEvent::Timeout) => {
             ctx.reset();
-            actions.push(SendAction::StopSendTimer).unwrap();
-            actions.push(SendAction::TransmissionComplete { success: false }).unwrap();
+            push(&mut actions, SendAction::StopSendTimer);
+            push(&mut actions, SendAction::TransmissionComplete { success: false });
         }
         (SendState::WaitingForEcho, SendEvent::Cancel) => {
             ctx.reset();
-            actions.push(SendAction::StopSendTimer).unwrap();
-            actions.push(SendAction::TransmissionComplete { success: false }).unwrap();
+            push(&mut actions, SendAction::StopSendTimer);
+            push(&mut actions, SendAction::TransmissionComplete { success: false });
         }
         (SendState::WaitingForEcho, _) => {}
 
@@ -1053,18 +1066,18 @@ pub fn process_send_event(ctx: &mut SendContext, event: SendEvent) -> SendAction
         // =====================================================================
         (SendState::WaitingForConfirm, SendEvent::Confirmation { ack }) => {
             ctx.reset();
-            actions.push(SendAction::StopSendTimer).unwrap();
-            actions.push(SendAction::TransmissionComplete { success: ack }).unwrap();
+            push(&mut actions, SendAction::StopSendTimer);
+            push(&mut actions, SendAction::TransmissionComplete { success: ack });
         }
         (SendState::WaitingForConfirm, SendEvent::Timeout) => {
             ctx.reset();
-            actions.push(SendAction::StopSendTimer).unwrap();
-            actions.push(SendAction::TransmissionComplete { success: false }).unwrap();
+            push(&mut actions, SendAction::StopSendTimer);
+            push(&mut actions, SendAction::TransmissionComplete { success: false });
         }
         (SendState::WaitingForConfirm, SendEvent::Cancel) => {
             ctx.reset();
-            actions.push(SendAction::StopSendTimer).unwrap();
-            actions.push(SendAction::TransmissionComplete { success: false }).unwrap();
+            push(&mut actions, SendAction::StopSendTimer);
+            push(&mut actions, SendAction::TransmissionComplete { success: false });
         }
         (SendState::WaitingForConfirm, _) => {}
     }
@@ -1217,9 +1230,9 @@ pub fn process_busmon_event(ctx: &mut BusMonitorContext, event: BusMonitorEvent)
         (BusMonitorState::Disabled, BusMonitorEvent::Enable) => {
             ctx.state = BusMonitorState::Active;
             ctx.bytes_received = 0;
-            actions.push(BusMonitorAction::SendBusMonitorEnable).unwrap();
-            actions.push(BusMonitorAction::BusMonitorActive).unwrap();
-            actions.push(BusMonitorAction::AllocReceiveBuffer).unwrap();
+            push(&mut actions, BusMonitorAction::SendBusMonitorEnable);
+            push(&mut actions, BusMonitorAction::BusMonitorActive);
+            push(&mut actions, BusMonitorAction::AllocReceiveBuffer);
         }
         (BusMonitorState::Disabled, _) => {
             // Ignore other events when disabled
@@ -1234,48 +1247,48 @@ pub fn process_busmon_event(ctx: &mut BusMonitorContext, event: BusMonitorEvent)
             // ACK/NACK/BUSY bytes mark frame boundaries
             if byte_type.is_ack_byte() {
                 // Store the ack byte as part of the frame
-                actions.push(BusMonitorAction::StoreReceivedByte(byte)).unwrap();
+                push(&mut actions, BusMonitorAction::StoreReceivedByte(byte));
                 ctx.bytes_received += 1;
 
                 // Report the byte
-                actions.push(BusMonitorAction::ReceivedByte { byte, byte_type }).unwrap();
+                push(&mut actions, BusMonitorAction::ReceivedByte { byte, byte_type });
 
                 // Frame is complete after ACK/NACK/BUSY
                 if ctx.bytes_received > 0 {
-                    actions.push(BusMonitorAction::FrameComplete).unwrap();
-                    actions.push(BusMonitorAction::ForwardFrame).unwrap();
-                    actions.push(BusMonitorAction::AllocReceiveBuffer).unwrap();
+                    push(&mut actions, BusMonitorAction::FrameComplete);
+                    push(&mut actions, BusMonitorAction::ForwardFrame);
+                    push(&mut actions, BusMonitorAction::AllocReceiveBuffer);
                     ctx.bytes_received = 0;
                 }
             } else {
                 // Regular data byte
-                actions.push(BusMonitorAction::StoreReceivedByte(byte)).unwrap();
+                push(&mut actions, BusMonitorAction::StoreReceivedByte(byte));
                 ctx.bytes_received += 1;
-                actions.push(BusMonitorAction::ReceivedByte { byte, byte_type }).unwrap();
-                actions.push(BusMonitorAction::StartTimer(TIMEOUT_INTER_BYTE)).unwrap();
+                push(&mut actions, BusMonitorAction::ReceivedByte { byte, byte_type });
+                push(&mut actions, BusMonitorAction::StartTimer(TIMEOUT_INTER_BYTE));
             }
         }
         (BusMonitorState::Active, BusMonitorEvent::Timer) => {
             // Inter-byte timeout - frame boundary detected (no ACK received)
             if ctx.bytes_received > 0 {
-                actions.push(BusMonitorAction::FrameComplete).unwrap();
-                actions.push(BusMonitorAction::ForwardFrame).unwrap();
-                actions.push(BusMonitorAction::AllocReceiveBuffer).unwrap();
+                push(&mut actions, BusMonitorAction::FrameComplete);
+                push(&mut actions, BusMonitorAction::ForwardFrame);
+                push(&mut actions, BusMonitorAction::AllocReceiveBuffer);
                 ctx.bytes_received = 0;
             }
         }
         (BusMonitorState::Active, BusMonitorEvent::Disable) => {
             ctx.state = BusMonitorState::Disabled;
-            actions.push(BusMonitorAction::StopTimer).unwrap();
+            push(&mut actions, BusMonitorAction::StopTimer);
             if ctx.bytes_received > 0 {
-                actions.push(BusMonitorAction::ReleaseReceiveBuffer).unwrap();
+                push(&mut actions, BusMonitorAction::ReleaseReceiveBuffer);
             }
-            actions.push(BusMonitorAction::SendReset).unwrap();
+            push(&mut actions, BusMonitorAction::SendReset);
             ctx.bytes_received = 0;
         }
         (BusMonitorState::Active, BusMonitorEvent::ReceiveError) => {
             // Receive error - continue but restart timeout
-            actions.push(BusMonitorAction::StartTimer(TIMEOUT_INTER_BYTE)).unwrap();
+            push(&mut actions, BusMonitorAction::StartTimer(TIMEOUT_INTER_BYTE));
         }
         (BusMonitorState::Active, BusMonitorEvent::Enable) => {
             // Already active

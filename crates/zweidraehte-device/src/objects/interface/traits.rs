@@ -7,6 +7,8 @@ use core::net::Ipv4Addr;
 
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
 use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::messages::apdu::go_diagnostics::GoDiagReturnCode;
+use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
 };
@@ -277,34 +279,62 @@ impl<'a> FunctionPropertyRequest<'a> {
 /// in the proto crate.
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionPropertyResult {
-    /// Return code (0x00 = success).
+    /// Raw return code (0x00 = success).
+    ///
+    /// Deliberately a `u8` and not one of the return-code enums: a function
+    /// property answers from whichever code space its property defines.
+    /// Most use the generic
+    /// [`PropertyReturnCode`] table, but `PID_OPERATION_MODE` and
+    /// `PID_GO_DIAGNOSTICS` answer from the disjoint, numerically
+    /// overlapping [`GoDiagReturnCode`] table. Build results through
+    /// [`with_code`](Self::with_code) / [`go_diag`](Self::go_diag) rather
+    /// than writing the byte directly, so the intended code space is
+    /// visible at the call site.
     pub return_code: u8,
     /// Response data (variable length, may be empty).
     pub data: PropertyBuf<MAX_FUNCTION_PROPERTY_RESPONSE>,
 }
 
 impl FunctionPropertyResult {
+    /// Result carrying a generic property-service return code
+    /// (spec 03/03/07 §3.4.5.5).
+    pub fn with_code(return_code: PropertyReturnCode, data: &[u8]) -> Self {
+        Self { return_code: return_code.into(), data: PropertyBuf::new(data) }
+    }
+
+    /// Result carrying a `PID_OPERATION_MODE` / `PID_GO_DIAGNOSTICS`
+    /// return code (spec 03/05/01 §4.3.8, §4.8.1).
+    pub fn go_diag(return_code: GoDiagReturnCode, data: &[u8]) -> Self {
+        Self { return_code: return_code.into(), data: PropertyBuf::new(data) }
+    }
+
     /// Success with no response data.
     pub fn success() -> Self {
-        Self { return_code: 0x00, data: PropertyBuf::new(&[]) }
+        Self::with_code(PropertyReturnCode::Success, &[])
     }
 
     /// Success with response data.
     pub fn success_with_data(data: &[u8]) -> Self {
-        Self { return_code: 0x00, data: PropertyBuf::new(data) }
+        Self::with_code(PropertyReturnCode::Success, data)
     }
 
     /// Error: function property not supported by this object/property.
+    ///
+    /// 0x02 is outside both named code spaces; it is the value the stack
+    /// has always returned here and conformance expectations pin it.
     pub fn not_supported() -> Self {
         Self { return_code: 0x02, data: PropertyBuf::new(&[]) }
     }
 
     /// Error: access denied (security policy or access level).
     pub fn access_denied() -> Self {
-        Self { return_code: 0xFC, data: PropertyBuf::new(&[]) }
+        Self::with_code(PropertyReturnCode::AccessDenied, &[])
     }
 
     /// Error: invalid object index.
+    ///
+    /// 0x05 is outside both named code spaces; see
+    /// [`not_supported`](Self::not_supported).
     pub fn invalid_object_index() -> Self {
         Self { return_code: 0x05, data: PropertyBuf::new(&[]) }
     }

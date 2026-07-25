@@ -21,6 +21,7 @@ use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
     PDT_Generic08, PDT_Generic16, PDT_Generic18, PDT_Generic20, PDT_UnsignedChar, PDT_UnsignedInt,
 };
+use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::properties::PropertyRead;
 
 use super::SecurityState;
@@ -488,11 +489,11 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
         // PID_SECURITY_FAILURES_LOG handler: Command format: [id, info, ...].
         // Only id=0, info=0 is defined (clear the log).
         if req.service_data.is_empty() {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[]));
         }
         let id = req.service_data[0];
         if req.service_data.len() < 2 {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[id]));
         }
         let info = req.service_data[1];
 
@@ -501,8 +502,8 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
                 self.state.failures_log().borrow_mut().clear();
                 Some(FunctionPropertyResult::success_with_data(&[id]))
             }
-            0 => Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[id]) }),
-            _ => Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[id]) }),
+            0 => Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[id])),
+            _ => Some(FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[id])),
         }
     }
 
@@ -522,7 +523,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
 
         // Short frame handling: need at least id and info bytes.
         if req.service_data.is_empty() {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[]));
         }
         // FunctionPropertyExtStateRead service data layout:
         //   service_data[0] = service_id (0 for standard state reads)
@@ -530,12 +531,12 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
         //   service_data[2..] = data (entry index for service_info=1)
         let service_id = req.service_data[0];
         if req.service_data.len() < 2 {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         }
         let service_info = req.service_data[1];
 
         if service_id != 0 {
-            return Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_id]));
         }
 
         match service_info {
@@ -543,7 +544,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             0 => {
                 let data_byte = req.service_data.get(2).copied().unwrap_or(0);
                 if data_byte != 0 {
-                    return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+                    return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
                 }
                 let log = self.state.failures_log().borrow();
                 let counter_bytes = log.counters_as_bytes();
@@ -556,7 +557,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             // service_info=1: Nth most recent 12-byte failure entry.
             1 => {
                 if req.service_data.len() < 3 {
-                    return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_info]) });
+                    return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_info]));
                 }
                 let entry_index = req.service_data[2];
                 let log = self.state.failures_log().borrow();
@@ -570,10 +571,10 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
                     data[13] = entry.failure_type;
                     Some(FunctionPropertyResult::success_with_data(&data))
                 } else {
-                    Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_info]) })
+                    Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_info]))
                 }
             }
-            _ => Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_info]) }),
+            _ => Some(FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_info])),
         }
     }
 }
@@ -612,7 +613,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             }
             _ => {
                 // Invalid ServiceInfo → E_DATA_VOID (0xF8)
-                FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) }
+                FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id])
             }
         }
     }
@@ -624,20 +625,27 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
     fn handle_security_mode_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if req.service_data.len() < 2 {
             // Too few bytes.
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let reserved = req.service_data[0];
         let read_service_id = req.service_data[1];
 
         // Reserved byte must be 0.
+        //
+        // TODO: 0xA0 belongs to neither named return-code space — it is not
+        // in the generic `PropertyReturnCode` table (03/03/07 §3.4.5.5), and
+        // the `GoDiagReturnCode` 0xA0 (`E_OM_ERROR`) is defined for
+        // `PID_OPERATION_MODE`, not `PID_SECURITY_MODE`. Left as a raw byte
+        // rather than mapped to a wrong-property enum; confirm against
+        // 03/05/01 and either add a variant or correct the code.
         if reserved != 0x00 {
             return FunctionPropertyResult { return_code: 0xA0, data: PropertyBuf::new(&[reserved, read_service_id]) };
         }
 
         // Only ReadServiceID 0x00 is supported.
         if read_service_id != 0x00 {
-            return FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[read_service_id]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[read_service_id]);
         }
 
         let mode = if self.state.security_mode_enabled() { 0x01u8 } else { 0x00u8 };

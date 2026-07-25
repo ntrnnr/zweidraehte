@@ -22,6 +22,7 @@ use zweidraehte_proto::dpt::{DeviceControl, ProgrammingMode, RoutingCount};
 use super::SystemBObjects;
 use crate::HasSecurityMode;
 use crate::objects::interface::{HasRoutingCount, PropertyLookup};
+use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 
 // ============================================================================
 // PropertyServiceHandler — property dispatch across base + augment objects
@@ -313,7 +314,7 @@ where
             // Echo back the service_info byte (second byte of service_data)
             // in the access-denied response per conformance spec.
             let service_info = req.service_data.get(1).copied().unwrap_or(0);
-            return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {
@@ -372,7 +373,7 @@ where
             // Echo back the service_info byte (second byte of service_data)
             // in the access-denied response per conformance spec.
             let service_info = req.service_data.get(1).copied().unwrap_or(0);
-            return FunctionPropertyResult { return_code: 0xFC, data: PropertyBuf::new(&[service_info]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::AccessDenied, &[service_info]);
         }
 
         if let Some(obj_type) = self.object_type_for(req.object_idx) {

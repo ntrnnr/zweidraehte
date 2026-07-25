@@ -30,6 +30,7 @@ use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Function, PDT_Generic02, PDT_Generic16, PDT_Scaling, PDT_UnsignedInt,
 };
+use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::messages::knxip::substructs::ServiceFamily;
 
 /// PBKDF2 hash of the empty password (§2.3.1.4.3) — the ex-factory
@@ -534,22 +535,22 @@ impl<'a, const MAX_PW: usize, const MAX_TU: usize> IpSecureAugment<'a, MAX_PW, M
         // no such octet and start at ServiceID — the layout is per-property,
         // not a shared framing rule, so the two handlers legitimately differ.
         let Some(&service_id) = req.service_data.get(1) else {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[]));
         };
         if service_id != 0x00 {
-            return Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_id]));
         }
         let (Some(&family_id), Some(&version)) = (req.service_data.get(2), req.service_data.get(3)) else {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         };
 
         let family = ServiceFamily::from(family_id);
         let Some(cell) = self.state.secured_version_cell(family) else {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         };
         // Only versions 0 (plain allowed) and 1 (this spec) are defined.
         if version > 1 {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         }
         let changed = cell.replace(version) != version;
         // Flipping the Routing family starts or stops the multicast
@@ -575,18 +576,18 @@ impl<'a, const MAX_PW: usize, const MAX_TU: usize> IpSecureAugment<'a, MAX_PW, M
         // §2.3.1.5.5.1 Figure 26 — same leading reserved octet as the write:
         //   [0] reserved (00h)   [1] ServiceID   [2] Service Family ID
         let Some(&service_id) = req.service_data.get(1) else {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[]));
         };
         if service_id != 0x00 {
-            return Some(FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_id]));
         }
         let Some(&family_id) = req.service_data.get(2) else {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         };
 
         let family = ServiceFamily::from(family_id);
         let Some(cell) = self.state.secured_version_cell(family) else {
-            return Some(FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[service_id]) });
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
         };
         Some(FunctionPropertyResult::success_with_data(&[service_id, family_id, cell.get()]))
     }

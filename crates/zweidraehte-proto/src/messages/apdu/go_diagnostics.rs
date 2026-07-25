@@ -22,6 +22,41 @@
 //! fixed-size array and return a `&[u8]` of the actual on-wire length.
 
 // ============================================================================
+// Return codes
+// ============================================================================
+
+crate::create_protocol_enum!(
+    /// Return codes for `PID_OPERATION_MODE` and `PID_GO_DIAGNOSTICS`
+    /// responses (spec 03/05/01 §4.3.8 and §4.8.1).
+    ///
+    /// These two properties answer from their own code space, **disjoint
+    /// from** the generic property-service table modelled by
+    /// [`PropertyReturnCode`](crate::messages::apdu::property_ext::PropertyReturnCode).
+    /// The two overlap numerically — `0x20` is a *success* here but has no
+    /// meaning in the generic table, and `0xF8` means `E_DATA_VOID` there
+    /// while being unassigned here — so the enums are deliberately kept
+    /// separate rather than merged into one type over the shared `u8`
+    /// field.
+    ///
+    /// The two success codes are property-specific:
+    /// - [`Config`](Self::Config) (`0x20`) doubles as
+    ///   `E_OM_CURRENT_OPERATION_MODE` for `PID_OPERATION_MODE` and as
+    ///   `E_GD_CONFIG` for GO diagnostics ReadServiceID 0x00.
+    /// - [`GoStatusValue`](Self::GoStatusValue) (`0x21`) carries a GO
+    ///   status/value payload.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub enum GoDiagReturnCode: u8 {
+        Config, 0x20, "E_GD_CONFIG / E_OM_CURRENT_OPERATION_MODE";
+        GoStatusValue, 0x21, "E_GD_GO_STATUS_VALUE";
+        OperationModeError, 0xA0, "E_OM_ERROR";
+        GoVoid, 0xA1, "E_GD_GO_VOID";
+        ConfigFlags, 0xA2, "E_GD_CONFIG_FLAGS";
+        GoSizeMismatch, 0xA3, "E_GD_GO_SIZE_MISMATCH";
+        _, "Unknown GO diagnostics return code 0x{:x}";
+    }
+);
+
+// ============================================================================
 // PID_OPERATION_MODE
 // ============================================================================
 

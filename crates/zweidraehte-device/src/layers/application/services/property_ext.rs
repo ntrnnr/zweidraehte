@@ -25,7 +25,7 @@ use crate::{
 use zweidraehte_proto::messages::{
     apdu::property_ext::{
         FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtValueHeader, PropertyExtValueResponse,
-        PropertyExtValueWriteConRes, return_code,
+        PropertyExtValueWriteConRes, PropertyReturnCode,
     },
     buffers::Buffer,
     builder::IndicationExt,
@@ -130,7 +130,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
 
     // Resolve (IOT, instance) → flat object index.
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_ext_read_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
         return;
     };
 
@@ -145,7 +145,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         // state without invoking a load-control function.
         if is_function_pdt(desc.pdt) && hdr.prop_id != pid::LOAD_STATE_CONTROL {
             debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION → type conflict");
-            send_ext_read_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+            send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict);
             return;
         }
         // Check start_index + count doesn't exceed max_elements (for non-count-query reads).
@@ -153,7 +153,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
             let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
             if end > desc.max_elements as u32 {
                 debug!("AL PropertyExtValueRead: range exceeds max_elements");
-                send_ext_read_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
+                send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
                 return;
             }
         }
@@ -161,7 +161,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
 
     // Per spec Figure 55: nr_of_elem must be > 0.
     if hdr.count == 0 {
-        send_ext_read_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
         return;
     }
 
@@ -187,7 +187,7 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
             // Data read successfully but the full response would exceed
             // the APDU budget — spec 03/03/07 §3.3 dedicated RC.
             warn!("AL PropertyExtValueRead result too large for APDU budget");
-            send_ext_read_error(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH);
+            send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::LengthExceedsMaxApduLength);
         }
         Ok(data_len) => {
             let response_len = PropertyExtValueResponse::msg_len(data_len);
@@ -249,7 +249,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
 
     // Resolve (IOT, instance) → flat object index.
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_ext_write_con_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
         return;
     };
 
@@ -262,7 +262,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
         // transitions. Allow it through; reject other function PDTs.
         if is_function_pdt(desc.pdt) && hdr.prop_id != pid::LOAD_STATE_CONTROL {
             debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION → type conflict");
-            send_ext_write_con_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+            send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict);
             return;
         }
 
@@ -277,7 +277,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
                     hdr.count,
                     elem_size
                 );
-                send_ext_write_con_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+                send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict);
                 return;
             }
         }
@@ -287,7 +287,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
             let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
             if end > desc.max_elements as u32 {
                 debug!("AL PropertyExtValueWriteCon: range {}..{} > max {}", hdr.start_idx, end, desc.max_elements);
-                send_ext_write_con_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
+                send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
                 return;
             }
         }
@@ -295,14 +295,14 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
 
     // Per spec Figure 55: nr_of_elem must be > 0.
     if hdr.count == 0 {
-        send_ext_write_con_error(ind, ctx, &hdr, return_code::E_ADDRESS_VOID);
+        send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
         return;
     }
 
     // Element-count write (start_index=0): data must be exactly 2 bytes.
     if hdr.start_idx == 0 && data.len() != 2 {
         debug!("AL PropertyExtValueWriteCon: element-count write with {} data bytes (expected 2)", data.len());
-        send_ext_write_con_error(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT);
+        send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict);
         return;
     }
 
@@ -332,7 +332,7 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
                         hdr.prop_id,
                         hdr.count,
                         hdr.start_idx,
-                        return_code::E_SUCCESS,
+                        PropertyReturnCode::Success,
                     );
                 });
             debug!("AL sending PropertyExtValueWriteConRes: success");
@@ -445,7 +445,7 @@ fn send_ext_read_error<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlCtx<'_, D>,
     hdr: &PropertyExtValueHeader,
-    return_code: u8,
+    return_code: PropertyReturnCode,
 ) {
     let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueResponse::ERROR_MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueResponse error");
@@ -471,7 +471,7 @@ fn send_ext_write_con_error<D: StackDefinition>(
     ind: &KnxMessageBuffer<Buffer<'static>>,
     ctx: &AlCtx<'_, D>,
     hdr: &PropertyExtValueHeader,
-    return_code: u8,
+    return_code: PropertyReturnCode,
 ) {
     let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(PropertyExtValueWriteConRes::MSG_LEN) else {
         warn!("AL no buffer for PropertyExtValueWriteConRes error");
@@ -557,7 +557,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     );
 
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
+        send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::AddressVoid.into(), &[]);
         return;
     };
 
@@ -568,12 +568,12 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     match ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         Ok(desc) if !is_function_pdt(desc.pdt) => {
             debug!("AL FunctionPropertyExtCommand: PDT 0x{:02X} is not function/control → type conflict", desc.pdt);
-            send_function_ext_response(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
+            send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict.into(), &[]);
             return;
         }
         Err(_) => {
             // PID doesn't exist on this object.
-            send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
+            send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::AddressVoid.into(), &[]);
             return;
         }
         Ok(_) => {} // PDT_FUNCTION or PDT_CONTROL — proceed.
@@ -586,7 +586,7 @@ fn handle_function_property_ext_command<D: StackDefinition>(
     if !ctx.base.response_fits(response_len) {
         // Response data exceeds the APDU budget (spec 03/03/07 §3.3 RC 0xF4).
         warn!("AL FunctionPropertyExt result too large for APDU budget ({} bytes)", response_len);
-        send_function_ext_response(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH, &[]);
+        send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::LengthExceedsMaxApduLength.into(), &[]);
         return;
     }
     let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {
@@ -636,7 +636,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     );
 
     let Some(object_idx) = ctx.interface_objects.resolve_ext_object_index(hdr.object_type, hdr.object_instance) else {
-        send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
+        send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::AddressVoid.into(), &[]);
         return;
     };
 
@@ -644,11 +644,11 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     match ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         Ok(desc) if !is_function_pdt(desc.pdt) => {
             debug!("AL FunctionPropertyExtStateRead: PDT 0x{:02X} is not function/control → type conflict", desc.pdt);
-            send_function_ext_response(ind, ctx, &hdr, return_code::E_DATA_TYPE_CONFLICT, &[]);
+            send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict.into(), &[]);
             return;
         }
         Err(_) => {
-            send_function_ext_response(ind, ctx, &hdr, return_code::E_ADDRESS_VOID, &[]);
+            send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::AddressVoid.into(), &[]);
             return;
         }
         Ok(_) => {}
@@ -661,7 +661,7 @@ fn handle_function_property_ext_state_read<D: StackDefinition>(
     let budget = ctx.base.effective_apdu_budget();
     if response_len > budget {
         warn!("AL FunctionPropertyExt result too large for APDU budget ({} > {})", response_len, budget);
-        send_function_ext_response(ind, ctx, &hdr, return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH, &[]);
+        send_function_ext_response(ind, ctx, &hdr, PropertyReturnCode::LengthExceedsMaxApduLength.into(), &[]);
         return;
     }
     let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(response_len) else {

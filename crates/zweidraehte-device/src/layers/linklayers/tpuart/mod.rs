@@ -205,6 +205,15 @@ impl<W, R, A> TpUartLinkLayerBuilder<W, R, A> {
 pub struct TpUartResources;
 
 // -- LinkLayerBuilderBase for explicit AddressChecker --------------------------
+//
+// These impls are deliberately duplicated for the `AutoAddressChecker`
+// variant further down rather than written as one blanket impl over the
+// `A` parameter. `AutoAddressChecker` is a marker that intentionally does
+// *not* implement `AddressChecker` (see its declaration), so the two impl
+// blocks cover disjoint type sets and a single blanket impl cannot express
+// both. Contrast `KnxRfLinkLayerBuilder`, which needs only one impl because
+// it has no such marker variant. If `TpUartResources` ever gains fields,
+// both `create_resources` bodies must be updated together.
 
 impl<W: Send + 'static, R: Send + 'static, A: AddressChecker + Send + 'static> super::super::LinkLayerBuilderBase
     for TpUartLinkLayerBuilder<W, R, A>

@@ -41,8 +41,9 @@ use crate::{DiagnosticsView, HasSecurityMode, StackDefinition, StackState};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Function};
 use zweidraehte_proto::messages::apdu::go_diagnostics::{
-    GoConfigResponse, GoStatusValueResponse, OperationModeResponse,
+    GoConfigResponse, GoDiagReturnCode, GoStatusValueResponse, OperationModeResponse,
 };
+use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::messages::knx::Priority;
 
 // ============================================================================
@@ -402,33 +403,50 @@ pub struct DiagnosticsAugment<'a, GS = SecureGoSendAbsent> {
 // GO Diagnostics Response Helpers
 // ============================================================================
 
-/// `PID_OPERATION_MODE` success return code — the response carries the
-/// (possibly just changed) current operation mode.
-const RC_OM_CURRENT_MODE: u8 = 0x20;
-
-/// `PID_OPERATION_MODE` negative return code (`0x20 | 0x80` error bit).
-/// Every validation failure answers with this code and the *unchanged*
-/// current mode echoed back; the conformance 6.1.x expectations pin
-/// both values.
-const RC_OM_ERROR: u8 = 0xA0;
-
 /// Build a `PropertyBuf` carrying the three-byte `PID_OPERATION_MODE`
 /// response body (`[service_id, mode, time_left]`). Works for both the
-/// success ([`RC_OM_CURRENT_MODE`]) and negative ([`RC_OM_ERROR`])
-/// paths, which share the same data layout.
+/// success ([`GoDiagReturnCode::Config`]) and negative
+/// ([`GoDiagReturnCode::OperationModeError`]) paths, which share the same
+/// data layout.
 fn operation_mode_buf<const N: usize>(service_id: u8, mode: u8, time_left: u8) -> PropertyBuf<N> {
     let mut scratch = [0u8; OperationModeResponse::LEN];
     PropertyBuf::new(OperationModeResponse { service_id, operation_mode: mode, time_left }.write(&mut scratch))
 }
 
 /// Build the negative `PID_OPERATION_MODE` response shared by all
-/// validation-failure paths: [`RC_OM_ERROR`] with the unchanged current
-/// mode echoed.
+/// validation-failure paths: [`GoDiagReturnCode::OperationModeError`]
+/// (`0xA0` — the success code `0x20` with the error bit set) with the
+/// unchanged current mode echoed. The conformance 6.1.x expectations pin
+/// both the code and the echoed values.
 fn operation_mode_reject(service_id: u8, current_mode: u8, current_time_left: u8) -> FunctionPropertyResult {
     FunctionPropertyResult {
-        return_code: RC_OM_ERROR,
+        return_code: GoDiagReturnCode::OperationModeError.into(),
         data: operation_mode_buf(service_id, current_mode, current_time_left),
     }
+}
+
+/// Parse and validate the two-octet `PID_GO_DIAGNOSTICS` service header
+/// shared by the Command and StateRead paths.
+///
+/// Both directions are framed as `[reserved, service_id, ...]` — byte 0 is
+/// reserved and must be `0x00`, byte 1 selects the sub-service. (The
+/// service ID is a whole octet, not a bitfield packed into the reserved
+/// byte: the reference frame `00 05 00 07 AA` decodes as reserved `0x00`,
+/// service ID `0x05`.)
+///
+/// Returns the service ID, or the ready-made rejection to hand straight
+/// back to the caller.
+fn parse_go_diag_header(service_data: &[u8]) -> Result<u8, FunctionPropertyResult> {
+    let reject = || Err(FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]));
+
+    let (&reserved, &service_id) = match service_data {
+        [reserved, service_id, ..] => (reserved, service_id),
+        _ => return reject(),
+    };
+    if reserved != 0x00 {
+        return reject();
+    }
+    Ok(service_id)
 }
 
 /// Build a GO diagnostics success response (return code 0x21 —
@@ -442,7 +460,7 @@ fn go_diag_success(service_id: u8, go_idx: u16, status: u8, value: &[u8]) -> Fun
     // implementation's `.min(60)`.
     let mut resp = [0u8; 64];
     let out = GoStatusValueResponse { service_id, go_idx, status, value }.write(&mut resp);
-    FunctionPropertyResult { return_code: 0x21, data: PropertyBuf::new(out) }
+    FunctionPropertyResult::go_diag(GoDiagReturnCode::GoStatusValue, out)
 }
 
 impl<'a, GS> DiagnosticsAugment<'a, GS> {
@@ -465,7 +483,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         // Response format: [return_code, service_id, operation_mode, time_left]
-        // On error: [RC_OM_ERROR, service_id_echo, current_mode, current_time_left]
+        // On error: [E_OM_ERROR, service_id_echo, current_mode, current_time_left]
 
         let current_mode = self.state.operation_mode();
         let current_time_left = self.state.time_left();
@@ -498,7 +516,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let new_time_left = self.state.time_left();
 
         FunctionPropertyResult {
-            return_code: RC_OM_CURRENT_MODE,
+            return_code: GoDiagReturnCode::Config.into(),
             data: operation_mode_buf(service_id, new_mode, new_time_left),
         }
     }
@@ -533,7 +551,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // Per spec §4.4.1 and conformance test 6.1.11: reads return the
         // current state regardless of the Run State Machine.
         FunctionPropertyResult {
-            return_code: RC_OM_CURRENT_MODE,
+            return_code: GoDiagReturnCode::Config.into(),
             data: operation_mode_buf(service_id, current_mode, current_time_left),
         }
     }
@@ -552,24 +570,10 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasAssociationTable,
         GS: SecureGoSender<D>,
     {
-        // Minimum: [reserved, service_id]
-        if req.service_data.len() < 2 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
-        }
-
-        let reserved = req.service_data[0];
-        let service_id = req.service_data[1];
-
-        // Validate reserved octet (bits 5-7 of first byte encode the write
-        // service ID, bits 0-2 encode the read service ID; for a Command,
-        // the write service ID is in bits 5-7 and must be non-zero or zero
-        // depending on the service). Actually, looking at the XML more
-        // carefully: byte 0 is [reserved:3 | writeServiceID:5] for commands.
-        // Wait — the XML shows: `00 05 00 07 AA` where 00=reserved, 05=serviceID.
-        // So byte 0 = reserved (must be 0x00), byte 1 = service_id.
-        if reserved != 0x00 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
-        }
+        let service_id = match parse_go_diag_header(req.service_data) {
+            Ok(id) => id,
+            Err(rejection) => return rejection,
+        };
 
         match service_id {
             0x00 => self.handle_go_diag_write_local(ctx.state, req),
@@ -579,7 +583,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
             0x04 => self.handle_go_diag_set_filter(req),
             _ => {
                 // Invalid WriteServiceID → F2 (E_COMMAND_INVALID).
-                FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) }
+                FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_id])
             }
         }
     }
@@ -594,16 +598,10 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         D::State: StackState + HasCommunicationObjectTable + HasCommObjects + HasAddressTable + HasAssociationTable,
         GS: SecureGoSender<D>,
     {
-        if req.service_data.len() < 2 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
-        }
-
-        let reserved = req.service_data[0];
-        let service_id = req.service_data[1];
-
-        if reserved != 0x00 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
-        }
+        let service_id = match parse_go_diag_header(req.service_data) {
+            Ok(id) => id,
+            Err(rejection) => return rejection,
+        };
 
         match service_id {
             // read-config needs the per-GO security flags via the strategy, so
@@ -612,7 +610,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
             0x01 => self.handle_go_diag_read_value(ctx.state, req),
             _ => {
                 // Invalid ReadServiceID → F2 (E_COMMAND_INVALID).
-                FunctionPropertyResult { return_code: 0xF2, data: PropertyBuf::new(&[service_id]) }
+                FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_id])
             }
         }
     }
@@ -639,13 +637,10 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         //     Table 36 explicitly calls this out as `A3 E_GD_GO_SIZE_-
         //     MISMATCH` ("the field Data is missing").
         if data.len() < 4 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
         if data.len() < 5 {
-            return FunctionPropertyResult {
-                return_code: 0xA3, // E_GD_GO_SIZE_MISMATCH
-                data: PropertyBuf::new(&[0x00]),
-            };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoSizeMismatch, &[0x00]);
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
@@ -655,27 +650,18 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 
         // Validate GO exists.
         let Some(entry) = cot.object(go_idx) else {
-            return FunctionPropertyResult {
-                return_code: 0xA1, // E_GD_GO_VOID
-                data: PropertyBuf::new(&[0x00]),
-            };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x00]);
         };
 
         // Check C (communication enable) and W (write enable) flags.
         if !entry.flags.communication_enable() || !entry.flags.write_enable() {
-            return FunctionPropertyResult {
-                return_code: 0xA2, // E_GD_CONFIG_FLAGS
-                data: PropertyBuf::new(&[0x00]),
-            };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::ConfigFlags, &[0x00]);
         }
 
         // Validate data size matches GO type.
         let (expected_size, _short) = entry.object_type.size_in_bytes();
         if value_data.len() != expected_size {
-            return FunctionPropertyResult {
-                return_code: 0xA3, // E_GD_GO_SIZE_MISMATCH
-                data: PropertyBuf::new(&[0x00]),
-            };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoSizeMismatch, &[0x00]);
         }
 
         drop(cot); // Release borrow before accessing comm objects.
@@ -686,16 +672,10 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         {
             let mut co = state.comm_objects().borrow_mut();
             let Some(dest) = co.value_mut(go_idx) else {
-                return FunctionPropertyResult {
-                    return_code: 0xA1, // E_GD_GO_VOID
-                    data: PropertyBuf::new(&[0x00]),
-                };
+                return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x00]);
             };
             if dest.len() < value_data.len() {
-                return FunctionPropertyResult {
-                    return_code: 0xA3, // E_GD_GO_SIZE_MISMATCH
-                    data: PropertyBuf::new(&[0x00]),
-                };
+                return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoSizeMismatch, &[0x00]);
             }
             dest[..value_data.len()].copy_from_slice(value_data);
         }
@@ -735,7 +715,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // shorter than the fixed header isn't specifically enumerated,
         // so fall through to `FF` per §4.8.1.1.7.
         if data.len() < 6 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let flags = data[2];
@@ -743,13 +723,13 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // select security and are validated below; bit 7 passes through).
         const FLAGS_RESERVED_MASK: u8 = 0x7C;
         if flags & FLAGS_RESERVED_MASK != 0 {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x01]);
         }
 
         // Security bits (0-1): 00=no security, 01=auth, 10=invalid, 11=auth+conf
         let sec_bits = flags & 0x03;
         if sec_bits == 0x02 {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x01]);
         }
 
         // Validate that the GA exists in the device's address table.
@@ -757,13 +737,13 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let tsap = ctx.state.adt().borrow().tsap(ga);
 
         let Some(tsap) = tsap else {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x01]);
         };
 
         // When security bits are non-zero, check that a group key is
         // available for the GA's TSAP.
         if sec_bits != 0 && !ctx.state.has_group_key(tsap) {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x01]);
         }
 
         let value = &data[5..];
@@ -783,7 +763,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
                 value.len(),
                 max_value_len,
             );
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[0x01]);
         }
 
         // Bit 7 of flags: 1 = next full octet, 0 = 6 trailing bits after APCI.
@@ -817,16 +797,16 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         match sec_bits {
             0x00 => {
                 ctx.group_value_sender().send_group_write_tsap(tsap, Priority::Low, encoding, value);
-                FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
+                FunctionPropertyResult::with_code(PropertyReturnCode::Success, &[0x01])
             }
             0x01 | 0x03 => {
                 let security = if sec_bits == 0x01 { RequestedSecurity::AuthOnly } else { RequestedSecurity::AuthConf };
                 match GS::send_write_secure(ctx, tsap, Priority::Low, encoding, value, security) {
                     SecureSendOutcome::Queued => {
-                        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x01]) }
+                        FunctionPropertyResult::with_code(PropertyReturnCode::Success, &[0x01])
                     }
                     SecureSendOutcome::NoKey => {
-                        FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x01]) }
+                        FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x01])
                     }
                 }
             }
@@ -857,7 +837,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let data = req.service_data;
         // Need exactly: reserved(1) + serviceID(1) + GO_idx(2)
         if data.len() != 4 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
@@ -867,12 +847,12 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 
         // Validate GO exists.
         let Some(entry) = cot.object(go_idx) else {
-            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x02]);
         };
 
         // Check C (communication enable) and T (transmission enable) flags.
         if !entry.flags.communication_enable() || !entry.flags.transmission_enable() {
-            return FunctionPropertyResult { return_code: 0xA2, data: PropertyBuf::new(&[0x02]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::ConfigFlags, &[0x02]);
         }
 
         let (object_size, short_format) = entry.object_type.size_in_bytes();
@@ -882,7 +862,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // Look up the sending TSAP for this ASAP.
         let Some(tsap) = ctx.state.ast().borrow().sending_tsap(asap) else {
             debug!("GO diag: no sending TSAP for ASAP {}", asap);
-            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x02]);
         };
 
         // Build success response with current value (before building the
@@ -891,10 +871,10 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // this index — both tables are downloaded independently.
         let co = ctx.state.comm_objects().borrow();
         let Some(value) = co.value(go_idx) else {
-            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x02]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x02]);
         };
         if value.len() < object_size {
-            return FunctionPropertyResult { return_code: 0xA3, data: PropertyBuf::new(&[0x02]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoSizeMismatch, &[0x02]);
         }
         let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
         let resp = go_diag_success(0x02, go_idx, status, value);
@@ -948,19 +928,19 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // a malformed length maps to `FF E_ERROR` per §4.8.1.1.7 —
         // `F2` is reserved for "command not supported" which this isn't.
         if data.len() != 5 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let flags = data[2];
         // Validate flags: bits 2-7 must be zero (bit 7 / full-octet flag
         // is not valid for reads since there is no value data to format).
         if flags & 0xFC != 0 {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x03]);
         }
 
         let sec_bits = flags & 0x03;
         if sec_bits == 0x02 {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x03]);
         }
 
         // Validate that the GA exists in the device's address table.
@@ -968,13 +948,13 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         let tsap = ctx.state.adt().borrow().tsap(ga);
 
         let Some(tsap) = tsap else {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x03]);
         };
 
         // When security bits are non-zero, check that a group key is
         // available for the GA's TSAP.
         if sec_bits != 0 && !ctx.state.has_group_key(tsap) {
-            return FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x03]);
         }
 
         debug!(
@@ -990,16 +970,16 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         match sec_bits {
             0x00 => {
                 ctx.group_value_sender().send_group_read_tsap(tsap, Priority::Low);
-                FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
+                FunctionPropertyResult::with_code(PropertyReturnCode::Success, &[0x03])
             }
             0x01 | 0x03 => {
                 let security = if sec_bits == 0x01 { RequestedSecurity::AuthOnly } else { RequestedSecurity::AuthConf };
                 match GS::send_read_secure(ctx, tsap, Priority::Low, security) {
                     SecureSendOutcome::Queued => {
-                        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x03]) }
+                        FunctionPropertyResult::with_code(PropertyReturnCode::Success, &[0x03])
                     }
                     SecureSendOutcome::NoKey => {
-                        FunctionPropertyResult { return_code: 0xF8, data: PropertyBuf::new(&[0x03]) }
+                        FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0x03])
                     }
                 }
             }
@@ -1029,10 +1009,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // check so malformed requests outside Diagnostic Mode still
         // report the mode error (matches the conformance 6.2.22 behaviour).
         if !self.state.is_diagnostic_mode() {
-            return FunctionPropertyResult {
-                return_code: 0xF3, // E_COMMAND_IMPOSSIBLE
-                data: PropertyBuf::new(&[0x04]),
-            };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::CommandImpossible, &[0x04]);
         }
 
         // Spec §4.8.1.3.6 Figure 40: `[reserved, 0x04, Sender_IA(2)]`.
@@ -1042,13 +1019,13 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // verifies `FF` alone (no service-ID echo) on both too-few and
         // too-many-byte variants.
         if data.len() != 4 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let ia = u16::from_be_bytes([data[2], data[3]]);
         self.state.set_diagnostic_source_filter(Some(ia));
 
-        FunctionPropertyResult { return_code: 0x00, data: PropertyBuf::new(&[0x04]) }
+        FunctionPropertyResult::with_code(PropertyReturnCode::Success, &[0x04])
     }
 
     // ================================================================
@@ -1071,14 +1048,14 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
     {
         let data = req.service_data;
         if data.len() != 4 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
         let cot = ctx.state.cot().borrow();
 
         let Some(entry) = cot.object(go_idx) else {
-            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x00]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x00]);
         };
 
         // Spec §4.8.1.1.6 Figure 23 defines `GO_config` as a packed 16-bit
@@ -1122,7 +1099,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         }
         .write(&mut resp);
 
-        FunctionPropertyResult { return_code: 0x20, data: PropertyBuf::new(out) }
+        FunctionPropertyResult::go_diag(GoDiagReturnCode::Config, out)
     }
 
     // ================================================================
@@ -1140,7 +1117,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
     ) -> FunctionPropertyResult {
         let data = req.service_data;
         if data.len() != 4 {
-            return FunctionPropertyResult { return_code: 0xFF, data: PropertyBuf::new(&[]) };
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let go_idx = u16::from_be_bytes([data[2], data[3]]);
@@ -1148,7 +1125,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 
         // Validate GO exists.
         if cot.object(go_idx).is_none() {
-            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x01]);
         }
         drop(cot);
 
@@ -1156,7 +1133,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // The COT entry existing does not guarantee the comm-object container
         // covers this index — both tables are downloaded independently.
         let Some(value) = co.value(go_idx) else {
-            return FunctionPropertyResult { return_code: 0xA1, data: PropertyBuf::new(&[0x01]) };
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x01]);
         };
         // GO diagnostics status uses only the low nibble (strip idle indicator).
         let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);

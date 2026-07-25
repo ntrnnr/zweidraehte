@@ -5,6 +5,7 @@ use core::fmt;
 use crate::AccessContext;
 use crate::access::AccessPolicy;
 use crate::dpt::PropertyDataDefinition;
+use crate::messages::apdu::property_ext::PropertyReturnCode;
 
 /// Property access rights
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,21 +72,20 @@ impl PropertyError {
     /// Convert to an AN163 extended property service return code.
     ///
     /// See spec 03_03_07 section 3.4.5.5 "Return Codes".
-    pub fn to_ext_return_code(self) -> u8 {
-        use crate::messages::apdu::property_ext::return_code;
+    pub fn to_ext_return_code(self) -> PropertyReturnCode {
         match self {
             PropertyError::InvalidObjectIndex
             | PropertyError::InvalidPropertyId
             | PropertyError::InvalidPropertyIndex
             | PropertyError::InvalidStartIndex
-            | PropertyError::InvalidElementCount => return_code::E_ADDRESS_VOID,
-            PropertyError::AccessDenied => return_code::E_ACCESS_DENIED,
-            PropertyError::WriteNotAllowed => return_code::E_ACCESS_READ_ONLY,
-            PropertyError::ReadNotAllowed => return_code::E_ACCESS_WRITE_ONLY,
-            PropertyError::TypeMismatch => return_code::E_DATA_TYPE_CONFLICT,
-            PropertyError::BufferTooSmall => return_code::E_LENGTH_EXCEEDS_MAX_APDU_LENGTH,
-            PropertyError::ValueOutOfRange => return_code::E_DATA_VOID,
-            PropertyError::InvalidLoadState => return_code::E_TEMPORARILY_NOT_AVAILABLE,
+            | PropertyError::InvalidElementCount => PropertyReturnCode::AddressVoid,
+            PropertyError::AccessDenied => PropertyReturnCode::AccessDenied,
+            PropertyError::WriteNotAllowed => PropertyReturnCode::AccessReadOnly,
+            PropertyError::ReadNotAllowed => PropertyReturnCode::AccessWriteOnly,
+            PropertyError::TypeMismatch => PropertyReturnCode::DataTypeConflict,
+            PropertyError::BufferTooSmall => PropertyReturnCode::LengthExceedsMaxApduLength,
+            PropertyError::ValueOutOfRange => PropertyReturnCode::DataVoid,
+            PropertyError::InvalidLoadState => PropertyReturnCode::TemporarilyNotAvailable,
         }
     }
 }
