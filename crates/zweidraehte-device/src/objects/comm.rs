@@ -409,7 +409,8 @@ impl ComObjectIndex for NoComObjectIndex {
 /// [`ComObjects`] implementation for devices with no group objects.
 ///
 /// Pure bridge/interface products (a KNX/IP interface, for example) still
-/// have to name a `ComObjects` type in their [`StackDefinition`]. Without
+/// have to name a `ComObjects` type in their
+/// [`StackDefinition`](crate::StackDefinition). Without
 /// this they each hand-write an uninhabited index enum plus three trait
 /// impls — about 35 lines that say nothing but "there are none".
 ///
