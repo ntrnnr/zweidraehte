@@ -22,6 +22,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get default parameter values as bytes
     let defaults: MdtParams = Default::default();
+    // TODO: This is unsound and produces a non-deterministic product database.
+    // `MdtParams` is not `IntoBytes`-able (it has 3 bytes of padding), so reading it as bytes
+    // includes uninitialized padding. Those bytes land at real parameter
+    // offsets in the `<Data>` defaults blob that ETS reads back byte-for-byte,
+    // and they change from build to build — a diff of the generated MDT
+    // program across two builds shows one byte flipping 0xBF -> 0xFF.
+    // Fix the struct (add explicit filler fields where the compiler reports
+    // padding), then switch to `zweidraehte_generators::params_as_bytes`, which
+    // makes this impossible to express. See SESSION.md.
+    #[allow(clippy::undocumented_unsafe_blocks)]
     let param_bytes = unsafe {
         core::slice::from_raw_parts(&defaults as *const MdtParams as *const u8, core::mem::size_of::<MdtParams>())
     };

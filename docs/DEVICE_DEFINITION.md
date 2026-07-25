@@ -655,7 +655,7 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state:    IpExtensionFor<KnxIpDeviceUdp>,
     state:              MyState,
     al_extensions:      (SystemBAlServices, DomainAddressService),
-    layer_builder:      InsecureIpDeviceBuilder,
+    layer_builder:      PlainIpDeviceBuilder,
 }
 ```
 
@@ -945,7 +945,7 @@ zweidraehte_device::system_b_standard_stack! {
     link_layer_builder: …, platform: (),
     extension_state: MyExtension, state: MyState,
     al_extensions: (SystemBAlServices, DomainAddressService),
-    layer_builder: InsecureDeviceBuilder,
+    layer_builder: PlainDeviceBuilder,
 }
 ```
 

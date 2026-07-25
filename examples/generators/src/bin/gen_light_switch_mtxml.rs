@@ -62,12 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get default parameter values as raw bytes for the knxprod.
     let defaults = LightSwitchParams::DEFAULT;
-    let param_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &defaults as *const LightSwitchParams as *const u8,
-            core::mem::size_of::<LightSwitchParams>(),
-        )
-    };
+    let param_bytes = zweidraehte_generators::params_as_bytes(&defaults);
 
     let page_layout = LightSwitchDevice::page_layout();
 

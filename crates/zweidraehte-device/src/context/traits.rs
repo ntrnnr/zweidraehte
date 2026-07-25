@@ -101,8 +101,8 @@ pub trait AddressTableContext {
 /// and the KNX Serial Number for the block-1 field of serial-addressed frames
 /// (AET=0, per KNX 03/02/05 §6.1.5.1).
 pub trait RfDomainAddressContext {
-    /// Copy the device's stored 6-octet RF Domain Address into `out`.
-    fn rf_domain_address(&self, out: &mut [u8; 6]);
+    /// The device's stored 6-octet RF Domain Address.
+    fn rf_domain_address(&self) -> [u8; 6];
 
     /// The device's 6-octet KNX Serial Number.
     fn knx_serial_number(&self) -> [u8; 6];

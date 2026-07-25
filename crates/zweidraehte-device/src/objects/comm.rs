@@ -387,6 +387,56 @@ pub const trait ComObjectIndex: Clone + Sized {
 /// index. The index typically originates from the association table, which
 /// is downloaded from ETS and therefore untrusted: a malicious or corrupt
 /// table must not be able to panic the device.
+// ============================================================================
+// Empty comm-object set
+// ============================================================================
+
+/// Index type for a device with no group objects. Uninhabited: no valid
+/// index exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoComObjectIndex {}
+
+impl ComObjectIndex for NoComObjectIndex {
+    fn from_index(_idx: u16) -> Option<Self> {
+        None
+    }
+
+    fn index(&self) -> u16 {
+        match *self {}
+    }
+}
+
+/// [`ComObjects`] implementation for devices with no group objects.
+///
+/// Pure bridge/interface products (a KNX/IP interface, for example) still
+/// have to name a `ComObjects` type in their [`StackDefinition`]. Without
+/// this they each hand-write an uninhabited index enum plus three trait
+/// impls — about 35 lines that say nothing but "there are none".
+///
+/// ```rust,ignore
+/// type CO = NoComObjects;
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoComObjects;
+
+impl ComObjects for NoComObjects {
+    type Index = NoComObjectIndex;
+
+    fn new() -> Self {
+        Self
+    }
+
+    fn info(&self, _idx: u16) -> Option<ComObjectInfo<'_>> {
+        None
+    }
+
+    fn info_mut(&mut self, _idx: u16) -> Option<ComObjectInfoMut<'_>> {
+        None
+    }
+}
+
+impl ComObjectBusHook for NoComObjects {}
+
 pub trait ComObjects {
     type Index: ComObjectIndex;
 

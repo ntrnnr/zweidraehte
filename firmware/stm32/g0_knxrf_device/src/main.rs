@@ -127,7 +127,7 @@ zweidraehte_device::system_b_standard_stack! {
         zweidraehte_device::layers::application::services::DomainAddressService,
         zweidraehte_device::layers::application::services::RfDomainAddressService,
     ),
-    layer_builder: InsecureDeviceBuilder,
+    layer_builder: PlainDeviceBuilder,
     augments: {
         bundle: Stm32G0KnxRfAugments,
         create: |state, platform, _layer_ctx| Stm32G0KnxRfAugments {

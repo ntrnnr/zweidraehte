@@ -110,7 +110,7 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: Tp1ExtensionState,
     state: PicoTp1State,
     al_extensions: zweidraehte_device::layers::application::services::SystemBAlServices,
-    layer_builder: InsecureDeviceBuilder,
+    layer_builder: PlainDeviceBuilder,
     augments: {
         bundle: PicoTp1Augments,
         create: |state, platform, _layer_ctx| PicoTp1Augments {

@@ -773,7 +773,7 @@ forward_to_field! {
         Inner: ExtensionState + HasRfDomainAddress,
         const GRP: usize, const P2P: usize, const GO: usize,
     ]> HasRfDomainAddress for SecureExtensionState<Inner, GRP, P2P, GO> {
-        out fn rf_domain_address(&self, out: &mut [u8; 6]);
+        get fn rf_domain_address(&self) -> [u8; 6];
         set fn set_rf_domain_address(&self, addr: &[u8; 6]);
     } => self.inner
 }
@@ -859,10 +859,6 @@ impl<Inner: ExtensionState + crate::ip::HasIpSecureView, const GRP: usize, const
 impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasSecurityState
     for SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    fn security_mode_enabled(&self) -> bool {
-        self.security.security_mode_enabled()
-    }
-
     fn security_load_state(&self) -> LoadState {
         self.security.load_state()
     }

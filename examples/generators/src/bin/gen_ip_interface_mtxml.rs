@@ -30,12 +30,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Empty parameters — zero bytes.
     let defaults = IpInterfaceParams::default();
-    let param_bytes = unsafe {
-        core::slice::from_raw_parts(
-            &defaults as *const IpInterfaceParams as *const u8,
-            core::mem::size_of::<IpInterfaceParams>(),
-        )
-    };
+    let param_bytes = zweidraehte_generators::params_as_bytes(&defaults);
 
     let bus_interfaces = tunneling_bus_interfaces();
 

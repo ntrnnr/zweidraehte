@@ -194,13 +194,13 @@ pub enum SecureSendOutcome {
 ///
 /// [`DiagnosticsAugment`] is generic over this strategy so a **non-secure**
 /// device carries no security concept at all — it composes the augment with
-/// [`SecureGoSendAbsent`], whose methods need no security state and report
+/// [`NoSecureGoSend`], whose methods need no security state and report
 /// "no key" / "plain". A secure device composes it with
-/// [`SecureGoSendPresent`], whose impl is the only place the Data Secure
+/// [`SecureGoSender`], whose impl is the only place the Data Secure
 /// bounds (`HasSecurityState` + the storage-handle `HasSeqStore`) appear.
 ///
 /// The trait is parameterised on `D` precisely so the two impls can differ in
-/// their `D`-bounds: `SecureGoSendAbsent` is unconditional, `SecureGoSendPresent`
+/// their `D`-bounds: `NoSecureGoSend` is unconditional, `WithSecureGoSend`
 /// requires the secure extension state. (A method-level `where` clause cannot
 /// express that, and the crate does not enable `specialization`, so a blanket
 /// no-op plus a bounded real impl is not an option — two distinct concrete
@@ -235,9 +235,9 @@ pub trait SecureGoSender<D: StackDefinition> {
 /// table and no sequence-number storage, so every secure send reports
 /// [`SecureSendOutcome::NoKey`] (→ `F8`) and every GO reports plain (`0`)
 /// security flags. Carries no security bound — this is the default strategy.
-pub struct SecureGoSendAbsent;
+pub struct NoSecureGoSend;
 
-impl<D: StackDefinition> SecureGoSender<D> for SecureGoSendAbsent {
+impl<D: StackDefinition> SecureGoSender<D> for NoSecureGoSend {
     fn send_write_secure(
         _ctx: &ServiceCtx<'_, D>,
         _tsap: u16,
@@ -268,9 +268,9 @@ impl<D: StackDefinition> SecureGoSender<D> for SecureGoSendAbsent {
 /// flags. This is the only place the Data Secure bounds appear, so a device
 /// only composes [`DiagnosticsAugment`] with this strategy when its extension
 /// state actually carries security.
-pub struct SecureGoSendPresent;
+pub struct WithSecureGoSend;
 
-impl<D: StackDefinition> SecureGoSender<D> for SecureGoSendPresent
+impl<D: StackDefinition> SecureGoSender<D> for WithSecureGoSend
 where
     D::Storage: HasSeqStore,
     D::State: StackState + HasExtensionState + HasAddressTable,
@@ -330,7 +330,7 @@ where
 // communication objects, tables). The *secure* GO-diagnostics services
 // (secure GroupValue send + the GO security-flags read) are not bounded
 // here: they go through the `GS: SecureGoSender<D>` strategy, so a
-// non-secure device composes this augment with `SecureGoSendAbsent` and
+// non-secure device composes this augment with `NoSecureGoSend` and
 // names no security trait at all.
 #[interface_object_augment(
     target_objects = [
@@ -347,11 +347,11 @@ where
         GS: SecureGoSender<D>,
     ),
 )]
-pub struct DiagnosticsAugment<'a, GS = SecureGoSendAbsent> {
+pub struct DiagnosticsAugment<'a, GS = NoSecureGoSend> {
     state: &'a OperationModeState,
     /// Selects the secure-send strategy without storing any data — both
     /// strategy types are zero-sized. A non-secure device uses the default
-    /// `SecureGoSendAbsent`; a secure device names `SecureGoSendPresent`.
+    /// `NoSecureGoSend`; a secure device names `WithSecureGoSend`.
     _sender: core::marker::PhantomData<GS>,
 
     // PID_OPERATION_MODE (52) on the ApplicationProgram object.
@@ -788,7 +788,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         // exactly like before. Secure (auth-only / auth+conf) goes through
         // the `GS: SecureGoSender<D>` strategy: on a secure device it builds
         // a fully-wrapped KNX Data Secure frame using the TSAP's group key;
-        // on a non-secure device (`SecureGoSendAbsent`) it reports `NoKey`,
+        // on a non-secure device (`NoSecureGoSend`) it reports `NoKey`,
         // which maps to `F8` per 03/05/01 §4.8.1.3.3 Table 37 ("Security is
         // requested for GA for which there is no GA Key"). The `has_group_key`
         // guard above already returns `F8` for non-secure devices before we

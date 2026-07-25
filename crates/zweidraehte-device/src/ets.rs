@@ -637,65 +637,55 @@ impl HasModuleCommObjects for () {
 /// # Modifiers
 ///
 /// - `[text_source]` - Marks this parameter as the text source for `{{0}}` substitution
+/// Maps the optional `[text_source]` marker in [`ets_virtual_params`] onto a
+/// `bool`. Not part of the public API.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __ets_text_source_flag {
+    () => {
+        false
+    };
+    (text_source) => {
+        true
+    };
+}
+
 #[macro_export]
 macro_rules! ets_virtual_params {
-    // String with text_source - single param
+    // One repetition arm handles any number of params, each with or without
+    // the `[text_source]` marker. An earlier version had one arm per shape and
+    // accepted only a single parameter, which forced multi-param devices to
+    // hand-expand the `EtsParamDefExt` literals.
     (
         $(#[$attr:meta])*
         $vis:vis $name:ident {
-            $param_name:ident : String($size:expr) => $display:literal [text_source] $(,)?
+            $(
+                $param_name:ident : String($size:expr) => $display:literal $([$text_source:ident])?
+            ),* $(,)?
         }
     ) => {
         $(#[$attr])*
         $vis const $name: &[$crate::ets::EtsParamDefExt] = &[
-            $crate::ets::EtsParamDefExt {
-                base: $crate::ets::EtsParamDef {
-                    name: stringify!($param_name),
-                    display_name: $display,
-                    suffix: None,
-                    offset: 0,
-                    size_bits: ($size * 8) as u8,
-                    bit_offset: 0,
-                    param_type: $crate::ets::EtsParamType::String,
-                    hidden: false,
-                    no_memory: true,
-                    type_name: None,
-                    text_pattern: None,
+            $(
+                $crate::ets::EtsParamDefExt {
+                    base: $crate::ets::EtsParamDef {
+                        name: stringify!($param_name),
+                        display_name: $display,
+                        suffix: None,
+                        offset: 0,
+                        size_bits: ($size * 8) as u8,
+                        bit_offset: 0,
+                        param_type: $crate::ets::EtsParamType::String,
+                        hidden: false,
+                        no_memory: true,
+                        type_name: None,
+                        text_pattern: None,
+                    },
+                    enum_variants: None,
+                    default_value: None,
+                    is_text_source: $crate::__ets_text_source_flag!($($text_source)?),
                 },
-                enum_variants: None,
-                default_value: None,
-                is_text_source: true,
-            },
-        ];
-    };
-
-    // String without modifier - single param
-    (
-        $(#[$attr:meta])*
-        $vis:vis $name:ident {
-            $param_name:ident : String($size:expr) => $display:literal $(,)?
-        }
-    ) => {
-        $(#[$attr])*
-        $vis const $name: &[$crate::ets::EtsParamDefExt] = &[
-            $crate::ets::EtsParamDefExt {
-                base: $crate::ets::EtsParamDef {
-                    name: stringify!($param_name),
-                    display_name: $display,
-                    suffix: None,
-                    offset: 0,
-                    size_bits: ($size * 8) as u8,
-                    bit_offset: 0,
-                    param_type: $crate::ets::EtsParamType::String,
-                    hidden: false,
-                    no_memory: true,
-                    type_name: None,
-                    text_pattern: None,
-                },
-                enum_variants: None,
-                default_value: None,
-                is_text_source: false,
-            },
+            )*
         ];
     };
 }

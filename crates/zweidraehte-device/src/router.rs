@@ -74,7 +74,7 @@ impl Outbox {
     /// restart handler, which must let the router push the
     /// `A_Restart_Response` to the link layer before it wipes the
     /// individual address.
-    pub fn is_fully_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.count == 0
     }
 

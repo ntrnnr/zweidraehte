@@ -48,7 +48,7 @@ impl<const N: usize> Table<CoTab7Impl<N>> {
 
         // Each entry is a big-endian U16 descriptor
         let offset = 2 + (((idx - 1) as usize) * 2);
-        let raw = U16::from_bytes(self.table.data[offset..offset + 2].try_into().unwrap());
+        let raw = U16::from_bytes(self.table.data[offset..offset + 2].try_into().expect("slice is exactly 2 bytes"));
 
         Some(ComObjectDescriptor::from_u16(raw))
     }
@@ -71,7 +71,7 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTab7Impl<N>> {
 
     fn entry_count(&self) -> u16 {
         // The count is bus-downloaded data and must not exceed physical capacity.
-        U16::from_bytes(self.table.data[0..2].try_into().unwrap()).get().min(self.max_entries() as u16)
+        U16::from_bytes(self.table.data[0..2].try_into().expect("slice is exactly 2 bytes")).get().min(self.max_entries() as u16)
     }
 
     fn object(&self, idx: u16) -> Option<ComObjectTableEntry> {
@@ -96,7 +96,7 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTab7Impl<N>> {
 
         // Read the existing descriptor, replace flags, write back
         let offset = 2 + (((idx - 1) as usize) * 2);
-        let raw = U16::from_bytes(self.table.data[offset..offset + 2].try_into().unwrap());
+        let raw = U16::from_bytes(self.table.data[offset..offset + 2].try_into().expect("slice is exactly 2 bytes"));
         let mut desc = ComObjectDescriptor::from_u16(raw);
         desc.flags = flags;
         self.table.data[offset..offset + 2].copy_from_slice(&desc.to_u16().to_bytes());

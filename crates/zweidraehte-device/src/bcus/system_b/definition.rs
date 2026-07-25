@@ -406,7 +406,7 @@ pub type ExtensionAugmentFor<'a, D> =
 ///     extension_state: IpExtensionFor<KnxIpDeviceTcp>,
 ///     state: DemoState,
 ///     al_extensions: (SystemBAlServices, DomainAddressService),
-///     layer_builder: InsecureIpDeviceBuilder,
+///     layer_builder: PlainIpDeviceBuilder,
 ///     augments: {
 ///         bundle: DemoAugments,
 ///         create: |state, platform, _layer_ctx| DemoAugments {

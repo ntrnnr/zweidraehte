@@ -349,8 +349,8 @@ impl<D: StackDefinition> RfDomainAddressContext for StackContext<'_, D>
 where
     D::State: HasRfDomainAddress,
 {
-    fn rf_domain_address(&self, out: &mut [u8; 6]) {
-        self.inner.state.rf_domain_address(out);
+    fn rf_domain_address(&self) -> [u8; 6] {
+        self.inner.state.rf_domain_address()
     }
 
     fn knx_serial_number(&self) -> [u8; 6] {

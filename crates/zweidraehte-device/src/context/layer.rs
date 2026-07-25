@@ -40,19 +40,26 @@ use zweidraehte_proto::messages::{
 /// reference to it. It is completely decoupled from `StackState` and is
 /// created *before* the state (see [`new()`](crate::new)) so
 /// `D::create_state` has working infrastructure from birth.
+///
+/// The channel fields are `pub(crate)` on purpose. Their types spell out
+/// their capacities (`PubSubChannel<.., 4, 4, 1>`, `Channel<.., 2>`), so
+/// exposing them would make every capacity part of the public API and turn
+/// "raise the subscriber limit" into a breaking change. Reach them through
+/// the methods below and on [`Stack`](crate::Stack) instead.
 pub struct LayerContext<D: StackDefinition> {
-    pub buffer_manager: DynBufferManager<'static>,
-    pub outbox: RefCell<Outbox>,
-    pub event_channel:
+    pub(crate) buffer_manager: DynBufferManager<'static>,
+    pub(crate) outbox: RefCell<Outbox>,
+    pub(crate) event_channel:
         PubSubChannel<D::Mutex, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent), 4, 4, 1>,
-    pub lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1>,
-    pub restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
-    pub app_service_channel: Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
+    pub(crate) lifecycle_channel: PubSubChannel<D::Mutex, LifecycleEvent, 4, 4, 1>,
+    pub(crate) restart_channel: Channel<D::Mutex, restart::RestartRequest, 1>,
+    pub(crate) app_service_channel:
+        Channel<D::Mutex, Request<ApplicationLayerService, ApplicationLayerServiceResponse>, 1>,
 
     /// Advisory persistence notifications towards the storage task (ETS
     /// download complete). Plain values — nothing on this channel blocks
     /// the sender; the dirty flag gates the actual write.
-    pub persist_channel: Channel<D::Mutex, PersistRequest, 2>,
+    pub(crate) persist_channel: Channel<D::Mutex, PersistRequest, 2>,
 
     /// Bookkeeping shared between the application layer's built-in
     /// group-data handler and the
@@ -103,15 +110,23 @@ impl<D: StackDefinition> LayerContext<D> {
     }
 
     /// Try sending a restart request to user code. Returns `true` if sent.
+    ///
+    /// `#[must_use]` because a dropped restart request is not recoverable
+    /// from elsewhere: the remote-reset server reports the failure back to
+    /// the client (see `knxip::services::remote_config`), so a caller that
+    /// silently ignored a `false` would strand the request.
+    #[must_use = "a dropped restart request is silently lost; report or retry it"]
     pub fn try_send_restart_request(&self, request: restart::RestartRequest) -> bool {
         self.restart_channel.try_send(request).is_ok()
     }
 
-    /// Try sending an advisory persistence notification to the storage
-    /// task. Returns `true` if sent. Losing one (channel full) is
-    /// acceptable — the dirty flag still gets the data saved on the next
-    /// poll/restart.
-    pub fn try_send_persist_request(&self, request: PersistRequest) -> bool {
-        self.persist_channel.try_send(request).is_ok()
+    /// Send an advisory persistence notification to the storage task.
+    ///
+    /// Deliberately returns `()`: losing one (channel full) is acceptable
+    /// because the dirty flag still gets the data saved on the next
+    /// poll/restart, so there is nothing a caller could usefully do with a
+    /// success flag.
+    pub fn try_send_persist_request(&self, request: PersistRequest) {
+        let _ = self.persist_channel.try_send(request);
     }
 }

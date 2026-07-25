@@ -139,8 +139,7 @@ where
         .with_application(ApciCode::DomainAddressResponse)
         .build();
 
-    let mut doa = [0u8; RF_DOA_LEN];
-    ctx.base.state.rf_domain_address(&mut doa);
+    let doa = ctx.base.state.rf_domain_address();
     DomainAddressResponse::write_domain_address(msg.buf_mut(), &doa);
 
     debug!("AL sending DomainAddressResponse");

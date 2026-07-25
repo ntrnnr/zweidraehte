@@ -10,7 +10,7 @@ use crate::{
     device_model::DeviceModelNotifier,
     objects::interface::{
         FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-        HasDeviceObject, InterfaceObject, PropertyAccess, PropertyBuf, PropertyDescriptionResponse, PropertyDescriptor,
+        HasDeviceObject, InterfaceObject, PropertyAccess, PropertyDescriptionResponse, PropertyDescriptor,
         PropertyError, PropertyServiceHandler, WriteResponse, pid,
     },
     objects::tables::{HasLoadStateMachine, HasRunStateMachine},

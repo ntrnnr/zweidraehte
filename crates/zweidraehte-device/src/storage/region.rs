@@ -178,6 +178,10 @@ impl RegionKind {
 /// array — the input [`check_layout`] proves and [`region_placement`] packs.
 /// Devices never assemble one by hand.
 #[derive(Clone, Copy, Debug)]
+/// `#[non_exhaustive]`: every construction/match site is inside this crate,
+/// where the attribute has no effect — so in-crate exhaustiveness checking
+/// is preserved while downstream crates stay insulated from new variants.
+#[non_exhaustive]
 pub struct RegionSpec {
     /// The chip this entry lives on (its auto-pack group).
     pub chip_tag: u32,

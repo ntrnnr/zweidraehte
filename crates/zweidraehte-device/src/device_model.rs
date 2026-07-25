@@ -50,6 +50,10 @@ pub enum RunTarget {
 /// via [`DeviceModelNotifier::notify`]. Drained by
 /// [`DeviceModel::drain_dm_events`] after each dispatch cycle.
 #[derive(Debug, Clone, Copy)]
+/// `#[non_exhaustive]`: every construction/match site is inside this crate,
+/// where the attribute has no effect — so in-crate exhaustiveness checking
+/// is preserved while downstream crates stay insulated from new variants.
+#[non_exhaustive]
 pub enum DeviceModelEvent {
     /// An RSM crossed the running/not-running boundary. The DeviceModel
     /// should handle lifecycle side effects (DeviceControl, comm object

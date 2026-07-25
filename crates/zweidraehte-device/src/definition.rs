@@ -28,6 +28,40 @@ use crate::{
     storage::{DeviceIdentity, StaticIdentity},
 };
 
+// ============================================================================
+// Empty parameter block
+// ============================================================================
+
+/// [`StackDefinition::P`] for devices with no application parameters.
+///
+/// Bridge/interface products configured purely through interface-object
+/// properties still have to name a parameter type. Without this they each
+/// declare a `#[repr(C)]` struct wrapping a `_private: ()` field plus a
+/// hand-written [`ConstDefault`] impl, only to satisfy the bounds.
+///
+/// ```rust,ignore
+/// type P = NoParams;
+/// ```
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, zerocopy::KnownLayout, zerocopy::Immutable, zerocopy::IntoBytes,
+)]
+#[repr(C)]
+pub struct NoParams {
+    // A ZST would not satisfy `IntoBytes`'s layout requirements as a bare
+    // unit struct here, so the private unit field stands in — the same trick
+    // each device previously wrote out by hand.
+    _private: (),
+}
+
+impl ConstDefault for NoParams {
+    const DEFAULT: Self = Self { _private: () };
+}
+
+impl NoParams {
+    /// Empty parameter list — nothing is ETS-visible.
+    pub const ETS_PARAMS_EXT: &'static [crate::ets::EtsParamDefExt] = &[];
+}
+
 pub trait StackDefinition: Copy + 'static {
     /// Device descriptor containing all device identification and configuration.
     ///
@@ -115,8 +149,8 @@ pub trait StackDefinition: Copy + 'static {
     /// # Important: overrides are currently ignored by the standard builders
     ///
     /// Due to a `generic_const_exprs` limitation, the standard layer builders
-    /// ([`InsecureDeviceBuilder`](crate::InsecureDeviceBuilder),
-    /// [`InsecureIpDeviceBuilder`](crate::InsecureIpDeviceBuilder), and
+    /// ([`PlainDeviceBuilder`](crate::PlainDeviceBuilder),
+    /// [`PlainIpDeviceBuilder`](crate::PlainIpDeviceBuilder), and
     /// [`SecureDeviceBuilder`](crate::SecureDeviceBuilder)) always construct
     /// `TransportLayer` with the hard-coded defaults (1 incoming, 0 outgoing).
     /// Overriding this constant on your `StackDefinition` is **silently a
@@ -424,8 +458,8 @@ pub trait StackDefinition: Copy + 'static {
     /// Layer stack builder that handles channel creation, layer construction,
     /// and link-layer endpoint wiring.
     ///
-    /// Use [`InsecureDeviceBuilder`](crate::InsecureDeviceBuilder) for standard
-    /// `(NL, TL, AL)` stacks or [`InsecureIpDeviceBuilder`](crate::InsecureIpDeviceBuilder)
+    /// Use [`PlainDeviceBuilder`](crate::PlainDeviceBuilder) for standard
+    /// `(NL, TL, AL)` stacks or [`PlainIpDeviceBuilder`](crate::PlainIpDeviceBuilder)
     /// for KNX/IP `(NL, CemiTL<TL>, AL)` stacks.
     type LayerBuilder: LayerStackBuilder<Self>;
 }

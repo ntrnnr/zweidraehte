@@ -182,7 +182,7 @@ forward_to_field! {
 
 forward_to_field! {
     impl<[]> HasRfDomainAddress for RfRetransmitterExtension {
-        out fn rf_domain_address(&self, out: &mut [u8; 6]);
+        get fn rf_domain_address(&self) -> [u8; 6];
         set fn set_rf_domain_address(&self, addr: &[u8; 6]);
     } => self.inner
 }

@@ -77,7 +77,7 @@ zweidraehte_device::system_b_standard_stack! {
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
     ),
-    layer_builder: InsecureIpDeviceBuilder,
+    layer_builder: PlainIpDeviceBuilder,
     augments: {
         bundle: LightSwitchAugments,
         create: |state, platform, _layer_ctx| LightSwitchAugments {

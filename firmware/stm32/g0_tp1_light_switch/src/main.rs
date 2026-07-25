@@ -140,7 +140,7 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: Tp1ExtensionState,
     state: Stm32G0State,
     al_extensions: zweidraehte_device::layers::application::services::SystemBAlServices,
-    layer_builder: InsecureDeviceBuilder,
+    layer_builder: PlainDeviceBuilder,
     augments: {
         bundle: Stm32G0LightSwitchAugments,
         create: |state, platform, _layer_ctx| Stm32G0LightSwitchAugments {

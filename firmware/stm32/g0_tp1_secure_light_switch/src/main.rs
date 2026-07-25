@@ -9,7 +9,7 @@
 //! STM32G0B0RE **KNX Data Secure** TP1 light switch.
 //!
 //! A secure variant of [`stm32g0_tp1_light_switch`](../stm32g0_tp1_light_switch).
-//! Uses `SecureDeviceBuilder` instead of `InsecureDeviceBuilder` and
+//! Uses `SecureDeviceBuilder` instead of `PlainDeviceBuilder` and
 //! plugs [`Stm32CommonRng`] into [`StackDefinition::Rng`][sd] so the
 //! Secure Application Layer's `S-A_Sync` challenges come from a small
 //! PRNG (see `stm32_common::rng`).
@@ -189,14 +189,14 @@ type SecAugment<'a> = SecureAugmentBundle<
 
 /// Augment chain: KNX Data Secure augment (drives Security IO 0x11),
 /// the GO/operation-mode diagnostics augment, plus the demo Easter Egg
-/// augment. As a secure device it uses the `SecureGoSendPresent` strategy
+/// augment. As a secure device it uses the `WithSecureGoSend` strategy
 /// so the secure GO-diagnostics send-paths are wired up.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct Stm32G0SecureAugments<'a> {
     #[service(augment)]
     pub sec: SecAugment<'a>,
     #[service(augment)]
-    pub diag: DiagnosticsAugment<'a, SecureGoSendPresent>,
+    pub diag: DiagnosticsAugment<'a, WithSecureGoSend>,
     #[service(augment)]
     pub easter: EasterEggAugment,
 }
@@ -227,7 +227,7 @@ zweidraehte_device::system_b_standard_stack! {
         bundle: Stm32G0SecureAugments,
         create: |state, platform, layer_ctx| Stm32G0SecureAugments {
             sec: state.extension_state().create_secure_augment(platform, layer_ctx),
-            diag: DiagnosticsAugment::<SecureGoSendPresent>::new(&state.operation_mode),
+            diag: DiagnosticsAugment::<WithSecureGoSend>::new(&state.operation_mode),
             easter: EasterEggAugment,
         },
     },

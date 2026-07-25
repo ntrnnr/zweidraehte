@@ -33,7 +33,7 @@
 use const_default::ConstDefault;
 use static_cell::StaticCell;
 
-use zweidraehte_device::InsecureDeviceBuilder;
+use zweidraehte_device::PlainDeviceBuilder;
 use zweidraehte_device::StackDefinition;
 use zweidraehte_device::bcus::system_b::{
     ExtensionAugmentFor, MemoryLayout, RfRetransmitterExtension, SystemBDeviceModel, SystemBDeviceState,
@@ -205,7 +205,7 @@ impl StackDefinition for RfTestStack {
     }
 
     type AlExtensions = ();
-    type LayerBuilder = InsecureDeviceBuilder;
+    type LayerBuilder = PlainDeviceBuilder;
 }
 
 const RF_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calculate(0x0100, 0, 0, 0, 0);

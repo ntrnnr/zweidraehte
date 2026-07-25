@@ -227,44 +227,12 @@ unsafe impl IntoBytes for ButtonConfig {
 // Object description text fields for each button. These are editable in ETS
 // and appear in the comm object tree via `{{param:default}}` text templates.
 // They have no device memory footprint.
-pub const LIGHT_SWITCH_VIRTUAL_PARAMS: &[zweidraehte_device::ets::EtsParamDefExt] = &[
-    zweidraehte_device::ets::EtsParamDefExt {
-        base: zweidraehte_device::ets::EtsParamDef {
-            name: "btn1_description",
-            display_name: "Object description",
-            suffix: None,
-            offset: 0,
-            size_bits: 240, // 30 bytes
-            bit_offset: 0,
-            param_type: zweidraehte_device::ets::EtsParamType::String,
-            hidden: false,
-            no_memory: true,
-            type_name: None,
-            text_pattern: None,
-        },
-        enum_variants: None,
-        default_value: None,
-        is_text_source: false,
-    },
-    zweidraehte_device::ets::EtsParamDefExt {
-        base: zweidraehte_device::ets::EtsParamDef {
-            name: "btn2_description",
-            display_name: "Object description",
-            suffix: None,
-            offset: 0,
-            size_bits: 240, // 30 bytes
-            bit_offset: 0,
-            param_type: zweidraehte_device::ets::EtsParamType::String,
-            hidden: false,
-            no_memory: true,
-            type_name: None,
-            text_pattern: None,
-        },
-        enum_variants: None,
-        default_value: None,
-        is_text_source: false,
-    },
-];
+zweidraehte_device::ets_virtual_params! {
+    pub LIGHT_SWITCH_VIRTUAL_PARAMS {
+        btn1_description: String(30) => "Object description",
+        btn2_description: String(30) => "Object description",
+    }
+}
 
 // ============================================================================
 // Application Parameters

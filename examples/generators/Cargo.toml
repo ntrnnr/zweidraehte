@@ -7,10 +7,12 @@ publish = false
 # MTXML / .knxprod generator binaries — thin glue between the device
 # definitions in `zweidraehte-devices` and `KnxprodBuilder`. One binary
 # per device so `cargo run --bin gen_<device>_mtxml` stays discoverable.
-# No library target; everything lives in src/bin/.
+# `src/lib.rs` holds the glue shared by every binary (safe params->bytes
+# conversion, `--knxprod` output handling).
 
 [dependencies]
 zweidraehte-devices = { path = "../devices", default-features = false, features = ["demos"] }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod" }
 const-default = { workspace = true }
 env_logger = { workspace = true }
+zerocopy = { workspace = true }

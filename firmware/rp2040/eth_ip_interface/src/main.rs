@@ -145,7 +145,7 @@ zweidraehte_device::system_b_standard_stack! {
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::DomainAddressService,
     ),
-    layer_builder: InsecureIpDeviceBuilder,
+    layer_builder: PlainIpDeviceBuilder,
     extra {
         const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
         type Identity = FlashIdentityData;

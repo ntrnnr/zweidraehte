@@ -957,7 +957,7 @@ pub trait HasMaxRetryCount {
 /// RF Domain Address is always 6 octets.
 pub trait HasRfDomainAddress {
     /// Copy the stored 6-octet RF Domain Address into `out`.
-    fn rf_domain_address(&self, out: &mut [u8; 6]);
+    fn rf_domain_address(&self) -> [u8; 6];
 
     /// Replace the stored 6-octet RF Domain Address.
     fn set_rf_domain_address(&self, addr: &[u8; 6]);

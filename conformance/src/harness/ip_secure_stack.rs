@@ -227,7 +227,7 @@ zweidraehte_device::system_b_standard_stack! {
         zweidraehte_device::layers::application::services::SystemBAlServices,
         zweidraehte_device::layers::application::services::PropertyExtValueService,
     ),
-    layer_builder: zweidraehte_device::InsecureIpDeviceBuilder,
+    layer_builder: zweidraehte_device::PlainIpDeviceBuilder,
     resources: IpSecureResources,
     extra {
         type Rng = GetrandomRng;

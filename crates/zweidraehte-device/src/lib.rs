@@ -31,7 +31,7 @@ pub use state::{
 pub mod actor;
 
 mod definition;
-pub use definition::StackDefinition;
+pub use definition::{NoParams, StackDefinition};
 
 pub mod rng;
 pub use rng::{NoRng, Rng, SecureRng};
@@ -46,12 +46,12 @@ pub use ip::{
 
 mod composition;
 pub use composition::{
-    InsecureDeviceBuilder, LayerStackBuilder, SecureDeviceBuilder, StandardDeviceLayers, StandardLayerStack,
+    PlainDeviceBuilder, LayerStackBuilder, SecureDeviceBuilder, StandardDeviceLayers, StandardLayerStack,
     StandardSecureDeviceLayers,
 };
 #[cfg(feature = "knxip")]
 pub use composition::{
-    InsecureIpDeviceBuilder, IpDeviceLayers, IpLayerStack, SecureIpDeviceBuilder, SecureIpDeviceLayers,
+    PlainIpDeviceBuilder, IpDeviceLayers, IpLayerStack, SecureIpDeviceBuilder, SecureIpDeviceLayers,
 };
 
 pub(crate) mod stack_core;
@@ -63,7 +63,7 @@ mod runner;
 pub use runner::{Runner, new};
 
 mod stack_handle;
-pub use stack_handle::Stack;
+pub use stack_handle::{Stack, SyncError, SyncOptions};
 
 #[doc(hidden)]
 pub mod logging;

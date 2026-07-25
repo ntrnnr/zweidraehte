@@ -4,8 +4,8 @@
 //! into a composed stack and wire them to the link layer. Two built-in builders
 //! are provided:
 //!
-//! - [`InsecureDeviceBuilder`] — standard `(NL, TL, AL)` stack
-//! - [`InsecureIpDeviceBuilder`] — KNX/IP `(NL, CemiTL<TL>, AL)` stack (requires `knxip` feature)
+//! - [`PlainDeviceBuilder`] — standard `(NL, TL, AL)` stack
+//! - [`PlainIpDeviceBuilder`] — KNX/IP `(NL, CemiTL<TL>, AL)` stack (requires `knxip` feature)
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
@@ -68,8 +68,8 @@ pub type LlConfirmationSender<'a> = DynamicSender<'a, ConfirmationMessage<Buffer
 /// - How to extract link-layer endpoints and start the link layer
 ///
 /// Two built-in builders are provided:
-/// - [`InsecureDeviceBuilder`] — standard `(NL, TL, AL)` stack, no extra channels
-/// - [`InsecureIpDeviceBuilder`] — `(NL, CemiTL<TL>, AL)` stack with cEMI channels
+/// - [`PlainDeviceBuilder`] — standard `(NL, TL, AL)` stack, no extra channels
+/// - [`PlainIpDeviceBuilder`] — `(NL, CemiTL<TL>, AL)` stack with cEMI channels
 pub trait LayerStackBuilder<D: StackDefinition>: Sized {
     /// Composed layer stack produced by [`build`](Self::build).
     type Stack<'a>: LayerRegistry<D>
@@ -108,9 +108,9 @@ pub trait LayerStackBuilder<D: StackDefinition>: Sized {
 ///
 /// Produces [`StandardDeviceLayers`] with no extra inter-layer channels.
 /// The link layer builder must have `LLEndpoints = ()` (the default).
-pub struct InsecureDeviceBuilder;
+pub struct PlainDeviceBuilder;
 
-impl<D: StackDefinition> LayerStackBuilder<D> for InsecureDeviceBuilder
+impl<D: StackDefinition> LayerStackBuilder<D> for PlainDeviceBuilder
 where
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
 {
@@ -147,10 +147,10 @@ where
 /// [`LLEndpoints`](layers::LinkLayerBuilderBase::LLEndpoints) must be
 /// [`CemiTransportLayerEndpoints`](crate::layers::transport::cemi::CemiTransportLayerEndpoints).
 #[cfg(feature = "knxip")]
-pub struct InsecureIpDeviceBuilder;
+pub struct PlainIpDeviceBuilder;
 
 #[cfg(feature = "knxip")]
-impl<D: StackDefinition> LayerStackBuilder<D> for InsecureIpDeviceBuilder
+impl<D: StackDefinition> LayerStackBuilder<D> for PlainIpDeviceBuilder
 where
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>, LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>>,
 {
@@ -189,6 +189,9 @@ where
 /// Both [`ApplicationLayer`] and [`SecureApplicationLayer`] implement this.
 /// Used as a bound on the `AL` parameter of layer stacks so that
 /// `handle_service_input` can dispatch to the correct layer.
+/// Not intended to be implemented outside this crate — it exists only to
+/// bound the `AL` slot of the layer stacks. It stays `pub` because those
+/// stacks are public and name it in their bounds.
 pub trait HasAppRequest {
     fn handle_app_request(&mut self, request: &Request<ApplicationLayerService, ApplicationLayerServiceResponse>);
 }
@@ -234,17 +237,22 @@ where
 /// compiles away.
 #[inline]
 fn debug_assert_default_tl_limits<D: StackDefinition>(builder: &'static str) {
+    // Positional `{}` rather than inline `{builder}` capture: under the
+    // `defmt` feature these asserts expand to defmt macros, whose format
+    // strings do not support captured identifiers.
     debug_assert_eq!(
         D::TL_MAX_INCOMING,
         1,
-        "TL_MAX_INCOMING override has no effect with {builder}; \
-         write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        "TL_MAX_INCOMING override has no effect with {}; \
+         write a custom LayerStackBuilder that passes the const to TransportLayer::new",
+        builder
     );
     debug_assert_eq!(
         D::TL_MAX_OUTGOING,
         0,
-        "TL_MAX_OUTGOING override has no effect with {builder}; \
-         write a custom LayerStackBuilder that passes the const to TransportLayer::new"
+        "TL_MAX_OUTGOING override has no effect with {}; \
+         write a custom LayerStackBuilder that passes the const to TransportLayer::new",
+        builder
     );
 }
 
@@ -357,7 +365,7 @@ where
 
 /// Builder for secure `(NL, TL, SecureAL<AL>)` layer stacks.
 ///
-/// Drop-in replacement for [`InsecureDeviceBuilder`] in a device's
+/// Drop-in replacement for [`PlainDeviceBuilder`] in a device's
 /// [`StackDefinition::LayerBuilder`] to enable Data Secure support.
 ///
 /// The `P2P` type parameter selects KNX Data Secure P2P support:
@@ -549,7 +557,7 @@ where
 
 /// Builder for secure KNX/IP `(NL, CemiTL<TL>, SecureAL<AL>)` layer stacks.
 ///
-/// The "cross" of [`InsecureIpDeviceBuilder`] and [`SecureDeviceBuilder`]:
+/// The "cross" of [`PlainIpDeviceBuilder`] and [`SecureDeviceBuilder`]:
 /// a device that needs **both** KNX/IP (so the cEMI transport wrapper and
 /// its [`CemiTransportLayerChannelPair`] are required) **and** KNX Data
 /// Secure (so the application layer is [`SecureApplicationLayer`]).
@@ -558,7 +566,7 @@ where
 /// `LLEndpoints<'a>: Default`, but the KNX/IP link layer's
 /// [`CemiTransportLayerEndpoints`] are not `Default` (they hold live
 /// channel ends), so it is structurally TP1/RF-only. This builder takes
-/// the cEMI channel/endpoint wiring from [`InsecureIpDeviceBuilder`] and
+/// the cEMI channel/endpoint wiring from [`PlainIpDeviceBuilder`] and
 /// the secure-AL substitution + security where-bounds from
 /// [`SecureDeviceBuilder`].
 ///
@@ -577,7 +585,7 @@ pub struct SecureIpDeviceBuilder<P2P: P2pFeature = NoP2p> {
 #[cfg(feature = "knxip")]
 impl<D: StackDefinition, P2P: P2pFeature> LayerStackBuilder<D> for SecureIpDeviceBuilder<P2P>
 where
-    // IP/cEMI bound — identical to `InsecureIpDeviceBuilder`.
+    // IP/cEMI bound — identical to `PlainIpDeviceBuilder`.
     D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>, LLEndpoints<'a> = CemiTransportLayerEndpoints<'a>>,
     // Security bounds — identical to `SecureDeviceBuilder`.
     D::State: HasExtensionState + HasAddressTable + HasAssociationTable,

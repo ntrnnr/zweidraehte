@@ -20,7 +20,7 @@ pub use ip::*;
 
 pub mod operation_mode;
 pub use operation_mode::{
-    DiagnosticsAugment, OperationModeState, SecureGoSendAbsent, SecureGoSendPresent, SecureGoSender, SecureSendOutcome,
+    DiagnosticsAugment, NoSecureGoSend, OperationModeState, SecureGoSender, SecureSendOutcome, WithSecureGoSend,
 };
 
 pub mod security;

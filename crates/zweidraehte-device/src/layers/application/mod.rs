@@ -994,7 +994,13 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         let request = RestartRequest { erase_code, channel, access_ctx: restart_ctx, needs_response };
         debug!("AL Restart: sending request to user code");
-        self.lctx.try_send_restart_request(request);
+        if !self.lctx.try_send_restart_request(request) {
+            // The restart channel holds one entry, so this means a restart is
+            // already queued and undrained. We still answer NoError below:
+            // the peer asked for a restart and one *is* pending, and changing
+            // the wire response here would need spec backing.
+            warn!("AL Restart: restart channel full, request dropped (one already pending)");
+        }
 
         if needs_response {
             self.send_restart_response(ind, RestartError::NoError, 0);

@@ -417,9 +417,7 @@ where
         // the sender's KNX Serial Number — no domain check applies; group
         // membership is filtered by the application layer.
         if meta.aet {
-            let mut doa = [0u8; 6];
-            self.context.rf_domain_address(&mut doa);
-            if meta.sn_or_doa != doa {
+            if meta.sn_or_doa != self.context.rf_domain_address() {
                 trace!("KNX-RF: frame for foreign domain dropped");
                 return;
             }
@@ -549,9 +547,7 @@ where
     fn tx_block1(&self, internal: &[u8]) -> (bool, [u8; 6]) {
         let dst_zero = internal[3] == 0 && internal[4] == 0;
         if tx_uses_domain_address(internal[0], internal[5], dst_zero, self.unidir) {
-            let mut doa = [0u8; 6];
-            self.context.rf_domain_address(&mut doa);
-            (true, doa)
+            (true, self.context.rf_domain_address())
         } else {
             (false, self.context.knx_serial_number())
         }

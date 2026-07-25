@@ -26,6 +26,41 @@ use zweidraehte_proto::address::IndividualAddress;
 
 use embassy_sync::channel::DynamicReceiver;
 
+/// Options for [`Stack::initiate_sync`].
+///
+/// The two flags are independent, so they are named fields rather than an
+/// enum: `tool_access` selects which key authenticates the request, while
+/// `system_broadcast` sets a bit in the Security Control Field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SyncOptions {
+    /// Authenticate with the tool key — falling back to the FDSK when no
+    /// tool key is set — instead of the P2P key stored for the peer.
+    pub tool_access: bool,
+    /// Set the SCF system-broadcast flag on the outgoing request.
+    pub system_broadcast: bool,
+}
+
+/// Error returned by [`Stack::initiate_sync`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SyncError {
+    /// The request was not sent. The application layer reports the
+    /// individual causes — missing P2P key, no free buffer, or a stack
+    /// built without Data Secure P2P support — only to the log, so they
+    /// are not distinguished here.
+    NotSent,
+}
+
+impl core::fmt::Display for SyncError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            SyncError::NotSent => write!(f, "S-A_Sync_Req was not sent"),
+        }
+    }
+}
+
+impl core::error::Error for SyncError {}
+
 /// KNX stack handle for interacting with the KNX protocol stack.
 ///
 /// This is the main interface for applications to interact with the KNX stack.
@@ -368,17 +403,29 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Initiate an S-A_Sync_Req to a peer.
     ///
     /// Sends a sync request to the specified individual address to
-    /// synchronize sequence numbers. Returns `true` if the request was
-    /// successfully sent, `false` if key lookup or buffer allocation failed.
-    pub async fn initiate_sync(&self, peer_ia: u16, tool_access: bool, is_broadcast: bool) -> bool {
+    /// synchronize sequence numbers.
+    ///
+    /// The two flags are passed as a named-field [`SyncOptions`] rather than
+    /// positional `bool`s: they are independent (one selects the key, the
+    /// other sets an SCF bit) and adjacent booleans of the same type are
+    /// trivially transposed at a call site without any compiler complaint.
+    ///
+    /// # Errors
+    /// Returns [`SyncError`] if the key lookup failed, no buffer was
+    /// available, or the stack was not built with KNX Data Secure P2P
+    /// support.
+    pub async fn initiate_sync(&self, peer_ia: u16, options: SyncOptions) -> Result<(), SyncError> {
         let resp =
             ActorRequest::<D::Mutex, _, _>::request(&self.app_request_sender, ApplicationLayerService::SyncRequest {
                 peer_ia,
-                tool_access,
-                is_broadcast,
+                tool_access: options.tool_access,
+                is_broadcast: options.system_broadcast,
             })
             .await;
-        matches!(resp, ApplicationLayerServiceResponse::SyncInitiated)
+        match resp {
+            ApplicationLayerServiceResponse::SyncInitiated => Ok(()),
+            _ => Err(SyncError::NotSent),
+        }
     }
 
     /// Subscribe to communication object events.
@@ -434,9 +481,23 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         &self,
     ) -> embassy_sync::pubsub::DynSubscriber<'_, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent)>
     {
-        self.inner.layer_context.event_channel.dyn_subscriber().expect(
+        self.try_events().expect(
             "too many event subscribers: LayerContext event_channel allows at most 4; raise SUBS in context/layer.rs",
         )
+    }
+
+    /// Fallible [`events`](Self::events): returns `None` instead of
+    /// panicking when the subscriber limit is already reached.
+    ///
+    /// Whether the limit is hit depends on how many callers subscribe, which
+    /// a library built on top of this stack cannot know — so it needs a way
+    /// to ask without risking a panic.
+    pub fn try_events(
+        &self,
+    ) -> Option<
+        embassy_sync::pubsub::DynSubscriber<'_, (<<D as StackDefinition>::CO as ComObjects>::Index, ComObjectEvent)>,
+    > {
+        self.inner.layer_context.event_channel.dyn_subscriber().ok()
     }
 
     /// Subscribe to application lifecycle events.
@@ -472,9 +533,16 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// # }
     /// ```
     pub fn lifecycle_events(&self) -> embassy_sync::pubsub::DynSubscriber<'_, LifecycleEvent> {
-        self.inner.layer_context.lifecycle_channel.dyn_subscriber().expect(
+        self.try_lifecycle_events().expect(
             "too many lifecycle subscribers: LayerContext lifecycle_channel allows at most 4; raise SUBS in context/layer.rs",
         )
+    }
+
+    /// Fallible [`lifecycle_events`](Self::lifecycle_events): returns `None`
+    /// instead of panicking when the subscriber limit is already reached.
+    /// See [`try_events`](Self::try_events) for why this exists.
+    pub fn try_lifecycle_events(&self) -> Option<embassy_sync::pubsub::DynSubscriber<'_, LifecycleEvent>> {
+        self.inner.layer_context.lifecycle_channel.dyn_subscriber().ok()
     }
 
     /// Get the device's individual address.
@@ -588,7 +656,7 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
     /// `embassy_futures::select` against a `Timer`.
     pub async fn await_outbox_drained(&self) {
         loop {
-            if self.inner.layer_context.outbox.borrow().is_fully_empty() {
+            if self.inner.layer_context.outbox.borrow().is_empty() {
                 return;
             }
             embassy_futures::yield_now().await;

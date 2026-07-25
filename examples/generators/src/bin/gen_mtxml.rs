@@ -23,9 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Get default parameter values as bytes
     let defaults = DemoParams::DEFAULT;
-    let param_bytes = unsafe {
-        core::slice::from_raw_parts(&defaults as *const DemoParams as *const u8, core::mem::size_of::<DemoParams>())
-    };
+    let param_bytes = zweidraehte_generators::params_as_bytes(&defaults);
 
     let app = ApplicationProgramDef {
         name: "DerGeraet",

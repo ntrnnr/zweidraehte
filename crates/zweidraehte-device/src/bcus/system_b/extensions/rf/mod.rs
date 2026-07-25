@@ -139,8 +139,8 @@ impl Extension<()> for RfExtensionState {
 // The RF-specific 6-octet accessor consumed by the link layer through
 // `RfDomainAddressContext`.
 impl HasRfDomainAddress for RfExtensionState {
-    fn rf_domain_address(&self, out: &mut [u8; 6]) {
-        *out = self.rf_domain_address.get();
+    fn rf_domain_address(&self) -> [u8; 6] {
+        self.rf_domain_address.get()
     }
 
     fn set_rf_domain_address(&self, addr: &[u8; 6]) {

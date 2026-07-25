@@ -211,7 +211,7 @@ Key modules:
 - `definition.rs` - `StackDefinition` trait (central compile-time "bill of materials")
 - `router.rs` - Synchronous `Layer` trait and compile-time dispatch-table router
 - `runner.rs` - Stack factory (`new()`) and router event loop
-- `composition.rs` - Layer-stack builders (`InsecureDeviceBuilder`, `InsecureIpDeviceBuilder`, `SecureDeviceBuilder`)
+- `composition.rs` - Layer-stack builders (`PlainDeviceBuilder`, `PlainIpDeviceBuilder`, `SecureDeviceBuilder`)
 - `context/` - Context-trait surface
   - `traits.rs` - Small single-responsibility context traits (buffer manager, APDU length, outbox, property service, address table, etc.)
   - `layer.rs` - `LayerContext<D>` (persistent shared runtime infrastructure, owned by `StackResources`)

@@ -565,7 +565,7 @@ All layers live under
 - **`transport/cemi.rs` — `CemiTransportLayer`.** Thin wrapper used in
   KNX/IP stacks. Translates between cEMI-framed service indications
   and the standard TL's internal representation. Composed as
-  `(NL, CemiTL<TL>, AL)` by `InsecureIpDeviceBuilder`.
+  `(NL, CemiTL<TL>, AL)` by `PlainIpDeviceBuilder`.
 - **`application/mod.rs` — `ApplicationLayer`.** Dispatches the AL's
   built-in APCIs inline (group communication, property read/write,
   `A_DeviceDescriptor_*`, `A_Restart`, individual address services).
@@ -604,8 +604,8 @@ A device never assembles `StandardLayerStack` by hand — it picks a
 
 | Builder | Layer shape | Use for |
 |---|---|---|
-| `InsecureDeviceBuilder` | `(NL, TL, ApplicationLayer)` | Plain TP1 / RF devices |
-| `InsecureIpDeviceBuilder` | `(NL, CemiTransportLayer<TL>, ApplicationLayer)` | Plain KNX/IP devices (cEMI framing between TL and link layer) |
+| `PlainDeviceBuilder` | `(NL, TL, ApplicationLayer)` | Plain TP1 / RF devices |
+| `PlainIpDeviceBuilder` | `(NL, CemiTransportLayer<TL>, ApplicationLayer)` | Plain KNX/IP devices (cEMI framing between TL and link layer) |
 | `SecureDeviceBuilder<P2P = NoP2p>` | `(NL, TL, SecureApplicationLayer<ApplicationLayer>)` | KNX Data Secure devices; the `P2P: P2pFeature` parameter sizes point-to-point key slots |
 | `SecureIpDeviceBuilder<P2P>` | `(NL, CemiTL<TL>, SecureApplicationLayer<…>)` | Data Secure over KNX/IP |
 
@@ -851,7 +851,7 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: Tp1ExtensionState,
     state: Tp1StateFor<MyDevice>,
     al_extensions: SystemBAlServices,
-    layer_builder: InsecureDeviceBuilder,
+    layer_builder: PlainDeviceBuilder,
 }
 ```
 
@@ -945,7 +945,7 @@ that you don't want to hand-write.
 | `IpInterfaceExtension<N, CAPS>` | KNX/IP + tunneling server | `IpExtensionConfig` | `()` | `IpAugment<'a, P, CAPS>` | `knxip` |
 | `RfRetransmitterExtension` | KNX-RF retransmitter (wraps `RfExtensionState`) | `(RfExtensionConfig, RfRetransmitterConfig)` | `()` | RF augment + PID 57/74 surface | — |
 | `SecureExtensionState<Inner, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<Inner>` (generic over the inner `ExtensionState`; carries the FDSK) | `SecureAugmentBundle { inner, security }` (a `#[derive(ServiceRegistry)]` struct) | — (seq store comes from `D::Storage`) |
-| `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment<'a, GS = SecureGoSendAbsent>` | — |
+| `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment<'a, GS = NoSecureGoSend>` | — |
 
 #### Composing augments on a device
 

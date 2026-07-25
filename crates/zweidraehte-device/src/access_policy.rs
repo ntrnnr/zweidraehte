@@ -22,6 +22,10 @@ use zweidraehte_proto::messages::knx::ApciCode;
 /// Result of a service-level access check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
+/// `#[non_exhaustive]`: every construction/match site is inside this crate,
+/// where the attribute has no effect — so in-crate exhaustiveness checking
+/// is preserved while downstream crates stay insulated from new variants.
+#[non_exhaustive]
 pub enum AccessDecision {
     /// Service is allowed.
     Allowed,

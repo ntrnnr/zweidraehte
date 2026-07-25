@@ -908,7 +908,7 @@ forward_to_field! {
         D: StackDefinition,
         ES: ExtensionState + HasRfDomainAddress,
     ]> HasRfDomainAddress for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES> {
-        out fn rf_domain_address(&self, out: &mut [u8; 6]);
+        get fn rf_domain_address(&self) -> [u8; 6];
         set fn set_rf_domain_address(&self, addr: &[u8; 6]);
     } => self.extension_state, mark_dirty
 }

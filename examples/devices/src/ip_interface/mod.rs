@@ -14,11 +14,10 @@
 //! indicated by `IsIPEnabled="true"` on the Hardware element in MTXML.
 //! We use `MaskVersion::SystemBTp1` (0x07B0).
 
-use const_default::ConstDefault;
-use serde::{Deserialize, Serialize};
 
 use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
-use zweidraehte_device::objects::comm::{ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects};
+use zweidraehte_device::NoParams;
+use zweidraehte_device::objects::comm::{NoComObjectIndex, NoComObjects};
 
 // ============================================================================
 // Device Identity
@@ -70,64 +69,21 @@ pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x10];
 /// Empty parameter block. The IP Interface has no application-level
 /// parameters; all configuration is handled through interface object
 /// properties (individual addresses, IP settings, etc.).
-#[derive(
-    Debug, Clone, Copy, Default, Serialize, Deserialize, zerocopy::KnownLayout, zerocopy::Immutable, zerocopy::IntoBytes,
-)]
-#[repr(C)]
-pub struct IpInterfaceParams {
-    // Intentionally empty — no application parameters.
-    // A ZST (zero-sized type) with `#[repr(C)]` to satisfy the
-    // `ConstDefault`, zerocopy, and serialization bounds required by
-    // `StackDefinition::P`.
-    _private: (),
-}
-
-impl ConstDefault for IpInterfaceParams {
-    const DEFAULT: Self = Self { _private: () };
-}
-
-impl IpInterfaceParams {
-    /// Empty parameter list — no ETS-visible parameters.
-    pub const ETS_PARAMS_EXT: &'static [zweidraehte_device::ets::EtsParamDefExt] = &[];
-}
+///
+/// Aliases the stack's [`NoParams`], which supplies the `ConstDefault` +
+/// zerocopy impls that `StackDefinition::P` requires.
+pub type IpInterfaceParams = NoParams;
 
 // ============================================================================
 // Communication Objects (empty — pure bridge device)
 // ============================================================================
 
-/// Index type for an empty comm object set. No valid indices exist.
-#[derive(Debug, Clone, Copy)]
-pub enum IpInterfaceComObjectIndex {}
+/// Empty communication objects. The IP Interface has no group objects — it
+/// only forwards frames between tunneling clients and the TP1 bus.
+///
+/// Aliases the stack's [`NoComObjects`] rather than restating the
+/// uninhabited-index + three-impl boilerplate.
+pub type IpInterfaceComObjects = NoComObjects;
 
-impl ComObjectIndex for IpInterfaceComObjectIndex {
-    fn from_index(_idx: u16) -> Option<Self> {
-        None
-    }
-
-    fn index(&self) -> u16 {
-        match *self {}
-    }
-}
-
-/// Empty communication objects. The IP Interface has no group objects —
-/// it only forwards frames between tunneling clients and the TP1 bus.
-pub struct IpInterfaceComObjects;
-
-impl ComObjects for IpInterfaceComObjects {
-    type Index = IpInterfaceComObjectIndex;
-
-    fn new() -> Self {
-        Self
-    }
-
-    fn info(&self, _idx: u16) -> Option<ComObjectInfo<'_>> {
-        // The IP interface has no communication objects.
-        None
-    }
-
-    fn info_mut(&mut self, _idx: u16) -> Option<ComObjectInfoMut<'_>> {
-        None
-    }
-}
-
-impl zweidraehte_device::objects::comm::ComObjectBusHook for IpInterfaceComObjects {}
+/// Index type for the (empty) comm object set.
+pub type IpInterfaceComObjectIndex = NoComObjectIndex;

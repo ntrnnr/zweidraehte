@@ -144,14 +144,14 @@ type SecAugment<'a> = SecureAugmentBundle<
 
 /// Augment chain: the secure RF medium + security augment, the
 /// GO/operation-mode diagnostics augment, plus the demo Easter Egg
-/// augment. As a secure device it uses the `SecureGoSendPresent` strategy
+/// augment. As a secure device it uses the `WithSecureGoSend` strategy
 /// so the secure GO-diagnostics send-paths are wired up.
 #[derive(zweidraehte_device::service::ServiceRegistry)]
 pub struct Stm32G0SecureAugments<'a> {
     #[service(augment)]
     pub sec: SecAugment<'a>,
     #[service(augment)]
-    pub diag: DiagnosticsAugment<'a, SecureGoSendPresent>,
+    pub diag: DiagnosticsAugment<'a, WithSecureGoSend>,
     #[service(augment)]
     pub easter: EasterEggAugment,
 }
@@ -182,7 +182,7 @@ zweidraehte_device::system_b_standard_stack! {
         bundle: Stm32G0SecureAugments,
         create: |state, platform, layer_ctx| Stm32G0SecureAugments {
             sec: state.extension_state().create_secure_augment(platform, layer_ctx),
-            diag: DiagnosticsAugment::<SecureGoSendPresent>::new(&state.operation_mode),
+            diag: DiagnosticsAugment::<WithSecureGoSend>::new(&state.operation_mode),
             easter: EasterEggAugment,
         },
     },

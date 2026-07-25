@@ -89,6 +89,22 @@ impl LightSwitchDevice {
     pub const MAX_COM_OBJECTS: u16 = 6;
     pub const PEI_TYPE: u8 = 0;
 
+    /// Build a descriptor from the only two fields that vary between this
+    /// device's variants; the remaining seven are identical everywhere.
+    const fn descriptor_for(mask: MaskVersion, application_id: u16) -> DeviceDescriptor {
+        DeviceDescriptor {
+            mask_version: mask,
+            manufacturer_id: Self::MANUFACTURER_ID,
+            hardware_type: Self::HARDWARE_TYPE,
+            application_id,
+            application_version: Self::APPLICATION_VERSION,
+            max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
+            max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
+            max_com_objects: Self::MAX_COM_OBJECTS,
+            pei_type: Self::PEI_TYPE,
+        }
+    }
+
     /// Build a device descriptor for the given mask version.
     ///
     /// The mask version determines the transport medium and selects the
@@ -105,17 +121,7 @@ impl LightSwitchDevice {
             MaskVersion::SystemBRf => Self::APPLICATION_ID_RF,
             _ => Self::APPLICATION_ID_IP,
         };
-        DeviceDescriptor {
-            mask_version: mask,
-            manufacturer_id: Self::MANUFACTURER_ID,
-            hardware_type: Self::HARDWARE_TYPE,
-            application_id,
-            application_version: Self::APPLICATION_VERSION,
-            max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
-            max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
-            max_com_objects: Self::MAX_COM_OBJECTS,
-            pei_type: Self::PEI_TYPE,
-        }
+        Self::descriptor_for(mask, application_id)
     }
 
     /// Build a device descriptor for the Data Secure TP1 variant.
@@ -126,17 +132,7 @@ impl LightSwitchDevice {
     /// [`APPLICATION_ID_TP1_SECURE`](Self::APPLICATION_ID_TP1_SECURE) so
     /// both variants coexist in the same knxprod catalogue.
     pub const fn device_descriptor_secure_tp1() -> DeviceDescriptor {
-        DeviceDescriptor {
-            mask_version: MaskVersion::SystemBTp1,
-            manufacturer_id: Self::MANUFACTURER_ID,
-            hardware_type: Self::HARDWARE_TYPE,
-            application_id: Self::APPLICATION_ID_TP1_SECURE,
-            application_version: Self::APPLICATION_VERSION,
-            max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
-            max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
-            max_com_objects: Self::MAX_COM_OBJECTS,
-            pei_type: Self::PEI_TYPE,
-        }
+        Self::descriptor_for(MaskVersion::SystemBTp1, Self::APPLICATION_ID_TP1_SECURE)
     }
 
     /// Build a device descriptor for the Data Secure KNX-RF variant.
@@ -150,17 +146,7 @@ impl LightSwitchDevice {
     /// [`device_descriptor_secure_tp1`](Self::device_descriptor_secure_tp1);
     /// the matching firmware is not implemented yet.
     pub const fn device_descriptor_secure_rf() -> DeviceDescriptor {
-        DeviceDescriptor {
-            mask_version: MaskVersion::SystemBRf,
-            manufacturer_id: Self::MANUFACTURER_ID,
-            hardware_type: Self::HARDWARE_TYPE,
-            application_id: Self::APPLICATION_ID_RF_SECURE,
-            application_version: Self::APPLICATION_VERSION,
-            max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
-            max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
-            max_com_objects: Self::MAX_COM_OBJECTS,
-            pei_type: Self::PEI_TYPE,
-        }
+        Self::descriptor_for(MaskVersion::SystemBRf, Self::APPLICATION_ID_RF_SECURE)
     }
 
     /// Build a device descriptor for the combined IP Secure + Data Secure
@@ -173,17 +159,7 @@ impl LightSwitchDevice {
     /// variants coexist in the same knxprod catalogue. Pairs with the
     /// `pico_eth_secure_light_switch` firmware.
     pub const fn device_descriptor_secure_ip() -> DeviceDescriptor {
-        DeviceDescriptor {
-            mask_version: MaskVersion::SystemBKnxIp,
-            manufacturer_id: Self::MANUFACTURER_ID,
-            hardware_type: Self::HARDWARE_TYPE,
-            application_id: Self::APPLICATION_ID_IP_SECURE,
-            application_version: Self::APPLICATION_VERSION,
-            max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
-            max_association_table_entries: Self::MAX_ASSOCIATION_TABLE_ENTRIES,
-            max_com_objects: Self::MAX_COM_OBJECTS,
-            pei_type: Self::PEI_TYPE,
-        }
+        Self::descriptor_for(MaskVersion::SystemBKnxIp, Self::APPLICATION_ID_IP_SECURE)
     }
 }
 

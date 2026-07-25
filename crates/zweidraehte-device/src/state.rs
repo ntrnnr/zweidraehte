@@ -467,6 +467,10 @@ impl<T, CO> CoreDeviceState<CO> for T where
 /// ring buffer so that individual failures can be distinguished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+/// `#[non_exhaustive]`: every construction/match site is inside this crate,
+/// where the attribute has no effect — so in-crate exhaustiveness checking
+/// is preserved while downstream crates stay insulated from new variants.
+#[non_exhaustive]
 pub enum SecurityFailureType {
     /// Invalid SCF field (unsupported algorithm, reserved bits set).
     ScfError = 0,
@@ -507,9 +511,13 @@ impl Default for SecurityFailureEntry {
 ///
 /// Implemented automatically for `SystemBDeviceState` when the extension
 /// state is `SecureExtensionState`.
-pub trait HasSecurityState {
-    /// Whether the device's Security Mode is currently enabled.
-    fn security_mode_enabled(&self) -> bool;
+///
+/// [`HasSecurityMode`] is a supertrait rather than this trait redeclaring
+/// `security_mode_enabled`: both spellings existed, with `HasSecurityMode`
+/// defaulting to `false`, so which one a caller saw depended on which trait
+/// happened to be in scope — and the default could silently answer `false`
+/// for a device that does have security enabled.
+pub trait HasSecurityState: HasSecurityMode {
 
     /// Current load state of the Security Interface Object.
     ///

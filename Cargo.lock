@@ -6899,6 +6899,7 @@ version = "0.1.0"
 dependencies = [
  "const-default",
  "env_logger",
+ "zerocopy",
  "zweidraehte-devices",
  "zweidraehte-knxprod",
 ]

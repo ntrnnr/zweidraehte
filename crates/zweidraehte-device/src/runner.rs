@@ -77,8 +77,8 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
         // ================================================================
         //
         // The builder decides what shared channels are needed between
-        // layers and the link layer. For InsecureIpDeviceBuilder this is
-        // a CemiTransportLayerChannelPair; for InsecureDeviceBuilder it's ().
+        // layers and the link layer. For PlainIpDeviceBuilder this is
+        // a CemiTransportLayerChannelPair; for PlainDeviceBuilder it's ().
 
         type B<D> = <D as StackDefinition>::LayerBuilder;
         type Layers<'a, D> = <B<D> as LayerStackBuilder<D>>::Stack<'a>;

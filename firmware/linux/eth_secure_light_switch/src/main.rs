@@ -323,6 +323,8 @@ async fn main(spawner: Spawner) {
                     println!("\n********************************************");
                     println!("*** Programming mode: {} ***", if new_mode { "ENABLED" } else { "DISABLED" });
                     println!("*** Current address: {} ***", current_addr);
+                    println!("*** Device will respond to IndividualAddress_Read ***");
+                    println!("*** Device will accept IndividualAddress_Write ***");
                     println!("********************************************\n");
                 }
                 'q' | 'Q' => {
@@ -376,6 +378,8 @@ async fn main(spawner: Spawner) {
                 println!("    Rocker direction: {:?}", params.rocker_direction);
                 println!("    Button 1 config:  {:?}", params.button1_config);
                 println!("    Button 2 config:  {:?}", params.button2_config);
+                println!("    Debounce time:    {:?}", params.debounce_time);
+                println!("    Long-press time:  {:?}", params.long_press_time);
             } else {
                 println!("  Application Parameters: Not loaded");
             }
