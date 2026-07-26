@@ -127,3 +127,11 @@ pub use generator::baggage::{baggages_to_refs, encode_baggage_filename, make_bag
 /// Re-export paste for use by macros (internal use only)
 #[doc(hidden)]
 pub use paste;
+
+/// Re-export zerocopy for use by macros (internal use only).
+///
+/// `define_module!` derives [`zerocopy::IntoBytes`] on the params struct it
+/// generates, so downstream crates get the no-padding guarantee without having
+/// to depend on zerocopy themselves.
+#[doc(hidden)]
+pub use zerocopy;

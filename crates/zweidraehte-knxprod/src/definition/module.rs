@@ -1220,7 +1220,15 @@ macro_rules! __define_module_params_struct {
         )+]
     ) => {
         $crate::paste::paste! {
-            #[derive(Debug, Clone, Copy, ::zweidraehte_device::ets::EtsParams, ::serde::Serialize, ::serde::Deserialize)]
+            // `IntoBytes` is derived (not hand-written) because the generator
+            // reinterprets these params as the `<Data>` defaults blob ETS reads
+            // back byte-for-byte. zerocopy rejects any struct with padding, so a
+            // module whose fields would leave an alignment hole fails to compile
+            // rather than emitting uninitialized bytes at real parameter offsets.
+            #[derive(
+                Debug, Clone, Copy, ::zweidraehte_device::ets::EtsParams, ::serde::Serialize, ::serde::Deserialize,
+                $crate::zerocopy::KnownLayout, $crate::zerocopy::Immutable, $crate::zerocopy::IntoBytes,
+            )]
             #[repr(C)]
             $vis struct [<$module_name Params>] {
                 $(

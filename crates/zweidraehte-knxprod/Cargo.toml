@@ -30,3 +30,4 @@ icu = "1.5"
 reqwest = { version = "0.12", features = ["blocking"] }
 directories = "5.0"
 uuid = { version = "1.21.0", features = ["v4"] }
+zerocopy = { workspace = true, features = ["derive"] }

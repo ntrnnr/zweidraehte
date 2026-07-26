@@ -228,6 +228,7 @@
 //! generates its own `Index` type, so they need separate namespaces.
 
 use serde::{Deserialize, Serialize};
+use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_proto::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
@@ -371,7 +372,9 @@ zweidraehte_device::ets_virtual_params! {
 pub const NUM_CHANNELS: usize = 4;
 
 /// Enable/Disable enum for channel activation.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum ChannelEnable {
     #[default]
@@ -383,7 +386,9 @@ pub enum ChannelEnable {
 
 /// Icon selection enum - stored on device to select which icon to display in ETS.
 /// The default variant (Christmas = 1) is automatically used as the parameter default.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, EtsEnum, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, EtsEnum, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes,
+)]
 #[repr(u8)]
 pub enum IconSelection {
     #[default]
@@ -419,7 +424,7 @@ pub enum IconSelection {
 /// let ch2_offset = DeviceParams::channel_param_offset(2); // = 10
 /// let ch2_obj0 = DeviceParams::channel_object_index(2, 0); // = 3
 /// ```
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(C)]
 pub struct DeviceParams {
     /// Enable channel 1
