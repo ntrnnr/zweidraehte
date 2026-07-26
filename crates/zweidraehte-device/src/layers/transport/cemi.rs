@@ -34,7 +34,6 @@ use crate::StackDefinition;
 use crate::context::layer::LayerContext;
 use crate::service::Layer;
 use zweidraehte_proto::AccessSource;
-use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{
     buffers::Buffer,
     knx::{KnxMessageBuffer, ServiceType},
