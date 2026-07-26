@@ -28,6 +28,11 @@ impl UdpMulticastSocket {
         // the conformance harness. Linux shares the port with SO_REUSEADDR
         // alone, and there SO_REUSEPORT changes multicast delivery semantics,
         // so it is restricted to the platforms that need it.
+        //
+        // `set_reuse_port` only exists when socket2 is built with its `all`
+        // feature, which our Cargo.toml therefore requests explicitly. Do not
+        // drop that feature: because the `#[cfg]` below compiles this line out
+        // on Linux, a missing `all` breaks *only* the BSD-family builds.
         #[cfg(any(
             target_os = "macos",
             target_os = "ios",

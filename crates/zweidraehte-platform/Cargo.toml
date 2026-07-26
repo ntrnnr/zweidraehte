@@ -15,7 +15,7 @@ embassy-time = { workspace = true }
 serialport = { version = "4.7", optional = true }
 async-io = { version = "2.4", optional = true }
 nix = { version = "0.30", default-features = false, optional = true, features = ["term", "socket", "net", "uio", "fs"] }
-socket2 = { version = "0.6", optional = true }
+socket2 = { version = "0.6", optional = true, features = ["all"] }
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
