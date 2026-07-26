@@ -18,7 +18,8 @@ mod linux;
 #[cfg(feature = "linux")]
 pub use linux::{
     AsyncLinuxTcpListener, AsyncSerialPort, AsyncSerialPortRx, AsyncSerialPortTx, AsyncTcpStream, Error as LinuxError,
-    LinuxIpPlatform, LinuxIpTransport, LinuxSystem,
+    InterfaceSelector, LinuxIpPlatform, LinuxIpTransport, LinuxSystem, NetworkInterface, SelectInterfaceError,
+    SelectionReason, ipv4_interfaces, route_source_address,
 };
 
 #[derive(Debug)]

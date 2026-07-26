@@ -10,6 +10,11 @@ pub use self::multicast_socket::AsyncUdpMulticastSocket;
 mod tcp;
 pub use self::tcp::{AsyncLinuxTcpListener, AsyncTcpStream};
 
+mod interface;
+pub use self::interface::{
+    InterfaceSelector, NetworkInterface, SelectInterfaceError, SelectionReason, ipv4_interfaces, route_source_address,
+};
+
 mod network;
 pub use self::network::LinuxIpPlatform;
 

@@ -51,7 +51,8 @@ use devices::light_switch::{
 };
 use support::storage::{FileSecureIdentity, JsonStorage, open_siat_store};
 use support::util::{
-    EvdevButton, EvdevButtonId, EvdevChannels, keyboard, open_keyboard, spawn_evdev_reader, terminal_key_to_button,
+    EvdevButton, EvdevButtonId, EvdevChannels, keyboard, open_keyboard, resolve_knx_interface, spawn_evdev_reader,
+    terminal_key_to_button,
 };
 
 mod stack;
@@ -66,9 +67,6 @@ zweidraehte_device::storage_task! {
     system: LinuxSystem,
     guard: NoSaveGuard,
 }
-
-/// Network interface name for KNX/IP communication.
-const INTERFACE_NAME: &str = "knxdevbridgeif";
 
 /// Default path for the device state JSON file (config only — the sequence
 /// state lives in its own file, see [`SEQ_FILE_PATH`]).
@@ -267,14 +265,18 @@ async fn main(spawner: Spawner) {
     let resources = SecureResources { inner: IpSecureResources { fdsk }, fdsk };
     let state_init = SystemBStateInit { identity, loaded_config, resources };
 
+    // Which interface the device lives on is a property of the host, not of
+    // the firmware, so it is resolved at startup (`--interface` / the
+    // `KNX_INTERFACE` environment variable, else auto-detected) rather than
+    // compiled in.
+    let (interface_name, interface_addr) = resolve_knx_interface();
+
     // The read-only platform reports the host's actual network configuration.
-    let platform = zweidraehte_platform::LinuxIpPlatform::new(INTERFACE_NAME);
-    let interface_addr = platform.current_ip_address();
-    assert!(!interface_addr.is_unspecified(), "interface {INTERFACE_NAME} not found or has no IPv4 address");
+    let platform = zweidraehte_platform::LinuxIpPlatform::new(interface_name);
     let control_endpoint = SocketAddrV4::new(interface_addr, 3671);
 
     let link_layer_builder =
-        KnxNetIpBuilder::<LinuxEthSecureLightSwitch>::new(INTERFACE_NAME, interface_addr, control_endpoint, ());
+        KnxNetIpBuilder::<LinuxEthSecureLightSwitch>::new(interface_name, interface_addr, control_endpoint, ());
 
     static RESOURCES: StaticCell<
         StackResources<

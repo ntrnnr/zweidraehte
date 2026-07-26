@@ -177,7 +177,9 @@ The workspace pins a nightly toolchain via `rust-toolchain.toml`
 `rustup` picks it up automatically.
 
 ```bash
-# Run the KNX/IP light switch device (host target)
+# Run the KNX/IP light switch device (host target). The network interface is
+# auto-detected; name it with --interface <name|ip> or KNX_INTERFACE=<name|ip>
+# when the host has several.
 (cd firmware/linux/eth_light_switch && cargo run)
 
 # Run the KNX conformance suite (long; accepts a name filter)

@@ -658,6 +658,14 @@ cd firmware/linux/eth_secure_light_switch && cargo run   # IP Secure + Data Secu
 ```
 Runs the shared `light_switch` device stack on the host (firmware workspace).
 
+The network interface is resolved at startup by
+`support::util::resolve_knx_interface` (policy in
+`zweidraehte_platform::InterfaceSelector`): `--interface <name|ip>` /
+`KNX_INTERFACE=<name|ip>` if given, otherwise the only live,
+multicast-capable, non-loopback interface, otherwise whichever one the
+kernel routes `224.0.23.12` through. Several candidates and no route ⇒ a
+listing and exit 1, never a panic. Both binaries print the choice and why.
+
 **Run TPUART Interface Test**
 ```bash
 cargo run --bin tpuart
