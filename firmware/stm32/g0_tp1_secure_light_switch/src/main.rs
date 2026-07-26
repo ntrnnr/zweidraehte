@@ -353,7 +353,7 @@ async fn app_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, btn_pin: ExtiIn
 
         let event = btn.wait_for_press(debounce, Some(long_press)).await;
 
-        let dim_ramping = event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer);
+        let dim_ramping = event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
         if dim_ramping {
             let up = dim_direction_for_long_press(&params, ButtonId::Btn1, dim_up);
             DIM_RAMP.store(if up { 1 } else { -1 }, Ordering::Relaxed);

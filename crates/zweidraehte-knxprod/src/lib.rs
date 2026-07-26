@@ -14,7 +14,7 @@
 //! This crate is designed to be used alongside the `zweidraehte` stack crate and `ets-macros`
 //! proc-macro crate. The typical workflow is:
 //!
-//! 1. Define device parameters using `#[derive(EtsParams)]` and `#[derive(EtsUnion)]`
+//! 1. Define device parameters using `#[derive(EtsParams)]` and `#[ets_union]`
 //! 2. Define communication objects using `#[derive(EtsComObjects)]`
 //! 3. Implement `EtsPageLayout` using the `ets_pages!` macro
 //! 4. Use `KnxprodBuilder` to generate all files and optionally create .knxprod packages

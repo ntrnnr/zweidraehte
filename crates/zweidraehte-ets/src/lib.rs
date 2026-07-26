@@ -2,7 +2,7 @@
 //!
 //! This crate provides derive macros for generating ETS parameter definitions:
 //! - `#[derive(EtsParams)]` - For structs containing parameters
-//! - `#[derive(EtsUnion)]` - For enums representing union parameters (with data)
+//! - `#[ets_union]` - For enums representing union parameters (with data)
 //! - `#[derive(EtsEnum)]` - For simple enums (no data) used as dropdown parameters
 //!
 //! # EtsParams Usage
@@ -30,15 +30,15 @@
 //! // }
 //! ```
 //!
-//! # EtsUnion Usage
+//! # ets_union Usage
 //!
-//! Use `#[derive(EtsUnion)]` on `#[repr(C, u8)]` enums to create union parameters
+//! Use `#[ets_union]` on enums to create union parameters
 //! where the discriminant acts as the selector:
 //!
 //! ```rust,ignore
-//! use zweidraehte_ets::EtsUnion;
+//! use zweidraehte_ets::ets_union;
 //!
-//! #[derive(EtsUnion)]
+//! #[ets_union]
 //! #[repr(C, u8)]
 //! pub enum ConfigUnion {
 //!     #[ets(display = "Off")]
@@ -81,7 +81,7 @@
 //! - `#[ets(bit_offset = N)]` - Bit offset within byte (for bitfields)
 //! - `#[ets(enum_variants("Name" => 0, "Other" => 1))]` - Define enum variants for ETS
 //!
-//! # EtsUnion Attributes
+//! # ets_union Attributes
 //!
 //! On the enum:
 //! - `#[repr(C, u8)]` - Required, ensures predictable memory layout
@@ -110,6 +110,7 @@ mod ets_enum;
 mod ets_params;
 mod ets_range_enum;
 mod ets_union;
+mod ets_union_attr;
 mod parse;
 
 /// Derive macro for generating ETS parameter definitions.
@@ -149,11 +150,43 @@ pub fn derive_ets_params(input: TokenStream) -> TokenStream {
 ///     Normal { config: u32 },
 /// }
 /// ```
-#[proc_macro_derive(EtsUnion, attributes(ets))]
-pub fn derive_ets_union(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
+/// Define an ETS union parameter (a tagged union of parameter variants).
+///
+/// Rewrites the enum so its byte image is fully initialised — inserting the
+/// alignment and tail padding a `#[repr(u8)]` tagged union needs — then applies
+/// `#[derive(zerocopy::IntoBytes)]`, which is what actually proves the result
+/// has no uninitialized bytes. That matters because a union's bytes are read
+/// wholesale: as the `<Data>` defaults blob ETS reads back, and as the live
+/// parameter memory served to `A_Memory_Read`.
+///
+/// Write only the real parameters; do **not** add a `repr` (the macro emits
+/// `#[repr(u8)]`) and never hand-write `unsafe impl IntoBytes`.
+///
+/// ```rust,ignore
+/// #[ets_union]
+/// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// pub enum ButtonConfig {
+///     #[ets(default_variant, display = "Switch")]
+///     Switch {
+///         #[ets(display = "Switch action", ets_enum)]
+///         action: SwitchAction,
+///     } = 0,
+///
+///     #[ets(display = "Dimmer")]
+///     Dimmer = 1,
+/// }
+/// ```
+///
+/// Generated padding is named `_pad_tail` / `_pad_before_<field>` and carries
+/// `#[ets(skip)]`, so it produces no ETS parameter and shifts no real
+/// parameter's offset. One consequence worth knowing: a unit variant gains a
+/// body, so `ButtonConfig::Dimmer` is constructed and matched as
+/// `ButtonConfig::Dimmer { .. }`.
+#[proc_macro_attribute]
+pub fn ets_union(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
 
-    match ets_union::derive_ets_union_impl(&input) {
+    match ets_union_attr::ets_union_impl(&input) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

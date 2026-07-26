@@ -180,11 +180,11 @@ ets_range_enum! {
 ///   up/down.
 /// - **Scene**: short press recalls a scene, long press stores it.
 ///   Scene number is configurable.
-#[derive(Debug, Clone, Copy, EtsUnion, Serialize, Deserialize, KnownLayout, Immutable)]
-#[repr(C, u8)]
+#[ets_union]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum ButtonConfig {
     /// Switch on/off
-    #[ets(display = "Switch")]
+    #[ets(default_variant, display = "Switch")]
     Switch {
         /// What pressing this button does (2-function mode only)
         #[ets(display = "Switch action", ets_enum)]
@@ -206,18 +206,6 @@ pub enum ButtonConfig {
         #[ets(display = "Scene number", ets_enum)]
         scene_number: SceneNumber,
     } = 3,
-}
-
-impl ConstDefault for ButtonConfig {
-    const DEFAULT: Self = ButtonConfig::Switch { action: SwitchAction::DEFAULT };
-}
-
-// SAFETY: ButtonConfig is #[repr(C, u8)] with all-u8 or repr(u8)-enum fields.
-// After ConstDefault, the union-body bytes for shorter variants are zero.
-// zerocopy's derive rejects #[repr(C, u8)]; this manual impl provides the
-// same guarantee.
-unsafe impl IntoBytes for ButtonConfig {
-    fn only_derive_is_allowed_to_implement_this_trait() {}
 }
 
 // ============================================================================
@@ -250,7 +238,7 @@ zweidraehte_device::ets_virtual_params! {
 ///
 /// In 2-function mode, each button has its own independent `ButtonConfig`.
 /// The `rocker_direction` parameter is hidden.
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable)]
+#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
 #[repr(C)]
 pub struct LightSwitchParams {
     /// Button input debounce time (applies to both buttons)
@@ -278,12 +266,4 @@ pub struct LightSwitchParams {
     /// Hidden in 1-function mode.
     #[ets(union, display = "Function")]
     pub button2_config: ButtonConfig,
-}
-
-// SAFETY: LightSwitchParams is #[repr(C)] with all-u8 fields (or #[repr(u8)] enums
-// whose In-Bytes impls are already verified). All fields implement IntoBytes, and
-// #[repr(C)] on a struct of uniform-u8 types produces no internal padding. The
-// ButtonConfig union bodies for shorter variants are zero-initialised by ConstDefault.
-unsafe impl IntoBytes for LightSwitchParams {
-    fn only_derive_is_allowed_to_implement_this_trait() {}
 }

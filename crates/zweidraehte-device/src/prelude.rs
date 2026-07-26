@@ -14,7 +14,7 @@ pub use crate::{
 // KNX/IP-specific types
 #[cfg(feature = "knxip")]
 pub use crate::{
-    HasIpExtensionState, PlainIpDeviceBuilder, IpDeviceLayers, IpPlatform, IpPlatformConfig, IpStateView,
+    HasIpExtensionState, IpDeviceLayers, IpPlatform, IpPlatformConfig, IpStateView, PlainIpDeviceBuilder,
     SecureIpDeviceBuilder, SecureIpDeviceLayers,
 };
 
@@ -28,7 +28,7 @@ pub use crate::layers::transport::cemi::{
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 // Device identity and ETS derive macros
-pub use crate::ets::{DeviceDescriptor, EtsComObjects, EtsEnum, EtsParams, EtsUnion, MaskVersion};
+pub use crate::ets::{DeviceDescriptor, EtsComObjects, EtsEnum, EtsParams, MaskVersion, ets_union};
 
 // Communication objects
 pub use crate::objects::comm::{ComObject, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects};

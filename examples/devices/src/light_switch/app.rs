@@ -132,16 +132,16 @@ pub async fn handle_button_press<D, R>(
     let (config, primary, status, secondary, rocker_on) = resolve_button(params, button);
 
     match config {
-        ButtonConfig::Switch { action } => {
+        ButtonConfig::Switch { action, .. } => {
             handle_switch(knx, event, *action, primary, status, rocker_on).await;
         }
-        ButtonConfig::Dimmer => {
+        ButtonConfig::Dimmer { .. } => {
             handle_dimmer(knx, event, primary, status, secondary, rocker_on, release, dim_up).await;
         }
-        ButtonConfig::Blind => {
+        ButtonConfig::Blind { .. } => {
             handle_blind(knx, event, primary, secondary, rocker_on, release).await;
         }
-        ButtonConfig::Scene { scene_number } => {
+        ButtonConfig::Scene { scene_number, .. } => {
             handle_scene(knx, event, primary, *scene_number as u8).await;
         }
     }

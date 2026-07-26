@@ -235,13 +235,11 @@ pub trait StackDefinition: Copy + 'static {
     /// - [`KnownLayout`] and [`Immutable`] — required by
     ///   the `IntoBytes` derive.
     ///
-    /// Structs derived with `#[derive(EtsParams)]` that contain only primitive
-    /// fields and `#[repr(u8)]` enum fields can add
-    /// `#[derive(IntoBytes, KnownLayout, Immutable)]`
-    /// directly.  Structs that contain `#[derive(EtsUnion)]` fields (which use
-    /// `#[repr(C, u8)]`, rejected by zerocopy's derive) must provide a manual
-    /// `unsafe impl IntoBytes`.  See the `ApplicationImpl` documentation
-    /// for the full safety contract.
+    /// Add `#[derive(IntoBytes, KnownLayout, Immutable)]` to the params struct.
+    /// Union fields declared with `#[ets_union]` carry their own padding and
+    /// `IntoBytes` check, so structs containing them derive cleanly too — a
+    /// manual `unsafe impl` is never the right answer here. See the
+    /// `ApplicationImpl` documentation for the full contract.
     type P: ConstDefault + IntoBytes + KnownLayout + Immutable;
 
     /// Communication-object container. Must also implement

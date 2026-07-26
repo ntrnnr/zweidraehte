@@ -338,7 +338,7 @@ async fn app_task(knx: Stack<'static, Stm32G0LightSwitch>, btn_pin: ExtiInput<'s
         // `app::handle_dimmer`. We deliberately don't try to flip
         // `dim_up` ourselves — the helper does that — so the two stay
         // in sync across consecutive long presses.
-        let dim_ramping = event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer);
+        let dim_ramping = event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
         if dim_ramping {
             let up = dim_direction_for_long_press(&params, ButtonId::Btn1, dim_up);
             DIM_RAMP.store(if up { 1 } else { -1 }, Ordering::Relaxed);

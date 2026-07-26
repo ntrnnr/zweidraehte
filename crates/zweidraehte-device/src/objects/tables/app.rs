@@ -68,10 +68,11 @@ use super::{RunnableApplication, Table, TableMemory};
 /// - [`zerocopy::Immutable`] — no interior mutability, required for safe shared
 ///   byte-level access.
 ///
-/// Param structs that contain `#[derive(EtsUnion)]` fields (which use
-/// `#[repr(C, u8)]`) must provide a manual `unsafe impl zerocopy::IntoBytes`
-/// because zerocopy's derive macro does not support `#[repr(C, u8)]`. See the
-/// module-level documentation for the safety invariant that must be upheld.
+/// Derive all three; never hand-write `unsafe impl IntoBytes`. Union fields
+/// declared with `#[ets_union]` are padded and `IntoBytes`-checked by that
+/// macro, so a param struct containing them derives cleanly. A hand-written
+/// impl only asserts the invariant — and historically asserted it falsely,
+/// putting uninitialized bytes on the bus through `data_ref`.
 ///
 /// # Compile-fail example
 ///
