@@ -48,6 +48,34 @@ use syn::{Data, DeriveInput, Fields, FieldsNamed, parse_quote};
 
 use crate::ets_union::derive_ets_union_impl;
 
+// ============================================================================
+// Layout-const naming
+// ============================================================================
+//
+// The const chain emitted below is also read back by the metadata pass in
+// `ets_union`, which needs the real offsets and cannot compute them itself:
+// `core::mem::offset_of!` does not reach enum variant fields on stable, and a
+// macro-time type table cannot know the `repr` of a field's enum type. Both
+// sides go through these helpers so the names cannot drift apart.
+
+/// Const holding the union's alignment (max over every payload field).
+pub(crate) fn align_ident(enum_name: &syn::Ident) -> syn::Ident {
+    format_ident!("__ETS_UNION_{}_ALIGN", enum_name)
+}
+
+/// Const holding the offset of real field `idx` of `variant`, measured from the
+/// start of the variant (i.e. from the tag).
+pub(crate) fn field_offset_ident(enum_name: &syn::Ident, variant: &syn::Ident, idx: usize) -> syn::Ident {
+    format_ident!("__ETS_UNION_{}_{}_OFF{}", enum_name, variant, idx)
+}
+
+/// Expression for where the variant data area begins: the tag, rounded up to
+/// the union's alignment.
+pub(crate) fn data_offset_expr(enum_name: &syn::Ident) -> TokenStream2 {
+    let align = align_ident(enum_name);
+    quote! { zweidraehte_device::ets::union_align_up(1, #align) }
+}
+
 pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let enum_name = &input.ident;
 
@@ -80,7 +108,7 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     // The enum's alignment is the largest alignment among all payload fields
     // of all variants (1 if every variant is empty).
-    let align_ident = format_ident!("__ETS_UNION_{}_ALIGN", enum_name);
+    let align_ident = align_ident(enum_name);
     let mut align_expr: TokenStream2 = quote!(1usize);
     for variant in &data.variants {
         for field in variant.fields.iter() {
@@ -92,6 +120,7 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
     layout_consts.push(quote! {
         #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
         const #align_ident: usize = #align_expr;
     });
 
@@ -102,20 +131,38 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let mut end_ident = format_ident!("__ETS_UNION_{}_{}_END0", enum_name, vname);
         layout_consts.push(quote! {
             #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
             const #end_ident: usize = 1;
         });
 
         for (j, field) in variant.fields.iter().enumerate() {
             let ty = &field.ty;
-            let off_ident = format_ident!("__ETS_UNION_{}_{}_OFF{}", enum_name, vname, j);
+            let off_ident = field_offset_ident(enum_name, vname, j);
             let next_end = format_ident!("__ETS_UNION_{}_{}_END{}", enum_name, vname, j + 1);
+            // The first payload field of *every* variant starts at the same
+            // union-wide data offset, not merely at its own alignment.
+            //
+            // Rust would happily put a `u8` payload at byte 1 while a `u16`
+            // payload in a sibling variant starts at byte 2 — each variant is
+            // laid out independently. ETS cannot express that: `EtsUnionInfo`
+            // carries one `data_offset` for the whole union, so a variant
+            // sitting at a different offset is simply addressed at the wrong
+            // byte. Padding every head to the common offset makes the Rust
+            // layout match the model the product database is written against.
+            let off_expr = if j == 0 {
+                let data_offset = data_offset_expr(enum_name);
+                quote!(#data_offset)
+            } else {
+                quote!(zweidraehte_device::ets::union_align_up(#end_ident, core::mem::align_of::<#ty>()))
+            };
             layout_consts.push(quote! {
-                #[doc(hidden)]
-                const #off_ident: usize =
-                    zweidraehte_device::ets::union_align_up(#end_ident, core::mem::align_of::<#ty>());
-                #[doc(hidden)]
-                const #next_end: usize = #off_ident + core::mem::size_of::<#ty>();
-            });
+                    #[doc(hidden)]
+            #[allow(non_upper_case_globals)]
+                    const #off_ident: usize = #off_expr;
+                    #[doc(hidden)]
+            #[allow(non_upper_case_globals)]
+                    const #next_end: usize = #off_ident + core::mem::size_of::<#ty>();
+                });
             end_ident = next_end;
         }
         variant_end_idents.push(end_ident);
@@ -130,6 +177,7 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     }
     layout_consts.push(quote! {
         #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
         const #total_ident: usize = zweidraehte_device::ets::union_align_up(#widest, #align_ident);
     });
 
@@ -169,7 +217,7 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         let mut padded = syn::punctuated::Punctuated::new();
 
         for (j, field) in originals.iter().enumerate() {
-            let off_ident = format_ident!("__ETS_UNION_{}_{}_OFF{}", enum_name, vname, j);
+            let off_ident = field_offset_ident(enum_name, &vname, j);
             let prev_end = format_ident!("__ETS_UNION_{}_{}_END{}", enum_name, vname, j);
             let pad_name = format_ident!("_pad_before_{}", field.ident.as_ref().expect("named"));
             // Zero-length in the common case; a ZST field costs nothing and

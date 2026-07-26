@@ -74,12 +74,14 @@ pub(crate) fn ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> 
     }
     layout_consts.push(quote! {
         #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
         const #align_ident: usize = #align_expr;
     });
 
     let mut end_ident = format_ident!("__ETS_PARAMS_{}_END0", struct_name);
     layout_consts.push(quote! {
         #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
         const #end_ident: usize = 0;
     });
 
@@ -90,9 +92,11 @@ pub(crate) fn ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> 
         let next_end = format_ident!("__ETS_PARAMS_{}_END{}", struct_name, j + 1);
         layout_consts.push(quote! {
             #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
             const #off_ident: usize =
                 zweidraehte_device::ets::union_align_up(#end_ident, core::mem::align_of::<#ty>());
             #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
             const #next_end: usize = #off_ident + core::mem::size_of::<#ty>();
         });
         end_ident = next_end;
@@ -101,6 +105,7 @@ pub(crate) fn ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> 
     let total_ident = format_ident!("__ETS_PARAMS_{}_TOTAL", struct_name);
     layout_consts.push(quote! {
         #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
         const #total_ident: usize = zweidraehte_device::ets::union_align_up(#end_ident, #align_ident);
     });
 

@@ -2,6 +2,7 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::{Data, DeriveInput, Type};
 
+use crate::ets_union_attr::{data_offset_expr, field_offset_ident};
 use crate::parse::{get_const_zero_expr, get_type_info, get_type_size, parse_field_attrs, parse_variant_attrs};
 
 pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -36,9 +37,12 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
         ));
     }
 
-    // First pass: calculate max alignment across all variants to determine data_offset.
-    // In #[repr(C, u8)], the variant data area starts at an offset aligned to the
-    // maximum alignment of any field in any variant.
+    // Where the variant data area begins. Emitted as a `const` expression over
+    // the real `align_of` of the payload types rather than computed here: the
+    // macro-time type table cannot see through a field's enum type to its
+    // `repr`, so a `#[repr(u16)]` ETS enum used to contribute nothing to the
+    // alignment and this landed on 1 where the payload really starts at 2.
+    let data_offset_tokens = data_offset_expr(enum_name);
     let mut max_align: usize = 1;
     for variant in variants.iter() {
         if let syn::Fields::Named(fields) = &variant.fields {
@@ -168,6 +172,10 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
             syn::Fields::Named(fields) => {
                 let mut size = 0usize;
                 let mut field_offset = 0usize;
+                // Index among the *real* fields, i.e. ignoring the `_pad_*`
+                // fields `#[ets_union]` interleaves. This is what the layout
+                // consts are keyed on.
+                let mut real_idx = 0usize;
 
                 for field in &fields.named {
                     let field_name = field.ident.as_ref().unwrap();
@@ -218,7 +226,8 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
 
                         let variant_name_str = variant_name.to_string();
                         let field_name_str = field_name.to_string();
-                        let param_offset = field_offset as u16;
+                        let off_ident = field_offset_ident(enum_name, variant_name, real_idx);
+                        let param_offset = quote! { (#off_ident - #data_offset_tokens) as u16 };
                         let bit_offset = field_attrs.bit_offset.unwrap_or(0);
 
                         // For ets_enum fields, use default_value if specified
@@ -256,6 +265,7 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
 
                         size = field_offset + 1;
                         field_offset += 1;
+                        real_idx += 1;
                         continue;
                     }
 
@@ -272,6 +282,7 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
                     if field_attrs.skip {
                         size = field_offset + type_info.size_bytes;
                         field_offset += type_info.size_bytes;
+                        real_idx += 1;
                         continue;
                     }
 
@@ -305,8 +316,10 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
 
                     let variant_name_str = variant_name.to_string();
                     let field_name_str = field_name.to_string();
-                    // Use the field offset within the variant data area
-                    let param_offset = field_offset as u16;
+                    // Offset within the variant data area, read from the layout
+                    // const so it reflects the field type's real alignment.
+                    let off_ident = field_offset_ident(enum_name, variant_name, real_idx);
+                    let param_offset = quote! { (#off_ident - #data_offset_tokens) as u16 };
 
                     // Generate enum_variants expression
                     let enum_variants_expr = if let Some(variants) = &field_attrs.enum_variants {
@@ -367,6 +380,7 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
 
                     size = field_offset + type_info.size_bytes;
                     field_offset += type_info.size_bytes;
+                    real_idx += 1;
                 }
 
                 variant_size = size;
@@ -388,7 +402,6 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
 
     let enum_name_str = enum_name.to_string();
     let variant_count = discriminant_variants.len();
-    let data_offset_u16 = data_offset as u16;
     // NOTE: We use core::mem::size_of to get the actual Rust size including alignment
     // padding. The calculated max_variant_size is only used for data_size (the logical
     // size of variant data), but total_size must match the actual struct layout for
@@ -423,9 +436,9 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
                 // Use actual Rust size including alignment padding
                 total_size: core::mem::size_of::<#enum_name>() as u16,
                 // Offset where variant data begins (after discriminant + alignment padding)
-                data_offset: #data_offset_u16,
+                data_offset: #data_offset_tokens as u16,
                 // data_size is total_size minus data_offset
-                data_size: (core::mem::size_of::<#enum_name>() as u16 - #data_offset_u16),
+                data_size: (core::mem::size_of::<#enum_name>() as u16 - #data_offset_tokens as u16),
                 variant_count: #variant_count,
                 variant_params: &[
                     #(#union_params),*
