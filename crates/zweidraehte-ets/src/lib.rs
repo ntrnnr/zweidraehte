@@ -108,6 +108,7 @@ use syn::{DeriveInput, parse_macro_input};
 mod ets_com_objects;
 mod ets_enum;
 mod ets_params;
+mod ets_params_attr;
 mod ets_range_enum;
 mod ets_union;
 mod ets_union_attr;
@@ -117,15 +118,6 @@ mod parse;
 ///
 /// Generates an `ETS_PARAMS` constant containing metadata for each field
 /// that can be used for ETS export.
-#[proc_macro_derive(EtsParams, attributes(ets))]
-pub fn derive_ets_params(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    match ets_params::derive_ets_params_impl(&input) {
-        Ok(tokens) => tokens.into(),
-        Err(err) => err.to_compile_error().into(),
-    }
-}
 
 /// Derive macro for generating ETS union definitions from Rust enums.
 ///
@@ -182,6 +174,43 @@ pub fn derive_ets_params(input: TokenStream) -> TokenStream {
 /// parameter's offset. One consequence worth knowing: a unit variant gains a
 /// body, so `ButtonConfig::Dimmer` is constructed and matched as
 /// `ButtonConfig::Dimmer { .. }`.
+/// Define an ETS parameter struct.
+///
+/// Rewrites the struct so its byte image is fully initialised — inserting the
+/// alignment and trailing padding `#[repr(C)]` would otherwise leave unnamed —
+/// then applies `#[derive(zerocopy::IntoBytes)]`, which proves there is none
+/// left. That matters because the struct is read wholesale: as the `<Data>`
+/// defaults blob ETS reads back, and as the live parameter memory served to
+/// `A_Memory_Read`.
+///
+/// Write only the real parameters; do **not** add a `repr` (the macro emits
+/// `#[repr(C)]`) and never hand-write `unsafe impl IntoBytes`.
+///
+/// ```rust,ignore
+/// #[ets_params]
+/// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// pub struct MyParams {
+///     #[ets(display = "Startup time", suffix = "s")]
+///     pub startup_timeout: u16,
+///
+///     #[ets(display = "Reaction time", ets_enum)]
+///     pub debounce_time: ReactionTime,
+/// }
+/// ```
+///
+/// Generated padding is named `_pad_before_<field>` / `_pad_tail` and carries
+/// `#[ets(skip)]`, so it emits no ETS parameter. Real parameters keep their
+/// offsets because the metadata reads them from `core::mem::offset_of!`.
+#[proc_macro_attribute]
+pub fn ets_params(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(item as DeriveInput);
+
+    match ets_params_attr::ets_params_impl(&input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 #[proc_macro_attribute]
 pub fn ets_union(_args: TokenStream, item: TokenStream) -> TokenStream {
     let input = parse_macro_input!(item as DeriveInput);

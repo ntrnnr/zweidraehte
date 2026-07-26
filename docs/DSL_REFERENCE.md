@@ -34,7 +34,7 @@ The DSL consists of derive macros and a declarative macro:
 
 | Component | Purpose |
 |-----------|---------|
-| `#[derive(EtsParams)]` | Define device parameters |
+| `#[ets_params]` | Define device parameters |
 | `#[derive(EtsEnum)]` | Define simple enumerations for dropdowns |
 | `#[ets_union]` | Define tagged unions for variant parameters (attribute, not derive) |
 | `#[derive(EtsComObjects)]` | Define communication objects |
@@ -77,15 +77,30 @@ The DSL consists of derive macros and a declarative macro:
 
 ---
 
-## EtsParams - Parameter Definitions
+## ets_params - Parameter Definitions
 
-Use `#[derive(EtsParams)]` on a struct to define device parameters.
+`#[ets_params]` is an **attribute macro**, not a derive, for the same reason as
+[`#[ets_union]`](#ets_union---tagged-unions): it rewrites the struct. `#[repr(C)]`
+leaves a hole wherever a field's alignment exceeds the running offset, plus trailing
+padding to the struct's own alignment, and naming those bytes means *adding fields* —
+which a derive cannot do to its own item. The macro inserts them, sets `#[repr(C)]`,
+and applies `#[derive(zerocopy::IntoBytes)]`, which proves none are left.
+
+Consequences for how you write one:
+
+- **Do not add a `repr`.** The macro sets it.
+- **Never hand-write `unsafe impl IntoBytes`.**
+- Struct literals must close with `..Default::default()` so the generated padding is
+  filled without naming it. Real parameter offsets are unaffected — the metadata reads
+  them from `core::mem::offset_of!`.
+
+Use `#[ets_params]` on a struct to define device parameters.
 
 ### Basic Usage
 
 ```rust
-#[derive(Debug, Clone, Copy, EtsParams)]
-#[repr(C)]  // Required for predictable memory layout
+#[ets_params]
+#[derive(Debug, Clone, Copy)]  // Required for predictable memory layout
 pub struct MyDeviceParams {
     /// Simple numeric parameter
     #[ets(display = "Startup Timeout", suffix = "s", default = 2)]
@@ -107,11 +122,10 @@ pub struct MyDeviceParams {
 
 #### Auto-generated Defaults
 
-`#[derive(EtsParams)]` automatically generates `Default` and `ConstDefault` implementations from your field defaults:
+`#[ets_params]` automatically generates `Default` and `ConstDefault` implementations from your field defaults:
 
 ```rust
-#[derive(EtsParams)]
-#[repr(C)]
+#[ets_params]
 pub struct MyParams {
     #[ets(display = "Timeout", default = 100)]
     pub timeout: u16,
@@ -190,7 +204,7 @@ pub output_value: ValueUnion,  // Stores discriminant + value (Switch has 1-bit,
 When your field type is an `EtsEnum`, use the `ets_enum` attribute:
 
 ```rust
-#[derive(EtsParams)]
+#[ets_params]
 pub struct Params {
     // Use the enum's ETS_VARIANTS for the dropdown
     #[ets(display = "Enable Feature", ets_enum)]
@@ -915,7 +929,7 @@ zweidraehte_knxprod::define_module! {
 ```
 
 The macro generates:
-- `DimmerChannelModuleParams` - params struct with `#[derive(EtsParams)]`
+- `DimmerChannelModuleParams` - params struct with `#[ets_params]`
 - `DIMMER_CHANNEL_MODULE_VIRTUAL_PARAMS` - virtual params constant (naming
   rule: the module struct name in SCREAMING_SNAKE_CASE plus
   `_VIRTUAL_PARAMS`)
@@ -1020,8 +1034,7 @@ impl EtsPageLayout for MyDevice {
 Use `#[ets(module = ModuleType)]` on array fields to automatically generate `HasChannelHelpers`:
 
 ```rust
-#[derive(EtsParams)]
-#[repr(C)]
+#[ets_params]
 pub struct DeviceParams {
     pub enable_ch1: u8,
     pub enable_ch2: u8,
@@ -1282,8 +1295,8 @@ pub enum OutputModeUnion {
 }
 
 // Device parameters
-#[derive(Debug, Clone, Copy, EtsParams)]
-#[repr(C)]
+#[ets_params]
+#[derive(Debug, Clone, Copy)]
 pub struct DeviceParams {
     #[ets(display = "Startup Delay", suffix = "s", default = 2)]
     pub startup_delay: u8,

@@ -238,8 +238,8 @@ zweidraehte_device::ets_virtual_params! {
 ///
 /// In 2-function mode, each button has its own independent `ButtonConfig`.
 /// The `rocker_direction` parameter is hidden.
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
-#[repr(C)]
+#[ets_params]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct LightSwitchParams {
     /// Button input debounce time (applies to both buttons)
     #[ets(display = "Debounce time", ets_enum)]

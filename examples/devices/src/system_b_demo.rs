@@ -425,7 +425,7 @@ pub enum SceneConfig {
 
 /// Application parameters for the demo device.
 ///
-/// The `#[derive(EtsParams)]` macro generates:
+/// The `#[ets_params]` macro generates:
 /// - `ETS_PARAMS`: Basic parameter definitions
 /// - `ETS_PARAMS_EXT`: Extended definitions with enum variants
 /// - `MODE_VARIANTS`: Auto-generated const for enum variants (named after the field)
@@ -440,8 +440,8 @@ pub enum SceneConfig {
 ///
 /// Union fields can be placed anywhere in the struct. The macro uses `core::mem::offset_of!`
 /// to correctly calculate field offsets regardless of union placement.
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
-#[repr(C)]
+#[ets_params]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DemoParams {
     /// Channel A output configuration - controls comm object DPT and mode-specific params
     #[ets(union, display = "Channel A Config")]

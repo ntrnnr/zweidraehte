@@ -111,7 +111,7 @@
 //! ```
 //!
 //! The macro generates:
-//! - `DimmerChannelModuleParams` - params struct with `#[derive(EtsParams)]`
+//! - `DimmerChannelModuleParams` - params struct with `#[ets_params]`
 //! - `DIMMER_CHANNEL_MODULE_VIRTUAL_PARAMS` - virtual params constant
 //! - `DimmerChannelModule` - module struct implementing `KnxModule`
 //!
@@ -120,8 +120,7 @@
 //! Use `#[ets(module = ModuleType)]` on array fields to generate compile-time helpers:
 //!
 //! ```rust,ignore
-//! #[derive(EtsParams)]
-//! #[repr(C)]
+//! #[ets_params]
 //! pub struct DeviceParams {
 //!     pub enable_ch1: u8,
 //!     pub enable_ch2: u8,
@@ -424,8 +423,8 @@ pub enum IconSelection {
 /// let ch2_offset = DeviceParams::channel_param_offset(2); // = 10
 /// let ch2_obj0 = DeviceParams::channel_object_index(2, 0); // = 3
 /// ```
-#[derive(Debug, Clone, Copy, EtsParams, Serialize, Deserialize, KnownLayout, Immutable, IntoBytes)]
-#[repr(C)]
+#[ets_params]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct DeviceParams {
     /// Enable channel 1
     #[ets(display = "Enable channel 1", ets_enum)]
@@ -937,6 +936,7 @@ mod tests {
                     max_brightness: 100,
                     dim_speed: 30,
                     power_on_level: 50,
+                    ..Default::default()
                 },
                 DimmerChannelModuleParams {
                     icon_selection: IconSelection::Christmas,
@@ -944,6 +944,7 @@ mod tests {
                     max_brightness: 90,
                     dim_speed: 40,
                     power_on_level: 60,
+                    ..Default::default()
                 },
                 DimmerChannelModuleParams {
                     icon_selection: IconSelection::Night,
@@ -951,6 +952,7 @@ mod tests {
                     max_brightness: 80,
                     dim_speed: 50,
                     power_on_level: 70,
+                    ..Default::default()
                 },
                 DimmerChannelModuleParams {
                     icon_selection: IconSelection::Christmas,
@@ -958,8 +960,10 @@ mod tests {
                     max_brightness: 100,
                     dim_speed: 60,
                     power_on_level: 80,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         };
 
         // Simulated comm object values (flat array, 4 channels * 3 objects = 12 objects)
@@ -1174,6 +1178,7 @@ mod tests {
                     max_brightness: 100,
                     dim_speed: 30,
                     power_on_level: 50,
+                    ..Default::default()
                 },
                 DimmerChannelModuleParams {
                     icon_selection: IconSelection::Christmas,
@@ -1181,6 +1186,7 @@ mod tests {
                     max_brightness: 90,
                     dim_speed: 40,
                     power_on_level: 60,
+                    ..Default::default()
                 },
                 DimmerChannelModuleParams {
                     icon_selection: IconSelection::Night,
@@ -1188,6 +1194,7 @@ mod tests {
                     max_brightness: 80,
                     dim_speed: 50,
                     power_on_level: 70,
+                    ..Default::default()
                 },
                 DimmerChannelModuleParams {
                     icon_selection: IconSelection::Christmas,
@@ -1195,8 +1202,10 @@ mod tests {
                     max_brightness: 100,
                     dim_speed: 60,
                     power_on_level: 80,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         };
 
         // === Simulate: Remote device sends GroupValueWrite to channel 3 dim object ===

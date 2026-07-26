@@ -20,11 +20,10 @@
 //!
 //! ```rust,ignore
 //! use zweidraehte_knxprod::definition::module::{KnxModule, ModuleArgDef, ModuleInstance};
-//! use zweidraehte_device::ets::{EtsParams, EtsComObjects};
+//! use zweidraehte_device::ets::{EtsComObjects, ets_params};
 //!
 //! // Define parameters for a dimmer channel module
-//! #[derive(EtsParams)]
-//! #[repr(C)]
+//! #[ets_params]
 //! pub struct DimmerChannelParams {
 //!     #[ets(display = "Enable channel")]
 //!     pub enabled: u8,
@@ -283,7 +282,7 @@ pub trait KnxModule {
     /// Parameter type - must derive `EtsParams`.
     ///
     /// This type provides module parameter definitions via the `HasModuleParams` trait
-    /// which is automatically implemented by `#[derive(EtsParams)]`.
+    /// which is automatically implemented by `#[ets_params]`.
     type Params: zweidraehte_device::ets::HasModuleParams;
 
     /// Communication objects type - must derive `EtsComObjects`.
@@ -936,7 +935,7 @@ impl ModuleCollection {
 /// Macro for defining KNX modules with an ergonomic DSL.
 ///
 /// This macro generates:
-/// - A params struct with `#[derive(EtsParams)]`
+/// - A params struct with `#[ets_params]`
 /// - Virtual params constant (optional)
 /// - The module struct implementing `KnxModule`
 ///
@@ -1196,7 +1195,7 @@ macro_rules! __define_module_impl {
     };
 }
 
-/// Generate the params struct with #[derive(EtsParams)]
+/// Generate the params struct with #[ets_params]
 #[macro_export]
 #[doc(hidden)]
 macro_rules! __define_module_params_struct {
@@ -1220,16 +1219,13 @@ macro_rules! __define_module_params_struct {
         )+]
     ) => {
         $crate::paste::paste! {
-            // `IntoBytes` is derived (not hand-written) because the generator
-            // reinterprets these params as the `<Data>` defaults blob ETS reads
-            // back byte-for-byte. zerocopy rejects any struct with padding, so a
-            // module whose fields would leave an alignment hole fails to compile
-            // rather than emitting uninitialized bytes at real parameter offsets.
-            #[derive(
-                Debug, Clone, Copy, ::zweidraehte_device::ets::EtsParams, ::serde::Serialize, ::serde::Deserialize,
-                $crate::zerocopy::KnownLayout, $crate::zerocopy::Immutable, $crate::zerocopy::IntoBytes,
-            )]
-            #[repr(C)]
+            // `#[ets_params]` owns the representation, inserts any alignment
+            // padding the fields need, and applies the zerocopy derives — so a
+            // generated module struct carries the same no-uninitialized-bytes
+            // guarantee as a hand-written one, without the macro here having to
+            // reason about layout at all.
+            #[::zweidraehte_device::ets::ets_params]
+            #[derive(Debug, Clone, Copy, ::serde::Serialize, ::serde::Deserialize)]
             $vis struct [<$module_name Params>] {
                 $(
                     $(#[$p_attr])*
