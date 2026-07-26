@@ -10,9 +10,12 @@
 //! Applications that do want KNX-driven reconfiguration (e.g. an appliance
 //! that owns its interface via systemd-networkd or NetworkManager) should
 //! implement [`NetworkInfo`] + [`NetworkConfig`] themselves instead.
+//!
+//! Despite the name, this builds and runs on macOS too — it is gated on the
+//! `linux` *feature*, and `getifaddrs` is POSIX. Only the default gateway is
+//! genuinely Linux-only (`/proc/net/route`); elsewhere it reads as 0.0.0.0.
 
 use core::net::Ipv4Addr;
-use std::fs;
 
 use nix::ifaddrs::getifaddrs;
 
@@ -98,7 +101,16 @@ impl NetworkInfo for LinuxIpPlatform {
     }
 
     fn current_default_gateway(&self) -> Ipv4Addr {
-        default_gateway_from_proc(&self.interface_name).unwrap_or(Ipv4Addr::UNSPECIFIED)
+        // Only Linux is served here: the lookup goes through `/proc/net/route`
+        // (see below), which no BSD-family host has. macOS builds this module
+        // too — it is gated on the `linux` *feature*, not the target — and
+        // reporting 0.0.0.0 there is the honest answer, quietly: a property
+        // read that fires per ETS poll must not spam the log with a limitation
+        // that will not change.
+        #[cfg(target_os = "linux")]
+        return default_gateway_from_proc(&self.interface_name).unwrap_or(Ipv4Addr::UNSPECIFIED);
+        #[cfg(not(target_os = "linux"))]
+        return Ipv4Addr::UNSPECIFIED;
     }
 
     fn mac_address(&self) -> [u8; 6] {
@@ -136,8 +148,9 @@ impl NetworkConfig for LinuxIpPlatform {
 /// in-memory (little-endian) representation of the network-byte-order
 /// `u32` — so `192.168.1.1` appears as `0101A8C0` and `to_le_bytes()`
 /// recovers the octet order.
+#[cfg(target_os = "linux")]
 fn default_gateway_from_proc(interface_name: &str) -> Option<Ipv4Addr> {
-    let route_table = match fs::read_to_string("/proc/net/route") {
+    let route_table = match std::fs::read_to_string("/proc/net/route") {
         Ok(contents) => contents,
         Err(e) => {
             log::warn!("failed to read /proc/net/route while querying default gateway of {interface_name}: {e}");
