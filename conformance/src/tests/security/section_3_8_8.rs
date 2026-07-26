@@ -56,6 +56,10 @@ const COMMAND_RESP_FC: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 FC 
 // APDU: 01 D4 + 00 11 + 00 10 + 33 + 00 + 00 + 03 = 10 bytes → TP1 len = 0x09
 const COMMAND_INVALID_SERVICE_INFO: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 03";
 
+// Command with the Reserved octet = 0x01. 03/05/01 §6.3.5.1 fixes it at 00h,
+// so the request data is not valid for this receiver → E_DATA_VOID (0xF8).
+const COMMAND_RESERVED_NONZERO: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 01 00 01";
+
 // ============================================================================
 // FunctionPropertyExtState_Read / Response templates for PID 0x33
 // ============================================================================
@@ -81,6 +85,13 @@ const STATE_READ_INVALID_SERVICE_ID: &str = "3C 60 #EDI #BDUT_ADDR 08 01 D5 00 1
 // State_Read response: return_code=0xF2 (invalid service ID), echoed ServiceID=0x01.
 // APDU: 01 D6 + 00 11 + 00 10 + 33 + F2 + 01 = 9 bytes → TP1 len = 0x08
 const STATE_READ_RESP_F2: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 F2 01";
+
+// State_Read with the Reserved octet = 0x01 (03/05/01 §6.3.5.2 fixes it at 00h).
+const STATE_READ_RESERVED_NONZERO: &str = "3C 60 #EDI #BDUT_ADDR 08 01 D5 00 11 00 10 33 01 00";
+
+// State_Read response: return_code=0xF8 (void request data), echoed ServiceID=0x00.
+// APDU: 01 D6 + 00 11 + 00 10 + 33 + F8 + 00 = 9 bytes → TP1 len = 0x08
+const STATE_READ_RESP_F8: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 F8 00";
 
 // ============================================================================
 // Plain (non-secure) FunctionPropertyExt templates
@@ -331,6 +342,12 @@ fn test_3_8_8_1() -> TestCase {
 // Verifies that the DUT rejects FunctionPropertyExtCommand with an invalid
 // ServiceInfo value (0x03) and FunctionPropertyExtState_Read with an invalid
 // ServiceID (0x01). Neither should change the security mode.
+//
+// The two Reserved-octet steps are not in the XML template; they are derived
+// from 03/05/01 §6.3.5.3, which admits only FFh, FEh, F8h and the Table 102
+// code F2h for this property. A malformed Reserved octet is void request
+// data, so it must answer F8h — not a code from the specific-negative range
+// A0h–DFh, where Table 102 defines nothing at all.
 
 fn test_3_8_8_2() -> TestCase {
     TestCase::new("3.8.8.2 Invalid Service IDs").with_steps(vec![
@@ -350,6 +367,18 @@ fn test_3_8_8_2() -> TestCase {
         comment("A+C StateRead → mode=0 (still unchanged)"),
         inject_secure_ac(STATE_READ, "TK1"),
         expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+        // Reserved octet != 0x00 on the Command → RC=0xF8, ServiceID echoed,
+        // and — critically — the enable must not take effect.
+        comment("A+C Command with Reserved=0x01 → RC=0xF8"),
+        inject_secure_ac(COMMAND_RESERVED_NONZERO, "TK1"),
+        expect_secure_ac(COMMAND_RESP_F8, "TK1", TIMEOUT),
+        comment("A+C StateRead → mode=0 (rejected Command did not enable)"),
+        inject_secure_ac(STATE_READ, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_OFF, "TK1", TIMEOUT),
+        // Reserved octet != 0x00 on the StateRead → RC=0xF8, ServiceID echoed.
+        comment("A+C StateRead with Reserved=0x01 → RC=0xF8"),
+        inject_secure_ac(STATE_READ_RESERVED_NONZERO, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_F8, "TK1", TIMEOUT),
     ])
 }
 

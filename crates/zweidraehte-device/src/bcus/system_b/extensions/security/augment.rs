@@ -9,8 +9,8 @@ use core::cell::RefCell;
 use super::SecurityTable;
 use crate::StackDefinition;
 use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyBuf,
-    PropertyError, WriteResponse, interface_object_augment, pid,
+    FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyError,
+    WriteResponse, interface_object_augment, pid,
 };
 use crate::objects::tables::{LoadEvent, LoadState};
 use crate::service::ServiceCtx;
@@ -583,23 +583,54 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
 // Private Helpers
 // ============================================================================
 
+/// Build a negative `PID_SECURITY_MODE` response per 03/05/01 §6.3.5.3.
+///
+/// That clause fixes both halves of the answer. The payload is *only* the
+/// echoed ServiceID ("repeating the ServiceID – ReadServiceID or
+/// WriteServiceID – as appropriate"), never the request data that caused
+/// the rejection. The code must be > 7Fh and is restricted to the basic
+/// negative (FFh), the two generic negatives the clause admits (FEh, F8h),
+/// and the single property-specific code in Table 102 (F2h
+/// `E_COMMAND_INVALID`, for an invalid ServiceID).
+///
+/// Notably, Table 102 defines **no** entry in the specific-negative range
+/// A0h–DFh (03/03/07 §3.4.5.5), so this property must never answer from
+/// there. This helper exists to make that impossible: taking a
+/// [`PropertyReturnCode`] keeps the response inside the generic table and
+/// out of the disjoint `GoDiagReturnCode` space that `PID_OPERATION_MODE`
+/// uses — the two overlap numerically, and A0h is `E_OM_ERROR` there.
+fn security_mode_reject(code: PropertyReturnCode, service_id: u8) -> FunctionPropertyResult {
+    FunctionPropertyResult::with_code(code, &[service_id])
+}
+
 impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: usize, const GO: usize>
     SecurityAugment<'a, SEQ, GRP, P2P, GO>
 {
-    /// Handle PID_SECURITY_MODE FunctionPropertyCommand.
+    /// Handle PID_SECURITY_MODE `A_FunctionPropertyCommand` (03/05/01
+    /// §6.3.5.1).
     ///
-    /// ServiceID 0x00: Write Security Mode.
-    /// ServiceInfo: 0x00 = disable, 0x01 = enable.
+    /// Request: `[Reserved(00h), WriteServiceID, ServiceInfo]`.
+    /// WriteServiceID 00h ("Write the Security Mode") is the only one
+    /// defined; ServiceInfo 00h disables, 01h enables.
+    ///
+    /// Errors follow §6.3.5.3 — see [`security_mode_reject`] for the code
+    /// space this property may answer from.
     fn handle_security_mode_command(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
-        // Command format: [reserved, service_id, service_info]
         if req.service_data.len() < 3 {
-            return FunctionPropertyResult::not_supported();
+            // Truncated before the WriteServiceID, so there is nothing to
+            // echo: only the basic negative code is left.
+            return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
+        let reserved = req.service_data[0];
         let service_id = req.service_data[1];
         let service_info = req.service_data[2];
 
+        if reserved != 0x00 {
+            return security_mode_reject(PropertyReturnCode::DataVoid, service_id);
+        }
+
         if service_id != 0x00 {
-            return FunctionPropertyResult::not_supported();
+            return security_mode_reject(PropertyReturnCode::CommandInvalid, service_id);
         }
 
         match service_info {
@@ -611,41 +642,36 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
                 self.state.set_security_mode_enabled(true);
                 FunctionPropertyResult::success_with_data(&[service_id])
             }
-            _ => {
-                // Invalid ServiceInfo → E_DATA_VOID (0xF8)
-                FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id])
-            }
+            // ServiceInfo is an enumeration; an unsupported value is void
+            // request data (03/03/07 §3.4.5.5, E_DATA_VOID).
+            _ => security_mode_reject(PropertyReturnCode::DataVoid, service_id),
         }
     }
 
-    /// Handle PID_SECURITY_MODE FunctionPropertyStateRead.
+    /// Handle PID_SECURITY_MODE `A_FunctionPropertyState_Read` (03/05/01
+    /// §6.3.5.2).
     ///
-    /// Service format: [reserved, ReadServiceID]
-    /// ReadServiceID 0x00: Read Security Mode → returns current mode byte.
+    /// Request: `[Reserved(00h), ReadServiceID]`. ReadServiceID 00h ("Read
+    /// the current Security Mode") is the only one defined and answers with
+    /// `[ReadServiceID, Security Mode]` after the return code (Figure 71).
+    ///
+    /// Errors follow §6.3.5.3 — see [`security_mode_reject`].
     fn handle_security_mode_state_read(&self, req: &FunctionPropertyRequest<'_>) -> FunctionPropertyResult {
         if req.service_data.len() < 2 {
-            // Too few bytes.
+            // Truncated before the ReadServiceID — nothing to echo.
             return FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[]);
         }
 
         let reserved = req.service_data[0];
         let read_service_id = req.service_data[1];
 
-        // Reserved byte must be 0.
-        //
-        // TODO: 0xA0 belongs to neither named return-code space — it is not
-        // in the generic `PropertyReturnCode` table (03/03/07 §3.4.5.5), and
-        // the `GoDiagReturnCode` 0xA0 (`E_OM_ERROR`) is defined for
-        // `PID_OPERATION_MODE`, not `PID_SECURITY_MODE`. Left as a raw byte
-        // rather than mapped to a wrong-property enum; confirm against
-        // 03/05/01 and either add a variant or correct the code.
         if reserved != 0x00 {
-            return FunctionPropertyResult { return_code: 0xA0, data: PropertyBuf::new(&[reserved, read_service_id]) };
+            return security_mode_reject(PropertyReturnCode::DataVoid, read_service_id);
         }
 
         // Only ReadServiceID 0x00 is supported.
         if read_service_id != 0x00 {
-            return FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[read_service_id]);
+            return security_mode_reject(PropertyReturnCode::CommandInvalid, read_service_id);
         }
 
         let mode = if self.state.security_mode_enabled() { 0x01u8 } else { 0x00u8 };
