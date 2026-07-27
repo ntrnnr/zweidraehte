@@ -518,7 +518,6 @@ impl Default for SecurityFailureEntry {
 /// happened to be in scope — and the default could silently answer `false`
 /// for a device that does have security enabled.
 pub trait HasSecurityState: HasSecurityMode {
-
     /// Current load state of the Security Interface Object.
     ///
     /// Per KNX spec 03/05/01 §6.3.4: security tables (P2P keys, group

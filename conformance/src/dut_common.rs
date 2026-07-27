@@ -356,9 +356,7 @@ pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, s
             // `ApplicationLayer::handle_service`) rather than panicking, so
             // we can dispatch unconditionally and rely on the app layer to
             // fall through for non-secure builds.
-            let _ = stack
-                .initiate_sync(peer_ia, SyncOptions { tool_access, system_broadcast: is_broadcast })
-                .await;
+            let _ = stack.initiate_sync(peer_ia, SyncOptions { tool_access, system_broadcast: is_broadcast }).await;
         }
         RunnerMessage::PowerCycle => {
             log::info!("CMD: PowerCycle — flush + exit");

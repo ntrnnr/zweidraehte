@@ -14,9 +14,8 @@
 //! indicated by `IsIPEnabled="true"` on the Hardware element in MTXML.
 //! We use `MaskVersion::SystemBTp1` (0x07B0).
 
-
-use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
 use zweidraehte_device::NoParams;
+use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
 use zweidraehte_device::objects::comm::{NoComObjectIndex, NoComObjects};
 
 // ============================================================================

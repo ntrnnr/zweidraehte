@@ -21,8 +21,8 @@ use crate::bcus::system_b::extensions::security::{SecurityTable, read_table_with
 use crate::bcus::system_b::{Extension, ExtensionState};
 use crate::ip::{HasIpSecureView, IpSecureStateView};
 use crate::objects::interface::{
-    FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
-    PropertyError, WriteResponse, interface_object_augment, pid,
+    FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyError,
+    WriteResponse, interface_object_augment, pid,
 };
 use crate::restart::EraseCode;
 use crate::service::ServiceCtx;

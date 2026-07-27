@@ -7,11 +7,11 @@ use core::net::Ipv4Addr;
 
 use super::{PropertyDescriptionResponse, PropertyDescriptor, PropertyError};
 use zweidraehte_proto::AccessContext;
-use zweidraehte_proto::messages::apdu::go_diagnostics::GoDiagReturnCode;
-use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Bitset8, PDT_Bitset16, PDT_Generic06, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
 };
+use zweidraehte_proto::messages::apdu::go_diagnostics::GoDiagReturnCode;
+use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 
 // ============================================================================
 // Inline Property Buffer

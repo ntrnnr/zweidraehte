@@ -45,13 +45,13 @@ pub use ip::{
 };
 
 mod composition;
-pub use composition::{
-    PlainDeviceBuilder, LayerStackBuilder, SecureDeviceBuilder, StandardDeviceLayers, StandardLayerStack,
-    StandardSecureDeviceLayers,
-};
 #[cfg(feature = "knxip")]
 pub use composition::{
-    PlainIpDeviceBuilder, IpDeviceLayers, IpLayerStack, SecureIpDeviceBuilder, SecureIpDeviceLayers,
+    IpDeviceLayers, IpLayerStack, PlainIpDeviceBuilder, SecureIpDeviceBuilder, SecureIpDeviceLayers,
+};
+pub use composition::{
+    LayerStackBuilder, PlainDeviceBuilder, SecureDeviceBuilder, StandardDeviceLayers, StandardLayerStack,
+    StandardSecureDeviceLayers,
 };
 
 pub(crate) mod stack_core;

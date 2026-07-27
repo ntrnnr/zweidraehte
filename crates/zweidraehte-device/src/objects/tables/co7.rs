@@ -71,7 +71,9 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTab7Impl<N>> {
 
     fn entry_count(&self) -> u16 {
         // The count is bus-downloaded data and must not exceed physical capacity.
-        U16::from_bytes(self.table.data[0..2].try_into().expect("slice is exactly 2 bytes")).get().min(self.max_entries() as u16)
+        U16::from_bytes(self.table.data[0..2].try_into().expect("slice is exactly 2 bytes"))
+            .get()
+            .min(self.max_entries() as u16)
     }
 
     fn object(&self, idx: u16) -> Option<ComObjectTableEntry> {

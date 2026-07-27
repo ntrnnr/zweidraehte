@@ -756,7 +756,8 @@ impl<T: TableMemory> Table<T> {
         table.state = LoadState::Loaded;
         table.table_reference = table_reference;
         // Initialize MCB with data size and CRC
-        let stored_mcb = McbData::mut_from_bytes(table.mcb_table.as_mut_bytes()).expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
+        let stored_mcb = McbData::mut_from_bytes(table.mcb_table.as_mut_bytes())
+            .expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
         stored_mcb.requested_memory_size.set(data.len() as u32);
         stored_mcb.mode = 0x00;
         stored_mcb.fill = 0xFF;
@@ -869,7 +870,8 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
 
                             // Store the length in the MCB table
                             // CRC will be calculated later on LoadEnd
-                            let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes()).expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
+                            let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes())
+                                .expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
                             stored_mcb.requested_memory_size = data.requested_memory_size;
                             stored_mcb.mode = 0x00;
                             stored_mcb.fill = 0xFF;
@@ -893,7 +895,8 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
                 }
             }
             LoadAction::LoadEnd => {
-                let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes()).expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
+                let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes())
+                    .expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
                 stored_mcb
                     .crc
                     .set(crc16_ccitt(&self.table.data_ref()[0..(stored_mcb.requested_memory_size.get() as usize)]));
