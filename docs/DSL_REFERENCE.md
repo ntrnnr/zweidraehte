@@ -210,6 +210,13 @@ explicit default; theirs comes from the type's `ConstDefault`.
 | `[u8; N]` | Array / String | N bytes |
 | Enum types | Via `ets_enum` | Depends on repr |
 
+`[u8; N]` is limited only by what an ETS `SizeInBit` can express (8191 bytes),
+so the text widths KNX master data ships — `String_30Byte`, `String_40Byte` —
+are all available. Combining `string` with `no_memory` gives a label ETS keeps
+in the project and never downloads, which is how vendors declare per-channel
+description fields; that is worth doing deliberately, since a 40-byte text
+parameter otherwise costs 40 bytes of EEPROM per channel.
+
 ### `ets_enum` vs `union` - What's the Difference?
 
 Both mark fields with custom types, but they serve different purposes:

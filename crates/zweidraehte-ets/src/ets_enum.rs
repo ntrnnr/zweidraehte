@@ -99,7 +99,7 @@ pub(crate) fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStre
         });
     }
 
-    let size_bits = (repr_size * 8) as u8;
+    let size_bits = (repr_size * 8) as u16;
 
     // Generate ConstDefault impl if a #[default] variant was found
     let const_default_impl = if let Some(default_ident) = default_variant_ident {
@@ -120,7 +120,7 @@ pub(crate) fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStre
             ];
 
             /// Size of this enum in bits (for ETS parameter definition).
-            pub const ETS_SIZE_BITS: u8 = #size_bits;
+            pub const ETS_SIZE_BITS: u16 = #size_bits;
         }
 
         impl zweidraehte_device::ets::EtsEnumType for #enum_name {

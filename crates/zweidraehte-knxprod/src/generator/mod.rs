@@ -556,7 +556,7 @@ pub enum GeneratorError {
     /// A parameter size_bits value is outside the range [1, 63]
     InvalidParameterSize {
         /// The out-of-range value
-        size_bits: u8,
+        size_bits: u16,
     },
     /// A parameter extends past the end of the code segment holding it
     ParameterOutOfSegment {

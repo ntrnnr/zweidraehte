@@ -1750,7 +1750,8 @@ impl MtxmlGenerator {
                 }
                 let max = (1i64 << param.size_bits) - 1;
                 Ok(ParameterTypeDef::TypeNumber(TypeNumber {
-                    size_in_bit: param.size_bits,
+                    // Narrowing is safe: the guard above rejects anything past 63.
+                    size_in_bit: param.size_bits as u8,
                     num_type: "unsignedInt".to_string(),
                     min_inclusive: 0,
                     max_inclusive: max,
@@ -1764,7 +1765,8 @@ impl MtxmlGenerator {
                 }
                 let half = 1i64 << (param.size_bits - 1);
                 Ok(ParameterTypeDef::TypeNumber(TypeNumber {
-                    size_in_bit: param.size_bits,
+                    // Narrowing is safe: the guard above rejects anything past 63.
+                    size_in_bit: param.size_bits as u8,
                     num_type: "signedInt".to_string(),
                     min_inclusive: -half,
                     max_inclusive: half - 1,

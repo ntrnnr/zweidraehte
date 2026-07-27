@@ -237,7 +237,9 @@ pub(crate) fn parse_variant_attrs(attrs: &[Attribute]) -> syn::Result<VariantAtt
 
 pub(crate) struct TypeInfo {
     pub(crate) size_bytes: usize,
-    pub(crate) size_bits: u8,
+    /// Mirrors `EtsParamDef::size_bits`, which is `u16` so that text
+    /// parameters wider than 31 characters remain expressible.
+    pub(crate) size_bits: u16,
     pub(crate) align: usize,
     pub(crate) param_type: TokenStream2,
 }
@@ -340,13 +342,15 @@ pub(crate) fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                     && let Lit::Int(int) = &lit.lit
                 {
                     let len: usize = int.base10_parse()?;
-                    // `size_bits` is a u8; a `[u8; N]` with N >= 32 would overflow
-                    // it and silently truncate (e.g. [u8; 32] -> 256 as u8 -> 0),
-                    // producing a zero-sized ETS descriptor. Reject it instead.
-                    let size_bits = u8::try_from(len * 8).map_err(|_| {
+                    // `size_bits` is a u16; a `[u8; N]` with N >= 8192 would
+                    // overflow it and silently truncate, producing a wrongly
+                    // sized ETS descriptor. Reject it instead. The bound is far
+                    // above any real text parameter — ETS master data tops out
+                    // at `String_40Byte` — so this only guards against a typo.
+                    let size_bits = u16::try_from(len * 8).map_err(|_| {
                         syn::Error::new_spanned(
                             ty,
-                            format!("[u8; {len}] exceeds 255 bits; ETS size_bits cannot represent it"),
+                            format!("[u8; {len}] exceeds 65535 bits; ETS size_bits cannot represent it"),
                         )
                     })?;
                     return Ok(TypeInfo {

@@ -301,7 +301,7 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
                             .join(" ")
                     });
 
-                    let size_bits = field_attrs.bits.unwrap_or(type_info.size_bits);
+                    let size_bits = field_attrs.bits.map(u16::from).unwrap_or(type_info.size_bits);
                     let bit_offset = field_attrs.bit_offset.unwrap_or(0);
 
                     // Determine param type - if has enum_variants, it's an Enum type

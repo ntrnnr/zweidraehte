@@ -236,7 +236,7 @@ pub fn ets_union(_args: TokenStream, item: TokenStream) -> TokenStream {
 /// # Generated Items
 ///
 /// - `ETS_VARIANTS: &[EtsEnumVariant]` - Enum variants for ETS dropdown
-/// - `ETS_SIZE_BITS: u8` - Size in bits (8 for repr(u8), 16 for repr(u16))
+/// - `ETS_SIZE_BITS: u16` - Size in bits (8 for repr(u8), 16 for repr(u16))
 /// - `EtsEnumType` trait implementation
 /// - `Display` trait implementation (uses `#[ets(display = "...")]` values)
 ///
@@ -392,7 +392,7 @@ pub fn derive_ets_com_objects(input: TokenStream) -> TokenStream {
 /// For each enum, generates:
 /// - The enum definition with variants
 /// - `ETS_VARIANTS: &'static [EtsEnumVariant]`
-/// - `ETS_SIZE_BITS: u8`
+/// - `ETS_SIZE_BITS: u16`
 /// - `impl Default`
 /// - `impl ConstDefault`
 #[proc_macro]

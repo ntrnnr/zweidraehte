@@ -244,8 +244,14 @@ pub struct EtsParamDef {
     /// part of the struct and use 0.
     pub offset: u16,
 
-    /// Size in bits
-    pub size_bits: u8,
+    /// Size in bits.
+    ///
+    /// Wider than the byte a bit count would suggest because text parameters
+    /// are sized in bits too: KNX master data ships `String_40Byte` (320 bits)
+    /// and vendors use it — the MDT Push Button Lite gives its eight logic
+    /// description fields that type — so a `u8` would cap parameters at 31
+    /// characters and make those products inexpressible.
+    pub size_bits: u16,
 
     /// Bit offset within the byte (0-7)
     pub bit_offset: u8,
@@ -798,7 +804,7 @@ macro_rules! ets_virtual_params {
                         display_name: $display,
                         suffix: None,
                         offset: 0,
-                        size_bits: ($size * 8) as u8,
+                        size_bits: ($size * 8) as u16,
                         bit_offset: 0,
                         param_type: $crate::ets::EtsParamType::String,
                         hidden: false,

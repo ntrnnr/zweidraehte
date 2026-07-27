@@ -261,7 +261,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
 
         let type_info = get_type_info(field_type)?;
 
-        let size_bits = attrs.bits.unwrap_or(type_info.size_bits);
+        let size_bits = attrs.bits.map(u16::from).unwrap_or(type_info.size_bits);
         let bit_offset = attrs.bit_offset.unwrap_or(0);
 
         // Determine param type - if has enum_variants, it's an Enum type

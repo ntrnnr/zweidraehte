@@ -216,7 +216,7 @@ pub(crate) fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_
         .ok_or_else(|| syn::Error::new(proc_macro2::Span::call_site(), "default index not within range"))?;
 
     let num_variants = (range_end - range_start) as usize;
-    let size_bits: u8 = if num_variants <= 2 {
+    let size_bits: u16 = if num_variants <= 2 {
         1
     } else if num_variants <= 4 {
         2
@@ -241,7 +241,7 @@ pub(crate) fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_
             pub const ETS_TYPE_NAME: &'static str = #type_name_str;
 
             /// Number of bits needed to represent this enum
-            pub const ETS_SIZE_BITS: u8 = #size_bits;
+            pub const ETS_SIZE_BITS: u16 = #size_bits;
 
             /// ETS variant definitions for parameter generation
             pub const ETS_VARIANTS: &'static [zweidraehte_device::ets::EtsEnumVariant] = &[
