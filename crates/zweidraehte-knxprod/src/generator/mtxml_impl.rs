@@ -2228,26 +2228,25 @@ impl MtxmlGenerator {
             let obj_id = format!("{}_O-{}", app_id, adjusted_index);
             let flags = co.default_flags;
 
-            // Check if this object has multiple refs
-            let (ref_count, max_size) = ref_info.get(&co.index).copied().unwrap_or((1, co.size_bits));
+            // An object with several refs sizes itself to the widest of them,
+            // since each ref may narrow the object to a different datapoint
+            // type. object_size_override takes precedence if specified.
+            let (ref_count, max_size) = ref_info.get(&co.index).copied().unwrap_or((0, co.size_bits));
             let is_multi_ref = ref_count > 1;
+            let object_size = co.object_size_override.map(|s| s.to_string()).unwrap_or_else(|| {
+                let size_bits = if is_multi_ref { max_size } else { co.size_bits };
+                object_size_to_string(size_bits).to_string()
+            });
 
-            // For multi-ref objects: no DPT on base object, use max size from refs
-            // For single-ref objects: include DPT and use object's size
-            // object_size_override takes precedence if specified
-            let (datapoint_type, object_size) = if is_multi_ref {
-                let size = co
-                    .object_size_override
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| object_size_to_string(max_size).to_string());
-                (None, size)
-            } else {
-                let size = co
-                    .object_size_override
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| object_size_to_string(co.size_bits).to_string());
-                (Some(dpt_to_string(co.dpt_main, co.dpt_sub)), size)
-            };
+            // The datapoint type belongs on the ComObjectRef, which always
+            // carries one (see `build_com_object_refs`), so the base object
+            // states it only when there is no ref to state it. Vendors write
+            // it this way — 75 of the MDT reference's 88 objects declare no
+            // datapoint type at all — because a ref that narrows the type
+            // would otherwise contradict its own object. Declaring it in both
+            // places is legal (the attribute is optional on `ComObject_t` and
+            // `ComObjectRef_t` alike), but leaves ETS reconciling two answers.
+            let datapoint_type = (ref_count == 0).then(|| dpt_to_string(co.dpt_main, co.dpt_sub));
 
             table.objects.push(ComObject {
                 id: obj_id,
