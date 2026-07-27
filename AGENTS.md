@@ -614,11 +614,20 @@ cargo run --bin compare_programs -- --reference <ref.xml> --generated <gen.xml> 
 ```
 Compares two KNX ApplicationProgram XML files for semantic equivalence. Used to verify DSL-generated XML against manufacturer reference XML.
 
+Reports five sections: parameter definitions, communication objects,
+references (per-placement overrides), Dynamic-section visibility, and the
+default memory image. All are on by default. Everything is matched by
+semantic key — parameters by memory location, objects by number, refs by
+what they point at — because the ID strings differ between any two
+programs by construction.
+
 Options:
 - `--strict` - Enable strict mode (compare ordering and ID structure)
 - `--compare-ordering` - Compare element ordering
 - `--compare-ids` - Compare ID correspondence structure
 - `--no-text` - Skip text comparison
+- `--no-visibility` - Skip Dynamic-section visibility comparison
+- `--no-memory` - Skip memory layout comparison
 - `--warn-missing` - Treat missing entities as warnings instead of errors
 
 Example (needs the local `manuf_tool_data/` vendor files — see

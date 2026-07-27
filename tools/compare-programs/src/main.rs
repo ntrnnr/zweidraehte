@@ -8,6 +8,8 @@
 //!   --compare-ordering Compare element ordering
 //!   --compare-ids     Compare ID correspondence structure
 //!   --no-text         Skip text comparison
+//!   --no-visibility   Skip Dynamic-section visibility comparison
+//!   --no-memory       Skip memory layout comparison
 //!   --warn-missing    Treat missing entities as warnings instead of errors
 
 use std::env;
@@ -16,7 +18,31 @@ use std::process;
 
 mod equivalence;
 
-use crate::equivalence::{ComparisonConfig, EquivalenceChecker};
+use crate::equivalence::{CanonicalProgram, ComparisonConfig, EquivalenceChecker};
+
+/// Print what a program contains, before any differences are reported.
+///
+/// The mask version and application number are shown but never compared: a
+/// replication frequently targets a different mask than the device it mirrors
+/// (the MDT reference is System 7, ours is System B), so a mismatch there is
+/// context for reading the report rather than a defect in its own right.
+fn print_program_summary(role: &str, program: &CanonicalProgram) {
+    let metadata = &program.metadata;
+    println!("{} program: {} ({})", role, metadata.name, metadata.id);
+    println!(
+        "  Application: {} v{}, mask {}",
+        metadata.application_number, metadata.application_version, metadata.mask_version
+    );
+    println!("  Parameters: {}", program.parameters.len());
+    println!("  Communication objects: {}", program.com_objects.len());
+    println!("  Parameter refs: {}", program.param_refs.len());
+    println!("  ComObject refs: {}", program.com_object_refs.len());
+    match program.memory_image_size() {
+        Ok(size) => println!("  Parameter memory: {} bytes", size),
+        Err(reason) => println!("  Parameter memory: n/a ({})", reason),
+    }
+    println!();
+}
 
 fn print_usage() {
     eprintln!(
@@ -34,6 +60,8 @@ Options:
   --compare-ordering    Compare element ordering
   --compare-ids         Compare ID correspondence structure
   --no-text             Skip text comparison
+  --no-visibility       Skip Dynamic-section visibility comparison
+  --no-memory           Skip memory layout comparison
   --warn-missing        Treat missing entities as warnings instead of errors
   --help, -h            Show this help message
 
@@ -82,8 +110,11 @@ fn main() {
                 }
                 generated_path = Some(args[i].clone());
             }
+            // Set the individual switches rather than replacing the config, so
+            // that --strict composes with the --no-* flags in any order.
             "--strict" => {
-                config = ComparisonConfig::strict();
+                config.compare_ordering = true;
+                config.compare_id_structure = true;
             }
             "--compare-ordering" => {
                 config.compare_ordering = true;
@@ -93,6 +124,12 @@ fn main() {
             }
             "--no-text" => {
                 config.compare_text = false;
+            }
+            "--no-visibility" => {
+                config.compare_visibility = false;
+            }
+            "--no-memory" => {
+                config.compare_memory = false;
             }
             "--warn-missing" => {
                 config.strict_missing = false;
@@ -161,19 +198,8 @@ fn main() {
     };
 
     // Print some metadata
-    println!("Reference program: {} ({})", checker.reference.metadata.name, checker.reference.metadata.id);
-    println!("  Parameters: {}", checker.reference.parameters.len());
-    println!("  Communication objects: {}", checker.reference.com_objects.len());
-    println!("  Parameter refs: {}", checker.reference.param_refs.len());
-    println!("  ComObject refs: {}", checker.reference.com_object_refs.len());
-    println!();
-
-    println!("Generated program: {} ({})", checker.generated.metadata.name, checker.generated.metadata.id);
-    println!("  Parameters: {}", checker.generated.parameters.len());
-    println!("  Communication objects: {}", checker.generated.com_objects.len());
-    println!("  Parameter refs: {}", checker.generated.param_refs.len());
-    println!("  ComObject refs: {}", checker.generated.com_object_refs.len());
-    println!();
+    print_program_summary("Reference", &checker.reference);
+    print_program_summary("Generated", &checker.generated);
 
     // Run comparison
     let report = checker.compare(&config);

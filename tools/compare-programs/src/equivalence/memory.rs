@@ -26,12 +26,18 @@ impl TestConfig {
     }
 
     /// Set a parameter value.
+    ///
+    /// Unused outside tests until `generate_default_configs` learns to sweep
+    /// parameters; kept as the way callers will build those configurations.
+    #[allow(dead_code)]
     pub fn with_value(mut self, key: ParameterKey, value: i64) -> Self {
         self.values.insert(key, value);
         self
     }
 
-    /// Get a parameter value.
+    /// Get a parameter value. See [`TestConfig::with_value`] on why this is
+    /// currently only exercised by tests.
+    #[allow(dead_code)]
     pub fn get(&self, key: &ParameterKey) -> Option<i64> {
         self.values.get(key).copied()
     }
@@ -57,13 +63,24 @@ impl MemoryImage {
     }
 
     /// Create a new memory image with the given size and base offset.
+    ///
+    /// Every comparison currently builds offset-zero images, because parameter
+    /// offsets are already segment-relative. A non-zero base becomes necessary
+    /// once several segments are imaged side by side.
+    #[allow(dead_code)]
     pub fn with_base(size: usize, base_offset: u32) -> Self {
         Self { bytes: vec![0; size], base_offset }
     }
 
     /// Write a value at the given offset and bit position.
+    ///
+    /// Writes that fall outside the image (below its base or past its end) are
+    /// dropped rather than panicking: a malformed program should surface as a
+    /// parameter difference, not as a crash in the comparator.
     pub fn write_bits(&mut self, offset: u32, bit_offset: u8, size_bits: u32, value: u64) {
-        let local_offset = (offset - self.base_offset) as usize;
+        let Some(local_offset) = offset.checked_sub(self.base_offset).map(|o| o as usize) else {
+            return;
+        };
 
         if size_bits <= 8 && bit_offset + size_bits as u8 <= 8 {
             // Single byte, possibly with bit offset
@@ -75,20 +92,30 @@ impl MemoryImage {
                 self.bytes[byte_idx] = (self.bytes[byte_idx] & !shifted_mask) | shifted_value;
             }
         } else {
-            // Multi-byte value (assume bit_offset is 0 for simplicity)
+            // Multi-byte value (assume bit_offset is 0 for simplicity). KNX
+            // parameter memory is big-endian, so the most significant byte goes
+            // to the lowest offset.
             let num_bytes = size_bits.div_ceil(8) as usize;
             for i in 0..num_bytes {
                 let byte_idx = local_offset + i;
                 if byte_idx < self.bytes.len() {
-                    self.bytes[byte_idx] = ((value >> (i * 8)) & 0xFF) as u8;
+                    let shift = (num_bytes - 1 - i) * 8;
+                    self.bytes[byte_idx] = ((value >> shift) & 0xFF) as u8;
                 }
             }
         }
     }
 
     /// Read a value from the given offset and bit position.
+    ///
+    /// Reads outside the image yield 0, mirroring [`MemoryImage::write_bits`].
+    /// Comparison works on raw bytes, so this exists to pin down the encoding
+    /// `write_bits` produces rather than to serve the comparison itself.
+    #[allow(dead_code)]
     pub fn read_bits(&self, offset: u32, bit_offset: u8, size_bits: u32) -> u64 {
-        let local_offset = (offset - self.base_offset) as usize;
+        let Some(local_offset) = offset.checked_sub(self.base_offset).map(|o| o as usize) else {
+            return 0;
+        };
 
         if size_bits <= 8 && bit_offset + size_bits as u8 <= 8 {
             // Single byte, possibly with bit offset
@@ -100,13 +127,14 @@ impl MemoryImage {
                 0
             }
         } else {
-            // Multi-byte value
+            // Multi-byte value, big-endian; mirrors `write_bits`.
             let num_bytes = size_bits.div_ceil(8) as usize;
             let mut value: u64 = 0;
             for i in 0..num_bytes {
                 let byte_idx = local_offset + i;
                 if byte_idx < self.bytes.len() {
-                    value |= (self.bytes[byte_idx] as u64) << (i * 8);
+                    let shift = (num_bytes - 1 - i) * 8;
+                    value |= (self.bytes[byte_idx] as u64) << shift;
                 }
             }
             value
@@ -214,10 +242,30 @@ impl<'a> MemoryComparator<'a> {
         configs.iter().filter_map(|config| self.compare_config(config, memory_size)).collect()
     }
 
-    /// Generate test configurations covering all parameter default values.
+    /// Generate the test configurations to compare the two programs under.
+    ///
+    /// Currently only the empty configuration, which leaves every parameter at
+    /// its declared default and so compares the images ETS would download from
+    /// a freshly-added device.
+    ///
+    /// TODO: sweep each enum parameter through its variants, so layouts that
+    /// only diverge for non-default values are caught too. That needs a shared
+    /// notion of "the same parameter" across programs beyond the memory key.
     pub fn generate_default_configs(&self) -> Vec<TestConfig> {
-        // For now, just test the default configuration
         vec![TestConfig::new()]
+    }
+
+    /// Compare both programs across the given configurations and summarise.
+    pub fn compare_report(&self, configs: &[TestConfig], memory_size: usize) -> MemoryComparisonReport {
+        let diffs = self.compare(configs, memory_size);
+
+        MemoryComparisonReport {
+            configs_tested: configs.len(),
+            configs_matched: configs.len() - diffs.len(),
+            memory_size,
+            diffs,
+            skipped: None,
+        }
     }
 }
 
@@ -232,11 +280,23 @@ pub struct MemoryComparisonReport {
     pub configs_tested: usize,
     /// Configurations that matched.
     pub configs_matched: usize,
+    /// Size of the memory image the comparison was run over.
+    pub memory_size: usize,
     /// Differences found.
     pub diffs: Vec<MemoryDiff>,
+    /// Why the comparison did not run, when it did not.
+    pub skipped: Option<String>,
 }
 
 impl MemoryComparisonReport {
+    /// A report standing in for a comparison that could not be run.
+    ///
+    /// A skipped comparison is not a difference: it reports nothing either way,
+    /// so it must not fail the run.
+    pub fn skipped(reason: impl Into<String>) -> Self {
+        Self { skipped: Some(reason.into()), ..Self::default() }
+    }
+
     /// Check if there are any differences.
     pub fn has_differences(&self) -> bool {
         !self.diffs.is_empty()
@@ -246,8 +306,18 @@ impl MemoryComparisonReport {
 impl fmt::Display for MemoryComparisonReport {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "--- Memory Layout Comparison ---")?;
-        writeln!(f, "Configs tested: {}, matched: {}", self.configs_tested, self.configs_matched)?;
-        if self.diffs.is_empty() {
+
+        if let Some(ref reason) = self.skipped {
+            writeln!(f, "- Skipped: {}", reason)?;
+            return Ok(());
+        }
+
+        writeln!(
+            f,
+            "Image size: {} bytes, configs tested: {}, matched: {}",
+            self.memory_size, self.configs_tested, self.configs_matched
+        )?;
+        if !self.has_differences() {
             writeln!(f, "✓ All memory layouts matched")?;
         } else {
             writeln!(f, "✗ {} configurations differ:", self.diffs.len())?;
@@ -284,6 +354,23 @@ mod tests {
         let mut image = MemoryImage::new(16);
         image.write_bits(0, 0, 16, 0x1234);
         assert_eq!(image.read_bits(0, 0, 16), 0x1234);
+    }
+
+    /// KNX parameter memory is big-endian; the round-trip test above would pass
+    /// either way, so pin the actual byte placement.
+    #[test]
+    fn test_memory_image_multibyte_is_big_endian() {
+        let mut image = MemoryImage::new(16);
+        image.write_bits(0, 0, 16, 0x1234);
+        assert_eq!(&image.bytes[0..2], &[0x12, 0x34]);
+    }
+
+    #[test]
+    fn test_memory_image_ignores_out_of_range_writes() {
+        let mut image = MemoryImage::with_base(4, 0x100);
+        image.write_bits(0x0F, 0, 8, 0xFF);
+        image.write_bits(0x200, 0, 8, 0xFF);
+        assert_eq!(image.bytes, vec![0; 4]);
     }
 
     #[test]

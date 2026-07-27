@@ -9,6 +9,8 @@ use zweidraehte_knxprod::schema::{
     ApplicationProgram, ComObject, EnableFlag, ParameterItem, ParameterType, ParameterTypeDef,
 };
 
+use super::visibility::{CanonicalVisibilityMap, RefKey, VisibilityMap};
+
 // ============================================================================
 // Semantic Keys
 // ============================================================================
@@ -113,11 +115,12 @@ impl TypeSignature {
 // ============================================================================
 
 /// Canonical representation of a parameter.
+///
+/// The semantic key is deliberately not repeated here: parameters are only ever
+/// reached through [`CanonicalProgram::parameters`], which is keyed by it.
 #[derive(Debug, Clone)]
 pub struct CanonicalParameter {
-    /// Semantic key (memory location).
-    pub key: ParameterKey,
-    /// Original ID (for debugging/reporting).
+    /// Original ID, for pointing at the element in the source XML.
     pub original_id: String,
     /// Display name.
     pub name: String,
@@ -138,11 +141,12 @@ pub struct CanonicalParameter {
 // ============================================================================
 
 /// Canonical representation of a communication object.
+///
+/// As with [`CanonicalParameter`], the object number lives in the key of
+/// [`CanonicalProgram::com_objects`] rather than being duplicated here.
 #[derive(Debug, Clone)]
 pub struct CanonicalComObject {
-    /// Object number (0-based index).
-    pub number: u16,
-    /// Original ID (for debugging/reporting).
+    /// Original ID, for pointing at the element in the source XML.
     pub original_id: String,
     /// Object name.
     pub name: String,
@@ -204,6 +208,13 @@ pub struct CanonicalParamRef {
     pub ref_index: usize,
 }
 
+impl CanonicalParamRef {
+    /// The semantic identity of this reference.
+    pub fn ref_key(&self) -> RefKey {
+        RefKey::Param { key: self.param_key, ref_index: self.ref_index }
+    }
+}
+
 // ============================================================================
 // Canonical ComObject Reference
 // ============================================================================
@@ -225,6 +236,13 @@ pub struct CanonicalComObjectRef {
     pub flag_overrides: Option<ComObjectFlags>,
     /// Index of this ref among refs for the same object.
     pub ref_index: usize,
+}
+
+impl CanonicalComObjectRef {
+    /// The semantic identity of this reference.
+    pub fn ref_key(&self) -> RefKey {
+        RefKey::ComObject { number: self.object_number, ref_index: self.ref_index }
+    }
 }
 
 // ============================================================================
@@ -257,6 +275,11 @@ pub struct CanonicalProgram {
     pub param_ref_id_to_index: HashMap<String, usize>,
     /// ComObject ref ID to index mapping.
     pub com_object_ref_id_to_index: HashMap<String, usize>,
+    /// Code segments that parameters store their values in, with the declared
+    /// size of each. Used to size the memory image for the layout comparison.
+    pub param_segments: BTreeMap<String, u32>,
+    /// Visibility constraints from the Dynamic section, reduced to semantic keys.
+    pub visibility: CanonicalVisibilityMap,
 
     // For strict mode: preserve ordering
     /// Parameters in original order (for ordering comparison).
@@ -297,6 +320,8 @@ impl CanonicalProgram {
             id_to_object_number: HashMap::new(),
             param_ref_id_to_index: HashMap::new(),
             com_object_ref_id_to_index: HashMap::new(),
+            param_segments: BTreeMap::new(),
+            visibility: CanonicalVisibilityMap::default(),
             parameter_order: Vec::new(),
             param_ref_order: Vec::new(),
             com_object_ref_order: Vec::new(),
@@ -312,26 +337,42 @@ impl CanonicalProgram {
             }
         }
 
+        // Declared sizes of every code segment, keyed by segment ID. System 7
+        // programs use absolute segments and System B ones relative segments;
+        // for sizing a memory image only the declared size matters, not where
+        // the segment lives, so both kinds go into the same lookup.
+        let mut segment_sizes: HashMap<&str, u32> = HashMap::new();
+        if let Some(ref code) = program.static_section.code {
+            for segment in &code.absolute_segments {
+                segment_sizes.insert(&segment.id, segment.size);
+            }
+            for segment in &code.relative_segments {
+                segment_sizes.insert(&segment.id, segment.size);
+            }
+        }
+
         // Process parameters
         if let Some(ref params) = program.static_section.parameters {
             for item in &params.items {
                 match item {
                     ParameterItem::Parameter(p) => {
                         if let Some(ref mem) = p.memory {
+                            if let Some(&size) = segment_sizes.get(mem.code_segment.as_str()) {
+                                canonical.param_segments.insert(mem.code_segment.clone(), size);
+                            }
                             let type_sig = type_id_to_sig
                                 .get(&p.parameter_type)
                                 .cloned()
                                 .unwrap_or(TypeSignature::None { size_bits: 0 });
                             let key = ParameterKey::new(mem.offset, mem.bit_offset, type_sig.size_bits());
                             let cp = CanonicalParameter {
-                                key,
                                 original_id: p.id.clone(),
                                 name: p.name.clone(),
                                 text: normalize_text(&p.text),
                                 type_signature: type_sig,
                                 default_value: p.value.clone(),
                                 hidden: p.access.as_deref() == Some("None"),
-                                suffix_text: p.suffix_text.clone(),
+                                suffix_text: normalize_optional_text(&p.suffix_text),
                             };
                             canonical.id_to_param_key.insert(p.id.clone(), key);
                             canonical.parameter_order.push(key);
@@ -339,6 +380,10 @@ impl CanonicalProgram {
                         }
                     }
                     ParameterItem::Union(u) => {
+                        if let Some(&size) = segment_sizes.get(u.memory.code_segment.as_str()) {
+                            canonical.param_segments.insert(u.memory.code_segment.clone(), size);
+                        }
+
                         // Process union parameters
                         for up in &u.parameters {
                             let type_sig = type_id_to_sig
@@ -351,14 +396,13 @@ impl CanonicalProgram {
                                 type_sig.size_bits(),
                             );
                             let cp = CanonicalParameter {
-                                key,
                                 original_id: up.id.clone(),
                                 name: up.name.clone(),
                                 text: normalize_text(&up.text),
                                 type_signature: type_sig,
                                 default_value: up.value.clone(),
                                 hidden: false, // Union params don't have access attr
-                                suffix_text: up.suffix_text.clone(),
+                                suffix_text: normalize_optional_text(&up.suffix_text),
                             };
                             canonical.id_to_param_key.insert(up.id.clone(), key);
                             canonical.parameter_order.push(key);
@@ -373,13 +417,12 @@ impl CanonicalProgram {
         if let Some(ref com_table) = program.static_section.com_object_table {
             for obj in &com_table.objects {
                 let co = CanonicalComObject {
-                    number: obj.number,
                     original_id: obj.id.clone(),
                     name: obj.name.clone(),
                     text: normalize_text(&obj.text),
                     function_text: obj.function_text.clone(),
                     object_size: obj.object_size.clone(),
-                    datapoint_type: obj.datapoint_type.clone(),
+                    datapoint_type: normalize_optional_text(&obj.datapoint_type),
                     flags: ComObjectFlags::from_com_object(obj),
                 };
                 canonical.id_to_object_number.insert(obj.id.clone(), obj.number);
@@ -401,7 +444,7 @@ impl CanonicalProgram {
                     let cpr = CanonicalParamRef {
                         original_id: pr.id.clone(),
                         param_key,
-                        text_override: pr.text.as_ref().map(|t| normalize_text(t)),
+                        text_override: normalize_optional_text(&pr.text),
                         value_override: pr.value.clone(),
                         hidden: pr.access.as_deref() == Some("None"),
                         ref_index,
@@ -447,9 +490,9 @@ impl CanonicalProgram {
                     let cor = CanonicalComObjectRef {
                         original_id: cr.id.clone(),
                         object_number: obj_num,
-                        text_override: cr.text.as_ref().map(|t| normalize_text(t)),
-                        function_text_override: cr.function_text.clone(),
-                        datapoint_type: cr.datapoint_type.clone(),
+                        text_override: normalize_optional_text(&cr.text),
+                        function_text_override: normalize_optional_text(&cr.function_text),
+                        datapoint_type: normalize_optional_text(&cr.datapoint_type),
                         flag_overrides,
                         ref_index,
                     };
@@ -461,7 +504,26 @@ impl CanonicalProgram {
             }
         }
 
+        // Visibility comes last: canonicalizing it needs the ref lookups built above.
+        canonical.visibility = VisibilityMap::from_program(program).canonicalize(&canonical);
+
         canonical
+    }
+
+    /// Size of the memory image spanned by this program's parameters.
+    ///
+    /// `Err` carries the reason no single image applies. Parameters are keyed by
+    /// offset alone ([`ParameterKey`] deliberately ignores the segment, so that
+    /// two programs naming their segments differently still match up), which
+    /// only holds while every parameter lives in one segment. A program that
+    /// spreads parameters over several segments would alias offsets between
+    /// them, so we refuse rather than compare nonsense.
+    pub fn memory_image_size(&self) -> Result<u32, String> {
+        match self.param_segments.len() {
+            0 => Err("no code segment carries parameters".to_string()),
+            1 => Ok(*self.param_segments.values().next().expect("length checked to be 1")),
+            n => Err(format!("parameters span {} code segments, which offset-keyed comparison cannot separate", n)),
+        }
     }
 }
 
@@ -472,6 +534,16 @@ impl CanonicalProgram {
 /// Normalize text for comparison by trimming and collapsing whitespace.
 pub fn normalize_text(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Normalize an optional text attribute.
+///
+/// An attribute written as `SuffixText=""` and an absent one mean the same
+/// thing, so both collapse to `None` — otherwise every parameter that spells the
+/// default one way while the other program spells it the other way reads as a
+/// difference.
+pub fn normalize_optional_text(value: &Option<String>) -> Option<String> {
+    value.as_deref().map(normalize_text).filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]

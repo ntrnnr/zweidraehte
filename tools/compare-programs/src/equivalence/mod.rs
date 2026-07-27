@@ -39,7 +39,7 @@ mod comparison;
 mod memory;
 mod visibility;
 
-pub use canonical::*;
-pub use comparison::*;
-pub use memory::*;
-pub use visibility::*;
+// Only the driver surface is re-exported here; the modules reach each other
+// through `super::`, so a glob re-export would just be dead weight.
+pub use canonical::CanonicalProgram;
+pub use comparison::{ComparisonConfig, EquivalenceChecker};
