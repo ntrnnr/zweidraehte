@@ -180,6 +180,12 @@ pub enum RefDiff {
     Missing { ref_key: RefKey, in_source: Source, original_id: String },
     /// The reference overrides an attribute differently.
     AttributeMismatch { ref_key: RefKey, attribute: &'static str, ref_value: String, gen_value: String },
+    /// The two refs override a different set of communication object flags.
+    ///
+    /// Separate from [`RefDiff::AttributeMismatch`] because the difference is
+    /// per-flag rather than one value against another; `flags` already names
+    /// each side.
+    FlagOverrideMismatch { ref_key: RefKey, flags: String },
 }
 
 impl fmt::Display for RefDiff {
@@ -190,6 +196,9 @@ impl fmt::Display for RefDiff {
             }
             RefDiff::AttributeMismatch { ref_key, attribute, ref_value, gen_value } => {
                 write!(f, "Ref {} {} mismatch: ref='{}', gen='{}'", ref_key, attribute, ref_value, gen_value)
+            }
+            RefDiff::FlagOverrideMismatch { ref_key, flags } => {
+                write!(f, "Ref {} flag override mismatch: {}", ref_key, flags)
             }
         }
     }
@@ -468,7 +477,7 @@ impl EquivalenceChecker {
         let ref_params: BTreeMap<_, _> = self.reference.param_refs.iter().map(|r| (r.ref_key(), r)).collect();
         let gen_params: BTreeMap<_, _> = self.generated.param_refs.iter().map(|r| (r.ref_key(), r)).collect();
 
-        let all_param_refs: BTreeSet<_> = ref_params.keys().chain(gen_params.keys()).copied().collect();
+        let all_param_refs: BTreeSet<_> = ref_params.keys().chain(gen_params.keys()).cloned().collect();
         report.stats.param_refs_compared = all_param_refs.len();
 
         for ref_key in all_param_refs {
@@ -477,7 +486,7 @@ impl EquivalenceChecker {
                     let mut mismatch = |attribute, ref_value: String, gen_value: String| {
                         if ref_value != gen_value {
                             report.ref_diffs.push(RefDiff::AttributeMismatch {
-                                ref_key,
+                                ref_key: ref_key.clone(),
                                 attribute,
                                 ref_value,
                                 gen_value,
@@ -524,7 +533,7 @@ impl EquivalenceChecker {
         let ref_objects: BTreeMap<_, _> = self.reference.com_object_refs.iter().map(|r| (r.ref_key(), r)).collect();
         let gen_objects: BTreeMap<_, _> = self.generated.com_object_refs.iter().map(|r| (r.ref_key(), r)).collect();
 
-        let all_object_refs: BTreeSet<_> = ref_objects.keys().chain(gen_objects.keys()).copied().collect();
+        let all_object_refs: BTreeSet<_> = ref_objects.keys().chain(gen_objects.keys()).cloned().collect();
         report.stats.com_object_refs_compared = all_object_refs.len();
 
         for ref_key in all_object_refs {
@@ -533,7 +542,7 @@ impl EquivalenceChecker {
                     let mut mismatch = |attribute, ref_value: String, gen_value: String| {
                         if ref_value != gen_value {
                             report.ref_diffs.push(RefDiff::AttributeMismatch {
-                                ref_key,
+                                ref_key: ref_key.clone(),
                                 attribute,
                                 ref_value,
                                 gen_value,
@@ -558,11 +567,13 @@ impl EquivalenceChecker {
                         describe_override(&reference.datapoint_type),
                         describe_override(&generated.datapoint_type),
                     );
-                    mismatch(
-                        "flag overrides",
-                        describe_override(&reference.flag_overrides),
-                        describe_override(&generated.flag_overrides),
-                    );
+
+                    // Flags are reported by name rather than through
+                    // `mismatch`: the difference is per-flag, and each side is
+                    // labelled inside the description.
+                    if let Some(flags) = reference.flag_overrides.describe_difference(&generated.flag_overrides) {
+                        report.ref_diffs.push(RefDiff::FlagOverrideMismatch { ref_key: ref_key.clone(), flags });
+                    }
                 }
                 (Some(reference), None) => {
                     if config.strict_missing {
@@ -647,7 +658,7 @@ impl EquivalenceChecker {
                     // Compare type signatures
                     if rp.type_signature != gp.type_signature {
                         report.parameter_diffs.push(ParameterDiff::TypeMismatch {
-                            key,
+                            key: key.clone(),
                             name: rp.name.clone(),
                             ref_type: rp.type_signature.clone(),
                             gen_type: gp.type_signature.clone(),
@@ -658,7 +669,7 @@ impl EquivalenceChecker {
                     // Compare default values
                     if rp.default_value != gp.default_value {
                         report.parameter_diffs.push(ParameterDiff::DefaultMismatch {
-                            key,
+                            key: key.clone(),
                             name: rp.name.clone(),
                             ref_default: rp.default_value.clone(),
                             gen_default: gp.default_value.clone(),
@@ -669,7 +680,7 @@ impl EquivalenceChecker {
                     // Compare hidden status
                     if rp.hidden != gp.hidden {
                         report.parameter_diffs.push(ParameterDiff::HiddenMismatch {
-                            key,
+                            key: key.clone(),
                             name: rp.name.clone(),
                             ref_hidden: rp.hidden,
                             gen_hidden: gp.hidden,
@@ -680,7 +691,7 @@ impl EquivalenceChecker {
                     // Compare text (if enabled)
                     if config.compare_text && rp.text != gp.text {
                         report.parameter_diffs.push(ParameterDiff::TextMismatch {
-                            key,
+                            key: key.clone(),
                             name: rp.name.clone(),
                             ref_text: rp.text.clone(),
                             gen_text: gp.text.clone(),
@@ -691,7 +702,7 @@ impl EquivalenceChecker {
                     // The suffix is user-visible text, so it follows compare_text
                     if config.compare_text && rp.suffix_text != gp.suffix_text {
                         report.parameter_diffs.push(ParameterDiff::SuffixMismatch {
-                            key,
+                            key: key.clone(),
                             name: rp.name.clone(),
                             ref_suffix: rp.suffix_text.clone(),
                             gen_suffix: gp.suffix_text.clone(),
@@ -706,7 +717,7 @@ impl EquivalenceChecker {
                 (Some(rp), None) => {
                     if config.strict_missing {
                         report.parameter_diffs.push(ParameterDiff::Missing {
-                            key,
+                            key: key.clone(),
                             in_source: Source::Generated,
                             name: rp.name.clone(),
                             original_id: rp.original_id.clone(),
@@ -716,7 +727,7 @@ impl EquivalenceChecker {
                 (None, Some(gp)) => {
                     if config.strict_missing {
                         report.parameter_diffs.push(ParameterDiff::Missing {
-                            key,
+                            key: key.clone(),
                             in_source: Source::Reference,
                             name: gp.name.clone(),
                             original_id: gp.original_id.clone(),

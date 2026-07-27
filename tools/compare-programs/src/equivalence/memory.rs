@@ -207,16 +207,21 @@ impl<'a> MemoryComparator<'a> {
     pub fn generate_memory(program: &CanonicalProgram, config: &TestConfig, memory_size: usize) -> MemoryImage {
         let mut image = MemoryImage::new(memory_size);
 
-        // Write default values first
+        // Write default values first. Tool-only parameters have no location
+        // and contribute no bytes — the device never receives them.
         for (key, param) in &program.parameters {
-            if let Ok(default_val) = param.default_value.parse::<i64>() {
-                image.write_bits(key.memory_offset, key.bit_offset, key.size_bits, default_val as u64);
+            if let (Some((offset, bit_offset, size_bits)), Ok(default_val)) =
+                (key.memory_location(), param.default_value.parse::<i64>())
+            {
+                image.write_bits(offset, bit_offset, size_bits, default_val as u64);
             }
         }
 
         // Overwrite with test config values
         for (key, value) in &config.values {
-            image.write_bits(key.memory_offset, key.bit_offset, key.size_bits, *value as u64);
+            if let Some((offset, bit_offset, size_bits)) = key.memory_location() {
+                image.write_bits(offset, bit_offset, size_bits, *value as u64);
+            }
         }
 
         image
@@ -376,7 +381,7 @@ mod tests {
     #[test]
     fn test_test_config() {
         let key = ParameterKey::new(0x100, 0, 8);
-        let config = TestConfig::new().with_value(key, 42);
+        let config = TestConfig::new().with_value(key.clone(), 42);
         assert_eq!(config.get(&key), Some(42));
     }
 }

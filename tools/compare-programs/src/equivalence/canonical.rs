@@ -15,29 +15,74 @@ use super::visibility::{CanonicalVisibilityMap, RefKey, VisibilityMap};
 // Semantic Keys
 // ============================================================================
 
-/// Semantic key for a parameter based on its memory location.
+/// Semantic key for a parameter, independent of its ID string.
 ///
-/// This key uniquely identifies a parameter independent of its ID string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ParameterKey {
-    /// Memory offset in bytes from segment start.
-    pub memory_offset: u32,
-    /// Bit offset within the byte (0-7).
-    pub bit_offset: u8,
-    /// Size in bits.
-    pub size_bits: u32,
+/// Most parameters are keyed by where they live in device memory. A parameter
+/// declared without a `<Memory>` element has no location to key on: ETS shows
+/// it and stores it in the project, but never downloads it, so it exists only
+/// to gate what the user sees. Vendors lean on these heavily — the MDT Push
+/// Button Lite declares 102 of its 166 standalone parameters this way and
+/// drives 92 of its `<choose>` branches off them — so dropping them would
+/// leave most of a program's Dynamic section uncomparable.
+///
+/// The only identity such a parameter carries is what ETS puts on screen, so
+/// that is what it is keyed by. The occurrence index disambiguates the texts a
+/// program reuses (MDT has four parameters labelled "Subfunction"); it comes
+/// from document order, so two programs listing equally-labelled parameters in
+/// a different order will pair them wrongly. Mispairings surface as type or
+/// default differences rather than silence, which is the point — the previous
+/// behaviour was to omit the parameter entirely and report nothing.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ParameterKey {
+    /// Backed by device memory, keyed by where it lives.
+    Memory {
+        /// Memory offset in bytes from segment start.
+        memory_offset: u32,
+        /// Bit offset within the byte (0-7).
+        bit_offset: u8,
+        /// Size in bits.
+        size_bits: u32,
+    },
+    /// Tool-only: no `<Memory>`, keyed by its normalized display text.
+    ToolOnly {
+        /// Normalized display text.
+        text: String,
+        /// Index among tool-only parameters sharing this text.
+        occurrence: usize,
+    },
 }
 
 impl ParameterKey {
-    /// Create a new parameter key.
+    /// Create a key for a memory-backed parameter.
     pub fn new(memory_offset: u32, bit_offset: u8, size_bits: u32) -> Self {
-        Self { memory_offset, bit_offset, size_bits }
+        Self::Memory { memory_offset, bit_offset, size_bits }
+    }
+
+    /// Create a key for a tool-only parameter.
+    pub fn tool_only(text: impl Into<String>, occurrence: usize) -> Self {
+        Self::ToolOnly { text: text.into(), occurrence }
+    }
+
+    /// Where this parameter lives, as `(offset, bit_offset, size_bits)`.
+    ///
+    /// `None` for tool-only parameters, which occupy no device memory. Callers
+    /// building or comparing a memory image use this to skip them.
+    pub fn memory_location(&self) -> Option<(u32, u8, u32)> {
+        match *self {
+            Self::Memory { memory_offset, bit_offset, size_bits } => Some((memory_offset, bit_offset, size_bits)),
+            Self::ToolOnly { .. } => None,
+        }
     }
 }
 
 impl std::fmt::Display for ParameterKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "0x{:X}:{}:{}", self.memory_offset, self.bit_offset, self.size_bits)
+        match self {
+            Self::Memory { memory_offset, bit_offset, size_bits } => {
+                write!(f, "0x{:X}:{}:{}", memory_offset, bit_offset, size_bits)
+            }
+            Self::ToolOnly { text, occurrence } => write!(f, "tool[{:?}]#{}", text, occurrence),
+        }
     }
 }
 
@@ -211,7 +256,7 @@ pub struct CanonicalParamRef {
 impl CanonicalParamRef {
     /// The semantic identity of this reference.
     pub fn ref_key(&self) -> RefKey {
-        RefKey::Param { key: self.param_key, ref_index: self.ref_index }
+        RefKey::Param { key: self.param_key.clone(), ref_index: self.ref_index }
     }
 }
 
@@ -232,10 +277,66 @@ pub struct CanonicalComObjectRef {
     pub function_text_override: Option<String>,
     /// Datapoint type override if any.
     pub datapoint_type: Option<String>,
-    /// Flag overrides if any.
-    pub flag_overrides: Option<ComObjectFlags>,
+    /// Per-flag overrides; absent attributes stay `None`.
+    pub flag_overrides: OverriddenFlags,
     /// Index of this ref among refs for the same object.
     pub ref_index: usize,
+}
+
+/// The subset of communication object flags a `ComObjectRef` overrides.
+///
+/// Each flag is independently `Some(value)` when the ref carries the attribute
+/// and `None` when it does not — a ref inherits every flag it stays silent
+/// about. Collapsing this into an all-or-nothing `Option<ComObjectFlags>` makes
+/// an unmentioned flag indistinguishable from one explicitly set to `Disabled`,
+/// which matters because vendors override partially: of the MDT Push Button
+/// Lite's 561 ComObjectRefs, 90 override exactly `WriteFlag` and `UpdateFlag`
+/// and nothing else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct OverriddenFlags {
+    pub read: Option<bool>,
+    pub write: Option<bool>,
+    pub communicate: Option<bool>,
+    pub transmit: Option<bool>,
+    pub update: Option<bool>,
+    pub read_on_init: Option<bool>,
+}
+
+impl OverriddenFlags {
+    /// The flags by name, in the order KNX documents them.
+    fn by_name(&self) -> [(&'static str, Option<bool>); 6] {
+        [
+            ("read", self.read),
+            ("write", self.write),
+            ("communicate", self.communicate),
+            ("transmit", self.transmit),
+            ("update", self.update),
+            ("read_on_init", self.read_on_init),
+        ]
+    }
+
+    /// Describe how this override set differs from `other`, flag by flag.
+    ///
+    /// Returns `None` when they agree. Naming the flags that actually differ
+    /// keeps the report readable: dumping both six-field structs makes the
+    /// reader diff them by eye, and does not distinguish "not overridden" from
+    /// "overridden to disabled" at a glance.
+    pub fn describe_difference(&self, other: &Self) -> Option<String> {
+        let describe = |value: Option<bool>| match value {
+            Some(true) => "enabled",
+            Some(false) => "disabled",
+            None => "inherited",
+        };
+        let differing: Vec<String> = self
+            .by_name()
+            .into_iter()
+            .zip(other.by_name())
+            .filter(|((_, mine), (_, theirs))| mine != theirs)
+            .map(|((name, mine), (_, theirs))| format!("{}: ref={} gen={}", name, describe(mine), describe(theirs)))
+            .collect();
+
+        if differing.is_empty() { None } else { Some(differing.join(", ")) }
+    }
 }
 
 impl CanonicalComObjectRef {
@@ -352,32 +453,54 @@ impl CanonicalProgram {
         }
 
         // Process parameters
+        //
+        // Tool-only parameters are keyed by display text, so each distinct text
+        // needs a running count to disambiguate its repeats. Keyed on the
+        // normalized text, matching what goes into the key itself.
+        let mut tool_only_occurrences: HashMap<String, usize> = HashMap::new();
+
         if let Some(ref params) = program.static_section.parameters {
             for item in &params.items {
                 match item {
                     ParameterItem::Parameter(p) => {
-                        if let Some(ref mem) = p.memory {
-                            if let Some(&size) = segment_sizes.get(mem.code_segment.as_str()) {
-                                canonical.param_segments.insert(mem.code_segment.clone(), size);
+                        let type_sig = type_id_to_sig
+                            .get(&p.parameter_type)
+                            .cloned()
+                            .unwrap_or(TypeSignature::None { size_bits: 0 });
+                        let text = normalize_text(&p.text);
+
+                        // A parameter with no `<Memory>` is tool-only: ETS
+                        // shows it and keeps it in the project, but the device
+                        // never sees it. It gets a key all the same, so that
+                        // the refs and `<choose>` branches hanging off it stay
+                        // comparable.
+                        let key = match p.memory {
+                            Some(ref mem) => {
+                                if let Some(&size) = segment_sizes.get(mem.code_segment.as_str()) {
+                                    canonical.param_segments.insert(mem.code_segment.clone(), size);
+                                }
+                                ParameterKey::new(mem.offset, mem.bit_offset, type_sig.size_bits())
                             }
-                            let type_sig = type_id_to_sig
-                                .get(&p.parameter_type)
-                                .cloned()
-                                .unwrap_or(TypeSignature::None { size_bits: 0 });
-                            let key = ParameterKey::new(mem.offset, mem.bit_offset, type_sig.size_bits());
-                            let cp = CanonicalParameter {
-                                original_id: p.id.clone(),
-                                name: p.name.clone(),
-                                text: normalize_text(&p.text),
-                                type_signature: type_sig,
-                                default_value: p.value.clone(),
-                                hidden: p.access.as_deref() == Some("None"),
-                                suffix_text: normalize_optional_text(&p.suffix_text),
-                            };
-                            canonical.id_to_param_key.insert(p.id.clone(), key);
-                            canonical.parameter_order.push(key);
-                            canonical.parameters.insert(key, cp);
-                        }
+                            None => {
+                                let occurrence = tool_only_occurrences.entry(text.clone()).or_insert(0);
+                                let key = ParameterKey::tool_only(text.clone(), *occurrence);
+                                *occurrence += 1;
+                                key
+                            }
+                        };
+
+                        let cp = CanonicalParameter {
+                            original_id: p.id.clone(),
+                            name: p.name.clone(),
+                            text,
+                            type_signature: type_sig,
+                            default_value: p.value.clone(),
+                            hidden: p.access.as_deref() == Some("None"),
+                            suffix_text: normalize_optional_text(&p.suffix_text),
+                        };
+                        canonical.id_to_param_key.insert(p.id.clone(), key.clone());
+                        canonical.parameter_order.push(key.clone());
+                        canonical.parameters.insert(key, cp);
                     }
                     ParameterItem::Union(u) => {
                         if let Some(&size) = segment_sizes.get(u.memory.code_segment.as_str()) {
@@ -404,8 +527,8 @@ impl CanonicalProgram {
                                 hidden: false, // Union params don't have access attr
                                 suffix_text: normalize_optional_text(&up.suffix_text),
                             };
-                            canonical.id_to_param_key.insert(up.id.clone(), key);
-                            canonical.parameter_order.push(key);
+                            canonical.id_to_param_key.insert(up.id.clone(), key.clone());
+                            canonical.parameter_order.push(key.clone());
                             canonical.parameters.insert(key, cp);
                         }
                     }
@@ -437,9 +560,9 @@ impl CanonicalProgram {
 
             for pr in &param_refs.refs {
                 // Resolve the parameter this ref points to
-                if let Some(&param_key) = canonical.id_to_param_key.get(&pr.ref_id) {
+                if let Some(param_key) = canonical.id_to_param_key.get(&pr.ref_id).cloned() {
                     let ref_index = *ref_counts.get(&param_key).unwrap_or(&0);
-                    ref_counts.insert(param_key, ref_index + 1);
+                    ref_counts.insert(param_key.clone(), ref_index + 1);
 
                     let cpr = CanonicalParamRef {
                         original_id: pr.id.clone(),
@@ -468,23 +591,16 @@ impl CanonicalProgram {
                     let ref_index = *ref_counts.get(&obj_num).unwrap_or(&0);
                     ref_counts.insert(obj_num, ref_index + 1);
 
-                    let flag_overrides = if cr.read_flag.is_some()
-                        || cr.write_flag.is_some()
-                        || cr.communication_flag.is_some()
-                        || cr.transmit_flag.is_some()
-                        || cr.update_flag.is_some()
-                        || cr.read_on_init_flag.is_some()
-                    {
-                        Some(ComObjectFlags {
-                            read: cr.read_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                            write: cr.write_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                            communicate: cr.communication_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                            transmit: cr.transmit_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                            update: cr.update_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                            read_on_init: cr.read_on_init_flag.map(|f| f == EnableFlag::Enabled).unwrap_or(false),
-                        })
-                    } else {
-                        None
+                    // Each flag is carried through independently: a ref that
+                    // says nothing about a flag inherits it from the object.
+                    let overridden = |flag: Option<EnableFlag>| flag.map(|f| f == EnableFlag::Enabled);
+                    let flag_overrides = OverriddenFlags {
+                        read: overridden(cr.read_flag),
+                        write: overridden(cr.write_flag),
+                        communicate: overridden(cr.communication_flag),
+                        transmit: overridden(cr.transmit_flag),
+                        update: overridden(cr.update_flag),
+                        read_on_init: overridden(cr.read_on_init_flag),
                     };
 
                     let cor = CanonicalComObjectRef {
@@ -561,5 +677,31 @@ mod tests {
     fn test_parameter_key_display() {
         let key = ParameterKey::new(0x100, 3, 8);
         assert_eq!(format!("{}", key), "0x100:3:8");
+    }
+
+    /// Tool-only keys must be visibly distinct from memory-backed ones, or a
+    /// report mixing both reads as if every parameter had a memory location.
+    #[test]
+    fn tool_only_key_display_is_distinguishable() {
+        let key = ParameterKey::tool_only("Setting Logic 2", 0);
+        assert_eq!(format!("{}", key), "tool[\"Setting Logic 2\"]#0");
+    }
+
+    /// A tool-only parameter occupies no device memory, so it must not
+    /// contribute bytes to a memory image.
+    #[test]
+    fn tool_only_key_has_no_memory_location() {
+        assert_eq!(ParameterKey::new(0x10, 2, 4).memory_location(), Some((0x10, 2, 4)));
+        assert_eq!(ParameterKey::tool_only("Subfunction", 3).memory_location(), None);
+    }
+
+    /// "Not overridden" and "overridden to disabled" are different states; the
+    /// previous `Option<ComObjectFlags>` modelling collapsed them into one.
+    #[test]
+    fn inherited_flag_differs_from_explicitly_disabled() {
+        let inherited = OverriddenFlags::default();
+        let disabled = OverriddenFlags { write: Some(false), ..OverriddenFlags::default() };
+        assert_eq!(inherited.describe_difference(&disabled), Some("write: ref=inherited gen=disabled".to_string()));
+        assert_eq!(inherited.describe_difference(&inherited), None);
     }
 }

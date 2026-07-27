@@ -491,9 +491,9 @@ fn merge_or(map: &mut HashMap<String, VisibilityConstraint>, key: &str, constrai
 /// XML vs. `M-00FA_A-0200-01-0000_P-1_R-1` in ours), so visibility can only be
 /// compared once every ref is reduced to what it actually points at: the
 /// referenced entity's semantic key, plus which of that entity's refs it is.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RefKey {
-    /// A `ParameterRefRef`, identified by the referenced parameter's memory location.
+    /// A `ParameterRefRef`, identified by the referenced parameter's semantic key.
     Param { key: ParameterKey, ref_index: usize },
     /// A `ComObjectRefRef`, identified by the referenced object's number.
     ComObject { number: u16, ref_index: usize },
@@ -604,7 +604,7 @@ pub fn compare_visibility(
     reference: &CanonicalVisibilityMap,
     generated: &CanonicalVisibilityMap,
 ) -> Vec<VisibilityDiff> {
-    let all_refs: BTreeSet<_> = reference.visibility.keys().chain(generated.visibility.keys()).copied().collect();
+    let all_refs: BTreeSet<_> = reference.visibility.keys().chain(generated.visibility.keys()).cloned().collect();
 
     all_refs
         .into_iter()
