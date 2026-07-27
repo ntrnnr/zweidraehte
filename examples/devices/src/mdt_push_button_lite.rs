@@ -2517,7 +2517,7 @@ pub struct MdtParams {
     pub eingang_type_patsch: GEboolEnableDisable,
 
     /// Button 1 description text
-    #[ets(display = "Description of buttons/objects", string)]
+    #[ets(display = "Description of buttons/objects", string, no_memory)]
     pub button1_description: [u8; 30],
 
     /// Button 1 main function (matching MDT ButtonFunction type values).
@@ -2820,7 +2820,7 @@ pub struct MdtParams {
     // Button 2 Extended Parameters
     // ========================================================================
     /// Button 2 description text
-    #[ets(display = "Description of buttons/objects", string)]
+    #[ets(display = "Description of buttons/objects", string, no_memory)]
     pub button2_description: [u8; 30],
 
     /// Button 2 short action (P-48 equivalent for button 2)
@@ -3003,36 +3003,36 @@ pub struct MdtParams {
     pub logic4_invert_output: YesNo,
 
     /// Logic 1 description
-    #[ets(display = "Description", string)]
-    pub logic1_description: [u8; 30],
+    #[ets(display = "Description of function", string, no_memory)]
+    pub logic1_description: [u8; 40],
 
     /// Logic 2 description
-    #[ets(display = "Description", string)]
-    pub logic2_description: [u8; 30],
+    #[ets(display = "Description of function", string, no_memory)]
+    pub logic2_description: [u8; 40],
 
     /// Logic 3 description
-    #[ets(display = "Description", string)]
-    pub logic3_description: [u8; 30],
+    #[ets(display = "Description of function", string, no_memory)]
+    pub logic3_description: [u8; 40],
 
     /// Logic 4 description
-    #[ets(display = "Description", string)]
-    pub logic4_description: [u8; 30],
+    #[ets(display = "Description of function", string, no_memory)]
+    pub logic4_description: [u8; 40],
 
     /// Logic 1 additional description
-    #[ets(display = "Additional description", string)]
-    pub logic1_add_description: [u8; 30],
+    #[ets(display = "Additional text", string, no_memory)]
+    pub logic1_add_description: [u8; 40],
 
     /// Logic 2 additional description
-    #[ets(display = "Additional description", string)]
-    pub logic2_add_description: [u8; 30],
+    #[ets(display = "Additional text", string, no_memory)]
+    pub logic2_add_description: [u8; 40],
 
     /// Logic 3 additional description
-    #[ets(display = "Additional description", string)]
-    pub logic3_add_description: [u8; 30],
+    #[ets(display = "Additional text", string, no_memory)]
+    pub logic3_add_description: [u8; 40],
 
     /// Logic 4 additional description
-    #[ets(display = "Additional description", string)]
-    pub logic4_add_description: [u8; 30],
+    #[ets(display = "Additional text", string, no_memory)]
+    pub logic4_add_description: [u8; 40],
 
     /// Logic 1 button choice (internal input 0)
     #[ets(display = "Internal Input 1", ets_enum)]

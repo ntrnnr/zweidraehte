@@ -42,22 +42,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - AS-083C @ 2108 (0x083C): RAM segment, size 1
     //
     // Every size below is the original's except the parameter segment, which is
-    // sized to what `MdtParams` actually needs (544 bytes) rather than MDT's
-    // 498. The gap is the tool-only conversion still outstanding: MDT keeps 102
-    // of its parameters out of device memory entirely (`#[ets(no_memory)]`),
-    // and we so far keep two. Declaring 498 here while the struct needs 544
-    // would place parameters outside their own segment, which
-    // `validate_param_offsets` now rejects outright. Shrink this back to 498 as
-    // the conversion lands; reaching exactly 498 is the parity goal.
+    // sized to what `MdtParams` actually occupies rather than being written out
+    // as a literal. Deriving it means it cannot drift from the struct, and
+    // `validate_param_offsets` rejects a parameter placed past the end of its
+    // own segment, so a literal that fell behind a struct change would fail the
+    // build rather than silently mis-declare the layout. Reaching exactly MDT's
+    // 498 is the parity goal: it arrives when the struct is laid out on MDT's
+    // offsets, reserved gaps included.
     let system7_layout = System7MemoryLayout {
         segments: vec![
             System7Segment {
                 name: "4000",
                 address: 16384,
                 size: 513,
-                memory_type: None,       // Default
-                data: Some(param_bytes), // Address table initial data
-                mask: None,              // TODO: Add mask if needed
+                memory_type: None, // Default
+                // No initial data: ETS builds the address table from the group
+                // addresses assigned in the project, exactly as for the
+                // association and communication object tables below.
+                data: None,
+                mask: None, // TODO: Add mask if needed
             },
             System7Segment {
                 name: "4201",
@@ -78,7 +81,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             System7Segment {
                 name: "456C",
                 address: 17772,
-                size: 544,
+                size: param_bytes.len() as u32,
                 memory_type: Some("EEPROM"),
                 data: Some(param_bytes), // Parameters
                 mask: None,
