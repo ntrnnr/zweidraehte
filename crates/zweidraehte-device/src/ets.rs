@@ -80,6 +80,109 @@ pub use zweidraehte_ets::{ets_params, ets_union};
 pub use zweidraehte_proto::device::{DeviceDescriptor, MaskFamily, MaskVersion};
 
 // ============================================================================
+// `#[ets(no_memory)]` — rejected combinations
+// ============================================================================
+//
+// A tool-only parameter is one ETS displays and stores in the project but never
+// downloads. Each of the four items below pins one combination that cannot
+// mean anything, so the diagnostic lands on the attribute instead of on
+// whatever the generator would have produced from it.
+
+/// Compile-fail proof that `#[ets(no_memory)]` is rejected on a `union` field.
+///
+/// A union always occupies device memory — its discriminant selects which
+/// variant's bytes are live — so there is no coherent reading of a union that
+/// is never downloaded.
+///
+/// ```compile_fail
+/// use serde::{Deserialize, Serialize};
+/// use zweidraehte_device::ets::{ets_params, ets_union};
+///
+/// #[ets_union]
+/// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// pub enum Choice {
+///     #[ets(display = "a")]
+///     A { #[ets(display = "v")] v: u8 },
+///     #[ets(display = "b")]
+///     B { #[ets(display = "w")] w: u8 },
+/// }
+///
+/// #[ets_params]
+/// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// pub struct Params {
+///     // `union` + `no_memory` — must not compile.
+///     #[ets(display = "Choice", union, no_memory)]
+///     pub choice: Choice,
+/// }
+/// ```
+#[allow(dead_code)]
+struct NoMemoryOnUnionIsRejected;
+
+/// Compile-fail proof that `#[ets(no_memory)]` is rejected alongside `skip`.
+///
+/// `skip` emits no ETS parameter at all while `no_memory` emits one without
+/// device memory, so asking for both says nothing coherent.
+///
+/// ```compile_fail
+/// use serde::{Deserialize, Serialize};
+/// use zweidraehte_device::ets::ets_params;
+///
+/// #[ets_params]
+/// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// pub struct Params {
+///     // `skip` + `no_memory` — must not compile.
+///     #[ets(no_memory, skip)]
+///     pub filler: u8,
+/// }
+/// ```
+#[allow(dead_code)]
+struct NoMemoryWithSkipIsRejected;
+
+/// Compile-fail proof that `#[ets(no_memory)]` is rejected on a `module` field.
+///
+/// Module instances are stored per channel and occupy device memory, so they
+/// cannot be tool-only.
+///
+/// ```compile_fail
+/// use serde::{Deserialize, Serialize};
+/// use zweidraehte_device::ets::ets_params;
+///
+/// #[ets_params]
+/// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// pub struct Params {
+///     // `module` + `no_memory` — must not compile.
+///     #[ets(no_memory, module = u8)]
+///     pub channels: [u8; 2],
+/// }
+/// ```
+#[allow(dead_code)]
+struct NoMemoryOnModuleIsRejected;
+
+/// Compile-fail proof that a tool-only parameter using inline `enum_variants`
+/// must state its default explicitly.
+///
+/// A tool-only parameter contributes no bytes to the defaults blob and carries
+/// offset 0, so without `#[ets(default = N)]` the generator would read the
+/// first byte of an unrelated parameter. `ets_enum` fields are exempt — their
+/// default comes from the type's `ConstDefault` — which is why this proof uses
+/// inline variants.
+///
+/// ```compile_fail
+/// use serde::{Deserialize, Serialize};
+/// use zweidraehte_device::ets::ets_params;
+///
+/// #[ets_params]
+/// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// pub struct Params {
+///     // Inline variants + `no_memory` and no `default` — must not compile.
+///     #[ets(display = "Mode", no_memory, enum_variants("Off" => 0, "On" => 1))]
+///     pub mode: u8,
+/// }
+/// ```
+#[allow(dead_code)]
+struct NoMemoryEnumVariantsNeedsDefault;
+
+// ============================================================================
 // ETS Parameter Type
 // ============================================================================
 

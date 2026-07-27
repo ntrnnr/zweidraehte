@@ -60,6 +60,10 @@ pub(crate) struct FieldAttrs {
     pub(crate) string_field: bool,
     /// Marks this field as hidden (Access="None" in ETS)
     pub(crate) hidden: bool,
+    /// Marks this parameter as tool-only: ETS shows and persists it, but it is
+    /// never downloaded, so it occupies no device memory. The field is dropped
+    /// from the emitted struct entirely — see the `#[ets_params]` docs.
+    pub(crate) no_memory: bool,
     /// Override for the ParameterType name in ETS export
     pub(crate) type_name: Option<String>,
     /// Default value for this field
@@ -85,6 +89,7 @@ pub(crate) fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> 
         ets_enum_field: false,
         string_field: false,
         hidden: false,
+        no_memory: false,
         type_name: None,
         default_value: None,
         text_pattern: None,
@@ -134,6 +139,8 @@ pub(crate) fn parse_field_attrs(attrs: &[Attribute]) -> syn::Result<FieldAttrs> 
                     result.string_field = true;
                 } else if ident == "hidden" {
                     result.hidden = true;
+                } else if ident == "no_memory" {
+                    result.no_memory = true;
                 } else if ident == "type_name" {
                     input.parse::<Token![=]>()?;
                     let value: syn::LitStr = input.parse()?;

@@ -40,6 +40,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // - AS-456C @ 17772 (0x456C): Parameters (EEPROM), size 498
     // - AS-0700 @ 1792 (0x0700): RAM segment, size 316
     // - AS-083C @ 2108 (0x083C): RAM segment, size 1
+    //
+    // Every size below is the original's except the parameter segment, which is
+    // sized to what `MdtParams` actually needs (544 bytes) rather than MDT's
+    // 498. The gap is the tool-only conversion still outstanding: MDT keeps 102
+    // of its parameters out of device memory entirely (`#[ets(no_memory)]`),
+    // and we so far keep two. Declaring 498 here while the struct needs 544
+    // would place parameters outside their own segment, which
+    // `validate_param_offsets` now rejects outright. Shrink this back to 498 as
+    // the conversion lands; reaching exactly 498 is the parity goal.
     let system7_layout = System7MemoryLayout {
         segments: vec![
             System7Segment {
@@ -69,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             System7Segment {
                 name: "456C",
                 address: 17772,
-                size: 498,
+                size: 544,
                 memory_type: Some("EEPROM"),
                 data: Some(param_bytes), // Parameters
                 mask: None,

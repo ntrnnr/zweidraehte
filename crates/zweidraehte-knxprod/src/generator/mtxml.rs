@@ -29,7 +29,7 @@ use super::traversal::{
 };
 use super::{
     ActiveConditions, ApplicationProgramConfig, GeneratorError, MaskFamily, ParamRefMap, System7MemoryLayout,
-    strip_no_memory_bytes,
+    validate_param_offsets,
 };
 use crate::signing::KnxSchemaVersion;
 

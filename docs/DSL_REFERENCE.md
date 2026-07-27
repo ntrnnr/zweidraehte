@@ -152,6 +152,7 @@ The macro generates defaults as follows:
 | `ets_enum` | Simple enum dropdown | Use with `#[derive(EtsEnum)]` types |
 | `union` | Discriminated union field | Use with `#[ets_union]` types |
 | `hidden` | Hide from ETS UI | For internal parameters |
+| `no_memory` | Tool-only: shown and stored by ETS, never downloaded | For choices that only decide what other parameters are shown |
 | `bits = N` | Override bit size | `bits = 4` for nibble |
 | `bit_offset = N` | Bit offset within byte | `bit_offset = 4` |
 | `type_name = "..."` | Override ETS type name | `type_name = "MyCustomType"` |
@@ -159,6 +160,41 @@ The macro generates defaults as follows:
 | `string` | Treat `[u8; N]` as text | For text parameters |
 | `text_pattern = "..."` | ETS text template substituted with `{{0:default}}` against the parameter's own ParameterRef | `text_pattern = "{{0:Channel}}"` |
 | `text_source` | Mark this parameter as the text source for a module's text-substitution mechanism (V20 modules only; bare flag) | `text_source` |
+
+#### Tool-only parameters (`no_memory`)
+
+Not every parameter needs to reach the device. A high-level choice like
+"Single-button function" usually only decides *which* detailed parameters ETS
+shows; the firmware acts on those details and never needs the choice itself.
+`#[ets(no_memory)]` marks such a parameter: ETS displays it, stores it in the
+project, and can drive `when` blocks from it, but it gets no `<Memory>` element
+and consumes no device EEPROM.
+
+```rust,ignore
+#[ets_params]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ButtonParams {
+    /// Only selects which of the parameters below are shown.
+    #[ets(display = "Single-button function", ets_enum, no_memory)]
+    pub function: ButtonFunction,
+
+    /// Stored: this is what the firmware acts on.
+    #[ets(display = "Switch on delay", suffix = "s", default = 2)]
+    pub on_delay: u16,
+}
+```
+
+Because the params struct *is* the download image, a tool-only field is
+**removed from the emitted struct entirely** — keeping it would put bytes in the
+image at an offset ETS was never told about. So `function` above does not exist
+on `ButtonParams`: reading or assigning it is a compile error, and the struct
+cannot be built by literal. Use the generated `Default` / `ConstDefault`.
+
+Rejected at compile time: combining `no_memory` with `union`, `skip` or
+`module` (all of which necessarily occupy memory), and using it with inline
+`enum_variants` without an explicit `default = N` — a tool-only parameter has no
+bytes in the defaults blob to read a default from. `ets_enum` fields need no
+explicit default; theirs comes from the type's `ConstDefault`.
 
 ### Supported Field Types
 

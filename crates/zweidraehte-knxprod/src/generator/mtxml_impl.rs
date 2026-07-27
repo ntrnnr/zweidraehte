@@ -31,6 +31,11 @@ impl MtxmlGenerator {
         config: &ApplicationProgramConfig,
         schema_version: Option<KnxSchemaVersion>,
     ) -> Result<String, GeneratorError> {
+        // Ahead of building anything: a parameter placed outside its segment
+        // names the offending parameter, where the same fault found later would
+        // only show up as XML that ETS rejects.
+        validate_param_offsets(config)?;
+
         let knx = Self::build_knx(config, schema_version)?;
 
         // Validate all references before serialization
@@ -699,9 +704,9 @@ impl MtxmlGenerator {
         app_id: &str,
         mask_family: MaskFamily,
     ) -> Result<(StaticSection, BTreeMap<String, String>), GeneratorError> {
-        // Calculate the stripped param size (excluding no_memory virtual parameters)
-        let stripped_defaults = strip_no_memory_bytes(config.param_defaults, config.params);
-        let param_size = stripped_defaults.len() as u32;
+        // Tool-only parameters never reach the struct the defaults come from, so
+        // the blob is already exactly the device's parameter memory.
+        let param_size = config.param_defaults.len() as u32;
 
         // Build code segment ID based on mask family (for parameter references)
         let code_segment_id = match mask_family.data_segment_type() {
@@ -1481,9 +1486,8 @@ impl MtxmlGenerator {
 
     /// Build the Code section with appropriate segment type for the mask.
     fn build_code(config: &ApplicationProgramConfig, app_id: &str, size: u32, mask_family: MaskFamily) -> Code {
-        // Strip no_memory (virtual) parameters' bytes from the raw defaults
-        let stripped_defaults = strip_no_memory_bytes(config.param_defaults, config.params);
-        let data = base64::engine::general_purpose::STANDARD.encode(&stripped_defaults);
+        // See `build_static_section`: the defaults blob carries no tool-only bytes.
+        let data = base64::engine::general_purpose::STANDARD.encode(config.param_defaults);
 
         match mask_family.data_segment_type() {
             DataSegmentType::Relative => {
@@ -1839,6 +1843,13 @@ impl MtxmlGenerator {
             } else if param.param_type == EtsParamType::String {
                 // String parameters default to empty string
                 String::new()
+            } else if param.no_memory {
+                // A tool-only parameter has no bytes in the blob, and its offset
+                // is 0 — reading there would hand it an unrelated parameter's
+                // default. `ets_enum` fields never reach this (their default
+                // comes from ConstDefault) and inline `enum_variants` must
+                // declare one, so this is the plain-numeric fallback.
+                "0".to_string()
             } else if param_offset + size_bytes <= config.param_defaults.len() {
                 match size_bytes {
                     1 => config.param_defaults[param_offset].to_string(),

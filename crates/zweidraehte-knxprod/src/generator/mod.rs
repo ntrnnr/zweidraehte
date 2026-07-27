@@ -558,6 +558,17 @@ pub enum GeneratorError {
         /// The out-of-range value
         size_bits: u8,
     },
+    /// A parameter extends past the end of the code segment holding it
+    ParameterOutOfSegment {
+        /// Name of the offending parameter
+        param_name: &'static str,
+        /// Byte offset the parameter starts at
+        offset: usize,
+        /// First byte past the parameter
+        end: usize,
+        /// Declared size of the segment
+        segment_size: usize,
+    },
 }
 
 impl std::fmt::Display for GeneratorError {
@@ -576,56 +587,74 @@ impl std::fmt::Display for GeneratorError {
             GeneratorError::InvalidParameterSize { size_bits } => {
                 write!(f, "Parameter size_bits {size_bits} is out of range [1, 63]")
             }
+            GeneratorError::ParameterOutOfSegment { param_name, offset, end, segment_size } => {
+                write!(
+                    f,
+                    "Parameter '{param_name}' occupies bytes {offset}..{end} but its code segment is only \
+                     {segment_size} bytes: either the segment is declared too small or the parameter struct \
+                     has outgrown it (consider `#[ets(no_memory)]` for parameters the device does not need)"
+                )
+            }
         }
     }
 }
 
 impl std::error::Error for GeneratorError {}
 
-/// Strip bytes belonging to `no_memory` (virtual) parameters from the raw defaults.
+// There is deliberately no `strip_no_memory_bytes` here.
+//
+// An earlier version removed each tool-only parameter's bytes from the defaults
+// blob, for a design where such parameters still occupied the params struct.
+// That design was rejected — the struct is the download image, so a parameter
+// ETS is never told the offset of must not sit in it at all — and
+// `#[ets(no_memory)]` now drops the field before the struct is emitted. Nothing
+// is left to strip, and stripping would be actively wrong: tool-only parameters
+// carry offset 0, so it would have removed the first bytes of real parameters.
+
+/// Check that every stored parameter fits inside the code segment it is placed in.
 ///
-/// Virtual parameters exist in the Rust struct for metadata purposes but should not
-/// occupy device memory. This function creates a new byte vector with the `no_memory`
-/// fields' bytes removed.
-pub(crate) fn strip_no_memory_bytes(raw_defaults: &[u8], params: &[EtsParamDefExt]) -> Vec<u8> {
-    // Collect ranges of bytes to exclude (offset, size_bytes) for no_memory params
-    let mut exclude_ranges: Vec<(usize, usize)> = params
-        .iter()
-        .filter(|p| p.base.no_memory)
-        .map(|p| {
-            let offset = p.base.offset as usize;
-            let size_bytes = (p.base.size_bits as usize).div_ceil(8);
-            (offset, size_bytes)
-        })
-        .collect();
+/// Without this the generator will happily emit offsets past the end of the
+/// declared segment — which is what the MDT replication did, running to offset
+/// 546 in a segment declared as 498 bytes, producing XML ETS is likely to
+/// reject. Failing here points at the parameter instead.
+///
+/// Only `config.params` is checked, which is exactly the set that carries
+/// absolute offsets into this segment. Union *variant* parameters live in
+/// `config.union_fields` with offsets relative to the union's data area, and
+/// module parameters live in `config.modules` behind a `BaseOffset`; neither is
+/// addressed in this space. Union *selector* parameters are in `config.params`
+/// with a true struct offset and are checked like any other.
+pub(crate) fn validate_param_offsets(config: &ApplicationProgramConfig) -> Result<(), GeneratorError> {
+    // System 7 devices declare their segments explicitly; everything else sizes
+    // the segment from the defaults blob, which is the struct itself.
+    let segment_size = match config.system7_layout {
+        Some(ref layout) => layout
+            .segments
+            .iter()
+            .find(|segment| segment.memory_type == Some("EEPROM"))
+            .map(|segment| segment.size as usize)
+            .unwrap_or(config.param_defaults.len()),
+        None => config.param_defaults.len(),
+    };
 
-    // If no no_memory params, return as-is
-    if exclude_ranges.is_empty() {
-        return raw_defaults.to_vec();
-    }
-
-    // Sort by offset and merge overlapping ranges
-    exclude_ranges.sort_by_key(|(offset, _)| *offset);
-
-    // Build output by copying non-excluded ranges
-    let mut result = Vec::with_capacity(raw_defaults.len());
-    let mut current_pos = 0;
-
-    for (exclude_start, exclude_size) in &exclude_ranges {
-        // Copy bytes before this exclusion
-        if current_pos < *exclude_start {
-            result.extend_from_slice(&raw_defaults[current_pos..*exclude_start]);
+    for param_ext in config.params {
+        let param = &param_ext.base;
+        if param.no_memory {
+            continue;
         }
-        // Skip past the excluded bytes
-        current_pos = (*exclude_start + *exclude_size).max(current_pos);
+
+        let end = param.offset as usize + (param.size_bits as usize).div_ceil(8);
+        if end > segment_size {
+            return Err(GeneratorError::ParameterOutOfSegment {
+                param_name: param.name,
+                offset: param.offset as usize,
+                end,
+                segment_size,
+            });
+        }
     }
 
-    // Copy any remaining bytes after the last exclusion
-    if current_pos < raw_defaults.len() {
-        result.extend_from_slice(&raw_defaults[current_pos..]);
-    }
-
-    result
+    Ok(())
 }
 
 /// Get the medium type string from a mask version.

@@ -40,8 +40,12 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
         // Parse field attributes
         let attrs = parse_field_attrs(&field.attrs)?;
 
-        // Determine the default value expression for this field
-        {
+        // Determine the default value expression for this field.
+        //
+        // Tool-only parameters are absent from the emitted struct, so they take
+        // no part in `Default` / `ConstDefault` — there is no field to
+        // initialise. Their ETS default comes from the metadata below instead.
+        if !attrs.no_memory {
             let default_expr = if attrs.skip {
                 // Skip fields use const-compatible zeroing
                 get_const_zero_expr(field_type)
@@ -98,12 +102,24 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
         let name_str = field_name.to_string();
 
         // Use offset_of! to get the actual field offset at const-eval time
-        // This correctly handles all alignment padding and works with any field type
-        let offset_expr = quote! {
-            core::mem::offset_of!(#struct_name, #field_name) as u16
+        // This correctly handles all alignment padding and works with any field type.
+        //
+        // A tool-only parameter has no field to take the offset of, and nothing
+        // reads the value: `build_parameters` emits no `<Memory>` element for
+        // it, so the offset is inert. Zero rather than a sentinel, because the
+        // generator must never treat it as a location in the defaults blob.
+        let offset_expr = if attrs.no_memory {
+            quote!(0u16)
+        } else {
+            quote! {
+                core::mem::offset_of!(#struct_name, #field_name) as u16
+            }
         };
+        let no_memory = attrs.no_memory;
 
-        // Check if this is a union field (unknown type that might implement EtsUnionType)
+        // Check if this is a union field (unknown type that might implement EtsUnionType).
+        // The `no_memory` literals below stay `false`: `#[ets_params]` rejects
+        // `no_memory` on a union field, so a selector can never be tool-only.
         if attrs.union_field {
             let selector_name = format!("{}_selector", field_name);
             let selector_display = format!("{} Mode", display_name);
@@ -196,7 +212,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
                     bit_offset: #bit_offset,
                     param_type: zweidraehte_device::ets::EtsParamType::Enum,
                     hidden: #hidden,
-                    no_memory: false,
+                    no_memory: #no_memory,
                     type_name: #type_name_expr,
                     text_pattern: None,
                 }
@@ -230,7 +246,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
                         bit_offset: #bit_offset,
                         param_type: zweidraehte_device::ets::EtsParamType::Enum,
                         hidden: #hidden,
-                        no_memory: false,
+                        no_memory: #no_memory,
                         type_name: #type_name_expr,
                         text_pattern: None,
                     },
@@ -275,7 +291,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
                 bit_offset: #bit_offset,
                 param_type: #param_type,
                 hidden: #hidden,
-                no_memory: false,
+                no_memory: #no_memory,
                 type_name: #type_name_expr,
                 text_pattern: None,
             }
@@ -322,7 +338,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
                     bit_offset: #bit_offset,
                     param_type: #param_type,
                     hidden: #hidden,
-                    no_memory: false,
+                    no_memory: #no_memory,
                     type_name: #type_name_expr,
                     text_pattern: None,
                 },

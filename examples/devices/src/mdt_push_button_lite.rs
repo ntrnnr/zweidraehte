@@ -2520,8 +2520,13 @@ pub struct MdtParams {
     #[ets(display = "Description of buttons/objects", string)]
     pub button1_description: [u8; 30],
 
-    /// Button 1 main function (matching MDT ButtonFunction type values)
-    #[ets(display = "Single-button function", ets_enum)]
+    /// Button 1 main function (matching MDT ButtonFunction type values).
+    ///
+    /// Tool-only: the choice selects which detailed settings ETS shows, and the
+    /// device infers the behaviour from those, so MDT declares it without a
+    /// `<Memory>` element and never downloads it. See `#[ets_params]` on why the
+    /// field is therefore absent from the emitted struct.
+    #[ets(display = "Single-button function", ets_enum, no_memory)]
     pub button1_function: ButtonFunction,
 
     /// Button 1 switch subfunction (default: toggle)
@@ -2538,8 +2543,10 @@ pub struct MdtParams {
     #[ets(display = "Datapoint type", ets_enum, default = 2)]
     pub button1_object_type: ObjectType,
 
-    /// Button 2 main function (matching MDT ButtonFunction type values)
-    #[ets(display = "Single-button function", ets_enum)]
+    /// Button 2 main function (matching MDT ButtonFunction type values).
+    ///
+    /// Tool-only for the same reason as [`MdtParams::button1_function`].
+    #[ets(display = "Single-button function", ets_enum, no_memory)]
     pub button2_function: ButtonFunction,
 
     /// Button 2 switch subfunction (default: toggle)
