@@ -1,7 +1,17 @@
 //! Group Object Conformance Tests
 //!
-//! Tests based on KNX v2.1.1, Volume 08_03_07 System Conformance Testing - AIL and Management Tests
-//! Reference: AN182 v03
+//! Transcribed from the EITT template `KnxConformanceTestTemplate-GroupObjects.xml`,
+//! Version 11 (2025-03-18), which realises 08_03_07 "System Conformance Testing -
+//! AIL and Management Tests" §1.4.1.
+//!
+//! Three template revisions matter for reading this file, because earlier
+//! transcriptions of these tests looked quite different:
+//!
+//! - v7 (2023-02-07): the write flag no longer influences the update on a
+//!   received `A_GroupValue_Response` — see 1.4.1.5 below.
+//! - v8 (2024-07-16): 1.4.1.4a no longer re-types GO0/GO3 to BYTE3.
+//! - v9 (2024-12-11): 1.4.1.5's "read response update" clause carries the
+//!   BCU2 response value.
 //!
 //! The tests in this collection are performed on a Group Object with Field Value Type UINT1.
 //! This format shall be accessible by GO0, whereas the three additional group objects are
@@ -29,17 +39,25 @@
 //!
 //! ## Special Test Cases
 //!
-//! - **1.4.1.4a (BDUT receives invalid data length)**: GO0 and GO3 shall have the value
-//!   field type of BYTE3 instead of UINT1. We implement this with a separate set of 3-byte
-//!   objects (GO0_BYTE3 through GO3_BYTE3) at addresses 2/1/0 through 2/1/3.
+//! - **1.4.1.4a (BDUT receives invalid data length)**: a one-octet payload is
+//!   written to the 1-bit GO0. The short encoding carries the value inside the
+//!   APCI octet, so the extra octet makes the frame one longer than the object
+//!   and the write must be rejected.
+//!
+//! - **1.4.1.5 (BDUT receives A_GroupValue_Response)**: the update is gated by
+//!   Communication Enable and Response Update Enable only. Write Enable does
+//!   *not* participate — see the flag discussion in
+//!   `zweidraehte_device::layers::application::group_data`.
 //!
 //! - **1.4.1.6 (Test Read on Init Flag)**: Assuming the BDUT has five group objects
 //!   (GO0 to GO4), deactivate the read on init flag of the first 3 (with different settings
 //!   of the other available flags) and activate the read on init of the last two. Attribute
 //!   the group addresses 1001h to 1005h to Group Object 0 to 4.
 //!
-//! - **1.4.1.7 (BDUT receives invalid APCI)**: GO0 and GO3 shall have the value field type
-//!   of BYTE3 instead of UINT1. Uses the same 3-byte objects as test 1.4.1.4a.
+//! - **1.4.1.7 (BDUT receives invalid APCI)**: every invalid APCI is injected
+//!   twice, once as a standard frame and once as an extended frame, and
+//!   programming mode is toggled over the bus with an `A_PropertyValue_Write`
+//!   to PID_PROGMODE rather than out of band.
 //!
 //! ## BCU1-Style Test Architecture
 //!
@@ -91,10 +109,19 @@
 //! - 1.4.1.2: BDUT receives A_GroupValue_Read
 //! - 1.4.1.3: BDUT sends A_GroupValue_Write
 //! - 1.4.1.4: BDUT receives A_GroupValue_Write
-//! - 1.4.1.4a: BDUT receives invalid data length (optional, uses BYTE3 objects)
+//! - 1.4.1.4a: BDUT receives invalid data length (optional)
 //! - 1.4.1.5: BDUT receives A_GroupValue_Response
-//! - 1.4.1.6: Checking of Read on Init Flag (not yet implemented - requires ROI support)
-//! - 1.4.1.7: BDUT receives invalid APCI (uses BYTE3 objects)
+//! - 1.4.1.6: Checking of Read on Init Flag
+//! - 1.4.1.7: BDUT receives invalid APCI
+//!
+//! ## Deliberate Deviations From the Template
+//!
+//! - `trigger_read` / `trigger_write` steps, as described above.
+//! - `expect_none` is inserted wherever the template's acceptance criterion is
+//!   "no response generated". EITT leaves that to the operator watching the
+//!   trace; our runner needs the assertion spelled out.
+//! - The template duplicates all eight cases for a UINT8 GO0. We implement the
+//!   UINT1 collection only — the conformance DUT's GO0 is 1-bit.
 
 use std::collections::BTreeMap;
 
@@ -119,11 +146,6 @@ pub fn create_test_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("GO_2_ADDR".to_string(), TestVariable::Bytes(vec![0x10, 0x02]));
     vars.insert("GO_3_ADDR".to_string(), TestVariable::Bytes(vec![0x10, 0x03]));
     vars.insert("GO_4_ADDR".to_string(), TestVariable::Bytes(vec![0x10, 0x05]));
-    // 3-byte object addresses for test 1.4.1.4a (2/1/0 through 2/1/3)
-    vars.insert("GO_0_B3_ADDR".to_string(), TestVariable::Bytes(vec![0x11, 0x00])); // 2/1/0 = 0x1100
-    vars.insert("GO_1_B3_ADDR".to_string(), TestVariable::Bytes(vec![0x11, 0x01])); // 2/1/1 = 0x1101
-    vars.insert("GO_2_B3_ADDR".to_string(), TestVariable::Bytes(vec![0x11, 0x02])); // 2/1/2 = 0x1102
-    vars.insert("GO_3_B3_ADDR".to_string(), TestVariable::Bytes(vec![0x11, 0x03])); // 2/1/3 = 0x1103
     // Additional variables for test 1.4.1.7 (invalid APCI tests)
     // Memory addresses - these are device-specific placeholders
     vars.insert("MEM_ACCESSIBLE_START_CC".to_string(), TestVariable::Bytes(vec![0x01, 0x00]));
@@ -223,10 +245,13 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 87", 200),
                 trigger_read(1), // Should fail due to disabled comm flag
                 comment("Acceptance: BDUT does not send A_GroupValue_Read."),
+                comment("Error flag not necessarily set due to disabled communication flag."),
                 // Read communication flags
                 inject("BC #EDI #GO_1_ADDR E1 00 00"),
-                // Comm flags = idle/error, read (0x45)
-                expect("BC #BDUT #GO_1_ADDR E1 00 45", 200),
+                // Comm flags = idle/error, read (0x45); the template accepts
+                // any low nibble here because a device may leave the error
+                // flag clear when communication itself is disabled.
+                expect("BC #BDUT #GO_1_ADDR E1 00 4?", 200),
                 // --------------------------------------------------------
                 comment("Disable 'read'"),
                 // Disable read in configuration flags
@@ -345,13 +370,13 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("Acceptance: No response generated."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DB", 200),
                 inject_delay("BC #EDI #GO_0_ADDR E1 00 00", 200),
-                // (No response expected - wait to ensure nothing sent)
+                expect_none(200),
                 // --------------------------------------------------------
                 comment("Disable 'read'"),
                 comment("Acceptance: No response generated."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 D7", 200),
                 inject_delay("BC #EDI #GO_0_ADDR E1 00 00", 200),
-                // (No response expected)
+                expect_none(200),
                 // --------------------------------------------------------
                 comment("Disable 'write'"),
                 comment("Acceptance: Response generated."),
@@ -421,8 +446,11 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DB", 200), // disable communication
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 83", 200),    // set transmit request
                 trigger_write(1),                                    // Should fail due to disabled comm flag
-                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 41", 200), // Comm.-flags = idle/error (BCU 2), transmit request (BCU1)
+                comment("Error flag not necessarily set due to disabled communication flag."),
+                inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
+                // Comm.-flags = idle/error (BCU 2), transmit request (BCU1);
+                // low nibble left open per the template.
+                expect("BC #BDUT #GO_1_ADDR E1 00 4?", 200),
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // reset Comm. flags
                 // --------------------------------------------------------
                 comment("Disable 'read'"),
@@ -539,36 +567,29 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
             ..Default::default()
         },
         // ====================================================================
-        // Test 1.4.1.4a: BDUT receives an invalid data length (BYTE3, optional)
+        // Test 1.4.1.4a: BDUT receives an invalid data length (UINT1, optional)
         // ====================================================================
-        // Uses 3-byte objects GO0_BYTE3 and GO3_BYTE3 for invalid length testing
         TestCase {
-            name: "1.4.1.4a BDUT receives an invalid data length (BYTE3, optional)",
+            name: "1.4.1.4a BDUT receives an invalid data length (UINT1, optional)",
             steps: vec![
-                comment("Testcase 1.4.1.4a BDUT receives invalid data length (BYTE3, optional)"),
-                comment("Uses 3-byte objects GO0_BYTE3 (2/1/0) and GO3_BYTE3 (2/1/3)"),
+                comment("Testcase 1.4.1.4a BDUT receives invalid data length (UINT1, optional)"),
+                comment(
+                    "Purpose of the test is to check whether the group objects implemented in BDUT reject a value write/response addressed to them,",
+                ),
+                comment("of which the indicated info length does not match their own supported field types."),
+                comment("Preparation"),
+                inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DF", 200), // set Configuration flags
+                inject_delay("BC #EDI #GO_3_ADDR E2 00 80 00", 200), // clear object data
+                inject_delay("BC #EDI #GO_3_ADDR E2 00 80 01", 200), // set object to value other than default value
                 // --------------------------------------------------------
-                comment("Data larger than the expected size"),
-                comment("'read on init' 'transmission' 'write' 'communication' enabled"),
-                comment("Acceptance: Comm.-flags = no update flag and value unchanged."),
-                inject_delay("BC #EDI #GO_2_B3_ADDR E2 00 80 FF", 200), // enable all flags on GO0_BYTE3
-                inject_delay("BC #EDI #GO_0_B3_ADDR E4 00 80 12 34 56", 200), // Value Write (3 bytes) - valid
-                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200),    // clear Comm. flags
-                inject_delay("BC #EDI #GO_0_B3_ADDR E5 00 80 12 34 56 78", 200), // Value Write (4 bytes - too large)
-                inject("BC #EDI #GO_1_B3_ADDR E1 00 00"),               // read communication-flags
-                expect("BC #BDUT #GO_1_B3_ADDR E1 00 40", 200),         // Comm.-flags = no update flag
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),               // Value read of object value
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 12 34 56", 200), // Value Response (unchanged)
-                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200),    // clear Comm. Flags
-                // --------------------------------------------------------
-                comment("Data smaller than the expected size"),
-                comment("Acceptance: Comm.-flags = no update flag and value unchanged."),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 00 80 AB CD", 200), // Value Write (2 bytes - too small)
-                inject("BC #EDI #GO_1_B3_ADDR E1 00 00"),                  // read communication-flags
-                expect("BC #BDUT #GO_1_B3_ADDR E1 00 40", 200),            // Comm.-flags = no update flag
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),                  // Value read of object value
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 12 34 56", 200),   // Value Response (unchanged)
-                inject_delay("BC #EDI #GO_1_B3_ADDR E1 00 80", 200),       // clear Comm. Flags
+                comment("Test"),
+                // One octet of payload addressed to the 1-bit GO0: the short
+                // encoding carries the value inside the APCI octet, so the
+                // extra octet makes the frame one longer than the object.
+                inject_delay("BC #EDI #GO_0_ADDR E2 00 80 00", 200), // set object to value larger than size of group object
+                comment("Acceptance: The object value is not updated."),
+                inject("BC #EDI #GO_3_ADDR E1 00 00"), // send Value Read to group object
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200), // value of group object not updated
             ],
             ..Default::default()
         },
@@ -606,13 +627,13 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable \"write\""),
-                comment("Acceptance: Update flag not set."),
+                comment("Acceptance: Update flag set."),
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 CF", 200), // disable write in configuration flags
                 inject_delay("BC #EDI #GO_0_ADDR E1 00 41", 200),    // ValueResponse by EITT to BDUT
                 inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
-                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200),         // Comm.-flags = update flag not set
+                expect("BC #BDUT #GO_1_ADDR E1 00 48", 200),         // Comm.-flags = update flag set
                 inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
-                expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200),      // Value Response of BDUT
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
                 // --------------------------------------------------------
                 comment("Disable \"transmission\""),
@@ -624,30 +645,24 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 inject("BC #EDI #GO_3_ADDR E1 00 00"),               // Value read of object value
                 expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200),      // Value Response of BDUT
                 inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200),    // clear Comm. flags
-                                                                     // --------------------------------------------------------
-                                                                     // NOTE: The following "Disable read response update" test clause is for devices
-                                                                     // that do NOT support deactivation of the update flag. Our implementation properly
-                                                                     // supports update flag deactivation (BCU2 behavior), so this test is not applicable.
-                                                                     //
-                                                                     // When update_enable is disabled, we correctly:
-                                                                     // 1. Do NOT set the Updated flag (verified by expect 0x40 above)
-                                                                     // 2. Do NOT update the object value (value remains unchanged)
-                                                                     //
-                                                                     // The original EITT test expects value=0x00 which would only happen if the device
-                                                                     // ignores the update_enable flag and updates anyway (BCU1 behavior).
-                                                                     //
-                                                                     // comment("Disable \"read response update\" (if possible)"),
-                                                                     // comment("Acceptance: Update flag not set"),
-                                                                     // inject_delay("BC #EDI #GO_2_ADDR E2 00 80 5F", 200), // disable read response update
-                                                                     // inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200), // ValueResponse by EITT to BDUT
-                                                                     // inject("BC #EDI #GO_1_ADDR E1 00 00"), // read communication-flags
-                                                                     // comment("Next telegram: Update flag not set (BCU2), update flag set (BCU1)."),
-                                                                     // expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Update flag not set
-                                                                     // inject("BC #EDI #GO_3_ADDR E1 00 00"), // Value read of object value
-                                                                     // comment("The group object value remains unchanged for devices supporting deactivation of the update flag and vice versa."),
-                                                                     // comment("The underneath frame shows the reaction in the case where the device does not support deactivation of the update flag."),
-                                                                     // expect("BC #BDUT #GO_3_ADDR E2 00 40 00", 200), // Value Response of BDUT (BCU1: updated to 0x00)
-                                                                     // inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. Flags
+                // --------------------------------------------------------
+                // The BCU2 branch of the template's alternative: we support
+                // deactivation of the update flag, so neither the flag nor
+                // the value changes. (A BCU1 device would set the flag and
+                // take the new value.)
+                comment("Disable \"read response update\" (if possible)"),
+                comment("Acceptance: Update flag not set (BCU2)."),
+                inject_delay("BC #EDI #GO_2_ADDR E2 00 80 5F", 200), // disable read response update
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 40", 200),    // ValueResponse by EITT to BDUT
+                inject("BC #EDI #GO_1_ADDR E1 00 00"),               // read communication-flags
+                comment("Next telegram: Update flag not set (BCU2), update flag set (BCU1)."),
+                expect("BC #BDUT #GO_1_ADDR E1 00 40", 200), // Update flag not set
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),       // Value read of object value
+                comment(
+                    "The group object value remains unchanged for devices supporting deactivation of the update flag and vice versa.",
+                ),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 200), // Value Response of BDUT (value unchanged)
+                inject_delay("BC #EDI #GO_1_ADDR E1 00 80", 200), // clear Comm. Flags
             ],
             ..Default::default()
         },
@@ -657,8 +672,7 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
         // Restarts the device via A_Restart and verifies that only
         // ROI-flagged objects send GroupValue_Read automatically.
         //
-        // GO3 (ASAP 4) and GO4 (ASAP 9) have the ROI flag set.
-        // GO0-GO2 and GO0_BYTE3-GO3_BYTE3 do not.
+        // GO3 (ASAP 4) and GO4 (ASAP 9) have the ROI flag set; the rest do not.
         TestCase {
             name: "1.4.1.6 Checking of Read on Init Flag (UINT1)",
             steps: vec![
@@ -667,12 +681,10 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
                 comment("a Group Value Read request for group objects with the read-on-init flag set."),
                 comment("GO3 (ASAP 4, addr 2/0/3) and GO4 (ASAP 9, addr 2/0/5) have ROI enabled."),
                 comment("GO0-GO2 do not have ROI."),
-                // Reset COT flags that prior tests may have modified, so the
-                // ROI scan after restart only fires for the intended objects.
-                // ASAP 1 (GO0): tests 1.4.1.1-1.4.1.5 modify via GO2.
+                // Restore ASAP 1's COT flags, which tests 1.4.1.1-1.4.1.5
+                // rewrite through GO2, so the ROI scan after restart only
+                // fires for the intended objects.
                 inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DF", 200),
-                // ASAP 5 (GO0_BYTE3): test 1.4.1.4a sets 0xFF which enables ROI.
-                inject_delay("BC #EDI #GO_2_B3_ADDR E2 00 80 DF", 200),
                 // Send a basic A_Restart (connectionless) to trigger a reboot.
                 inject("BC #EDI #BDUT 61 03 80"),
                 // Wait for the child to exit and respawn without draining ROI
@@ -689,354 +701,356 @@ pub fn create_group_objects_uint1_suite() -> TestSuite {
             ..Default::default()
         },
         // ====================================================================
-        // Test 1.4.1.7: BDUT receives invalid APCI (BYTE3)
+        // Test 1.4.1.7: BDUT receives invalid APCI (UINT1)
         // ====================================================================
-        // NOTE: This test uses 3-byte objects (GO0_BYTE3, GO3_BYTE3) because we need
-        // to verify that the value CC CC CC (3 bytes) remains unchanged after invalid APCIs.
+        // Each APCI is injected twice: once as a standard frame and once as
+        // an extended frame, per the template.
         TestCase {
-            name: "1.4.1.7 BDUT receives invalid APCI (BYTE3)",
+            name: "1.4.1.7 BDUT receives invalid APCI (UINT1)",
             steps: vec![
-                comment("Testcase 1.4.1.7 BDUT receives invalid APCI (BYTE3)"),
-                comment("Uses 3-byte objects GO0_BYTE3 (2/1/0) and GO3_BYTE3 (2/1/3)"),
+                comment("Testcase 1.4.1.7 BDUT receives invalid APCI (UINT1)"),
                 comment("Preparation"),
-                inject_delay("BC #EDI #GO_2_B3_ADDR E2 00 80 DF", 200),
-                inject_delay("BC #EDI #GO_3_B3_ADDR E4 00 80 00 00 00", 200),
-                inject_delay("BC #EDI #GO_3_B3_ADDR E4 00 80 CC CC CC", 200),
-                // --------------------------------------------------------
-                comment("Test 1 (optional) – Checking acceptance of Value Read with values higher than 00."),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E1 00 3F", 200),
+                inject_delay("BC #EDI #GO_2_ADDR E2 00 80 DF", 500),
+                inject_delay("BC #EDI #GO_3_ADDR E2 00 80 00", 500),
+                inject_delay("BC #EDI #GO_3_ADDR E2 00 80 01", 500),
+                comment("Test 1 (optional) - Checking acceptance of Value Read with values higher than 00."),
+                inject_delay("BC #EDI #GO_0_ADDR E1 00 3F", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 01 00 3F", 2000),
                 comment("Acceptance: No value response may be sent."),
-                // --------------------------------------------------------
+                expect_none(500),
                 comment(
-                    "Test 2 – Checking acceptance of frames with unsupported APCI's or APCI's not valid for group communication.",
+                    "Test 2 - Checking acceptance of frames with unsupported APCI's or APCI's not valid for group communication.",
                 ),
-                comment("ACTION: Make sure the BDUT is in programming mode (programming LED on)."),
-                // --------------------------------------------------------
+                comment("Activate programming mode"),
+                inject("BC #EDI #BDUT 66 03 D7 00 36 10 01 01"),
+                expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 01", 500),
                 comment("Test: APCI - IndividualAddress_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 00 C0 FF FF", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E3 00 C0 FF FF", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 03 00 C0 FF FF", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
-                comment("ACTION: Make sure the BDUT is in programming mode (programming LED on)."),
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - IndividualAddress_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E1 01 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E1 01 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 01 01 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
-                comment("ACTION: Make sure the BDUT is in programming mode (programming LED on)."),
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - IndividualAddress_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E1 01 40", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E1 01 40", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 01 01 40", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
-                comment("ACTION: Turn off Programming Mode on the BDUT (programming LED off)."),
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
+                comment("Deactivate programming mode"),
+                inject("BC #EDI #BDUT 66 03 D7 00 36 10 01 00"),
+                expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
                 comment("Test: APCI - ADC_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E2 41 81 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E2 41 81 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 02 41 81 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - ADC_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E4 41 C1 01 FF FF", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E4 41 C1 01 FF FF", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 04 41 C1 01 FF FF", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - SystemNetworkParameter_Read"),
-                inject_delay("B0 #EDI #GO_0_B3_ADDR E6 01 C8 00 00 00 10 00", 200),
+                inject_delay("B0 #EDI #GO_0_ADDR E6 01 C8 00 00 00 10 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 01 C8 00 00 00 10 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - SystemNetworkParameter_Response"),
-                inject_delay("B0 #EDI #GO_0_B3_ADDR E9 01 C9 00 00 00 10 00 00 00 00", 200),
+                inject_delay("B0 #EDI #GO_0_ADDR E9 01 C9 00 00 00 10 00 00 00 00", 2000),
+                inject_delay("3C 11 41 10 00 09 01 C9 00 00 00 10 00 00 00 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - SystemNetworkParameter_Write"),
-                inject_delay("B0 #EDI #GO_0_B3_ADDR E6 01 CA 00 00 03 30 06", 200),
+                inject_delay("B0 #EDI #GO_0_ADDR E6 01 CA 00 00 03 30 06", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 01 CA 00 00 03 30 06", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Memory_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 42 04 #MEM_ACCESSIBLE_START_CC", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E3 42 04 #MEM_ACCESSIBLE_START_CC", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 03 42 04 #MEM_ACCESSIBLE_START_CC", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Memory_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E7 42 44 #MEM_ACCESSIBLE_START_CC CA FE BA BE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E7 42 44 #MEM_ACCESSIBLE_START_CC CA FE BA BE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 07 42 44 #MEM_ACCESSIBLE_START_CC CA FE BA BE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Memory_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E5 42 82 #MEM_ACCESSIBLE_START_CC CA FE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E5 42 82 #MEM_ACCESSIBLE_START_CC CA FE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 05 42 82 #MEM_ACCESSIBLE_START_CC CA FE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - MemoryBit_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 43 D0 01 #MEM_ACCESSIBLE_START_CC FF FF", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 43 D0 01 #MEM_ACCESSIBLE_START_CC FF FF", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 43 D0 01 #MEM_ACCESSIBLE_START_CC FF FF", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - UserMemory_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E4 42 C0 02 #MEM_ACCESSIBLE_START_AC", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E4 42 C0 02 #MEM_ACCESSIBLE_START_AC", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 04 42 C0 02 #MEM_ACCESSIBLE_START_AC", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - UserMemory_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 42 C1 02 #MEM_ACCESSIBLE_START_AC CA FE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 42 C1 02 #MEM_ACCESSIBLE_START_AC CA FE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 42 C1 02 #MEM_ACCESSIBLE_START_AC CA FE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - UserMemory_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 42 C2 02 #MEM_ACCESSIBLE_START_AC CA FE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 42 C2 02 #MEM_ACCESSIBLE_START_AC CA FE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 42 C2 02 #MEM_ACCESSIBLE_START_AC CA FE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - UserMemoryBit_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 42 C4 01 #MEM_ACCESSIBLE_START_AC FF FF", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 42 C4 01 #MEM_ACCESSIBLE_START_AC FF FF", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 42 C4 01 #MEM_ACCESSIBLE_START_AC FF FF", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - UserManufacturer_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E1 42 C5", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E1 42 C5", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 01 42 C5", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - UserManufacturer_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E4 42 C6 01 CA FE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E4 42 C6 01 CA FE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 04 42 C6 01 CA FE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - FunctionPropertyCommand"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E4 42 C7 00 00 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E4 42 C7 00 00 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 04 42 C7 00 00 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - FunctionPropertyState_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E4 42 C8 00 00 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E4 42 C8 00 00 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 04 42 C8 00 00 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - FunctionPropertyState_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E5 42 C9 00 00 00 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E5 42 C9 00 00 00 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 05 42 C9 00 00 00 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DeviceDescriptor_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E1 43 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E1 43 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 01 43 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DeviceDescriptor_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 43 40 07 B0", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E3 43 40 07 B0", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 03 43 40 07 B0", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Restart"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E1 43 80", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E1 43 80", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 01 43 80", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Authorize_Request"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 43 D1 00 12 34 56 78", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 43 D1 00 12 34 56 78", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 43 D1 00 12 34 56 78", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Authorize_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E2 43 D2 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E2 43 D2 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 02 43 D2 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Key_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 43 D3 00 CA FE BA BE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 43 D3 00 CA FE BA BE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 43 D3 00 CA FE BA BE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Key_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E2 43 D4 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E2 43 D4 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 02 43 D4 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - PropertyValue_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E5 43 D5 #OBJ_0_ID #OBJ_0_PROP_1 10 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E5 43 D5 #OBJ_0_ID #OBJ_0_PROP_1 10 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 05 43 D5 #OBJ_0_ID #OBJ_0_PROP_1 10 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - PropertyValue_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 43 D6 #OBJ_0_ID #OBJ_0_PROP_1 10 01 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 43 D6 #OBJ_0_ID #OBJ_0_PROP_1 10 01 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 43 D6 #OBJ_0_ID #OBJ_0_PROP_1 10 01 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - PropertyValue_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 43 D7 #OBJ_0_ID #OBJ_0_PROP_1 10 01 FF", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 43 D7 #OBJ_0_ID #OBJ_0_PROP_1 10 01 FF", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 43 D7 #OBJ_0_ID #OBJ_0_PROP_1 10 01 FF", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - PropertyDescription_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E4 43 D8 #OBJ_0_ID #OBJ_0_PROP_1 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E4 43 D8 #OBJ_0_ID #OBJ_0_PROP_1 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 04 43 D8 #OBJ_0_ID #OBJ_0_PROP_1 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - PropertyDescription_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E8 43 D9 #OBJ_0_ID #OBJ_0_PROP_1 01 81 00 07 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E8 43 D9 #OBJ_0_ID #OBJ_0_PROP_1 01 81 00 07 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 08 43 D9 #OBJ_0_ID #OBJ_0_PROP_1 01 81 00 07 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - NetworkParameter_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E5 43 DA #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E5 43 DA #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 05 43 DA #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - NetworkParameter_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 43 DB #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO #NP_VALUE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 43 DB #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO #NP_VALUE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 43 DB #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO #NP_VALUE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - NetworkParameter_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E6 43 E4 #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO #NP_VALUE", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E6 43 E4 #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO #NP_VALUE", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 06 43 E4 #NP_OBJ_TYPE #NP_PID #NP_TEST_INFO #NP_VALUE", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - IndividualAddressSerialNumber_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E7 43 DC #BDUT_SERIAL_NUMBER", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E7 43 DC #BDUT_SERIAL_NUMBER", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 07 43 DC #BDUT_SERIAL_NUMBER", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - IndividualAddressSerialNumber_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR EB 43 DD #BDUT_SERIAL_NUMBER 00 00 00 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR EB 43 DD #BDUT_SERIAL_NUMBER 00 00 00 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 0B 43 DD #BDUT_SERIAL_NUMBER 00 00 00 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - IndividualAddressSerialNumber_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR ED 43 DE #BDUT_SERIAL_NUMBER CA FE 00 00 00 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR ED 43 DE #BDUT_SERIAL_NUMBER CA FE 00 00 00 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 0D 43 DE #BDUT_SERIAL_NUMBER CA FE 00 00 00 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
+                comment("Activate programming mode"),
+                inject("BC #EDI #BDUT 66 03 D7 00 36 10 01 01"),
+                expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 01", 500),
                 comment("Test: APCI - DomainAddress_Write (2 octet DoA)"),
-                comment("ACTION: Make sure the BDUT is in programming mode (programming LED on)."),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 43 E0 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E3 43 E0 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 03 43 E0 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddress_Write (6 octet DoA)"),
-                comment("ACTION: Make sure the BDUT is in programming mode (programming LED on)."),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E7 43 E0 00 00 00 00 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E7 43 E0 00 00 00 00 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 07 43 E0 00 00 00 00 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddress_Read"),
-                comment("ACTION: Make sure the BDUT is in programming mode (programming LED on)."),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E1 43 E1", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E1 43 E1", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 01 43 E1", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
+                comment("Deactivate programming mode"),
+                inject("BC #EDI #BDUT 66 03 D7 00 36 10 01 00"),
+                expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
                 comment("Test: APCI - DomainAddress_Response (2 octet DoA)"),
-                comment("ACTION: Turn off Programming Mode on the BDUT (programming LED off)."),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 43 E2 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E3 43 E2 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 03 43 E2 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddress_Response (6 octet DoA)"),
-                comment("ACTION: Turn off Programming Mode on the BDUT (programming LED off)."),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E7 43 E2 00 00 00 00 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E7 43 E2 00 00 00 00 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 07 43 E2 00 00 00 00 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Link_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 43 E5 01 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E3 43 E5 01 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 03 43 E5 01 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Link_Response"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E5 43 E6 01 11 09 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E5 43 E6 01 11 09 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 05 43 E6 01 11 09 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - Link_Write"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E5 43 E7 01 00 79 7F", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E5 43 E7 01 00 79 7F", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 05 43 E7 01 00 79 7F", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddressSerialNumber_Read"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E7 43 EC #BDUT_SERIAL_NUMBER", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E7 43 EC #BDUT_SERIAL_NUMBER", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 07 43 EC #BDUT_SERIAL_NUMBER", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddressSerialNumber_Response (2 octet DoA)"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E9 43 ED #BDUT_SERIAL_NUMBER 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E9 43 ED #BDUT_SERIAL_NUMBER 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 09 43 ED #BDUT_SERIAL_NUMBER 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddressSerialNumber_Response (6 octet DoA)"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR ED 43 ED #BDUT_SERIAL_NUMBER 00 00 00 00 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR ED 43 ED #BDUT_SERIAL_NUMBER 00 00 00 00 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 0D 43 ED #BDUT_SERIAL_NUMBER 00 00 00 00 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddressSerialNumber_Write (2 octet DoA)"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E9 43 EE #BDUT_SERIAL_NUMBER 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E9 43 EE #BDUT_SERIAL_NUMBER 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 09 43 EE #BDUT_SERIAL_NUMBER 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - DomainAddressSerialNumber_Write (6 octet DoA)"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR ED 43 EE #BDUT_SERIAL_NUMBER 00 00 00 00 00 01", 200),
+                inject_delay("BC #EDI #GO_0_ADDR ED 43 EE #BDUT_SERIAL_NUMBER 00 00 00 00 00 01", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 0D 43 EE #BDUT_SERIAL_NUMBER 00 00 00 00 00 01", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
-                // --------------------------------------------------------
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
                 comment("Test: APCI - FileStream_InfoReport"),
-                inject_delay("BC #EDI #GO_0_B3_ADDR E3 43 F0 00 00", 200),
+                inject_delay("BC #EDI #GO_0_ADDR E3 43 F0 00 00", 2000),
+                inject_delay("3C E0 #EDI #GO_0_ADDR 03 43 F0 00 00", 2000),
                 comment("Acceptance: No value response may be sent and value of object is not updated."),
-                inject("BC #EDI #GO_3_B3_ADDR E1 00 00"),
-                expect("BC #BDUT #GO_3_B3_ADDR E4 00 40 CC CC CC", 200),
+                inject("BC #EDI #GO_3_ADDR E1 00 00"),
+                expect("BC #BDUT #GO_3_ADDR E2 00 40 01", 500),
             ],
             ..Default::default()
         },
@@ -1265,11 +1279,6 @@ mod tests {
         assert_eq!(vars["GO_2_ADDR"].as_bytes(), &[0x10, 0x02]); // 2/0/2
         assert_eq!(vars["GO_3_ADDR"].as_bytes(), &[0x10, 0x03]); // 2/0/3
         assert_eq!(vars["GO_4_ADDR"].as_bytes(), &[0x10, 0x05]); // 2/0/5
-        // BYTE3 object addresses for tests 1.4.1.4a and 1.4.1.7 (2/1/x)
-        assert_eq!(vars["GO_0_B3_ADDR"].as_bytes(), &[0x11, 0x00]); // 2/1/0
-        assert_eq!(vars["GO_1_B3_ADDR"].as_bytes(), &[0x11, 0x01]); // 2/1/1
-        assert_eq!(vars["GO_2_B3_ADDR"].as_bytes(), &[0x11, 0x02]); // 2/1/2
-        assert_eq!(vars["GO_3_B3_ADDR"].as_bytes(), &[0x11, 0x03]); // 2/1/3
     }
 
     #[test]
@@ -1281,9 +1290,9 @@ mod tests {
         assert_eq!(suite.cases[1].name, "1.4.1.2 BDUT receives A_GroupValue_Read (UINT1)");
         assert_eq!(suite.cases[2].name, "1.4.1.3 BDUT sends A_GroupValue_Write (UINT1)");
         assert_eq!(suite.cases[3].name, "1.4.1.4 BDUT receives A_GroupValue_Write (UINT1)");
-        assert_eq!(suite.cases[4].name, "1.4.1.4a BDUT receives an invalid data length (BYTE3, optional)");
+        assert_eq!(suite.cases[4].name, "1.4.1.4a BDUT receives an invalid data length (UINT1, optional)");
         assert_eq!(suite.cases[5].name, "1.4.1.5 BDUT receives A_GroupValue_Response (UINT1)");
         assert_eq!(suite.cases[6].name, "1.4.1.6 Checking of Read on Init Flag (UINT1)");
-        assert_eq!(suite.cases[7].name, "1.4.1.7 BDUT receives invalid APCI (BYTE3)");
+        assert_eq!(suite.cases[7].name, "1.4.1.7 BDUT receives invalid APCI (UINT1)");
     }
 }

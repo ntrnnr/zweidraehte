@@ -390,7 +390,13 @@ pub(crate) mod conformance_config {
             // ================================================================
             // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)
             // ================================================================
-            // GO0_BYTE3: 3-byte main object for invalid data length test 1.4.1.4a
+            // No test drives these any more — EITT dropped the BYTE3 form of
+            // 1.4.1.4a in 2024 and both it and 1.4.1.7 now run on the 1-bit
+            // GO0. They stay because every later ASAP (GO4's read-on-init at
+            // 9, the security GOs at 12-14) is referenced by number from the
+            // association table and from the security suites, and renumbering
+            // buys nothing.
+            // GO0_BYTE3: 3-byte main object
             5 => (9, CE | TE | RE | WE | UE),   // 9 = Byte3 (3 bytes)
             // GO1_BYTE3: Communication flags for GO0_BYTE3 (4-bit like original GO1)
             6 => (4, CE | TE | RE | WE | UE),   // 4 = 4-bit for short format response

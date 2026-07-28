@@ -140,6 +140,15 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
     ///
     /// Updates local communication objects with values received from the bus.
     /// Only valid for `T_GroupData_Ind` service type.
+    ///
+    /// Both services require Communication Enable. Beyond that, a write is
+    /// subject to Write Enable and a response to Response Update Enable —
+    /// see the flag discussion at the gate below.
+    ///
+    /// A response is treated identically whether or not it answers a read
+    /// this device initiated: 03/04/01 §3.3.2 fig. 3 fn. b places the
+    /// Update Enable gate inside the *application-initiated* read flow, so
+    /// there is deliberately no solicited/unsolicited distinction here.
     pub fn handle_write_or_response(&self, ind: &mut KnxMessageBuffer<Buffer<'static>>, apci: ApciCode) {
         // Validate service type
         if ind.service_type() != ServiceType::T_GroupData_Ind {
@@ -193,18 +202,34 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 continue;
             }
 
-            // For GroupValue_Write: check write_enable
-            // For GroupValue_Response: check BOTH write_enable AND update_enable
-            // BCU1/BCU2 behavior: write_enable gates both Write and Response processing
-            if matches!(apci, ApciCode::GroupValueWrite) && !cot_info.flags.write_enable() {
-                debug!("AL GroupValueWrite for ASAP {} ignored (write disabled)", asap);
-                continue;
-            }
-
-            if matches!(apci, ApciCode::GroupValueResponse)
-                && (!cot_info.flags.write_enable() || !cot_info.flags.update_enable())
-            {
-                debug!("AL GroupValueResponse for ASAP {} ignored (write/update disabled)", asap);
+            // The two services are gated by *different* config flags.
+            //
+            // `A_GroupValue_Write.ind` is subject to Write Enable
+            // (03/05/01 §4.18.3.1.2.1, whose wording is scoped to that
+            // service alone). `A_GroupValue_Read.res` is subject to
+            // Response Update Enable and nothing else (§4.18.4.1,
+            // pulled into the System B descriptor verbatim by
+            // §4.18.6.2.4.1.2).
+            //
+            // Write Enable must NOT additionally gate the response.
+            // 03/04/01 §3.3.2 fig. 3 fn. b states the update is subject
+            // to "the 'Update Enable' and 'Communication' flag when
+            // used, else to the 'Write Enable' flag" — alternatives
+            // selected by whether the realisation has a UE bit, never a
+            // conjunction. System B has one, so UE applies and WE does
+            // not. 08/03/07 §1.4.1.5 makes this observable: a response
+            // received while Write Enable is disabled must still set the
+            // update flag and update the value.
+            let accepted = match apci {
+                ApciCode::GroupValueWrite => cot_info.flags.write_enable(),
+                ApciCode::GroupValueResponse => cot_info.flags.update_enable(),
+                // Not reachable — the AL only dispatches the two APCIs
+                // above into this handler. Accept rather than drop so a
+                // future caller doesn't silently lose telegrams.
+                _ => true,
+            };
+            if !accepted {
+                debug!("AL {:?} for ASAP {} ignored (config flag disabled)", apci, asap);
                 continue;
             }
 
@@ -748,6 +773,20 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             if self.state.ast().borrow().sending_tsap(asap).is_none() {
                 debug!("AL read-on-init: ASAP {} skipped (not linked)", asap);
                 continue;
+            }
+
+            // ROI without Response Update Enable is a dead configuration:
+            // the read goes out but `handle_write_or_response` drops the
+            // answer, so this scan can never initialize the object. We
+            // still send the read — the ROI flag is normative and the
+            // traffic is what the downloaded table asked for — but the
+            // combination is almost certainly an ETS-side mistake.
+            if !cot_info.flags.update_enable() {
+                warn!(
+                    "AL read-on-init: ASAP {} has ROI set but Response Update Enable clear; \
+                     the response will be discarded",
+                    asap
+                );
             }
 
             // Found an eligible object — send GroupValueRead.req.
