@@ -19,13 +19,120 @@ database entry. See "Product definition generator" below.
 
 ## Conformance testing
 
-Run the conformance tests with `cargo run --bin conformance-runner`.
+There are two runners. Both drive the same DUT child processes through
+the same engine (`conformance/src/engine.rs`); they differ only in
+where the test steps come from.
+
+- **`conformance-runner`** runs the hand-written Rust transcriptions in
+  `conformance/src/tests/`. This is the complete suite — 533 tests
+  covering everything we have transcribed.
+- **`conformance-eitt`** runs a vendor EITT XML template directly. Only
+  the group-object template works so far; see below.
+
+Run the hand-written suite with `cargo run --bin conformance-runner`.
 Pass a test name, suite name, or a substring of either as the first
 argument to run a subset. Do not truncate the output of a test run —
 it can be long. The tests take a long while; if you need to inspect
 the output, pipe it into a file once and grep that file instead of
 re-running the suite. Before running, rebuild the DUT binaries with
 `cargo build` — the runner spawns them as separate executables.
+
+**Do not run any other `cargo` command while a suite is running.** The
+runner respawns DUT children from `target/debug/` during a test, and a
+concurrent `cargo test`/`clippy`/`build` rewriting those binaries hangs
+the run with no error.
+
+### Running the vendor EITT XML templates
+
+`conformance-eitt` executes a `KnxConformanceTestTemplate-*.xml` as-is.
+The point is fidelity: hand-transcribing a template loses information
+and then rots as the template is revised, and the resulting failures
+look like stack bugs. Running the XML makes "are we current?" a matter
+of pointing at a newer file.
+
+The templates are licensed material and are **not** in the repository.
+Point `EITT_TEMPLATES` at the directory holding them — on a machine
+with EITT installed that is something like
+`.../KNX/conformance/v44v03/v44v03/`. If they are absent, skip anything
+involving `conformance-eitt` rather than hunting for them; the
+hand-written suite is self-contained.
+
+```bash
+export EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files>
+cargo build   # the runner spawns the DUT binaries
+cargo run --bin conformance-eitt -- --profile conformance/profiles/tp1-systemb.toml
+```
+
+That runs every template the profile lists, with the patches and
+not-applicable cases each one needs. To run just one, name a substring
+of its file name: `--template GroupObjects`.
+
+Flags: `--list` lowers and prints what would run without touching a DUT
+— the quickest way to see what a new template revision changed, since
+it also prints the template version and its latest changelog line.
+`--templates-dir` overrides `$EITT_TEMPLATES`. `--template` also
+accepts a path, to run an XML the profile knows nothing about.
+`--patch` adds a patch set on top of the profile's, and may be
+repeated. `--realtime` disables the 50× fast mode. Trailing arguments
+filter by suite or case name.
+
+Two things we commit, neither containing vendor test content:
+
+- `conformance/profiles/*.toml` — what the template cannot know about
+  our device: the `#EDI` / `#BDUT` addresses (EITT takes these from its
+  project settings, and they are declared nowhere in the XML), which
+  medium we are, which DUT binary to drive, and a `[[template]]` entry
+  per template naming its `collections`, its patch sets, and any cases
+  that do not apply to us, each with a mandatory reason. Templates are
+  referenced by file name, never by path, so the committed profile
+  works on any machine.
+
+  **`collections` matters more than it looks.** A template's
+  collections are often *alternatives*, not parts of one run: the
+  group-object template ships a UINT1 and a UINT8 collection that use
+  the same group addresses and each begin "the following sample
+  application program shall be loaded into the BDUT". Only one such
+  program can be loaded, so a device runs the collection matching the
+  one it has — for us `collections = ["UINT1"]`. Leaving the selection
+  empty runs every collection, which for that template means running
+  eight cases against an object of the wrong width.
+- `conformance/patches/*.toml` — harness-specific edits anchored on the
+  GUID that the template gives every telegram. Today these are mostly
+  the `trigger_read` / `trigger_write` kicks that 1.4.1.1 and 1.4.1.3
+  need because EITT assumes a BCU whose Group Object Server transmits
+  by itself when the application sets the request flag.
+
+An anchor GUID that no longer resolves is a **hard error**, not a
+warning: that is the signal the template has been revised and whatever
+the patch was compensating for needs re-checking.
+
+Only the group-object template runs today. Others need their own
+`[[template]]` entry and patch set, and most also need comment commands
+that are currently hard errors — see `conformance/src/eitt/profile.rs`
+and the notes in `SESSION.md`.
+
+### EITT template semantics worth knowing
+
+These are not guessable from the XML and getting them wrong produces a
+suite that passes while testing the wrong thing:
+
+- **`TimeToNext` means different things per direction.** On an `OUT`
+  telegram it is the window within which the frame must arrive — the
+  expect timeout. On an `IN` telegram it is the gap before the *next*
+  telegram is sent (manual §12.2.3.7).
+- **`Wait="yes"`** ("wait end time", §12.2.3.8) means the full
+  `TimeToNext` elapses even after the telegram has been sent or
+  received. `no`/`N` continues immediately.
+- **`Activate="no"`** disables a step. This is how a template offers
+  alternatives — 1.4.1.6 ships both a connectionless and a
+  connection-oriented restart, with one deactivated.
+- **`Medium`** is `tp` or `rf`; 1.4.1.7 carries every invalid APCI
+  twice, once per medium, and a TP1 device runs only the TP half.
+- **`Comment/@Text` is a command language**, not prose (manual §13.3.5,
+  catalogued in `KnxCommentCommandsScheme.xml`). `@[t` is documentation
+  and accounts for the overwhelming majority, but `@[w` is a real wait
+  and `@if±` / `@#` / `@@[sn` change what runs or what state exists.
+  See `conformance/src/eitt/comment.rs`.
 
 ## Authoring conformance tests
 
@@ -150,7 +257,8 @@ examples/
   support/                 Host-side demo/test support (JSON storage,
                            keyboard/mock-context utilities)
 
-conformance/               KNX conformance test framework + runner
+conformance/               KNX conformance test framework + two runners
+                           (hand-written suites, and vendor EITT XML)
 
 tools/
   knxprod-tui/             TUI viewer for MTXML files
@@ -283,22 +391,36 @@ When running the conformance tests, make sure the two DUTs that are separate
 executables are rebuilt with `cargo build`!
 
 Key modules:
-- `lib.rs` - Test framework definition and data structures
-- `bin/runner.rs` - Test runner executable
-- `telegram.rs` - Telegram parsing and matching
+- `lib.rs` - `TestStep` / `TestCase` / `TestSuite` / `TestVariable`
+- `engine.rs` - Execution: time scaling, per-step dispatch, the
+  suite/case/step loop and its tally. Shared by both runners, so the
+  two are directly comparable
+- `telegram.rs` - Telegram template parsing and matching (`#VAR`,
+  `#VAR.N`, `#VAR±N`, `??` and nibble wildcards)
 - `logger.rs` - Test logging utilities
+- `bin/runner.rs` - Hand-written suites: the registry and CLI
+- `bin/eitt.rs` - Vendor EITT XML: CLI, load, lower, report
 
 Subdirectories:
 - `harness/` - Test harness implementations
   - `mock.rs` - Mock link layer for injection/capture
   - `stack.rs` - Stack instance for testing
-- `tests/` - Actual test suites
+- `tests/` - Hand-written test suites
   - `group_objects.rs` - Group object communication tests
   - `network_layer.rs` - Network layer conformance
   - `transport_layer_*.rs` - Transport layer tests (general, state machine, timing)
   - `load_state_machines.rs` - Application state loading
   - `run_state_machines.rs` - Application state execution
   - `management.rs` - Management operations
+  - `security/`, `ip_secure/` - Data Security and KNX IP Secure
+- `eitt/` - Running vendor EITT templates from their XML
+  - `schema.rs` - serde mirror of the template XML
+  - `comment.rs` - the `@`-command language in `Comment/@Text`
+  - `profile.rs` - our device: addresses, medium, DUT, not-applicable cases
+  - `patch.rs` - GUID-anchored harness edits over the vendor sequence
+  - `lower.rs` - model + profile + patches → `Vec<TestSuite>`; every
+    EITT semantic is decided here, with the reasoning next to it
+- `profiles/`, `patches/` - the committed TOML for the above
 
 #### 5. ETS Macros Crate (`crates/zweidraehte-ets`)
 **Purpose**: Procedural macros for generating ETS parameter definitions
@@ -607,6 +729,38 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 cargo run --bin conformance-runner [test_filter]
 ```
 Runs KNX protocol conformance tests. Takes a long while to run. Prevent running them multiple times. If you need output, write it to a file to grep through later for what you are looking. Also pass an optional filter to run specific tests or test suites (e.g., `transport` to run only transport layer tests).
+
+Do not run any other `cargo` command while it is going — the runner
+respawns DUT children out of `target/debug/`, and a concurrent build
+rewriting them hangs the run silently.
+
+**Run a Vendor EITT Template**
+```bash
+export EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files>
+cargo run --bin conformance-eitt -- \
+  --profile conformance/profiles/tp1-systemb.toml \
+  [--template GroupObjects] [--list] [--realtime] [filter...]
+```
+Executes KNX conformance templates straight from EITT's XML instead of
+hand-written transcriptions of them. The profile lists which templates
+to run and what each needs. Only the group-object template runs today.
+
+The templates are licensed and are not in the repository — if
+`EITT_TEMPLATES` is unset or they are absent on this machine, skip this
+rather than looking for them. See "Conformance testing" above for what
+the profile and patch files do and for the template semantics that are
+easy to get wrong.
+
+Options:
+- `--profile` - Device profile TOML, listing the templates to run.
+- `--template` - Run one of them: a substring of a file name the
+  profile lists, or a path to an XML it does not.
+- `--templates-dir` - Overrides `$EITT_TEMPLATES`.
+- `--list` - Lower and print what would run, without touching a DUT.
+  Also prints the template version and its latest changelog entry, so
+  this is the first thing to run against a newer template.
+- `--patch` - Extra patch set TOML on top of the profile's; repeatable.
+- `--realtime` - Spec-compliant timeouts instead of 50× fast mode.
 
 **Compare MTXML Programs**
 ```bash

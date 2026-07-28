@@ -42,9 +42,11 @@
 //! ];
 //! ```
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 pub mod dut_common;
+pub mod eitt;
+pub mod engine;
 pub mod harness;
 pub mod logger;
 mod telegram;
@@ -566,9 +568,13 @@ impl TestStep {
 // ============================================================================
 
 /// A single test case containing a sequence of steps
+///
+/// The name is a [`Cow`] rather than a `&'static str` because cases built
+/// from an EITT XML template carry runtime-owned names; the hand-written
+/// suites keep passing string literals.
 #[derive(Debug, Clone, Default)]
 pub struct TestCase {
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     /// Steps run before [`Self::steps`]. Use to provision DUT state this
     /// case depends on (e.g. installing TK1 via an FDSK-encrypted
     /// `PID_TOOL_KEY` write after a factory reset) without baking the
@@ -586,8 +592,8 @@ pub struct TestCase {
 }
 
 impl TestCase {
-    pub const fn new(name: &'static str) -> Self {
-        Self { name, preparation: Vec::new(), steps: Vec::new(), teardown: Vec::new() }
+    pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
+        Self { name: name.into(), preparation: Vec::new(), steps: Vec::new(), teardown: Vec::new() }
     }
 
     pub fn with_preparation(mut self, preparation: Vec<TestStep>) -> Self {
@@ -613,7 +619,7 @@ impl TestCase {
 /// A collection of related test cases with their variables
 #[derive(Debug, Clone)]
 pub struct TestSuite {
-    pub name: &'static str,
+    pub name: Cow<'static, str>,
     pub variables: BTreeMap<String, TestVariable>,
     /// Optional preparation steps that run once before all test cases in the suite
     pub preparation: Vec<TestStep>,
@@ -625,9 +631,9 @@ pub struct TestSuite {
 }
 
 impl TestSuite {
-    pub fn new(name: &'static str, variables: BTreeMap<String, TestVariable>) -> Self {
+    pub fn new(name: impl Into<Cow<'static, str>>, variables: BTreeMap<String, TestVariable>) -> Self {
         Self {
-            name,
+            name: name.into(),
             variables,
             preparation: Vec::new(),
             cases: Vec::new(),

@@ -42,7 +42,7 @@ pub fn create_network_layer_suite() -> TestSuite {
         // Test Suite 3.1: Group oriented communication
         // ====================================================================
         TestCase {
-            name: "3.1 Group oriented communication",
+            name: "3.1 Group oriented communication".into(),
             steps: vec![
                 comment("Testcase 3.1 Group oriented communication"),
                 comment("A Group Object (GO) shall be present in the BDUT that is read- and transmit-enabled."),
@@ -83,7 +83,7 @@ pub fn create_network_layer_suite() -> TestSuite {
         // Uses T_Connect/T_Disconnect and Memory_Read service
         // ====================================================================
         TestCase {
-            name: "3.2 Device oriented communication - connected",
+            name: "3.2 Device oriented communication - connected".into(),
             steps: vec![
                 comment("Testcase 3.2 Device oriented communication - connected"),
                 comment("Send telegrams with Routing Count 6, 5, 4, 3, 2, 1, 0 to the BDUT."),
@@ -153,7 +153,7 @@ pub fn create_network_layer_suite() -> TestSuite {
         // Using PropertyRead service
         // ====================================================================
         TestCase {
-            name: "3.3 Device oriented communication - connectionless",
+            name: "3.3 Device oriented communication - connectionless".into(),
             steps: vec![
                 comment("Testcase 3.3 Device oriented communication - connectionless"),
                 comment("Note: Uses PropertyRead service. Send telegrams with Routing Count 6, 5, 4, 3, 2, 1, 0."),
@@ -190,7 +190,7 @@ pub fn create_network_layer_suite() -> TestSuite {
         // Test Suite 3.4: Broadcast communication
         // ====================================================================
         TestCase {
-            name: "3.4 Broadcast communication",
+            name: "3.4 Broadcast communication".into(),
             steps: vec![
                 comment("Testcase 3.4 Broadcast communication"),
                 comment("Preparation: Activate ProgMode"),

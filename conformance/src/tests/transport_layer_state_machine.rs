@@ -59,7 +59,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.2.1: Connect from a remote device
         // ====================================================================
         TestCase {
-            name: "6.2.1.1 Connect with initial state OPEN_IDLE",
+            name: "6.2.1.1 Connect with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.2.1.1 Sequence 1: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Connect from USB A to BDUT."),
@@ -77,7 +77,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.2.1.2 Connect with initial state OPEN_WAIT",
+            name: "6.2.1.2 Connect with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.2.1.2 Sequence 2: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Connect from USB A to BDUT."),
@@ -109,7 +109,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.2.2: Connect from a remote device during an existing connection
         // ====================================================================
         TestCase {
-            name: "6.2.2.1 Connect during connection, initial state OPEN_IDLE",
+            name: "6.2.2.1 Connect during connection, initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.2.2.1 Sequence 3: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Connect from USB A to BDUT."),
@@ -129,7 +129,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.2.2.2 Connect during connection, initial state OPEN_WAIT",
+            name: "6.2.2.2 Connect during connection, initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.2.2.2 Sequence 4: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Connect from USB B to BDUT."),
@@ -162,7 +162,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.2.3: Disconnect from a remote device
         // ====================================================================
         TestCase {
-            name: "6.2.3.1 Disconnect with initial state CLOSED",
+            name: "6.2.3.1 Disconnect with initial state CLOSED".into(),
             steps: vec![
                 comment("Testcase 6.2.3.1 Sequence 5: Procedure with initial state 'CLOSED'"),
                 comment("---> Send Disconnect to BDUT in State CLOSED."),
@@ -175,7 +175,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.2.3.2 Disconnect with initial state OPEN_IDLE",
+            name: "6.2.3.2 Disconnect with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.2.3.2 Sequence 6: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -192,7 +192,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.2.3.3 Disconnect with initial state OPEN_WAIT",
+            name: "6.2.3.3 Disconnect with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.2.3.3 Sequence 7: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -222,7 +222,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.2.4: Disconnect from a remote device during an existing connection
         // ====================================================================
         TestCase {
-            name: "6.2.4.1 Disconnect during connection, initial state OPEN_IDLE",
+            name: "6.2.4.1 Disconnect during connection, initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.2.4.1 Sequence 8: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Connect from USB A to BDUT."),
@@ -241,7 +241,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.2.4.2 Disconnect during connection, initial state OPEN_WAIT",
+            name: "6.2.4.2 Disconnect during connection, initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.2.4.2 Sequence 9: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Connect from USB A to BDUT."),
@@ -275,7 +275,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.2.5: Connection timeout
         // ====================================================================
         TestCase {
-            name: "6.2.5.1 Connection timeout from OPEN_IDLE",
+            name: "6.2.5.1 Connection timeout from OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.2.5.1 Sequence 10: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -292,7 +292,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.2.6: Acknowledgement timeout
         // ====================================================================
         TestCase {
-            name: "6.2.6.1 Acknowledgement timeout from OPEN_WAIT",
+            name: "6.2.6.1 Acknowledgement timeout from OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.2.6.1 Sequence 11: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -332,7 +332,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.3.1: Reception of a correct N_Data_Individual
         // ====================================================================
         TestCase {
-            name: "6.3.1.1 N_Data_Individual with initial state OPEN_IDLE",
+            name: "6.3.1.1 N_Data_Individual with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.3.1.1 Sequence 12: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -355,7 +355,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.3.1.2 N_Data_Individual with initial state OPEN_WAIT",
+            name: "6.3.1.2 N_Data_Individual with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.3.1.2 Sequence 13: Procedure with initial state 'OPEN_WAIT'"),
                 comment(
@@ -402,7 +402,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.3.3: Reception of a repeated N_Data_Individual
         // ====================================================================
         TestCase {
-            name: "6.3.3.1 Repeated N_Data_Individual with initial state OPEN_IDLE",
+            name: "6.3.3.1 Repeated N_Data_Individual with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.3.3.1 Sequence 14: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -430,7 +430,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.3.3.2 Repeated N_Data_Individual with initial state OPEN_WAIT",
+            name: "6.3.3.2 Repeated N_Data_Individual with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.3.3.2 Sequence 15: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -468,7 +468,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.3.4: Reception of N_Data_Individual with wrong sequence number
         // ====================================================================
         TestCase {
-            name: "6.3.4.1 Wrong sequence number with initial state OPEN_IDLE",
+            name: "6.3.4.1 Wrong sequence number with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.3.4.1 Sequence 16: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -491,7 +491,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.3.4.2 Wrong sequence number with initial state OPEN_WAIT",
+            name: "6.3.4.2 Wrong sequence number with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.3.4.2 Sequence 17: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -527,7 +527,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.3.5: Reception of N_Data_Individual with wrong source address
         // ====================================================================
         TestCase {
-            name: "6.3.5.1 Wrong source address with initial state OPEN_IDLE",
+            name: "6.3.5.1 Wrong source address with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.3.5.1 Sequence 18: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Connect from USB B to BDUT."),
@@ -545,7 +545,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.3.5.2 Wrong source address with initial state OPEN_WAIT",
+            name: "6.3.5.2 Wrong source address with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.3.5.2 Sequence 19: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Connect from USB B to BDUT."),
@@ -581,7 +581,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.1: Reception of a T_ACK_PDU
         // ====================================================================
         TestCase {
-            name: "6.4.1.1 T_ACK_PDU with initial state OPEN_IDLE",
+            name: "6.4.1.1 T_ACK_PDU with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.4.1.1 Sequence 20: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -604,7 +604,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.2: Reception of T_ACK_PDU with wrong sequence number
         // ====================================================================
         TestCase {
-            name: "6.4.2.1 T_ACK wrong sequence number with initial state OPEN_IDLE",
+            name: "6.4.2.1 T_ACK wrong sequence number with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.4.2.1 Sequence 21: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -628,7 +628,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Our Style 3 state machine takes the disconnect path (E09 OPEN_WAIT
         // → Closed/A6), which is explicitly permitted by the spec.
         TestCase {
-            name: "6.4.2.2 T_ACK wrong sequence number with initial state OPEN_WAIT",
+            name: "6.4.2.2 T_ACK wrong sequence number with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.4.2.2 Sequence 22: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -657,7 +657,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.3: Reception of T_ACK_PDU with wrong connection address
         // ====================================================================
         TestCase {
-            name: "6.4.3.1 T_ACK wrong connection address with initial state OPEN_IDLE",
+            name: "6.4.3.1 T_ACK wrong connection address with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.4.3.1 Sequence 23: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Connect from USB B to BDUT."),
@@ -675,7 +675,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.4.3.2 T_ACK wrong connection address with initial state OPEN_WAIT",
+            name: "6.4.3.2 T_ACK wrong connection address with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.4.3.2 Sequence 24: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Connect from USB B to BDUT."),
@@ -711,7 +711,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.4: Reception of T_NAK_PDU with wrong sequence number
         // ====================================================================
         TestCase {
-            name: "6.4.4.1 T_NAK wrong sequence number with initial state OPEN_IDLE",
+            name: "6.4.4.1 T_NAK wrong sequence number with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.4.4.1 Sequence 25: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -731,7 +731,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.4.4.2 T_NAK wrong sequence number with initial state OPEN_WAIT",
+            name: "6.4.4.2 T_NAK wrong sequence number with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.4.4.2 Sequence 26: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -763,7 +763,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.5: Reception of T_NAK_PDU with correct sequence number
         // ====================================================================
         TestCase {
-            name: "6.4.5.1 T_NAK correct sequence number with initial state OPEN_IDLE",
+            name: "6.4.5.1 T_NAK correct sequence number with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.4.5.1 Sequence 27: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -784,7 +784,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.6: Reception of T_NAK_PDU and maximum number of repetitions is not reached
         // ====================================================================
         TestCase {
-            name: "6.4.6.1 T_NAK max repetitions not reached with initial state OPEN_WAIT",
+            name: "6.4.6.1 T_NAK max repetitions not reached with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.4.6.1 Sequence 28: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -816,7 +816,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.7: Reception of T_NAK_PDU and maximum number of repetitions is reached
         // ====================================================================
         TestCase {
-            name: "6.4.7.1 T_NAK max repetitions reached with initial state OPEN_WAIT",
+            name: "6.4.7.1 T_NAK max repetitions reached with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.4.7.1 Sequence 29: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Send Connect from USB A to BDUT."),
@@ -851,7 +851,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.4.8: Reception of T_NAK_PDU with wrong connection address
         // ====================================================================
         TestCase {
-            name: "6.4.8.1 T_NAK wrong connection address with initial state OPEN_IDLE",
+            name: "6.4.8.1 T_NAK wrong connection address with initial state OPEN_IDLE".into(),
             steps: vec![
                 comment("Testcase 6.4.8.1 Sequence 30: Procedure with initial state 'OPEN_IDLE'"),
                 comment("Connect from USB B to BDUT."),
@@ -870,7 +870,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
             ..Default::default()
         },
         TestCase {
-            name: "6.4.8.2 T_NAK wrong connection address with initial state OPEN_WAIT",
+            name: "6.4.8.2 T_NAK wrong connection address with initial state OPEN_WAIT".into(),
             steps: vec![
                 comment("Testcase 6.4.8.2 Sequence 31: Procedure with initial state 'OPEN_WAIT'"),
                 comment("Connect from USB B to BDUT."),
@@ -905,7 +905,7 @@ pub fn create_transport_layer_state_machine_suite() -> TestSuite {
         // Test Suite 6.5: Events started in state 'CLOSED'
         // ====================================================================
         TestCase {
-            name: "6.5.1 Events in state CLOSED",
+            name: "6.5.1 Events in state CLOSED".into(),
             steps: vec![
                 comment("Testcase 6.5.1 Sequence 32: Procedure with initial state 'CLOSED'"),
                 comment("Send DeviceDescriptorRead from USB A to BDUT."),

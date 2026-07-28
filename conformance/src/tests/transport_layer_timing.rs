@@ -41,7 +41,7 @@ pub fn create_transport_layer_timing_suite() -> TestSuite {
         // Test 4.1: Testing of the connection-time-out-timer
         // --------------------------------------------------------------------
         TestCase {
-            name: "4.1 Testing of the connection-time-out-timer",
+            name: "4.1 Testing of the connection-time-out-timer".into(),
             steps: vec![
                 comment("Testcase 4.1 Testing of the connection-time-out-timer"),
                 comment("This is implicitly tested in clause 5.2.10.1 and 6.2.5.1."),
@@ -53,7 +53,7 @@ pub fn create_transport_layer_timing_suite() -> TestSuite {
         // Test 4.2: Testing of the acknowledgement-time-out timer
         // --------------------------------------------------------------------
         TestCase {
-            name: "4.2 Testing of the acknowledgement-time-out timer",
+            name: "4.2 Testing of the acknowledgement-time-out timer".into(),
             steps: vec![
                 comment("Testcase 4.2 Testing of the acknowledgement-time-out timer"),
                 comment("Connect from USB A to BDUT."),

@@ -1,0 +1,144 @@
+# Harness patches for the EITT group-object template.
+#
+# Anchors are the GUIDs the template gives every telegram. If one stops
+# resolving the run fails rather than quietly dropping the patch — that
+# is the signal the template has been revised and the compensation here
+# needs re-checking.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-GroupObjects"
+
+# ============================================================================
+# 1.4.1.1 — BDUT sends A_GroupValue_Read
+# ============================================================================
+#
+# EITT drives a BCU whose Group Object Server polls the communication
+# flags and transmits by itself when the application sets the read
+# request (03/04/01 §3.3.2 fig. 3, "The Group Object Server polls the
+# communication flag"). Our stack separates communication object state
+# from bus operations, so writing the flag through GO1 sets the status
+# and stops there; the request has to be kicked.
+#
+# ASAP 1 is GO0, the object under test.
+
+[[patch]]
+after = "02E382CC-9DE4-44C6-A2AD-B8FC381CC979"
+why = "1.4.1.1 low priority: kick the read our GO server does not send by itself"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "24CA46DC-0E20-4F9F-A540-391795627AE4"
+why = "1.4.1.1 normal priority: kick the read"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "94946A2D-3D59-4ACA-8A35-C4919920347A"
+why = "1.4.1.1 urgent priority: kick the read"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "22AD4D2B-F937-4135-BA58-ED5B9C06938C"
+why = "1.4.1.1 system priority: kick the read"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "4234193E-D374-42F2-B6EB-B7C992A4270F"
+why = "1.4.1.1 communication disabled: kick the read so the error status is reached"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "D3FE9FA1-820E-44CE-93C6-9D341C3720CE"
+why = "1.4.1.1 read disabled: kick the read"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "2608111F-70E4-4AFE-B40D-928C3A340978"
+why = "1.4.1.1 write disabled: kick the read"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "46FE352C-B84B-43D2-822B-53F6E5AF91DA"
+why = "1.4.1.1 transmission disabled: kick the read so the error status is reached"
+insert = [{ trigger_read = 1 }]
+
+[[patch]]
+after = "F8F68985-6D41-4975-85B8-8FD703C805BD"
+why = "1.4.1.1 read response update disabled: kick the read"
+insert = [{ trigger_read = 1 }]
+
+# ============================================================================
+# 1.4.1.3 — BDUT sends A_GroupValue_Write
+# ============================================================================
+#
+# Same reason as 1.4.1.1, for the transmit request.
+
+[[patch]]
+after = "2652A527-DFAE-4E04-B5E3-B465276D65F7"
+why = "1.4.1.3 low priority: kick the write our GO server does not send by itself"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "A2EEB200-3FB3-4570-B990-A0598BD47390"
+why = "1.4.1.3 normal priority: kick the write"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "4EB7EF59-B57E-4F7C-B2AC-43E06BD17CFD"
+why = "1.4.1.3 urgent priority: kick the write"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "BD2E400A-7C5D-4E48-AEEF-2F7460DB52AE"
+why = "1.4.1.3 system priority: kick the write"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "D89254F2-6073-47E5-B5AD-F76ABEDCC16F"
+why = "1.4.1.3 communication disabled: kick the write so the error status is reached"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "5AC5BEE5-E3BF-4B5F-B8A7-EEB5A4252D71"
+why = "1.4.1.3 read disabled: kick the write"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "D685EC1B-4463-4BDB-9DBF-36E7118DED14"
+why = "1.4.1.3 write disabled: kick the write"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "E8431EB4-D585-48BE-A097-B44CE03B94AA"
+why = "1.4.1.3 transmission disabled: kick the write so the error status is reached"
+insert = [{ trigger_write = 1 }]
+
+[[patch]]
+after = "2CB4A8E6-16FB-48A4-AEA9-7D1310D06549"
+why = "1.4.1.3 read response update disabled: kick the write"
+insert = [{ trigger_write = 1 }]
+
+# ============================================================================
+# 1.4.1.6 — Read on Init
+# ============================================================================
+
+# The template reloads the application program between cases; we run
+# them back to back against one DUT, so GO0 still carries whatever
+# configuration flags 1.4.1.5 left behind (read response update off).
+# Restore them before the restart or the ROI scan runs against the wrong
+# table.
+[[patch]]
+before = "B8709B3D-060D-46CD-9BC9-DB48FAFEE736"
+why = "1.4.1.6: restore GO0's config flags, which the preceding cases rewrite"
+insert = [
+  { comment = "Restore GO0 config flags (previous cases leave them modified)" },
+  { inject = { data = "BC #EDI #GO_2_ADDR E2 00 80 DF", delay_ms = 200 } },
+]
+
+# A_Restart kills the DUT child. The harness must wait for the respawn
+# *without* draining what comes back up, because what comes back up is
+# exactly the read-on-init scan this case is about.
+[[patch]]
+after = "B8709B3D-060D-46CD-9BC9-DB48FAFEE736"
+why = "1.4.1.6: wait for the child to respawn without draining its read-on-init frames"
+insert = [{ wait_for_restart = 10000 }]

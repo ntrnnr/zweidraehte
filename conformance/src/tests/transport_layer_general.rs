@@ -50,7 +50,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
         // Test 2.1: Transport Layer tests for multicast communication
         // --------------------------------------------------------------------
         TestCase {
-            name: "2.1 Transport Layer tests for multicast communication",
+            name: "2.1 Transport Layer tests for multicast communication".into(),
             steps: vec![
                 comment("Testcase 2.1 Transport Layer tests for multicast communication"),
                 comment("Multicast-addressed frames with incorrect TPCI coding for multicast communication."),
@@ -113,7 +113,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
         // Test 2.2: Transport Layer test for broadcast communication
         // --------------------------------------------------------------------
         TestCase {
-            name: "2.2 Transport Layer test for broadcast communication",
+            name: "2.2 Transport Layer test for broadcast communication".into(),
             steps: vec![
                 comment("Testcase 2.2 Transport Layer test for broadcast communication"),
                 comment("Broadcast-addressed frames with incorrect TPCI coding for broadcast communication."),
@@ -171,7 +171,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
         // Test 2.3: Transport Layer tests point-to-point connection oriented communication
         // --------------------------------------------------------------------
         TestCase {
-            name: "2.3 Transport Layer tests point-to-point connection oriented communication",
+            name: "2.3 Transport Layer tests point-to-point connection oriented communication".into(),
             steps: vec![
                 comment("Testcase 2.3 Transport Layer tests point-to-point connection oriented communication"),
                 comment(
@@ -259,7 +259,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
         // Test 2.4: Transport Layer tests point-to-point connectionless communication
         // --------------------------------------------------------------------
         TestCase {
-            name: "2.4 Transport Layer tests point-to-point connectionless communication",
+            name: "2.4 Transport Layer tests point-to-point connectionless communication".into(),
             steps: vec![
                 comment("Testcase 2.4 Transport Layer tests point-to-point connectionless communication"),
                 comment("Purpose: Check BDUT's acceptance of connectionless frames with incorrect TPCI-coding."),
@@ -288,7 +288,7 @@ pub fn create_transport_layer_suite() -> TestSuite {
         // Test 2.5: Additional negative Transport Layer Tests
         // --------------------------------------------------------------------
         TestCase {
-            name: "2.5 Additional negative Transport Layer Tests",
+            name: "2.5 Additional negative Transport Layer Tests".into(),
             steps: vec![
                 comment("Testcase 2.5 Additional negative Transport Layer Tests"),
                 // === 2.5.1: Ignoring a malformed T_Connect message ===

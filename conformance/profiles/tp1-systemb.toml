@@ -1,0 +1,55 @@
+# Device profile for the plain TP1 System B conformance DUT.
+#
+# Run every template it lists:
+#
+#   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
+#     cargo run --bin conformance-eitt -- \
+#       --profile conformance/profiles/tp1-systemb.toml
+#
+# or one of them, by a substring of its file name:
+#
+#   ... --profile conformance/profiles/tp1-systemb.toml --template GroupObjects
+#
+# See conformance/src/eitt/profile.rs.
+
+medium = "tp"
+dut = "plain"
+
+[addresses]
+# Must match conformance/src/harness/stack.rs: the DUT's individual
+# address is 1.0.1 and the tests address it as the BDUT. EITT takes
+# these from its project settings, which is why they are referenced by
+# nearly every telegram and declared nowhere in the template.
+EDI = "AF FE"   # 10.15.254, the tool
+BDUT = "10 01"  # 1.0.1, the device under test
+
+[commands]
+# `@@`-family commands block for an operator, of which a headless run
+# has none. Everything else stays at the default `error`: an ignored
+# `@if-` or `@#` changes what runs.
+pause = "ignore"
+
+# ============================================================================
+# 8/3/7 — Group Objects
+# ============================================================================
+#
+# This template holds two collections, UINT1 and UINT8, which are
+# alternatives rather than two halves of one run: both address group
+# addresses 1000h–1005h, and each opens by saying which sample
+# application program "shall be loaded into the BDUT". Only one of those
+# programs can be loaded at a time — GO0 at 1000h is either 1 bit or
+# 8 bits — so a device runs the collection matching the program it has.
+#
+# Our conformance DUT's GO0 is `DPT_Switch`. Adding an 8-bit GO0 with
+# its three shadow objects would not help: it would need the same group
+# addresses, so it would have to be a second application program, not a
+# second set of objects.
+
+[[template]]
+file = "KnxConformanceTestTemplate-GroupObjects.xml"
+collections = ["UINT1"]
+patches = ["conformance/patches/group-objects.toml"]
+
+# Other templates go here as they start working. Each needs its own
+# patch set, and most also need comment commands that are hard errors
+# today — see SESSION.md.
