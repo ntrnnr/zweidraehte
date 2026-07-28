@@ -1,0 +1,34 @@
+# Harness patches for the EITT load-state-machine template.
+#
+# Anchors are the GUIDs the template gives every telegram. If one stops
+# resolving the run fails rather than quietly dropping the patch — that
+# is the signal the template has been revised and the compensation here
+# needs re-checking.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-LoadStateMachines"
+
+# ============================================================================
+# Read-on-init after the association table reaches LOAD_STATE_LOADED
+# ============================================================================
+#
+# Our DUT carries a read-on-init group object (GO3, `ROI` in
+# conformance/src/harness/stack.rs), so completing a load of the
+# association table makes it scan: an unsolicited `A_GroupValue_Read`
+# on 2/0/1 goes out a moment later and lands in whichever expect comes
+# next, which fails because a block rejects a frame it cannot place.
+#
+# Only the first case of each suite trips on it — the later ones reload
+# the same table and the scan does not repeat — so this drains where it
+# happens rather than after every load.
+
+[[patch]]
+after = "38FBA40B-40B7-4A6C-BF52-F3C4FF5F61EA"
+why = "2.3.1: drain the read-on-init scan our DUT runs once the association table loads"
+insert = [{ drain = 200 }]
+
+[[patch]]
+after = "8A89FF12-D122-48A9-867E-C6C1E87D5C64"
+why = "2.5.1: same read-on-init scan, here after the load that precedes the error case"
+insert = [{ drain = 200 }]

@@ -33,6 +33,9 @@ pub struct Template {
     pub header: Option<Header>,
     #[serde(rename = "History")]
     pub history: Option<History>,
+    /// The tool interfaces a telegram's `Connection` refers to.
+    #[serde(rename = "Interfaces")]
+    pub interfaces: Option<Interfaces>,
     /// Template-global variables.
     #[serde(rename = "Fields", default)]
     pub fields: Vec<Fields>,
@@ -48,8 +51,10 @@ pub struct Header {
     /// "08_03_07 System Conformance Testing - AIL and Management Tests".
     #[serde(rename = "Volume")]
     pub volume: Option<String>,
-    #[serde(rename = "ApplicationNote")]
-    pub application_note: Option<String>,
+    /// A template may realise several application notes at once — the
+    /// Data Security one names six — so this repeats.
+    #[serde(rename = "ApplicationNote", default)]
+    pub application_note: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -71,6 +76,33 @@ pub struct HistoryItem {
     pub who: Option<String>,
     #[serde(rename = "@Change")]
     pub change: Option<String>,
+}
+
+// ============================================================================
+// Interfaces
+// ============================================================================
+
+/// The tool-side bus connections a template uses.
+///
+/// EITT drives up to two KNX interfaces so that a test can play two
+/// remote devices at once; the transport-layer template needs that for
+/// every "during an existing connection" case. Each `Telegram` names
+/// the one it belongs to in [`Telegram::connection`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct Interfaces {
+    #[serde(rename = "Interface", default)]
+    pub interfaces: Vec<Interface>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct Interface {
+    /// Referenced from `Telegram/@Connection`, `#IFACE0` style.
+    #[serde(rename = "@Name")]
+    pub name: Option<String>,
+    #[serde(rename = "@DisplayName")]
+    pub display_name: Option<String>,
+    #[serde(rename = "@Comment")]
+    pub comment: Option<String>,
 }
 
 // ============================================================================
@@ -198,8 +230,12 @@ pub struct TestSuite {
     pub name: Option<String>,
     #[serde(rename = "@Comment")]
     pub comment: Option<String>,
-    #[serde(rename = "TestCases")]
-    pub test_cases: Option<TestCases>,
+    /// Repeats: the transport-layer template splits suite 6.4.8 across
+    /// two `<TestCases>` elements, and one of the two cases lives in
+    /// the second. Modelling this as a single optional element made
+    /// the whole file fail to parse.
+    #[serde(rename = "TestCases", default)]
+    pub test_cases: Vec<TestCases>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -261,7 +297,17 @@ pub struct Comment {
 /// them fails to lower with a clear message instead of silently running
 /// as though they were absent — an `InvalMAC` we ignore turns a
 /// negative test into a positive one.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `deny_unknown_fields` extends that to attributes we have never seen:
+/// serde drops those silently, which is how `Connection` went unnoticed
+/// on all 394 telegrams of the transport-layer template. An attribute
+/// we have not read about is a template revision we have not read
+/// about, so it stops the run.
+/// `Default` is for tests: every field is optional, and building one by
+/// naming only the two or three attributes a case is about keeps them
+/// readable.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Telegram {
     #[serde(rename = "@ID")]
     pub id: Option<String>,
@@ -295,9 +341,28 @@ pub struct Telegram {
     /// `tp` or `rf`. Absent means the template's default medium.
     #[serde(rename = "@Medium")]
     pub medium: Option<String>,
+    /// Which of EITT's tool interfaces carries this telegram, named
+    /// after an entry in [`Interfaces`]. We drive a single mock bus on
+    /// which both tool addresses are visible, so this is deliberately
+    /// not consulted — the source address in [`Telegram::data`] already
+    /// says which of the two is speaking.
+    #[serde(rename = "@Connection")]
+    pub connection: Option<String>,
     /// Free-text comment, which may itself carry `@`-commands.
     #[serde(rename = "@Comment")]
     pub comment: Option<String>,
+
+    // ---- Transport layer ---------------------------------------------
+    /// The "fix sequence" value from EITT's telegram properties
+    /// (manual §15.6, "TL sequence number, if fix"): the sequence
+    /// number to use instead of the one EITT would compute for itself
+    /// while running the sequence.
+    ///
+    /// Despite sitting among the security attributes in the XML this
+    /// has nothing to do with KNX Data Security. It is handled in
+    /// [`super::lower`], which writes it into the TPCI octet.
+    #[serde(rename = "@TLSeqNum")]
+    pub tl_seq_num: Option<String>,
 
     // ---- RF ----------------------------------------------------------
     #[serde(rename = "@RFInfo")]
@@ -334,8 +399,6 @@ pub struct Telegram {
     pub sbc: Option<String>,
     #[serde(rename = "@TA")]
     pub ta: Option<String>,
-    #[serde(rename = "@TLSeqNum")]
-    pub tl_seq_num: Option<String>,
     #[serde(rename = "@Challenge")]
     pub challenge: Option<String>,
     #[serde(rename = "@KNXSerNo")]
@@ -364,14 +427,30 @@ impl Telegram {
 
     /// Whether "wait end time" is set, i.e. the full `TimeToNext`
     /// elapses even after the telegram has been handled.
-    pub fn waits_out_time(&self) -> bool {
-        self.wait.as_deref().is_some_and(|w| w.eq_ignore_ascii_case("yes"))
+    ///
+    /// `None` for a value we do not recognise. The templates write the
+    /// flag four ways — `yes`, `y`, `no`, `n`, in either case — and an
+    /// unrecognised one used to read as "no", which silently dropped
+    /// 161 waits in the load-state-machine template. The caller turns
+    /// `None` into a hard error rather than guessing again.
+    pub fn wait_flag(&self) -> Option<bool> {
+        match self.wait.as_deref().map(str::trim) {
+            None | Some("") => Some(false),
+            Some(w) if w.eq_ignore_ascii_case("yes") || w.eq_ignore_ascii_case("y") => Some(true),
+            Some(w) if w.eq_ignore_ascii_case("no") || w.eq_ignore_ascii_case("n") => Some(false),
+            Some(_) => None,
+        }
     }
 
     /// Any security attribute carrying a value. Used by the lowerer to
     /// refuse a telegram it would otherwise send in the clear.
+    ///
+    /// `TLSeqNum` is deliberately not here: it sits among these in the
+    /// XML but is a transport-layer sequence number, and treating it as
+    /// a security attribute made the whole transport-layer template
+    /// unrunnable.
     pub fn security_attrs_set(&self) -> Vec<&'static str> {
-        let candidates: [(&'static str, &Option<String>); 18] = [
+        let candidates: [(&'static str, &Option<String>); 17] = [
             ("Secure", &self.secure),
             ("SecType", &self.sec_type),
             ("SecKey", &self.sec_key),
@@ -383,7 +462,6 @@ impl Telegram {
             ("SAL", &self.sal),
             ("SBC", &self.sbc),
             ("TA", &self.ta),
-            ("TLSeqNum", &self.tl_seq_num),
             ("Challenge", &self.challenge),
             ("KNXSerNo", &self.knx_ser_no),
             ("SyncReqName", &self.sync_req_name),
@@ -391,8 +469,28 @@ impl Telegram {
             ("InvalSCF", &self.inval_scf),
             ("InvalCypher", &self.inval_cypher),
         ];
-        candidates.iter().filter(|(_, v)| v.as_deref().is_some_and(|s| !s.trim().is_empty())).map(|(k, _)| *k).collect()
+        set_attrs(&candidates)
     }
+
+    /// Any RF attribute carrying a value.
+    ///
+    /// A telegram with these is an RF frame whether or not it also
+    /// carries `Medium="rf"`, and several do not — the medium filter
+    /// would otherwise let them through and we would inject an RF frame
+    /// on TP.
+    pub fn rf_attrs_set(&self) -> Vec<&'static str> {
+        let candidates: [(&'static str, &Option<String>); 4] = [
+            ("RFInfo", &self.rf_info),
+            ("RFInfoEval", &self.rf_info_eval),
+            ("RFSerial", &self.rf_serial),
+            ("LFN", &self.lfn),
+        ];
+        set_attrs(&candidates)
+    }
+}
+
+fn set_attrs(candidates: &[(&'static str, &Option<String>)]) -> Vec<&'static str> {
+    candidates.iter().filter(|(_, v)| v.as_deref().is_some_and(|s| !s.trim().is_empty())).map(|(k, _)| *k).collect()
 }
 
 // ============================================================================
@@ -402,6 +500,75 @@ impl Telegram {
 /// Parse a template from XML text.
 pub fn parse(xml: &str) -> Result<Template, quick_xml::DeError> {
     quick_xml::de::from_str(xml)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wrap(suite_body: &str) -> String {
+        format!(
+            "<EITT_KnxConformanceTests><TestCollections><TestCollection><TestSuites>\
+             <TestSuite Name=\"s\">{suite_body}</TestSuite>\
+             </TestSuites></TestCollection></TestCollections></EITT_KnxConformanceTests>"
+        )
+    }
+
+    #[test]
+    fn a_suite_may_hold_more_than_one_test_cases_block() {
+        // Transport-layer suite 6.4.8 does, and one of its two cases
+        // lives in the second block. Modelling this as a single optional
+        // element used to fail the whole file with "duplicate field".
+        let xml = wrap(
+            "<TestCases><TestCase Name=\"a\"/></TestCases>\
+             <TestCases><TestCase Name=\"b\"/></TestCases>",
+        );
+        let template = parse(&xml).expect("parses");
+        let names: Vec<_> = template.cases().map(|(_, c)| c.name.clone().unwrap_or_default()).collect();
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn wait_accepts_every_spelling_the_templates_use() {
+        let flag = |w: Option<&str>| schema_wait(w).wait_flag();
+        for yes in ["yes", "Yes", "YES", "y", "Y"] {
+            assert_eq!(flag(Some(yes)), Some(true), "{yes:?}");
+        }
+        for no in ["no", "No", "n", "N", ""] {
+            assert_eq!(flag(Some(no)), Some(false), "{no:?}");
+        }
+        assert_eq!(flag(None), Some(false));
+        // Anything else has to reach the caller as a question, not as a
+        // "no" — that is how 161 waits went missing.
+        assert_eq!(flag(Some("later")), None);
+    }
+
+    fn schema_wait(wait: Option<&str>) -> Telegram {
+        Telegram { wait: wait.map(str::to_string), ..Default::default() }
+    }
+
+    #[test]
+    fn an_attribute_we_have_never_seen_stops_the_parse() {
+        let xml = wrap(
+            "<TestCases><TestCase Name=\"a\"><Sequence>\
+             <Telegram Data=\"BC\" CWay=\"IN\" Invented=\"1\"/>\
+             </Sequence></TestCase></TestCases>",
+        );
+        assert!(parse(&xml).is_err(), "an unmodelled attribute must not be dropped silently");
+    }
+
+    #[test]
+    fn tl_seq_num_is_not_a_security_attribute() {
+        let t = Telegram { tl_seq_num: Some("3".into()), ..Default::default() };
+        assert!(t.security_attrs_set().is_empty());
+    }
+
+    #[test]
+    fn rf_attributes_are_recognised_without_a_medium() {
+        let t = Telegram { rf_info: Some("02".into()), ..Default::default() };
+        assert_eq!(t.rf_attrs_set(), ["RFInfo"]);
+        assert!(t.medium.is_none());
+    }
 }
 
 impl Template {

@@ -26,8 +26,9 @@ where the test steps come from.
 - **`conformance-runner`** runs the hand-written Rust transcriptions in
   `conformance/src/tests/`. This is the complete suite — 533 tests
   covering everything we have transcribed.
-- **`conformance-eitt`** runs a vendor EITT XML template directly. Only
-  the group-object template works so far; see below.
+- **`conformance-eitt`** runs a vendor EITT XML template directly. The
+  group-object, network-layer, transport-layer and load/run-state-machine
+  templates work so far; see below.
 
 Run the hand-written suite with `cargo run --bin conformance-runner`.
 Pass a test name, suite name, or a substring of either as the first
@@ -87,6 +88,15 @@ Two things we commit, neither containing vendor test content:
   referenced by file name, never by path, so the committed profile
   works on any machine.
 
+  A `[[template]]` entry also carries the exceptions that hold for one
+  template and not the others, each with its own mandatory reason:
+  `[template.variables]` (the network-layer and transport-layer
+  templates both call a group object `GO_ADDR` and mean different
+  widths of object at different addresses), `[[template.command]]` (a
+  comment-command policy — `@if±` is a no-op for the transport-layer
+  template and load-bearing for the couplers), and
+  `[template.tl_sequence]` (see below).
+
   **`collections` matters more than it looks.** A template's
   collections are often *alternatives*, not parts of one run: the
   group-object template ships a UINT1 and a UINT8 collection that use
@@ -97,19 +107,23 @@ Two things we commit, neither containing vendor test content:
   empty runs every collection, which for that template means running
   eight cases against an object of the wrong width.
 - `conformance/patches/*.toml` — harness-specific edits anchored on the
-  GUID that the template gives every telegram. Today these are mostly
-  the `trigger_read` / `trigger_write` kicks that 1.4.1.1 and 1.4.1.3
-  need because EITT assumes a BCU whose Group Object Server transmits
-  by itself when the application sets the request flag.
+  GUID that the template gives every telegram. Mostly the
+  `trigger_read` / `trigger_write` kicks that 1.4.1.1 and 1.4.1.3 need
+  because EITT assumes a BCU whose Group Object Server transmits by
+  itself when the application sets the request flag; plus the two
+  places where a template offers a choice the XML resolves the other
+  way (transport layer 6.4.2.2 ships both 03/03/04 §5.4 transition
+  styles) and where our DUT does something the template's reference
+  device does not (a read-on-init scan after the association table
+  loads).
 
 An anchor GUID that no longer resolves is a **hard error**, not a
 warning: that is the signal the template has been revised and whatever
 the patch was compensating for needs re-checking.
 
-Only the group-object template runs today. Others need their own
-`[[template]]` entry and patch set, and most also need comment commands
-that are currently hard errors — see `conformance/src/eitt/profile.rs`
-and the notes in `SESSION.md`.
+The group-object, network-layer, transport-layer and
+load/run-state-machine templates run today. Management and TSSJ
+DataSecurity do not; see `SESSION.md` for what each still needs.
 
 ### EITT template semantics worth knowing
 
@@ -119,10 +133,29 @@ suite that passes while testing the wrong thing:
 - **`TimeToNext` means different things per direction.** On an `OUT`
   telegram it is the window within which the frame must arrive — the
   expect timeout. On an `IN` telegram it is the gap before the *next*
-  telegram is sent (manual §12.2.3.7).
+  telegram is sent (manual §12.2.3.6).
+- **Consecutive `OUT` telegrams with no gap are one block**, received
+  in any order inside the window the *last* of them names (§12.2.3.6,
+  "intervals below 0.2 seconds are treated as zero"). Timing them
+  individually is not a smaller version of the same thing: transport
+  layer 6.3.5.2 expects three retransmissions and a disconnect inside
+  12.5 s, arriving about 3 s apart, and per-telegram windows fail the
+  second one against the engine's 1 s default.
 - **`Wait="yes"`** ("wait end time", §12.2.3.8) means the full
   `TimeToNext` elapses even after the telegram has been sent or
-  received. `no`/`N` continues immediately.
+  received. The templates spell the flag `yes`/`y`/`no`/`n` in either
+  case, and an unrecognised value is a hard error — reading one as
+  "no" silently dropped 161 waits in the load-state-machine template.
+- **The sequence numbers in `Data` need not be right.** EITT computes
+  one for every management telegram before running a sequence, unless
+  the telegram pins it with `TLSeqNum` (§12.2.3.14, §15.6), so what the
+  XML carries is whatever its author last typed. Whether that matters
+  is per template: the load-state-machine template's are demonstrably
+  stale — 2.2.2 and 2.3.2 open identically and expect different
+  acknowledgements — while the transport-layer template's are the
+  subject of the test and its negative cases send deliberately wrong
+  ones. `[template.tl_sequence]` in the profile decides, with a
+  mandatory reason.
 - **`Activate="no"`** disables a step. This is how a template offers
   alternatives — 1.4.1.6 ships both a connectionless and a
   connection-oriented restart, with one deactivated.
@@ -743,7 +776,7 @@ cargo run --bin conformance-eitt -- \
 ```
 Executes KNX conformance templates straight from EITT's XML instead of
 hand-written transcriptions of them. The profile lists which templates
-to run and what each needs. Only the group-object template runs today.
+to run and what each needs — five of them today.
 
 The templates are licensed and are not in the repository — if
 `EITT_TEMPLATES` is unset or they are absent on this machine, skip this

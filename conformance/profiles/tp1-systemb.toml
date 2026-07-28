@@ -50,6 +50,113 @@ file = "KnxConformanceTestTemplate-GroupObjects.xml"
 collections = ["UINT1"]
 patches = ["conformance/patches/group-objects.toml"]
 
+# ============================================================================
+# 8/3/3 — Network Layer
+# ============================================================================
+#
+# One collection, four cases, and nothing in the file but `@[t`
+# narration: each case sends the same request with every routing count
+# and checks the answer comes back with 6.
+
+[[template]]
+file = "KnxConformanceTestTemplate-NetworkLayer.xml"
+
+# 3.1 checks the routing count on an answer, and the template's device
+# answers in the long form — its group object holds a whole octet. Ours
+# at the template's default address is one bit, which answers in the
+# short form and never matches. GO5 at 1/0/1 is the 8-bit object the
+# hand-written transcription of this case already uses.
+[template.variables]
+GO_ADDR = "08 01"
+
+# ============================================================================
+# 8/3/4 — Transport Layer
+# ============================================================================
+#
+# Three collections that are chapters rather than alternatives —
+# general TL behaviour, the two timing requirements, and the state
+# machine — so all of them run.
+
+[[template]]
+file = "KnxConformanceTestTemplate-TransportLayer.xml"
+patches = ["conformance/patches/transport-layer.toml"]
+
+# EITT plays two remote devices at once here, from two tool interfaces
+# it switches on and off around the cases that need the second one. We
+# drive a single mock link layer that models no L2 acknowledgement, so
+# there is nothing to switch: both tool addresses are always on the bus
+# and the source address in each telegram already says which of them is
+# speaking. The same command means something quite different in the
+# coupler templates, which is why this is scoped to this file.
+[[template.command]]
+category = "interface"
+policy = "ignore"
+why = "one mock bus carries both tool addresses, so @if+/@if- have nothing to switch"
+
+[[template.not_applicable]]
+id = "6E6FDBCA-0912-40BA-A10A-97955BD1CE61"
+why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run"
+
+# ============================================================================
+# 8 TSS G — Load State Machines
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
+patches = ["conformance/patches/load-state-machines.toml"]
+
+# Suite 2.3 loads the association table for real: it writes three
+# entries to the segment's start address and reads them back. The
+# template's default 1000h is nowhere in our DUT's memory map, so the
+# read comes back with no data. 0116h is where our association table
+# actually lives (`AST_BASE` in conformance/src/harness/stack.rs).
+[template.variables]
+LOAD_EVENT_03_START_ADDR = "01 16"
+
+[template.tl_sequence]
+recompute = true
+why = """
+this template's own sequence numbers are stale. 2.2.2 and 2.3.2 open \
+with the identical connect and request and then expect different \
+acknowledgements from it — 60 C2 and 60 C6 — so no reading of the \
+literals is self-consistent. EITT never reads them either: it computes \
+a sequence number for every management telegram before running the \
+sequence (manual 12.2.3.14). Recomputing gives exactly the numbering \
+the hand-written transcription of these cases arrived at by hand.\
+"""
+
+[[template.not_applicable]]
+id = "2F319664-DCA2-4B15-96A6-03C5ED531C33"
+why = """
+2.6 denies itself access by writing a key for level 3. Level 3 is the \
+level a connection has when it has not authorised at all, so on a \
+System B device it is keyless by construction (`NUM_AUTH_KEYS = 3`, \
+levels 0-2) and A_Key_Write answers 0xFF. The case is optional, and the \
+behaviour it is after — the load state machine refusing an \
+unauthorised connection — is covered by the hand-written L-2.6, which \
+gets there by changing the level 0 key instead.\
+"""
+
+# ============================================================================
+# 8 TSS I — Run State Machines
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-RunStateMachines.xml"
+
+[[template.not_applicable]]
+id = "97DB686D-39CF-4D28-B315-2E3851DD8AC3"
+why = """
+2.1 is an example, as its name says: it factory-resets the BDUT and then \
+writes an individual address by serial number, using a serial number and \
+an address the template invented. Its own comments say to adapt or \
+deactivate it ("Example for medium RF; please modify or deactivate telegram \
+accordingly", "BDUT specific: Possibly do further BDUT configuration"). Run \
+against us unmodified it wipes the address table, leaves the DUT at \
+15.15.255 and takes the other thirty cases with it. Our DUT starts \
+configured, so there is nothing here to adapt it to.\
+"""
+
 # Other templates go here as they start working. Each needs its own
 # patch set, and most also need comment commands that are hard errors
 # today — see SESSION.md.

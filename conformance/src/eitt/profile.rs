@@ -85,6 +85,16 @@ pub struct Profile {
     /// where a collection name would have no template to belong to.
     #[serde(skip)]
     pub collections: Vec<String>,
+    /// Whether to recompute transport-layer sequence numbers, filled in
+    /// per template by [`Profile::for_template`]. See
+    /// [`TlSequencePolicy`].
+    #[serde(skip)]
+    pub recompute_tl_sequence: bool,
+    /// The per-template exceptions that were applied, already rendered
+    /// for the run report. Filled in by [`Profile::for_template`] for
+    /// the same reason as `collections`.
+    #[serde(skip)]
+    pub applied_overrides: Vec<String>,
 }
 
 /// One template the profile can run, and what it needs.
@@ -113,6 +123,77 @@ pub struct TemplateRef {
     /// Cases in *this* template that do not apply to this device.
     #[serde(default)]
     pub not_applicable: Vec<NotApplicable>,
+    /// Variable overrides for this template only.
+    ///
+    /// Templates reuse variable names for different things: `GO_ADDR`
+    /// is a 1-bit object in the transport-layer template and an 8-bit
+    /// one in the network-layer template, and our DUT keeps those at
+    /// different group addresses. A profile-wide override could only
+    /// ever be right for one of them.
+    #[serde(default)]
+    pub variables: BTreeMap<String, String>,
+    /// Whether the transport-layer sequence numbers in this template's
+    /// telegram data can be trusted. See [`TlSequencePolicy`].
+    #[serde(default)]
+    pub tl_sequence: Option<TlSequencePolicy>,
+    /// Command-policy exceptions that hold for this template only.
+    ///
+    /// The profile-wide `[commands]` cannot express these: `@if+` is a
+    /// no-op for the transport-layer template, where the second tool
+    /// interface has no counterpart in our single mock bus, and is
+    /// emphatically not one for the coupler templates, where it decides
+    /// which side of the coupler a frame enters on.
+    #[serde(default, rename = "command")]
+    pub commands: Vec<CommandOverride>,
+}
+
+/// Whether to recompute a template's transport-layer sequence numbers.
+///
+/// EITT computes one for every management telegram before running a
+/// sequence, unless the telegram pins it (manual §12.2.3.14), so the
+/// numbers a template's `Data` carries are whatever the author last
+/// typed and need not be right. Whether that matters is a property of
+/// the template, not of the device, which is why this is per template
+/// and not a profile-wide switch:
+///
+/// - The load-state-machine template's numbers are demonstrably stale.
+///   Cases 2.2.2 and 2.3.2 open with the identical telegram and expect
+///   different acknowledgements from it; only recomputation reconciles
+///   them, and it produces exactly what the hand-written transcription
+///   of those cases renumbered them to.
+/// - The transport-layer template's numbers are the subject of the
+///   test. Its negative cases send deliberately wrong ones, and
+///   recomputing would turn them into positive tests.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlSequencePolicy {
+    pub recompute: bool,
+    /// Why the template's own numbers are or are not to be believed.
+    /// Required for the same reason every other exception's is.
+    pub why: String,
+}
+
+/// A per-template override of one command-policy category.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandOverride {
+    pub category: CommandCategory,
+    pub policy: Policy,
+    /// Why the override is right *here*. Required, for the same reason
+    /// [`NotApplicable::why`] is: an unexplained exception cannot be
+    /// told apart from an oversight when the template is next revised.
+    pub why: String,
+}
+
+/// The command families [`CommandPolicies`] holds a policy for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandCategory {
+    Pause,
+    Interface,
+    Sequence,
+    Security,
+    PointApi,
 }
 
 /// The environment variable naming the directory that holds the EITT
@@ -261,6 +342,27 @@ impl Profile {
         let mut scoped = self.clone();
         scoped.not_applicable.extend(template.not_applicable.iter().cloned());
         scoped.collections.clone_from(&template.collections);
+        scoped.variables.extend(template.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
+
+        for over in &template.commands {
+            let slot = match over.category {
+                CommandCategory::Pause => &mut scoped.commands.pause,
+                CommandCategory::Interface => &mut scoped.commands.interface,
+                CommandCategory::Sequence => &mut scoped.commands.sequence,
+                CommandCategory::Security => &mut scoped.commands.security,
+                CommandCategory::PointApi => &mut scoped.commands.point_api,
+            };
+            *slot = over.policy;
+            scoped
+                .applied_overrides
+                .push(format!("{:?} commands are {:?} for this template — {}", over.category, over.policy, over.why));
+        }
+
+        if let Some(tl) = &template.tl_sequence {
+            scoped.recompute_tl_sequence = tl.recompute;
+            let what = if tl.recompute { "recomputed" } else { "taken from the template" };
+            scoped.applied_overrides.push(format!("transport-layer sequence numbers are {what} — {}", tl.why));
+        }
         scoped
     }
 
@@ -361,6 +463,46 @@ mod tests {
         // that stops naming its collections fails loudly (nothing runs)
         // rather than silently running the wrong one.
         assert!(!scoped.accepts_collection(None));
+    }
+
+    #[test]
+    fn command_policies_are_relaxed_per_template_only() {
+        let p: Profile = toml::from_str(
+            r#"
+            [[template]]
+            file = "KnxConformanceTestTemplate-TransportLayer.xml"
+
+            [[template.command]]
+            category = "interface"
+            policy = "ignore"
+            why = "one mock bus carries both tool addresses"
+
+            [[template]]
+            file = "KnxConformanceTestTemplate-Coupler TP-TP.xml"
+            "#,
+        )
+        .expect("profile");
+
+        let relaxed = p.for_template(&p.templates[0]);
+        assert_eq!(relaxed.commands.interface, Policy::Ignore);
+        // Untouched categories keep the profile-wide policy, and the
+        // reason travels with the override so the run can print it.
+        assert_eq!(relaxed.commands.sequence, Policy::Error);
+        assert_eq!(relaxed.applied_overrides.len(), 1);
+
+        // The next template starts from the profile-wide policy again:
+        // `@if+` is a no-op for us on the transport-layer template and
+        // decides which side of a coupler a frame enters on for that one.
+        let coupler = p.for_template(&p.templates[1]);
+        assert_eq!(coupler.commands.interface, Policy::Error);
+        assert!(coupler.applied_overrides.is_empty());
+    }
+
+    #[test]
+    fn a_command_override_must_say_why() {
+        let toml = "[[template]]\nfile = \"x.xml\"\n\n\
+                    [[template.command]]\ncategory = \"interface\"\npolicy = \"ignore\"\n";
+        assert!(toml::from_str::<Profile>(toml).is_err(), "an unexplained override reads as an oversight");
     }
 
     #[test]

@@ -1,0 +1,36 @@
+# Harness patches for the EITT transport-layer template.
+#
+# Anchors are the GUIDs the template gives every telegram. If one stops
+# resolving the run fails rather than quietly dropping the patch — that
+# is the signal the template has been revised and the compensation here
+# needs re-checking.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-TransportLayer"
+
+# ============================================================================
+# 6.4.2.2 — T_ACK with a wrong sequence number, in OPEN_WAIT
+# ============================================================================
+#
+# The template ships both answers the standard allows and leaves the
+# wrong one active for us. 03/03/04 §5.4 gives four transition styles;
+# for event E09 (`T_ACK_PDU` whose SeqNo is not SeqNoSend) in state
+# OPEN_WAIT, Style 2 stays in OPEN_WAIT and goes on repeating, while
+# Style 1 and Style 1 (rationalised) — §5.4.1 and §5.4.4.3 — go to
+# CLOSED with action A6, "send a N_Data_Individual.req with
+# T_DISCONNECT_REQ_PDU". We implement the rationalised Style 1, so the
+# repetition never comes and the disconnect does.
+#
+# The template says as much itself: the step after the cleanup is the
+# same disconnect with `Activate="no"`, introduced by the comment
+# "Alternatively BDUT immediately sends Disconnect to USB A". This
+# swaps which of the two alternatives runs; it does not weaken the
+# case, which is still that the wrong ACK is not treated as an ACK.
+
+[[patch]]
+replace = "62A76FBA-FDA9-44D1-8BF2-FD06D2089566"
+why = "6.4.2.2: we follow 03/03/04 §5.4.4.3 Style 1, where E09 in OPEN_WAIT disconnects instead of repeating"
+insert = [
+  { expect = { data = "B0 #BDUT_ADDR #IFACE_A_ADDR 60 81", timeout_ms = 500 } },
+]

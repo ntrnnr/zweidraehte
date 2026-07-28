@@ -43,7 +43,14 @@ pub enum CommentCommand {
     /// `@@` / `@@!` / `@@+` — suspend until the operator acknowledges.
     Pause { text: String, kind: PauseKind },
     /// `@[w` / `@@[w` — delay for the quoted time.
-    Wait { duration: Duration, text: String },
+    ///
+    /// `duration` is `None` when the argument is not a literal time —
+    /// the load-state-machine template writes `@@[w"#WAIT"`, naming one
+    /// of the template's own `TimeToNextTelegram` variables. Resolving
+    /// that needs the profile and the template's declared defaults, so
+    /// it happens in [`super::lower`]; `raw` carries the argument
+    /// through untouched.
+    Wait { duration: Option<Duration>, raw: String, text: String },
     /// `@AP"on"` / `@AP"off"` — suppress failure marking.
     AutoPass(bool),
     /// `@if+` / `@if-` — activate or deactivate a bus connection.
@@ -243,7 +250,7 @@ fn build(token: &str, rest: &str) -> CommentCommand {
 
         "@[w" | "@@[w" => {
             let (quoted, tail) = take_quoted(rest);
-            CommentCommand::Wait { duration: parse_wait_time(&quoted), text: tail.trim().to_string() }
+            CommentCommand::Wait { duration: parse_wait_time(&quoted), raw: quoted, text: tail.trim().to_string() }
         }
         "@AP" => CommentCommand::AutoPass(strip_quoted(rest).eq_ignore_ascii_case("on")),
 
@@ -303,16 +310,22 @@ fn split_once_semi(s: &str) -> (String, String) {
 
 /// Parse `hh:mm:ss` or `hh:mm:ss.t` as used by `@[w` / `@@[w`.
 ///
-/// Anything unparseable yields a zero duration rather than an error:
-/// the alternative is refusing to run a whole case over a malformed
-/// comment, and a zero wait is the same thing the sequence would do if
-/// the comment were absent.
-fn parse_wait_time(s: &str) -> Duration {
-    let mut secs = 0f64;
-    for part in s.trim().split(':') {
-        secs = secs * 60.0 + part.trim().parse::<f64>().unwrap_or(0.0);
+/// `None` for anything else, including a `#VAR` reference to one of the
+/// template's duration variables. Falling back to a zero duration here
+/// would be the worst of both worlds: `@@[w"#WAIT"` in the
+/// load-state-machine template would become a no-wait and the case
+/// would go on testing something quieter than its name says. The
+/// lowerer resolves what it can and errors on the rest.
+fn parse_wait_time(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
     }
-    Duration::from_secs_f64(secs.max(0.0))
+    let mut secs = 0f64;
+    for part in s.split(':') {
+        secs = secs * 60.0 + part.trim().parse::<f64>().ok()?;
+    }
+    Some(Duration::from_secs_f64(secs.max(0.0)))
 }
 
 #[cfg(test)]
@@ -363,20 +376,32 @@ mod tests {
 
     #[test]
     fn wait_times_parse_in_both_resolutions() {
-        assert_eq!(parse_wait_time("00:00:02"), Duration::from_secs(2));
-        assert_eq!(parse_wait_time("00:00:02.5"), Duration::from_millis(2500));
-        assert_eq!(parse_wait_time("00:01:30"), Duration::from_secs(90));
-        assert_eq!(parse_wait_time("01:00:00"), Duration::from_secs(3600));
-        // Malformed input must not panic.
-        assert_eq!(parse_wait_time("nonsense"), Duration::ZERO);
+        assert_eq!(parse_wait_time("00:00:02"), Some(Duration::from_secs(2)));
+        assert_eq!(parse_wait_time("00:00:02.5"), Some(Duration::from_millis(2500)));
+        assert_eq!(parse_wait_time("00:01:30"), Some(Duration::from_secs(90)));
+        assert_eq!(parse_wait_time("01:00:00"), Some(Duration::from_secs(3600)));
+        // Malformed input must not panic, and must not read as zero.
+        assert_eq!(parse_wait_time("nonsense"), None);
+    }
+
+    #[test]
+    fn wait_variable_is_left_for_the_lowerer() {
+        // `@@[w"#WAIT"` names one of the template's duration variables.
+        // Parsing it as zero would turn the load-state-machine restart
+        // delays into no-waits.
+        let CommentCommand::Wait { duration, raw, .. } = parse("@@[w\"#WAIT\"") else {
+            panic!("expected a wait");
+        };
+        assert_eq!(duration, None);
+        assert_eq!(raw, "#WAIT");
     }
 
     #[test]
     fn wait_carries_its_trailing_comment() {
-        let CommentCommand::Wait { duration, text } = parse("@[w\"00:00:05\"settle time") else {
+        let CommentCommand::Wait { duration, text, .. } = parse("@[w\"00:00:05\"settle time") else {
             panic!("expected a wait");
         };
-        assert_eq!(duration, Duration::from_secs(5));
+        assert_eq!(duration, Some(Duration::from_secs(5)));
         assert_eq!(text, "settle time");
     }
 

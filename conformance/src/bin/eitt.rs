@@ -164,6 +164,9 @@ async fn run() -> ExitCode {
                 collections: Vec::new(),
                 patches: Vec::new(),
                 not_applicable: Vec::new(),
+                commands: Vec::new(),
+                variables: Default::default(),
+                tl_sequence: None,
             };
             vec![&direct]
         }
