@@ -1,0 +1,37 @@
+# Harness patches for the EITT run-state-machine template.
+#
+# Anchors are the GUIDs the template gives every telegram. If one stops
+# resolving the run fails rather than quietly dropping the patch — that
+# is the signal the template has been revised and the compensation here
+# needs re-checking.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-RunStateMachines"
+
+# ============================================================================
+# Read-on-init after RUNCONTROL_RESTART starts the application
+# ============================================================================
+#
+# Our DUT carries a read-on-init group object (GO3, `ROI` in
+# conformance/src/harness/stack.rs). Starting the application resets the
+# communication objects, which re-arms the scan, so an unsolicited
+# `A_GroupValue_Read` on 2/0/1 goes out a moment later and lands in
+# whichever expect comes next — a block rejects a frame it cannot place.
+#
+# The transition is the one 03/05/01 §4.24.2.3.3 Table 97 spells
+# `I:Halted → I:Ready → M:Running`: the executable part really does start
+# here, and a device that did not re-read its inputs at that point would
+# be the one behaving oddly. EITT's reference device just does not have a
+# read-on-init object configured.
+#
+# Only 2.3.1 trips on it. It is the case that loads the executable part
+# and starts it for the first time; the restarts in 2.3.3, 2.4.3 and
+# 2.5.2 act on an application that is already running and whose scan has
+# already been satisfied. Same shape as the load-state-machine template's
+# patch, so this drains where it happens rather than after every restart.
+
+[[patch]]
+after = "EBAA20B8-DFC6-49A2-B1E5-A4B158A39FBB"
+why = "2.3.1: drain the read-on-init scan our DUT runs when RUNCONTROL_RESTART starts the application"
+insert = [{ drain = 200 }]

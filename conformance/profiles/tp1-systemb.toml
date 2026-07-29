@@ -143,6 +143,7 @@ gets there by changing the level 0 key instead.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-RunStateMachines.xml"
+patches = ["conformance/patches/run-state-machines.toml"]
 
 [[template.not_applicable]]
 id = "97DB686D-39CF-4D28-B315-2E3851DD8AC3"
@@ -155,6 +156,23 @@ accordingly", "BDUT specific: Possibly do further BDUT configuration"). Run \
 against us unmodified it wipes the address table, leaves the DUT at \
 15.15.255 and takes the other thirty cases with it. Our DUT starts \
 configured, so there is nothing here to adapt it to.\
+"""
+
+[[template.not_applicable]]
+id = "384257FA-38AF-4780-9231-D1EAEF52A087"
+why = """
+2.2.2 scopes itself out: "Only applicable for devices complying with \
+System 2/BCU2 profiles or mask versions 0300h and 2300h. For all other \
+system profiles, this test does not apply as the initial state can not be \
+provoked." We are System B, mask 07B0/57B0. The preparation shows why: it \
+reaches the initial state — HALTED with the executable part loaded — by \
+sending RUNCONTROL_STOP and expecting RUNSTATE_HALTED, annotated "(only \
+mask 0300h or 2300h, otherwise RUNSTATE_TERMINATED)". 03/05/01 \
+§4.24.2.3.3 Table 97 footnote a says the same thing normatively, so for us \
+STOP against a loaded application is TERMINATED and the state this case \
+starts from is unreachable by construction. The RESTART transition it \
+would have tested is covered from every reachable state by 2.3.3, 2.4.3 \
+and 2.5.2.\
 """
 
 # Other templates go here as they start working. Each needs its own

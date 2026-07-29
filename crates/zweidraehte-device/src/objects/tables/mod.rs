@@ -986,8 +986,25 @@ impl<T: TableMemory> TableMemory for Table<T> {
 pub struct RunnableApplication<T: HasLoadStateMachine> {
     /// The underlying loadable table
     pub(super) table: T,
-    /// Run state for the application
+    /// Run state for the application.
+    ///
+    /// Deliberately not persisted: 03/05/01 §4.24.2.2 requires the run state
+    /// to live in volatile memory, and Table 97 note d) has every reset start
+    /// the machine in `Halted`. Carrying `Terminated` across a device restart
+    /// would defeat both, and would block the power-up cascade in
+    /// `SystemBDeviceModel::init`. Interface-object writes to PID 6 are
+    /// already exempt from `mark_dirty` for the same reason — see the
+    /// volatile-PID list in `bcus::system_b::objects::dispatch`.
+    #[serde(skip, default = "run_state_at_reset")]
     pub(super) run_state: RunState,
+}
+
+/// The run state every device reset starts from (03/05/01 §4.24.2.3.3 note d).
+///
+/// A `serde` default path rather than `impl Default for RunState`: there is no
+/// such thing as a default run state in the protocol, only a state after reset.
+fn run_state_at_reset() -> RunState {
+    RunState::Halted
 }
 
 impl<T: HasLoadStateMachine + ConstDefault> ConstDefault for RunnableApplication<T> {
@@ -1024,37 +1041,68 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
         &mut self.table
     }
 
-    /// Compute the next run state based on the event.
+    /// Compute the next run state, per 03/05/01 §4.24.2.3.3 Table 97.
     ///
-    /// |                 | HALTED  | RUNNING | READY   | TERMINATED |
-    /// |-----------------|---------|---------|---------|------------|
-    /// | Ready (0)       | halted  | running | ready   | terminated |
-    /// | Restart (1)     | halted  | ready   | ready   | halted     |
-    /// | Stop (2)        | term    | term    | term    | term       |
-    /// | Loaded (3)      | ready   | running | ready   | term       |
-    /// | Unloaded (4)    | halted  | halted  | halted  | halted     |
-    /// | ReadyToRun (5)  | halted  | running | running | term       |
+    /// | Event                   | HALTED  | RUNNING | READY   | TERMINATED |
+    /// |-------------------------|---------|---------|---------|------------|
+    /// | NOP (0)                 | halted  | running | ready   | terminated |
+    /// | Restart (1), loaded     | running | running | running | running    |
+    /// | Restart (1), unloaded   | halted  | halted  | halted  | halted     |
+    /// | Stop (2), loaded        | term    | term    | term    | term       |
+    /// | Stop (2), unloaded      | halted  | halted  | halted  | halted     |
+    /// | Loaded (internal)       | ready   | running | ready   | term       |
+    /// | Unloaded (internal)     | halted  | halted  | halted  | halted     |
+    /// | ReadyToRun (internal)   | halted  | running | running | term       |
+    /// | unknown                 | halted  | running | ready   | terminated |
     ///
-    /// The spec's transition table additionally annotates some arms with
-    /// loadStart/loadEnd actions; those are intentionally not modeled —
-    /// the only consumer the stack needs is start/stop notification,
-    /// which [`apply_event`](Self::apply_event) derives from the
-    /// running/not-running boundary crossing instead.
+    /// Whether the executable part is loaded is not a modifier the spec
+    /// bolts on — Table 97 gives Restart and Device-Restart a row each for
+    /// loaded and unloaded, with opposite outcomes, and note c) scopes Stop
+    /// the same way ("the event Stop shall always lead to the state
+    /// Terminated; this shall only be possible if the corresponding Load
+    /// State Machine is in the state Loaded"). Vendor conformance case 2.2.4
+    /// tests exactly that: STOP against an unloaded application must answer
+    /// HALTED, not TERMINATED.
+    ///
+    /// Restart-when-loaded is spelled `I:Halted → I:Ready → M:Running` in the
+    /// table; only `Running` is mandatory, and §4.24.2.4 notes the
+    /// intermediates "may never appear". Ours never do — the application has
+    /// no start-up work to perform, so collapsing the chain into a single
+    /// transition is both simpler and required by case 2.5.2, which pins the
+    /// write response to RUNNING with no wildcard.
+    ///
+    /// `Starting` (04h) and `ShuttingDown` (05h) are unimplemented for the
+    /// same reason: Table 95 makes them mandatory only when the executable
+    /// part needs more than two seconds to start or stop.
+    ///
+    /// Table 97 additionally annotates some arms with loadStart/loadEnd
+    /// actions; those are intentionally not modeled — the only consumer the
+    /// stack needs is start/stop notification, which
+    /// [`apply_event`](Self::apply_event) derives instead.
     fn next_run_state(&self, event: RunEvent) -> RunState {
+        // One of the run conditions of §4.24.2.3.4: the executable part can
+        // only start while its Load State Machine says Loaded.
+        let loaded = self.table.is_loaded();
+
         match (self.run_state, event) {
-            // Ready event - no-op, stay in current state
+            // NOP - stay in current state
             (state, RunEvent::Ready) => state,
 
-            // Restart command
-            (RunState::Halted, RunEvent::Restart) => RunState::Halted,
-            (RunState::Running, RunEvent::Restart) => RunState::Ready,
-            (RunState::Ready, RunEvent::Restart) => RunState::Ready,
-            (RunState::Terminated, RunEvent::Restart) => RunState::Halted,
+            // Restart command. Loaded, the application really does stop and
+            // start again, from every state including Terminated — Table 95
+            // makes Restart one of the two ways out of Terminated.
+            (_, RunEvent::Restart) if loaded => RunState::Running,
+            (_, RunEvent::Restart) => RunState::Halted,
 
-            // Stop command
-            (_, RunEvent::Stop) => RunState::Terminated,
+            // Stop command, see note c) above.
+            (_, RunEvent::Stop) if loaded => RunState::Terminated,
+            (_, RunEvent::Stop) => RunState::Halted,
 
-            // Loaded event (from LSM)
+            // Loaded event (from LSM). Figure 65 draws this as the
+            // Halted → Ready arrow; the onward Ready → Running step is the
+            // run-condition check, which arrives as `ReadyToRun`. Starting
+            // the application here instead would fire `RunAction::Started`
+            // on every segment of an ETS download.
             (RunState::Halted, RunEvent::Loaded) => RunState::Ready,
             (RunState::Running, RunEvent::Loaded) => RunState::Running,
             (RunState::Ready, RunEvent::Loaded) => RunState::Ready,
@@ -1063,25 +1111,34 @@ impl<T: HasLoadStateMachine> RunnableApplication<T> {
             // Unloaded event (from LSM)
             (_, RunEvent::Unloaded) => RunState::Halted,
 
-            // ReadyToRun event (startup delay complete)
+            // ReadyToRun event (run conditions evaluated). Terminated is
+            // deliberately sticky: Table 95 says a terminated executable part
+            // "shall no longer start automatically".
             (RunState::Halted, RunEvent::ReadyToRun) => RunState::Halted,
             (RunState::Running, RunEvent::ReadyToRun) => RunState::Running,
             (RunState::Ready, RunEvent::ReadyToRun) => RunState::Running,
             (RunState::Terminated, RunEvent::ReadyToRun) => RunState::Terminated,
 
-            // Unknown events - no change
+            // "Unknown events shall be ignored" (§4.24.2.3.3).
             (state, RunEvent::Other(_)) => state,
         }
     }
 
-    /// Apply a run event and return a [`RunAction`] if the running state
-    /// crossed the running/not-running boundary.
+    /// Apply a run event and return a [`RunAction`] if the application
+    /// started or stopped.
     fn apply_event(&mut self, event: RunEvent) -> Option<RunAction> {
         let was_running = self.is_running();
         self.run_state = self.next_run_state(event);
         match (was_running, self.is_running()) {
             (false, true) => Some(RunAction::Started),
             (true, false) => Some(RunAction::Stopped),
+            // A Restart that lands in RUNNING from RUNNING crosses no
+            // boundary we can observe, but Table 97 routes it through the
+            // intermediate Halted and Ready states — the application did stop
+            // and start again. Report it, so the device model resets the
+            // communication objects and re-arms read-on-init. This is the
+            // path an ETS download ends on.
+            (true, true) if event == RunEvent::Restart => Some(RunAction::Started),
             _ => None,
         }
     }
@@ -1146,7 +1203,17 @@ impl<T: HasLoadStateMachine> HasRunStateMachine for RunnableApplication<T> {
             return None;
         }
 
-        let event = RunEvent::from(data[0]);
+        // Only NOP, Restart and Stop can be written to PID_RUN_STATE_CONTROL
+        // (03/05/01 §4.24.2.3.2 Table 96). `RunEvent` continues past those to
+        // carry the machine's internal events, whose values overlap the same
+        // byte space, so decoding the wire byte with `RunEvent::from` would
+        // let a management client drive `Loaded`, `Unloaded` or `ReadyToRun`
+        // from the bus. Everything outside the three defined writes is an
+        // unknown event, and §4.24.2.3.3 says unknown events are ignored.
+        let event = match data[0] {
+            b @ 0x00..=0x02 => RunEvent::from(b),
+            b => RunEvent::Other(b),
+        };
         self.apply_event(event)
     }
 

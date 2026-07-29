@@ -265,11 +265,26 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Halted);
     }
 
+    /// STOP against an unloaded application leaves it HALTED.
+    ///
+    /// 03/05/01 §4.24.2.3.3 note c): the Stop event leads to Terminated, but
+    /// "this shall only be possible if the corresponding Load State Machine is
+    /// in the state Loaded". Vendor conformance case 2.2.4 tests this
+    /// directly and expects HALTED back.
     #[test]
-    fn test_stop_transitions_to_terminated() {
+    fn test_stop_when_unloaded_stays_halted() {
         let mut app: Application<()> = Application::new();
+        assert!(!app.is_loaded());
 
-        // STOP from HALTED should go to TERMINATED
+        app.write_rsm(&[RunEvent::Stop.into()]);
+        assert_eq!(app.run_state(), RunState::Halted);
+    }
+
+    #[test]
+    fn test_stop_when_loaded_transitions_to_terminated() {
+        let mut app: Application<()> = Application::new();
+        load_and_start(&mut app);
+
         app.write_rsm(&[RunEvent::Stop.into()]);
         assert_eq!(app.run_state(), RunState::Terminated);
     }
@@ -303,15 +318,34 @@ mod tests {
         assert_eq!(app.run_state(), RunState::Running);
     }
 
+    /// RESTART with the executable part loaded ends in RUNNING, from any state.
+    ///
+    /// 03/05/01 §4.24.2.3.3 Table 97 spells the transition
+    /// `I:Halted → I:Ready → M:Running`; only the last is mandatory, and
+    /// §4.24.2.4 notes the intermediates may never appear. Vendor conformance
+    /// case 2.5.2 pins the write response to RUNNING with no wildcard.
     #[test]
-    fn test_restart_from_running_goes_to_ready() {
+    fn test_restart_when_loaded_goes_to_running() {
         let mut app: Application<()> = Application::new();
         load_and_start(&mut app);
         assert_eq!(app.run_state(), RunState::Running);
 
-        // RESTART from RUNNING should go to READY (not stay RUNNING)
         app.write_rsm(&[RunEvent::Restart.into()]);
-        assert_eq!(app.run_state(), RunState::Ready);
+        assert_eq!(app.run_state(), RunState::Running);
+    }
+
+    /// The other of the two ways out of TERMINATED (03/05/01 Table 95): the
+    /// vendor conformance 2.5.2 shape.
+    #[test]
+    fn test_restart_from_terminated_when_loaded() {
+        let mut app: Application<()> = Application::new();
+        load_and_start(&mut app);
+
+        app.write_rsm(&[RunEvent::Stop.into()]);
+        assert_eq!(app.run_state(), RunState::Terminated);
+
+        app.write_rsm(&[RunEvent::Restart.into()]);
+        assert_eq!(app.run_state(), RunState::Running);
     }
 
     #[test]
@@ -359,14 +393,47 @@ mod tests {
     fn test_restart_from_terminated_when_not_loaded() {
         let mut app: Application<()> = Application::new();
 
-        // Go to TERMINATED
+        // TERMINATED is only reachable while loaded (note c), so get there
+        // first and then take the load state away underneath it. `write_lsm`
+        // does not cascade, so the run state survives the unload here.
+        load_and_start(&mut app);
         app.write_rsm(&[RunEvent::Stop.into()]);
+        assert_eq!(app.run_state(), RunState::Terminated);
+
+        app.write_lsm(&[LoadEvent::Unload.into()], None);
+        assert!(!app.is_loaded());
         assert_eq!(app.run_state(), RunState::Terminated);
 
         // RESTART from TERMINATED when not loaded should go to HALTED
         app.write_rsm(&[RunEvent::Restart.into()]);
         assert_eq!(app.run_state(), RunState::Halted);
     }
+
+    /// The internal run events share a byte space with the three writable
+    /// ones (03/05/01 §4.24.2.3.2 Table 96 defines only 00h–02h), so a write
+    /// of 03h/04h/05h to PID_RUN_STATE_CONTROL must be treated as an unknown
+    /// event and ignored — not decoded as Loaded / Unloaded / ReadyToRun.
+    #[test]
+    fn test_internal_run_events_are_not_writable_from_the_bus() {
+        let mut app: Application<()> = Application::new();
+        load_and_start(&mut app);
+        assert_eq!(app.run_state(), RunState::Running);
+
+        // Would be `Unloaded` if the wire byte reached `RunEvent::from`,
+        // which would drop a running application to HALTED.
+        assert_eq!(app.write_rsm(&[0x04]), None);
+        assert_eq!(app.run_state(), RunState::Running);
+
+        for byte in [0x03u8, 0x05, 0x06, 0x7F, 0xFF] {
+            assert_eq!(app.write_rsm(&[byte]), None, "0x{byte:02X} should be ignored");
+            assert_eq!(app.run_state(), RunState::Running);
+        }
+    }
+
+    // The matching assertion that the run state does not survive
+    // serialization lives in `tests/run_state_volatility.rs`: naming a serde
+    // format inside the lib test target makes `impl PartialEq<Value> for u8`
+    // visible and breaks `.into()` inference across the other table tests.
 
     // ====================================================================
     // RunAction production tests
@@ -448,10 +515,26 @@ mod tests {
         assert_eq!(ev, Some(RunAction::Stopped));
     }
 
+    /// A restart of an already-running application crosses no observable
+    /// boundary, but Table 97 routes it through the intermediate Halted and
+    /// Ready states — it really did stop and start again. The device model
+    /// needs to hear about it to reset the communication objects and re-arm
+    /// read-on-init, which is how an ETS download ends.
+    #[test]
+    fn test_restart_of_running_app_still_produces_started() {
+        let mut app: Application<()> = Application::new();
+        load_and_start(&mut app);
+        assert!(app.is_running());
+
+        assert_eq!(app.write_rsm(&[RunEvent::Restart.into()]), Some(RunAction::Started));
+        assert_eq!(app.run_state(), RunState::Running);
+    }
+
     #[test]
     fn test_noop_transitions_produce_no_action() {
         let mut app: Application<()> = Application::new();
 
+        // Unloaded throughout, so none of these reach RUNNING.
         assert_eq!(app.write_rsm(&[RunEvent::Ready.into()]), None);
         assert_eq!(app.write_rsm(&[RunEvent::Restart.into()]), None);
         assert_eq!(app.write_rsm(&[0xFF]), None);

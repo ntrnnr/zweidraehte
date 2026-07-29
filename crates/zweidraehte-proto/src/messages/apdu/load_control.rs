@@ -59,14 +59,25 @@ create_protocol_enum!(
 );
 
 create_protocol_enum!(
-    /// Run control event for `PID_RUN_STATE_CONTROL` (0x06).
+    /// Event driving the run state machine of 03/05/01 §4.24.
+    ///
+    /// Only the first three are writable to `PID_RUN_STATE_CONTROL` (0x06);
+    /// they are the whole of §4.24.2.3.2 Table 96:
     ///
     /// - `Ready` (0x00): no operation — state unchanged.
     /// - `Restart` (0x01): restart the application.
-    /// - `Stop` (0x02): stop the application (→ `Terminated`).
-    /// - `Loaded` (0x03): internal — the load machine finished loading.
-    /// - `Unloaded` (0x04): internal — the load machine unloaded.
-    /// - `ReadyToRun` (0x05): internal — startup delay complete, may run.
+    /// - `Stop` (0x02): stop the application (→ `Terminated` if loaded).
+    ///
+    /// The rest are internal events raised by the device itself, and reuse
+    /// the same byte space because nothing ever encodes them onto the wire:
+    ///
+    /// - `Loaded` (0x03): the load state machine finished loading.
+    /// - `Unloaded` (0x04): the load state machine unloaded.
+    /// - `ReadyToRun` (0x05): run conditions evaluated, the application may run.
+    ///
+    /// The overlap is why `HasRunStateMachine::write_rsm` decodes 0x00–0x02
+    /// itself instead of handing the received byte to `RunEvent::from` — a
+    /// management client must not be able to drive the internal events.
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum RunEvent: u8 {
         Ready           , 0x00, "Ready";

@@ -24,7 +24,7 @@ the same engine (`conformance/src/engine.rs`); they differ only in
 where the test steps come from.
 
 - **`conformance-runner`** runs the hand-written Rust transcriptions in
-  `conformance/src/tests/`. This is the complete suite — 533 tests
+  `conformance/src/tests/`. This is the complete suite — 556 tests
   covering everything we have transcribed.
 - **`conformance-eitt`** runs a vendor EITT XML template directly. The
   group-object, network-layer, transport-layer and load/run-state-machine
@@ -166,6 +166,38 @@ suite that passes while testing the wrong thing:
   and accounts for the overwhelming majority, but `@[w` is a real wait
   and `@if±` / `@#` / `@@[sn` change what runs or what state exists.
   See `conformance/src/eitt/comment.rs`.
+- **A case may scope itself out in its own `@[t` prose.** There is no
+  attribute for it, so the only way to know is to read the text. Run
+  state machines 2.2.2 says "Only applicable for devices complying with
+  System 2/BCU2 profiles or mask versions 0300h and 2300h. For all other
+  system profiles, this test does not apply as the initial state can not
+  be provoked", and its preparation reaches that state by an exchange
+  annotated "(only mask 0300h or 2300h, otherwise RUNSTATE_TERMINATED)".
+  That is a `not_applicable` entry, not a stack bug and not something to
+  patch around — quote the note as the `why`.
+- **The medium comes from the interface, not from the frame.** EITT sets
+  it per bus connection — "Depending on the media type setting, EITT
+  selects the LL service code for sending telegrams to the bus … RF: all
+  telegrams will be assumed to be of the extended frame type" — and a
+  template names the interfaces it needs in `<Interfaces>`, stating each
+  one's media type in prose for the operator. All five templates we run
+  declare none, so there is one connection and one medium; ours is the
+  profile's `medium` key, which is the same thing in the same place.
+  Couplers, USB, RF Multi and the routers do declare interfaces and
+  switch between them with `@#`, which we do not implement.
+- **`Medium` on a telegram is an either/or, and the only medium signal.**
+  It was added for coupler tests, and every `rf` telegram in the
+  templates we run has a `tp` twin in the same case — group objects
+  1.4.1.7 carries 54 of each, transport layer 2.5 carries 29 — so a
+  single-medium device runs one half. `RFInfo` / `RFInfoEval` /
+  `RFSerial` / `LFN` are **not** a second signal: they are cEMI
+  additional info (manual §12.12.1), they ride on a telegram
+  independently of its bus, and the TP-RF coupler templates carry
+  thousands of them alongside an explicit `Medium="tp"`. Inferring a
+  medium from them is a rule EITT does not have; we had one, and its
+  only effect was to drop the sole RF-attributed telegram in the
+  run-state template — the T_Connect opening 2.3.1 — leaving that whole
+  suite to run unconnected.
 
 ## Authoring conformance tests
 
