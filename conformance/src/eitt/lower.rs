@@ -96,12 +96,23 @@ impl LowerReport {
 /// *for us*. Kept next to the report rather than at the use site so a
 /// run states the reasoning out loud instead of leaving it in a
 /// comment nobody reads.
-const IGNORED_ATTR_REASONS: &[(&str, &str)] = &[(
-    "Connection",
-    "we drive one mock link layer that models no L2 acknowledgement, so \
-     there is no second tool interface to switch between; the two tool \
-     addresses are already distinguished by the source address in Data",
-)];
+const IGNORED_ATTR_REASONS: &[(&str, &str)] = &[
+    (
+        "Connection",
+        "we drive one mock link layer that models no L2 acknowledgement, so \
+         there is no second tool interface to switch between; the two tool \
+         addresses are already distinguished by the source address in Data",
+    ),
+    (
+        "RFInfo",
+        "RFInfo/RFInfoEval/RFSerial/LFN are cEMI additional info (EITT manual \
+         12.12.1, 'Add Info 0 (RF info) on Req'), which we do not model, and \
+         they are not a medium declaration — EITT takes the medium from the \
+         interface the telegram goes out on, configured per bus connection, \
+         which for us is the profile's `medium`. A telegram carrying them is \
+         therefore sent exactly as its Data says",
+    ),
+];
 
 /// Why a template could not be lowered.
 #[derive(Debug)]
@@ -525,17 +536,21 @@ fn lower_telegram(
         return Ok(());
     }
 
-    // The RF attributes make a telegram an RF frame whether or not it
-    // also carries `Medium="rf"`, and several across the templates do
-    // not carry it. Without inferring the medium from them the filter
-    // lets those through and we inject an RF frame on TP.
+    // `Medium` is the telegram saying which bus it belongs on, and it is
+    // an either/or: every `rf` telegram in the templates we run has a
+    // `tp` twin in the same case (group objects 1.4.1.7 carries 54 of
+    // each, transport layer 2.5 carries 29). Running both halves against
+    // a single-medium device tests the same thing twice, once wrongly.
     let declared = t.medium.as_deref().map(str::trim).filter(|m| !m.is_empty());
-    let implied_rf = declared.is_none() && !t.rf_attrs_set().is_empty();
-    let medium = if implied_rf { Some("rf") } else { declared };
-    if !profile.accepts_medium(medium) {
-        let label = if implied_rf { "rf (implied by RF attributes)" } else { medium.unwrap_or_default() }.to_string();
-        *report.wrong_medium.entry(label).or_default() += 1;
+    if !profile.accepts_medium(declared) {
+        *report.wrong_medium.entry(declared.unwrap_or_default().to_string()).or_default() += 1;
         return Ok(());
+    }
+
+    // Deliberately *not* a second source of medium: see the reason in
+    // `IGNORED_ATTR_REASONS`.
+    if !t.rf_attrs_set().is_empty() {
+        *report.ignored_attrs.entry("RFInfo").or_default() += 1;
     }
 
     if t.connection.as_deref().is_some_and(|c| !c.trim().is_empty()) {
