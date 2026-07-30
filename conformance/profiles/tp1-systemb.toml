@@ -50,6 +50,18 @@ file = "KnxConformanceTestTemplate-GroupObjects.xml"
 collections = ["UINT1"]
 patches = ["conformance/patches/group-objects.toml"]
 
+[[template.skipped_collection]]
+name = "UINT8"
+why = """
+the UINT8 collection is the alternative to UINT1, not a second half of \
+the run: both drive group addresses 1000h-1005h and each opens by naming \
+the sample application program that "shall be loaded into the BDUT". Only \
+one can be loaded, because GO0 at 1000h is either 1 bit or 8 bits. Our \
+DUT's GO0 is DPT_Switch, so it runs UINT1. Adding an 8-bit GO0 alongside \
+would not help — it would need the same group addresses, making it a \
+second application program rather than a second set of objects.\
+"""
+
 # ============================================================================
 # 8/3/3 — Network Layer
 # ============================================================================
@@ -173,6 +185,204 @@ STOP against a loaded application is TERMINATED and the state this case \
 starts from is unreachable by construction. The RESTART transition it \
 would have tested is covered from every reachable state by 2.3.3, 2.4.3 \
 and 2.5.2.\
+"""
+
+# ============================================================================
+# 8/3/7 — AIL & Management
+# ============================================================================
+#
+# The largest template we run: 238 cases over 21 collections. Its
+# collections are chapters rather than alternatives, so the selection
+# below is about which management services our device has, not about
+# which application program is loaded. Each omission is stated as a
+# `skipped_collection`, and lowering refuses to run if the template
+# grows a collection this profile has never heard of.
+
+[[template]]
+file = "KnxConformanceTestTemplate-Management.xml"
+patches = ["conformance/patches/management.toml"]
+collections = [
+  "2.3 - 2.4 Individual Address",
+  "2.5 Device Descriptor",
+  "2.6 - 2.7 Memory Access",
+  "2.8 ADC",
+  "2.9 Restart",
+  "2.10 MemoryBit Access",
+  "2.11 Authorization",
+  "2.12 Key Access",
+  "2.16 - 2.17 Individual Address Serial Number",
+  "2.20 Illegal APCI",
+  "2.25 Service Information Indication",
+  "2.31 - 2.33 User Memory Access",
+  "2.33 User Manufacturer Info Access",
+  "Test of structure of Address Table",
+]
+
+[template.tl_sequence]
+recompute = true
+why = """
+this template's sequence numbers do not survive contact with a running \
+connection. 2.7.4 sends a property write and then a memory write on the \
+same connection, both encoding sequence 0 in their Data, and then expects \
+the two acknowledgements 60 C2 and 60 C6 — numbers only a running counter \
+produces. EITT computes one for every management telegram before running \
+a sequence (manual 12.2.3.14), so what the XML carries is whatever its \
+author last typed. The 46 telegrams that pin TLSeqNum still win over the \
+recomputation, which is what pinning is for.\
+"""
+
+# What the template cannot know about our device. The rest of its
+# defaults already fit: MEMPOS 512 is our linear-memory base 0200h and
+# MEMPOS_LASTACCESS 767 its last byte, MEM_START_BLOCK_LEVEL_2 768 is
+# 0300h, the user-memory window 32752..32767 is 7FF0h..7FFFh, and the
+# three access keys are the ones the harness installs.
+[template.variables]
+# The template invents "000000" as ASCII. Ours is in
+# `device_info::SERIAL_NUMBER`.
+BDUT_SERIAL_NUMBER = "FE ED BA BE CA FE"
+# Declared as "?? ??", which is a wildcard for a field EITT expects the
+# operator to fill in from the data sheet, not something `parse_hex` can
+# turn into bytes — 2.5.1 fails on an empty array before it sends
+# anything. Pinning it also makes the case assert our mask rather than
+# accept whatever comes back.
+DD0_RESPONSE = "07 B0"
+# The template puts protected memory at 0300h, which for us is the
+# level-2 block: readable, just not until you have authorised. 1000h is
+# outside our memory map entirely, which is what "protected" has to mean
+# for 2.6.3 and 2.7.5 to test anything.
+MEMPOS_PROTECTED = "10 00"
+# Level 1 is at 0400h for us; the template defaults it to 0200h, our
+# freely accessible linear memory.
+MEM_START_BLOCK_LEVEL_1 = "04 00"
+
+# Cases the template scopes out itself, in its own prose, against a
+# device capability we happen to exceed. Our MAX_APDU_LENGTH is 254
+# (`MAX_APDU_LENGTH_EXTENDED` in conformance/src/harness/stack.rs) and we
+# support extended frames, so every "not applicable if MAX_APDU_LENGTH is
+# equal or greater than N" case is out for N of 19, 66 and 195 alike.
+# Note that 2.7.12 phrases its condition the other way round — "is
+# applicable if the MAX_APDU_LENGTH is equal or greater than 66" — so it
+# stays in.
+
+[[template.not_applicable]]
+id = "256CBE07-D937-4476-A915-61D7476ED34E"
+why = "2.6.5 is \"for devices not supporting EFF\"; we support extended frames"
+
+[[template.not_applicable]]
+id = "60178AF4-0215-49A6-8FAF-5086FF3733D8"
+why = "2.6.7 is \"conditional for devices supporting MAX_APDU_LENGTH < 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "7B32A143-B03A-4393-B88B-314AA67D0CD7"
+why = "2.7.10: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "F41CB375-5B93-47D2-B14D-CB697FBBE3D7"
+why = "2.7.15: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "8784BD49-3441-4287-9A65-0908E5E70C2D"
+why = "2.7.17: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "47DF0849-EF46-4377-A68C-49B13304A00B"
+why = "2.31.4 is \"for devices supporting SFF only\"; we support extended frames"
+
+[[template.not_applicable]]
+id = "76887E41-4EDC-4297-83D2-563F64A7747F"
+why = "2.31.6: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 195\"; ours is 254"
+
+[[template.not_applicable]]
+id = "C0BEA8A5-DAC0-48ED-BF38-47FA60051574"
+why = "2.32.9: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.not_applicable]]
+id = "2D805C32-EB0B-40D6-95EC-B1A4EEA1C2B8"
+why = "2.32.11: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.not_applicable]]
+id = "332EA8BC-338E-42B7-8ABF-4D7439C38646"
+why = "2.32.15: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.not_applicable]]
+id = "0795F3D4-8D17-4A7A-B971-878C8684257E"
+why = "2.32.17: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.skipped_collection]]
+name = "2.13 to 2.15 Property Access"
+why = """
+the collection wants an application built for it: three interface \
+objects each guarded by its own access key (OBJ_0/1/2_ACCESS_KEY, \
+installed by its preparation suite and removed by its cleanup suite), \
+and System B authorisation is device-global rather than per-object. It \
+also wants writable properties of 7, 4 and 11 octets plus a \
+PDT_GENERIC_20 at PID E0h, which no object in our fixed property tables \
+provides. The property services themselves are implemented and are \
+exercised elsewhere; it is the fixture that does not exist. The \
+hand-written transcription of these cases \
+(`create_property_value_read_suite` in conformance/src/tests/management.rs) \
+is unregistered for the same reason. Worth revisiting as its own piece of \
+work.\
+"""
+
+[[template.skipped_collection]]
+name = "2.18 Network Parameter Access"
+why = """
+A_NetworkParameter_Read and A_NetworkParameter_Write have no ApciCode \
+entry in zweidraehte-proto and no service behind them. The template makes \
+the supported parameters a manufacturer declaration — its NP_OBJ_TYPE, \
+NP_PID and NP_TEST_INFO fields are there to be filled in from the PIXIT — \
+and we declare none.\
+"""
+
+[[template.skipped_collection]]
+name = "2.22 to 2.24 Routing Table Access"
+why = """
+A_FilterTable_Read/Write and A_RouterMemory_Read/Write, which are router \
+services. We are a TP1 end device of mask 07B0 with no filter table and \
+no router memory, and the APCIs do not exist in zweidraehte-proto. This \
+is also where the template's stale TLSeqNum values live: 2.24.1 pins 22 \
+of them that disagree with their own Data, which stops mattering once \
+the collection does not run.\
+"""
+
+[[template.skipped_collection]]
+name = "2.27-2.29 Domain Address Access"
+why = """
+domain addresses exist on RF and PL, not on TP1. DomainAddressService \
+and RfDomainAddressService are implemented but deliberately left out of \
+SystemBAlServices, and the TP1 state type implements neither \
+HasDomainAddress nor HasRfDomainAddress, so they could not be wired in \
+without giving the device a domain it does not have.\
+"""
+
+[[template.skipped_collection]]
+name = "2.30 Domain Address Selective"
+why = "selective domain-address addressing, same reason as 2.27-2.29 — RF and PL only"
+
+[[template.skipped_collection]]
+name = "2.34 Domain Address Serial Number Access (RF only)"
+why = "the collection name says it: RF only, same reason as 2.27-2.29"
+
+[[template.skipped_collection]]
+name = "Test of structure of Association Table"
+why = """
+the collection is configured and judged by a human. Every case opens \
+with an operator instruction — "Please configure the BDUT with a Group \
+Address that is linked to a single 1-bit DPT (Group Object)", "…with two \
+Group Addresses that each link to a single, but different, 1-bit DPT" — \
+and closes with an @@! verdict prompt, "verify if the returned status \
+value has changed according to the written values". Neither end exists \
+without the operator: the template cannot say which addresses to use, so \
+GA_1/GA_2/GA_3 default to 0900h..0902h, which our DUT does not answer on.
+
+Pointing them at our objects would not fix it either. The cases need a \
+1-bit object whose *status* object transmits to a second group address \
+when the first changes, and our conformance DUT's GO1-GO3 are accessors \
+for GO0's flags and value (see the group_addresses / comm-object table in \
+conformance/src/harness/stack.rs), not a status object that sends by \
+itself. The fixture would have to be built, and then the verdict would \
+still be a human reading the trace.\
 """
 
 # Other templates go here as they start working. Each needs its own

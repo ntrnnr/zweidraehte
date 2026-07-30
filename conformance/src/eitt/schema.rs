@@ -351,6 +351,28 @@ pub struct Telegram {
     /// Free-text comment, which may itself carry `@`-commands.
     #[serde(rename = "@Comment")]
     pub comment: Option<String>,
+    /// `yes` when EITT should transmit via `L_SystemBroadcast.req`
+    /// rather than `L_Data.req`.
+    ///
+    /// Modelled so the file parses — `Telegram` denies unknown fields,
+    /// and the management template is the first to carry this — but
+    /// deliberately not acted on.
+    ///
+    /// It selects a link-layer service on a real interface, and we
+    /// inject octets straight into a mock bus, where the distinction is
+    /// already in the frame: the system broadcast flag is bit 4 of the
+    /// control field, clear for a system broadcast, and
+    /// `KnxMessage::get_address_type` reads exactly that bit to tell
+    /// `AddressType::SystemBroadcast` from `AddressType::Broadcast`.
+    /// The management template's system broadcasts carry control byte
+    /// `2C` where its ordinary broadcasts carry `BC`, so the DUT
+    /// classifies them correctly with no help from this attribute.
+    ///
+    /// On the TP1 profile the question does not even arise: all 50 of
+    /// them are either `Medium="rf"` or in a domain-address collection,
+    /// so none survives the medium filter.
+    #[serde(rename = "@UseSystemBroadcast")]
+    pub use_system_broadcast: Option<String>,
 
     // ---- Transport layer ---------------------------------------------
     /// The "fix sequence" value from EITT's telegram properties

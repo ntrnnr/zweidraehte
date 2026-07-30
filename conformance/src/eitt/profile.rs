@@ -85,6 +85,10 @@ pub struct Profile {
     /// where a collection name would have no template to belong to.
     #[serde(skip)]
     pub collections: Vec<String>,
+    /// The reasons the unselected collections are unselected, filled in
+    /// per template alongside `collections`.
+    #[serde(skip)]
+    pub skipped_collections: Vec<SkippedCollection>,
     /// Whether to recompute transport-layer sequence numbers, filled in
     /// per template by [`Profile::for_template`]. See
     /// [`TlSequencePolicy`].
@@ -115,8 +119,23 @@ pub struct TemplateRef {
     /// loaded into the BDUT". Only one of those programs can be loaded
     /// at a time, so a device runs the collection matching the one it
     /// has.
+    ///
+    /// Selecting any at all obliges the profile to account for the rest
+    /// in [`TemplateRef::skipped_collections`].
     #[serde(default)]
     pub collections: Vec<String>,
+    /// Why each collection `collections` leaves out is left out.
+    ///
+    /// Dropping a collection drops every case in it — 52 of the
+    /// management template's 238 in one entry — and `collections` on its
+    /// own is a bare list of substrings with nowhere to say why. Pairing
+    /// the two makes lowering able to check that every collection a
+    /// template declares is either run or explained, and to fail when
+    /// one is neither. That is the same bargain the patch anchors make:
+    /// a template that gains or renames a collection stops the run
+    /// instead of quietly shrinking it.
+    #[serde(default, rename = "skipped_collection")]
+    pub skipped_collections: Vec<SkippedCollection>,
     /// Patch sets to overlay, as repository-relative paths.
     #[serde(default)]
     pub patches: Vec<String>,
@@ -254,6 +273,22 @@ pub struct NotApplicable {
     pub why: String,
 }
 
+/// A whole `TestCollection` we deliberately do not run.
+///
+/// Matched by substring of the collection's name, the same way
+/// [`TemplateRef::collections`] selects. Collections are named for the
+/// clause range they cover — "2.22 to 2.24 Routing Table Access" — so a
+/// prefix is enough and survives the wording being tidied up.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkippedCollection {
+    /// Substring of the collection name.
+    pub name: String,
+    /// Why the whole collection does not apply. Required, for the same
+    /// reason [`NotApplicable::why`] is.
+    pub why: String,
+}
+
 /// What to do when a comment command we do not implement turns up.
 ///
 /// The defaults are chosen by what happens if we are wrong. Ignoring a
@@ -342,6 +377,7 @@ impl Profile {
         let mut scoped = self.clone();
         scoped.not_applicable.extend(template.not_applicable.iter().cloned());
         scoped.collections.clone_from(&template.collections);
+        scoped.skipped_collections.clone_from(&template.skipped_collections);
         scoped.variables.extend(template.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
 
         for over in &template.commands {
@@ -374,6 +410,14 @@ impl Profile {
         }
         let name = name.unwrap_or_default().to_lowercase();
         self.collections.iter().any(|c| name.contains(&c.to_lowercase()))
+    }
+
+    /// Why a `TestCollection` with this name is not run, if the profile
+    /// says. Only consulted for collections `accepts_collection` turned
+    /// down; one it cannot account for is an error, raised by the caller.
+    pub fn skipped_collection_reason(&self, name: Option<&str>) -> Option<&str> {
+        let name = name.unwrap_or_default().to_lowercase();
+        self.skipped_collections.iter().find(|s| name.contains(&s.name.to_lowercase())).map(|s| s.why.as_str())
     }
 
     /// The templates matching a filter, or all of them when there is no

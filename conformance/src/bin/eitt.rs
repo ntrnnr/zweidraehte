@@ -161,7 +161,10 @@ async fn run() -> ExitCode {
         Some(t) if t.contains('/') || t.ends_with(".xml") => {
             direct = TemplateRef {
                 file: t.clone(),
+                // No selection, so every collection runs and none needs
+                // accounting for.
                 collections: Vec::new(),
+                skipped_collections: Vec::new(),
                 patches: Vec::new(),
                 not_applicable: Vec::new(),
                 commands: Vec::new(),

@@ -1,0 +1,200 @@
+# Harness patches for the EITT management template.
+#
+# Anchors are the GUIDs the template gives every telegram. If one stops
+# resolving the run fails rather than quietly dropping the patch — that
+# is the signal the template has been revised and the compensation here
+# needs re-checking.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-Management"
+
+# ============================================================================
+# 2.5.5 / 2.5.6 sweep descriptor type 02h, which we support
+# ============================================================================
+#
+# Both cases walk descriptor types 01h through 3Fh expecting 7Fh — "no
+# such descriptor" — back from each, and both include 02h. That
+# contradicts 2.5.3, which the template writes for either kind of device:
+# "When the BDUT supports DD2, it shall return the correct
+# DescriptorData. When the BDUT does not support DD2, [negative
+# response]". A device cannot both answer 2.5.3 with its DD2 and call 02h
+# illegal, so the sweep is written for the branch we are not on.
+#
+# We are on the other branch — `DEVICE_DESCRIPTOR_TYPE2` is `Some` in
+# conformance/src/harness/stack.rs and 2.5.3 and 2.5.4 pass — so the two
+# telegrams for type 02h come out of the sweep, along with the
+# acknowledgement the connection-oriented one would have drawn. The
+# remaining 62 types still run, and the profile's sequence-number
+# recomputation renumbers what follows on both sides.
+
+[[patch]]
+skip = "E5A43CD1-620F-4C2A-A8E7-EF51FFBF5CD5"
+why = "2.5.5: descriptor type 02h is not illegal for us — we support DD2, which is the branch 2.5.3 covers"
+
+[[patch]]
+skip = "3560E06D-5587-4D1B-9C16-1D23445F4D9C"
+why = "2.5.5: the acknowledgement for the type 02h read that is no longer sent"
+
+[[patch]]
+skip = "B40B0D61-9468-46B3-85D4-70D91A7AF16D"
+why = "2.5.5: the 7Fh answer expected for type 02h, which we answer with our DD2 instead"
+
+[[patch]]
+skip = "5D2B9AAF-F084-45AC-87CC-075C593427F0"
+why = "2.5.5: the tool's acknowledgement closing the type 02h exchange — leaving it behind advances the numbering by one and every later type answers a sequence early"
+
+[[patch]]
+skip = "8E696BAC-BF72-4A87-9656-DBFF09CF1344"
+why = "2.5.6: descriptor type 02h is not illegal for us — connectionless twin of the 2.5.5 skip"
+
+[[patch]]
+skip = "BA85EE59-F3BB-4E66-8636-5008D0E8EC4D"
+why = "2.5.6: the 7Fh answer expected for type 02h"
+
+# ============================================================================
+# The template turns verify mode on and never off
+# ============================================================================
+#
+# Verify mode is a device-wide switch (PID_DEVICE_CONTROL bit 2). Thirty-
+# nine telegrams across the file write 04h to turn it on and not one
+# writes 00h to turn it back off, so every "no Verify" case that follows
+# a "Verify" case runs against a device that is still verifying. The
+# cases that only look for an acknowledgement do not notice; the ones
+# that assert a frame is *ignored* do, because an A_Memory_Response
+# arrives where nothing should:
+#
+#   2.7.16  "The frame shall be ignored"  → got 63 42 40 02 00
+#   2.32.10 "The frames shall be ignored" → got 64 42 C1 00 7F F0
+#
+# Both are correct zero-count verify answers to a length-inconsistent
+# write, which `handle_memory_write` already declines to act on. The
+# device is right; it has simply been left in the wrong mode.
+#
+# EITT traces the extra frame and moves on. We hold a case to what it
+# says, so verify goes off at the head of each "no Verify" run instead.
+
+[[patch]]
+before = "66119B72-2F0C-4BDF-8698-CD466409DB36"
+why = "2.7.13: verify mode off for the no-Verify run 2.7.13-2.7.17, which 2.7.4-2.7.12 left switched on"
+insert = [
+  { comment = "verify mode off (PID_DEVICE_CONTROL = 00h); the template never clears it" },
+  { inject = { data = "B0 #EDI #BDUT 60 80", delay_ms = 200 } },
+  { inject = { data = "BC #EDI #BDUT 66 43 D7 00 0E 10 01 00", delay_ms = 200 } },
+  { drain = 200 },
+  { inject = { data = "B0 #EDI #BDUT 60 81", delay_ms = 200 } },
+]
+
+[[patch]]
+before = "03E3E16A-CDCA-45DE-8E8B-543856FAED5B"
+why = "2.32.7: verify mode off for the no-Verify run 2.32.7-2.32.11, which 2.32.4-2.32.6 left switched on"
+insert = [
+  { comment = "verify mode off (PID_DEVICE_CONTROL = 00h); the template never clears it" },
+  { inject = { data = "B0 #EDI #BDUT 60 80", delay_ms = 200 } },
+  { inject = { data = "BC #EDI #BDUT 66 43 D7 00 0E 10 01 00", delay_ms = 200 } },
+  { drain = 200 },
+  { inject = { data = "B0 #EDI #BDUT 60 81", delay_ms = 200 } },
+]
+
+# ============================================================================
+# 2.16.1 expects the DUT's answer to come from the tool's address
+# ============================================================================
+#
+# The case writes individual address 1002h to the BDUT by serial number,
+# then reads it back, and expects
+#
+#     BC #EDI 00 00 EB 03 DD #BDUT_SERIAL_NUMBER 00 00 00 00
+#
+# as the answer. `#EDI` is the tool. A response the BDUT sends carries
+# the BDUT's own source address, and after the write in the same case
+# that is 1002h — which is exactly what our DUT sends.
+#
+# EITT papers over this with the connection setting the manual calls
+# "Used Tool Address (formerly 'Adjust'/'Adapt'): Enables an automatic
+# adjustment of the source / destination addresses". We have no such
+# rewriting layer, and adding one to paper over a wrong source address
+# would blunt every case that checks who spoke.
+
+[[patch]]
+replace = "18005AC9-CEDF-43D4-B4A7-8E3B8F8A4AAC"
+why = "2.16.1: the read-back answer comes from the BDUT's new address 1002h, not from #EDI as the template writes it"
+insert = [{ expect = { data = "BC 10 02 00 00 EB 03 DD #BDUT_SERIAL_NUMBER 00 00 00 00", timeout_ms = 1000 } }]
+
+# ============================================================================
+# 2.10 assumes the accessible memory still holds its factory pattern
+# ============================================================================
+#
+# The MemoryBit cases compute their expected read-back from a known
+# starting value rather than from whatever is there: 2.10.1 writes
+# and_data 33h / xor_data 55h over five octets and expects 56h back,
+# which is (0Fh AND 33h) XOR 55h. The collection says as much in its own
+# `MEM` field, sixteen octets of 0Fh described as "Accessible memory from
+# first position", and 0Fh is exactly what our linear memory holds
+# factory-fresh (`linear_memory: [0x0F; _]` in
+# ConformanceDeviceConfig::default_snapshot).
+#
+# By the time 2.10 runs it is not 0Fh any more. Collection 2.6-2.7 spends
+# 29 cases writing its own `MEM` — 01h, 02h, 03h … — over the same
+# addresses, and nothing puts them back. On a real bench the operator
+# reconfigures between collections; running the file end to end, we have
+# to say so.
+#
+# A full reset rather than a memory write: it restores the whole factory
+# snapshot in one step, which is the state the template assumes, and it
+# does not need a hand-computed A_Memory_Write frame whose length octet
+# and APCI count would have to be kept in step with the address the
+# profile picks for MEMPOS.
+
+[[patch]]
+before = "C60961FB-1070-478A-966A-438A0AFC74F9"
+why = "2.10.1: restore the factory memory pattern that collection 2.6-2.7 overwrote, which the MemoryBit expectations are computed from"
+insert = [{ full_reset = 2000 }]
+
+# ============================================================================
+# 2.10.4 onwards want verify mode, which the reset above turned off
+# ============================================================================
+#
+# The MemoryBit collection splits into 2.10.1-3 "no Verify" and 2.10.4-7
+# "Verify", and only the first group's state is arranged by the template
+# itself. Nothing in 2.10.4 enables verify mode: it inherits it from
+# collection 2.7, whose 2.7.4 writes 04h to PID_DEVICE_CONTROL and never
+# clears it.
+#
+# Our factory reset above clears it along with everything else, so the
+# switch has to go back on before the Verify group. The memory does not
+# need restoring a second time — 2.10.4 works at MEMPOS+20h, which
+# 2.10.1-3 never touch, so it is still 0Fh from the reset.
+#
+# The exchange is written out rather than patched into 2.10.4's own
+# connection because a patch step is injected verbatim, without the
+# sequence renumbering the profile asks for elsewhere. Opening and
+# closing a connection of its own keeps the numbering the template
+# expects intact: 2.10.4's first numbered telegram is still sequence 0.
+
+[[patch]]
+before = "3D162662-9648-4423-A6CD-2FE8A3216ABA"
+why = "2.10.4: put verify mode back on for the Verify half of 2.10, which inherits it from 2.7 and which our reset before 2.10.1 cleared"
+insert = [
+  { comment = "verify mode on (PID_DEVICE_CONTROL = 04h), inherited from 2.7 on a real bench" },
+  { inject = { data = "B0 #EDI #BDUT 60 80", delay_ms = 200 } },
+  { inject = { data = "BC #EDI #BDUT 66 43 D7 00 0E 10 01 04", delay_ms = 200 } },
+  { drain = 200 },
+  { inject = { data = "B0 #EDI #BDUT 60 81", delay_ms = 200 } },
+]
+
+# …and off again at the end of the group, because the switch is global.
+# Left on, it turns every later "no Verify" case into a Verify one:
+# 2.31.0, 2.32.2, 2.32.3 and 2.32.10 all start failing on the
+# A_Memory_Response they never asked for. Restoring the state a patch
+# changed is the patch's job — the template never asked for either edit.
+
+[[patch]]
+after = "59EE961F-528C-4377-A4A5-D935D1FECCDD"
+why = "2.10.7: turn verify mode off again after the Verify half of 2.10, restoring what the patch before 2.10.4 changed"
+insert = [
+  { comment = "verify mode off (PID_DEVICE_CONTROL = 00h)" },
+  { inject = { data = "B0 #EDI #BDUT 60 80", delay_ms = 200 } },
+  { inject = { data = "BC #EDI #BDUT 66 43 D7 00 0E 10 01 00", delay_ms = 200 } },
+  { drain = 200 },
+  { inject = { data = "B0 #EDI #BDUT 60 81", delay_ms = 200 } },
+]

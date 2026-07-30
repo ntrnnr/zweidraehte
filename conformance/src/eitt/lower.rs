@@ -31,8 +31,9 @@ use crate::{TestCase, TestStep, TestSuite, TestVariable};
 /// 16 cases" is never a surprise.
 #[derive(Debug, Default, Clone)]
 pub struct LowerReport {
-    /// Collections the profile did not select, with their case counts.
-    pub skipped_collections: Vec<(String, usize)>,
+    /// Collections the profile did not select, with their case counts
+    /// and the reason the profile gives.
+    pub skipped_collections: Vec<(String, usize, String)>,
     /// Cases skipped because the profile says they do not apply.
     pub not_applicable: Vec<(String, String)>,
     /// Cases skipped by a patch.
@@ -64,8 +65,8 @@ impl LowerReport {
         for why in &self.overrides {
             println!("  ⚑ {why}");
         }
-        for (name, cases) in &self.skipped_collections {
-            println!("  ⊘ collection {name:?} not selected ({cases} case(s))");
+        for (name, cases, why) in &self.skipped_collections {
+            println!("  ⊘ collection {name:?} not run ({cases} case(s)) — {why}");
         }
         for (name, why) in &self.not_applicable {
             println!("  ⊘ {name}: not applicable — {why}");
@@ -104,6 +105,15 @@ const IGNORED_ATTR_REASONS: &[(&str, &str)] = &[
          addresses are already distinguished by the source address in Data",
     ),
     (
+        "UseSystemBroadcast",
+        "it picks L_SystemBroadcast.req over L_Data.req on a real interface, and \
+         we inject octets into a mock bus where the frame already says which it \
+         is — the system broadcast flag is bit 4 of the control field, and \
+         `get_address_type` reads that bit to tell the two apart. The management \
+         template's system broadcasts carry control byte 2C where its ordinary \
+         broadcasts carry BC, so nothing is lost by not acting on the attribute",
+    ),
+    (
         "RFInfo",
         "RFInfo/RFInfoEval/RFSerial/LFN are cEMI additional info (EITT manual \
          12.12.1, 'Add Info 0 (RF info) on Req'), which we do not model, and \
@@ -123,6 +133,10 @@ pub enum LowerError {
     UnsupportedCommand { case: String, command: String, text: String },
     /// A telegram attribute whose value we do not know.
     UnknownAttribute { case: String, telegram: String, attr: &'static str, value: String },
+    /// A collection the profile neither selects nor explains.
+    UnexplainedCollection { template: String, collection: String },
+    /// A `skipped_collection` naming no collection in the template.
+    UnusedSkippedCollection { name: String, why: String },
     /// A telegram carrying KNX Data Security attributes. Sending it
     /// plain would silently turn a security test into a plaintext one.
     SecureTelegram { case: String, telegram: String, attrs: Vec<&'static str> },
@@ -152,6 +166,19 @@ impl std::fmt::Display for LowerError {
             Self::UnknownAttribute { case, telegram, attr, value } => {
                 write!(f, "{case}: telegram {telegram} has {attr}={value:?}, which this lowerer does not know")
             }
+            Self::UnexplainedCollection { collection, .. } => write!(
+                f,
+                "the collection {collection:?} is neither selected by `collections` nor \
+                 accounted for by a `skipped_collection`. Selecting any collection obliges \
+                 the profile to say why it leaves the rest out — add it to one list or the \
+                 other. A collection that appeared out of nowhere means the template has been \
+                 revised."
+            ),
+            Self::UnusedSkippedCollection { name, why } => write!(
+                f,
+                "the profile skips a collection matching {name:?} — {why} — but the template \
+                 has none. Either it was renamed, or the entry is stale."
+            ),
             Self::SecureTelegram { case, telegram, attrs } => write!(
                 f,
                 "{case}: telegram {telegram} carries KNX Data Security attributes {attrs:?}; \
@@ -199,6 +226,7 @@ pub fn lower(
     let mut report = LowerReport { overrides: profile.applied_overrides.clone(), ..Default::default() };
     let by_anchor = patches.map(|p| p.by_anchor()).unwrap_or_default();
     let mut used_anchors: Vec<String> = Vec::new();
+    let mut used_skips: Vec<String> = Vec::new();
     let global_vars = collect_fields(&template.fields);
 
     let mut suites = Vec::new();
@@ -207,6 +235,14 @@ pub fn lower(
         // a different application program loaded into the BDUT, so the
         // profile picks the one matching the program we actually have.
         if !profile.accepts_collection(collection.name.as_deref()) {
+            let name = collection.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
+            // Dropping a collection drops every case in it, so the
+            // profile has to say why. One it cannot account for is the
+            // signal that the template grew or renamed a collection
+            // since the profile was written.
+            let why = profile.skipped_collection_reason(collection.name.as_deref()).ok_or_else(|| {
+                LowerError::UnexplainedCollection { template: name.clone(), collection: name.clone() }
+            })?;
             let cases = collection
                 .test_suites
                 .iter()
@@ -214,9 +250,8 @@ pub fn lower(
                 .flat_map(|s| s.test_cases.iter())
                 .map(|tc| tc.cases.len())
                 .sum();
-            report
-                .skipped_collections
-                .push((collection.name.clone().unwrap_or_else(|| "(unnamed)".to_string()), cases));
+            used_skips.push(name.to_lowercase());
+            report.skipped_collections.push((name, cases, why.to_string()));
             continue;
         }
 
@@ -257,6 +292,16 @@ pub fn lower(
             }
             let suite_name = suite.name.clone().unwrap_or_else(|| "(unnamed suite)".to_string());
             suites.push(TestSuite::new(suite_name, vars.clone()).with_cases(cases));
+        }
+    }
+
+    // Every `skipped_collection` must have matched something, for the
+    // same reason a patch anchor must: an entry that stopped matching
+    // has silently become an opinion about nothing.
+    for skip in &profile.skipped_collections {
+        let needle = skip.name.to_lowercase();
+        if !used_skips.iter().any(|used| used.contains(&needle)) {
+            return Err(LowerError::UnusedSkippedCollection { name: skip.name.clone(), why: skip.why.clone() });
         }
     }
 
@@ -557,6 +602,10 @@ fn lower_telegram(
         *report.ignored_attrs.entry("Connection").or_default() += 1;
     }
 
+    if t.use_system_broadcast.as_deref().is_some_and(|b| !b.trim().is_empty()) {
+        *report.ignored_attrs.entry("UseSystemBroadcast").or_default() += 1;
+    }
+
     let secure_attrs = t.security_attrs_set();
     if !secure_attrs.is_empty() {
         return Err(LowerError::SecureTelegram { case: case_name.to_string(), telegram: tid(), attrs: secure_attrs });
@@ -706,22 +755,24 @@ struct Tpci {
 fn locate_tpci(data: &str, vars: &BTreeMap<String, TestVariable>) -> Result<Option<Tpci>, String> {
     let tokens: Vec<String> = data.split_whitespace().map(str::to_string).collect();
 
-    // The control field decides the frame layout, and only the standard
-    // one puts TPCI at octet 6. Refusing the extended layout is not a
-    // limitation we have hit — every telegram in these templates is
-    // standard — it is a guard against reading the wrong octet.
+    // The control field decides the frame layout, and it is the
+    // authority rather than the `FT` attribute — the management template
+    // has 28 telegrams whose `FT` says `Normal` over an extended control
+    // byte, and it is the octets the device parses.
+    //
+    //   standard:  CTRL  src(2) dst(2) len/AT  TPCI …   → octet 6
+    //   extended:  CTRL1 CTRL2  src(2) dst(2)  len TPCI → octet 7
     let ctrl = tokens.first().and_then(|t| u8::from_str_radix(t, 16).ok());
-    match ctrl {
-        Some(c) if c & 0x80 != 0 => {}
-        Some(c) => return Err(format!("control field {c:#04X} is an extended frame, whose TPCI is elsewhere")),
+    let tpci_offset = match ctrl {
+        Some(c) if c & 0x80 != 0 => 6,
+        Some(_) => 7,
         None => return Ok(None),
-    }
+    };
 
-    const TPCI_OFFSET: usize = 6;
     let mut offset = 0usize;
     let Some(index) = tokens.iter().position(|tok| {
         let width = token_width(tok, vars);
-        let covers = (offset..offset + width).contains(&TPCI_OFFSET);
+        let covers = (offset..offset + width).contains(&tpci_offset);
         offset += width;
         covers
     }) else {
@@ -816,8 +867,19 @@ fn collect_fields(fields: &[schema::Fields]) -> BTreeMap<String, TestVariable> {
             if f.is_duration() {
                 continue;
             }
-            let raw = f.default_value.as_deref().unwrap_or("0");
-            let value = u32::from_str_radix(raw.trim().trim_start_matches("0x"), 16).unwrap_or(0);
+            // Decimal, despite `Format="Hex"` — that attribute says how
+            // EITT renders the field in its data sheet, not how the
+            // default is written. The management template settles it
+            // twice: `OBJ_0_PROP_E0`, the property named for PID E0h,
+            // defaults to "224"; and its user-memory window is
+            // 32752..32767, which is 7FF0h..7FFFh. Read as hex those are
+            // 0x224 and a value too wide for the 16 bits the field
+            // declares.
+            let raw = f.default_value.as_deref().unwrap_or("0").trim();
+            let value = raw
+                .strip_prefix("0x")
+                .or_else(|| raw.strip_prefix("0X"))
+                .map_or_else(|| raw.parse::<u32>().unwrap_or(0), |hex| u32::from_str_radix(hex, 16).unwrap_or(0));
             // `SizeInBits` decides the width. 16 bits is two octets on
             // the wire; anything else contributes one.
             let bytes =
@@ -961,9 +1023,45 @@ mod tests {
             ],
         }];
         let vars = collect_fields(&fields);
-        assert_eq!(vars["WIDE"].as_bytes(), vec![0x01, 0x00]);
+        assert_eq!(vars["WIDE"].as_bytes(), vec![0x00, 0x64]);
         assert_eq!(vars["NARROW"].as_bytes(), vec![0x02]);
         assert!(!vars.contains_key("TTN"));
+    }
+
+    /// `Format="Hex"` is a data-sheet display format, not the encoding of
+    /// `DefaultValue`. Both cases here are taken from the management
+    /// template, which is where the difference first shows: `OBJ_0_PROP_E0`
+    /// is the property named for PID E0h, and the user-memory window it
+    /// declares is 7FF0h..7FFFh. Read as hex, the first is 0x224 and the
+    /// second does not fit the 16 bits the field declares.
+    #[test]
+    fn number_field_defaults_are_decimal_despite_format_hex() {
+        let number = |name: &str, bits: u32, default: &str| {
+            schema::Field::NumberField(schema::NumberField {
+                name: name.into(),
+                size_in_bits: Some(bits),
+                default_value: Some(default.into()),
+                format: Some("Hex".into()),
+                display_name: None,
+                min_value: None,
+                max_value: None,
+            })
+        };
+        let fields = vec![schema::Fields {
+            name: None,
+            fields: vec![
+                number("OBJ_0_PROP_E0", 8, "224"),
+                number("MEM_ACCESSIBLE_START", 16, "32752"),
+                number("MEM_ACCESSIBLE_END", 16, "32767"),
+                // An explicit 0x prefix still means hex.
+                number("PREFIXED", 16, "0x0200"),
+            ],
+        }];
+        let vars = collect_fields(&fields);
+        assert_eq!(vars["OBJ_0_PROP_E0"].as_bytes(), vec![0xE0]);
+        assert_eq!(vars["MEM_ACCESSIBLE_START"].as_bytes(), vec![0x7F, 0xF0]);
+        assert_eq!(vars["MEM_ACCESSIBLE_END"].as_bytes(), vec![0x7F, 0xFF]);
+        assert_eq!(vars["PREFIXED"].as_bytes(), vec![0x02, 0x00]);
     }
 
     #[test]
@@ -1140,9 +1238,20 @@ mod tests {
     }
 
     #[test]
-    fn tl_seq_num_refuses_an_extended_frame() {
-        let err = pin("3C E0 #EDI #BDUT 01 40 80", "0").expect_err("extended");
-        assert!(err.contains("extended frame"), "{err}");
+    fn tl_seq_num_finds_the_tpci_octet_in_an_extended_frame() {
+        // An extended frame spends two octets on the control field, so
+        // its TPCI is at octet 7 rather than 6. Taken from management
+        // 2.6.6: `3C 60 #BDUT #EDI 10 42 4D …`, where 42h is a numbered
+        // TPCI at sequence 0.
+        assert_eq!(pin("3C 60 #BDUT #EDI 10 42 4D 02 00", "3").expect("applies"), "3C 60 #BDUT #EDI 10 4E 4D 02 00");
+    }
+
+    #[test]
+    fn tl_seq_num_reads_the_layout_from_the_control_byte_not_the_ft_attribute() {
+        // Reading octet 6 in this frame would find the length octet
+        // (10h), which is unnumbered, and report that instead.
+        let err = pin("3C 60 #BDUT #EDI 10 00 4D", "0").expect_err("unnumbered TPCI at octet 7");
+        assert!(err.contains("unnumbered"), "{err}");
     }
 
     #[test]

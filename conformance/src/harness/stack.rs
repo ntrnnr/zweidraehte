@@ -1016,13 +1016,32 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
 
 /// Device descriptor type 2 (DD2) data for conformance tests.
 ///
-/// This must match the DD2_RESPONSE variable in the conformance test suite.
-/// Format:
-/// - Bytes 0-1: Application manufacturer code (0x0001)
-/// - Bytes 2-3: Manufacturer-specific device type (0x0203)
-/// - Byte 4: Version (0x04)
-/// - Byte 5: Link management support (bit 7=0) + Logical tag base (0x05)
-/// - Bytes 6-13: Channel information (4 channels)
+/// Deliberately placeholder content: these are the fourteen octets the
+/// EITT management template declares as the default of its own
+/// `DD2_RESPONSE` field, which is what 2.5.3 and 2.5.4 compare against.
+/// A real DD2 would be filled in from the data sheet.
+///
+/// DD2 is Optional for System B — 06 Profiles §4.3 "Device
+/// Identification", row "Device Descriptor Type 2", where it is M only
+/// for RF unidirectional and bidirectional and "-" for System 1/2,
+/// BCU 1 and BIM M112. We answer it so the read path is exercised.
+///
+/// Its fields are all defined in terms of an E-Mode device: 03/05/01
+/// §4.1.3 describes octets 0-1 as "the manufacturer code of the
+/// manufacturer of the E-Mode device", octet 5 as "the Management
+/// Profile of the E-Mode device", and octets 6-13 as E-Mode Channel
+/// information; §4.3.13.4 has an E-Mode Management Server deriving a
+/// device's active Group Objects from DD2 plus the Channel database.
+/// The spec does not go on to say DD2 is E-Mode only — §4.1.1 names a
+/// mode for DD0 alone ("designed for use in S-Mode") — which is why an
+/// S-Mode profile can still list it as Optional.
+///
+/// Format, against the octets below:
+/// - Bytes 0-1: Application Manufacturer (0x0102)
+/// - Bytes 2-3: Application Identification (0x0304)
+/// - Byte 4: Application Version (0x05)
+/// - Byte 5: Management Profile in bits 7-4, rest reserved (0x06)
+/// - Bytes 6-13: Channel Info 1-4, two octets each
 pub const CONFORMANCE_DD2: [u8; 14] =
     [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E];
 

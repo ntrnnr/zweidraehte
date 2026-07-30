@@ -27,8 +27,8 @@ where the test steps come from.
   `conformance/src/tests/`. This is the complete suite — 556 tests
   covering everything we have transcribed.
 - **`conformance-eitt`** runs a vendor EITT XML template directly. The
-  group-object, network-layer, transport-layer and load/run-state-machine
-  templates work so far; see below.
+  group-object, network-layer, transport-layer, load/run-state-machine
+  and management templates work so far; see below.
 
 Run the hand-written suite with `cargo run --bin conformance-runner`.
 Pass a test name, suite name, or a substring of either as the first
@@ -121,9 +121,9 @@ An anchor GUID that no longer resolves is a **hard error**, not a
 warning: that is the signal the template has been revised and whatever
 the patch was compensating for needs re-checking.
 
-The group-object, network-layer, transport-layer and
-load/run-state-machine templates run today. Management and TSSJ
-DataSecurity do not; see `SESSION.md` for what each still needs.
+The group-object, network-layer, transport-layer, load/run-state-machine
+and management templates run today. TSSJ DataSecurity does not; see
+`SESSION.md` for what it still needs.
 
 ### EITT template semantics worth knowing
 
@@ -180,7 +180,7 @@ suite that passes while testing the wrong thing:
   selects the LL service code for sending telegrams to the bus … RF: all
   telegrams will be assumed to be of the extended frame type" — and a
   template names the interfaces it needs in `<Interfaces>`, stating each
-  one's media type in prose for the operator. All five templates we run
+  one's media type in prose for the operator. All six templates we run
   declare none, so there is one connection and one medium; ours is the
   profile's `medium` key, which is the same thing in the same place.
   Couplers, USB, RF Multi and the routers do declare interfaces and
@@ -198,6 +198,32 @@ suite that passes while testing the wrong thing:
   only effect was to drop the sole RF-attributed telegram in the
   run-state template — the T_Connect opening 2.3.1 — leaving that whole
   suite to run unconnected.
+- **`Format="Hex"` on a `NumberField` is a display format, not an
+  encoding.** Its `DefaultValue` is decimal. The management template
+  settles it twice over: `OBJ_0_PROP_E0`, the property named for PID
+  E0h, defaults to `224`, and its user-memory window is `32752..32767`,
+  which is `7FF0h..7FFFh`. Read as hex the second does not even fit the
+  16 bits the field declares.
+- **The frame layout comes from the control byte, not from `FT`.** An
+  extended frame spends two octets on the control field, so its TPCI is
+  at octet 7 rather than 6 — and the management template has 28
+  telegrams whose `FT` says `Normal` over an extended control byte. The
+  octets are what the device parses.
+- **Device-wide switches stay switched, and so does memory.** Verify
+  mode (PID_DEVICE_CONTROL bit 2) is written on 39 times across the
+  management template and never written off, so its "no Verify" cases
+  inherit the mode from the "Verify" cases before them; EITT traces the
+  unexpected `A_Memory_Response` and moves on, we hold a case to what it
+  says. Likewise 2.10 computes its expectations from the factory memory
+  pattern that collection 2.6-2.7 spends 29 cases overwriting. Both are
+  the template assuming a bench where the operator reconfigures between
+  collections, and both are patched rather than papered over.
+- **`collections` and `skipped_collection` must together account for
+  every collection a template declares.** Selecting any obliges the
+  profile to say why it leaves the rest out, and a collection that is
+  neither run nor explained stops the run — same bargain as the patch
+  anchors, so a template that gains or renames one cannot quietly
+  shrink the suite.
 
 ## Authoring conformance tests
 
@@ -808,7 +834,7 @@ cargo run --bin conformance-eitt -- \
 ```
 Executes KNX conformance templates straight from EITT's XML instead of
 hand-written transcriptions of them. The profile lists which templates
-to run and what each needs — five of them today.
+to run and what each needs — six of them today.
 
 The templates are licensed and are not in the repository — if
 `EITT_TEMPLATES` is unset or they are absent on this machine, skip this
