@@ -520,14 +520,51 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
 
 /// Object type for the KNX Certification Object (manufacturer-specific).
 ///
-/// Active only during KNX certification testing. Provides PID 51 (0x33) as
-/// a single UINT8 property with role-based access policies.
+/// Active only during KNX certification testing. 0xC351 is 50001, the
+/// value the EITT templates carry as `USER_OBJ_TYPE1` — their "User
+/// Interface Object (IO1)", described there as being "used for testing
+/// both Roles and Extended Interface Object addressing".
 const CERTIFICATION_OBJECT_TYPE: InterfaceObjectType = InterfaceObjectType::Other(0xC351);
 
-/// Property ID used for role-based access testing.
+/// Property IDs on the Certification Object.
+///
+/// PID 51 serves the role-based access tests (data security 3.6). The
+/// other four are the template's `ACCESSIBLE_PROP1`..`PROP4`, whose
+/// required shapes come from its own field comments — a device is
+/// expected to supply one property of each kind so the extended property
+/// services have something manufacturer-specific to address.
 mod cert_pid {
+    /// Role-based access testing. UINT8, read/write.
     pub const ROLES: u16 = 51; // 0x33
+    /// `ACCESSIBLE_PROP1` — PDT_GENERIC_02, restricted write level.
+    pub const GENERIC_02: u16 = 52; // 0x34
+    /// `ACCESSIBLE_PROP3` — PDT_FUNCTION.
+    pub const FUNCTION: u16 = 54; // 0x36
+    /// `ACCESSIBLE_PROP4` — PDT_GENERIC_01, long enough to fill an APDU.
+    pub const LONG_ARRAY: u16 = 55; // 0x37
+    /// `ACCESSIBLE_PROP2` — PDT_GENERIC_01 with a validated range.
+    pub const RANGED: u16 = 201; // 0xC9
 }
+
+/// How many elements [`cert_pid::LONG_ARRAY`] holds.
+///
+/// The template reads `MAX_APDU_FIT_DATA` (F5h = 245) elements from it
+/// and expects a response filling the whole 254-octet APDU, then reads
+/// `MAX_APDU_LENGTH` (FEh = 254) and expects F4h. The property has to be
+/// long enough that the first read is about the APDU rather than about
+/// running out of property.
+const CERT_LONG_ARRAY_LEN: usize = 245;
+
+/// Accepted range for [`cert_pid::RANGED`].
+///
+/// Data security 4.2.12 writes each boundary and expects a distinct
+/// return code: 00h is below the minimum (F6h), FFh above the maximum
+/// (F7h), and 80h is a hole inside the range that must still be refused
+/// (F8h). The three codes are the point of the case, so the property
+/// needs all three conditions to be separable.
+const CERT_RANGED_MIN: u8 = 0x01;
+const CERT_RANGED_MAX: u8 = 0xFE;
+const CERT_RANGED_VOID: u8 = 0x80;
 
 /// Access policy for the Certification Object's PID 51.
 ///
@@ -588,13 +625,85 @@ pub struct CertificationObjectAugment {
     )]
     _roles_io: (),
 
+    // ------------------------------------------------------------------
+    // The template's ACCESSIBLE_PROP1..PROP4.
+    //
+    // All four are `manual`: the macro's `read = |this| ...` closure form
+    // cannot see the request, and each of these needs something from it —
+    // a start index and count for the array, the written value for the
+    // range check, the access context for the level check.
+    // ------------------------------------------------------------------
+    // PID 52 — PDT_GENERIC_02, restricted at both ends. 4.1.10 reads it
+    // unauthorised and expects a refusal, and 4.2.11 / 4.3.11 / 4.4.11
+    // authorise with the level-0 key, write, re-key, and expect the next
+    // write refused. Level 0 for both means only a fully authorised
+    // client gets through, which is the "higher access level" those
+    // cases are named for.
+    #[io(
+        pid = cert_pid::GENERIC_02,
+        pdt = zweidraehte_proto::dpt::PDT_Generic02,
+        access = RW,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
+        rl = 0, wl = 0,
+        manual,
+    )]
+    _generic02_io: (),
+
+    // PID 201 — PDT_GENERIC_01 with the validated range above.
+    #[io(
+        pid = cert_pid::RANGED,
+        pdt = zweidraehte_proto::dpt::PDT_Generic01,
+        access = RW,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
+        rl = 3, wl = 3,
+        manual,
+    )]
+    _ranged_io: (),
+
+    // PID 54 — PDT_FUNCTION. Reached through the function-property
+    // services; a plain value write to it must fail with FEh, which the
+    // value handlers below produce by declining it as a type mismatch.
+    #[io(
+        pid = cert_pid::FUNCTION,
+        pdt = zweidraehte_proto::dpt::PDT_Function,
+        access = RW,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
+        rl = 3, wl = 3,
+        manual,
+    )]
+    _function_io: (),
+
+    // PID 55 — PDT_GENERIC_01, `CERT_LONG_ARRAY_LEN` elements.
+    #[io(
+        pid = cert_pid::LONG_ARRAY,
+        pdt = zweidraehte_proto::dpt::PDT_Generic01,
+        access = RW,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
+        rl = 3, wl = 3,
+        array(max = CERT_LONG_ARRAY_LEN as u16),
+        manual,
+    )]
+    _long_array_io: (),
+
     /// The stored value for PID 51 (single byte).
     value: Cell<u8>,
+    /// PID 52's two octets.
+    generic02: Cell<[u8; 2]>,
+    /// PID 201's single octet, seeded inside the accepted range.
+    ranged: Cell<u8>,
+    /// PID 55's elements. `RefCell` rather than `Cell` because reads
+    /// slice it rather than copying the whole array out.
+    long_array: RefCell<[u8; CERT_LONG_ARRAY_LEN]>,
 }
 
 impl CertificationObjectAugment {
     pub fn new() -> Self {
-        Self { value: Cell::new(0) }
+        Self {
+            value: Cell::new(0),
+            generic02: Cell::new([0, 0]),
+            ranged: Cell::new(CERT_RANGED_MIN),
+            long_array: RefCell::new([0u8; CERT_LONG_ARRAY_LEN]),
+        }
     }
 
     /// Check whether the given access context permits reading PID 51.
@@ -710,6 +819,13 @@ impl CertificationObjectAugment {
                 let val = [self.value.get()];
                 Some(val.read_property(req.start_idx, req.count, buf))
             }
+            cert_pid::GENERIC_02 => Some(self.generic02.get().read_property(req.start_idx, req.count, buf)),
+            cert_pid::RANGED => Some([self.ranged.get()].read_property(req.start_idx, req.count, buf)),
+            cert_pid::LONG_ARRAY => Some(self.read_long_array(req.start_idx, req.count, buf)),
+            // PID 54 is PDT_FUNCTION. A value read of a function
+            // property is not a thing, so it falls through to the same
+            // type-conflict answer as a value write.
+            cert_pid::FUNCTION => Some(Err(PropertyError::TypeMismatch)),
             _ => None,
         }
     }
@@ -731,26 +847,132 @@ impl CertificationObjectAugment {
                 self.value.set(req.data[0]);
                 Some(Ok(WriteResponse::Echo))
             }
+            cert_pid::GENERIC_02 => {
+                if req.data.len() != 2 {
+                    return Some(Err(PropertyError::TypeMismatch));
+                }
+                self.generic02.set([req.data[0], req.data[1]]);
+                Some(Ok(WriteResponse::Echo))
+            }
+            cert_pid::RANGED => {
+                if req.data.len() != 1 {
+                    return Some(Err(PropertyError::TypeMismatch));
+                }
+                // The three rejections 4.2.12 distinguishes. Order
+                // matters only in that the void value sits inside the
+                // range, so it has to be checked after the bounds rather
+                // than folded into them.
+                let value = req.data[0];
+                if value < CERT_RANGED_MIN {
+                    return Some(Err(PropertyError::ValueBelowMin));
+                }
+                if value > CERT_RANGED_MAX {
+                    return Some(Err(PropertyError::ValueAboveMax));
+                }
+                if value == CERT_RANGED_VOID {
+                    return Some(Err(PropertyError::ValueOutOfRange));
+                }
+                self.ranged.set(value);
+                Some(Ok(WriteResponse::Echo))
+            }
+            cert_pid::LONG_ARRAY => {
+                let start = req.start_idx as usize;
+                let mut store = self.long_array.borrow_mut();
+                // `start_idx` is 1-based, and element 0 is the element
+                // count, which is not writable.
+                if start == 0 || start - 1 + req.data.len() > store.len() {
+                    return Some(Err(PropertyError::InvalidStartIndex));
+                }
+                store[start - 1..start - 1 + req.data.len()].copy_from_slice(req.data);
+                Some(Ok(WriteResponse::Echo))
+            }
+            // A value write to a PDT_FUNCTION property: 4.2.13 and
+            // 4.3.12 expect FEh, which is what TypeMismatch maps to.
+            cert_pid::FUNCTION => Some(Err(PropertyError::TypeMismatch)),
             _ => None,
         }
+    }
+
+    /// Array read for [`cert_pid::LONG_ARRAY`].
+    ///
+    /// The blanket `PropertyRead` impl is single-element — it refuses
+    /// anything but `start_idx == 1, count == 1` — so an array property
+    /// has to do the slicing itself. Same convention the tunnelling
+    /// augment follows: `start_idx == 0` answers the element count as a
+    /// big-endian u16, and `start_idx >= 1` is a 1-based offset.
+    fn read_long_array(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
+        let store = self.long_array.borrow();
+
+        if start_idx == 0 {
+            if buf.len() < 2 {
+                return Err(PropertyError::BufferTooSmall);
+            }
+            buf[..2].copy_from_slice(&(store.len() as u16).to_be_bytes());
+            return Ok(2);
+        }
+        if count == 0 {
+            return Err(PropertyError::InvalidElementCount);
+        }
+
+        let start = (start_idx - 1) as usize;
+        if start >= store.len() {
+            return Err(PropertyError::InvalidStartIndex);
+        }
+        // Clamped rather than refused: a read running off the end
+        // returns what is there, and it is the APDU budget that decides
+        // whether the answer fits — 4.1.8 wants F4h from that check, not
+        // an address error from this one.
+        let end = (start + count as usize).min(store.len());
+        let needed = end - start;
+        if buf.len() < needed {
+            return Err(PropertyError::BufferTooSmall);
+        }
+        buf[..needed].copy_from_slice(&store[start..end]);
+        Ok(needed)
+    }
+
+    /// The function-property body for PID 54.
+    ///
+    /// Three octets, so that with the return code in front the response
+    /// carries the four the template expects: 4.2.13, 4.3.12 and 4.6.1
+    /// all match `?? ?? ?? ??`, which is return code plus three. The
+    /// contents are free — the wildcards say the template only cares
+    /// that the property answers as a function property at all — so this
+    /// echoes the service ID and the stored byte rather than a constant,
+    /// which makes a wrong-PID answer visible in a trace.
+    fn function_body(&self, req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>) -> [u8; 3] {
+        let service_id = req.service_data.get(1).copied().unwrap_or(0);
+        [service_id, self.value.get(), 0x00]
     }
 
     pub fn handle_extra_pid_function_command<D: StackDefinition>(
         &self,
         _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
-        _req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
+        req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
     ) -> Option<zweidraehte_device::objects::interface::FunctionPropertyResult> {
-        None
+        match req.prop_id {
+            cert_pid::FUNCTION => Some(zweidraehte_device::objects::interface::FunctionPropertyResult::with_code(
+                zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode::Success,
+                &self.function_body(req),
+            )),
+            _ => None,
+        }
     }
 
     pub fn handle_extra_pid_function_state_read<D: StackDefinition>(
         &self,
         _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
-        _req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
+        req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
     ) -> Option<zweidraehte_device::objects::interface::FunctionPropertyResult> {
-        None
+        match req.prop_id {
+            cert_pid::FUNCTION => Some(zweidraehte_device::objects::interface::FunctionPropertyResult::with_code(
+                zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode::Success,
+                &self.function_body(req),
+            )),
+            _ => None,
+        }
     }
 }
 

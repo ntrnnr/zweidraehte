@@ -431,6 +431,16 @@ WRITEONLY_MEM_START = "00 05 10"   # WRITEONLY_MEMORY_BASE, 16 bytes
 # which is what those access-policy cases need, and the hand-written
 # suite uses the same two values.
 
+# MAX_APDU_FIT_DATA is deliberately left at the template's F5h (245).
+# That value is right for us and we currently fail 4.1.7 against it: the
+# length field of a TP1 frame holds the APDU length *minus one*, so
+# `MAX_APDU_LENGTH` FEh admits a 255-octet APDU, and with the ten octets
+# an A_PropertyExtValue_Response spends on its header, 245 elements fit.
+# Our `max_outgoing_msg_len` reads FEh as the octet count instead, so
+# every response is budgeted one octet short. Overriding this field to
+# F4h would hide that behind a device parameter that is not true. See
+# SESSION.md.
+
 # Other templates go here as they start working. Each needs its own
 # patch set, and most also need comment commands that are hard errors
 # today — see SESSION.md.

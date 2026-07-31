@@ -245,11 +245,16 @@ fn test_4_3_10() -> TestCase {
 
 fn test_4_3_12() -> TestCase {
     TestCase::new("4.3.12 WriteUnCon to PDT_FUNCTION → ignored").with_steps(vec![
-        comment("WriteUnCon to Security IO PID_SECURITY_MODE (PDT_FUNCTION) → ignored"),
+        comment("WriteUnCon to the PDT_FUNCTION property on IO1 → ignored"),
         inject("BC #EDI #BDUT_ADDR 6C 01 D0 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 01 00 01 00 00 01"),
         wait(SETTLE),
-        comment("Verify Security Mode unchanged via FunctionPropertyStateRead"),
+        comment("Verify it still answers as a function property"),
+        // Four octets after the PID — return code plus three, which is
+        // what the reference XML matches with `?? ?? ?? ??`. The three
+        // this expected before were the shape of PID_SECURITY_MODE, the
+        // stand-in `#ACCESSIBLE_PROP3` named before the Certification
+        // Object had a function property of its own.
         inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 00 00"),
-        expect("BC #BDUT_ADDR #EDI 69 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ??", TIMEOUT),
+        expect("BC #BDUT_ADDR #EDI 6A 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ?? ??", TIMEOUT),
     ])
 }

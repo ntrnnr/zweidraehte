@@ -61,11 +61,14 @@ fn test_4_7_0() -> TestCase {
 
 fn test_4_6_1() -> TestCase {
     TestCase::new("4.6.1 Command to valid function property → success").with_steps(vec![
-        // Read current security mode state first
-        comment("StateRead Security Mode on Security IO"),
+        comment("StateRead the PDT_FUNCTION property on IO1"),
         inject("BC #EDI #BDUT_ADDR 68 01 D5 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 00 00"),
-        // Response: 01 D6 + IOT(2) + INST(2) + PID(1) + rc(1) + ServiceID echo(1) + mode(1) = 10 bytes → 0x69
-        expect("BC #BDUT_ADDR #EDI 69 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ??", TIMEOUT),
+        // Response: 01 D6 + IOT(2) + INST(2) + PID(1) + rc(1) + body(3)
+        // = 11 bytes → 0x6A. The body is three octets, which is what the
+        // reference XML matches with `?? ?? ?? ??` counting the return
+        // code. This expected one fewer while `#ACCESSIBLE_PROP3` still
+        // named PID_SECURITY_MODE as a stand-in.
+        expect("BC #BDUT_ADDR #EDI 6A 01 D6 #USER_OBJ_TYPE1 00 10 #ACCESSIBLE_PROP3 ?? ?? ?? ??", TIMEOUT),
     ])
 }
 

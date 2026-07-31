@@ -134,8 +134,19 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("L2_PWD".into(), TestVariable::Bytes(vec![0x11, 0x22, 0x33, 0x44]));
     vars.insert("L3_PWD".into(), TestVariable::Bytes(vec![0x12, 0x34, 0x56, 0x78]));
 
-    // User-defined Interface Object: for our DUT, this is the Security IO.
-    vars.insert("USER_OBJ_TYPE1".into(), TestVariable::Bytes(vec![0x00, 0x11]));
+    // The template's "User Interface Object (IO1)", which for us is the
+    // Certification Object at 0xC351 — the same object `CERT_OBJ_TYPE`
+    // names, kept as a separate variable because the reference XML uses
+    // both spellings.
+    //
+    // This used to point at the Security IO (0x0011) and the four
+    // accessible properties at whatever Security IO properties happened
+    // to have roughly the right shape. That was the only option before
+    // the Certification Object carried properties of its own; it also
+    // meant the extended-addressing tests never addressed anything
+    // outside the standard object range, which is the one thing AN163
+    // exists to cover.
+    vars.insert("USER_OBJ_TYPE1".into(), TestVariable::Bytes(vec![0xC3, 0x51]));
 
     // Certification Object (IOT 0xC351) — used for Section 3.6 role tests.
     vars.insert("CERT_OBJ_TYPE".into(), TestVariable::Bytes(vec![0xC3, 0x51]));
@@ -143,13 +154,17 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     // Property used for role-based access testing (PID 51 = 0x33).
     vars.insert("ROLES_PROPERTY".into(), TestVariable::Bytes(vec![0x33]));
 
-    // Accessible properties on USER_OBJ_TYPE1 (Security IO):
-    // PROP1: PDT_GENERIC_20 ReadWrite (PID_P2P_KEY_TABLE = 0x34)
+    // The four accessible properties the reference XML expects on IO1.
+    // Their shapes come from its own field comments; see
+    // `cert_pid` in `harness::secure_stack` for the implementations.
+    // PROP1: PDT_GENERIC_02 ReadWrite, restricted write level (PID 52).
     vars.insert("ACCESSIBLE_PROP1".into(), TestVariable::Bytes(vec![0x34]));
-    // PROP3: PDT_FUNCTION (PID_SECURITY_MODE = 0x33)
-    vars.insert("ACCESSIBLE_PROP3".into(), TestVariable::Bytes(vec![0x33]));
-    // PROP4: PDT_GENERIC_01 ReadWrite (PID_SECURITY_REPORT = 0x39)
-    vars.insert("ACCESSIBLE_PROP4".into(), TestVariable::Bytes(vec![0x39]));
+    // PROP2: PDT_GENERIC_01 ReadWrite with a validated range (PID 201).
+    vars.insert("ACCESSIBLE_PROP2".into(), TestVariable::Bytes(vec![0xC9]));
+    // PROP3: PDT_FUNCTION (PID 54).
+    vars.insert("ACCESSIBLE_PROP3".into(), TestVariable::Bytes(vec![0x36]));
+    // PROP4: PDT_GENERIC_01 ReadWrite, long enough to fill an APDU (PID 55).
+    vars.insert("ACCESSIBLE_PROP4".into(), TestVariable::Bytes(vec![0x37]));
 
     // Manufacturer-specific overflow-test PID exposed by our DUT for
     // conformance test 3.8.12.6: a writable view of the four 16-bit
