@@ -26,6 +26,11 @@ use zweidraehte_proto::properties::PropertyRead;
 
 use super::SecurityState;
 
+/// The Security Interface Object's name (PID_OBJECT_NAME, ten
+/// `PDT_UNSIGNED_CHAR` elements). The value itself is free; the length is
+/// what the conformance template exercises.
+const SECURITY_OBJECT_NAME: [u8; 10] = *b"SecurityIO";
+
 // ============================================================================
 // SecurityAugment
 // ============================================================================
@@ -79,6 +84,22 @@ pub struct SecurityAugment<
         },
     )]
     _object_type_io: (),
+
+    // PID 2 OBJECT_NAME — optional-recommended per 03/05/01 §4.2.2; the
+    // data-security template's 3.8.2 reads it back (fifteen requested
+    // elements clamp to the ten stored ones) and expects the write
+    // refused. RO with the open-read policy the suite's 3FF/0CC title
+    // names.
+    #[io(
+        pid = pid::OBJECT_NAME,
+        pdt = PDT_UnsignedChar,
+        access = RO,
+        policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
+        rl = 3, wl = 0,
+        array(max = 10),
+        manual,
+    )]
+    _object_name_io: (),
 
     // PID 5 LOAD_STATE_CONTROL — write triggers state-machine + seq seeding.
     #[io(
@@ -140,15 +161,17 @@ pub struct SecurityAugment<
 
     // PID 55 SECURITY_FAILURES_LOG — PDT_FUNCTION; clear via
     // FunctionPropertyCommand, read counters/entries via FunctionPropertyStateRead.
-    // ReadOnly per descriptor, but FunctionPropertyCommand is allowed
-    // (the dispatch layer treats function commands separately from value writes).
+    // Declared RW so the descriptor advertises the function-command channel
+    // (write_enable set — TSS J 3.8.12.9 pins BEh); value writes stay
+    // refused by the PDT_FUNCTION gate in the property services. Max
+    // elements is 1: zero "indicates a problem" per 03/03/07 §3.4.3.2.
     #[io(
         pid = pid::security::SECURITY_FAILURES_LOG,
         pdt = PDT_Function,
-        access = RO,
+        access = RW,
         policy = AccessPolicy::new(0x1FF, 0x0CC),
         rl = 3, wl = 2,
-        array(max = 0),
+        array(max = 1),
         manual,
     )]
     _security_failures_log_io: (),
@@ -223,10 +246,12 @@ pub struct SecurityAugment<
     )]
     _sequence_number_sending_io: (),
 
-    // PID 61 GO_SECURITY_FLAGS — per-GO security requirements (1 byte/entry).
+    // PID 61 GO_SECURITY_FLAGS — per-GO security requirements. Each
+    // element is PDT_GENERIC_01 (03/05/01 §6.3.15; TSS J 3.8.17.4 pins
+    // 91h = write_enable | 11h), not PDT_UNSIGNED_CHAR.
     #[io(
         pid = pid::security::GO_SECURITY_FLAGS,
-        pdt = PDT_UnsignedChar,
+        pdt = PDT_Generic01,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
         rl = 2, wl = 2,
@@ -287,6 +312,12 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
         buf: &mut [u8],
     ) -> Option<Result<usize, PropertyError>> {
         Some(match req.pid {
+            // PID 2 OBJECT_NAME — a fixed ten-character name; over-long
+            // reads clamp to the stored characters (ArrayPropertyRead).
+            pid::OBJECT_NAME => {
+                use zweidraehte_proto::properties::ArrayPropertyRead;
+                SECURITY_OBJECT_NAME.read_array_property(req.start_idx, req.count, 1, buf)
+            }
             // PID 5 LOAD_STATE_CONTROL — single-byte load state.
             pid::LOAD_STATE_CONTROL => {
                 let val: u8 = self.state.load_state().into();

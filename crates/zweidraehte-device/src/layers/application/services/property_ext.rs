@@ -17,8 +17,7 @@ use crate::{
     definition::StackDefinition,
     memory::{MemoryError, MemoryMap},
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyError,
-        PropertyServiceHandler, pid,
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, PropertyServiceHandler, pid,
     },
     service::{AlCtx, ApciHandler},
 };
@@ -164,14 +163,16 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
                 return;
             }
         }
-        // Check start_index + count doesn't exceed max_elements (for non-count-query reads).
-        if hdr.start_idx > 0 && desc.max_elements > 0 {
-            let end = hdr.start_idx as u32 + hdr.count as u32 - 1;
-            if end > desc.max_elements as u32 {
-                debug!("AL PropertyExtValueRead: range exceeds max_elements");
-                send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
-                return;
-            }
+        // A start index past the array is FDh; a count overshooting the
+        // end is not — reads clamp to the available elements, the way a
+        // MaC discovers an array's actual length (TSS J 3.8.2.1 reads
+        // fifteen elements of the ten-character object name and gets the
+        // ten). Writes keep their full range check: clamping a write
+        // would silently drop data.
+        if hdr.start_idx > 0 && desc.max_elements > 0 && hdr.start_idx as u32 > desc.max_elements as u32 {
+            debug!("AL PropertyExtValueRead: start index past max_elements");
+            send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::AddressVoid);
+            return;
         }
     }
 
@@ -563,6 +564,7 @@ pub fn pdt_element_size(pdt: u8) -> usize {
         0x0B => 4,  // PDT_FLOAT32
         0x0C => 10, // PDT_CHAR_BLOCK
         0x0E => 5,  // PDT_SHORT_CHAR_BLOCK
+        0x33 => 1,  // PDT_BITSET8
         // PDT_GENERIC_xx: code 0x11..0x24 → size = code - 0x10
         c @ 0x11..=0x24 => (c - 0x10) as usize,
         _ => 0,
@@ -810,19 +812,17 @@ fn handle_ext_description_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer
     let desc_result = object_idx.and_then(|idx| {
         let desc_resp = ctx.interface_objects.property_description_read(idx, hdr.prop_id, hdr.prop_idx).ok()?;
 
-        // Check per-property access policy via a dummy element-count read.
-        // If the property value is access-denied, hide the descriptor too.
-        let test_req = FullPropertyReadRequest {
-            object_idx: idx,
-            pid: desc_resp.prop_id,
-            start_idx: 0,
-            count: 1,
-            ctx: ctx.base.access,
-        };
-        let mut dummy = [0u8; 4];
-        match ctx.interface_objects.property_value_read(&test_req, &mut dummy) {
-            Err(PropertyError::AccessDenied) => None,
-            _ => Some(desc_resp),
+        // Mask the descriptor from requesters the per-property policy
+        // grants no access at all — read, write, or function alike. Any
+        // one of them makes the description visible: a write-only key
+        // property must describe itself to the tool that is about to
+        // write it (TSS J 3.8.13.7 reads PID_TOOL_KEY's description under
+        // the tool key), while a plain scan with security mode on still
+        // sees zeros for the tool-only properties.
+        if ctx.interface_objects.property_description_visible(idx, desc_resp.prop_id, &ctx.base.access) {
+            Some(desc_resp)
+        } else {
+            None
         }
     });
 

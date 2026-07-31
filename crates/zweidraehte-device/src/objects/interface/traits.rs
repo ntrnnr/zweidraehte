@@ -561,6 +561,21 @@ pub trait PropertyServiceHandler {
         prop_idx: u16,
     ) -> Result<PropertyDescriptionResponse, PropertyError>;
 
+    /// Whether a property's *description* is visible to `ctx`.
+    ///
+    /// The description services themselves are never subject to
+    /// authorisation (03/03/07 §3.4.3.2), but a Data Secure device masks
+    /// the descriptors of properties the requester could neither read nor
+    /// write nor drive as a function — otherwise a plain scan would map
+    /// out the security surface. Anyone with *any* access to the property
+    /// gets its description: notably a write-only key property must
+    /// describe itself to the tool that is about to write it.
+    ///
+    /// Default: always visible (no per-property policies).
+    fn property_description_visible(&self, _object_idx: u16, _pid: u16, _ctx: &AccessContext) -> bool {
+        true
+    }
+
     /// Handle A_PropertyValue_Read request.
     ///
     /// Reads property data into the provided buffer.

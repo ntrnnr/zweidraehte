@@ -2396,7 +2396,11 @@ impl From<MaxRetryCount> for [u8; 1] {
 /// DeviceControl uses PDT_GENERIC_01 (ID 0x11) - 1 byte
 const impl PropertyDataDefinition for DeviceControl {
     const SIZE: usize = 1;
-    const ID: u8 = 0x11; // PDT_GENERIC_01
+    // 03/05/01 §4.2.14 names PDT_BITSET8 first and PDT_GENERIC_01 only as
+    // the alternative; the data-security template's 4.5.1 expects the
+    // primary (writeable | 33h = B3h) and ships the GENERIC_01 variant as
+    // a deactivated alternative.
+    const ID: u8 = 0x33; // PDT_BITSET8
 }
 
 /// ProgrammingMode uses PDT_GENERIC_01 (ID 0x11) - 1 byte

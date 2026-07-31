@@ -169,6 +169,15 @@ where
         base_result
     }
 
+    fn property_description_visible(&self, object_idx: u16, pid: u16, ctx: &AccessContext) -> bool {
+        // Visible to anyone the policy grants *any* access — read, write,
+        // or the function channel. `check_access` returns true for
+        // properties without a descriptor, matching the trait default.
+        self.check_access(object_idx, pid, ctx, PropertyDescriptor::can_read_secure)
+            || self.check_access(object_idx, pid, ctx, PropertyDescriptor::can_write_secure)
+            || self.check_access(object_idx, pid, ctx, PropertyDescriptor::can_function_write_secure)
+    }
+
     fn property_value_read(&self, req: &FullPropertyReadRequest, buf: &mut [u8]) -> Result<usize, PropertyError> {
         let obj_type = self.object_type_for(req.object_idx).ok_or(PropertyError::InvalidObjectIndex)?;
 
