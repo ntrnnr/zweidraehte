@@ -99,6 +99,14 @@ const PLAIN_DESC_READ_PID02: &str = "BC #EDI #BDUT_ADDR 68 01 D2 00 11 00 10 02 
 // APDU: 01 D3 + 00 11 + 00 10 + 02 + 00 00 00 00 00 00 00 00 00 00 = 16 bytes
 const PLAIN_DESC_READ_PID02_ZERO: &str = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 02 00 00 00 00 00 00 00 00 00 00";
 
+// With Security Mode off the descriptor is visible: prop_idx 1 (the name
+// sits right after OBJECT_TYPE), not writeable, PDT_UNSIGNED_CHAR (02h),
+// ten elements, read level 3 / write level 0. The vendor XML wildcards
+// the device-specific octets and pins the type; we assert our own values
+// exactly.
+const PLAIN_DESC_READ_PID02_VISIBLE: &str =
+    "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 02 00 01 00 00 00 00 02 00 0A 30";
+
 // ============================================================================
 // Suite Constructor
 // ============================================================================
@@ -208,8 +216,8 @@ fn test_3_8_2_3() -> TestCase {
         comment("Disable Security Mode"),
         inject_secure_ac(DISABLE_SECURITY_MODE, "TK1"),
         expect_secure_ac(DISABLE_SECURITY_MODE_RESP, "TK1", TIMEOUT),
-        comment("Plain description read → all-zero (PID not implemented)"),
+        comment("Plain description read → visible descriptor (sec mode OFF)"),
         inject(PLAIN_DESC_READ_PID02),
-        expect(PLAIN_DESC_READ_PID02_ZERO, TIMEOUT),
+        expect(PLAIN_DESC_READ_PID02_VISIBLE, TIMEOUT),
     ])
 }

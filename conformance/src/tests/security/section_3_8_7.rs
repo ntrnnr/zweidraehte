@@ -41,9 +41,10 @@ const PLAIN_DESC_READ_PID05_ZERO: &str = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 0
 // Plain response: valid descriptor (allowed when SM=OFF for 15F policy).
 // Wildcard bytes for the descriptor fields that vary by implementation.
 // Valid descriptor response when SM=OFF. The descriptor index byte (00)
-// and property index byte (01) are fixed; PDT and access fields use
-// wildcards since they vary by implementation.
-const PLAIN_DESC_READ_PID05_OK: &str = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 05 00 01 ?? ?? ?? ?? ?? ?? ?? ??";
+// and property index byte (02 — OBJECT_TYPE and OBJECT_NAME precede the
+// load control) are fixed; PDT and access fields use wildcards since
+// they vary by implementation.
+const PLAIN_DESC_READ_PID05_OK: &str = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 05 00 02 ?? ?? ?? ?? ?? ?? ?? ??";
 
 // ============================================================================
 // Suite Constructor

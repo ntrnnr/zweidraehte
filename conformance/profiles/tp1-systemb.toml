@@ -431,6 +431,14 @@ WRITEONLY_MEM_START = "00 05 10"   # WRITEONLY_MEMORY_BASE, 16 bytes
 # which is what those access-policy cases need, and the hand-written
 # suite uses the same two values.
 
+# 4.5.4 reads property descriptions by index; a property's sequential
+# index is implementation-defined (03/03/07 §3.4.3.2 numbers them from
+# the object's own table). The template defaults are the reference
+# device's positions (3 and 5); in our Device Object PID_SERIAL_NUMBER
+# sits at index 8 and PID_DEVICE_CONTROL at index 1.
+INDX_PID_SERIAL_NO = "08"
+INDX_PID_DEVICE_CTRL = "01"
+
 # MAX_APDU_FIT_DATA stays at the template's F5h (245), which is right for
 # us: a TP1 length field holds the APDU length *minus one*, so
 # `MAX_APDU_LENGTH` FEh admits a 255-octet APDU, and with the ten octets

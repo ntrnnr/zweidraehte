@@ -385,3 +385,26 @@ after the T_Disconnect — no compliant device acknowledges an unnumbered \
 frame, and the case's acceptance (silence on the write, value unaltered \
 on the closing read) is checked by its other steps.\
 """
+
+# ============================================================================
+# 3.8.2.3 pins the reference device's one-element object name
+# ============================================================================
+#
+# The mode-off description of PID_OBJECT_NAME is pinned with
+# max_nr_of_elem = 0001h, while the same suite's value reads take back ten
+# characters — the reference device describes its name as a single
+# element. 03/05/01 §4.2.2 makes the name a PDT_UNSIGNED_CHAR array, so
+# ours reports the array's real length, ten. Only the element count moves;
+# the pinned type (02h, not writeable) stays as authored.
+
+[[patch]]
+replace = "6F22498E-886E-43C1-B621-BBCF4DDED1F0"
+why = """
+3.8.2.3 pins max_nr_of_elem 0001h for an object name whose value reads \
+return ten characters — the reference's quirk. The name is a \
+PDT_UNSIGNED_CHAR array (03/05/01 §4.2.2); ours describes its real \
+length, ten.\
+"""
+insert = [
+  { expect = { data = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 02 0? ?? 00 00 00 00 02 00 0A ??", timeout_ms = 200 } },
+]
