@@ -52,3 +52,84 @@ as `#GO_2`.\
 insert = [
   { inject = { data = "BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 82 19 06 55" } },
 ]
+
+# ============================================================================
+# Restore the device at the AN158 → AN170 collection boundary
+# ============================================================================
+#
+# 3.8.13.1 sends `A_Restart` with erase code 02h — a factory reset:
+#
+#     BC #EDI #BDUT_ADDR 63 03 81 02 00
+#
+# which is the point of that case, since PID_TOOL_KEY is meant to revert
+# to FDSK. It also wipes the application program and the Communication
+# Object Table, and the template never downloads them again. On a bench
+# the operator reconfigures the device between collections; a runner has
+# to do it explicitly.
+#
+# Everything in AN170 needs a loaded application, so the whole collection
+# ran against a blank device: `PID_OPERATION_MODE` writes were refused
+# because the application is not running (state *reads* still answered,
+# which is why the negative cases all passed and only the positive ones
+# failed), and every `cot.object()` lookup missed, so GO Diagnostics
+# answered A1h E_GD_GO_VOID throughout. Running 3.8.13 alone before 6.1
+# reproduces 16 of the 17 failures; suite 6 on its own has 7.
+#
+# The reset goes here rather than after 3.8.13.1 for two reasons: the
+# rest of 3.8.13 is *about* the post-factory-reset state and must keep
+# seeing it, and AN163 (4.x) and AN177 (5.x) are demonstrably unaffected
+# — 13 and 10 failures either way — so this is the first point where the
+# device is next required to be loaded.
+#
+# `full_reset` restores the DUT's boot image, which is a loaded and
+# running application with the tool and group keys installed, and resets
+# the runner's own sequence bookkeeping with it. The `wait` afterwards
+# clears the S-A_Sync_Req rate-limit window, whose timer is wall-clock
+# and survives the respawn.
+
+[[patch]]
+before = "8D9803C9-54F4-4061-86E5-BE17C05014ED"
+why = """
+AN170 opens against a device that 3.8.13.1 factory-reset (A_Restart erase \
+code 02h), so the application program and Communication Object Table are \
+gone and the template never reloads them — the bench operator would have. \
+Restores the boot image at the collection boundary.\
+"""
+insert = [
+  { comment = "Collection boundary: restore the application 3.8.13.1's factory reset wiped" },
+  { full_reset = 3000 },
+  { wait = 1500 },
+]
+
+# ============================================================================
+# 6.1.6 pins a mid-countdown time_left that fast mode cannot reach
+# ============================================================================
+#
+# The case activates Diagnostic Mode, expects `#OPER_MODE_TIME_LEFT`
+# (30 = 1Eh), waits the 2 s that the first OUT telegram's `TimeToNext`
+# names, reads the mode again and expects `#OPER_MODE_TIME_LEFT-2`
+# (28 = 1Ch).
+#
+# The first value we answer exactly: our diagnostic timeout is 30 s, and
+# `compute_time_left` rounds up, so activation reports 1Eh. The second we
+# cannot, and not because of a device defect — the countdown is
+# wall-clock while the runner divides every inter-step wait by
+# `KNX_TIME_DIVISOR`, so the template's 2 s elapses in 40 ms and barely a
+# tick has come off. Under `--realtime` it would read 1Ch.
+#
+# So only the time_left octet gives way, and only on the second
+# expectation. The first stays pinned at 1Eh, which is what actually
+# covers the 30 s timeout value; wildcarding both would stop testing it
+# at all.
+
+[[patch]]
+replace = "25FD3493-8486-4E05-9F87-D939B7727234"
+why = """
+6.1.6: the second expectation pins time_left two seconds into the \
+countdown, which a wall-clock timer cannot reach when the runner \
+compresses that wait 50x. Only the time_left octet is wildcarded; the \
+first expectation keeps 1Eh pinned so the 30 s timeout stays covered.\
+"""
+insert = [
+  { expect = { data = "BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 20 00 01 ??", timeout_ms = 200 } },
+]

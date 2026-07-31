@@ -234,6 +234,20 @@ suite that passes while testing the wrong thing:
   pattern that collection 2.6-2.7 spends 29 cases overwriting. Both are
   the template assuming a bench where the operator reconfigures between
   collections, and both are patched rather than papered over.
+- **A case may factory-reset the device and never put it back.** Data
+  security 3.8.13.1 sends `A_Restart` with erase code 02h, which is the
+  point of the case — `PID_TOOL_KEY` is meant to revert to FDSK — but it
+  also wipes the application program and the Communication Object Table,
+  and nothing downloads them again. Two collections later AN170 needs a
+  loaded application for every one of its cases, and got a blank device:
+  the operation-mode *writes* were refused because the application is
+  not running (03/05/01 §4.4.1.1 requires load state Loaded and run
+  state Running), while state *reads* still answered, so the negative
+  cases all passed and only the positive ones failed. That asymmetry —
+  every negative green, every positive red — is the signature of a
+  device missing its application rather than a service being wrong.
+  Restore at the collection boundary with a `full_reset` patch step,
+  which returns the DUT to its boot image, and say which case wiped it.
 - **A secure telegram carries its security in attributes, not in
   `Data`.** `Data` is the *plaintext* frame; `SecKey`, `SecType`, `TA`,
   `SBC`, `SeqNum` and the rest say how to protect it, and
