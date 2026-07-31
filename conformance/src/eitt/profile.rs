@@ -109,6 +109,15 @@ pub struct TemplateRef {
     /// templates are licensed material kept outside the repository, so
     /// a committed profile cannot know where they live.
     pub file: String,
+    /// Which DUT this template needs, when it is not the profile's.
+    ///
+    /// The data-security template has to be driven against
+    /// `conformance-dut-secure`, which boots with the tool and group
+    /// keys installed; the other templates want the plain DUT, which has
+    /// no security at all. One profile covers both because they are the
+    /// same device otherwise — same medium, same addresses, same tables.
+    #[serde(default)]
+    pub dut: Option<Dut>,
     /// Which `TestCollection`s to run, by substring of their name.
     /// Empty runs all of them.
     ///
@@ -378,6 +387,10 @@ impl Profile {
         scoped.not_applicable.extend(template.not_applicable.iter().cloned());
         scoped.collections.clone_from(&template.collections);
         scoped.skipped_collections.clone_from(&template.skipped_collections);
+        if let Some(dut) = template.dut {
+            scoped.dut = dut;
+            scoped.applied_overrides.push(format!("driven against the {dut:?} DUT for this template"));
+        }
         scoped.variables.extend(template.variables.iter().map(|(k, v)| (k.clone(), v.clone())));
 
         for over in &template.commands {

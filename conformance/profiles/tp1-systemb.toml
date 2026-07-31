@@ -385,6 +385,29 @@ itself. The fixture would have to be built, and then the verdict would \
 still be a human reading the trace.\
 """
 
+# ============================================================================
+# 8 TSS J — Data Security
+# ============================================================================
+#
+# The one template that overlaps the hand-written suite rather than
+# adding a new device type: 319 cases against the 303 in
+# conformance/src/tests/security/. It is the only entry driven against
+# the secure DUT, which boots with the tool and group keys installed.
+#
+# Its four collections — AN158 Data Security, AN163 extended interface
+# object addressing, AN170 group object diagnostics, AN177 extended
+# memory services — all map to services the secure stack has, so none is
+# selected away and no `skipped_collection` accounting is needed.
+
+[[template]]
+file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"
+dut = "secure"
+
+[template.variables]
+# The template's own default is 11 01; our secure DUT is at 1.0.1, the
+# same address the hand-written security suites use.
+BDUT_ADDR = "10 01"
+
 # Other templates go here as they start working. Each needs its own
 # patch set, and most also need comment commands that are hard errors
 # today — see SESSION.md.

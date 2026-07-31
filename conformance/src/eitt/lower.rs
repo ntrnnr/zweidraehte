@@ -24,6 +24,7 @@ use crate::eitt::comment::{self, CommentCommand};
 use crate::eitt::patch::{Anchor, PatchError, PatchSet};
 use crate::eitt::profile::{Policy, Profile};
 use crate::eitt::schema::{self, SequenceItem, Template};
+use crate::eitt::secure;
 use crate::tests::helpers;
 use crate::{TestCase, TestStep, TestSuite, TestVariable};
 
@@ -52,6 +53,9 @@ pub struct LowerReport {
     /// counted per attribute. Reported so that "decided to ignore" and
     /// "never noticed" stay distinguishable.
     pub ignored_attrs: BTreeMap<&'static str, usize>,
+    /// `<Preparation>` operations EITT performs on itself, counted by
+    /// operation. They configure the tool, not the device.
+    pub ignored_preparations: BTreeMap<String, usize>,
     /// Patches that applied, by reason.
     pub applied_patches: Vec<String>,
     /// Exceptions the profile made for this template.
@@ -82,6 +86,13 @@ impl LowerReport {
         }
         for why in &self.applied_patches {
             println!("  ✎ patched: {why}");
+        }
+        for (op, count) in &self.ignored_preparations {
+            println!(
+                "  · {count}× <Preparation Operation={op:?}>: EITT provisioning itself. Our runner and \
+                 DUT are keyed together from tests::security::variables, so the table is already in \
+                 place — but check it still agrees with the template's own CSV"
+            );
         }
         for (cmd, count) in &self.ignored_commands {
             println!("  ⏸ ignored {count}× comment command: {cmd}");
@@ -137,9 +148,10 @@ pub enum LowerError {
     UnexplainedCollection { template: String, collection: String },
     /// A `skipped_collection` naming no collection in the template.
     UnusedSkippedCollection { name: String, why: String },
-    /// A telegram carrying KNX Data Security attributes. Sending it
-    /// plain would silently turn a security test into a plaintext one.
-    SecureTelegram { case: String, telegram: String, attrs: Vec<&'static str> },
+    /// Security attributes we cannot read. Guessing would send a
+    /// security test in the clear, or against the wrong key, and it
+    /// would still look green.
+    SecureAttrs { case: String, telegram: String, why: String },
     /// A telegram with no `Data`.
     MissingData { case: String, telegram: String },
     /// A `TLSeqNum` we cannot apply to the telegram's `Data`.
@@ -179,11 +191,9 @@ impl std::fmt::Display for LowerError {
                 "the profile skips a collection matching {name:?} — {why} — but the template \
                  has none. Either it was renamed, or the entry is stale."
             ),
-            Self::SecureTelegram { case, telegram, attrs } => write!(
-                f,
-                "{case}: telegram {telegram} carries KNX Data Security attributes {attrs:?}; \
-                 lowering it would send it in the clear"
-            ),
+            Self::SecureAttrs { case, telegram, why } => {
+                write!(f, "{case}: telegram {telegram} has security attributes we cannot read: {why}")
+            }
             Self::MissingData { case, telegram } => write!(f, "{case}: telegram {telegram} has no Data"),
             Self::TlSeqNum { case, telegram, why } => {
                 write!(f, "{case}: telegram {telegram} has a TLSeqNum this lowerer cannot apply: {why}")
@@ -291,7 +301,14 @@ pub fn lower(
                 continue;
             }
             let suite_name = suite.name.clone().unwrap_or_else(|| "(unnamed suite)".to_string());
-            suites.push(TestSuite::new(suite_name, vars.clone()).with_cases(cases));
+            let lowered = TestSuite::new(suite_name, vars.clone()).with_cases(cases);
+            // The engine keys the security context off the suite, not
+            // off the run: a secure step without one fails with
+            // "InjectSecure used without SecurityTestContext". The
+            // profile already says which DUT this template wants, and
+            // wanting the secure one is exactly what makes its suites
+            // secure.
+            suites.push(if profile.dut == crate::eitt::profile::Dut::Secure { lowered.secure() } else { lowered });
         }
     }
 
@@ -397,6 +414,9 @@ fn lower_sequence(
     // Fresh per case: a case that forgets to disconnect must not leave
     // the next one numbering from the middle.
     let mut tl_sequence = profile.recompute_tl_sequence.then(TlSequence::default);
+    // Fresh per case for the same reason: a challenge or a half-finished
+    // sync exchange must not leak into the next one.
+    let mut sync = SyncState::default();
     let Some(sequence) = &case.sequence else { return Ok(steps) };
 
     for item in &sequence.items {
@@ -432,6 +452,13 @@ fn lower_sequence(
                     let text = c.text.as_deref().unwrap_or("");
                     lower_comment(text, case_name, profile, report, &mut block, &mut steps)?;
                 }
+                SequenceItem::Preparation(prep) => {
+                    // EITT provisioning itself, not something on the bus.
+                    // Reported rather than dropped, because what it loads
+                    // and what our harness holds can drift apart.
+                    let what = prep.operation.as_deref().unwrap_or("(unnamed)");
+                    *report.ignored_preparations.entry(what.to_string()).or_default() += 1;
+                }
                 SequenceItem::Telegram(t) => {
                     let ctx = TelegramCtx {
                         case_name,
@@ -439,6 +466,7 @@ fn lower_sequence(
                         vars,
                         joinable: anchored.is_empty(),
                         tl_sequence: tl_sequence.as_mut(),
+                        sync: &mut sync,
                     };
                     lower_telegram(t, ctx, report, &mut block, &mut steps)?;
                 }
@@ -496,6 +524,22 @@ fn lower_comment_steps(
         CommentCommand::Interface(_) => Some(policies.interface),
         CommentCommand::CallSequence { .. } | CommentCommand::ParallelCall { .. } | CommentCommand::StopParallel(_) => {
             Some(policies.sequence)
+        }
+        // The two sequence-number commands act on the runner's own
+        // bookkeeping, which we have; the rest of the family rewrites
+        // EITT's security tables, which we provision ahead of the run.
+        CommentCommand::Security(comment::SecurityCmd::ResetSequenceNumbers) => {
+            steps.push(TestStep::ResetSecuritySequences);
+            return Ok(());
+        }
+        CommentCommand::Security(comment::SecurityCmd::SetSequenceNumber(arg)) => {
+            let (counter, value) = parse_set_sequence(arg).map_err(|why| LowerError::UnsupportedCommand {
+                case: case_name.to_string(),
+                command: "@@[sn".to_string(),
+                text: why,
+            })?;
+            steps.push(TestStep::SetSecuritySequence { counter, value });
+            return Ok(());
         }
         CommentCommand::Security(_) => Some(policies.security),
         CommentCommand::PointApi { .. } => Some(policies.point_api),
@@ -564,6 +608,8 @@ struct TelegramCtx<'a> {
     joinable: bool,
     /// The running numbering, when this template's own is not believed.
     tl_sequence: Option<&'a mut TlSequence>,
+    /// What this case's sync exchanges have established.
+    sync: &'a mut SyncState,
 }
 
 fn lower_telegram(
@@ -573,7 +619,7 @@ fn lower_telegram(
     block: &mut Vec<BlockMember>,
     steps: &mut Vec<TestStep>,
 ) -> Result<(), LowerError> {
-    let TelegramCtx { case_name, profile, vars, joinable, tl_sequence } = ctx;
+    let TelegramCtx { case_name, profile, vars, joinable, tl_sequence, sync } = ctx;
     let tid = || t.id.clone().unwrap_or_else(|| "(no ID)".to_string());
 
     if !t.is_active() {
@@ -606,11 +652,6 @@ fn lower_telegram(
         *report.ignored_attrs.entry("UseSystemBroadcast").or_default() += 1;
     }
 
-    let secure_attrs = t.security_attrs_set();
-    if !secure_attrs.is_empty() {
-        return Err(LowerError::SecureTelegram { case: case_name.to_string(), telegram: tid(), attrs: secure_attrs });
-    }
-
     let Some(data) = t.data.as_deref().filter(|d| !d.trim().is_empty()) else {
         return Err(LowerError::MissingData { case: case_name.to_string(), telegram: tid() });
     };
@@ -632,6 +673,21 @@ fn lower_telegram(
 
     let cway = t.cway.as_deref().map(str::trim);
     let inbound = cway.is_some_and(|d| d.eq_ignore_ascii_case("IN"));
+
+    // A telegram carrying security attributes is wrapped rather than
+    // sent as it stands: `Data` is the plaintext and the attributes say
+    // how to protect it. Everything above still applies — it can be
+    // deactivated, for another medium, or patched — but the emitting is
+    // different enough to live on its own.
+    if !t.security_attrs_set().is_empty() {
+        flush_block(block, steps);
+        lower_secure(t, data, inbound, time_to_next, case_name, sync, steps)?;
+        if waits_out_time && time_to_next > 0 {
+            steps.push(helpers::wait(time_to_next));
+        }
+        return Ok(());
+    }
+
     let pinned = t.tl_seq_num.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let data = apply_tl_sequence(data, pinned, tl_sequence, inbound, vars).map_err(|why| LowerError::TlSeqNum {
         case: case_name.to_string(),
@@ -677,6 +733,162 @@ fn lower_telegram(
                 value: other.unwrap_or_default().to_string(),
             });
         }
+    }
+    Ok(())
+}
+
+// ============================================================================
+// KNX Data Security
+// ============================================================================
+
+/// Read a `@@[sn` argument.
+///
+/// The template writes it as a semicolon-separated record whose first
+/// field names the counter and whose last carries the value:
+/// `Tool;;;IN;;5000000000`. The fields between are EITT's own
+/// addressing, which does not apply to a runner holding one counter per
+/// kind.
+fn parse_set_sequence(arg: &str) -> Result<(crate::SecuritySeqCounter, u64), String> {
+    let fields: Vec<&str> = arg.split(';').map(str::trim).collect();
+    let (Some(name), Some(raw)) = (fields.first(), fields.last()) else {
+        return Err(format!("{arg:?} is not a semicolon-separated record"));
+    };
+    let counter = if name.eq_ignore_ascii_case("tool") {
+        crate::SecuritySeqCounter::Tool
+    } else if name.eq_ignore_ascii_case("table") {
+        crate::SecuritySeqCounter::Table
+    } else {
+        return Err(format!("{arg:?} names the counter {name:?}, which is neither Tool nor Table"));
+    };
+    let value = raw.parse::<u64>().map_err(|_| format!("{arg:?} ends in {raw:?}, which is not a number"))?;
+    Ok((counter, value))
+}
+
+/// What one case's sync exchanges have established so far.
+///
+/// Two things cannot be read off a single telegram. A response saying
+/// `Challenge="auto"` means "whichever the request sent", so the last
+/// request's challenge has to be carried forward. And a sync the *device*
+/// starts is two telegrams in the XML — an `OUT` request and the `IN`
+/// response we send back — but one compound step in the engine, so the
+/// request waits here until its response arrives.
+#[derive(Default)]
+struct SyncState {
+    /// The challenge of the last request lowered in this case.
+    last_challenge: Option<[u8; 6]>,
+    /// A device-initiated request waiting for the response that answers it.
+    pending_req: Option<PendingSyncReq>,
+}
+
+struct PendingSyncReq {
+    key_name: String,
+    tool_access: bool,
+    timeout_ms: u32,
+}
+
+/// Emit the step for a telegram carrying security attributes.
+fn lower_secure(
+    t: &schema::Telegram,
+    data: &str,
+    inbound: bool,
+    time_to_next: u32,
+    case_name: &str,
+    sync: &mut SyncState,
+    steps: &mut Vec<TestStep>,
+) -> Result<(), LowerError> {
+    let tid = || t.id.clone().unwrap_or_else(|| "(no ID)".to_string());
+    let fail = |e: secure::SecureError| LowerError::SecureAttrs {
+        case: case_name.to_string(),
+        telegram: tid(),
+        why: e.to_string(),
+    };
+
+    let layer = secure::layer(t).map_err(fail)?;
+
+    // A device-initiated request is only half a step; it needs the
+    // response that follows. Anything else arriving first means the
+    // template has a request we cannot answer.
+    // Peek rather than take: the answer is the next telegram, and
+    // consuming the request here would leave nothing for it to pair
+    // with.
+    if sync.pending_req.is_some() && !(layer == secure::SecureLayer::SyncRes && inbound) {
+        let pending = sync.pending_req.take().expect("just checked it is there");
+        return Err(LowerError::SecureAttrs {
+            case: case_name.to_string(),
+            telegram: tid(),
+            why: format!(
+                "the device-initiated sync request before this one (key {}) is never answered — \
+                 an OUT sync_req must be followed by the IN sync_resp that replies to it",
+                pending.key_name
+            ),
+        });
+    }
+
+    match (layer, inbound) {
+        (secure::SecureLayer::Data, true) => {
+            let params = secure::data_params(t, true).map_err(fail)?;
+            match secure::corruption(t).map_err(fail)? {
+                Some(invalid) => steps.push(helpers::inject_secure_invalid(data, params, invalid)),
+                None => steps.push(helpers::inject_secure(data, params)),
+            }
+        }
+        (secure::SecureLayer::Data, false) => {
+            // Corruption is something we do on the way out; a telegram we
+            // are only waiting for cannot ask for it.
+            if secure::corruption(t).map_err(fail)?.is_some() {
+                return Err(LowerError::SecureAttrs {
+                    case: case_name.to_string(),
+                    telegram: tid(),
+                    why: "an OUT telegram asks for a deliberate corruption, which only applies to what we send"
+                        .to_string(),
+                });
+            }
+            let params = secure::data_params(t, false).map_err(fail)?;
+            steps.push(helpers::expect_secure(data, params, time_to_next));
+        }
+        (secure::SecureLayer::SyncReq, true) => {
+            let params = secure::sync_req_params(t, data).map_err(fail)?;
+            sync.last_challenge = Some(params.challenge);
+            match secure::corruption(t).map_err(fail)? {
+                Some(invalid) => steps.push(helpers::inject_sync_req_invalid(params, invalid)),
+                None => steps.push(helpers::inject_sync_req(params)),
+            }
+        }
+        (secure::SecureLayer::SyncReq, false) => {
+            // The device asking us to sync. Hold it until its answer.
+            sync.pending_req = Some(PendingSyncReq {
+                key_name: secure::sync_req_params(t, data).map_err(fail)?.key_name,
+                tool_access: secure::sync_req_params(t, data).map_err(fail)?.tool_access,
+                timeout_ms: time_to_next,
+            });
+        }
+        (secure::SecureLayer::SyncRes, false) => {
+            let expect = secure::sync_res_expect(t, data, sync.last_challenge).map_err(fail)?;
+            steps.push(helpers::expect_sync_res(expect, time_to_next));
+        }
+        (secure::SecureLayer::SyncRes, true) => match sync.pending_req.take() {
+            // Our answer to a request the device started: one compound
+            // step that captures the request and replies to it.
+            Some(pending) => {
+                let expect = secure::sync_res_expect(t, data, sync.last_challenge).map_err(fail)?;
+                steps.push(helpers::expect_sync_req_then_respond(
+                    &pending.key_name,
+                    pending.tool_access,
+                    expect.expected_seq_remote.unwrap_or(1),
+                    expect.expected_seq_local.unwrap_or(1),
+                    &expect.expected_src_template,
+                    pending.timeout_ms.max(time_to_next),
+                ));
+            }
+            // A response to nothing. Not a mistake in the template —
+            // 3.4.3 is "correct S-A_Sync_Res without request before",
+            // and the device is meant to ignore a response carrying a
+            // challenge it never issued.
+            None => {
+                let params = secure::sync_res_inject(t, data).map_err(fail)?;
+                steps.push(TestStep::InjectSyncRes { params, delay_before_ms: 0 });
+            }
+        },
     }
     Ok(())
 }

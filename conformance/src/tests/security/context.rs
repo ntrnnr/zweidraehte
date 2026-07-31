@@ -111,6 +111,17 @@ impl SecurityTestContext {
     /// Call after a full DUT reset (destructive factory reset + SHM
     /// rebuild + respawn) so the next secure frame re-starts from the
     /// initial `seq=1` baseline that a fresh DUT expects.
+    /// Put one counter at a chosen value.
+    ///
+    /// The template's `@@[sn`, which 3.3.15 uses to move the tool
+    /// counter somewhere a sync then has to reconcile.
+    pub fn set_sequence(&mut self, counter: crate::SecuritySeqCounter, value: u64) {
+        match counter {
+            crate::SecuritySeqCounter::Tool => self.tool_seq_nr = value,
+            crate::SecuritySeqCounter::Table => self.table_seq_nr = value,
+        }
+    }
+
     pub fn reset_peer_state(&mut self) {
         self.tool_seq_nr = 1;
         self.table_seq_nr = 1;

@@ -60,7 +60,7 @@ const SECURE_WRITE_ENTRY_B: &str =
 // (TSAP 2 → 1/1/1) decrypts with garbage in subsequent suites. Matching
 // pattern used in section_3_2 / section_3_8_17.
 const RESTORE_ENTRY_1_GK1: &str =
-    "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F";
+    "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA";
 
 // ============================================================================
 // PropertyExtValueRead / Response templates for PID 0x35 on Security IO

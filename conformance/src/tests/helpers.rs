@@ -257,10 +257,11 @@ const TOOL_KEY_SYNC_CHALLENGE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
 ///    authenticated and encrypted with the newly-set security tool
 ///    key, not the key used for the request.
 pub fn provision_tk1_via_fdsk() -> Vec<TestStep> {
-    // TK1 plaintext write of PID_TOOL_KEY. The 16-byte value is the
-    // canonical `00 01 02 ... 0F` TK1 blob from `variables.rs`.
+    // TK1 plaintext write of PID_TOOL_KEY. The sixteen octets are the
+    // TK1 blob from `variables.rs`, which carries the value the EITT
+    // data-security template's own Security Configuration Table uses.
     const WRITE_TK1_FDSK: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
     const WRITE_TK1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
     vec![
         comment("provision TK1: sync tool seq (FDSK-encrypted)"),
@@ -303,6 +304,15 @@ pub fn inject_secure(template: &str, params: SecureParams) -> TestStep {
 /// Inject a secure telegram with delay.
 pub fn inject_secure_delay(template: &str, params: SecureParams, delay_ms: u32) -> TestStep {
     TestStep::InjectSecure { template: template.to_string(), sec_params: params, delay_before_ms: delay_ms }
+}
+
+/// Expect a secure response with custom parameters.
+///
+/// The counterpart of [`inject_secure`], for callers that build the
+/// parameters rather than picking one of the named shapes below — the
+/// EITT lowering reads them off the telegram's attributes.
+pub fn expect_secure(template: &str, params: SecureParams, timeout_ms: u32) -> TestStep {
+    TestStep::ExpectSecure { template: template.to_string(), sec_params: params, timeout_ms }
 }
 
 /// Expect a secure response with authentication + confidentiality.

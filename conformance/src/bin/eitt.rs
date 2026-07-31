@@ -161,6 +161,9 @@ async fn run() -> ExitCode {
         Some(t) if t.contains('/') || t.ends_with(".xml") => {
             direct = TemplateRef {
                 file: t.clone(),
+                // Whatever DUT the profile names; a template run this way
+                // is not in the profile and cannot say.
+                dut: None,
                 // No selection, so every collection runs and none needs
                 // accounting for.
                 collections: Vec::new(),
@@ -302,8 +305,9 @@ async fn run_one(
         return Ok(None);
     }
 
-    let opts =
-        EngineOptions { divisor: time_divisor, dut_mode: profile.dut.into(), case_filters: args.filters.clone() };
+    // `scoped`, not `profile`: a template may name its own DUT, and the
+    // data-security one does.
+    let opts = EngineOptions { divisor: time_divisor, dut_mode: scoped.dut.into(), case_filters: args.filters.clone() };
     Ok(Some(engine::run_suites(&suites, &opts).await))
 }
 

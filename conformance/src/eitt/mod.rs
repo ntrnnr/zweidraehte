@@ -33,6 +33,7 @@ pub mod lower;
 pub mod patch;
 pub mod profile;
 pub mod schema;
+pub mod secure;
 
 pub use lower::{LowerReport, lower};
 pub use patch::PatchSet;

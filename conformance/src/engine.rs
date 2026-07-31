@@ -210,6 +210,31 @@ async fn execute_step(
             let divisor = ctx.divisor;
             step_full_reset(harness, ctx.sec_mut(), index, *timeout_ms, divisor).await
         }
+        TestStep::InjectSyncRes { params, delay_before_ms } => {
+            step_inject_sync_res(harness, index, params, *delay_before_ms, ctx).await
+        }
+        TestStep::ResetSecuritySequences => match ctx.sec_mut() {
+            Some(sec) => {
+                sec.reset_peer_state();
+                println!("  [{index}] 🔒 security sequence numbers reset (runner side only)");
+                true
+            }
+            None => {
+                println!("  [{index}] ❌ security sequence reset outside a secure suite");
+                false
+            }
+        },
+        TestStep::SetSecuritySequence { counter, value } => match ctx.sec_mut() {
+            Some(sec) => {
+                sec.set_sequence(*counter, *value);
+                println!("  [{index}] 🔒 {counter:?} sequence number set to {value}");
+                true
+            }
+            None => {
+                println!("  [{index}] ❌ security sequence set outside a secure suite");
+                false
+            }
+        },
         TestStep::InjectTemplate { .. } | TestStep::ExpectTemplate { .. } | TestStep::ExpectBlockTemplate { .. } => {
             println!("  [{}] ❌ Unresolved template", index);
             false
@@ -988,6 +1013,78 @@ async fn step_expect_sync_res(
             false
         }
     }
+}
+
+/// Inject an S-A_Sync_Res that answers nothing.
+///
+/// `crypto::wrap_sync_res` builds a response around the request it
+/// answers, so an unsolicited one needs a stand-in: the fields it reads
+/// are the SCF, the challenge, and the address the request came from.
+/// All three are in the step's own parameters, because when there is no
+/// request the template has to say what the response claims to answer.
+async fn step_inject_sync_res(
+    harness: &mut ChildLifecycle,
+    index: usize,
+    params: &crate::SyncResInject,
+    delay_before_ms: u32,
+    ctx: &mut StepContext<'_>,
+) -> StepOk {
+    let time_divisor = ctx.divisor;
+    let variables = ctx.vars;
+    let Some(sec) = ctx.sec_mut() else {
+        println!("  [{index}] InjectSyncRes requires security context");
+        return false;
+    };
+    if delay_before_ms > 0 {
+        embassy_time::Timer::after_millis(scale_ms(delay_before_ms, time_divisor) as u64).await;
+    }
+
+    let addr = |tmpl: &str| -> u16 {
+        Telegram::parse(&format!("00 00 {tmpl} 00 00 00 00"), variables)
+            .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
+            .unwrap_or(0)
+    };
+    let us = addr(&params.src_template);
+    let device = addr(&params.dst_template);
+
+    let scf = zweidraehte_proto::crypto::scf::SecurityControlField {
+        service: zweidraehte_proto::crypto::scf::SecureServiceType::SyncRequest,
+        system_broadcast: params.system_broadcast,
+        confidentiality: true,
+        tool_access: params.tool_access,
+    };
+    // `wrap_sync_res` reads `src` as "who asked", and answers back to
+    // it, so the stand-in request is the device asking us.
+    let stand_in = crypto::SyncReqDecrypted {
+        challenge: params.challenge,
+        seq_nr_local: crate::tests::security::context::seq_to_bytes(params.seq_nr_local),
+        scf_byte: scf.encode(),
+        src: device,
+        dst: us,
+        addr_type: params.npdu_byte,
+        tpci_apci: u16::from_be_bytes([params.tpci_high | 0x03, 0xF1]),
+        serial_number: [0u8; 6],
+    };
+
+    let key = sec.key(&params.key_name);
+    let frame = crypto::wrap_sync_res(
+        &stand_in,
+        &key,
+        &crate::tests::security::context::seq_to_bytes(params.seq_nr_remote),
+        &crate::tests::security::context::seq_to_bytes(params.seq_nr_local),
+        us,
+        Some(params.system_broadcast),
+    );
+
+    let tp1 = internal_to_tp1(&frame);
+    println!(
+        "  [{index}] 🔒⬇️  InjectSyncRes (unsolicited, key={}): {} bytes, seqRemote={}, seqLocal={}",
+        params.key_name,
+        tp1.len(),
+        params.seq_nr_remote,
+        params.seq_nr_local
+    );
+    harness.step(|seq| RunnerMessage::Inject { seq, data: tp1.clone() }).await.is_ok()
 }
 
 async fn step_expect_sync_req_then_respond(

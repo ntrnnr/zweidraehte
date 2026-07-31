@@ -178,11 +178,11 @@ fn test_3_8_13_1() -> TestCase {
     // Write PID_TOOL_KEY = TK2 (request authenticated with TK1;
     // response expected encrypted with TK2 per TSSJ §3.8.13.1).
     const WRITE_TK2: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 02";
 
     // Write PID_TOOL_KEY = TK1 (restore to default for subsequent tests).
     const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
 
     const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
@@ -227,13 +227,13 @@ fn test_3_8_13_2() -> TestCase {
     //
     // Write Tool Key = TK2 = 10 11 12 ... 1F.
     const WRITE_TK2: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         10 11 12 13 14 15 16 17 18 19 1A 1B 1C 1D 1E 1F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 02";
     const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
     // Write Tool Key = TK1 = 00 01 02 ... 0F (used to restore TK1
     // before the test exits so subsequent suites still authenticate).
     const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
 
     const ENABLE_SM: &str = "3C 60 #EDI #BDUT_ADDR 09 01 D4 00 11 00 10 33 00 00 01";
     const ENABLE_SM_OK: &str = "3C 60 #BDUT_ADDR #EDI 08 01 D6 00 11 00 10 33 00 00";
@@ -297,10 +297,10 @@ fn test_3_8_13_6() -> TestCase {
 
     // Write PID_TOOL_KEY = TK1 (idempotent: matches the default).
     const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
     // Write PID_TOOL_KEY = FDSK (idempotent when current key is FDSK).
     const WRITE_FDSK: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         F0 D5 1A 23 34 45 56 67 78 89 9A AB BC CD DE EF";
+         11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11";
     const WRITE_TK_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
     // Connection-oriented Basic Restart (secure A+C).
@@ -425,7 +425,7 @@ fn test_3_8_13_8() -> TestCase {
 
     // PID_TOOL_KEY writes. Value = TK1 (`00 01 02 ... 0F`).
     const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
     // Attempt to write value = P2PK2 (0x33*16). The particular value
     // doesn't matter — this step expects no response.
     const WRITE_P2PK2: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \

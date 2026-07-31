@@ -144,7 +144,7 @@ fn test_3_8_17_1() -> TestCase {
     // Restore group key entry 1 (TSAP 2 → GK1) — previous suites
     // (e.g. 3.8.10) may overwrite this entry with test data.
     const RESTORE_GRP_KEY: &str =
-        "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F";
+        "3C 60 #EDI #BDUT_ADDR 1B 01 CE 00 11 00 10 35 01 00 01 00 02 AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA";
     const RESTORE_GRP_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 35 01 00 01 00";
 
     // ---- GO Flags Write/Read (PID 0x3D) ----

@@ -38,8 +38,17 @@ pub enum CommentCommand {
     Plain(String),
     /// `@` / `@!` — show in the tool bar, optionally with a beep.
     Show { text: String, beep: bool },
-    /// `@[t` — append to the trace buffer.
-    Trace(String),
+    /// `@[t` / `@[t!` — append to the trace buffer.
+    ///
+    /// `protected` is the `!` form (EITT 4.3 build 460): a trace comment
+    /// the operator can neither delete nor deactivate in the GUI, which
+    /// EITT uses for the header it stamps on every sequence created from
+    /// a template. It exists only to keep the operator from editing the
+    /// header away; it changes nothing about what runs, and in every
+    /// template we have it carries an empty body — it is the blank line
+    /// closing the two header lines above it. We keep the flag so the
+    /// token we report is the token the template wrote.
+    Trace { text: String, protected: bool },
     /// `@@` / `@@!` / `@@+` — suspend until the operator acknowledges.
     Pause { text: String, kind: PauseKind },
     /// `@[w` / `@@[w` — delay for the quoted time.
@@ -116,8 +125,10 @@ impl CommentCommand {
     /// our output.
     pub fn text(&self) -> &str {
         match self {
-            Self::Plain(t) | Self::Trace(t) | Self::Unrecognised(t) => t,
-            Self::Show { text, .. } | Self::Pause { text, .. } | Self::Wait { text, .. } => text,
+            Self::Plain(t) | Self::Unrecognised(t) => t,
+            Self::Trace { text, .. } | Self::Show { text, .. } | Self::Pause { text, .. } | Self::Wait { text, .. } => {
+                text
+            }
             _ => "",
         }
     }
@@ -128,7 +139,8 @@ impl CommentCommand {
             Self::Plain(_) | Self::Unrecognised(_) => "",
             Self::Show { beep: false, .. } => "@",
             Self::Show { beep: true, .. } => "@!",
-            Self::Trace(_) => "@[t",
+            Self::Trace { protected: false, .. } => "@[t",
+            Self::Trace { protected: true, .. } => "@[t!",
             Self::Pause { kind: PauseKind::Plain, .. } => "@@",
             Self::Pause { kind: PauseKind::Beep, .. } => "@@!",
             Self::Pause { kind: PauseKind::Verdict, .. } => "@@+",
@@ -156,7 +168,13 @@ impl CommentCommand {
 // ============================================================================
 
 /// Every command token from `KnxCommentCommandsScheme.xml`, longest
-/// first.
+/// first, plus `@[t!`.
+///
+/// `@[t!` is not in the scheme file and cannot be entered in EITT — it
+/// exists only inside the template XML, and typing it into a comment
+/// makes EITT drop the `!` (release notes, 4.3 build 460). The scheme
+/// cross-check below is therefore one-directional: the scheme must be a
+/// subset of this table, not the other way round.
 ///
 /// Order is load-bearing: `parse` takes the first prefix that matches,
 /// so `@@[w` must be tried before `@@`, `@@!` before `@@`, and `@##`
@@ -180,11 +198,12 @@ const COMMANDS: &[&str] = &[
     // Timing.
     "@@[w",
     "@[w",
-    // Common — `@@!`/`@@+` before `@@`, `@[t` before `@`.
+    // Common — `@@!`/`@@+` before `@@`, `@[t!` before `@[t` before `@`.
     "@@!",
     "@@+",
     "@@",
     "@AP",
+    "@[t!",
     "@[t",
     "@!",
     // Sequence.
@@ -243,7 +262,8 @@ fn build(token: &str, rest: &str) -> CommentCommand {
     match token {
         "@" => CommentCommand::Show { text: body(), beep: false },
         "@!" => CommentCommand::Show { text: body(), beep: true },
-        "@[t" => CommentCommand::Trace(body()),
+        "@[t" => CommentCommand::Trace { text: body(), protected: false },
+        "@[t!" => CommentCommand::Trace { text: body(), protected: true },
         "@@" => CommentCommand::Pause { text: body(), kind: PauseKind::Plain },
         "@@!" => CommentCommand::Pause { text: body(), kind: PauseKind::Beep },
         "@@+" => CommentCommand::Pause { text: body(), kind: PauseKind::Verdict },
@@ -342,10 +362,22 @@ mod tests {
 
     #[test]
     fn trace_is_the_common_case() {
-        assert_eq!(
-            parse("@[tAcceptance: Update flag set."),
-            CommentCommand::Trace("Acceptance: Update flag set.".into())
-        );
+        assert_eq!(parse("@[tAcceptance: Update flag set."), CommentCommand::Trace {
+            text: "Acceptance: Update flag set.".into(),
+            protected: false
+        });
+    }
+
+    #[test]
+    fn protected_trace_is_a_trace_with_an_empty_body() {
+        // Every `@[t!` in every template we have carries no text: it is
+        // the blank line EITT stamps under a sequence header and forbids
+        // the operator to delete. Read as `@[t` it would emit a comment
+        // step reading "!" — 234 of them in the management template
+        // alone.
+        assert_eq!(parse("@[t!"), CommentCommand::Trace { text: String::new(), protected: true });
+        assert_eq!(parse("@[t!").text(), "");
+        assert_eq!(parse("@[t!").token(), "@[t!");
     }
 
     #[test]
@@ -357,7 +389,8 @@ mod tests {
         assert!(matches!(parse("@@+verdict"), CommentCommand::Pause { kind: PauseKind::Verdict, .. }));
         assert!(matches!(parse("@@[w\"00:00:02\""), CommentCommand::Wait { .. }));
         assert!(matches!(parse("@[w\"00:00:02\""), CommentCommand::Wait { .. }));
-        assert!(matches!(parse("@[tsomething"), CommentCommand::Trace(_)));
+        assert!(matches!(parse("@[tsomething"), CommentCommand::Trace { protected: false, .. }));
+        assert!(matches!(parse("@[t!"), CommentCommand::Trace { protected: true, .. }));
         assert!(matches!(parse("@!beep"), CommentCommand::Show { beep: true, .. }));
         assert!(matches!(parse("@@[rn"), CommentCommand::Security(SecurityCmd::ResetSequenceNumbers)));
         assert!(matches!(parse("@##\"seq\""), CommentCommand::CallSequence { conformance: true, .. }));

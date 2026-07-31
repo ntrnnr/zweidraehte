@@ -291,6 +291,31 @@ pub enum TestStep {
     /// Inject an S-A_Sync_Req with intentionally invalid fields.
     InjectSyncReqInvalid { sync_params: SyncReqParams, invalid: InvalidSecurityParam, delay_before_ms: u32 },
 
+    /// Inject an S-A_Sync_Res nobody asked for.
+    ///
+    /// Distinct from [`ExpectSyncReqThenRespond`](Self::ExpectSyncReqThenRespond),
+    /// which answers a request the device sent: here there is no
+    /// request, and that is the test. Data security 3.4.3 is "correct
+    /// S-A_Sync_Res without request before" — the device should ignore
+    /// it, because a response it never solicited carries a challenge it
+    /// never issued.
+    InjectSyncRes { params: SyncResInject, delay_before_ms: u32 },
+
+    /// Reset the runner's security sequence-number bookkeeping.
+    ///
+    /// The template's `@@[rn`: forget the tool and table counters and
+    /// every per-peer one, as EITT does when a case wants to start
+    /// counting from scratch. Touches only our side — the device keeps
+    /// whatever it has stored, which is the point in 3.8.18.2, where the
+    /// mismatch is the test.
+    ResetSecuritySequences,
+
+    /// Set one of the runner's security sequence counters.
+    ///
+    /// The template's `@@[sn"Tool;;;IN;;5000000000"`, used twice in
+    /// 3.3.15 to put the counter somewhere a sync has to reconcile.
+    SetSecuritySequence { counter: SecuritySeqCounter, value: u64 },
+
     /// Trigger the DUT to initiate an S-A_Sync_Req to the specified peer.
     ///
     /// The DUT builds and sends the sync request frame. The test runner
@@ -345,6 +370,16 @@ pub struct SecureParams {
     pub tool_access: bool,
     /// Sequence number source.
     pub seq_source: SeqSource,
+    /// Signed offset applied to whatever [`SecureParams::seq_source`]
+    /// produces.
+    ///
+    /// This is the EITT template's `SeqNumOfs`, and it is how the
+    /// sequence-number tests are written: 3.1.9 replays with `-1` and
+    /// `-2`, 3.1.10 and 3.1.11 jump forward with `+1` and `+2`. An
+    /// offset rather than [`SeqSource::Fixed`] because the counter must
+    /// still advance — a fixed value would leave every later telegram in
+    /// the case numbered from the wrong place.
+    pub seq_offset: i64,
     /// System broadcast flag.
     pub system_broadcast: bool,
 }
@@ -357,6 +392,7 @@ impl SecureParams {
             key_name: key.to_string(),
             tool_access: true,
             seq_source: SeqSource::Tool,
+            seq_offset: 0,
             system_broadcast: false,
         }
     }
@@ -368,6 +404,7 @@ impl SecureParams {
             key_name: key.to_string(),
             tool_access: true,
             seq_source: SeqSource::Tool,
+            seq_offset: 0,
             system_broadcast: false,
         }
     }
@@ -379,6 +416,7 @@ impl SecureParams {
             key_name: key.to_string(),
             tool_access: false,
             seq_source: SeqSource::Tool,
+            seq_offset: 0,
             system_broadcast: false,
         }
     }
@@ -390,6 +428,7 @@ impl SecureParams {
             key_name: key.to_string(),
             tool_access: false,
             seq_source: SeqSource::Tool,
+            seq_offset: 0,
             system_broadcast: false,
         }
     }
@@ -401,6 +440,7 @@ impl SecureParams {
             key_name: key.to_string(),
             tool_access: false,
             seq_source: SeqSource::Peer(key.to_string()),
+            seq_offset: 0,
             system_broadcast: false,
         }
     }
@@ -412,9 +452,47 @@ impl SecureParams {
             key_name: key.to_string(),
             tool_access: false,
             seq_source: SeqSource::Peer(key.to_string()),
+            seq_offset: 0,
             system_broadcast: false,
         }
     }
+}
+
+/// Parameters for an S-A_Sync_Res we send unprompted.
+#[derive(Debug, Clone)]
+pub struct SyncResInject {
+    /// Key the response is protected with.
+    pub key_name: String,
+    /// Tool-access flag in the SCF.
+    pub tool_access: bool,
+    /// System-broadcast flag in the SCF.
+    pub system_broadcast: bool,
+    /// Source address template — us.
+    pub src_template: String,
+    /// Destination address template — the device.
+    pub dst_template: String,
+    /// The device's next sending number, as the response asserts it.
+    pub seq_nr_remote: u64,
+    /// Our next sending number, as the response asserts it.
+    pub seq_nr_local: u64,
+    /// Challenge the response answers. Unsolicited, so it answers one
+    /// the device never issued, which is the point.
+    pub challenge: [u8; 6],
+    /// Control field, typically 3Ch for an extended frame.
+    pub ctrl_byte: u8,
+    /// NPDU octet: address type and hop count.
+    pub npdu_byte: u8,
+    /// TPCI octet.
+    pub tpci_high: u8,
+}
+
+/// Which of the runner's security sequence counters a step addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecuritySeqCounter {
+    /// Our own sending counter — what we put in the telegrams we inject.
+    Tool,
+    /// What we believe the device will send next.
+    Table,
 }
 
 /// Security algorithm mode.
@@ -439,6 +517,10 @@ pub enum SeqSource {
     Peer(String),
     /// Use the DUT's expected sequence number for a P2P peer.
     PeerTable(String),
+    /// A template variable that pins nothing, carried only so the
+    /// lowering can tell "unspecified" from "a number I could not
+    /// read". Never reaches the engine.
+    Unpinned(String),
 }
 
 /// Which security field to corrupt for negative tests.
@@ -459,6 +541,25 @@ pub enum InvalidSecurityParam {
     AppendBytes(Vec<u8>),
     /// Truncate N bytes from the end of the frame (frame too short).
     TruncateBytes(usize),
+    /// Set reserved bits in the SCF on top of the computed value.
+    ///
+    /// Distinct from [`InvalidScf`](Self::InvalidScf), which replaces the
+    /// whole byte: this ORs a bit into an otherwise correct SCF, which is
+    /// what data-security 3.1.12 does six times over, once per reserved
+    /// bit (01h, 02h, 04h, 08h, 10h, 20h).
+    ScfReservedBits(u8),
+    /// Rewrite the MAC field from a pattern.
+    ///
+    /// One entry per octet: `Some(b)` overrides, `None` keeps the byte
+    /// the MAC computation produced. A pattern shorter or longer than the
+    /// four-octet MAC shortens or lengthens the frame, which is how the
+    /// template writes "one byte too short" (3.1.29, `?? ?? ??`) and "one
+    /// byte too long" (3.1.28, `?? ?? ?? ?? 00`). A full-width pattern of
+    /// all-`Some` is the plain replacement
+    /// [`InvalidMac`](Self::InvalidMac) already does; the pattern form
+    /// exists for the mixed cases like `FF ?? ?? ??`, where only the
+    /// first octet is pinned.
+    MacPattern(Vec<Option<u8>>),
 }
 
 /// Parameters for injecting an S-A_Sync_Req.

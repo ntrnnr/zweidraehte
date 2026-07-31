@@ -182,11 +182,11 @@ fn test_3_8_8_7() -> TestCase {
     const CONNECTED_RESTART_FRWITHIA: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 07 00";
     const CONNECTED_RESTART_FRWITHIA_RESP: &str = "3C 60 #BDUT_ADDR #EDI 04 43 A1 00 00 ??";
 
-    // PID_TOOL_KEY write: value = TK1 (`00 01 02 ... 0F`). Used after
+    // PID_TOOL_KEY write: value = TK1 (`00 00 … 01`). Used after
     // each factory-reset phase to re-install TK1 so the next phase's
     // traffic can authenticate with TK1 again.
     const RESTORE_TOOL_KEY_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
-         00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F";
+         00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01";
     const RESTORE_TOOL_KEY_TK1_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 38 01 00 01 00";
 
     const CHALLENGE_1: [u8; 6] = [0, 0, 0, 0, 0, 1];

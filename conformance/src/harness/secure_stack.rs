@@ -74,8 +74,7 @@ pub const SECURE_SERIAL_NUMBER: [u8; 6] = [0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE];
 /// this distinct FDSK, and each such test has to re-provision TK1
 /// explicitly (sync + FDSK-encrypted `PID_TOOL_KEY` write) — the
 /// pattern the reference XML uses for 3.8.13.1/8 etc.
-pub const SECURE_FDSK: [u8; 16] =
-    [0xF0, 0xD5, 0x1A, 0x23, 0x34, 0x45, 0x56, 0x67, 0x78, 0x89, 0x9A, 0xAB, 0xBC, 0xCD, 0xDE, 0xEF];
+pub const SECURE_FDSK: [u8; 16] = [0x11; 16];
 
 // ============================================================================
 // Secure Inner State Type

@@ -27,8 +27,8 @@ where the test steps come from.
   `conformance/src/tests/`. This is the complete suite — 556 tests
   covering everything we have transcribed.
 - **`conformance-eitt`** runs a vendor EITT XML template directly. The
-  group-object, network-layer, transport-layer, load/run-state-machine
-  and management templates work so far; see below.
+  group-object, network-layer, transport-layer, load/run-state-machine,
+  management and data-security templates work so far; see below.
 
 Run the hand-written suite with `cargo run --bin conformance-runner`.
 Pass a test name, suite name, or a substring of either as the first
@@ -121,9 +121,11 @@ An anchor GUID that no longer resolves is a **hard error**, not a
 warning: that is the signal the template has been revised and whatever
 the patch was compensating for needs re-checking.
 
-The group-object, network-layer, transport-layer, load/run-state-machine
-and management templates run today. TSSJ DataSecurity does not; see
-`SESSION.md` for what it still needs.
+The group-object, network-layer, transport-layer, load/run-state-machine,
+management and TSSJ data-security templates run today. The data-security
+one is the only overlap with a hand-written suite rather than new device
+coverage, and the only one still red — its failures are device gaps, not
+lowering problems; see `SESSION.md`.
 
 ### EITT template semantics worth knowing
 
@@ -180,7 +182,7 @@ suite that passes while testing the wrong thing:
   selects the LL service code for sending telegrams to the bus … RF: all
   telegrams will be assumed to be of the extended frame type" — and a
   template names the interfaces it needs in `<Interfaces>`, stating each
-  one's media type in prose for the operator. All six templates we run
+  one's media type in prose for the operator. All seven templates we run
   declare none, so there is one connection and one medium; ours is the
   profile's `medium` key, which is the same thing in the same place.
   Couplers, USB, RF Multi and the routers do declare interfaces and
@@ -218,6 +220,22 @@ suite that passes while testing the wrong thing:
   pattern that collection 2.6-2.7 spends 29 cases overwriting. Both are
   the template assuming a bench where the operator reconfigures between
   collections, and both are patched rather than papered over.
+- **A secure telegram carries its security in attributes, not in
+  `Data`.** `Data` is the *plaintext* frame; `SecKey`, `SecType`, `TA`,
+  `SBC`, `SeqNum` and the rest say how to protect it, and
+  `conformance/src/eitt/secure.rs` turns them into the engine's
+  parameters. Two of them are easy to misread: `SAL` decides whether a
+  telegram is data, a sync request or a sync response, and `SeqNum` is
+  `tool` on what we send against `table` on what we expect.
+- **A template that provisions keys does it by value.** The
+  data-security template's preparation writes `PID_TOOL_KEY` with
+  sixteen literal octets under FDSK, so the harness keys in
+  `tests::security::variables` must be the ones in the template's own
+  Security Configuration Table (`supportfiles/TSSJ_SCT.csv`) — otherwise
+  the device ends up keyed one way, the runner expects the other, and
+  every secure exchange after the preparation times out. Runner and DUT
+  have to move together, along with the handful of hand-written tests
+  that write key bytes literally.
 - **`collections` and `skipped_collection` must together account for
   every collection a template declares.** Selecting any obliges the
   profile to say why it leaves the rest out, and a collection that is
@@ -834,7 +852,7 @@ cargo run --bin conformance-eitt -- \
 ```
 Executes KNX conformance templates straight from EITT's XML instead of
 hand-written transcriptions of them. The profile lists which templates
-to run and what each needs — six of them today.
+to run and what each needs — seven of them today.
 
 The templates are licensed and are not in the repository — if
 `EITT_TEMPLATES` is unset or they are absent on this machine, skip this

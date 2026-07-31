@@ -471,17 +471,22 @@ pub(crate) mod conformance_config {
         security: {
             p2p_key_capacity: 8,
             siat_capacity: 8,
-            tool_key: "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F",
+            tool_key: "00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01",
 
             // Group keys: TSAP → 16-byte key.
             // Sorted by TSAP for binary search in the S-AL.
+            //
+            // Values are the ones in the data-security template's own
+            // Security Configuration Table (supportfiles/TSSJ_SCT.csv),
+            // because that template provisions keys by value; see the
+            // note in tests::security::variables.
             group_keys: {
-                2  => "20 21 22 23 24 25 26 27 28 29 2A 2B 2C 2D 2E 2F",  // TSAP 2  (1/1/1) → GK1
-                12 => "30 31 32 33 34 35 36 37 38 39 3A 3B 3C 3D 3E 3F",  // TSAP 12 (2/2/2) → GK2
-                13 => "70 71 72 73 74 75 76 77 78 79 7A 7B 7C 7D 7E 7F",  // TSAP 13 (3/1/6) → GK6
-                15 => "40 41 42 43 44 45 46 47 48 49 4A 4B 4C 4D 4E 4F",  // TSAP 15 (3/3/3) → GK3
-                16 => "50 51 52 53 54 55 56 57 58 59 5A 5B 5C 5D 5E 5F",  // TSAP 16 (4/4/4) → GK4
-                18 => "60 61 62 63 64 65 66 67 68 69 6A 6B 6C 6D 6E 6F",  // TSAP 18 (6/6/6) → GK5
+                2  => "AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA AA",  // TSAP 2  (1/1/1) → GK1
+                12 => "BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB BB",  // TSAP 12 (2/2/2) → GK2
+                13 => "FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF",  // TSAP 13 (3/1/6) → GK6
+                15 => "CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC",  // TSAP 15 (3/3/3) → GK3
+                16 => "DD DD DD DD DD DD DD DD DD DD DD DD DD DD DD DD",  // TSAP 16 (4/4/4) → GK4
+                18 => "EE EE EE EE EE EE EE EE EE EE EE EE EE EE EE EE",  // TSAP 18 (6/6/6) → GK5
             },
 
             // GO security flags are written dynamically by the test,

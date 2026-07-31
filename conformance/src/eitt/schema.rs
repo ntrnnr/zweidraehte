@@ -270,6 +270,7 @@ pub struct Sequence {
 pub enum SequenceItem {
     Comment(Comment),
     Telegram(Telegram),
+    Preparation(Preparation),
 }
 
 impl SequenceItem {
@@ -278,8 +279,31 @@ impl SequenceItem {
         match self {
             Self::Comment(c) => c.id.as_deref(),
             Self::Telegram(t) => t.id.as_deref(),
+            Self::Preparation(_) => None,
         }
     }
+}
+
+/// Something EITT does to itself before the sequence runs.
+///
+/// The data-security template has exactly one, loading its Security
+/// Configuration Table from a CSV shipped beside the templates:
+///
+/// ```xml
+/// <Preparation Operation="LoadSecurityTable" Parameter="file=TSSJ_SCT.csv"/>
+/// ```
+///
+/// That table is EITT's own key provisioning — which key it uses for
+/// which group address and which peer. We provision the runner and the
+/// DUT together from `crate::tests::security::variables`, so the table
+/// is already installed by the time a case runs and the operation has
+/// nothing to do here.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Preparation {
+    #[serde(rename = "@Operation")]
+    pub operation: Option<String>,
+    #[serde(rename = "@Parameter")]
+    pub parameter: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

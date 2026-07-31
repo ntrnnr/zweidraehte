@@ -25,7 +25,15 @@ pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut Secu
         SeqSource::Fixed(val) => super::context::seq_to_bytes(*val),
         SeqSource::Peer(name) => ctx.next_peer_seq(name),
         SeqSource::PeerTable(name) => ctx.current_peer_table_seq(name),
+        // The EITT lowering resolves this to `Table` or refuses the
+        // telegram; it exists only to keep "unspecified" distinct from
+        // "unreadable" while reading the attributes.
+        SeqSource::Unpinned(name) => unreachable!("unresolved sequence variable {name} reached the engine"),
     };
+    // Applied after the counter has moved, so a replay (`-1`) or a
+    // forward jump (`+1`) sends one number out of step without changing
+    // where the rest of the case is numbered from.
+    let seq_nr = apply_seq_offset(seq_nr, params.seq_offset);
 
     // Build SCF byte.
     let scf = SecurityControlField {
@@ -87,6 +95,43 @@ pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut Secu
     frame
 }
 
+/// Rewrite the trailing MAC field from a pattern.
+///
+/// `None` keeps the computed octet, `Some(b)` overrides it, and a
+/// pattern of a length other than four resizes the frame — which is the
+/// point for the "one byte too short" and "one byte too long" cases.
+fn apply_mac_pattern(frame: &mut Vec<u8>, pattern: &[Option<u8>]) {
+    const MAC_LEN: usize = 4;
+    if frame.len() < MAC_LEN {
+        return;
+    }
+    let mac_start = frame.len() - MAC_LEN;
+    let computed: Vec<u8> = frame[mac_start..].to_vec();
+    frame.truncate(mac_start);
+    for (i, slot) in pattern.iter().enumerate() {
+        // Past the computed MAC a `None` has nothing to keep; the
+        // templates only ever pin those octets, so take a zero rather
+        // than guess.
+        frame.push(slot.or_else(|| computed.get(i).copied()).unwrap_or(0));
+    }
+}
+
+/// Shift a 48-bit sequence number by a signed offset, saturating at the
+/// ends of the range rather than wrapping.
+///
+/// The templates only ever offset by ±1 and ±2, so saturation never
+/// bites in practice; it is here so an offset can never silently turn a
+/// low sequence number into a very high one.
+fn apply_seq_offset(seq: [u8; 6], offset: i64) -> [u8; 6] {
+    if offset == 0 {
+        return seq;
+    }
+    /// Largest value the six-octet sequence number field can hold.
+    const SEQ_MAX: u64 = (1 << 48) - 1;
+    let value = super::context::seq_from_bytes(&seq);
+    super::context::seq_to_bytes(value.saturating_add_signed(offset).min(SEQ_MAX))
+}
+
 /// Wrap a secure telegram with an intentionally invalid field.
 pub fn wrap_secure_invalid(
     plaintext_frame: &[u8],
@@ -142,6 +187,14 @@ pub fn wrap_secure_invalid(
                 frame[payload_start..payload_start + copy_len].copy_from_slice(&plain_bytes[..copy_len]);
             }
         }
+        InvalidSecurityParam::ScfReservedBits(bits) => {
+            if frame.len() > 8 {
+                frame[8] |= *bits;
+            }
+        }
+        InvalidSecurityParam::MacPattern(pattern) => {
+            apply_mac_pattern(&mut frame, pattern);
+        }
         InvalidSecurityParam::WrongAddressType => unreachable!("handled above"),
         InvalidSecurityParam::AppendBytes(extra) => {
             frame.extend_from_slice(extra);
@@ -168,7 +221,15 @@ fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut
         SeqSource::Fixed(val) => super::context::seq_to_bytes(*val),
         SeqSource::Peer(name) => ctx.next_peer_seq(name),
         SeqSource::PeerTable(name) => ctx.current_peer_table_seq(name),
+        // The EITT lowering resolves this to `Table` or refuses the
+        // telegram; it exists only to keep "unspecified" distinct from
+        // "unreadable" while reading the attributes.
+        SeqSource::Unpinned(name) => unreachable!("unresolved sequence variable {name} reached the engine"),
     };
+    // Applied after the counter has moved, so a replay (`-1`) or a
+    // forward jump (`+1`) sends one number out of step without changing
+    // where the rest of the case is numbered from.
+    let seq_nr = apply_seq_offset(seq_nr, params.seq_offset);
 
     let scf = SecurityControlField {
         service: SecureServiceType::Data,
@@ -353,6 +414,14 @@ pub fn wrap_sync_req_invalid(
         InvalidSecurityParam::TruncateBytes(n) => {
             let new_len = frame.len().saturating_sub(*n);
             frame.truncate(new_len);
+        }
+        InvalidSecurityParam::ScfReservedBits(bits) => {
+            if frame.len() > 8 {
+                frame[8] |= *bits;
+            }
+        }
+        InvalidSecurityParam::MacPattern(pattern) => {
+            apply_mac_pattern(&mut frame, pattern);
         }
         InvalidSecurityParam::WrongAddressType => { /* Already handled above */ }
         _ => {}
