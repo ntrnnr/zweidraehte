@@ -408,3 +408,64 @@ length, ten.\
 insert = [
   { expect = { data = "3C 60 #BDUT_ADDR #EDI 10 01 D3 00 11 00 10 02 0? ?? 00 00 00 00 02 00 0A ??", timeout_ms = 200 } },
 ]
+
+# ============================================================================
+# 3.8.2.2's A+C expectation echoes the wrong PID
+# ============================================================================
+#
+# The third write of the security-mode-on half targets PID 02
+# (`13 01 CE 00 11 00 10 02 …`, like every other write in the case), but
+# its expectation reads `… 01 CF 00 11 00 10 01 00 00 01 ??` — PID 01.
+# The write-confirmation echoes the PID that was written; the identical
+# A+C write in the mode-off half expects 02. A one-octet authoring slip,
+# same category as 6.2.8's stray token.
+
+[[patch]]
+replace = "795A13DD-18F6-4FD6-A9ED-B499D50C5467"
+why = """
+3.8.2.2: the A+C expectation echoes PID 01 for a write that targets PID \
+02 — its own request and the identical mode-off twin both say 02.\
+"""
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 02 00 00 01 ??", key = "TK1", timeout_ms = 200 } },
+]
+
+# ============================================================================
+# 3.8.15.6 offers two exhaustion points; ours is the other one
+# ============================================================================
+#
+# The case's acceptance reads "The BDUT stops sending after
+# PID_SEQUENCE_NUMBER_SENDING has reached its maximum value (optionally
+# maximum value minus 1)", and its own prose carries the second variant's
+# values: "Alternatively write value = FFFFFFFFFFFDh" before the write and
+# "Alternatively response value = FFFFFFFFFFFEh" before the response. The
+# XML encodes the first variant — write FFFFFFFFFFFEh, answer with
+# FFFFFFFFFFFFh, then fall silent.
+#
+# `reserve_next_seq_nr` refuses at the maximum rather than one past it, so
+# ours is the "minus 1" device: it answers with FFFFFFFFFFFEh and falls
+# silent one frame earlier. Stopping earlier can only ever be safe — the
+# frame it declines to send is the one that would leave the counter with
+# nowhere to advance to — and the case explicitly admits it, so the two
+# telegrams move to the alternative values the prose names rather than the
+# device moving to the riskier boundary.
+#
+# The closing silence is unpatched: it is the same assertion either way.
+
+[[patch]]
+replace = "DBDC3898-6C08-43FD-B801-8B1DFBAECAB5"
+why = """
+3.8.15.6: ours is the "(optionally maximum value minus 1)" device its own \
+acceptance admits, so the seed is the FFFFFFFFFFFDh its prose names as \
+the alternative.\
+"""
+insert = [
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 0F 01 CE 00 11 00 10 3B 01 00 01 FF FF FF FF FF FD", key = "TK1" } },
+]
+
+[[patch]]
+replace = "F17D55A9-B09B-4463-B0E1-1957A0C068A3"
+why = "3.8.15.6: the matching \"Alternatively response value = FFFFFFFFFFFEh\" the case's prose names"
+insert = [
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0F 01 CD 00 11 00 10 3B 01 00 01 FF FF FF FF FF FE", key = "TK1", timeout_ms = 1000 } },
+]

@@ -173,15 +173,18 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
     vars.insert("OVERFLOW_PROPERTY".into(), TestVariable::Bytes(vec![0xCB]));
 
     // Start address of the DUT's read-only memory region for tests
-    // 5.1.4 / 5.2.3. Three octets, big-endian.
-    // Maps to `ConformanceMemoryMap::READONLY_MEMORY_BASE` (0x000500).
-    vars.insert("READONLY_MEM_START".into(), TestVariable::Bytes(vec![0x00, 0x05, 0x00]));
-    // Start address of the DUT's write-only memory region for test 5.2.3.
-    // Maps to `ConformanceMemoryMap::WRITEONLY_MEMORY_BASE` (0x000510).
-    vars.insert("WRITEONLY_MEM_START".into(), TestVariable::Bytes(vec![0x00, 0x05, 0x10]));
+    // 5.1.4 / 5.1.5 / 5.2.3. Three octets, big-endian. It sits directly
+    // behind the linear read/write block so a write running off the end
+    // of that block lands in it — which is what 5.1.5 tests.
+    // Maps to `ConformanceMemoryMap::READONLY_MEMORY_BASE` (0x000300).
+    vars.insert("READONLY_MEM_START".into(), TestVariable::Bytes(vec![0x00, 0x03, 0x00]));
+    // Start address of the DUT's write-only memory region, directly
+    // behind the read-only one (5.2.3 / 5.2.4).
+    // Maps to `ConformanceMemoryMap::WRITEONLY_MEMORY_BASE` (0x000310).
+    vars.insert("WRITEONLY_MEM_START".into(), TestVariable::Bytes(vec![0x00, 0x03, 0x10]));
 
     // Memory addresses for security-aware sub-region tests (3.7.2.8).
-    // 3-byte MemoryExtended addresses within Level 2 memory (0x0300-0x03FF).
+    // 3-byte MemoryExtended addresses within Level 2 memory (0x0320-0x03FF).
     vars.insert("MEM_AP_000_000".into(), TestVariable::Bytes(vec![0x00, 0x03, 0xD0]));
     vars.insert("MEM_AP_3FF_00C".into(), TestVariable::Bytes(vec![0x00, 0x03, 0xE0]));
 

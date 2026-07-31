@@ -585,8 +585,10 @@ impl ConstDefault for TestParameters {
 
 /// Size of linear memory region (0x0200-0x02FF) - freely accessible
 pub const LINEAR_MEMORY_SIZE: usize = 256;
-/// Size of level 2 memory block (0x0300-0x03FF) - requires access level <= 2
-pub const LEVEL2_MEMORY_SIZE: usize = 256;
+/// Size of level 2 memory block (0x0320-0x03FF) - requires access level <= 2.
+/// Shorter than a full page: the read-only and write-only regions sit in
+/// front of it, directly behind the linear block (see `ConformanceMemoryMap`).
+pub const LEVEL2_MEMORY_SIZE: usize = 224;
 /// Size of level 1 memory block (0x0400-0x04FF) - requires access level <= 1
 pub const LEVEL1_MEMORY_SIZE: usize = 256;
 /// Size of user memory region (0x7FF0-0x7FFF) - for A_UserMemory_Read/Write tests
@@ -649,7 +651,7 @@ pub struct ConformanceState {
     /// Linear memory region for A_Memory_Read/Write tests (0x0200-0x02FF)
     /// This is freely accessible (no access level restriction) for M-2.6/M-2.7 tests.
     pub linear_memory: RefCell<[u8; LINEAR_MEMORY_SIZE]>,
-    /// Level 2 memory block for authorization tests (0x0300-0x03FF)
+    /// Level 2 memory block for authorization tests (0x0320-0x03FF)
     /// Requires access level <= 2. Used by M-2.6 as "protected" and M-2.11 as level 2 block.
     pub level2_memory: RefCell<[u8; LEVEL2_MEMORY_SIZE]>,
     /// Level 1 memory block for M-2.11 authorization tests (0x0400-0x04FF)
@@ -766,12 +768,20 @@ impl DeviceModelNotifier for ConformanceState {
 /// - 0x0116-0x014F: Association Table (AST) - 46 bytes max (2 header + 11 entries * 4 bytes)
 /// - 0x0150-0x019F: Communication Object Table (COT) - 24 bytes max (11 entries * 2 bytes + 2 header)
 /// - 0x0200-0x02FF: Linear memory (256 bytes) - freely accessible (no restriction)
-/// - 0x0300-0x03FF: Level 2 block (256 bytes) - requires access level <= 2
+/// - 0x0300-0x030F: Read-only region (16 bytes)
+/// - 0x0310-0x031F: Write-only region (16 bytes)
+/// - 0x0320-0x03FF: Level 2 block (224 bytes) - requires access level <= 2
 /// - 0x0400-0x04FF: Level 1 block (256 bytes) - requires access level <= 1
+/// - 0x7FF0-0x7FFF: User memory (16 bytes)
+///
+/// The read-only and write-only regions sit between the linear block and
+/// the level-2 block deliberately: TSS J 5.1.5 and 5.2.4 start an access
+/// on a region's last octet and run into the next one, so each protected
+/// region must be reachable by overrunning the region in front of it.
 ///
 /// This layout matches what the conformance tests expect:
-/// - M-2.6/M-2.7: MEMPOS = 0x0200 (accessible), MEMPOS_PROTECTED = 0x0300 (protected for level 3)
-/// - M-2.11: MEM_START_BLOCK_LEVEL_1 = 0x0400, MEM_START_BLOCK_LEVEL_2 = 0x0300
+/// - M-2.6/M-2.7: MEMPOS = 0x0200 (accessible), MEMPOS_PROTECTED = 0x1000 (outside the map)
+/// - M-2.11: MEM_START_BLOCK_LEVEL_1 = 0x0400, MEM_START_BLOCK_LEVEL_2 = 0x0320
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ConformanceMemoryMap;
 
@@ -782,30 +792,97 @@ impl ConformanceMemoryMap {
     pub const AST_BASE: u16 = 0x0116;
     /// Base address for Communication Object Table
     pub const COT_BASE: u16 = 0x0150;
+    // The protected regions sit directly behind the freely writable
+    // linear block, and behind each other:
+    //
+    //   0200h-02FFh  linear, read/write     (READWRITE_MEM_START/END)
+    //   0300h-030Fh  read-only              (READONLY_MEM_START/END)
+    //   0310h-031Fh  write-only             (WRITEONLY_MEM_START)
+    //   0320h-03FFh  level-2 block
+    //   0400h-04FFh  level-1 block
+    //
+    // Adjacency is the point, not an accident of allocation. TSS J 5.1.5
+    // ("partly read only memory") writes six octets starting on the last
+    // read/write octet and 5.2.4 reads six starting on the last read-only
+    // octet; both need the *next* region to be the protected one, or the
+    // access straddles into something with no protection to report and
+    // the case tests nothing. A device that keeps its protected memory
+    // somewhere unreachable from a write cannot answer these at all.
+
     /// Base address for linear memory region (freely accessible)
     pub const LINEAR_MEMORY_BASE: u16 = 0x0200;
-    /// Base address for level 2 memory block (requires access level <= 2)
-    pub const LEVEL2_MEMORY_BASE: u16 = 0x0300;
-    /// Base address for level 1 memory block (requires access level <= 1)
-    pub const LEVEL1_MEMORY_BASE: u16 = 0x0400;
-    /// Base address for the read-only memory region. Reads return a
-    /// fixed pattern; writes always fail with `MemoryError::WriteProtected`,
-    /// which the application layer maps to return code 0xFB
-    /// (`E_READ_ONLY`). Used by Data Security conformance tests
-    /// 5.1.4 and 5.2.3 to verify the BDUT honours read-only memory.
-    pub const READONLY_MEMORY_BASE: u16 = 0x0500;
-    /// Size of the read-only region (16 bytes; the test addresses one
+    /// Base address for the read-only memory region — directly behind the
+    /// linear block. Reads return a fixed pattern; writes always fail
+    /// with `MemoryError::WriteProtected`, which the application layer
+    /// maps to return code 0xFB (`E_READ_ONLY`). Used by Data Security
+    /// conformance tests 5.1.4, 5.1.5 and 5.2.3.
+    pub const READONLY_MEMORY_BASE: u16 = 0x0300;
+    /// Size of the read-only region (16 bytes; the tests address one
     /// 6-byte write and a few short reads).
     pub const READONLY_MEMORY_SIZE: u16 = 0x10;
-    /// Base address for the write-only memory region. Reads always fail
-    /// with `MemoryError::WriteProtected` (mapped by the AL to return
-    /// code 0xFB, which the conformance test 5.2.3 accepts as the
-    /// "alternative" to 0xFA). Writes succeed but the data is dropped.
-    pub const WRITEONLY_MEMORY_BASE: u16 = 0x0510;
+    /// Base address for the write-only memory region — directly behind
+    /// the read-only one. Reads always fail with
+    /// `MemoryError::WriteProtected` (mapped by the AL to return code
+    /// 0xFA on the read path); writes succeed but the data is dropped.
+    pub const WRITEONLY_MEMORY_BASE: u16 = 0x0310;
     /// Size of the write-only region (16 bytes).
     pub const WRITEONLY_MEMORY_SIZE: u16 = 0x10;
+    /// Base address for level 2 memory block (requires access level <= 2).
+    /// Starts behind the two protected regions and still covers the
+    /// 03D0h/03E0h the management template's access-policy cases use.
+    pub const LEVEL2_MEMORY_BASE: u16 = 0x0320;
+    /// Base address for level 1 memory block (requires access level <= 1)
+    pub const LEVEL1_MEMORY_BASE: u16 = 0x0400;
     /// Base address for user memory region (for A_UserMemory_* tests)
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
+
+    /// Whether `[address, end_address)` starts inside a region and runs
+    /// past its end — a *partly protected* access.
+    ///
+    /// The extended memory services answer with the protection they meet
+    /// rather than "address void": the address is not void, part of what
+    /// was asked for simply cannot be served. TSS J 5.1.5 writes six
+    /// octets starting on the last read-only octet and expects FBh
+    /// (E_READ_ONLY); 5.2.4 reads the same range and expects FAh
+    /// (E_ACCESS_WRITE_ONLY). Both answer for the region the access
+    /// *starts* in.
+    pub(crate) fn straddles(address: u16, end_address: u16, base: u16, size: u16) -> bool {
+        address >= base && address < base + size && end_address > base + size
+    }
+
+    /// The error a partly protected access must report, or `None` when it
+    /// straddles no boundary this map knows.
+    ///
+    /// `writing` picks the direction: a read-only region refuses writes
+    /// (`WriteProtected` → FBh), a write-only region refuses reads (the
+    /// same variant, which the read path renders as FAh). A straddle
+    /// between two regions that both permit the operation still fails —
+    /// the map serves one region per access — and reports `AccessDenied`,
+    /// rendered FCh (E_ILLEGAL_COMMAND), which is the alternative return
+    /// code TSS J 5.1.5 carries for exactly that shape.
+    pub(crate) fn partly_protected(address: u16, end_address: u16, writing: bool) -> Option<MemoryError> {
+        // Read-only memory: refuses a straddling write outright, and a
+        // straddling read runs on into the write-only region.
+        if Self::straddles(address, end_address, Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE) {
+            return Some(MemoryError::WriteProtected);
+        }
+        // Write-only memory: unreadable, and nothing follows it.
+        if Self::straddles(address, end_address, Self::WRITEONLY_MEMORY_BASE, Self::WRITEONLY_MEMORY_SIZE) {
+            return Some(if writing { MemoryError::NotAccessible } else { MemoryError::WriteProtected });
+        }
+        // Straddling out of one freely accessible block into the next.
+        for (base, size) in [
+            (Self::LINEAR_MEMORY_BASE, LINEAR_MEMORY_SIZE as u16),
+            (Self::LEVEL2_MEMORY_BASE, LEVEL2_MEMORY_SIZE as u16),
+            (Self::LEVEL1_MEMORY_BASE, LEVEL1_MEMORY_SIZE as u16),
+            (Self::USER_MEMORY_BASE, USER_MEMORY_SIZE as u16),
+        ] {
+            if Self::straddles(address, end_address, base, size) {
+                return Some(MemoryError::AccessDenied);
+            }
+        }
+        None
+    }
 }
 
 impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
@@ -911,6 +988,11 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             && end_address <= Self::WRITEONLY_MEMORY_BASE + Self::WRITEONLY_MEMORY_SIZE
         {
             return Err(MemoryError::WriteProtected);
+        }
+
+        // A partly protected access reports the protection it met.
+        if let Some(e) = Self::partly_protected(address, end_address, false) {
+            return Err(e);
         }
 
         // Address is outside accessible range
@@ -1023,6 +1105,11 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             && end_address <= Self::WRITEONLY_MEMORY_BASE + Self::WRITEONLY_MEMORY_SIZE
         {
             return Ok(data.len());
+        }
+
+        // A partly protected access reports the protection it met.
+        if let Some(e) = Self::partly_protected(address, end_address, true) {
+            return Err(e);
         }
 
         // Address is outside accessible range

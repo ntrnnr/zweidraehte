@@ -254,6 +254,10 @@ MEMPOS_PROTECTED = "10 00"
 # Level 1 is at 0400h for us; the template defaults it to 0200h, our
 # freely accessible linear memory.
 MEM_START_BLOCK_LEVEL_1 = "04 00"
+# Level 2 starts at 0320h, not the template's 0300h: the read-only and
+# write-only regions occupy 0300h-031Fh so that the data-security
+# template's partly-protected accesses have somewhere to straddle into.
+MEM_START_BLOCK_LEVEL_2 = "03 20"
 
 # Cases the template scopes out itself, in its own prose, against a
 # device capability we happen to exceed. Our MAX_APDU_LENGTH is 254
@@ -422,12 +426,18 @@ BDUT_ADDR = "10 01"
 # itself and `tests::security::variables` the other two.
 READWRITE_MEM_START = "00 02 00"   # LINEAR_MEMORY_BASE, 256 bytes
 READWRITE_MEM_END = "00 02 FF"
-READONLY_MEM_START = "00 05 00"    # READONLY_MEMORY_BASE, 16 bytes
-READONLY_MEM_END = "00 05 0F"
-WRITEONLY_MEM_START = "00 05 10"   # WRITEONLY_MEMORY_BASE, 16 bytes
+# The two protected regions sit directly behind the linear block, and
+# behind each other — 5.1.5 and 5.2.4 ("partly read only" / "partly write
+# only memory") start an access on a region's last octet and run into the
+# next one, so the adjacency is what makes them testable at all.
+READONLY_MEM_START = "00 03 00"    # READONLY_MEMORY_BASE, 16 bytes
+READONLY_MEM_END = "00 03 0F"
+WRITEONLY_MEM_START = "00 03 10"   # WRITEONLY_MEMORY_BASE, 16 bytes
 
 # MEM_AP_000_000 and MEM_AP_3FF_00C are deliberately not overridden: the
-# template's 0003D0h and 0003E0h already fall inside our level-2 block,
+# template's 0003D0h and 0003E0h still fall inside our level-2 block
+# (0320h-03FFh, shortened at the front to make room for the two protected
+# regions),
 # which is what those access-policy cases need, and the hand-written
 # suite uses the same two values.
 

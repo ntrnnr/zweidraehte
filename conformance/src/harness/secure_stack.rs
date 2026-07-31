@@ -368,7 +368,7 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
             return Ok(data.len());
         }
 
-        // Read-only memory region (5.1.4): 0x0500–0x050F. Reads return
+        // Read-only memory region (5.1.4/5.1.5): 0x0300–0x030F. Reads return
         // a fixed pattern; writes return `WriteProtected` in the write
         // handler.
         if address >= ConformanceMemoryMap::READONLY_MEMORY_BASE
@@ -381,7 +381,7 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
             return Ok(data.len());
         }
 
-        // Write-only memory region (5.2.3): 0x0510–0x051F. Reads return
+        // Write-only memory region (5.2.3/5.2.4): 0x0310–0x031F. Reads return
         // `WriteProtected`; writes succeed but the data is discarded
         // (the AL maps `WriteProtected` to return code 0xFB, which 5.2.3
         // accepts as the "alternative" return code along with 0xFA).
@@ -389,6 +389,12 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
             && end_address <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
         {
             return Err(MemoryError::WriteProtected);
+        }
+
+        // A partly protected access reports the protection it met, not
+        // "address void" — see `ConformanceMemoryMap::partly_protected`.
+        if let Some(e) = ConformanceMemoryMap::partly_protected(address, end_address, false) {
+            return Err(e);
         }
 
         Err(MemoryError::NotAccessible)
@@ -508,6 +514,12 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
             && end_address <= ConformanceMemoryMap::WRITEONLY_MEMORY_BASE + ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE
         {
             return Ok(data.len());
+        }
+
+        // A partly protected access reports the protection it met, not
+        // "address void" — see `ConformanceMemoryMap::partly_protected`.
+        if let Some(e) = ConformanceMemoryMap::partly_protected(address, end_address, true) {
+            return Err(e);
         }
 
         Err(MemoryError::NotAccessible)

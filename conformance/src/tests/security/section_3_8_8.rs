@@ -229,25 +229,21 @@ fn test_3_8_8_7() -> TestCase {
         // Drop Read-On-Init frames the respawned child emits so they
         // don't collide with subsequent expects.
         drain(500),
-        // After FactoryResetKeepIA the active tool key reverts to FDSK,
-        // security mode is OFF, but the IA is kept so we don't need to
-        // re-program. Sync + read + restore TK1, all using FDSK until
-        // the tool key is re-provisioned.
-        comment("B. Sync tool seq after FactoryResetKeepIA (FDSK-encrypted)"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
-        comment("B. Read Security Mode → OFF (factory reset cleared)"),
-        inject_secure_ac(STATE_READ, "FDSK"),
-        expect_secure_ac(STATE_READ_RESP_OFF, "FDSK", TIMEOUT),
-        comment("B. Restore PID_TOOL_KEY = TK1 (auth with FDSK, response with TK1)"),
-        inject_secure_ac(RESTORE_TOOL_KEY_TK1, "FDSK"),
-        expect_secure_ac(RESTORE_TOOL_KEY_TK1_OK, "TK1", TIMEOUT),
+        // 03/05/01 §6.3.5.4 and §6.3.10 both put "Reset to default
+        // without IA" (07h) in the "not influenced" row: the Security
+        // Mode stays on and the tool key stays TK1. The tables, the
+        // failures log and the security report *are* cleared, and the IA
+        // is kept, so there is nothing to re-program either.
+        comment("B. Sync tool seq after FactoryResetKeepIA (tool key survives 07h)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+        comment("B. Read Security Mode → still ON (07h leaves it unchanged)"),
+        inject_secure_ac(STATE_READ, "TK1"),
+        expect_secure_ac(STATE_READ_RESP_ON, "TK1", TIMEOUT),
         // ==== Phase C: FactoryReset clears PID_SECURITY_MODE ====
         // Note: our DUT restored IA after the FactoryResetKeepIA (via
         // the preserved address), so step C still starts with a valid IA.
-        comment("C. Re-activate Security Mode"),
-        inject_secure_ac(COMMAND_ENABLE, "TK1"),
-        expect_secure_ac(COMMAND_RESP_OK, "TK1", TIMEOUT),
+        comment("C. Security Mode is already on from phase B"),
         comment("C. FactoryReset (erase=0x02) — IA gets wiped"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject_secure_ac(CONNECTED_RESTART_FACTORY, "TK1"),

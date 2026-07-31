@@ -1905,8 +1905,10 @@ fn create_authorization_test_variables() -> std::collections::BTreeMap<String, T
     // Memory block start addresses
     // MEM_START_BLOCK_LEVEL_1 = 1024 = 0x0400 (requires access level <= 1)
     vars.insert("MEM_START_BLOCK_LEVEL_1".into(), TestVariable::Bytes(vec![0x04, 0x00]));
-    // MEM_START_BLOCK_LEVEL_2 = 768 = 0x0300 (requires access level <= 2)
-    vars.insert("MEM_START_BLOCK_LEVEL_2".into(), TestVariable::Bytes(vec![0x03, 0x00]));
+    // MEM_START_BLOCK_LEVEL_2 = 800 = 0x0320 (requires access level <= 2).
+    // 0300h-031Fh is the read-only / write-only pair, which sits directly
+    // behind the linear block for the data-security straddle tests.
+    vars.insert("MEM_START_BLOCK_LEVEL_2".into(), TestVariable::Bytes(vec![0x03, 0x20]));
 
     vars
 }

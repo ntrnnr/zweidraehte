@@ -279,7 +279,7 @@ fn test_3_8_13_6() -> TestCase {
     //   (a) power cycle               — key survives
     //   (b) bus-level Basic Restart   — key survives
     //   (c) bus-level Confirmed Restart (erase=0x01) — key survives
-    //   (d) FactoryResetKeepIA (erase=0x07) — key replaced with FDSK
+    //   (d) FactoryResetKeepIA (erase=0x07) — key unchanged
     //   (e) local FactoryReset (erase=0x02) — key replaced with FDSK
     //
     // "Read" here is really "write PID_TOOL_KEY using the current key
@@ -288,12 +288,14 @@ fn test_3_8_13_6() -> TestCase {
     // sub-case leaves the device with the expected current key; a
     // successful secure write under that key proves the invariant.
     //
-    // Sub-cases (a)-(c) match the original tool key (TK1 in our
-    // harness). (d)-(e) land the device on FDSK, which is a distinct
-    // key in our harness — verification uses SecKey="FDSK" for those
-    // sub-cases. This exercises the factory-reset FDSK re-seeding
-    // path in `SecureExtensionState::on_erase` and confirms the DUT
-    // rejects TK1 after the reset.
+    // Sub-cases (a)-(d) match the original tool key (TK1 in our
+    // harness): 03/05/01 §6.3.10's master-reset table leaves the tool
+    // key "not influenced" by a Confirmed Restart *and* by "Reset to
+    // default without IA" (07h), and only (e), "Reset to default state"
+    // (02h), makes it inactive so the FDSK becomes active again
+    // (§6.1.4). (e) verifies under SecKey="FDSK", which is a distinct
+    // key in our harness, so it also confirms the DUT stops accepting
+    // TK1 there.
 
     // Write PID_TOOL_KEY = TK1 (idempotent: matches the default).
     const WRITE_TK1: &str = "3C 60 #EDI #BDUT_ADDR 19 01 CE 00 11 00 10 38 01 00 01 \
@@ -358,14 +360,15 @@ fn test_3_8_13_6() -> TestCase {
             comment("Verify: write TK1 with TK1 → ACK"),
             inject_secure_ac(WRITE_TK1, "TK1"),
             expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
-            // ==== (d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK ====
-            // Our FDSK is distinct from TK1, so after the reset the DUT
-            // only accepts frames encrypted with FDSK until a new tool
-            // key is written. FactoryResetKeepIA also wipes the address /
-            // association / group-key / GO-flag tables — the suite
+            // ==== (d) FactoryResetKeepIA (erase=0x07) — tool key survives ====
+            // 07h clears the key tables, the SIAT, the GO flags, the
+            // failures log and the security report, but 03/05/01 §6.3.10
+            // leaves the tool key itself "not influenced" — so TK1 still
+            // opens the device afterwards. It does wipe the address /
+            // association / group-key / GO-flag tables, so the suite
             // teardown issues a `full_reset` to rebuild the default SHM
             // snapshot before handing off to the next suite.
-            comment("(d) FactoryResetKeepIA (erase=0x07) — tool key → FDSK"),
+            comment("(d) FactoryResetKeepIA (erase=0x07) — tool key survives"),
             inject("B0 #EDI #BDUT_ADDR 60 80"),
             inject_secure_ac(CONNECTED_RESTART_FRWITHIA, "TK1"),
             expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
@@ -374,14 +377,11 @@ fn test_3_8_13_6() -> TestCase {
             inject("B0 #EDI #BDUT_ADDR 60 81"),
             wait_for_restart(2000),
             drain(500),
-            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
-            expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
-            comment("Verify: write PID_TOOL_KEY (value = FDSK) with FDSK → ACK"),
-            // Security mode was reset to off by the factory reset; a
-            // write on 008/008 policy still works when sec mode is off
-            // because the 16F nibble permits A+C writes in both modes.
-            inject_secure_ac(WRITE_FDSK, "FDSK"),
-            expect_secure_ac(WRITE_TK_OK, "FDSK", TIMEOUT),
+            inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+            expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
+            comment("Verify: write TK1 with TK1 → ACK"),
+            inject_secure_ac(WRITE_TK1, "TK1"),
+            expect_secure_ac(WRITE_TK_OK, "TK1", TIMEOUT),
             // ==== (e) Local FactoryReset (erase=0x02) — tool key → FDSK ====
             // IA also wiped; re-program via serial-number-keyed
             // `A_IndividualAddressSerialNumber_Write` before the verify.

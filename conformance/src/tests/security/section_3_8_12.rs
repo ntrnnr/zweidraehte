@@ -393,18 +393,21 @@ fn test_3_8_12_4() -> TestCase {
         comment("Wait for the DUT to auto-restart (IA is preserved)"),
         wait_for_restart(2000),
         drain(500),
-        comment("Sync tool seq number after FactoryResetKeepIA (FDSK-encrypted)"),
-        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
-        expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
+        // 07h clears the failures log but leaves the tool key alone
+        // (03/05/01 §6.3.9 vs §6.3.10), so the verification stays on TK1.
+        comment("Sync tool seq number after FactoryResetKeepIA (tool key survives 07h)"),
+        inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 1, CHALLENGE_1),
+        expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
         comment("Read counters → expect all zero"),
-        inject_secure_ac(READ_COUNTERS, "FDSK"),
-        expect_secure_ac(READ_COUNTERS_EMPTY, "FDSK", TIMEOUT),
+        inject_secure_ac(READ_COUNTERS, "TK1"),
+        expect_secure_ac(READ_COUNTERS_EMPTY, "TK1", TIMEOUT),
         comment("Read last entry → expect F8 (empty log)"),
-        inject_secure_ac(READ_LAST_ENTRY, "FDSK"),
-        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "FDSK", TIMEOUT),
+        inject_secure_ac(READ_LAST_ENTRY, "TK1"),
+        expect_secure_ac(READ_LAST_ENTRY_EMPTY, "TK1", TIMEOUT),
     ]);
 
-    // Factory reset left `tool_key == FDSK`; restore TK1 in teardown.
+    // The tool key is untouched by 07h, but the reset wiped the tables —
+    // the teardown's `full_reset` restores them for the next case.
     TestCase::new("3.8.12.4 Secure FunctionPropertyCommand, behavior on Factory Reset without IA")
         .with_steps(steps)
         .with_teardown(provision_tk1_via_fdsk())
