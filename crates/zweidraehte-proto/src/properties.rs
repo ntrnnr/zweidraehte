@@ -39,8 +39,16 @@ pub enum PropertyError {
     ReadNotAllowed,
     /// Data type mismatch
     TypeMismatch,
-    /// Value out of range
+    /// Value inside the property's range but not one it accepts.
+    ///
+    /// Distinct from [`ValueBelowMin`](Self::ValueBelowMin) and
+    /// [`ValueAboveMax`](Self::ValueAboveMax): those say the value fell
+    /// off one end, this says it is a hole in the middle.
     ValueOutOfRange,
+    /// Value below the property's minimum.
+    ValueBelowMin,
+    /// Value above the property's maximum.
+    ValueAboveMax,
     /// Access denied (insufficient access level)
     AccessDenied,
     /// Buffer too small to hold result
@@ -61,6 +69,8 @@ impl fmt::Display for PropertyError {
             PropertyError::ReadNotAllowed => write!(f, "Read not allowed"),
             PropertyError::TypeMismatch => write!(f, "Type mismatch"),
             PropertyError::ValueOutOfRange => write!(f, "Value out of range"),
+            PropertyError::ValueBelowMin => write!(f, "Value below minimum"),
+            PropertyError::ValueAboveMax => write!(f, "Value above maximum"),
             PropertyError::AccessDenied => write!(f, "Access denied"),
             PropertyError::BufferTooSmall => write!(f, "Buffer too small"),
             PropertyError::InvalidLoadState => write!(f, "Invalid load state"),
@@ -85,6 +95,8 @@ impl PropertyError {
             PropertyError::TypeMismatch => PropertyReturnCode::DataTypeConflict,
             PropertyError::BufferTooSmall => PropertyReturnCode::LengthExceedsMaxApduLength,
             PropertyError::ValueOutOfRange => PropertyReturnCode::DataVoid,
+            PropertyError::ValueBelowMin => PropertyReturnCode::DataMin,
+            PropertyError::ValueAboveMax => PropertyReturnCode::DataMax,
             PropertyError::InvalidLoadState => PropertyReturnCode::TemporarilyNotAvailable,
         }
     }
