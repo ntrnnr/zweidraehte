@@ -156,6 +156,15 @@ pub enum InsertStep {
     },
     /// Expect a raw telegram template.
     Expect { data: String, timeout_ms: u32 },
+    /// Send a plaintext telegram wrapped tool-access A+C under a named
+    /// key (the runner's tool counter supplies the sequence number).
+    ///
+    /// For state the template's prose assumes the bench operator
+    /// provisioned — a "Required BDUT Setting" that only secure
+    /// management can put in place once security mode is on.
+    InjectSecure { data: String, key: String },
+    /// Expect a secure tool-access A+C response under a named key.
+    ExpectSecure { data: String, key: String, timeout_ms: u32 },
 }
 
 impl InsertStep {
@@ -180,6 +189,8 @@ impl InsertStep {
             Self::Comment(text) => helpers::comment(text),
             Self::Inject { data, delay_ms } => helpers::inject_delay(data, *delay_ms),
             Self::Expect { data, timeout_ms } => helpers::expect(data, *timeout_ms),
+            Self::InjectSecure { data, key } => helpers::inject_secure_ac(data, key),
+            Self::ExpectSecure { data, key, timeout_ms } => helpers::expect_secure_ac(data, key, *timeout_ms),
         }
     }
 }

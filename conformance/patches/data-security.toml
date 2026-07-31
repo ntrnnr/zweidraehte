@@ -239,15 +239,36 @@ before = "7F92F60A-7010-4DB7-B162-709A59B3C38F"
 why = "3.4.2: the DUT-initiated sync req the prose asks the operator to stimulate"
 insert = [{ trigger_sync = { peer_ia = 0x1041 } }]
 
+# 3.4.4's "Required BDUT Setting – IA2 in
+# PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE and security key P2PK2 set" is
+# bench provisioning the template never performs in telegrams — and by
+# this point 3.4.3 has positionally overwritten SIAT element 1 with its
+# own 11F0 test entry. Provision element 2 and key index 2 the way the
+# operator would, then stimulate.
 [[patch]]
 before = "89C29A0D-EA04-4594-8404-546586A103F7"
-why = "3.4.4: the DUT-initiated sync req to the second IA (#ALT_SRC_ADDR, P2PK2)"
-insert = [{ trigger_sync = { peer_ia = 0xAFFD } }]
+why = """
+3.4.4: its "Required BDUT Setting" (IA2 in the SIAT, P2PK2 set) is bench provisioning the template performs nowhere; write element 2 and key index 2, then stimulate the DUT-initiated sync req to the second IA"""
+insert = [
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #ALT_SRC_ADDR 00 00 00 00 00 00", key = "TK1" } },
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00", key = "TK1", timeout_ms = 1000 } },
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 02 00 02 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 00 01", key = "TK1" } },
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 02 00", key = "TK1", timeout_ms = 1000 } },
+  { trigger_sync = { peer_ia = 0xAFFD } },
+]
 
+# 3.4.3 positionally overwrote SIAT element 1 (IA1 = 1.0.65) with its
+# own 11F0 test entry and never restores it; the bench operator would.
+# Put IA1 back before stimulating.
 [[patch]]
 before = "F264CADA-C329-4860-81DD-3985A48A8103"
-why = "3.4.5: the DUT-initiated sync req the prose asks the operator to stimulate"
-insert = [{ trigger_sync = { peer_ia = 0x1041 } }]
+why = """
+3.4.5: the DUT-initiated sync req the prose asks the operator to stimulate; element 1 is first restored to IA1, which 3.4.3's test entry overwrote and the bench would have put back"""
+insert = [
+  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 10 41 00 00 00 00 00 00", key = "TK1" } },
+  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00", key = "TK1", timeout_ms = 1000 } },
+  { trigger_sync = { peer_ia = 0x1041 } },
+]
 
 [[patch]]
 before = "95679590-9F61-4E57-808F-C906A66450E6"
