@@ -850,38 +850,50 @@ impl ConformanceMemoryMap {
         address >= base && address < base + size && end_address > base + size
     }
 
+    /// Whether `octet` falls inside `[base, base + size)`.
+    fn within(octet: u16, base: u16, size: u16) -> bool {
+        octet >= base && octet < base + size
+    }
+
     /// The error a partly protected access must report, or `None` when it
     /// straddles no boundary this map knows.
     ///
-    /// `writing` picks the direction: a read-only region refuses writes
-    /// (`WriteProtected` → FBh), a write-only region refuses reads (the
-    /// same variant, which the read path renders as FAh). A straddle
-    /// between two regions that both permit the operation still fails —
-    /// the map serves one region per access — and reports `AccessDenied`,
-    /// rendered FCh (E_ILLEGAL_COMMAND), which is the alternative return
-    /// code TSS J 5.1.5 carries for exactly that shape.
+    /// The protection can come from either end. A write starting on the
+    /// last read/write octet runs *into* read-only memory (TSS J 5.1.5's
+    /// first case), while a write starting on the last read-only octet is
+    /// refused by the region it starts in (5.1.5's second) — so both the
+    /// head and the tail are asked, head first. A straddle with no
+    /// protection at either end still fails, because the map serves one
+    /// region per access, and reports `AccessDenied` → FCh
+    /// (E_ILLEGAL_COMMAND).
     pub(crate) fn partly_protected(address: u16, end_address: u16, writing: bool) -> Option<MemoryError> {
-        // Read-only memory: refuses a straddling write outright, and a
-        // straddling read runs on into the write-only region.
-        if Self::straddles(address, end_address, Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE) {
-            return Some(MemoryError::WriteProtected);
+        const REGIONS: [(u16, u16); 6] = [
+            (ConformanceMemoryMap::LINEAR_MEMORY_BASE, LINEAR_MEMORY_SIZE as u16),
+            (ConformanceMemoryMap::READONLY_MEMORY_BASE, ConformanceMemoryMap::READONLY_MEMORY_SIZE),
+            (ConformanceMemoryMap::WRITEONLY_MEMORY_BASE, ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE),
+            (ConformanceMemoryMap::LEVEL2_MEMORY_BASE, LEVEL2_MEMORY_SIZE as u16),
+            (ConformanceMemoryMap::LEVEL1_MEMORY_BASE, LEVEL1_MEMORY_SIZE as u16),
+            (ConformanceMemoryMap::USER_MEMORY_BASE, USER_MEMORY_SIZE as u16),
+        ];
+
+        if !REGIONS.iter().any(|&(base, size)| Self::straddles(address, end_address, base, size)) {
+            return None;
         }
-        // Write-only memory: unreadable, and nothing follows it.
-        if Self::straddles(address, end_address, Self::WRITEONLY_MEMORY_BASE, Self::WRITEONLY_MEMORY_SIZE) {
-            return Some(if writing { MemoryError::NotAccessible } else { MemoryError::WriteProtected });
-        }
-        // Straddling out of one freely accessible block into the next.
-        for (base, size) in [
-            (Self::LINEAR_MEMORY_BASE, LINEAR_MEMORY_SIZE as u16),
-            (Self::LEVEL2_MEMORY_BASE, LEVEL2_MEMORY_SIZE as u16),
-            (Self::LEVEL1_MEMORY_BASE, LEVEL1_MEMORY_SIZE as u16),
-            (Self::USER_MEMORY_BASE, USER_MEMORY_SIZE as u16),
-        ] {
-            if Self::straddles(address, end_address, base, size) {
-                return Some(MemoryError::AccessDenied);
+
+        // The octets at each end of the access, head first: an access is
+        // refused by the region it starts in before the one it reaches.
+        let tail = end_address.saturating_sub(1);
+        for octet in [address, tail] {
+            if writing && Self::within(octet, Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE) {
+                return Some(MemoryError::WriteProtected);
+            }
+            if !writing && Self::within(octet, Self::WRITEONLY_MEMORY_BASE, Self::WRITEONLY_MEMORY_SIZE) {
+                // The read path renders `WriteProtected` as FAh
+                // (E_ACCESS_WRITE_ONLY).
+                return Some(MemoryError::WriteProtected);
             }
         }
-        None
+        Some(MemoryError::AccessDenied)
     }
 }
 
