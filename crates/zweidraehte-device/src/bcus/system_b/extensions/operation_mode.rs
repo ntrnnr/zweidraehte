@@ -126,6 +126,18 @@ impl OperationModeState {
     }
 
     /// Compute the time_left value for the response.
+    ///
+    /// 03/05/01 §4.4.1.2.1 Figure 13 calls this "the remaining time of
+    /// the current Operation Mode", 0..=254 s, with 255 reserved for a
+    /// mode that does not time out.
+    ///
+    /// Rounded **up**. Truncating would answer 29 the instant a 30 s
+    /// diagnostic mode is entered — 29.999 s remain, and reporting 29
+    /// understates by almost a full second at the one moment the answer
+    /// is exactly known. Rounding up also makes the value reach 0 only
+    /// when the mode really has expired, and it is what the reference
+    /// device does: data security 6.1.6 activates and expects 1Eh, then
+    /// reads two seconds later and expects 1Ch.
     fn compute_time_left(&self) -> u8 {
         if self.mode.get() == MODE_NORMAL {
             return TIME_LEFT_NONE;
@@ -136,7 +148,7 @@ impl OperationModeState {
                 if now >= deadline {
                     0
                 } else {
-                    let remaining = (deadline - now).as_secs();
+                    let remaining = (deadline - now).as_millis().div_ceil(1000);
                     // Clamp below TIME_LEFT_NONE, which is reserved for
                     // "no timeout".
                     remaining.min((TIME_LEFT_NONE - 1) as u64) as u8
