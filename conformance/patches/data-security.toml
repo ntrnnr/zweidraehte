@@ -133,3 +133,39 @@ first expectation keeps 1Eh pinned so the 30 s timeout stays covered.\
 insert = [
   { expect = { data = "BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 20 00 01 ??", timeout_ms = 200 } },
 ]
+
+# ============================================================================
+# 5.2.5's third read is for devices with an APDU shorter than 254
+# ============================================================================
+#
+# The case sends three MemoryExtended_Reads and its prose says what each
+# is for:
+#
+#   MemExt_Read 0 bytes                     → FDh
+#   MemExt_Read 250 bytes …                 → F4h (alternatively FFh)
+#   "Only for devices supporting APDU length smaller than 254"
+#   MemExt_Read 249 bytes, but response would exceed APDU length
+#
+# We are exactly 254 (`MAX_APDU_LENGTH_EXTENDED`), so the third read is
+# the one the template scopes out itself. 249 octets is a request we can
+# actually serve, and answering it with data is correct — there is no
+# error to return.
+#
+# The first two run and pass: size 0 draws FDh, and 250 draws F4h now
+# that `handle_memory_extended_read` refuses an over-budget read instead
+# of quietly truncating it.
+#
+# Only the third exchange comes out, not the whole case, so the two
+# sub-cases that do apply keep testing.
+
+[[patch]]
+skip = "0ACD029A-92B7-40A7-BE9C-A7C38294A602"
+why = """
+5.2.5: the 249-octet read is prefaced "Only for devices supporting APDU \
+length smaller than 254" and ours is exactly 254, so the request fits \
+and there is no error to return.\
+"""
+
+[[patch]]
+skip = "BA6739AF-0E5F-4019-9E90-99AF8D033169"
+why = "5.2.5: the expectation belonging to the 249-octet read above"

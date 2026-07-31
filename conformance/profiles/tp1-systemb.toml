@@ -409,6 +409,28 @@ patches = ["conformance/patches/data-security.toml"]
 # same address the hand-written security suites use.
 BDUT_ADDR = "10 01"
 
+# The AN177 memory fields. These are PIXIT-style: the template cannot
+# know where a device keeps its memory, so it declares the regions as
+# fields and carries an example layout at A000h/B000h/C000h that belongs
+# to nobody's device. Left at the defaults, every extended-memory case
+# addresses memory we do not have, and the DUT correctly answers FDh
+# E_ADDRESS_VOID — which reads like an unimplemented service and is not.
+#
+# These are our `ConformanceMemoryMap` regions
+# (conformance/src/harness/stack.rs), and the same values the
+# hand-written twin already uses: `section_5.rs` sets READWRITE_MEM_START
+# itself and `tests::security::variables` the other two.
+READWRITE_MEM_START = "00 02 00"   # LINEAR_MEMORY_BASE, 256 bytes
+READWRITE_MEM_END = "00 02 FF"
+READONLY_MEM_START = "00 05 00"    # READONLY_MEMORY_BASE, 16 bytes
+READONLY_MEM_END = "00 05 0F"
+WRITEONLY_MEM_START = "00 05 10"   # WRITEONLY_MEMORY_BASE, 16 bytes
+
+# MEM_AP_000_000 and MEM_AP_3FF_00C are deliberately not overridden: the
+# template's 0003D0h and 0003E0h already fall inside our level-2 block,
+# which is what those access-policy cases need, and the hand-written
+# suite uses the same two values.
+
 # Other templates go here as they start working. Each needs its own
 # patch set, and most also need comment commands that are hard errors
 # today — see SESSION.md.
