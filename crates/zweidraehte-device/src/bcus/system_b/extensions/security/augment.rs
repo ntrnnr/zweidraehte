@@ -789,17 +789,19 @@ fn write_siat_to_store<S: SiatAccess>(
         store.siat_set_count(new_count).map_err(|_| PropertyError::InvalidPropertyId)?;
         return Ok(WriteResponse::Echo);
     }
-    // Entry write(s): one or more contiguous 8-byte entries. The store is
-    // IA-keyed, so the array index `req.start_idx` selects is not threaded
-    // through — each entry is upserted by its own IA.
+    // Entry write(s): one or more contiguous 8-byte entries landing at the
+    // 1-based `req.start_idx`. The position is part of the payload's meaning:
+    // it is the `IA_Index` the P2P key table joins on (03/05/01 §6.3.6.2), so
+    // each entry replaces exactly the element the writer named.
     if req.data.is_empty() || req.data.len() % 8 != 0 {
         return Err(PropertyError::TypeMismatch);
     }
-    for chunk in req.data.chunks_exact(8) {
+    for (i, chunk) in req.data.chunks_exact(8).enumerate() {
+        let idx = req.start_idx - 1 + i as u16;
         let ia = u16::from_be_bytes([chunk[0], chunk[1]]);
         let mut seq = [0u8; 6];
         seq.copy_from_slice(&chunk[2..8]);
-        store.siat_write_entry(ia, seq).map_err(|_| PropertyError::InvalidPropertyId)?;
+        store.siat_write_entry(idx, ia, seq).map_err(|_| PropertyError::InvalidPropertyId)?;
     }
     Ok(WriteResponse::Echo)
 }

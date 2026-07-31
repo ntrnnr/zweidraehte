@@ -14,8 +14,8 @@
 //! Free slot:              all 0xFF
 //! ```
 //!
-//! `klen ≤ MAX_KEY (2)` and `vlen ≤ MAX_VAL (6)`, so the largest record
-//! (`1+1+2+1+6+1 = 12`) fills the slot exactly. A `remove` is a record with
+//! `klen ≤ MAX_KEY (2)` and `vlen ≤ MAX_VAL (8)`, so the largest record
+//! (`1+1+2+1+8+1 = 14`) fits the 16-byte slot. A `remove` is a record with
 //! `vlen == 0xFF` (tombstone); last-writer-wins on replay, so a tombstone after
 //! a value cancels it. A non-blank slot failing its CRC is *torn* (power cut
 //! mid-append): recovery skips it and keeps replaying — the record being
@@ -38,15 +38,16 @@ use super::mirror::Mirror;
 use super::sector_io::{SectorIo, crc8};
 use super::{KeyValueStore, MAX_KEY, MAX_VAL};
 
-/// Bytes per slot. The largest record is `ns(1)+klen(1)+key(2)+vlen(1)+val(6)
-/// +crc(1) = 12`.
-const SLOT_SIZE: usize = 12;
+/// Bytes per slot. The largest record is `ns(1)+klen(1)+key(2)+vlen(1)+val(8)
+/// +crc(1) = 14`; the slot is 16 so every power-of-two `WRITE_ALIGN` up to 16
+/// divides it (14 would shut out align-4 and align-8 media).
+const SLOT_SIZE: usize = 16;
 
 /// Tombstone marker in the `vlen` byte: the record removes its `(ns, key)`.
 const TOMBSTONE_VLEN: u8 = 0xFF;
 
 // Compile-time guarantee that the widest record fits a slot.
-const _: () = core::assert!(1 + 1 + MAX_KEY + 1 + MAX_VAL + 1 <= SLOT_SIZE, "record exceeds the 12-byte slot");
+const _: () = core::assert!(1 + 1 + MAX_KEY + 1 + MAX_VAL + 1 <= SLOT_SIZE, "record exceeds the 16-byte slot");
 
 /// Wear-levelled key-value store over `ENTRIES` live records, `SECTORS` flash
 /// sectors of `SECTOR_SIZE` bytes starting at `REGION_OFFSET`.
@@ -100,7 +101,7 @@ impl<F: SectorIo, R: Region, const ENTRIES: usize> WearLeveledKv<F, R, ENTRIES> 
     // devices use the byte-medium path (`FramSiatRegion` + `PackedSeqStore`).
     const _WRITE_ALIGN: () = core::assert!(
         SLOT_SIZE % F::WRITE_ALIGN == 0,
-        "WearLeveledKv slot writes require the medium's WRITE_ALIGN to divide SLOT_SIZE (12) — use FramSiatRegion/PackedSeqStore on doubleword-programmed flash or byte media"
+        "WearLeveledKv slot writes require the medium's WRITE_ALIGN to divide SLOT_SIZE (16) — use FramSiatRegion/PackedSeqStore on media with a coarser write grain"
     );
 
     /// Slots per sector, from the runtime sector size. `SLOT_SIZE` is a const so

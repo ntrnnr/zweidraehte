@@ -315,10 +315,10 @@ where
     F: Fn(MockFlash) -> S,
 {
     let mut store: SiatStore<S, 8, 4> = SiatStore::boot(open(backing.reopen())).unwrap();
-    store.write_entry(0x1103, s6(3)).unwrap();
-    store.write_entry(0x1101, s6(1)).unwrap();
-    store.write_entry(0x1102, s6(2)).unwrap();
-    // Sorted reads regardless of provisioning order.
+    store.write_entry(0, 0x1101, s6(1)).unwrap();
+    store.write_entry(1, 0x1102, s6(2)).unwrap();
+    store.write_entry(2, 0x1103, s6(3)).unwrap();
+    // Positional reads: element i is what was written at i.
     assert_eq!(store.read_entry(0), Some((0x1101, s6(1))));
     assert_eq!(store.read_entry(2), Some((0x1103, s6(3))));
     assert_eq!(store.count(), 3);

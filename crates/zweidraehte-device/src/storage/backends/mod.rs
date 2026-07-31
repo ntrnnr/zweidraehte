@@ -19,16 +19,16 @@
 //! All take their region placement as runtime constructor args — the storage
 //! layer's auto-packing derives each offset from the declared region sizes.
 //!
-//! Key/value widths are bounded so the wear-levelled slot stays a fixed 12 bytes
-//! (no_alloc). The current bounds cover the SIAT (key = IA, 2 bytes; value =
-//! SeqNr, 6 bytes) and the singleton counters (1-byte key).
+//! Key/value widths are bounded so the wear-levelled slot stays a fixed 16 bytes
+//! (no_alloc). The current bounds cover the SIAT (key = element index, 2 bytes;
+//! value = IA + SeqNr, 8 bytes) and the singleton counters (1-byte key).
 
 use crate::storage::kv::KeyValueStore;
 
-/// Maximum key width across all namespaces (IA = 2 bytes).
+/// Maximum key width across all namespaces (SIAT element index = 2 bytes).
 pub const MAX_KEY: usize = 2;
-/// Maximum value width across all namespaces (SeqNr = 6 bytes).
-pub const MAX_VAL: usize = 6;
+/// Maximum value width across all namespaces (SIAT IA + SeqNr = 8 bytes).
+pub const MAX_VAL: usize = 8;
 
 mod byte_io;
 mod config_store;

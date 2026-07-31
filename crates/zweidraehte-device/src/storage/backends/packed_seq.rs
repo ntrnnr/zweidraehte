@@ -1,7 +1,7 @@
 //! The KNX Data Secure sequence state in a fixed packed byte layout.
 //!
 //! [`PackedSeqStore`] holds exactly what the secure stack persists — the two
-//! singleton sequence counters (sending, tool) and the per-IA SIAT table — at
+//! singleton sequence counters (sending, tool) and the positional SIAT — at
 //! fixed offsets behind a magic, and exposes them through [`KeyValueStore`] so
 //! a [`SiatStore`](crate::storage::SiatStore) sits on it like any other backend. The
 //! layout is the storage format, not a general-purpose map: the namespaces,
@@ -24,6 +24,12 @@
 //! Offset 16:  peer_count[2]       big-endian u16
 //! Offset 18:  peer_entries[N]     each 8 bytes: ia[2] + seq[6]   (NS_SIAT)
 //! ```
+//!
+//! The SIAT records are keyed by 0-based element index and the packed entry
+//! *is* the record value (`ia[2] + seq[6]`), so `NS_SIAT` access is direct
+//! slot addressing — the element position is the `IA_Index` the P2P key
+//! table joins on (03/05/01 §6.3.6.2), and it is the [`SiatStore`] view on
+//! top that owns the IA lookups.
 //!
 //! A read checks the magic first and reports a blank store (`get` → `None`,
 //! `for_each` → nothing) until the first `put` stamps it, so a [`SiatStore`]
@@ -70,9 +76,9 @@ pub const fn region_len(peer_slots: usize) -> usize {
 /// [`SiatStore`](crate::storage::SiatStore) can drive it like any other backend.
 ///
 /// `R` is the bound [`Region`] — the single source of the blank-medium
-/// magic. `PEER_SLOTS` caps the per-IA SIAT table; size it ≥ the device's
-/// authorized-sender count (an over-full table silently drops new entries,
-/// matching the other backends' policy).
+/// magic. `PEER_SLOTS` caps the SIAT; size it ≥ the device's
+/// authorized-sender count (an over-capacity element write is silently
+/// dropped, matching the other backends' policy).
 ///
 /// The layout sits at `base` within the adapter's address space — 0 via
 /// [`new`](Self::new) (the region owns the whole medium, as in the
@@ -151,25 +157,11 @@ impl<M: ByteIo, R: Region, const PEER_SLOTS: usize> PackedSeqStore<M, R, PEER_SL
     fn peer_entry_offset(index: u16) -> u32 {
         OFF_PEER_ENTRIES + index as u32 * PEER_ENTRY_SIZE
     }
-
-    /// Offset of the entry whose IA matches `key`, or `None` if absent.
-    fn find_peer(&self, ia: u16) -> Result<Option<u32>, M::Error> {
-        let count = self.peer_count()?;
-        let target = ia.to_be_bytes();
-        for i in 0..count {
-            let off = Self::peer_entry_offset(i);
-            let mut stored = [0u8; 2];
-            self.medium.read_at(self.at(off), &mut stored)?;
-            if stored == target {
-                return Ok(Some(off));
-            }
-        }
-        Ok(None)
-    }
 }
 
-/// Read a key's 2-byte IA (the only multi-byte key in this layout).
-fn key_ia(key: &[u8]) -> u16 {
+/// Read a key's 2-byte big-endian element index (the only multi-byte key in
+/// this layout).
+fn key_index(key: &[u8]) -> u16 {
     u16::from_be_bytes([key[0], key[1]])
 }
 
@@ -211,13 +203,15 @@ impl<M: ByteIo, R: Region, const PEER_SLOTS: usize> KeyValueStore for PackedSeqS
                     Ok(Some(SEQ_LEN))
                 }
             }
-            NS_SIAT => match self.find_peer(key_ia(key))? {
-                Some(off) => {
-                    self.medium.read_at(self.at(off + 2), &mut buf[..SEQ_LEN])?;
-                    Ok(Some(SEQ_LEN))
+            NS_SIAT => {
+                let idx = key_index(key);
+                if idx >= self.peer_count()? {
+                    return Ok(None);
                 }
-                None => Ok(None),
-            },
+                let off = Self::peer_entry_offset(idx);
+                self.medium.read_at(self.at(off), &mut buf[..PEER_ENTRY_SIZE as usize])?;
+                Ok(Some(PEER_ENTRY_SIZE as usize))
+            }
             _ => Ok(None),
         }
     }
@@ -230,46 +224,35 @@ impl<M: ByteIo, R: Region, const PEER_SLOTS: usize> KeyValueStore for PackedSeqS
             NS_SENDING => self.medium.write_at(self.at(OFF_SENDING), &val[..SEQ_LEN]),
             NS_TOOL => self.medium.write_at(self.at(OFF_TOOL), &val[..SEQ_LEN]),
             NS_SIAT => {
-                let ia = key_ia(key);
-                if let Some(off) = self.find_peer(ia)? {
-                    self.medium.write_at(self.at(off + 2), &val[..SEQ_LEN])
-                } else {
-                    let count = self.peer_count()?;
-                    // Silently drop past capacity (table must be sized ≥ the
-                    // authorized-sender count); same policy as the RAM-mirror
-                    // backends.
-                    if (count as usize) < PEER_SLOTS {
-                        let off = Self::peer_entry_offset(count);
-                        self.medium.write_at(self.at(off), &ia.to_be_bytes())?;
-                        self.medium.write_at(self.at(off + 2), &val[..SEQ_LEN])?;
-                        self.set_peer_count(count + 1)?;
-                    }
-                    Ok(())
+                let idx = key_index(key);
+                // Silently drop past capacity (table must be sized ≥ the
+                // authorized-sender count); same policy as the RAM-mirror
+                // backends.
+                if (idx as usize) >= PEER_SLOTS {
+                    return Ok(());
                 }
+                let off = Self::peer_entry_offset(idx);
+                self.medium.write_at(self.at(off), &val[..PEER_ENTRY_SIZE as usize])?;
+                if idx >= self.peer_count()? {
+                    self.set_peer_count(idx + 1)?;
+                }
+                Ok(())
             }
             _ => Ok(()),
         }
     }
 
     fn remove(&mut self, ns: u8, key: &[u8]) -> Result<(), Self::Error> {
-        // Only SIAT entries are removable (count truncation / clear); the
+        // Only SIAT entries are removable, and only from the tail: the
+        // SiatStore view truncates and clears by popping the highest index,
+        // so removing element `idx` shrinks the table to `idx` elements. The
         // singletons are always present once the medium is initialised.
         if ns != NS_SIAT {
             return Ok(());
         }
-        let ia = key_ia(key);
-        if let Some(off) = self.find_peer(ia)? {
-            // Swap the last entry into the freed slot and shrink the count —
-            // the peer table carries no ordering invariant (the SiatStore view
-            // sorts in RAM).
-            let count = self.peer_count()?;
-            let last_off = Self::peer_entry_offset(count - 1);
-            if off != last_off {
-                let mut last = [0u8; PEER_ENTRY_SIZE as usize];
-                self.medium.read_at(self.at(last_off), &mut last)?;
-                self.medium.write_at(self.at(off), &last)?;
-            }
-            self.set_peer_count(count - 1)?;
+        let idx = key_index(key);
+        if idx < self.peer_count()? {
+            self.set_peer_count(idx)?;
         }
         Ok(())
     }
@@ -302,7 +285,7 @@ impl<M: ByteIo, R: Region, const PEER_SLOTS: usize> KeyValueStore for PackedSeqS
                     let off = Self::peer_entry_offset(i);
                     let mut entry = [0u8; PEER_ENTRY_SIZE as usize];
                     if self.medium.read_at(self.at(off), &mut entry).is_ok() {
-                        f(&entry[0..2], &entry[2..PEER_ENTRY_SIZE as usize]);
+                        f(&i.to_be_bytes(), &entry);
                     }
                 }
             }
@@ -426,7 +409,7 @@ mod tests {
         // raw all-zero bytes at OFF_SENDING. This is the FRAM/Shm divergence the
         // guard fixes: without it, a reboot here would boot sending_live = 0.
         let mut s = TestStore::new(RamRegion::new());
-        s.put(NS_SIAT, &0x1101u16.to_be_bytes(), &[0, 0, 0, 0, 0, 5]).unwrap();
+        s.put(NS_SIAT, &0u16.to_be_bytes(), &[0x11, 0x01, 0, 0, 0, 0, 0, 5]).unwrap();
         let mut buf = [0u8; 6];
         assert_eq!(s.get(NS_SENDING, &[0], &mut buf).unwrap(), None);
         // A real sending write is then visible.
@@ -435,26 +418,32 @@ mod tests {
     }
 
     #[test]
-    fn peer_insert_update_and_remove_swaps_last() {
+    fn peer_entries_are_positional() {
         let mut s = TestStore::new(RamRegion::new());
-        let ia = |n: u16| n.to_be_bytes();
-        s.put(NS_SIAT, &ia(0x1101), &[0, 0, 0, 0, 0, 1]).unwrap();
-        s.put(NS_SIAT, &ia(0x1102), &[0, 0, 0, 0, 0, 2]).unwrap();
-        s.put(NS_SIAT, &ia(0x1103), &[0, 0, 0, 0, 0, 3]).unwrap();
+        let idx = |n: u16| n.to_be_bytes();
+        let entry = |ia: u16, n: u8| {
+            let mut e = [0u8; 8];
+            e[..2].copy_from_slice(&ia.to_be_bytes());
+            e[7] = n;
+            e
+        };
+        s.put(NS_SIAT, &idx(0), &entry(0x1101, 1)).unwrap();
+        s.put(NS_SIAT, &idx(1), &entry(0x1102, 2)).unwrap();
+        s.put(NS_SIAT, &idx(2), &entry(0x1103, 3)).unwrap();
         assert_eq!(s.peer_count().unwrap(), 3);
 
-        // Update in place.
-        s.put(NS_SIAT, &ia(0x1102), &[0, 0, 0, 0, 0, 9]).unwrap();
-        let mut buf = [0u8; 6];
-        assert_eq!(s.get(NS_SIAT, &ia(0x1102), &mut buf).unwrap(), Some(6));
-        assert_eq!(buf, [0, 0, 0, 0, 0, 9]);
+        // Update element 1 in place — with a different IA, positionally.
+        s.put(NS_SIAT, &idx(1), &entry(0x1109, 9)).unwrap();
+        let mut buf = [0u8; 8];
+        assert_eq!(s.get(NS_SIAT, &idx(1), &mut buf).unwrap(), Some(8));
+        assert_eq!(buf, entry(0x1109, 9));
 
-        // Remove the middle entry: last (0x1103) swaps into its slot.
-        s.remove(NS_SIAT, &ia(0x1102)).unwrap();
-        assert_eq!(s.peer_count().unwrap(), 2);
-        assert_eq!(s.get(NS_SIAT, &ia(0x1102), &mut buf).unwrap(), None);
-        assert_eq!(s.get(NS_SIAT, &ia(0x1101), &mut buf).unwrap(), Some(6));
-        assert_eq!(s.get(NS_SIAT, &ia(0x1103), &mut buf).unwrap(), Some(6));
+        // Removing element 1 truncates to one element (the SiatStore view
+        // only ever pops from the tail).
+        s.remove(NS_SIAT, &idx(1)).unwrap();
+        assert_eq!(s.peer_count().unwrap(), 1);
+        assert_eq!(s.get(NS_SIAT, &idx(1), &mut buf).unwrap(), None);
+        assert_eq!(s.get(NS_SIAT, &idx(0), &mut buf).unwrap(), Some(8));
     }
 
     #[test]
@@ -462,23 +451,26 @@ mod tests {
         let mut s = TestStore::new(RamRegion::new());
         for i in 0..6u16 {
             // PEER_SLOTS = 4: last two dropped.
-            s.put(NS_SIAT, &(0x1100 + i).to_be_bytes(), &[0, 0, 0, 0, 0, i as u8]).unwrap();
+            let mut e = [0u8; 8];
+            e[..2].copy_from_slice(&(0x1100 + i).to_be_bytes());
+            e[7] = i as u8;
+            s.put(NS_SIAT, &i.to_be_bytes(), &e).unwrap();
         }
         assert_eq!(s.peer_count().unwrap(), 4);
-        let mut buf = [0u8; 6];
-        assert_eq!(s.get(NS_SIAT, &0x1103u16.to_be_bytes(), &mut buf).unwrap(), Some(6));
-        assert_eq!(s.get(NS_SIAT, &0x1104u16.to_be_bytes(), &mut buf).unwrap(), None);
+        let mut buf = [0u8; 8];
+        assert_eq!(s.get(NS_SIAT, &3u16.to_be_bytes(), &mut buf).unwrap(), Some(8));
+        assert_eq!(s.get(NS_SIAT, &4u16.to_be_bytes(), &mut buf).unwrap(), None);
     }
 
     #[test]
     fn for_each_visits_peers() {
         let mut s = TestStore::new(RamRegion::new());
-        s.put(NS_SIAT, &0x1101u16.to_be_bytes(), &[0, 0, 0, 0, 0, 1]).unwrap();
-        s.put(NS_SIAT, &0x1102u16.to_be_bytes(), &[0, 0, 0, 0, 0, 2]).unwrap();
+        s.put(NS_SIAT, &0u16.to_be_bytes(), &[0x11, 0x01, 0, 0, 0, 0, 0, 1]).unwrap();
+        s.put(NS_SIAT, &1u16.to_be_bytes(), &[0x11, 0x02, 0, 0, 0, 0, 0, 2]).unwrap();
         let mut seen = 0u32;
         s.for_each(NS_SIAT, &mut |key, val| {
             assert_eq!(key.len(), 2);
-            assert_eq!(val.len(), 6);
+            assert_eq!(val.len(), 8);
             seen += 1;
         });
         assert_eq!(seen, 2);
