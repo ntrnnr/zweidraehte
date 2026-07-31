@@ -908,14 +908,36 @@ fn handle_memory_ext_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'sta
 
     let addr16 = (address & 0xFFFF) as u16;
     let mut data_buf = [0u8; 252]; // Max extended memory read
+
     // MemoryExtendedReadResponse: APCI(2) + rc(1) + addr(3) + data(n).
-    // Cap `read_len` so the response fits in the effective APDU
-    // budget. Over-budget reads respond with `count = 0` analog to
-    // A_Memory_Read (spec 03/03/07 §3.5.3 — MemoryExtended has no
-    // dedicated 0xF4 path since the return code field already carries
-    // a 0xFD "address void" variant for size errors).
+    //
+    // A read whose count cannot fit the response is refused outright
+    // rather than served short. 03/03/07 §3.4.9.1 is explicit: "the
+    // Return Code gives details to the indicated an error if the value
+    // of the parameter 'number of data octets' is greater than Maximum
+    // APDU Length - 4", and Table 3 names that code F4h
+    // `E_LENGTH_EXCEEDS_MAX_APDU_LENGTH` — "requested data will not fit
+    // into a Frame supported by this server". Figure 68 has the APDU end
+    // after the address, with no data field.
+    //
+    // Truncating instead, which is what this did, is worse than a
+    // failure: the requester gets a short read that looks successful and
+    // has no way to tell it apart from a region that really is that
+    // short.
     let payload_cap = ctx.base.response_payload_cap(offsets::MSG_APCI + 6);
-    let read_len = count.min(data_buf.len()).min(payload_cap);
+    if count > payload_cap {
+        let resp_len = offsets::MSG_APCI + 6; // APCI + rc + addr, no data
+        let Some(msg_buf) = ctx.base.buffer_manager().try_alloc_with_size(resp_len) else { return };
+        let msg = ind.respond_with(msg_buf).with_application(ApciCode::MemoryExtendedReadResponse).with_data(|buf| {
+            buf[base + 2] = PropertyReturnCode::LengthExceedsMaxApduLength.into();
+            buf[base + 3] = addr_hi;
+            buf[base + 4] = addr_mid;
+            buf[base + 5] = addr_lo;
+        });
+        ctx.base.lctx.push_outbox(msg.into_inner());
+        return;
+    }
+    let read_len = count.min(data_buf.len());
 
     let result = if read_len == 0 {
         Ok(0usize)
