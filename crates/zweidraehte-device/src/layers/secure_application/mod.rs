@@ -437,8 +437,13 @@ where
 
         // Non-tool P2P communication requires the sender to be in the SIAT —
         // checked against the storage-layer-owned store the SAL already holds.
+        // The sender's position in that table is its `IA_Index`, which is how
+        // the P2P key table names it (03/05/01 §6.3.8.4), so the membership
+        // check and the key lookup below are one resolution.
+        let mut sender_ia_index = None;
         if !scf.tool_access && addr_type == 0 {
-            if !self.seq_storage.borrow().siat_contains(src) {
+            sender_ia_index = self.seq_storage.borrow().siat_index_of(src);
+            if sender_ia_index.is_none() {
                 warn!("S-AL: sender {:#06X} not in SIAT", src);
                 self.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
                 return SecureResult::Dropped;
@@ -477,14 +482,17 @@ where
                 }
             }
         } else {
-            // P2P non-tool: look up key and roles from P2P key table.
-            match security_state.p2p_key_for_ia(src) {
+            // P2P non-tool: look up key and roles from P2P key table, by the
+            // sender's SIAT index resolved above (the branch that leaves
+            // `sender_ia_index` unset is `addr_type != 0`, handled above).
+            let ia_index = sender_ia_index.expect("non-tool P2P resolved the sender's IA_Index above");
+            match security_state.p2p_key_for_index(ia_index) {
                 Some((k, roles)) => {
                     p2p_roles = roles;
                     k
                 }
                 None => {
-                    warn!("S-AL: no P2P key for IA {:#06X}", src);
+                    warn!("S-AL: no P2P key for IA {:#06X} (IA_Index {})", src, ia_index);
                     self.log_security_failure_and_maybe_report(SecurityFailureType::CryptoError, src, &[]);
                     return SecureResult::Dropped;
                 }
@@ -767,9 +775,10 @@ where
     ///   ConnectionNr in `MSG_DEST_ADDR`; the TL replaces it with the GA
     ///   later, but `wrap_outgoing` reverse-resolves the GA via the ADT
     ///   for the CCM context).
-    /// - `T_Data_Req` / `T_DataUnack_Req` (P2P) → P2P key by destination
-    ///   IA. P2P entries imply Auth+Conf; if a caller stamps `Auth` on a
-    ///   P2P frame we honour it but the spec convention is AuthConf.
+    /// - `T_Data_Req` / `T_DataUnack_Req` (P2P) → P2P key by the destination
+    ///   IA's SIAT index (03/05/01 §6.3.8.4). P2P entries imply Auth+Conf;
+    ///   if a caller stamps `Auth` on a P2P frame we honour it but the spec
+    ///   convention is AuthConf.
     /// - `T_Broadcast_Req` / `T_SystemBroadcast_Req` → not supported here
     ///   yet (no spontaneous secure broadcast surfaces today; the security
     ///   report is `Plain`). Falls back to plaintext with a warning so we
@@ -830,7 +839,12 @@ where
                     // resolution applies only to group services).
                     let buf = msg.buf();
                     let peer_ia = u16::from_be_bytes([buf[offsets::MSG_DEST_ADDR], buf[offsets::MSG_DEST_ADDR + 1]]);
-                    match security_state.p2p_key_for_ia(peer_ia) {
+                    match self
+                        .seq_storage
+                        .borrow()
+                        .siat_index_of(peer_ia)
+                        .and_then(|ia_index| security_state.p2p_key_for_index(ia_index))
+                    {
                         Some((k, _roles)) => (k, false),
                         None => {
                             warn!(

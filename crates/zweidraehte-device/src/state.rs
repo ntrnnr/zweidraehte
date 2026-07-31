@@ -534,11 +534,18 @@ pub trait HasSecurityState: HasSecurityMode {
     /// Look up GO security flags by 0-based group object index.
     fn go_security_flags_for(&self, go_index: u16) -> Option<u8>;
 
-    /// Look up a P2P key and role bitmask by peer individual address.
+    /// Look up a P2P key and role bitmask by 1-based Security Individual
+    /// Address Table index.
+    ///
+    /// The Point-to-point Key Table refers to a communication partner by its
+    /// `IA_Index`, not by its address (03/05/01 §6.3.6.2); callers resolve the
+    /// peer IA through `SiatAccess::siat_index_of` first. The security state
+    /// cannot do that itself — the SIAT lives in the sequence-number store, so
+    /// that the Last Valid SeqNr has a single source of truth.
     ///
     /// Returns `(key, roles)` where `roles` is a bitmask of R0-R15 from
     /// bytes 18-19 of the P2P key table entry.
-    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)>;
+    fn p2p_key_for_index(&self, ia_index: u16) -> Option<([u8; 16], u16)>;
 
     /// Record a security failure in the failures log and set bit 0 of
     /// PID_SECURITY_REPORT (57) per 03/05/01 §6.3.11.4.

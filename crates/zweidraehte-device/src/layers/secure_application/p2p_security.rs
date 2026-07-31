@@ -214,17 +214,17 @@ where
     if security_state.security_load_state() != LoadState::Loaded {
         return SecureResult::Dropped;
     }
-    if !sal.seq_storage.borrow().siat_contains(src) {
+    let Some(ia_index) = sal.seq_storage.borrow().siat_index_of(src) else {
         warn!("S-AL: sync req — sender {:#06X} not in SIAT", src);
         sal.log_security_failure_and_maybe_report(SecurityFailureType::RoleError, src, &[]);
         return SecureResult::Dropped;
-    }
+    };
 
-    // P2P key lookup (roles not needed for sync).
-    let key = match security_state.p2p_key_for_ia(src) {
+    // P2P key lookup by the sender's IA_Index (roles not needed for sync).
+    let key = match security_state.p2p_key_for_index(ia_index) {
         Some((k, _roles)) => k,
         None => {
-            warn!("S-AL: sync req — no P2P key for IA {:#06X}", src);
+            warn!("S-AL: sync req — no P2P key for IA {:#06X} (IA_Index {})", src, ia_index);
             return SecureResult::Dropped;
         }
     };
@@ -611,7 +611,14 @@ where
             *<<D::State as StackState>::Identity as SecureDeviceIdentity>::fdsk(sal.inner.state().identity())
         }
     } else {
-        match security_state.p2p_key_for_ia(peer_ia) {
+        // The peer's SIAT position is its IA_Index, which is how the P2P key
+        // table names it (03/05/01 §6.3.8.4).
+        match sal
+            .seq_storage
+            .borrow()
+            .siat_index_of(peer_ia)
+            .and_then(|ia_index| security_state.p2p_key_for_index(ia_index))
+        {
             Some((k, _roles)) => k,
             None => {
                 warn!("S-AL: initiate_sync — no P2P key for IA {:#06X}", peer_ia);

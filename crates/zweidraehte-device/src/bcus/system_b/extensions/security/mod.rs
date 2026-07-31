@@ -556,22 +556,39 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         None
     }
 
-    /// Look up a P2P key by peer individual address.
+    /// Look up a P2P key by 1-based Security Individual Address Table index.
     ///
-    /// Linearly scans the P2P key table. Each entry is 20 bytes:
-    /// IA_Index(2) + Key(16) + Roles(2). Returns the 16-byte key and
-    /// the role bitmask (R0-R15) if a matching IA is found.
-    pub fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)> {
+    /// Each entry is 20 bytes: IA_Index(2) + Key(16) + Roles(2), where the
+    /// leading field identifies the communication partner *by its position in
+    /// the SIAT* rather than by its address (03/05/01 §6.3.6.2). The caller
+    /// resolves the peer IA to that index through the SIAT first.
+    ///
+    /// Uses binary search — §6.3.6.2 requires the table sorted by IA_Index
+    /// ascending and §6.3.6.3 makes the MaC (ETS) maintain that order, exactly
+    /// as for the group key table above.
+    ///
+    /// Returns the 16-byte key and the role bitmask (R0-R15), or `None` if the
+    /// index has no key entry — which per NOTE 98 is the normal state for a
+    /// partner we only share group communication with.
+    pub fn p2p_key_for_index(&self, ia_index: u16) -> Option<([u8; 16], u16)> {
         let table = self.p2p_keys.borrow();
         let count = table.count() as usize;
-        let peer_bytes = peer_ia.to_be_bytes();
-        for i in 0..count {
-            let entry = &table.data[i];
-            if entry[0] == peer_bytes[0] && entry[1] == peer_bytes[1] {
-                let mut key = [0u8; 16];
-                key.copy_from_slice(&entry[2..18]);
-                let roles = u16::from_be_bytes([entry[18], entry[19]]);
-                return Some((key, roles));
+
+        let mut lo = 0usize;
+        let mut hi = count;
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let entry = &table.data[mid];
+            let stored_index = u16::from_be_bytes([entry[0], entry[1]]);
+            match stored_index.cmp(&ia_index) {
+                core::cmp::Ordering::Equal => {
+                    let mut key = [0u8; 16];
+                    key.copy_from_slice(&entry[2..18]);
+                    let roles = u16::from_be_bytes([entry[18], entry[19]]);
+                    return Some((key, roles));
+                }
+                core::cmp::Ordering::Less => lo = mid + 1,
+                core::cmp::Ordering::Greater => hi = mid,
             }
         }
         None
@@ -875,8 +892,8 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
         self.security.go_security_flags_for(go_index)
     }
 
-    fn p2p_key_for_ia(&self, peer_ia: u16) -> Option<([u8; 16], u16)> {
-        self.security.p2p_key_for_ia(peer_ia)
+    fn p2p_key_for_index(&self, ia_index: u16) -> Option<([u8; 16], u16)> {
+        self.security.p2p_key_for_index(ia_index)
     }
 
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool {
@@ -949,15 +966,14 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
         }
     }
 
-    fn required_security_for_p2p(&self, peer_ia: u16) -> RequiredSecurity {
-        // Per 03/03/07 §5.5.3.4: P2P sends to a peer with a key entry are
-        // mandatory Auth+Conf — the table holds a single key without any
-        // auth-only granularity. No entry → plaintext.
-        match self.security.p2p_key_for_ia(peer_ia) {
-            Some(_) => RequiredSecurity::AuthConf,
-            None => RequiredSecurity::Plain,
-        }
-    }
+    // `required_security_for_p2p` is deliberately left at the trait default
+    // (Plain). Per 03/03/07 §5.5.3.4 a peer with a P2P key entry is mandatory
+    // Auth+Conf, but deciding that needs the peer's IA_Index, and the SIAT that
+    // resolves it lives in the sequence-number store rather than in the
+    // extension state. The one place that has both — the S-AL's
+    // `encrypt_spontaneous` — already makes this decision from the same table
+    // when it looks the key up, so nothing is lost by not answering it a
+    // second time from here.
 
     fn required_security_for_broadcast(&self) -> RequiredSecurity {
         // Spontaneous broadcasts that the spec marks as Plain (notably the

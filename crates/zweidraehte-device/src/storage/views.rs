@@ -128,18 +128,39 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatStore<S, N, K> {
         Self::find(&self.entries, ia).is_ok()
     }
 
+    /// The 1-based array index of `ia` — its `IA_Index` — or `None` if absent.
+    ///
+    /// This is the join key into the Point-to-point Key Table: 03/05/01 §6.3.8.4
+    /// has the MaS look an IA up here and "use the found IA_Index to find the key
+    /// in the Point-to-point Key Table". The index is a pure function of the
+    /// IA-sorted order because §6.3.8.3 requires the table sorted by numerical
+    /// value of the Individual Address and Figure 75 labels the array index
+    /// column `= IA_Index`, counting from 1. That is the invariant the mirror
+    /// already maintains, so the position *is* the index — nothing extra is
+    /// persisted for it.
+    pub fn index_of(&self, ia: u16) -> Option<u16> {
+        Self::find(&self.entries, ia).ok().map(|idx| idx as u16 + 1)
+    }
+
     /// The last-valid receiving SeqNr for `ia`, or `None` if absent.
     pub fn load_seq(&self, ia: u16) -> Option<[u8; 6]> {
         Self::find(&self.entries, ia).ok().map(|idx| self.entries[idx].seq)
     }
 
-    /// Update `ia`'s receiving SeqNr (called per accepted secure frame). The IA
-    /// normally already sits in the SIAT (ETS provisions membership), but an
-    /// unknown IA is inserted rather than rejected — the security layer has
-    /// already authenticated the frame, so refusing to track its counter would
-    /// only weaken replay protection.
+    /// Update `ia`'s receiving SeqNr (called per accepted secure frame).
+    ///
+    /// Update-only: an IA that is not already in the table is ignored, not
+    /// inserted. Membership is the MaC's to decide (03/05/01 §6.3.8.5 — ETS
+    /// fills the table during configuration), and an insert here would be
+    /// actively harmful: entries are ordered by IA, so a new low address shifts
+    /// every entry above it up by one, silently rebinding each peer's
+    /// `IA_Index` to its neighbour's key in the Point-to-point Key Table.
     pub fn save_seq(&mut self, ia: u16, seq: &[u8; 6]) -> Result<(), S::Error> {
-        Self::upsert_sorted(&mut self.entries, SiatEntry { ia, seq: *seq });
+        let Ok(idx) = Self::find(&self.entries, ia) else {
+            debug!("SIAT: dropping SeqNr update for unprovisioned IA {:#06X}", ia);
+            return Ok(());
+        };
+        self.entries[idx].seq = *seq;
         self.kv.put(NS_SIAT, &ia.to_be_bytes(), seq)
     }
 
@@ -157,15 +178,16 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatStore<S, N, K> {
         self.entries.get(idx as usize).map(|e| (e.ia, e.seq))
     }
 
-    /// Write a SIAT entry (PID 54 entry write).
+    /// Provision a SIAT entry (PID 54 entry write), inserting it if new.
     ///
-    /// ETS writes the count first, then fills entries by index. Because the
-    /// mirror is IA-keyed and kept sorted, the persisted IA is the whole
-    /// identity of the entry — the array index ETS writes at carries no
-    /// information, so we simply upsert by IA. (This is why no `idx` is taken;
-    /// the index slot ETS chose is discarded by design.)
+    /// ETS writes the count first, then fills entries by index, in ascending
+    /// address order (03/05/01 §6.3.8.5). Sorting by IA therefore reproduces the
+    /// array ETS wrote, and the index slot need not be threaded through: the
+    /// entry lands at the position its own address dictates, which is the
+    /// position ETS chose. [`index_of`](Self::index_of) reads it back out.
     pub fn write_entry(&mut self, ia: u16, seq: [u8; 6]) -> Result<(), S::Error> {
-        self.save_seq(ia, &seq)
+        Self::upsert_sorted(&mut self.entries, SiatEntry { ia, seq });
+        self.kv.put(NS_SIAT, &ia.to_be_bytes(), &seq)
     }
 
     /// Set the SIAT element count (PID 54 write at index 0).
@@ -274,12 +296,20 @@ pub trait SiatAccess {
 
     /// Number of SIAT entries (PID 54 element-count read at index 0).
     fn siat_count(&self) -> u16;
-    /// Whether `ia` is in the SIAT.
-    fn siat_contains(&self, ia: u16) -> bool;
+    /// The 1-based `IA_Index` of `ia`, or `None` if it is not in the SIAT — the
+    /// join key into the Point-to-point Key Table (03/05/01 §6.3.8.4).
+    fn siat_index_of(&self, ia: u16) -> Option<u16>;
+    /// Whether `ia` is in the SIAT. Named separately from
+    /// [`siat_index_of`](Self::siat_index_of) because the S-AL answers a bare
+    /// membership failure with a different security-failure code than a missing
+    /// key.
+    fn siat_contains(&self, ia: u16) -> bool {
+        self.siat_index_of(ia).is_some()
+    }
     /// Entry at 0-based `idx` in IA-sorted order (PID 54 entry read).
     fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])>;
-    /// Write a SIAT entry by IA (PID 54 entry write). The store is IA-keyed, so
-    /// the array index ETS writes at is not part of the call — see
+    /// Provision a SIAT entry by IA (PID 54 entry write). The array index ETS
+    /// writes at is not part of the call — sorting by IA reproduces it, see
     /// [`SiatStore::write_entry`].
     fn siat_write_entry(&mut self, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error>;
     /// Set the SIAT element count (PID 54 write at index 0; 0 clears).
@@ -293,6 +323,9 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatAccess for SiatStore<S,
 
     fn siat_count(&self) -> u16 {
         self.count()
+    }
+    fn siat_index_of(&self, ia: u16) -> Option<u16> {
+        self.index_of(ia)
     }
     fn siat_contains(&self, ia: u16) -> bool {
         self.contains(ia)
@@ -487,22 +520,28 @@ mod tests {
         assert!(!s.contains(0x1101));
     }
 
+    /// Provisioning out of order still yields the IA-sorted array the spec
+    /// defines (03/05/01 §6.3.8.3), and `index_of` reads back the 1-based
+    /// `IA_Index` the Point-to-point Key Table refers to.
     #[test]
     fn entries_kept_sorted_by_ia() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
-        s.save_seq(0x1103, &s6(3)).unwrap();
-        s.save_seq(0x1101, &s6(1)).unwrap();
-        s.save_seq(0x1102, &s6(2)).unwrap();
+        s.write_entry(0x1103, s6(3)).unwrap();
+        s.write_entry(0x1101, s6(1)).unwrap();
+        s.write_entry(0x1102, s6(2)).unwrap();
         assert_eq!(s.count(), 3);
         assert_eq!(s.read_entry(0), Some((0x1101, s6(1))));
         assert_eq!(s.read_entry(1), Some((0x1102, s6(2))));
         assert_eq!(s.read_entry(2), Some((0x1103, s6(3))));
+        assert_eq!(s.index_of(0x1101), Some(1));
+        assert_eq!(s.index_of(0x1103), Some(3));
+        assert_eq!(s.index_of(0x1104), None);
     }
 
     #[test]
     fn save_seq_updates_in_place_and_persists() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
-        s.save_seq(0x1101, &s6(5)).unwrap();
+        s.write_entry(0x1101, s6(5)).unwrap();
         s.save_seq(0x1101, &s6(9)).unwrap();
         assert_eq!(s.count(), 1);
         assert_eq!(s.load_seq(0x1101), Some(s6(9)));
@@ -512,11 +551,24 @@ mod tests {
         assert_eq!(s2.load_seq(0x1101), Some(s6(9)));
     }
 
+    /// The receiving path never grows the table. An insert would shift every
+    /// higher IA up one position and so rebind its `IA_Index` — and with it its
+    /// P2P key — to the neighbouring entry.
+    #[test]
+    fn save_seq_ignores_unprovisioned_ia() {
+        let mut s = TestStore::boot(MemKv::default()).unwrap();
+        s.write_entry(0x1102, s6(2)).unwrap();
+        s.save_seq(0x1101, &s6(7)).unwrap();
+        assert_eq!(s.count(), 1);
+        assert_eq!(s.load_seq(0x1101), None);
+        assert_eq!(s.index_of(0x1102), Some(1), "the provisioned entry keeps its IA_Index");
+    }
+
     #[test]
     fn set_count_truncates_highest_ia() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
         for ia in [0x1101u16, 0x1102, 0x1103] {
-            s.save_seq(ia, &s6(ia as u64)).unwrap();
+            s.write_entry(ia, s6(ia as u64)).unwrap();
         }
         s.set_count(2).unwrap();
         assert_eq!(s.count(), 2);
@@ -531,8 +583,8 @@ mod tests {
     #[test]
     fn clear_empties_and_persists() {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
-        s.save_seq(0x1101, &s6(1)).unwrap();
-        s.save_seq(0x1102, &s6(2)).unwrap();
+        s.write_entry(0x1101, s6(1)).unwrap();
+        s.write_entry(0x1102, s6(2)).unwrap();
         s.set_count(0).unwrap();
         assert_eq!(s.count(), 0);
         let s2 = TestStore::boot(s.kv).unwrap();
@@ -566,7 +618,7 @@ mod tests {
         let mut s = TestStore::boot(MemKv::default()).unwrap();
         for i in 0..10u16 {
             // capacity 8; last two dropped
-            s.save_seq(0x1100 + i, &s6(i as u64)).unwrap();
+            s.write_entry(0x1100 + i, s6(i as u64)).unwrap();
         }
         assert_eq!(s.count(), 8);
         assert!(s.contains(0x1107));
