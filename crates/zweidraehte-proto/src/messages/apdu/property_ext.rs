@@ -449,25 +449,33 @@ impl PropertyExtDescriptionResponse {
         let base = offsets::MSG_APCI;
         write_ext_description_prefix(buf, object_type, object_instance, desc.prop_id);
 
+        // Field order is 03/03/07 §3.4.3.2 Figure 45: descriptor type
+        // and property index, then the two DPT numbers, then the
+        // writeable/PDT octet, the element count and the access levels.
+        //
         // desc_type (high nibble = 0 on success) | prop_idx[11:8].
         buf[base + 7] = (desc.prop_idx >> 8) as u8 & 0x0F;
         buf[base + 8] = desc.prop_idx as u8;
 
-        // Writeable (bit 7) | PDT[5:0].
-        buf[base + 9] = if desc.writeable { 0x80 } else { 0x00 } | (desc.pdt & 0x3F);
+        // DPT main and sub number. We do not model a datapoint type per
+        // property — that belongs to the product database, not the
+        // device — and the spec's own error case sets these to zero, so
+        // zero is what an undeclared DPT looks like on the wire.
+        buf[base + 9] = 0;
+        buf[base + 10] = 0;
+        buf[base + 11] = 0;
+        buf[base + 12] = 0;
 
-        // PDT[hi 4] | max_elements[11:0].
-        let pdt_max = ((desc.pdt as u16 & 0x3F) << 12) | (desc.max_elements & 0x0FFF);
-        buf[base + 10] = (pdt_max >> 8) as u8;
-        buf[base + 11] = pdt_max as u8;
+        // Writeable (bit 7), five reserved bits, PDT[5:0].
+        buf[base + 13] = if desc.writeable { 0x80 } else { 0x00 } | (desc.pdt & 0x3F);
+
+        // max_nr_of_elem, a plain 16-bit count.
+        let max = desc.max_elements.to_be_bytes();
+        buf[base + 14] = max[0];
+        buf[base + 15] = max[1];
 
         // Access levels (read in high nibble, write in low nibble).
-        buf[base + 12] = (desc.read_level << 4) | desc.write_level;
-
-        // Reserved / padding to 16-byte APDU.
-        for i in (base + 13)..(base + 16) {
-            buf[i] = 0;
-        }
+        buf[base + 16] = (desc.read_level << 4) | desc.write_level;
     }
 
     /// Write an error response. The request's `prop_id`, `desc_type`,
@@ -487,7 +495,11 @@ impl PropertyExtDescriptionResponse {
         buf[base + 7] = ((desc_type & 0x0F) << 4) | ((prop_idx >> 8) as u8 & 0x0F);
         buf[base + 8] = prop_idx as u8;
 
-        for i in (base + 9)..(base + 16) {
+        // Everything the spec lists as zeroed on error: the two DPT
+        // numbers, writeable, PDT, max_nr_of_elem and access. The last
+        // of those is the final octet of the PDU, so the range runs to
+        // `+16` inclusive.
+        for i in (base + 9)..=(base + 16) {
             buf[i] = 0;
         }
     }
@@ -692,18 +704,22 @@ mod tests {
         // desc_type = 0 on success, prop_idx[11:8] = 0 (prop_idx = 0x008).
         assert_eq!(buf[base + 7], 0x00);
         assert_eq!(buf[base + 8], 0x08);
-        // writeable | pdt[5:0].
-        assert_eq!(buf[base + 9], 0x80 | 0x17);
-        // pdt[hi 4] | max_elements[11:0] big-endian. pdt=0x17 & 0x3F = 0x17
-        // → (0x17 << 12) & 0xFFFF = 0x7000; combined with 0x123 = 0x7123.
-        assert_eq!(buf[base + 10], 0x71);
-        assert_eq!(buf[base + 11], 0x23);
-        // read=2 | write=1.
-        assert_eq!(buf[base + 12], 0x21);
-        // Padding zero.
-        for i in (base + 13)..(base + 16) {
-            assert_eq!(buf[i], 0, "padding byte {} non-zero", i);
+        // DPT main and sub, both zero: we do not model a datapoint type
+        // per property. 03/03/07 §3.4.3.2 Figure 45 puts them here,
+        // before the writeable/PDT octet — omitting them shifted every
+        // field after by four octets, which is what the EITT
+        // data-security template's 3.8.1.3 caught.
+        for i in (base + 9)..=(base + 12) {
+            assert_eq!(buf[i], 0, "DPT octet {i} should be zero");
         }
+        // writeable | pdt[5:0].
+        assert_eq!(buf[base + 13], 0x80 | 0x17);
+        // max_nr_of_elem, a plain big-endian count — not packed with the
+        // PDT, which it used to be.
+        assert_eq!(buf[base + 14], 0x01);
+        assert_eq!(buf[base + 15], 0x23);
+        // read=2 | write=1.
+        assert_eq!(buf[base + 16], 0x21);
     }
 
     #[test]
