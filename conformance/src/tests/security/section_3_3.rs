@@ -185,11 +185,12 @@ fn test_3_3_4() -> TestCase {
     const WRITE_SIAT: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 01 #EDI 00 00 00 00 00 01";
     const WRITE_SIAT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 01 00";
 
-    // Write P2P key entry 1: IA=#EDI (0xAFFE), key=P2PK1 (0x22*16), roles=0x0001.
-    // The P2P key table entry is 20 bytes: IA(2) + Key(16) + Roles(2). Our
-    // stack looks up the key by the IA field in the entry, so we must write
-    // #EDI's address as the IA.
-    const WRITE_P2P_KEY: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 #EDI 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
+    // Write P2P key entry 1: key=P2PK1 (0x22*16), roles=0x0001.
+    // The P2P key table entry is 20 bytes: IA_Index(2) + Key(16) + Roles(2),
+    // where the leading field names the partner by its position in the SIAT
+    // (03/05/01 §6.3.6.2) — #EDI is the only entry there, written at element 1
+    // above, so its IA_Index is 1.
+    const WRITE_P2P_KEY: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 00 01 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
     const WRITE_P2P_KEY_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 01 00";
 
     // Transition security IO load state: Unloaded → Loading → Loaded.

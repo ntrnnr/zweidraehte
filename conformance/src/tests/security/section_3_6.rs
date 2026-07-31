@@ -7,9 +7,9 @@
 //! The DUT must have a Certification Object (IOT 0xC351) with PID 51 (0x33)
 //! that enforces per-role read/write permissions.
 //!
-//! Setup writes the P2P key table with 8 entries (each with IA, key, and
-//! role bitmask), the SIAT with the same 8 IAs, syncs each peer, and
-//! activates security mode. Each test then sends PropertyExtValueWriteCon
+//! Setup writes the SIAT with 8 peer IAs and the P2P key table with 8 entries
+//! naming them by SIAT index (each with a key and a role bitmask), syncs each
+//! peer, and activates security mode. Each test then sends PropertyExtValueWriteCon
 //! and/or PropertyExtValueRead from different peer IAs with different
 //! security levels, verifying that the DUT accepts or denies based on the
 //! sender's role.
@@ -85,30 +85,34 @@ const SIAT_ENTRY_8: &str = "3C 60 #EDI #ALT_BDUT_ADDR 11 01 CE 00 11 00 10 36 01
 
 // ============================================================================
 // P2P Key Table (PID 0x34) write templates — 20 bytes per entry:
-//   IA(2) + Key(16) + Roles(2)
+//   IA_Index(2) + Key(16) + Roles(2)
 // ============================================================================
+//
+// The leading field is the peer's *position in the SIAT*, not its address
+// (03/05/01 §6.3.6.2). The SIAT above is written in ascending address order,
+// so element N there holds IA 1.1.N and key entry N names it as index N.
 
 // Clear P2P key table.
 const P2P_CLEAR: &str = "3C 60 #EDI #ALT_BDUT_ADDR 0B 01 CE 00 11 00 10 34 01 00 00 00 00";
 
 const P2P_RESP_OK: &str = "3C 60 #ALT_BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 ?? 00";
 
-// IA4=1.1.1 (0x1101): P2PK1=[0x22;16], Role 0 → roles=0x0001
-const P2P_ENTRY_1: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 11 01 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
-// IA5=1.1.2 (0x1102): P2PK2=[0x33;16], Role 1 → roles=0x0002
-const P2P_ENTRY_2: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 02 11 02 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 00 02";
-// IA6=1.1.3 (0x1103): P2PK3=[0x44;16], Role 2 → roles=0x0004
-const P2P_ENTRY_3: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 03 11 03 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 00 04";
-// IA7=1.1.4 (0x1104): P2PK4=[0x55;16], Role 3 → roles=0x0008
-const P2P_ENTRY_4: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 04 11 04 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 00 08";
-// IA8=1.1.5 (0x1105): P2PK5=[0x66;16], Role 4 → roles=0x0010
-const P2P_ENTRY_5: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 05 11 05 66 66 66 66 66 66 66 66 66 66 66 66 66 66 66 66 00 10";
-// IA9=1.1.6 (0x1106): P2PK6=[0x77;16], Role 5 → roles=0x0020
-const P2P_ENTRY_6: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 06 11 06 77 77 77 77 77 77 77 77 77 77 77 77 77 77 77 77 00 20";
-// IA10=1.1.7 (0x1107): P2PK7=[0x88;16], No role → roles=0x0000
-const P2P_ENTRY_7: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 07 11 07 88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 00 00";
-// IA11=1.1.8 (0x1108): P2PK8=[0x99;16], Roles 3+4 → roles=0x0018
-const P2P_ENTRY_8: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 08 11 08 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 00 18";
+// IA_Index 1 → IA4=1.1.1 (0x1101): P2PK1=[0x22;16], Role 0 → roles=0x0001
+const P2P_ENTRY_1: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 00 01 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
+// IA_Index 2 → IA5=1.1.2 (0x1102): P2PK2=[0x33;16], Role 1 → roles=0x0002
+const P2P_ENTRY_2: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 02 00 02 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 00 02";
+// IA_Index 3 → IA6=1.1.3 (0x1103): P2PK3=[0x44;16], Role 2 → roles=0x0004
+const P2P_ENTRY_3: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 03 00 03 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 44 00 04";
+// IA_Index 4 → IA7=1.1.4 (0x1104): P2PK4=[0x55;16], Role 3 → roles=0x0008
+const P2P_ENTRY_4: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 04 00 04 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 00 08";
+// IA_Index 5 → IA8=1.1.5 (0x1105): P2PK5=[0x66;16], Role 4 → roles=0x0010
+const P2P_ENTRY_5: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 05 00 05 66 66 66 66 66 66 66 66 66 66 66 66 66 66 66 66 00 10";
+// IA_Index 6 → IA9=1.1.6 (0x1106): P2PK6=[0x77;16], Role 5 → roles=0x0020
+const P2P_ENTRY_6: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 06 00 06 77 77 77 77 77 77 77 77 77 77 77 77 77 77 77 77 00 20";
+// IA_Index 7 → IA10=1.1.7 (0x1107): P2PK7=[0x88;16], No role → roles=0x0000
+const P2P_ENTRY_7: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 07 00 07 88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 88 00 00";
+// IA_Index 8 → IA11=1.1.8 (0x1108): P2PK8=[0x99;16], Roles 3+4 → roles=0x0018
+const P2P_ENTRY_8: &str = "3C 60 #EDI #ALT_BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 08 00 08 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 99 00 18";
 
 // ============================================================================
 // PropertyExtValueWriteCon / PropertyExtValueRead templates for Cert Object

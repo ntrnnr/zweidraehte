@@ -47,12 +47,15 @@ const WRITE_SIAT_1041_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 
 const WRITE_SIAT_ALT: &str = "3C 60 #EDI #BDUT_ADDR 11 01 CE 00 11 00 10 36 01 00 02 #ALT_SRC_ADDR 00 00 00 00 00 00";
 const WRITE_SIAT_ALT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 36 01 00 02 00";
 
-// Write P2P key entry 1: IA=0x1041, key=P2PK1 (0x22*16), roles=0x0001.
-const WRITE_P2P_KEY_1041: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 10 41 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
+// Write P2P key entry 1: key=P2PK1 (0x22*16), roles=0x0001. The leading field
+// is the partner's SIAT index, not its address (03/05/01 §6.3.6.2) — the SIAT
+// is sorted by address, so 0x1041 is element 1 and 0xAFFD element 2, which is
+// the order the two writes above use.
+const WRITE_P2P_KEY_1041: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 01 00 01 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 00 01";
 const WRITE_P2P_KEY_1041_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 01 00";
 
-// Write P2P key entry 2: IA=#ALT_SRC_ADDR (0xAFFD), key=P2PK2 (0x33*16), roles=0x0001.
-const WRITE_P2P_KEY_ALT: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 02 #ALT_SRC_ADDR 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 00 01";
+// Write P2P key entry 2: IA_Index 2 = #ALT_SRC_ADDR (0xAFFD), key=P2PK2 (0x33*16), roles=0x0001.
+const WRITE_P2P_KEY_ALT: &str = "3C 60 #EDI #BDUT_ADDR 1D 01 CE 00 11 00 10 34 01 00 02 00 02 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 33 00 01";
 const WRITE_P2P_KEY_ALT_OK: &str = "3C 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 34 01 00 02 00";
 
 // Security IO Load state transitions.
@@ -88,10 +91,10 @@ pub fn create_section_3_4_suite() -> TestSuite {
             comment("Write SIAT entry 2: IA=#ALT_SRC_ADDR (0xAFFD), seq=0"),
             inject_secure_ac(WRITE_SIAT_ALT, "TK1"),
             expect_secure_ac(WRITE_SIAT_ALT_OK, "TK1", TIMEOUT),
-            comment("Write P2P key entry 1: IA=0x1041, P2PK1, roles=0x0001"),
+            comment("Write P2P key entry 1: IA_Index 1 (=0x1041), P2PK1, roles=0x0001"),
             inject_secure_ac(WRITE_P2P_KEY_1041, "TK1"),
             expect_secure_ac(WRITE_P2P_KEY_1041_OK, "TK1", TIMEOUT),
-            comment("Write P2P key entry 2: IA=#ALT_SRC_ADDR, P2PK2, roles=0x0001"),
+            comment("Write P2P key entry 2: IA_Index 2 (=#ALT_SRC_ADDR), P2PK2, roles=0x0001"),
             inject_secure_ac(WRITE_P2P_KEY_ALT, "TK1"),
             expect_secure_ac(WRITE_P2P_KEY_ALT_OK, "TK1", TIMEOUT),
             comment("Transition security IO: Loading → Loaded"),
