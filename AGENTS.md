@@ -122,7 +122,7 @@ warning: that is the signal the template has been revised and whatever
 the patch was compensating for needs re-checking.
 
 The group-object, network-layer, transport-layer, load/run-state-machine,
-management and TSSJ data-security templates run today, 439 of 533 cases.
+management and TSSJ data-security templates run today, 473 of 533 cases.
 The data-security one is the only overlap with a hand-written suite
 rather than new device coverage, and the only one still red. Its
 remaining failures are device gaps rather than lowering problems, but
