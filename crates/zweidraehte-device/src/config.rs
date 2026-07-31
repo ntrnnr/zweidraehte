@@ -452,6 +452,11 @@ macro_rules! knx_stack_config {
                     grp_keys,
                     p2p_keys: SecurityTable::new(),
                     go_flags,
+                    // A boot image reports no security failures and does
+                    // not report spontaneously; both are the KNX defaults
+                    // (03/05/01 §6.3.11.3, §6.3.12.3).
+                    security_report: 0,
+                    security_report_enabled: false,
                 }
             }
         }

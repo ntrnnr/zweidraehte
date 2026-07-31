@@ -268,6 +268,16 @@ pub struct SecurityExtensionConfig<const GRP: usize, const P2P: usize, const GO:
     /// GO security flags: 1 byte per group object.
     #[serde(default)]
     pub go_flags: SecurityTable<GO, 1>,
+    /// PID_SECURITY_REPORT (57). Persisted: 03/05/01 §6.3.11's master-reset
+    /// table leaves it untouched by a Confirmed Restart, so it has to
+    /// survive one — and a power cycle with it.
+    #[serde(default)]
+    pub security_report: u8,
+    /// PID_SECURITY_REPORT_CONTROL (58). Persisted for the same reason
+    /// (§6.3.12: "01h Confirmed Restart — not influenced: the value shall
+    /// not change").
+    #[serde(default)]
+    pub security_report_enabled: bool,
 }
 
 impl<const GRP: usize, const P2P: usize, const GO: usize> core::fmt::Debug for SecurityExtensionConfig<GRP, P2P, GO> {
@@ -305,6 +315,8 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> Default for SecurityEx
             grp_keys: SecurityTable::new(),
             p2p_keys: SecurityTable::new(),
             go_flags: SecurityTable::new(),
+            security_report: 0,
+            security_report_enabled: false,
         }
     }
 }
@@ -625,10 +637,23 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
         self.security_report_enabled.set(enabled);
     }
 
+    /// Clear PID_SECURITY_REPORT (57) alone.
+    ///
+    /// ResetLinks (06h) clears the report but leaves the control alone:
+    /// 03/05/01 §6.3.11's master-reset table says "KNX default: cleared"
+    /// for the report, while §6.3.12's says "not influenced: no change"
+    /// for the control. The two tables agree only on the three full
+    /// resets, which go through [`clear_security_report`](Self::clear_security_report).
+    pub fn clear_security_report_only(&self) {
+        self.security_report.set(0);
+    }
+
     /// Clear PID_SECURITY_REPORT (57) and PID_SECURITY_REPORT_CONTROL (58).
     ///
-    /// Per spec 03/05/01 sections 6.3.11-6.3.12, erase codes 02h, 06h, and
-    /// 07h clear the report and set the control to "Disabled".
+    /// Per spec 03/05/01 §6.3.11 and §6.3.12, erase codes 02h and 07h and
+    /// a local reset clear the report and set the control to "Disabled".
+    /// Neither is influenced by a Confirmed Restart (01h), which is why
+    /// both are persisted rather than rebuilt at boot.
     pub fn clear_security_report(&self) {
         self.security_report.set(0);
         self.security_report_enabled.set(false);
@@ -674,8 +699,8 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
             p2p_keys: RefCell::new(config.p2p_keys),
             go_flags: RefCell::new(config.go_flags),
             failures_log: RefCell::new(config.failures_log),
-            security_report: Cell::new(0),
-            security_report_enabled: Cell::new(false),
+            security_report: Cell::new(config.security_report),
+            security_report_enabled: Cell::new(config.security_report_enabled),
         }
     }
 
@@ -690,6 +715,8 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
             grp_keys: self.grp_keys.borrow().clone(),
             p2p_keys: self.p2p_keys.borrow().clone(),
             go_flags: self.go_flags.borrow().clone(),
+            security_report: self.security_report.get(),
+            security_report_enabled: self.security_report_enabled.get(),
         }
     }
 
@@ -1087,14 +1114,34 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 
         match code {
             EraseCode::FactoryReset | EraseCode::FactoryResetKeepIA => {
+                // 03/05/01's master-reset tables split the two factory
+                // resets on exactly two resources. "Reset to default
+                // state" (02h) makes the tool key inactive (§6.3.10 —
+                // §6.1.4 then has the FDSK become the active key again)
+                // and disables the Security Mode (§6.3.5.4); "Reset to
+                // default without IA" (07h) leaves both "not influenced".
+                // Everything else the reset touches — the P2P and group
+                // key tables (§6.3.6/§6.3.7), the SIAT (§6.3.8), the GO
+                // security flags, the failures log (§6.3.9), the report
+                // and its control (§6.3.11/§6.3.12) — is cleared by both.
+                //
+                // TSS J 3.8.13.6 keeps writing under TK1 across a 07h and
+                // only switches to the FDSK after the 02h; 3.8.8.7's
+                // acceptance says the Security Mode "is unchanged … for
+                // factory reset without IA".
+                let keep = (code == EraseCode::FactoryResetKeepIA)
+                    .then(|| (self.security.tool_key(), self.security.security_mode_enabled()));
+
                 self.security.factory_reset();
 
-                // Spec 03/05/01 §6.1.4: after a factory reset, the FDSK
-                // becomes the active tool key again. The extension owns
-                // its own copy of the FDSK (moved in via
-                // `SecureResources`), so it can self-reset without any
+                // The extension owns its own copy of the FDSK (moved in
+                // via `SecureResources`), so it can self-reset without any
                 // parameter plumbing from `SystemBDeviceState`.
-                self.security.reset_tool_key_to_fdsk(self.fdsk);
+                let (tool_key, security_mode) = keep.unwrap_or((self.fdsk, false));
+                self.security.reset_tool_key_to_fdsk(tool_key);
+                if security_mode {
+                    self.security.set_security_mode_enabled(true);
+                }
 
                 // The sending-SeqNr near-exhaustion re-init (03/05/01 §6.1.4 +
                 // AN194) is the storage layer's slice of this erase: the
@@ -1103,7 +1150,9 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
                 // regions.
             }
             EraseCode::ResetLinks => {
-                self.security.clear_security_report();
+                // Report cleared, control untouched — the one erase code
+                // where §6.3.11 and §6.3.12 diverge.
+                self.security.clear_security_report_only();
             }
             _ => {}
         }

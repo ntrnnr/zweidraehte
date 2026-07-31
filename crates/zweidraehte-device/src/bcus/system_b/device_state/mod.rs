@@ -404,6 +404,25 @@ impl<
     /// extension owns (03/05/01 §6.1.4); non-secure extensions just
     /// reset their own state and ignore the security concern entirely.
     pub fn factory_reset(&self) {
+        self.factory_reset_with(EraseCode::FactoryReset);
+    }
+
+    /// Perform factory reset but keep the individual address.
+    ///
+    /// The two codes are *not* interchangeable for the extension state: a
+    /// Data Secure extension keeps its tool key and Security Mode across
+    /// `FactoryResetKeepIA` (07h) and clears both on `FactoryReset` (02h)
+    /// — 03/05/01 §6.3.10 and §6.3.5.4 — so the code has to reach
+    /// `on_erase` as sent.
+    pub fn factory_reset_keep_ia(&self) {
+        let ia = self.individual_address.get();
+        self.factory_reset_with(EraseCode::FactoryResetKeepIA);
+        self.individual_address.set(ia);
+    }
+
+    /// The body both factory resets share, told which erase code it is
+    /// acting for so the extension state can honour the per-code rules.
+    fn factory_reset_with(&self, code: EraseCode) {
         self.reset_individual_address();
         self.reset_all_tables();
         self.reset_application();
@@ -412,20 +431,8 @@ impl<
         self.programming_mode.set(false);
         *self.pei.borrow_mut() = PeiApplication::new();
         *self.pei_program_version.borrow_mut() = [0; 5];
-        self.extension_state.on_erase(EraseCode::FactoryReset);
+        self.extension_state.on_erase(code);
         self.mark_dirty();
-    }
-
-    /// Perform factory reset but keep the individual address.
-    ///
-    /// The wrapped [`factory_reset()`](Self::factory_reset) notifies the
-    /// extension with `EraseCode::FactoryReset` (not `FactoryResetKeepIA`).
-    /// All current extensions treat the two codes identically — the IA is
-    /// core state, not extension state — so no information is lost.
-    pub fn factory_reset_keep_ia(&self) {
-        let ia = self.individual_address.get();
-        self.factory_reset();
-        self.individual_address.set(ia);
     }
 
     /// Apply an A_Restart master-reset erase code to this state.
