@@ -1025,6 +1025,24 @@ fn locate_tpci(data: &str, vars: &BTreeMap<String, TestVariable>) -> Result<Opti
     }
 }
 
+/// Whether a `Data` frame is individually addressed (NPDU AT bit clear).
+///
+/// `false` when the address-type octet cannot be read as a literal —
+/// normalisation then stays away, which is the conservative side.
+fn is_individually_addressed(data: &str, vars: &BTreeMap<String, TestVariable>) -> bool {
+    let tokens: Vec<&str> = data.split_whitespace().collect();
+    let Some(ctrl) = tokens.first().and_then(|t| u8::from_str_radix(t, 16).ok()) else {
+        return false;
+    };
+    let Some((index, _)) = frame::token_at(&tokens, vars, frame::layout(ctrl).npdu) else {
+        return false;
+    };
+    match u8::from_str_radix(tokens[index], 16) {
+        Ok(npdu) => npdu & 0x80 == 0,
+        Err(_) => false,
+    }
+}
+
 /// Put `seq` in the TPCI octet's four sequence-number bits.
 fn write_seq(mut tpci: Tpci, seq: u8) -> String {
     tpci.tokens[tpci.index] = format!("{:02X}", (tpci.value & !0x3C) | ((seq & 0x0F) << 2));
@@ -1049,10 +1067,23 @@ fn apply_tl_sequence(
     let Some(raw) = pinned else {
         let Some(tracker) = tracker else { return Ok(data.to_string()) };
         let Some(tpci) = locate_tpci(data, vars)? else { return Ok(data.to_string()) };
-        return Ok(match tracker.number(tpci.value, inbound) {
-            Some(seq) => write_seq(tpci, seq),
-            None => data.to_string(),
-        });
+        if let Some(seq) = tracker.number(tpci.value, inbound) {
+            return Ok(write_seq(tpci, seq));
+        }
+        // Recomputing covers the unnumbered class too: EITT derives the TPCI
+        // octet of every management telegram, so stale author bits in a UDT
+        // TPCI are overwritten just like a stale sequence number. 4.3.11
+        // writes 11h and 19h — and 4.4.11 a Tag-Group 05h — on
+        // individually-addressed frames where only the APCI high bits belong
+        // in the low two, and the DUT rightly ignores such frames. Scoped to
+        // individually-addressed frames: on a group-addressed one the 000001
+        // pattern is a real T_Data_Tag_Group and must survive.
+        if tpci.value & 0xC0 == 0x00 && (tpci.value >> 2) & 0x0F != 0 && is_individually_addressed(data, vars) {
+            let mut tpci = tpci;
+            tpci.tokens[tpci.index] = format!("{:02X}", tpci.value & 0x03);
+            return Ok(tpci.tokens.join(" "));
+        }
+        return Ok(data.to_string());
     };
 
     let seq: u8 = raw.parse().map_err(|_| format!("{raw:?} is not a number"))?;

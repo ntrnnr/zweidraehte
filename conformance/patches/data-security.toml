@@ -102,22 +102,21 @@ insert = [
 ]
 
 # ============================================================================
-# 6.1.6 pins a mid-countdown time_left that fast mode cannot reach
+# 6.1.6 pins a mid-countdown time_left the run's timing cannot produce
 # ============================================================================
 #
 # The case activates Diagnostic Mode, expects `#OPER_MODE_TIME_LEFT`
-# (30 = 1Eh), waits the 2 s that the first OUT telegram's `TimeToNext`
-# names, reads the mode again and expects `#OPER_MODE_TIME_LEFT-2`
-# (28 = 1Ch).
+# (30 = 1Eh), and its second expectation pins `#OPER_MODE_TIME_LEFT-2`
+# (28 = 1Ch) — a value that requires two seconds to have passed. But
+# every telegram in the case says `Wait="no"` and the only 2 s in it is
+# the first expectation's receive window, which closes the moment the
+# response arrives. The countdown itself ticks correctly (it scales with
+# `KNX_TIME_DIVISOR`, which is what lets 6.1.11's explicit waits read
+# the ticking value) — there is simply no step in this case that lets
+# two seconds elapse, at any speed. The 1Ch is authored for a bench
+# where handling latency happened to approximate it.
 #
-# The first value we answer exactly: our diagnostic timeout is 30 s, and
-# `compute_time_left` rounds up, so activation reports 1Eh. The second we
-# cannot, and not because of a device defect — the countdown is
-# wall-clock while the runner divides every inter-step wait by
-# `KNX_TIME_DIVISOR`, so the template's 2 s elapses in 40 ms and barely a
-# tick has come off. Under `--realtime` it would read 1Ch.
-#
-# So only the time_left octet gives way, and only on the second
+# Only the time_left octet gives way, and only on the second
 # expectation. The first stays pinned at 1Eh, which is what actually
 # covers the 30 s timeout value; wildcarding both would stop testing it
 # at all.
@@ -125,11 +124,7 @@ insert = [
 [[patch]]
 replace = "25FD3493-8486-4E05-9F87-D939B7727234"
 why = """
-6.1.6: the second expectation pins time_left two seconds into the \
-countdown, which a wall-clock timer cannot reach when the runner \
-compresses that wait 50x. Only the time_left octet is wildcarded; the \
-first expectation keeps 1Eh pinned so the 30 s timeout stays covered.\
-"""
+6.1.6: the second expectation pins time_left two seconds into the countdown, but every telegram in the case is Wait="no" and its only 2 s is a receive window that closes on match — no step lets the time pass, at any clock speed. Only the time_left octet is wildcarded; the first expectation keeps 1Eh pinned so the 30 s timeout stays covered."""
 insert = [
   { expect = { data = "BC #BDUT_ADDR #EDI 6A 01 D6 00 03 00 10 34 20 00 01 ??", timeout_ms = 200 } },
 ]
@@ -279,3 +274,114 @@ insert = [{ trigger_sync = { peer_ia = 0xAFFE, tool = true } }]
 before = "EDADFBFC-D659-4609-883F-6C7EAAF576FE"
 why = "3.4.9: the DUT-initiated sync req whose response comes back system broadcast"
 insert = [{ trigger_sync = { peer_ia = 0x1041, broadcast = true } }]
+
+# ============================================================================
+# 3.7.2.6 assumes Device Descriptor Type 2 is unsupported
+# ============================================================================
+#
+# The case's prose says "Reading unsupported Device Descriptor, here 2" —
+# type 2 is its *example* of a type the reference device does not
+# implement. DD2 is Optional for System B (06 Profiles §4.3 "Device
+# Identification") and ours implements it — the management template's DD2
+# suite reads it back. What the case tests is the negative answer
+# (descriptor type 3Fh masked into the response APCI), which the response
+# does not echo the requested type into, so substituting a type we
+# genuinely do not support — 1 — keeps every expectation exactly as
+# authored.
+
+[[patch]]
+replace = "D7D8A063-AF9C-4755-9BFF-A7B6FB03C56A"
+why = """
+3.7.2.6 reads "unsupported Device Descriptor, here 2" as its example of \
+an unimplemented type; DD2 is Optional for System B and ours implements \
+it, so type 1 — which nothing implements — stands in. The error response \
+does not echo the type, so the expectations hold as authored.\
+"""
+insert = [{ inject = { data = "BC #EDI #BDUT_ADDR 61 03 01" } }]
+
+[[patch]]
+replace = "E73EF12D-3899-4CF0-B551-CD0D087F80DD"
+why = "3.7.2.6: the auth-only twin of the unsupported-descriptor read; type 1 for the same reason"
+insert = [{ inject_secure = { data = "BC #EDI #BDUT_ADDR 61 03 01", key = "TK1", auth_only = true } }]
+
+[[patch]]
+replace = "35962537-27E6-4CD7-94C7-F33A5FB44A83"
+why = "3.7.2.6: the A+C twin of the unsupported-descriptor read; type 1 for the same reason"
+insert = [{ inject_secure = { data = "BC #EDI #BDUT_ADDR 61 03 01", key = "TK1" } }]
+
+# ============================================================================
+# 6.2 negative-flag cases name the reference application's GO numbers
+# ============================================================================
+#
+# 6.2.6 and 6.2.14 need group objects whose C, W and T configuration
+# flags are clear, and the template addresses them at the numbers its
+# reference application uses (8, 10, 11). Our sample application keeps
+# dedicated diagnostic objects for exactly this — GO 15 has no C-flag,
+# GO 16 no W-flag, GO 17 no T-flag, the same objects the hand-written
+# 6.2.6/6.2.14 twins use — while our GOs 8/10/11 have full flags and
+# would answer A3h (size mismatch) or succeed instead of drawing the
+# A2h the cases are about. The expected responses stay as authored;
+# only the object number moves to the object with the tested flag.
+
+[[patch]]
+replace = "C323583A-E554-46B5-9F53-A95D59612B34"
+why = "6.2.6: the C-flag-clear object is GO 15 in our application, not the reference app's GO 8"
+insert = [{ inject = { data = "BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 00 00 0F AA" } }]
+
+[[patch]]
+replace = "ACE574DF-81DC-4A4E-B30B-3A531C79BB8A"
+why = "6.2.6: the W-flag-clear object is GO 16 in our application, not the reference app's GO 10"
+insert = [{ inject = { data = "BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 00 00 10 AA" } }]
+
+[[patch]]
+replace = "3CC36E24-0713-4814-8E79-20774A2B92F4"
+why = "6.2.14: the C-flag-clear object is GO 15 in our application, not the reference app's GO 8"
+insert = [{ inject = { data = "BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 0F" } }]
+
+[[patch]]
+replace = "74ED1075-A19F-4DA8-AD84-45E1C8D97AE9"
+why = "6.2.14: the T-flag-clear object is GO 17 in our application, not the reference app's GO 11"
+insert = [{ inject = { data = "BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 11" } }]
+
+# ============================================================================
+# 6.2.24 pins the reference application's GO configuration values
+# ============================================================================
+#
+# The case reads back GO 1 and GO 8 configuration; the flags, size code
+# and linkage in the answer are properties of the loaded application,
+# not of GO Diagnostics. The reference app's GO 1 is `07 5F` size 00 and
+# its GO 8 `04 DB` size 07; ours are 1-bit and 3-octet objects with full
+# flags, both linked and plain — `04 DF` with size codes 01 and 09, the
+# values the hand-written 6.2.24 twin documents field by field. DPT_ID
+# stays zero either way (our CO table does not track DPTs).
+
+[[patch]]
+replace = "BBCE515F-9681-4368-8EB8-081EE2C12437"
+why = "6.2.24: GO 1's configuration word and size code are the loaded application's, ours reads 04DF/01"
+insert = [{ expect = { data = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 01 04 DF 01 00 00 00 00", timeout_ms = 200 } }]
+
+[[patch]]
+replace = "148AC46B-C6AB-40FD-9586-E0BB617FB974"
+why = "6.2.24: GO 8's configuration word and size code are the loaded application's, ours reads 04DF/09"
+insert = [{ expect = { data = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 08 04 DF 09 00 00 00 00", timeout_ms = 200 } }]
+
+# ============================================================================
+# 4.3.11 expects a transport ACK for a connectionless frame
+# ============================================================================
+#
+# After disconnecting, the case sends its unauthorized
+# A_PropertyExtValue_WriteUnCon as T_Data_Individual and then expects a
+# `T_ACK` — but an unnumbered connectionless frame draws no transport
+# acknowledgement from any compliant device, and the connection it could
+# have ridden on was closed one telegram earlier. The behaviour under
+# test is intact without it: the DUT stays silent on the write and the
+# closing read verifies the value was not altered.
+
+[[patch]]
+skip = "5478992F-FB8E-40C4-B8ED-7CAFA6A5C497"
+why = """
+4.3.11: a T_ACK expectation for a connectionless T_Data_Individual sent \
+after the T_Disconnect — no compliant device acknowledges an unnumbered \
+frame, and the case's acceptance (silence on the write, value unaltered \
+on the closing read) is checked by its other steps.\
+"""

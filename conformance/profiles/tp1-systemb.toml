@@ -464,6 +464,22 @@ recomputation.\
 # and scopes itself to one device model in its own prose.
 
 [[template.not_applicable]]
+id = "B85CC6FC-F6EB-477D-A852-DE84BBC3E4B0"
+why = """
+3.7.2.4 expects a Domain Address Response \"in all cases\"; the domain \
+address is an open-media resource (3.7.2.11 marks the write half \
+\"[only open media]\" itself) and a TP1-only device has none to answer \
+with — every branch, plain included, gets silence\
+"""
+
+[[template.not_applicable]]
+id = "75C11A96-AA15-440B-9119-D81832182D99"
+why = """
+3.7.2.5 is the selective-read sibling of 3.7.2.4: an open-media domain \
+address a TP1-only device does not have\
+"""
+
+[[template.not_applicable]]
 id = "87877840-77DD-43F8-B223-F975CA47F166"
 why = "3.7.2.11 marks itself \"[only open media]\"; a TP1-only device has no domain address to write"
 
@@ -493,6 +509,28 @@ Parameter Memory of the Device Model 0x091A is related to the BCU1 memory \
 Model\" at 0100h-01FFh, \"related only to legacy tool usage and legacy \
 data base entries\". We are mask 07B0 with no BCU1 legacy memory, and \
 3.8.19 has no case for any other device model.\
+"""
+
+[[template.not_applicable]]
+id = "42F07BED-FD70-4BA2-A462-9751CCF9C750"
+why = """
+5.1.3 is \"CONDITIONAL on the full support for Authorization\" and its \
+mechanic locks the device by writing a key for level 3, expecting the \
+write accepted (`D4 03`). Level 3 is the level a connection has when it \
+has not authorised at all, so on a System B device it is keyless by \
+construction (`NUM_AUTH_KEYS = 3`, levels 0-2) and A_Key_Write answers \
+0xFF — the same reasoning as the load-state-machine template's 2.6. \
+Access-level enforcement through the keys that do exist is what the \
+management template's memory and user-memory suites run green.\
+"""
+
+[[template.not_applicable]]
+id = "8288ED21-986B-4429-BED0-0EC9C1B9C67F"
+why = """
+5.2.2 is 5.1.3's read twin and uses the same level-3 key lock, which a \
+System B device cannot hold (`NUM_AUTH_KEYS = 3`, levels 0-2; level 3 is \
+keyless by construction) — see 5.1.3 and the load-state-machine \
+template's 2.6.\
 """
 
 # Other templates go here as they start working. Each needs its own

@@ -156,15 +156,31 @@ pub enum InsertStep {
     },
     /// Expect a raw telegram template.
     Expect { data: String, timeout_ms: u32 },
-    /// Send a plaintext telegram wrapped tool-access A+C under a named
-    /// key (the runner's tool counter supplies the sequence number).
+    /// Send a plaintext telegram wrapped tool-access under a named key
+    /// (the runner's tool counter supplies the sequence number). A+C by
+    /// default; `auth_only = true` for authentication without
+    /// confidentiality.
     ///
     /// For state the template's prose assumes the bench operator
     /// provisioned — a "Required BDUT Setting" that only secure
-    /// management can put in place once security mode is on.
-    InjectSecure { data: String, key: String },
-    /// Expect a secure tool-access A+C response under a named key.
-    ExpectSecure { data: String, key: String, timeout_ms: u32 },
+    /// management can put in place once security mode is on — and for
+    /// replacing a secure telegram whose octets need a device-specific
+    /// correction.
+    InjectSecure {
+        data: String,
+        key: String,
+        #[serde(default)]
+        auth_only: bool,
+    },
+    /// Expect a secure tool-access response under a named key. A+C by
+    /// default; `auth_only = true` for authentication only.
+    ExpectSecure {
+        data: String,
+        key: String,
+        timeout_ms: u32,
+        #[serde(default)]
+        auth_only: bool,
+    },
 }
 
 impl InsertStep {
@@ -189,8 +205,20 @@ impl InsertStep {
             Self::Comment(text) => helpers::comment(text),
             Self::Inject { data, delay_ms } => helpers::inject_delay(data, *delay_ms),
             Self::Expect { data, timeout_ms } => helpers::expect(data, *timeout_ms),
-            Self::InjectSecure { data, key } => helpers::inject_secure_ac(data, key),
-            Self::ExpectSecure { data, key, timeout_ms } => helpers::expect_secure_ac(data, key, *timeout_ms),
+            Self::InjectSecure { data, key, auth_only } => {
+                if *auth_only {
+                    helpers::inject_secure_ao(data, key)
+                } else {
+                    helpers::inject_secure_ac(data, key)
+                }
+            }
+            Self::ExpectSecure { data, key, timeout_ms, auth_only } => {
+                if *auth_only {
+                    helpers::expect_secure_ao(data, key, *timeout_ms)
+                } else {
+                    helpers::expect_secure_ac(data, key, *timeout_ms)
+                }
+            }
         }
     }
 }
