@@ -379,9 +379,25 @@ pub fn sync_req_params(
         Some(_) => return err("Challenge=\"auto\" on a sync request: there is no earlier challenge to reuse"),
         None => return err("a sync request with no Challenge"),
     };
+    // The serial the request carries. Usually the `KNXSerNo` attribute,
+    // but 3.3.6 leaves the attribute empty and writes `#SER_NUM` into the
+    // Data instead — EITT reads the octets either way, and a broadcast
+    // sync req sent with a zero serial is one the device must ignore
+    // (serial mismatch), which silently inverted that case. The serial
+    // field sits nine octets past the TPCI: TPCI, APCI, SCF, then the
+    // six SeqNumLoc octets.
     let serial = match attr(t.knx_ser_no.as_ref()) {
         Some(raw) => six_octets(raw, "KNXSerNo")?,
-        None => [0u8; 6],
+        None => {
+            let tokens: Vec<&str> = data.split_whitespace().collect();
+            let layout = frame::layout(skel.ctrl_byte);
+            let span = frame::token_span(&tokens, vars, layout.tpci + 9, 6)
+                .ok_or_else(|| SecureError(format!("no KNXSerNo and no serial span in Data ({data:?})")))?;
+            let bytes = crate::telegram::Telegram::parse(&span, vars).map_err(SecureError)?.data;
+            let mut serial = [0u8; 6];
+            serial.copy_from_slice(&bytes);
+            serial
+        }
     };
     // `SeqNumLoc` is the number the request advertises as ours. A named
     // counter is carried through as such and resolved by the engine

@@ -443,6 +443,58 @@ WRITEONLY_MEM_START = "00 05 10"   # WRITEONLY_MEMORY_BASE, 16 bytes
 # stack wrong; the field describes the device, so it only moves when the
 # device genuinely differs.
 
+[template.tl_sequence]
+recompute = true
+why = """
+this template's connection-oriented sequence numbers are stale where they \
+matter. 4.2.11 (and its 4.3.11 / 4.4.11 siblings) opens a fresh T_Connect \
+and immediately pins the key writes at TPCI sequence 1, 2 and 3 — numbers \
+only a connection that already carried a frame could produce, and the DUT \
+correctly answers T_NAK. EITT computes a sequence number for every \
+management telegram before running a sequence (manual 12.2.3.14); \
+recomputing restores that. Telegrams that pin TLSeqNum explicitly — 3.9 \
+pins 0 on the repeated frames, which is its point — still win over the \
+recomputation.\
+"""
+
+# Cases the template scopes to media or device models we are not. The
+# 3.7.2.x access-policy cases exercise services that only exist on open
+# media (domain addresses) or on devices with a KNXnet/IP Parameter
+# Object; we are TP1 only. 3.8.19 tests BCU1 legacy memory compatibility
+# and scopes itself to one device model in its own prose.
+
+[[template.not_applicable]]
+id = "87877840-77DD-43F8-B223-F975CA47F166"
+why = "3.7.2.11 marks itself \"[only open media]\"; a TP1-only device has no domain address to write"
+
+[[template.not_applicable]]
+id = "36892560-E67E-428E-BBED-34770A0103F4"
+why = """
+3.7.2.12.1 \"For 4 octet (IP)\" verifies the write through PID 66 of the \
+KNXnet/IP Parameter Object (reads back 224.0.23.12); we have no IP object\
+"""
+
+[[template.not_applicable]]
+id = "CC08EB3D-172C-4FE7-B5B6-8C4982CCA5B9"
+why = "3.7.2.12.2 \"For 6 octet (RF)\" writes an RF domain address; we have no RF medium"
+
+[[template.not_applicable]]
+id = "7EAD5561-5284-48D3-9286-B5944929527C"
+why = """
+3.7.2.12.3 \"For 21 octet (IP)\" verifies the write through PID 66 of the \
+KNXnet/IP Parameter Object; we have no IP object\
+"""
+
+[[template.not_applicable]]
+id = "13B93F60-E73F-4152-8FE2-67CAE860A015"
+why = """
+3.8.19.1 scopes itself to \"Device Model 0x091A (IP-Router)\": \"The \
+Parameter Memory of the Device Model 0x091A is related to the BCU1 memory \
+Model\" at 0100h-01FFh, \"related only to legacy tool usage and legacy \
+data base entries\". We are mask 07B0 with no BCU1 legacy memory, and \
+3.8.19 has no case for any other device model.\
+"""
+
 # Other templates go here as they start working. Each needs its own
 # patch set, and most also need comment commands that are hard errors
 # today — see SESSION.md.

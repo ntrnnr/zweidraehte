@@ -13,6 +13,7 @@ use crate::{GroupAddress, IndividualAddress, TestVariable};
 /// Supported formats:
 /// - `#VAR` - simple variable reference
 /// - `#VAR.N` - array index (byte at position N)
+/// - `#VAR.N+K` / `#VAR.N-K` - array index with octet arithmetic (mod 256)
 /// - `#VAR+N` - arithmetic addition (for 16-bit values, adds N to the value)
 ///
 /// Examples:
@@ -20,11 +21,24 @@ use crate::{GroupAddress, IndividualAddress, TestVariable};
 /// - `#MEMPOS+12` -> [0x02, 0x0C] (0x0200 + 12 = 0x020C)
 /// - `#MEM.0` -> [0x01] (first byte of MEM array)
 /// - `#MEM.12` -> [0x0D] (13th byte of MEM array)
+/// - `#SER_NUM.5+1` -> last serial octet plus one (TSSJ 3.8.3.2 builds a
+///   serial that is deliberately *not* the device's this way)
 fn parse_variable_expr(expr: &str, variables: &BTreeMap<String, TestVariable>) -> Result<Vec<u8>, String> {
-    // Check for array indexing: #VAR.N
+    // Check for array indexing: #VAR.N, optionally with octet arithmetic
+    // #VAR.N+K / #VAR.N-K. The offset wraps mod 256: the templates use it
+    // to derive an octet that provably differs from the real one, and a
+    // wrap keeps that property at FFh.
     if let Some(dot_pos) = expr.find('.') {
         let var_name = &expr[..dot_pos];
-        let index_str = &expr[dot_pos + 1..];
+        let index_expr = &expr[dot_pos + 1..];
+        let (index_str, offset) = if let Some(op_pos) = index_expr.find(['+', '-']) {
+            let offset: i16 =
+                index_expr[op_pos + 1..].parse().map_err(|_| format!("Invalid array index offset: {}", index_expr))?;
+            let signed = if index_expr.as_bytes()[op_pos] == b'-' { -offset } else { offset };
+            (&index_expr[..op_pos], signed)
+        } else {
+            (index_expr, 0)
+        };
         let index: usize = index_str.parse().map_err(|_| format!("Invalid array index: {}", index_str))?;
 
         match variables.get(var_name) {
@@ -33,7 +47,7 @@ fn parse_variable_expr(expr: &str, variables: &BTreeMap<String, TestVariable>) -
                 if index >= bytes.len() {
                     return Err(format!("Array index {} out of bounds for {} (len={})", index, var_name, bytes.len()));
                 }
-                Ok(vec![bytes[index]])
+                Ok(vec![(bytes[index] as i16 + offset).rem_euclid(256) as u8])
             }
             None => Err(format!("Unknown variable: {}", var_name)),
         }
@@ -226,6 +240,19 @@ impl TelegramMatcher {
         Ok(Self { expected, masks, wildcards })
     }
 
+    /// Comparison mask for byte `i`.
+    ///
+    /// Byte 0 is the TP1 control field, whose bit 5 is the repeat flag —
+    /// a link-layer artifact the templates author inconsistently (the
+    /// TSSJ template writes the same DUT T_ACK as `BC` in one block and
+    /// `B0` in the next, and expects `2C`-control frames from a device
+    /// that sends `3C`). EITT masks it when matching, so we do too;
+    /// repetition behaviour is tested through timing cases, never through
+    /// this bit.
+    fn mask_at(&self, i: usize) -> u8 {
+        if i == 0 { self.masks[i] & !0x20 } else { self.masks[i] }
+    }
+
     /// Check if an actual telegram matches this pattern.
     pub fn matches(&self, actual: &[u8]) -> bool {
         if actual.len() != self.expected.len() {
@@ -233,7 +260,8 @@ impl TelegramMatcher {
         }
 
         for (i, (exp, act)) in self.expected.iter().zip(actual.iter()).enumerate() {
-            if (act & self.masks[i]) != (exp & self.masks[i]) {
+            let mask = self.mask_at(i);
+            if (act & mask) != (exp & mask) {
                 return false;
             }
         }
@@ -268,8 +296,8 @@ impl TelegramMatcher {
         let _ = write!(result, "Actual:   ");
         for (i, b) in actual.iter().enumerate() {
             if i < self.masks.len()
-                && self.masks[i] != 0x00
-                && (b & self.masks[i]) != (self.expected[i] & self.masks[i])
+                && self.mask_at(i) != 0x00
+                && (b & self.mask_at(i)) != (self.expected[i] & self.mask_at(i))
             {
                 let _ = write!(result, "[{:02X}] ", b);
             } else {

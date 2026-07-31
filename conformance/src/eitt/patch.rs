@@ -121,6 +121,18 @@ pub enum InsertStep {
     TriggerRead(u16),
     /// Send a `GroupValue_Write` for an ASAP.
     TriggerWrite(u16),
+    /// Make the DUT initiate an `S-A_Sync_Req` to a peer.
+    ///
+    /// The bench equivalent of the 3.4 prose "Please stimulate the BDUT
+    /// to send a S-A_Sync_Req" — EITT leaves the stimulation to the
+    /// operator, our DUT has no buttons, so the IPC side channel does it.
+    TriggerSync {
+        peer_ia: u16,
+        #[serde(default)]
+        tool: bool,
+        #[serde(default)]
+        broadcast: bool,
+    },
     /// Assert nothing arrives within the timeout.
     ExpectNone(u32),
     /// Idle for a while (scaled).
@@ -152,6 +164,13 @@ impl InsertStep {
         match self {
             Self::TriggerRead(asap) => helpers::trigger_read(*asap),
             Self::TriggerWrite(asap) => helpers::trigger_write(*asap),
+            Self::TriggerSync { peer_ia, tool, broadcast } => {
+                if *broadcast {
+                    helpers::trigger_sync_broadcast(*peer_ia, *tool)
+                } else {
+                    helpers::trigger_sync(*peer_ia, *tool)
+                }
+            }
             Self::ExpectNone(ms) => helpers::expect_none(*ms),
             Self::Wait(ms) => helpers::wait(*ms),
             Self::Drain(ms) => helpers::drain(*ms),

@@ -169,3 +169,92 @@ and there is no error to return.\
 [[patch]]
 skip = "BA6739AF-0E5F-4019-9E90-99AF8D033169"
 why = "5.2.5: the expectation belonging to the 249-octet read above"
+
+# ============================================================================
+# The template's own preparation factory-resets the sample application away
+# ============================================================================
+#
+# "Test Preparation - BDUT setup" sends `A_Restart` with erase code 02h
+# ("FactoryReset with IA"):
+#
+#     BC #EDI #BDUT_ADDR 63 03 81 02 00
+#
+# and then re-establishes only the individual address, the tool key and
+# the Security IO load state. On the certification bench that is enough,
+# because the operator loads the AN158 sample application (the "2.3.1"
+# object settings: GAs 1/1/1..6/6/6, keys GK1..GK5, per-GO security
+# flags) into the BDUT before the run — every 3.2 case says so in its
+# "Required BDUT setting" prose.
+#
+# Our DUT's factory reset wipes exactly those tables, and nothing in the
+# template reloads them, so every group-addressed frame afterwards died
+# in the transport layer with no TSAP: the four positive 3.2 cases and
+# the group half of 3.8.17.1. `full_reset` restores the boot image —
+# which *is* the loaded sample application with GK1..GK6 and TK1
+# installed, the runner's stand-in for the operator's reload — and the
+# wait clears the sync rate-limit window, whose timer is wall-clock.
+#
+# The anchor is the tool-key write response, not the end of the
+# preparation: the boot image's Security IO load state is Unloaded, and
+# the preparation's own closing steps are exactly the Unloaded → Loading
+# → Loaded transitions — restoring *before* them lets the template put
+# the restored device into the Loaded state it hands to 3.1.
+
+[[patch]]
+after = "4E927E12-B60B-4DF3-934B-4569D16CA709"
+why = """
+the preparation's erase-02 factory reset wipes the address/association \
+tables, group keys and GO security flags of the sample application the \
+bench operator would reload; every 3.2 case assumes the "2.3.1" object \
+settings are present. The boot image is that application.\
+"""
+insert = [
+  { comment = "Preparation reset the device: restore the sample application the bench would reload" },
+  { full_reset = 3000 },
+  { wait = 1500 },
+]
+
+# ============================================================================
+# 3.4 needs the operator to stimulate DUT-initiated sync requests
+# ============================================================================
+#
+# Every positive 3.4 case says "Please stimulate the BDUT to send a
+# S-A_Sync_Req" — on the bench the operator provokes the device (a
+# button, a cyclic transmission) into sending secure P2P traffic to a
+# peer whose sequence number it does not know, which makes it initiate a
+# sync. Our DUT has no buttons; the IPC side channel is the bench
+# equivalent, the same reasoning as the group-object template's
+# `trigger_read` / `trigger_write` kicks. The peers and key scopes come
+# from each case's own telegrams (10 41 under P2PK1, #ALT_SRC_ADDR under
+# P2PK2, #EDI under the tool key, and a system-broadcast-capable sync
+# for 3.4.9).
+
+[[patch]]
+before = "393A6E99-6CE8-470B-B8D1-E71CD3CB35F6"
+why = "3.4.1: the DUT-initiated sync req the prose asks the operator to stimulate"
+insert = [{ trigger_sync = { peer_ia = 0x1041 } }]
+
+[[patch]]
+before = "7F92F60A-7010-4DB7-B162-709A59B3C38F"
+why = "3.4.2: the DUT-initiated sync req the prose asks the operator to stimulate"
+insert = [{ trigger_sync = { peer_ia = 0x1041 } }]
+
+[[patch]]
+before = "89C29A0D-EA04-4594-8404-546586A103F7"
+why = "3.4.4: the DUT-initiated sync req to the second IA (#ALT_SRC_ADDR, P2PK2)"
+insert = [{ trigger_sync = { peer_ia = 0xAFFD } }]
+
+[[patch]]
+before = "F264CADA-C329-4860-81DD-3985A48A8103"
+why = "3.4.5: the DUT-initiated sync req the prose asks the operator to stimulate"
+insert = [{ trigger_sync = { peer_ia = 0x1041 } }]
+
+[[patch]]
+before = "95679590-9F61-4E57-808F-C906A66450E6"
+why = "3.4.7: the DUT-initiated tool-key sync req to #EDI"
+insert = [{ trigger_sync = { peer_ia = 0xAFFE, tool = true } }]
+
+[[patch]]
+before = "EDADFBFC-D659-4609-883F-6C7EAAF576FE"
+why = "3.4.9: the DUT-initiated sync req whose response comes back system broadcast"
+insert = [{ trigger_sync = { peer_ia = 0x1041, broadcast = true } }]

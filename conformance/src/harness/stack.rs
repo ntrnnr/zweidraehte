@@ -489,9 +489,20 @@ pub(crate) mod conformance_config {
                 18 => "EE EE EE EE EE EE EE EE EE EE EE EE EE EE EE EE",  // TSAP 18 (6/6/6) → GK5
             },
 
-            // GO security flags are written dynamically by the test,
-            // so we start with all zeros (plain).
-            go_flags: {},
+            // GO security flags of the AN158 sample application ("2.3.1"
+            // in the data-security template: GO0 A-only, GO1 A+C, GO2
+            // plain, GO3 C-only). The boot image is the bench operator's
+            // loaded sample app, and the EITT run restores it via
+            // `full_reset` after the template preparation's factory
+            // reset — with all-zero flags every secured 3.2 read died on
+            // the receive-side flag check. The hand-written 3.2 suite
+            // writes the same values itself in its preparation, so this
+            // seed changes nothing for suites that provision explicitly.
+            go_flags: {
+                12 => 0x01,  // GO_SEC_0 (1/1/1 recv, 2/2/2 send): A only
+                13 => 0x03,  // GO_SEC_1 (3/3/3 recv, 4/4/4 send): A+C
+                14 => 0x02,  // GO_SEC_3 (6/6/6): C only
+            },
         },
     }
 }

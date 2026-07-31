@@ -27,7 +27,7 @@ use crate::eitt::profile::{Policy, Profile};
 use crate::eitt::schema::{self, SequenceItem, Template};
 use crate::eitt::secure;
 use crate::tests::helpers;
-use crate::{TestCase, TestStep, TestSuite, TestVariable};
+use crate::{BlockExpectTemplate, SecureParams, TestCase, TestStep, TestSuite, TestVariable};
 
 /// What lowering dropped, and why. Printed before a run so that "8 of
 /// 16 cases" is never a surprise.
@@ -363,8 +363,12 @@ const BLOCK_JOIN_MS: u32 = 200;
 /// One `OUT` telegram waiting to be flushed, alone or as part of a
 /// block. See [`flush_block`].
 struct BlockMember {
-    /// The frame template, `#VAR` references intact.
+    /// The frame template, `#VAR` references intact. For a secure
+    /// member this is the *plaintext* frame; `sec` says how the wire
+    /// frame is protected.
     data: String,
+    /// `Some` for a secure S-A_Data expectation; `None` for plain.
+    sec: Option<SecureParams>,
     /// The receive window this member contributes if it closes the block.
     time_to_next: u32,
     waits_out_time: bool,
@@ -372,24 +376,41 @@ struct BlockMember {
 
 /// Emit the pending `OUT` telegrams and clear the buffer.
 ///
-/// A single member stays a plain `Expect`: that is what most of a
-/// template is, and it keeps the run log readable. Two or more become
-/// one any-order `ExpectBlock` whose window is the *closing* member's
-/// `TimeToNext` — which is the whole point of blocks. EITT gives a
-/// block one window rather than one per telegram (§12.2.3.6), and the
-/// transport-layer repetition cases lean on it: 6.3.5.2 expects three
-/// identical retransmissions and a disconnect inside 12.5 s, arriving
-/// roughly 3 s apart. Timed individually, the second one would run into
-/// the engine's 1 s default and fail on a harness artefact.
+/// A single member stays a plain `Expect` (or `ExpectSecure`): that is
+/// what most of a template is, and it keeps the run log readable. Two
+/// or more become one any-order `ExpectBlock` whose window is the
+/// *closing* member's `TimeToNext` — which is the whole point of
+/// blocks. EITT gives a block one window rather than one per telegram
+/// (§12.2.3.6), and the transport-layer repetition cases lean on it:
+/// 6.3.5.2 expects three identical retransmissions and a disconnect
+/// inside 12.5 s, arriving roughly 3 s apart. Timed individually, the
+/// second one would run into the engine's 1 s default and fail on a
+/// harness artefact.
+///
+/// Secure members join like plain ones. The data-security template
+/// leans on both mixes: GO diagnostics answers a function property with
+/// a plain response *and* puts the triggered secure group frame on the
+/// bus (6.2.7 / 6.2.15, either order), and 3.9's TL-retransmission
+/// block is four identical secure frames whose window is the closing
+/// disconnect's 12.4 s.
 fn flush_block(block: &mut Vec<BlockMember>, steps: &mut Vec<TestStep>) {
     let Some(last) = block.last() else { return };
     let timeout_ms = last.time_to_next;
     let waits_out_time = last.waits_out_time;
 
     if let [only] = block.as_slice() {
-        steps.push(helpers::expect(&only.data, timeout_ms));
+        match &only.sec {
+            None => steps.push(helpers::expect(&only.data, timeout_ms)),
+            Some(params) => steps.push(helpers::expect_secure(&only.data, params.clone(), timeout_ms)),
+        }
     } else {
-        let elements = block.iter().map(|m| helpers::block_plain(&m.data)).collect();
+        let elements = block
+            .iter()
+            .map(|m| match &m.sec {
+                None => helpers::block_plain(&m.data),
+                Some(params) => BlockExpectTemplate::Secure { template: m.data.clone(), sec_params: params.clone() },
+            })
+            .collect();
         steps.push(helpers::expect_block(elements, timeout_ms));
     }
 
@@ -681,6 +702,28 @@ fn lower_telegram(
     // deactivated, for another medium, or patched — but the emitting is
     // different enough to live on its own.
     if !t.security_attrs_set().is_empty() {
+        let fail = |e: secure::SecureError| LowerError::SecureAttrs {
+            case: case_name.to_string(),
+            telegram: tid(),
+            why: e.to_string(),
+        };
+        // An expected secure S-A_Data frame joins a pending block just
+        // like a plain one — §12.2.3.6 does not care how a telegram is
+        // protected. Sync exchanges and everything we *send* keep the
+        // flush-first path: an inject orders the sequence by nature, and
+        // a sync request/response pair is a dialogue, not a block.
+        if !inbound
+            && secure::layer(t).map_err(fail)? == secure::SecureLayer::Data
+            && secure::corruption(t).map_err(fail)?.is_none()
+            && joinable
+        {
+            let params = secure::data_params(t, false).map_err(fail)?;
+            block.push(BlockMember { data: data.to_string(), sec: Some(params), time_to_next, waits_out_time });
+            if time_to_next >= BLOCK_JOIN_MS {
+                flush_block(block, steps);
+            }
+            return Ok(());
+        }
         flush_block(block, steps);
         lower_secure(t, data, inbound, time_to_next, case_name, vars, sync, steps)?;
         if waits_out_time && time_to_next > 0 {
@@ -720,7 +763,7 @@ fn lower_telegram(
                     steps.push(helpers::wait(time_to_next));
                 }
             } else {
-                block.push(BlockMember { data, time_to_next, waits_out_time });
+                block.push(BlockMember { data, sec: None, time_to_next, waits_out_time });
                 if time_to_next >= BLOCK_JOIN_MS {
                     flush_block(block, steps);
                 }
