@@ -165,10 +165,17 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
         return;
     }
 
-    // Local scratch — not a protocol cap. The `payload_cap` derived
-    // from `response_payload_cap` is the actual ceiling the handler
-    // may produce.
-    const DATA_SCRATCH: usize = 64;
+    // Local scratch. Sized to the largest APDU the stack can carry, so
+    // that `payload_cap` below — derived from the device's advertised
+    // `PID_MAX_APDULENGTH` — is what actually limits the answer.
+    //
+    // It was 64, which silently became the real ceiling: a device
+    // advertising a 254-octet APDU still could not return more than 64
+    // octets of a property, and a longer read failed with
+    // `BufferTooSmall` rather than being served or refused for a reason
+    // the requester could act on. Data security 4.1.7 reads exactly as
+    // many elements as one APDU holds, which is the case that found it.
+    const DATA_SCRATCH: usize = zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED as usize;
     let mut data_buf = [0u8; DATA_SCRATCH];
 
     let payload_cap = ctx.base.response_payload_cap(PropertyExtValueResponse::msg_len(0)).min(DATA_SCRATCH);
