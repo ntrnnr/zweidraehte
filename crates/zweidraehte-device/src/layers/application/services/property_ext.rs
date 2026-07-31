@@ -138,15 +138,31 @@ fn handle_ext_value_read<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<'stat
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         // PDT_FUNCTION must be accessed via FunctionPropertyExt services,
         // never via PropertyExtValue. PDT_CONTROL is normally similar,
-        // but PID_LOAD_STATE_CONTROL is the canonical exception:
-        // implementations expose it as a 1-byte readable load-state
-        // value via PropertyExtValue_Read (see TSS J §3.8.7.4 expected
-        // response and AN163 Table 4) so the MaC can read the current
-        // state without invoking a load-control function.
-        if is_function_pdt(desc.pdt) && hdr.prop_id != pid::LOAD_STATE_CONTROL {
+        // but the load/run state machines are the canonical exceptions:
+        // PID_LOAD_STATE_CONTROL is exposed as a 1-byte readable
+        // load-state value via PropertyExtValue_Read (see TSS J §3.8.7.4
+        // expected response and AN163 Table 4), and PID_RUN_STATE_CONTROL
+        // reads back the run state the same way — both so the MaC can
+        // read the current state without invoking a control function.
+        if is_function_pdt(desc.pdt) && !is_state_machine_control(hdr.prop_id) {
             debug!("AL PropertyExtValueRead: PDT_CONTROL/FUNCTION → type conflict");
             send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict);
             return;
+        }
+        // A count that could never fit one APDU is refused F4h before the
+        // element-range check gets a say: 03/03/07 §3.3's
+        // `E_LENGTH_EXCEEDS_MAX_APDU_LENGTH` describes the *request*, not
+        // the property, and TSS J 4.1.8 ("data exceeds Max APDU Length")
+        // reads 254 elements of a 245-element property expecting exactly
+        // that precedence — FDh would claim the range was the problem.
+        let elem_size = pdt_element_size(desc.pdt);
+        if hdr.start_idx > 0 && elem_size > 0 {
+            let payload_cap = ctx.base.response_payload_cap(PropertyExtValueResponse::msg_len(0));
+            if hdr.count as usize * elem_size > payload_cap {
+                debug!("AL PropertyExtValueRead: requested count cannot fit an APDU");
+                send_ext_read_error(ind, ctx, &hdr, PropertyReturnCode::LengthExceedsMaxApduLength);
+                return;
+            }
         }
         // Check start_index + count doesn't exceed max_elements (for non-count-query reads).
         if hdr.start_idx > 0 && desc.max_elements > 0 {
@@ -263,12 +279,27 @@ fn handle_ext_value_write_con<D: StackDefinition>(ind: &KnxMessageBuffer<Buffer<
     // Validate per spec Figure 55 using the property description.
     if let Ok(desc) = ctx.interface_objects.property_description_read(object_idx, hdr.prop_id, 0) {
         // PDT_CONTROL and PDT_FUNCTION properties are normally accessed via
-        // FunctionPropertyCommand, not PropertyValueWrite. However,
-        // LOAD_STATE_CONTROL (PID 5) is a special case — the spec allows
-        // writing it via property value services to trigger load state
-        // transitions. Allow it through; reject other function PDTs.
-        if is_function_pdt(desc.pdt) && hdr.prop_id != pid::LOAD_STATE_CONTROL {
+        // FunctionPropertyCommand, not PropertyValueWrite. However, the
+        // state machines are the exception the spec itself defines: a
+        // write access to PID_LOAD_STATE_CONTROL / PID_RUN_STATE_CONTROL
+        // *is* the event (03/05/01 §4.23.2.1 Table 93 / §4.24.2.3.2), and
+        // DM_LoadStateMachineWrite (03/05/02 §3.31) delivers it as a
+        // 10-octet record — event plus additional load information. TSS J
+        // 4.2.1 and 6.1.11 write exactly that shape. Allow both through;
+        // reject other function PDTs.
+        if is_function_pdt(desc.pdt) && !is_state_machine_control(hdr.prop_id) {
             debug!("AL PropertyExtValueWriteCon: PDT_CONTROL/FUNCTION → type conflict");
+            send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict);
+            return;
+        }
+        // A state-machine-control write must be exactly the 10-octet
+        // record DM_LoadStateMachineWrite defines (03/05/02 §3.31: one
+        // event octet plus nine octets of event data). 4.2.10 probes 9 and
+        // 11 octets and expects FEh — PDT_CONTROL has no fixed element
+        // size, so the generic size check below cannot catch it.
+        const LOAD_RECORD_LEN: usize = 10;
+        if is_function_pdt(desc.pdt) && is_state_machine_control(hdr.prop_id) && data.len() != LOAD_RECORD_LEN {
+            debug!("AL PropertyExtValueWriteCon: load record of {} octets (expected 10)", data.len());
             send_ext_write_con_error(ind, ctx, &hdr, PropertyReturnCode::DataTypeConflict);
             return;
         }
@@ -504,6 +535,13 @@ fn send_ext_write_con_error<D: StackDefinition>(
 fn is_function_pdt(pdt: u8) -> bool {
     use zweidraehte_proto::dpt::{PDT_Control, PDT_Function, PropertyDataDefinition};
     pdt == PDT_Control::ID || pdt == PDT_Function::ID
+}
+
+/// Whether a PID is one of the two state-machine control properties that
+/// the spec drives through PropertyExtValue services despite their
+/// PDT_CONTROL type — see the call sites for the spec references.
+fn is_state_machine_control(pid: u16) -> bool {
+    pid == pid::LOAD_STATE_CONTROL || pid == pid::RUN_STATE_CONTROL
 }
 
 /// Get the element size in bytes for a given PDT code.

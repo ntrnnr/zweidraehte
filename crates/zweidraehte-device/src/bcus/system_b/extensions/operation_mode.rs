@@ -80,6 +80,21 @@ pub const MODE_NORMAL: u8 = 0x00;
 /// after [`OperationModeState::DIAGNOSTIC_TIMEOUT_SECS`].
 pub const MODE_DIAGNOSTIC: u8 = 0x01;
 
+/// The conformance fast-mode divisor for the diagnostic countdown — the
+/// same `KNX_TIME_DIVISOR` contract as the transport-layer timers. 1
+/// (spec-compliant wall clock) outside conformance builds.
+fn time_divisor() -> u64 {
+    #[cfg(feature = "conformance")]
+    {
+        extern crate std;
+        std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1)
+    }
+    #[cfg(not(feature = "conformance"))]
+    {
+        1
+    }
+}
+
 /// `time_left` wire value meaning "no timeout running" (Normal mode).
 /// Actual countdowns are clamped to `0..=254` seconds.
 pub const TIME_LEFT_NONE: u8 = 0xFF;
@@ -101,8 +116,15 @@ impl OperationModeState {
     pub fn set_mode(&self, mode: u8) {
         self.mode.set(mode);
         if mode == MODE_DIAGNOSTIC {
-            // Diagnostic mode: start timeout countdown.
-            let deadline = Instant::now() + embassy_time::Duration::from_secs(Self::DIAGNOSTIC_TIMEOUT_SECS as u64);
+            // Diagnostic mode: start timeout countdown. In fast-mode
+            // conformance runs the wall-clock window shrinks by the same
+            // divisor every other protocol timer uses, and
+            // `compute_time_left` scales the remainder back up so the wire
+            // still reports logical seconds — without this, a 50x run waits
+            // 40 ms of a 30 s countdown and the mode never times out
+            // (TSS J 6.1.6 / 6.1.11 both read the ticking value).
+            let millis = Self::DIAGNOSTIC_TIMEOUT_SECS as u64 * 1000 / time_divisor();
+            let deadline = Instant::now() + embassy_time::Duration::from_millis(millis);
             self.deadline.set(Some(deadline));
         } else {
             // Normal mode: clear deadline and source filter.
@@ -148,7 +170,9 @@ impl OperationModeState {
                 if now >= deadline {
                     0
                 } else {
-                    let remaining = (deadline - now).as_millis().div_ceil(1000);
+                    // Scale the wall-clock remainder back to logical seconds
+                    // (the deadline was divided by the same factor).
+                    let remaining = ((deadline - now).as_millis() * time_divisor()).div_ceil(1000);
                     // Clamp below TIME_LEFT_NONE, which is reserved for
                     // "no timeout".
                     remaining.min((TIME_LEFT_NONE - 1) as u64) as u8
