@@ -12,7 +12,7 @@
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
-use crate::{SyncReqParams, SyncResExpect, TestCase, TestSuite};
+use crate::{SeqSource, SyncReqParams, SyncResExpect, TestCase, TestSuite};
 
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
@@ -110,7 +110,7 @@ pub fn create_section_3_4_suite() -> TestSuite {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
@@ -224,7 +224,7 @@ fn test_3_4_4() -> TestCase {
             dst_template: "#BDUT_ADDR".into(),
             npdu_byte: 0x60,
             ctrl_byte: 0x3C,
-            seq_nr_local: 0,
+            seq_local: SeqSource::Fixed(0),
             serial_number: [0; 6],
             challenge: CHALLENGE_1,
             tpci_high: 0x00,

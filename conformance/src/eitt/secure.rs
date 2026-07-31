@@ -12,7 +12,10 @@
 //! errors. Guessing would send a security test in the clear or against
 //! the wrong key, and it would still look green.
 
-use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource, SyncReqParams, SyncResExpect};
+use std::collections::BTreeMap;
+
+use super::frame;
+use crate::{InvalidSecurityParam, SecType, SecureParams, SeqSource, SyncReqParams, SyncResExpect, TestVariable};
 
 /// The keys `crate::tests::security::variables::security_keys` installs.
 ///
@@ -307,11 +310,13 @@ fn hex_octets(raw: &str, what: &str) -> Result<Vec<u8>, SecureError> {
 ///
 /// A sync request is built from scratch rather than wrapped around a
 /// plaintext APDU, so the engine needs the header fields separately.
-/// They are all in `Data`, in the extended-frame layout:
+/// They are all in `Data`, and where each one sits depends on the frame
+/// layout — every sync telegram in the data-security template is
+/// extended:
 ///
 /// ```text
-///   3C     60      #EDI   #BDUT_ADDR   18    03    F1    92
-///   ctrl   npdu    src    dst          len   tpci  apci  scf
+///   3C     60      #EDI   22 02   18    03    F1    92
+///   ctrl   ctrle   src    dst     len   tpci  apci  scf
 /// ```
 struct SyncSkeleton {
     ctrl_byte: u8,
@@ -321,26 +326,51 @@ struct SyncSkeleton {
     tpci_high: u8,
 }
 
-fn sync_skeleton(data: &str) -> Result<SyncSkeleton, SecureError> {
-    let tok: Vec<&str> = data.split_whitespace().collect();
-    if tok.len() < 8 {
-        return err(format!("a sync telegram needs at least eight tokens of Data, got {}", tok.len()));
-    }
-    let octet = |i: usize, what: &str| -> Result<u8, SecureError> {
-        u8::from_str_radix(tok[i], 16).map_err(|_| SecureError(format!("{what} ({:?}) is not a hex octet", tok[i])))
+/// Read the header fields out of a sync telegram's `Data`.
+///
+/// Offsets come from [`frame::layout`] rather than from token positions.
+/// Counting tokens is only ever right by accident: `3C 60 #EDI
+/// #BDUT_ADDR 18 03 F1` puts the TPCI in the sixth token and `3C 60
+/// #EDI 22 02 18 03 F1` puts it in the seventh, because writing an
+/// address as two literal octets costs a token that a variable does not.
+fn sync_skeleton(data: &str, vars: &BTreeMap<String, TestVariable>) -> Result<SyncSkeleton, SecureError> {
+    let tokens: Vec<&str> = data.split_whitespace().collect();
+    let ctrl_byte = tokens
+        .first()
+        .and_then(|t| u8::from_str_radix(t, 16).ok())
+        .ok_or_else(|| SecureError("a sync telegram's Data must start with a literal control octet".to_string()))?;
+    let layout = frame::layout(ctrl_byte);
+
+    // A single literal octet — the NPDU and TPCI positions are never a
+    // variable or a wildcard in any template we run, and a frame where
+    // one of them is has to stop the run rather than be guessed at.
+    let octet = |offset: usize, what: &str| -> Result<u8, SecureError> {
+        let (index, _) = frame::token_at(&tokens, vars, offset)
+            .ok_or_else(|| SecureError(format!("{what} is past the end of Data ({data:?})")))?;
+        u8::from_str_radix(tokens[index], 16)
+            .map_err(|_| SecureError(format!("{what} ({:?}) is not a hex octet", tokens[index])))
     };
+    let address = |offset: usize, what: &str| -> Result<String, SecureError> {
+        frame::token_span(&tokens, vars, offset, 2)
+            .ok_or_else(|| SecureError(format!("{what} does not fall on token boundaries in Data ({data:?})")))
+    };
+
     Ok(SyncSkeleton {
-        ctrl_byte: octet(0, "the control field")?,
-        npdu_byte: octet(1, "the NPDU octet")?,
-        src: tok[2].to_string(),
-        dst: tok[3].to_string(),
-        tpci_high: octet(5, "the TPCI octet")?,
+        ctrl_byte,
+        npdu_byte: octet(layout.npdu, "the NPDU octet")?,
+        src: address(layout.src, "the source address")?,
+        dst: address(layout.dst, "the destination address")?,
+        tpci_high: octet(layout.tpci, "the TPCI octet")?,
     })
 }
 
 /// Parameters for an S-A_Sync_Req we inject.
-pub fn sync_req_params(t: &super::schema::Telegram, data: &str) -> Result<SyncReqParams, SecureError> {
-    let skel = sync_skeleton(data)?;
+pub fn sync_req_params(
+    t: &super::schema::Telegram,
+    data: &str,
+    vars: &BTreeMap<String, TestVariable>,
+) -> Result<SyncReqParams, SecureError> {
+    let skel = sync_skeleton(data, vars)?;
     let challenge = match attr(t.challenge.as_ref()) {
         Some(raw) if !raw.eq_ignore_ascii_case("auto") => six_octets(raw, "Challenge")?,
         // `auto` on a request would mean EITT picks one; the template
@@ -353,13 +383,16 @@ pub fn sync_req_params(t: &super::schema::Telegram, data: &str) -> Result<SyncRe
         Some(raw) => six_octets(raw, "KNXSerNo")?,
         None => [0u8; 6],
     };
-    // `SeqNumLoc` is the number the request advertises as ours.
-    let seq_nr_local = match seq_source(attr(t.seq_num_loc.as_ref()))? {
-        Some(SeqSource::Fixed(v)) => v,
-        // A named counter is resolved by the engine when it builds the
-        // frame; the plain value here is a starting point it overwrites.
-        _ => 0,
-    };
+    // `SeqNumLoc` is the number the request advertises as ours. A named
+    // counter is carried through as such and resolved by the engine
+    // against the live value — flattening it to a number here is how
+    // every `SeqNumLoc="tool"` request used to go out advertising zero,
+    // which the device rejects out of hand.
+    //
+    // Absent, it is the tool counter: `SeqNumLoc` is blank only on the
+    // requests that are already tool-access, and a request with no
+    // number to advertise has nothing to synchronise.
+    let seq_local = seq_source(attr(t.seq_num_loc.as_ref()))?.unwrap_or(SeqSource::Tool);
     Ok(SyncReqParams {
         key_name: key_name(t)?,
         tool_access: tool_access(t)?,
@@ -368,7 +401,7 @@ pub fn sync_req_params(t: &super::schema::Telegram, data: &str) -> Result<SyncRe
         dst_template: skel.dst,
         npdu_byte: skel.npdu_byte,
         ctrl_byte: skel.ctrl_byte,
-        seq_nr_local,
+        seq_local,
         serial_number: serial,
         challenge,
         tpci_high: skel.tpci_high,
@@ -383,9 +416,10 @@ pub fn sync_req_params(t: &super::schema::Telegram, data: &str) -> Result<SyncRe
 pub fn sync_res_expect(
     t: &super::schema::Telegram,
     data: &str,
+    vars: &BTreeMap<String, TestVariable>,
     inherited_challenge: Option<[u8; 6]>,
 ) -> Result<SyncResExpect, SecureError> {
-    let skel = sync_skeleton(data)?;
+    let skel = sync_skeleton(data, vars)?;
     let challenge = match attr(t.challenge.as_ref()) {
         Some(raw) if raw.eq_ignore_ascii_case("auto") => match inherited_challenge {
             Some(c) => c,
@@ -422,8 +456,12 @@ pub fn sync_res_expect(
 /// take it from: the challenge it claims to answer, the sequence
 /// numbers it asserts, and the addresses, which run the other way round
 /// from a response the device sends — the source is us.
-pub fn sync_res_inject(t: &super::schema::Telegram, data: &str) -> Result<crate::SyncResInject, SecureError> {
-    let skel = sync_skeleton(data)?;
+pub fn sync_res_inject(
+    t: &super::schema::Telegram,
+    data: &str,
+    vars: &BTreeMap<String, TestVariable>,
+) -> Result<crate::SyncResInject, SecureError> {
+    let skel = sync_skeleton(data, vars)?;
     let challenge = match attr(t.challenge.as_ref()) {
         Some(raw) if raw.eq_ignore_ascii_case("auto") => {
             return err("Challenge=\"auto\" on an unsolicited sync response: there is no request to take it from");
@@ -550,10 +588,53 @@ mod tests {
         assert_eq!(seq_offset(&t).expect("reads"), -2);
     }
 
+    fn skeleton_vars() -> BTreeMap<String, TestVariable> {
+        BTreeMap::from([
+            ("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE])),
+            ("BDUT_ADDR".to_string(), TestVariable::Bytes(vec![0x10, 0x01])),
+        ])
+    }
+
     #[test]
     fn a_sync_skeleton_comes_out_of_the_data() {
-        let s = sync_skeleton("3C 60 #EDI #BDUT_ADDR 18 03 F1 92 00").expect("reads");
+        let s = sync_skeleton("3C 60 #EDI #BDUT_ADDR 18 03 F1 92 00", &skeleton_vars()).expect("reads");
         assert_eq!(s.ctrl_byte, 0x3C);
+        assert_eq!(s.npdu_byte, 0x60);
+        assert_eq!(s.src, "#EDI");
+        assert_eq!(s.dst, "#BDUT_ADDR");
+        assert_eq!(s.tpci_high, 0x03);
+    }
+
+    #[test]
+    fn a_literal_address_does_not_shift_the_skeleton() {
+        // The shape this used to get wrong. Writing the destination as
+        // two literal octets costs a token that `#BDUT_ADDR` does not,
+        // so a token-index walk took `22` for the whole destination and
+        // the `18` length octet for the TPCI — and `0x18 | 0x03` is the
+        // `1B` that went out on the wire in 3.8.7.1.
+        let s = sync_skeleton("3C 60 #EDI 22 02 18 03 F1 92 00", &skeleton_vars()).expect("reads");
+        assert_eq!(s.ctrl_byte, 0x3C);
+        assert_eq!(s.npdu_byte, 0x60);
+        assert_eq!(s.src, "#EDI");
+        assert_eq!(s.dst, "22 02");
+        assert_eq!(s.tpci_high, 0x03);
+    }
+
+    #[test]
+    fn a_broadcast_sync_skeleton_keeps_its_zero_destination() {
+        let s = sync_skeleton("3C E0 #EDI 00 00 18 03 F1 92 00", &skeleton_vars()).expect("reads");
+        assert_eq!(s.npdu_byte, 0xE0);
+        assert_eq!(s.dst, "00 00");
+        assert_eq!(s.tpci_high, 0x03);
+    }
+
+    #[test]
+    fn a_standard_frame_skeleton_has_one_control_octet() {
+        // No template we run writes a standard-frame sync telegram, but
+        // the layout is chosen by the control byte rather than assumed,
+        // so it costs nothing to be right about it.
+        let s = sync_skeleton("BC #EDI #BDUT_ADDR 60 03 F1 92 00", &skeleton_vars()).expect("reads");
+        assert_eq!(s.ctrl_byte, 0xBC);
         assert_eq!(s.npdu_byte, 0x60);
         assert_eq!(s.src, "#EDI");
         assert_eq!(s.dst, "#BDUT_ADDR");

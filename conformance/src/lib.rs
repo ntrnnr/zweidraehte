@@ -580,8 +580,18 @@ pub struct SyncReqParams {
     pub npdu_byte: u8,
     /// Control byte (typically 0x3C for extended frame).
     pub ctrl_byte: u8,
-    /// SeqNr_local value to include in the request.
-    pub seq_nr_local: u64,
+    /// The sequence number the request advertises as ours.
+    ///
+    /// A [`SeqSource`] rather than a plain number because a template
+    /// usually names a counter — `SeqNumLoc="tool"` means "whatever the
+    /// tool entry holds right now" (EITT manual §12.21.5), and a request
+    /// sent after a reset has to advertise the value the counter
+    /// actually reached, not a number frozen at lowering time. The
+    /// engine resolves it when it builds the frame.
+    ///
+    /// A sync request advertises the *next to use* number and does not
+    /// consume it, so resolving this never advances a counter.
+    pub seq_local: SeqSource,
     /// KNX Serial Number (6 bytes). Zero for P2P, device serial for broadcast.
     pub serial_number: [u8; 6],
     /// Challenge value (6 bytes).

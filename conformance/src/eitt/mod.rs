@@ -29,6 +29,7 @@
 //! - [`lower`] combines the three into suites the engine can run.
 
 pub mod comment;
+mod frame;
 pub mod lower;
 pub mod patch;
 pub mod profile;

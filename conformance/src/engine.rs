@@ -846,7 +846,12 @@ async fn step_inject_sync_req(
         return false;
     };
     let key = sec.key(&sync_params.key_name);
-    let seq_nr_local = crate::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
+    // Resolved here rather than at lowering time: a named counter means
+    // whatever it holds now, and a request sent after a reset has to say
+    // so. Peeking, not consuming — the request advertises the next
+    // number, it does not spend one.
+    let seq_local = sec.peek_sequence(&sync_params.seq_local);
+    let seq_nr_local = crate::tests::security::context::seq_to_bytes(seq_local);
 
     let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
         .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))
@@ -877,7 +882,7 @@ async fn step_inject_sync_req(
     );
 
     let tp1 = internal_to_tp1(&frame);
-    println!("  [{}] 🔄⬇️  InjectSyncReq: {} bytes, seqLocal={}", index, tp1.len(), sync_params.seq_nr_local);
+    println!("  [{}] 🔄⬇️  InjectSyncReq: {} bytes, seqLocal={}", index, tp1.len(), seq_local);
     if delay_before_ms > 0 {
         Timer::after(Duration::from_millis(scale_delay_ms(delay_before_ms, time_divisor))).await;
     }
@@ -905,7 +910,12 @@ async fn step_inject_sync_req_invalid(
         return false;
     };
     let key = sec.key(&sync_params.key_name);
-    let seq_nr_local = crate::tests::security::context::seq_to_bytes(sync_params.seq_nr_local);
+    // Resolved here rather than at lowering time: a named counter means
+    // whatever it holds now, and a request sent after a reset has to say
+    // so. Peeking, not consuming — the request advertises the next
+    // number, it does not spend one.
+    let seq_local = sec.peek_sequence(&sync_params.seq_local);
+    let seq_nr_local = crate::tests::security::context::seq_to_bytes(seq_local);
 
     let src_bytes = Telegram::parse(&format!("00 00 {} 00 00 00 00", sync_params.src_template), variables)
         .map(|t| u16::from_be_bytes([t.data[2], t.data[3]]))

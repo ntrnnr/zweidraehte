@@ -30,10 +30,20 @@ pub fn wrap_secure(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut Secu
         // "unreadable" while reading the attributes.
         SeqSource::Unpinned(name) => unreachable!("unresolved sequence variable {name} reached the engine"),
     };
-    // Applied after the counter has moved, so a replay (`-1`) or a
-    // forward jump (`+1`) sends one number out of step without changing
-    // where the rest of the case is numbered from.
+    // A `SeqNumOfs` sends a number the counter would not have produced,
+    // and the counter has to follow it: EITT stores what was *sent*,
+    // plus one ("after sending the telegram the sequence number will be
+    // incremented and saved in the table", manual §12.21.4). Leaving the
+    // counter where it was means the next telegram replays a number the
+    // device has already stored and is dropped as a retransmission —
+    // which is what 3.1.11 and 3.1.21, the two "increment by 2" cases,
+    // used to do to whatever followed them.
+    //
+    // Only forwards. The deliberate replays offset backwards on purpose
+    // (3.1.22 is "sequence number identical/lower than last known") and
+    // must not rewind the counter for the rest of the case.
     let seq_nr = apply_seq_offset(seq_nr, params.seq_offset);
+    ctx.note_sent(&params.seq_source, &seq_nr);
 
     // Build SCF byte.
     let scf = SecurityControlField {
@@ -226,10 +236,9 @@ fn wrap_secure_wrong_at(plaintext_frame: &[u8], params: &SecureParams, ctx: &mut
         // "unreadable" while reading the attributes.
         SeqSource::Unpinned(name) => unreachable!("unresolved sequence variable {name} reached the engine"),
     };
-    // Applied after the counter has moved, so a replay (`-1`) or a
-    // forward jump (`+1`) sends one number out of step without changing
-    // where the rest of the case is numbered from.
+    // The counter follows the number actually sent — see `wrap_secure`.
     let seq_nr = apply_seq_offset(seq_nr, params.seq_offset);
+    ctx.note_sent(&params.seq_source, &seq_nr);
 
     let scf = SecurityControlField {
         service: SecureServiceType::Data,

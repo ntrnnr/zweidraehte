@@ -402,6 +402,7 @@ still be a human reading the trace.\
 [[template]]
 file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"
 dut = "secure"
+patches = ["conformance/patches/data-security.toml"]
 
 [template.variables]
 # The template's own default is 11 01; our secure DUT is at 1.0.1, the

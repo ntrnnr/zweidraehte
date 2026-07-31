@@ -21,6 +21,7 @@
 use std::collections::BTreeMap;
 
 use crate::eitt::comment::{self, CommentCommand};
+use crate::eitt::frame;
 use crate::eitt::patch::{Anchor, PatchError, PatchSet};
 use crate::eitt::profile::{Policy, Profile};
 use crate::eitt::schema::{self, SequenceItem, Template};
@@ -681,7 +682,7 @@ fn lower_telegram(
     // different enough to live on its own.
     if !t.security_attrs_set().is_empty() {
         flush_block(block, steps);
-        lower_secure(t, data, inbound, time_to_next, case_name, sync, steps)?;
+        lower_secure(t, data, inbound, time_to_next, case_name, vars, sync, steps)?;
         if waits_out_time && time_to_next > 0 {
             steps.push(helpers::wait(time_to_next));
         }
@@ -793,6 +794,7 @@ fn lower_secure(
     inbound: bool,
     time_to_next: u32,
     case_name: &str,
+    vars: &BTreeMap<String, TestVariable>,
     sync: &mut SyncState,
     steps: &mut Vec<TestStep>,
 ) -> Result<(), LowerError> {
@@ -847,7 +849,7 @@ fn lower_secure(
             steps.push(helpers::expect_secure(data, params, time_to_next));
         }
         (secure::SecureLayer::SyncReq, true) => {
-            let params = secure::sync_req_params(t, data).map_err(fail)?;
+            let params = secure::sync_req_params(t, data, vars).map_err(fail)?;
             sync.last_challenge = Some(params.challenge);
             match secure::corruption(t).map_err(fail)? {
                 Some(invalid) => steps.push(helpers::inject_sync_req_invalid(params, invalid)),
@@ -857,20 +859,20 @@ fn lower_secure(
         (secure::SecureLayer::SyncReq, false) => {
             // The device asking us to sync. Hold it until its answer.
             sync.pending_req = Some(PendingSyncReq {
-                key_name: secure::sync_req_params(t, data).map_err(fail)?.key_name,
-                tool_access: secure::sync_req_params(t, data).map_err(fail)?.tool_access,
+                key_name: secure::sync_req_params(t, data, vars).map_err(fail)?.key_name,
+                tool_access: secure::sync_req_params(t, data, vars).map_err(fail)?.tool_access,
                 timeout_ms: time_to_next,
             });
         }
         (secure::SecureLayer::SyncRes, false) => {
-            let expect = secure::sync_res_expect(t, data, sync.last_challenge).map_err(fail)?;
+            let expect = secure::sync_res_expect(t, data, vars, sync.last_challenge).map_err(fail)?;
             steps.push(helpers::expect_sync_res(expect, time_to_next));
         }
         (secure::SecureLayer::SyncRes, true) => match sync.pending_req.take() {
             // Our answer to a request the device started: one compound
             // step that captures the request and replies to it.
             Some(pending) => {
-                let expect = secure::sync_res_expect(t, data, sync.last_challenge).map_err(fail)?;
+                let expect = secure::sync_res_expect(t, data, vars, sync.last_challenge).map_err(fail)?;
                 steps.push(helpers::expect_sync_req_then_respond(
                     &pending.key_name,
                     pending.tool_access,
@@ -885,7 +887,7 @@ fn lower_secure(
             // and the device is meant to ignore a response carrying a
             // challenge it never issued.
             None => {
-                let params = secure::sync_res_inject(t, data).map_err(fail)?;
+                let params = secure::sync_res_inject(t, data, vars).map_err(fail)?;
                 steps.push(TestStep::InjectSyncRes { params, delay_before_ms: 0 });
             }
         },
@@ -965,32 +967,15 @@ struct Tpci {
 /// whether that is fine (the running numbering just skips it) or an
 /// error (a `TLSeqNum` naming an octet we cannot write).
 fn locate_tpci(data: &str, vars: &BTreeMap<String, TestVariable>) -> Result<Option<Tpci>, String> {
-    let tokens: Vec<String> = data.split_whitespace().map(str::to_string).collect();
-
-    // The control field decides the frame layout, and it is the
-    // authority rather than the `FT` attribute — the management template
-    // has 28 telegrams whose `FT` says `Normal` over an extended control
-    // byte, and it is the octets the device parses.
-    //
-    //   standard:  CTRL  src(2) dst(2) len/AT  TPCI …   → octet 6
-    //   extended:  CTRL1 CTRL2  src(2) dst(2)  len TPCI → octet 7
-    let ctrl = tokens.first().and_then(|t| u8::from_str_radix(t, 16).ok());
-    let tpci_offset = match ctrl {
-        Some(c) if c & 0x80 != 0 => 6,
-        Some(_) => 7,
-        None => return Ok(None),
+    let borrowed: Vec<&str> = data.split_whitespace().collect();
+    let Some(ctrl) = borrowed.first().and_then(|t| u8::from_str_radix(t, 16).ok()) else {
+        return Ok(None);
     };
-
-    let mut offset = 0usize;
-    let Some(index) = tokens.iter().position(|tok| {
-        let width = token_width(tok, vars);
-        let covers = (offset..offset + width).contains(&tpci_offset);
-        offset += width;
-        covers
-    }) else {
+    let Some((index, _)) = frame::token_at(&borrowed, vars, frame::layout(ctrl).tpci) else {
         return Ok(None);
     };
 
+    let tokens: Vec<String> = borrowed.iter().map(|t| t.to_string()).collect();
     match u8::from_str_radix(&tokens[index], 16) {
         Ok(value) => Ok(Some(Tpci { tokens, index, value })),
         Err(_) => Ok(None),
@@ -1041,21 +1026,6 @@ fn apply_tl_sequence(
         return Err(format!("TPCI {:#04X} is unnumbered, so it has no sequence number to fix", tpci.value));
     }
     Ok(write_seq(tpci, seq))
-}
-
-/// How many octets a `Data` token contributes to the frame.
-///
-/// Mirrors the expression grammar in [`crate::telegram`]: a bare `#VAR`
-/// and an offset `#VAR±N` are as wide as the variable, an indexed
-/// `#VAR.N` picks a single octet out of it, and everything else — a hex
-/// literal or a `??` wildcard — is one.
-fn token_width(token: &str, vars: &BTreeMap<String, TestVariable>) -> usize {
-    let Some(expr) = token.strip_prefix('#') else { return 1 };
-    let name = expr.split(['.', '+', '-']).next().unwrap_or(expr);
-    if expr[name.len()..].starts_with('.') {
-        return 1;
-    }
-    vars.get(name).map_or(1, |v| v.as_bytes().len())
 }
 
 // ============================================================================

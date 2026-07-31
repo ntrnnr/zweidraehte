@@ -1,0 +1,54 @@
+# Harness patches for the EITT TSSJ data-security template.
+#
+# Anchors are the GUIDs the template gives every telegram. If one stops
+# resolving the run fails rather than quietly dropping the patch — that
+# is the signal the template has been revised and the compensation here
+# needs re-checking.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
+
+# ============================================================================
+# 6.2.8 has a stray token in its first telegram
+# ============================================================================
+#
+# The telegram reads
+#
+#     BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 82 19 ??? 06 55
+#
+# and `???` is not a construct EITT has. Wildcards are for destination
+# addresses in OUT telegrams and for RF serial numbers (manual §12.10,
+# §12.19.2); this is a telegram EITT sends, and it is the only `???` in
+# all 3435 telegrams of the template.
+#
+# It is a stray token splitting the group address, not a wildcard octet.
+# Its six sibling telegrams in the same case all read
+#
+#     ... 42 00 01 <flags> #GO_2 55
+#
+# and `#GO_2` is 3/1/6, which is `19 06` — the two octets this line has
+# `???` sitting between. The case's own prose says "group address 3/1/6
+# and value 55h".
+#
+# The length octet settles it. `6C` gives an APDU length of Ch, so
+# thirteen octets follow it; the siblings have exactly thirteen, and this
+# telegram has thirteen only once the stray token is gone. Reading `???`
+# as an octet — wildcard or otherwise — makes the frame disagree with its
+# own length field.
+#
+# So this restores the group address rather than substituting anything.
+# The rest of the telegram is reproduced unchanged, including the 82h
+# flags byte that is what 6.2.8 is testing.
+
+[[patch]]
+replace = "FE4B9F1C-F08A-49A6-A085-C42125CED707"
+why = """
+6.2.8: `???` is a stray token splitting the `19 06` group address, not a \
+wildcard — the frame's own length octet (6Ch ⇒ 13 octets) only adds up \
+once it is removed, and the six sibling telegrams write the same address \
+as `#GO_2`.\
+"""
+insert = [
+  { inject = { data = "BC #EDI #BDUT_ADDR 6C 01 D4 00 09 00 10 42 00 01 82 19 06 55" } },
+]

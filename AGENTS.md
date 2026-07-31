@@ -122,10 +122,13 @@ warning: that is the signal the template has been revised and whatever
 the patch was compensating for needs re-checking.
 
 The group-object, network-layer, transport-layer, load/run-state-machine,
-management and TSSJ data-security templates run today. The data-security
-one is the only overlap with a hand-written suite rather than new device
-coverage, and the only one still red — its failures are device gaps, not
-lowering problems; see `SESSION.md`.
+management and TSSJ data-security templates run today, 439 of 533 cases.
+The data-security one is the only overlap with a hand-written suite
+rather than new device coverage, and the only one still red. Its
+remaining failures are device gaps rather than lowering problems, but
+only after four harness defects were cleared out first — see
+`SESSION.md` for what is left, and treat "these are all device gaps" as
+a claim to re-derive rather than inherit.
 
 ### EITT template semantics worth knowing
 
@@ -211,6 +214,17 @@ suite that passes while testing the wrong thing:
   at octet 7 rather than 6 — and the management template has 28
   telegrams whose `FT` says `Normal` over an extended control byte. The
   octets are what the device parses.
+- **A token is not an octet.** `#EDI` is one token and two octets,
+  `#SER_NUM` is one token and six, so any field you want out of a `Data`
+  string has to be found by walking widths, never by index —
+  `conformance/src/eitt/frame.rs` is the one place that does it. Index
+  arithmetic on tokens is not merely fragile, it is *plausibly* right
+  for a long time: `3C 60 #EDI #BDUT_ADDR 18 03 F1` puts the TPCI in the
+  sixth token, so a walk that assumed the standard layout and counted
+  tokens agreed with a walk that did it properly on 96 of the
+  data-security template's 142 sync telegrams. The other 46 write an
+  address as two literal octets, which costs a token a variable does
+  not, and those took the length octet for the TPCI.
 - **Device-wide switches stay switched, and so does memory.** Verify
   mode (PID_DEVICE_CONTROL bit 2) is written on 39 times across the
   management template and never written off, so its "no Verify" cases

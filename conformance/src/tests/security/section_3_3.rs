@@ -9,7 +9,7 @@
 
 use super::variables::create_security_variables;
 use crate::tests::helpers::*;
-use crate::{InvalidSecurityParam, SyncReqParams, SyncResExpect, TestCase, TestSuite};
+use crate::{InvalidSecurityParam, SeqSource, SyncReqParams, SyncResExpect, TestCase, TestSuite};
 
 /// Default response timeout in milliseconds.
 const TIMEOUT: u32 = 3000;
@@ -124,7 +124,7 @@ fn test_3_3_1() -> TestCase {
             dst_template: "#BDUT_ADDR".into(),
             npdu_byte: 0x60,
             ctrl_byte: 0x3C,
-            seq_nr_local: 0,
+            seq_local: SeqSource::Fixed(0),
             serial_number: [0; 6],
             challenge: CHALLENGE_1,
             tpci_high: 0x43,
@@ -163,7 +163,7 @@ fn test_3_3_3() -> TestCase {
             dst_template: "#BDUT_ADDR".into(),
             npdu_byte: 0x60,
             ctrl_byte: 0x3C,
-            seq_nr_local: 0,
+            seq_local: SeqSource::Fixed(0),
             serial_number: [0; 6],
             challenge: CHALLENGE_1,
             tpci_high: 0x00,
@@ -234,7 +234,7 @@ fn test_3_3_4() -> TestCase {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
@@ -281,7 +281,7 @@ fn test_3_3_5() -> TestCase {
             dst_template: "#BDUT_ADDR".into(),
             npdu_byte: 0x60,
             ctrl_byte: 0x3C,
-            seq_nr_local: 0,
+            seq_local: SeqSource::Fixed(0),
             serial_number: [0; 6],
             challenge: CHALLENGE_1,
             tpci_high: 0x00,
@@ -439,7 +439,7 @@ fn test_3_3_22() -> TestCase {
             dst_template: "#BDUT_ADDR".into(),
             npdu_byte: 0x60,
             ctrl_byte: 0x30, // Extended frame with repeat flag.
-            seq_nr_local: 0,
+            seq_local: SeqSource::Fixed(0),
             serial_number: [0; 6],
             challenge: CHALLENGE_1,
             tpci_high: 0x00,
@@ -477,7 +477,7 @@ fn test_3_3_8() -> TestCase {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
@@ -502,7 +502,7 @@ fn test_3_3_9() -> TestCase {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
@@ -554,7 +554,7 @@ fn test_3_3_18() -> TestCase {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
@@ -579,7 +579,7 @@ fn test_3_3_19() -> TestCase {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
@@ -604,7 +604,7 @@ fn test_3_3_20() -> TestCase {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
@@ -629,7 +629,7 @@ fn test_3_3_21() -> TestCase {
                 dst_template: "#BDUT_ADDR".into(),
                 npdu_byte: 0x60,
                 ctrl_byte: 0x3C,
-                seq_nr_local: 0,
+                seq_local: SeqSource::Fixed(0),
                 serial_number: [0; 6],
                 challenge: CHALLENGE_1,
                 tpci_high: 0x00,
