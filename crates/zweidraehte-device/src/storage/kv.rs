@@ -116,7 +116,13 @@ pub const DEFAULT_SENDING: [u8; 6] = [0, 0, 0, 0, 0, 1];
 /// a lower re-init as a replay.
 pub const SEQ_EXHAUSTION_THRESHOLD: u64 = 0xFF_0000_0000_00;
 
-/// Re-init target after a near-exhaustion factory reset. Must be non-zero
-/// (seq 0 is rejected per spec) but far below [`SEQ_EXHAUSTION_THRESHOLD`] so
-/// the counter has runway before the next reset is required.
-pub const SEQ_REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+/// Re-init target after a near-exhaustion factory reset.
+///
+/// 03/03/07 §5.3.1 requires the re-initialised value to sit "at least 20
+/// and at maximum FFFFh higher than the preceding initial value": ours is
+/// [`DEFAULT_SENDING`]'s 1, so 21. A fixed target technically shortchanges
+/// a *second* re-init in the same device life, but reaching one would mean
+/// counting from 21 back up to the 2^48-order threshold — the spec's own
+/// NOTE 33 blesses implementation-specific schemes, and storing a
+/// re-init generation to add 20 each time buys nothing real.
+pub const SEQ_REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x15];

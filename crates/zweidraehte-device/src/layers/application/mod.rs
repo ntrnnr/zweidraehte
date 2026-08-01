@@ -129,11 +129,21 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
     /// - [`AccessSource::Connection(slot)`] → look up from shared access store
     /// - [`AccessSource::Explicit(ctx)`] → use as-is (e.g. KNX/IP Device Mgmt)
     fn resolve_access(&self, msg: &KnxMessageBuffer<Buffer<'static>>) -> AccessContext {
-        match msg.access_source() {
+        let mut ctx = match msg.access_source() {
             AccessSource::Default => AccessContext::new(self.state.default_access_level()),
             AccessSource::Connection(slot) => self.state.connection_access(slot),
             AccessSource::Explicit(ctx) => ctx,
+        };
+        // The failure log records the offender's IA, and `check_access`
+        // treats a zero source as "nobody to blame" and skips the log
+        // entry. A *plain* request refused by a secured property is a
+        // failure against Access and Roles all the same (03/05/01 §6.3.9;
+        // TSS J 3.8.12.1 counts its two refused plain reads), so give the
+        // default context the frame's real source.
+        if ctx.source_addr == 0 {
+            ctx.source_addr = u16::from_be_bytes(msg.get_source_addr().0);
         }
+        ctx
     }
 
     /// Access the buffer manager for allocating response buffers.

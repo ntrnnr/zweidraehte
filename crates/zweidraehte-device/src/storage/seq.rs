@@ -96,16 +96,20 @@ pub type SeqStorageFor<D> = <<D as crate::definition::StackDefinition>::Storage 
 
 /// The sequence store's slice of a restart erase.
 ///
-/// On a factory reset the sending SeqNr is re-initialised **only** when it
-/// has reached the 48-bit near-exhaustion threshold (03/05/01 §6.1.4 +
-/// AN194); below the threshold the counter is preserved — receivers have
-/// already seen those values and would reject a lower re-init as a replay.
-/// Non-factory codes never touch the counter.
+/// The master-reset table in 03/03/07 §5.3.1 ("Sequence Number Sending
+/// and Master Reset") gives the sending SeqNr exactly one way to move: a
+/// "Reset to default state" (02h, and its no-bus local twin) while the
+/// counter is at or above the 48-bit near-exhaustion threshold
+/// re-initialises it; every other code — including "Reset to default
+/// without IA" (07h), which the table lists as "not influenced" in *both*
+/// columns — preserves it, as does 02h below the threshold. Receivers
+/// have already seen the lower values and would reject a lower re-init
+/// as a replay; TSS J 3.8.15.7 walks every code through both columns.
 ///
 /// Called from the seq-carrying stores structs' `StorageHooks` impls when the
 /// stores block declares `seq:`.
 pub fn erase_seq_on_factory_reset<S: SequenceNumberStorage>(seq: &mut S, code: EraseCode) {
-    if !code.is_factory_reset() {
+    if code != EraseCode::FactoryReset {
         return;
     }
     let Ok(current) = seq.load_sending_seq() else {

@@ -848,7 +848,17 @@ impl<D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
                         // the response (spec 03/03/07 §5.1.3.2 Figure 101).
                         if let Some(conn) = self.connections.find_any_including_closed(remote_addr) {
                             msg.set_access_source(AccessSource::Connection(conn.slot_index));
-                            msg.set_outgoing_tl_seq(conn.seq_no_send);
+                            // The seq the *response* will carry, not the one the
+                            // counter shows now: while an earlier response is
+                            // still awaiting its T_ACK, this indication's answer
+                            // parks in `queued_outgoing` and is released only
+                            // after that ACK has advanced `seq_no_send` — so the
+                            // MAC must be computed over the advanced value, or
+                            // the release-time TPCI rewrite breaks it (TSS J 3.9,
+                            // "response must be parked and sent later with
+                            // security").
+                            let pending = conn.pending_msg.is_some() as u8;
+                            msg.set_outgoing_tl_seq((conn.seq_no_send + pending) & 0x0F);
                         }
                         self.lctx.push_outbox(msg);
                     }

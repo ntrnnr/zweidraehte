@@ -236,15 +236,16 @@ where
     // ========================================================================
 
     /// Record a security failure and, if `PID_SECURITY_REPORT_CONTROL`
-    /// (58) is Enabled and this is the first failure since the tool
-    /// last cleared `PID_SECURITY_REPORT` (57), broadcast a spontaneous
+    /// (58) is Enabled, broadcast a spontaneous
     /// `A_NetworkParameter_InfoReport` (APCI 0x3DB) per the management
     /// procedure `DMP_InterfaceObjectInfoReport_RCl`.
     ///
-    /// Subsequent failures while bit 0 is already set do **not** re-emit —
-    /// the spec ties emission to the 0→1 transition of bit 0 of PID 57.
-    /// The tool clears PID 57 via authenticated write; the next failure
-    /// then triggers a fresh report.
+    /// Every failure while reporting is enabled emits — 03/05/01
+    /// §6.3.11.4: "This shall be done regardless of whether the field
+    /// Security Failure is set prior to this security failure or not.
+    /// This is, the MaS shall report any security failure, even if a
+    /// security failure is reported before or not." Only the tool resets
+    /// the Security Failure field itself, in secure communication.
     fn log_security_failure_and_maybe_report(
         &self,
         failure_type: SecurityFailureType,
@@ -252,8 +253,8 @@ where
         frame_fragment: &[u8],
     ) {
         let security_state = self.inner.state().extension_state();
-        let transitioned = security_state.log_security_failure(failure_type, source_addr, frame_fragment);
-        if transitioned && security_state.security_report_enabled() {
+        security_state.log_security_failure(failure_type, source_addr, frame_fragment);
+        if security_state.security_report_enabled() {
             let report = security_state.security_report();
             self.emit_security_report(report);
         }

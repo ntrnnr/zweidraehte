@@ -517,22 +517,27 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             _ => return None,
         }
 
-        // PID_SECURITY_FAILURES_LOG handler: Command format: [id, info, ...].
-        // Only id=0, info=0 is defined (clear the log).
-        if req.service_data.is_empty() {
-            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[]));
-        }
-        let id = req.service_data[0];
+        // PID_SECURITY_FAILURES_LOG command, 03/05/01 §6.3.9.3.2: the data
+        // is `[Reserved(00h), WriteServiceID, ServiceInfo]` — the same
+        // reserved-first layout as PID_SECURITY_MODE above, and the layout
+        // TSS J 3.8.12.8 probes: its "incorrect ServiceID" telegram is
+        // `00 05 00`, with the 05h in the *second* octet. Only
+        // WriteServiceID 0 with ServiceInfo 0 is defined (clear the log).
         if req.service_data.len() < 2 {
-            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[id]));
+            // Truncated before the WriteServiceID — nothing to echo.
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::Error, &[0]));
         }
-        let info = req.service_data[1];
+        let id = req.service_data[1];
+        let info = req.service_data.get(2).copied();
 
         match id {
-            0 if info == 0 => {
+            0 if info == Some(0) => {
                 self.state.failures_log().borrow_mut().clear();
                 Some(FunctionPropertyResult::success_with_data(&[id]))
             }
+            // WriteServiceID 0 with a ServiceInfo that is missing or not
+            // an implemented selector: void request data (Table 104
+            // defines only 00h).
             0 => Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[id])),
             _ => Some(FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[id])),
         }
@@ -552,27 +557,23 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
             return None;
         }
 
-        // Short frame handling: need at least id and info bytes.
-        if req.service_data.is_empty() {
-            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[]));
-        }
-        // FunctionPropertyExtStateRead service data layout:
-        //   service_data[0] = service_id (0 for standard state reads)
-        //   service_data[1] = service_info (0=counters, 1=entries)
-        //   service_data[2..] = data (entry index for service_info=1)
-        let service_id = req.service_data[0];
+        // State-read data layout per 03/05/01 §6.3.9.3.3:
+        // `[Reserved(00h), ReadServiceID, ...]` — reserved-first, like the
+        // command above. ReadServiceID 00h reads the counters (its
+        // ServiceInfo octet must be 00h), 01h reads the Nth latest
+        // failure entry (the next octet is the entry index).
         if req.service_data.len() < 2 {
-            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
+            // Truncated before the ReadServiceID. TSS J 3.8.12.7's
+            // "incorrect Length" case pins F8h with a zero echo (its FFh
+            // alternative ships deactivated), so void data it is.
+            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[0]));
         }
         let service_info = req.service_data[1];
 
-        if service_id != 0 {
-            return Some(FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_id]));
-        }
-
         match service_info {
-            // service_info=0: 4 × 2-byte BE counters (8 bytes).
+            // ReadServiceID 00h: 4 × 2-byte BE counters (8 bytes).
             0 => {
+                let service_id = 0u8;
                 let data_byte = req.service_data.get(2).copied().unwrap_or(0);
                 if data_byte != 0 {
                     return Some(FunctionPropertyResult::with_code(PropertyReturnCode::DataVoid, &[service_id]));
