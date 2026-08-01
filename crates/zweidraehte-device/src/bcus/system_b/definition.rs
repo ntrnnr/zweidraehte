@@ -398,7 +398,7 @@ pub type ExtensionAugmentFor<'a, D> =
 /// system_b_standard_stack! {
 ///     stack: DemoStack,
 ///     device: &DEVICE_DESCRIPTOR,
-///     tl_style: TlStyle::Style1,
+///     tl_style: TlStyle::Style3,
 ///     params: DemoParams,
 ///     com_objects: comm_objs::DemoComObjects,
 ///     link_layer_builder: KnxNetIpBuilder<DemoStack>,

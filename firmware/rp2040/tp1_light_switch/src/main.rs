@@ -102,7 +102,7 @@ pub struct PicoTp1Augments<'a> {
 zweidraehte_device::system_b_standard_stack! {
     stack: PicoTp1LightSwitch,
     device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style1,
+    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,

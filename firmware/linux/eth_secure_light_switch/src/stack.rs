@@ -125,7 +125,7 @@ impl KnxNetIpDefinition for LinuxEthSecureLightSwitch {
 zweidraehte_device::system_b_standard_stack! {
     stack: LinuxEthSecureLightSwitch,
     device: &DEVICE_DESCRIPTOR_IP_SECURE,
-    tl_style: TlStyle::Style1,
+    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: KnxNetIpBuilder<LinuxEthSecureLightSwitch>,

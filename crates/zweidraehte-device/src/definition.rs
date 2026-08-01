@@ -187,7 +187,10 @@ pub trait StackDefinition: Copy + 'static {
     /// Transport layer state machine style per KNX spec 03/03/04 section 5.4.
     ///
     /// Determines connection-oriented error recovery behavior. Must be chosen
-    /// explicitly — there is no default.
+    /// explicitly — there is no default, because the profile mandates it:
+    /// 06 Profiles v02.02.01 §4.1.2 requires Style 3 for System B (and
+    /// Style 2 / Style 1 for System 1 / System 2 respectively), so System B
+    /// devices use [`TlStyle::Style3`].
     const TL_STYLE: TlStyle;
 
     /// Mutex type for channels shared between the stack runner and user code.

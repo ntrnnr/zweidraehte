@@ -56,6 +56,17 @@ pub const MAX_REPETITIONS: u8 = 3;
 /// - `Style3`: Like Style 1 but adds a CONNECTING state for client connections.
 /// - `Style1Rationalised`: No NACK, no retransmit. Disconnects on any error.
 ///   Only one timer (connection timeout). Suitable for resource-constrained devices.
+///
+/// The choice is not free: 06 Profiles v02.02.01 §4.1.2 "TL - connection
+/// oriented" mandates one style per profile — Style 2 for BCU 1 / System 1,
+/// Style 1 for BCU 2 / System 2, and Style 3 for BIM M112 / System B /
+/// masks 5705h / 57B0h. AN160 mandates Style 3 for the RF S-Mode profiles
+/// as well, so every System B device here uses `Style3`.
+///
+/// A server-only device (`TL_MAX_OUTGOING = 0`) running `Style3` never
+/// enters CONNECTING — that state is only reachable through a local
+/// T_Connect.req — so it runs exactly the CLOSED / OPEN_IDLE / OPEN_WAIT
+/// subset of the Style 3 table, at no extra RAM cost.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TlStyle {
     Style1,
@@ -70,7 +81,7 @@ impl TlStyle {
     /// Only `Style3` carries the CONNECTING state needed to open connections
     /// to remote peers. A device with `TL_MAX_OUTGOING > 0` that does not
     /// pick `Style3` cannot actually initiate connections and the
-    /// [`Runner`](crate::Runner) rejects that combination at compile time.
+    /// [`Runner`](crate::Runner) rejects that combination at startup.
     pub const fn supports_outgoing_connections(self) -> bool {
         matches!(self, Self::Style3)
     }

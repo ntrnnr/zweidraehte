@@ -146,7 +146,7 @@ impl SystemBStackDefinition for RfTestStack {}
 
 impl StackDefinition for RfTestStack {
     const DEVICE: &'static DeviceDescriptor = &RF_DEVICE;
-    const TL_STYLE: TlStyle = TlStyle::Style1;
+    const TL_STYLE: TlStyle = TlStyle::Style3;
 
     type P = NoParams;
     type CO = NoCo;

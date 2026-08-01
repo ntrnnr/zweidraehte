@@ -843,7 +843,7 @@ device-specific bill of materials:
 zweidraehte_device::system_b_standard_stack! {
     stack: MyDevice,
     device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style1,
+    tl_style: TlStyle::Style3,
     params: MyParams,
     com_objects: MyComObjects,
     link_layer_builder: TpUartLinkLayerBuilder<MyUartTx, MyUartRx>,

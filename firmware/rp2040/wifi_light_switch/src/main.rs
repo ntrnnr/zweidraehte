@@ -104,7 +104,7 @@ impl KnxNetIpDefinition for PicoWLightSwitch {
 zweidraehte_device::system_b_standard_stack! {
     stack: PicoWLightSwitch,
     device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style1,
+    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: KnxNetIpBuilder<PicoWLightSwitch>,
