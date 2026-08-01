@@ -146,6 +146,15 @@ pub enum InsertStep {
     SetProgrammingMode(bool),
     /// Wipe shared memory and respawn.
     FullReset(u32),
+    /// Drive the DUT's own local master reset over the IPC side channel.
+    ///
+    /// The bench equivalent of "Please perform manual Factory Reset" —
+    /// EITT stops for the operator to press the device's button; our DUT
+    /// has none, and unlike [`FullReset`](Self::FullReset) this runs the
+    /// device's *own* erase handling (tool key back to FDSK, tables
+    /// cleared, IA wiped for erase code 02h) rather than restoring the
+    /// bench snapshot.
+    MasterReset { erase: u8, timeout_ms: u32 },
     /// A comment, for annotating why the surrounding patch exists.
     Comment(String),
     /// Send a raw telegram template.
@@ -202,6 +211,7 @@ impl InsertStep {
             Self::WaitForRestart(ms) => helpers::wait_for_restart(*ms),
             Self::SetProgrammingMode(on) => helpers::set_programming_mode(*on),
             Self::FullReset(ms) => helpers::full_reset(*ms),
+            Self::MasterReset { erase, timeout_ms } => helpers::master_reset(*erase, *timeout_ms),
             Self::Comment(text) => helpers::comment(text),
             Self::Inject { data, delay_ms } => helpers::inject_delay(data, *delay_ms),
             Self::Expect { data, timeout_ms } => helpers::expect(data, *timeout_ms),

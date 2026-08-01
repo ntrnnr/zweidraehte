@@ -453,6 +453,15 @@ fn test_3_8_15_7() -> TestCase {
     // value below the threshold; spec says the DUT must NOT re-init to
     // zero. The reference XML accepts any `00 00 00 00 ?? ??`.
     const CO_READ_OK_REINIT: &str = "30 60 #BDUT_ADDR #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
+
+    // 07h at the threshold: preserved, not re-initialised. The
+    // master-reset table (03/03/07 §5.3.1) puts "Reset to default
+    // without IA" in the "not influenced" row of *both* columns; only
+    // 02h and the local reset re-init at or above the threshold. The
+    // write response consumed FF…00 and the restart response FF…01, so
+    // the read reports FF 00 00 00 00 02 — the same value the vendor
+    // XML pins for its 07h phase.
+    const CO_READ_OK_PRESERVED_07: &str = "30 60 #BDUT_ADDR #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 FF 00 00 00 00 02";
     const CO_READ_OK_REINIT_RESET: &str =
         "30 60 #BDUT_ADDR_RESET #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
 
@@ -689,8 +698,10 @@ fn test_3_8_15_7() -> TestCase {
         expect_secure_ac(CO_WRITE_OK, "FDSK", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        // ---- Master Reset — FactoryResetKeepIA → re-init ----
-        comment("=== Master Reset - FactoryResetKeepIA (0x07): re-init ==="),
+        // ---- Master Reset — FactoryResetKeepIA → no change ----
+        // 07h sits in the "not influenced" row of both threshold columns
+        // (03/03/07 §5.3.1); only 02h and the local reset re-init.
+        comment("=== Master Reset - FactoryResetKeepIA (0x07): no change at threshold ==="),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject_secure_ac(CO_RESTART_FRWITHIA, "FDSK"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
@@ -701,14 +712,18 @@ fn test_3_8_15_7() -> TestCase {
         drain(500),
         inject_sync_req_tool("#EDI", "#BDUT_ADDR", "FDSK", 1, CHALLENGE_1),
         expect_sync_res_tool("FDSK", CHALLENGE_1, None, None, TIMEOUT),
-        comment("Connected read SeqNb → 00 00 00 00 ?? ?? (re-initialised, not zero)"),
+        comment("Connected read SeqNb → FF 00 00 00 00 02 (preserved)"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject_secure_ac(CO_READ, "FDSK"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        expect_secure_ac(CO_READ_OK_REINIT, "FDSK", TIMEOUT),
+        expect_secure_ac(CO_READ_OK_PRESERVED_07, "FDSK", TIMEOUT),
         inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
-        // ---- Re-set SeqNb = FF 00 00 00 00 00 for the next phase ----
+        // The counter is already at the threshold (FF…03 after the reads
+        // above) for the next phase, so no re-write is needed — but the
+        // 02h phase pins nothing about the exact pre-reset value beyond
+        // "at or above threshold", and re-writing keeps the accounting
+        // identical to the vendor XML.
         comment("Re-set SeqNb at threshold"),
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject_secure_ac(CO_WRITE_AT_THRESHOLD, "FDSK"),

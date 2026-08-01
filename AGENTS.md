@@ -122,13 +122,12 @@ warning: that is the signal the template has been revised and whatever
 the patch was compensating for needs re-checking.
 
 The group-object, network-layer, transport-layer, load/run-state-machine,
-management and TSSJ data-security templates run today, 513 of 524 cases.
-The data-security one is the only overlap with a hand-written suite
-rather than new device coverage, and the only one still red. Its
-remaining failures are device gaps rather than lowering problems, but
-only after four harness defects were cleared out first — see
-`SESSION.md` for what is left, and treat "these are all device gaps" as
-a claim to re-derive rather than inherit.
+management and TSSJ data-security templates run today, and all 524
+lowered cases pass. The data-security one is the only overlap with a
+hand-written suite rather than new device coverage; clearing it took
+harness defects, device fixes and fixture patches in roughly equal
+measure, so when a newer template revision fails, re-derive which of
+the three it is rather than assuming.
 
 ### EITT template semantics worth knowing
 
