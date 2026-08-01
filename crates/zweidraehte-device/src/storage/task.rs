@@ -25,7 +25,7 @@
 //! Devices spawn it through the `storage_task!` macro (which emits the
 //! monomorphic embassy wrapper — embassy tasks can't be generic).
 
-use embassy_futures::select::{Either3, select3};
+use embassy_futures::select::{Either3, select, select3};
 use embassy_time::{Duration, Ticker, Timer};
 
 use zweidraehte_platform::SystemControl;
@@ -48,6 +48,15 @@ pub const DIRTY_SAVE_POLL: Duration = Duration::from_secs(1);
 /// A_Restart_Response to leave the link layer (and, on TP1, for the remote
 /// TL's retry window to see it) before the device disappears from the bus.
 pub const RESTART_SETTLE_DELAY: Duration = Duration::from_millis(100);
+
+/// Cap on waiting for the router outbox to drain before applying an erase
+/// code.
+///
+/// The wait itself is mandatory (see the restart arm below); the cap only
+/// bounds it so a wedged outbox cannot make the device unrestartable. Far
+/// above the normal case — the response is one frame, dispatched on the
+/// router's next poll.
+pub const OUTBOX_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 // ============================================================================
 // SaveGuard — optional protection wrapped around each blocking flash save
@@ -108,12 +117,15 @@ impl SaveGuardToken for () {
 /// Drive all of a device's persistence: restart requests, on-demand persist
 /// requests, and the periodic dirty-save poll.
 ///
-/// - A [`RestartRequest`](crate::restart::RestartRequest) applies the erase
-///   code to the runtime state ([`HasPersistence::apply_erase_code`]) and the
-///   durable regions ([`StorageHooks::erase`] — mc_timer clear +
-///   sending-SeqNr exhaustion re-init on factory codes), persists if dirty,
-///   waits [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`]. The
-///   stack already sent the A_Restart_Response before queueing the request.
+/// - A [`RestartRequest`](crate::restart::RestartRequest) first lets the
+///   router outbox drain (the application layer queues the A_Restart_Response
+///   *before* the request, and the network layer stamps its source address
+///   only on the way out — erasing earlier sends the response from the
+///   default individual address), then applies the erase code to the runtime
+///   state ([`HasPersistence::apply_erase_code`]) and the durable regions
+///   ([`StorageHooks::erase`] — mc_timer clear + sending-SeqNr exhaustion
+///   re-init on factory codes), persists if dirty, waits
+///   [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`].
 /// - [`PersistRequest::EtsDownloadComplete`] (advisory) saves the config if
 ///   dirty.
 /// - The dirty poll saves the config at most once per [`DIRTY_SAVE_POLL`]
@@ -136,6 +148,14 @@ where
         match select3(knx.receive_restart_request(), knx.receive_persist_request(), tick.next()).await {
             Either3::First(request) => {
                 let code = request.erase_code;
+
+                // The A_Restart_Response is still in the router outbox here,
+                // and the network layer stamps its source address on the way
+                // out — erase first and a FactoryReset answer leaves as
+                // 15.15.255, which the remote TL discards as a stranger's
+                // frame. Wait for the outbox, capped so a wedged router
+                // cannot make the device unrestartable.
+                let _ = select(knx.await_outbox_drained(), Timer::after(OUTBOX_DRAIN_TIMEOUT)).await;
 
                 // State-side erase, then durable-storage-side erase.
                 knx.state().apply_erase_code(code);
