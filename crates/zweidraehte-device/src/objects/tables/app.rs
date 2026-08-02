@@ -55,7 +55,7 @@ use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
-use super::{RunnableApplication, Table, TableMemory};
+use super::{LoadControlPolicy, RelativeAlloc, RunnableApplication, Table, TableMemory};
 
 /// Inner implementation for application data storage.
 ///
@@ -183,9 +183,9 @@ impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> TableMemory for Appl
 /// app.write_rsm(&[RunEvent::Restart.into()]);
 /// assert!(app.is_running());
 /// ```
-pub type Application<D> = RunnableApplication<Table<ApplicationImpl<D>>>;
+pub type Application<D, P = RelativeAlloc> = RunnableApplication<Table<ApplicationImpl<D>, P>>;
 
-impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> Application<D> {
+impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable, P: LoadControlPolicy> Application<D, P> {
     /// Get a type-safe reference to the application parameters.
     ///
     /// This provides direct access to your application data struct without going through byte slices.

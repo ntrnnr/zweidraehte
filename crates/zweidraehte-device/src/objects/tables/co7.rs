@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zerocopy::big_endian::U16;
 
-use super::{ComObjectFlags, ComObjectTableEntry, ComObjectType, CommunicationObjectTable, Table, TableMemory};
+use super::{
+    ComObjectFlags, ComObjectTableEntry, ComObjectType, CommunicationObjectTable, LoadControlPolicy, Table, TableMemory,
+};
 
 /// Communication object descriptor containing type and flags.
 ///
@@ -39,7 +41,7 @@ pub struct CoTab7Impl<const N: usize> {
     data: [u8; N],
 }
 
-impl<const N: usize> Table<CoTab7Impl<N>> {
+impl<const N: usize, P: LoadControlPolicy> Table<CoTab7Impl<N>, P> {
     /// Get the descriptor for communication object at the given index.
     fn com_object(&self, idx: u16) -> Option<ComObjectDescriptor> {
         if idx == 0 || idx > self.entry_count() {
@@ -64,7 +66,7 @@ impl<const N: usize> TableMemory for CoTab7Impl<N> {
     }
 }
 
-impl<const N: usize> CommunicationObjectTable for Table<CoTab7Impl<N>> {
+impl<const N: usize, P: LoadControlPolicy> CommunicationObjectTable for Table<CoTab7Impl<N>, P> {
     fn max_entries(&self) -> usize {
         (N / 2) - 1
     }
@@ -292,3 +294,10 @@ mod test {
         assert!(ct.com_object(5).is_none());
     }
 }
+
+/// The Type 7 group object table under the System 7 load-control policy.
+///
+/// Same byte format as [`CoTab7`]; the policy only changes which
+/// `AdditionalLoadControls` records the load state machine accepts.
+pub type CoTab7Alloc<const MAX_ENTRIES: usize> =
+    Table<CoTab7Impl<{ (MAX_ENTRIES + 1) * 2 }>, crate::objects::tables::AbsoluteAlloc>;

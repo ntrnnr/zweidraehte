@@ -1345,16 +1345,20 @@ impl<T: HasLoadStateMachine> HasRunStateMachine for RunnableApplication<T> {
 }
 
 pub mod addr7;
+pub mod addr8;
 pub mod app;
 pub mod asso6;
+pub mod asso8;
 pub mod co7;
 
 // Re-export commonly-used concrete table types so consumers can write
 // `objects::tables::AddrTab7` instead of `objects::tables::addr7::AddrTab7`.
 pub use addr7::{AddrTab7, AddrTab7Impl};
+pub use addr8::{AddrTab8, AddrTab8Impl};
 pub use app::{Application, PeiApplication};
 pub use asso6::{AssoTab6, AssoTab6Impl};
-pub use co7::{CoTab7, CoTab7Impl};
+pub use asso8::{AssoTab8, AssoTab8Impl};
+pub use co7::{CoTab7, CoTab7Alloc, CoTab7Impl};
 
 #[cfg(test)]
 mod tests {
