@@ -21,10 +21,15 @@
 
 use core::cell::Cell;
 
-/// Number of authorization access levels supported (0-3).
+/// Number of authorization access levels in the 4-level model (0-3).
+///
+/// This is the System B count. The profile decides the count — System 7
+/// uses 16 levels (0-15; 06 Profiles v02.02.01 §4.2 row 12) — so device
+/// states report theirs via `HasAuthorization::max_access_levels()`
+/// rather than through this constant.
 pub const MAX_ACCESS_LEVELS: usize = 4;
 
-/// Number of settable authorization keys (levels 0-2).
+/// Number of settable authorization keys in the 4-level model (levels 0-2).
 /// Level 3 is "access for everyone" and has no key - it's what you get when auth fails.
 pub const NUM_AUTH_KEYS: usize = 3;
 
@@ -129,7 +134,15 @@ impl AccessContext {
         self.access_level <= required
     }
 
-    /// Minimum-access context (level 3, no special privileges).
+    /// Minimum-access context in the 4-level model (level 3, no special
+    /// privileges).
+    ///
+    /// On a 16-level device (System 7) the minimum is level 15, so this
+    /// constant is only a pre-connection placeholder there: every context
+    /// that reaches an access check is stamped from
+    /// `HasAuthorization::default_access_level()` by the transport layer
+    /// (on connect) or the application layer (connectionless), which
+    /// derives the true minimum from `max_access_levels()`.
     pub const MIN_ACCESS: Self =
         Self { access_level: 3, security: SecurityMode::Plain, role: ClientRole::Unlisted, source_addr: 0 };
 

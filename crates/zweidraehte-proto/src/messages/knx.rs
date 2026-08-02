@@ -1,9 +1,9 @@
 use core::marker::PhantomData;
 use core::ops::{Deref, DerefMut};
 
+use crate::AccessSource;
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::messages::buffers::MessageBuffer;
-use crate::{AccessContext, AccessSource};
 
 /// Offsets to fields in the KNX message buffers
 pub mod offsets {
@@ -565,9 +565,6 @@ impl TpciField {
 ///   - A: Acknowledge (L_Data.req only)
 ///   - C: Confirm (L_Data.con only)
 ///
-/// Default access level for messages (minimum access = level 3)
-pub const DEFAULT_MESSAGE_ACCESS_LEVEL: u8 = AccessContext::MIN_ACCESS.access_level;
-
 // ============================================================================
 // Message Format Markers
 // ============================================================================

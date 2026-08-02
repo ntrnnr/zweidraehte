@@ -110,7 +110,8 @@ impl PropertyError {
 ///
 /// Access control is enforced at two independent levels:
 /// 1. **Legacy access levels** (`read_level`/`write_level`): Checked against the
-///    connection's current A_Authorize level (0-3).
+///    connection's current A_Authorize level (0-3 on 4-level devices,
+///    0-15 on 16-level devices such as System 7).
 /// 2. **Access policy**: Checked against the sender's security context (role,
 ///    security mode). See [`AccessPolicy`] for details.
 ///
@@ -125,9 +126,11 @@ pub struct PropertyDescriptor {
     pub max_elements: u16,
     /// Access rights
     pub access: PropertyAccess,
-    /// Write access level (0-3, 0 = most restricted, 3 = no restriction)
+    /// Write access level (0 = most restricted; the profile's maximum
+    /// level — 3 or 15 — is unrestricted). 4-bit wire field.
     pub write_level: u8,
-    /// Read access level (0-3, 0 = most restricted, 3 = no restriction)
+    /// Read access level (0 = most restricted; the profile's maximum
+    /// level — 3 or 15 — is unrestricted). 4-bit wire field.
     pub read_level: u8,
     /// KNX Data Secure access policy (per spec 03/04/01, section 6.2).
     pub policy: AccessPolicy,
@@ -136,9 +139,10 @@ pub struct PropertyDescriptor {
 impl PropertyDescriptor {
     /// Create a new property descriptor.
     ///
-    /// Access levels range from 0-3, where:
+    /// Access levels are 4-bit values (0-15), where:
     /// - 0 = most restricted (requires full access/authorization)
-    /// - 3 = unrestricted (anyone can access)
+    /// - the profile's maximum level (3 on 4-level devices, 15 on
+    ///   16-level devices) = unrestricted
     ///
     /// A caller with level N can access a property if their level <= the
     /// property's level. The access policy provides additional KNX Data
@@ -619,5 +623,39 @@ impl<T: AsMut<[u8]>> ArrayPropertyWithPrefixWrite for T {
 
         target[byte_start..byte_start + data.len()].copy_from_slice(data);
         Ok(data.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::access::{AccessContext, AccessPolicy};
+
+    /// The access levels are 4-bit wire fields: a 16-level device
+    /// (System 7) must be able to round-trip level 15 through the
+    /// descriptor and the A_PropertyDescription_Response encoding.
+    #[test]
+    fn descriptor_round_trips_level_15() {
+        let desc = PropertyDescriptor::new(56, 0x04, 1, PropertyAccess::ReadWrite, 15, 1, AccessPolicy::OPEN);
+        assert_eq!(desc.read_level, 15);
+        assert_eq!(desc.write_level, 1);
+
+        let response = PropertyDescriptionResponse::from_descriptor(0, 0, &desc);
+        let mut buf = [0u8; 7];
+        assert_eq!(response.encode(&mut buf), 7);
+        // Access octet: [read_level:4][write_level:4]
+        assert_eq!(buf[6], 0xF1);
+    }
+
+    /// A caller at the 16-level minimum (level 15) must clear a
+    /// level-15 read gate and fail every stricter one.
+    #[test]
+    fn level_15_context_checks() {
+        let desc = PropertyDescriptor::new(56, 0x04, 1, PropertyAccess::ReadWrite, 15, 1, AccessPolicy::OPEN);
+        let everyone = AccessContext::new(15);
+        let privileged = AccessContext::new(1);
+        assert!(everyone.access_level <= desc.read_level);
+        assert!(everyone.access_level > desc.write_level);
+        assert!(privileged.access_level <= desc.write_level);
     }
 }
