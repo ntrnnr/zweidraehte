@@ -83,6 +83,12 @@ impl LightSwitchDevice {
     /// but a different application ID so the secure and insecure IP
     /// variants coexist in a single knxprod catalogue.
     pub const APPLICATION_ID_IP_SECURE: u16 = 0x0305;
+    /// Application ID for the System 7 TP1 variant (mask `System7Tp1` /
+    /// 0x0705). Unlike the secure variants this IS a distinct mask —
+    /// the BCU family changes, not just a capability flag — so ETS
+    /// programs it through the `ProductProcedure` load procedures with
+    /// absolute memory segments instead of System B's relative model.
+    pub const APPLICATION_ID_TP1_SYSTEM7: u16 = 0x0306;
     pub const APPLICATION_VERSION: u8 = 0x02;
     pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
     pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
@@ -161,6 +167,17 @@ impl LightSwitchDevice {
     pub const fn device_descriptor_secure_ip() -> DeviceDescriptor {
         Self::descriptor_for(MaskVersion::SystemBKnxIp, Self::APPLICATION_ID_IP_SECURE)
     }
+
+    /// Build a device descriptor for the System 7 TP1 variant
+    /// (mask `System7Tp1` / 0x0705).
+    ///
+    /// Same application logic and table capacities as the System B TP1
+    /// variant; only the BCU family — and with it the download model
+    /// (RT8 tables at absolute addresses, `ProductProcedure` load
+    /// procedures, 16 access levels) — differs.
+    pub const fn device_descriptor_system7_tp1() -> DeviceDescriptor {
+        Self::descriptor_for(MaskVersion::System7Tp1, Self::APPLICATION_ID_TP1_SYSTEM7)
+    }
 }
 
 /// Device descriptor for KNX/IP (mask version 57B0).
@@ -188,3 +205,9 @@ pub const DEVICE_DESCRIPTOR_RF_SECURE: DeviceDescriptor = LightSwitchDevice::dev
 /// variant (mask version 57B0, application ID 0x0305). Pairs with the
 /// `pico_eth_secure_light_switch` firmware.
 pub const DEVICE_DESCRIPTOR_IP_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_secure_ip();
+
+/// Device descriptor for the System 7 TP1 variant (mask version 0705,
+/// application ID 0x0306). No firmware target yet — the definition
+/// exists so the System 7 product can be generated and the family's
+/// `ProductProcedure` generator path stays exercised.
+pub const DEVICE_DESCRIPTOR_TP1_SYSTEM7: DeviceDescriptor = LightSwitchDevice::device_descriptor_system7_tp1();

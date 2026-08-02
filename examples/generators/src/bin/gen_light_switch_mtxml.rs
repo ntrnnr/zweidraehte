@@ -18,14 +18,14 @@ use const_default::ConstDefault;
 
 use devices::light_switch::{
     DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_IP_SECURE, DEVICE_DESCRIPTOR_RF, DEVICE_DESCRIPTOR_RF_SECURE,
-    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_SECURE, LightSwitchDevice, LightSwitchParams, comm_objs,
-    params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
+    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_SECURE, DEVICE_DESCRIPTOR_TP1_SYSTEM7, LightSwitchDevice,
+    LightSwitchParams, comm_objs, params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
 };
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{
     ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef, KnxprodBuilder,
-    ProductDef, RfRxCapabilities, RfTxCapabilities,
+    ProductDef, RfRxCapabilities, RfTxCapabilities, System7MemoryLayout, System7Segment,
 };
 
 /// Hardware serial for the KNX/IP variant.
@@ -56,6 +56,11 @@ const SERIAL_NUMBER_RF_SECURE_RT: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x08]
 /// Hardware serial for the combined IP Secure + Data Secure KNX/IP
 /// variant. Pairs with the `pico_eth_secure_light_switch` firmware.
 const SERIAL_NUMBER_IP_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
+
+/// Hardware serial for the System 7 TP1 variant. Also baked into the
+/// load procedures: ETS verifies it against `PID_SERIAL_NUMBER` with
+/// `LdCtrlCompareProp` before programming.
+const SERIAL_NUMBER_TP1_S7: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0A];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -311,9 +316,102 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_p2p_key_table_entries: Some(0),
     };
 
-    // Build a multi-device package: six application programs, six hardware
-    // definitions (IP, IP-Secure, TP1, TP1-Secure, RF, RF-Secure), and a
-    // single catalog section with all of them.
+    // System 7 TP1 variant: the same light switch on the BIM M112-lineage
+    // mask (0705h). Unlike every variant above, the mask changes the
+    // download model: ETS programs it through `ProductProcedure` load
+    // procedures over absolute memory segments (LdCtrlAbsSegment + task
+    // records), not System B's relative allocation. The segment map
+    // mirrors the conformance DUT and the family's memory map:
+    //
+    //   4000h  RT8 group address table (fixed by the profile)
+    //   4100h  RT8 association table
+    //   4200h  group object table
+    //   4300h  parameters (carries the defaults as segment data, which is
+    //          also what binds the parameter <Memory> references)
+    //
+    // Segment order matters to the generator: segments[2] is taken as the
+    // ComObjectTable segment, and the parameter references bind to the
+    // first EEPROM segment that carries data.
+    let system7_layout = System7MemoryLayout {
+        segments: vec![
+            System7Segment {
+                name: "4000",
+                address: 0x4000,
+                size: 3 + LightSwitchDevice::MAX_ADDRESS_TABLE_ENTRIES as u32 * 2,
+                memory_type: None,
+                data: None,
+                mask: None,
+            },
+            System7Segment {
+                name: "4100",
+                address: 0x4100,
+                size: 1 + LightSwitchDevice::MAX_ASSOCIATION_TABLE_ENTRIES as u32 * 2,
+                memory_type: None,
+                data: None,
+                mask: None,
+            },
+            System7Segment {
+                name: "4200",
+                address: 0x4200,
+                size: 2 + LightSwitchDevice::MAX_COM_OBJECTS as u32 * 2,
+                memory_type: None,
+                data: None,
+                mask: None,
+            },
+            System7Segment {
+                name: "4300",
+                address: 0x4300,
+                size: param_bytes.len() as u32,
+                memory_type: Some("EEPROM"),
+                // The segment carries the parameter defaults; leaked once —
+                // this is a short-lived host tool.
+                data: Some(Box::leak(param_bytes.to_vec().into_boxed_slice())),
+                mask: None,
+            },
+        ],
+        address_table_segment: "4000",
+        association_table_segment: "4100",
+        address_table_offset: 0,
+        association_table_offset: 0,
+        address_table_max_entries: LightSwitchDevice::MAX_ADDRESS_TABLE_ENTRIES,
+        association_table_max_entries: LightSwitchDevice::MAX_ASSOCIATION_TABLE_ENTRIES,
+        serial_number: SERIAL_NUMBER_TP1_S7,
+    };
+
+    let app_tp1_system7 = ApplicationProgramDef {
+        name: "LightSwitch2TPS7",
+        device: &DEVICE_DESCRIPTOR_TP1_SYSTEM7,
+        params: LightSwitchParams::ETS_PARAMS_EXT,
+        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
+        param_defaults: param_bytes,
+        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
+        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+        union_fields: Some(LightSwitchParams::ETS_UNIONS),
+        channel_name: "General",
+        absolute_segment_address: None,
+        system7_layout: Some(system7_layout),
+        application_hash: None,
+        non_reg_relevant_data_version: None,
+        replaces_versions: None,
+        application_data_hash: None,
+        page_layout: Some(LightSwitchDevice::page_layout()),
+        modules: None,
+        baggages: None,
+        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
+        is_secure_enabled: None,
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
+        max_security_individual_address_entries: None,
+        max_security_group_key_table_entries: None,
+        max_security_p2p_key_table_entries: None,
+    };
+
+    // Build a multi-device package: seven application programs, seven
+    // hardware definitions (IP, IP-Secure, TP1, TP1-Secure, TP1-System7,
+    // RF, RF-Secure), and a single catalog section with all of them.
     let mut builder = KnxprodBuilder::new(LightSwitchDevice::MANUFACTURER_ID);
     let app_ip_ref = builder.application_program(&app_ip);
     let app_ip_secure_ref = builder.application_program(&app_ip_secure);
@@ -321,6 +419,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_tp1_secure_ref = builder.application_program(&app_tp1_secure);
     let app_rf_ref = builder.application_program(&app_rf);
     let app_rf_secure_ref = builder.application_program(&app_rf_secure);
+    let app_tp1_system7_ref = builder.application_program(&app_tp1_system7);
 
     let hw_ip_ref = builder.hardware(HardwareDef {
         serial_number: SERIAL_NUMBER_IP,
@@ -394,6 +493,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             visible_description: None,
         }],
         application_programs: vec![app_tp1_secure_ref],
+    });
+
+    let hw_tp1_system7_ref = builder.hardware(HardwareDef {
+        serial_number: SERIAL_NUMBER_TP1_S7,
+        hardware_version: 1,
+        name: "2-Button Light Switch TP1 System 7",
+        bus_current: Some(10),
+        is_ip_enabled: None,
+        is_rf_retransmitter: None,
+        rf_rx_capabilities: None,
+        rf_tx_capabilities: None,
+        products: vec![ProductDef {
+            name: "Light Switch 2-fold (TP1, System 7)",
+            order_number: "LS-0002-TP-S7",
+            is_rail_mounted: false,
+            visible_description: None,
+        }],
+        application_programs: vec![app_tp1_system7_ref],
     });
 
     // The RF light switch is a battery/bus-less end device: not a
@@ -489,6 +606,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 application_program: app_tp1_secure_ref,
             },
             CatalogEntryDef {
+                name: "Light Switch 2-fold (TP1, System 7)",
+                hardware: hw_tp1_system7_ref,
+                product_order_number: "LS-0002-TP-S7",
+                application_program: app_tp1_system7_ref,
+            },
+            CatalogEntryDef {
                 name: "Light Switch 2-fold (RF)",
                 hardware: hw_rf_ref,
                 product_order_number: "LS-0002-RF",
@@ -539,6 +662,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardware: hw_tp1_secure_ref,
             product_order_number: "LS-0002-TP-SEC",
             application_program: app_tp1_secure_ref,
+        });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch TP1 System 7",
+            hardware: hw_tp1_system7_ref,
+            product_order_number: "LS-0002-TP-S7",
+            application_program: app_tp1_system7_ref,
         });
         builder.device_instance(DeviceInstanceDef {
             name: "2-Button Light Switch RF",
