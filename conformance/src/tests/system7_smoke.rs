@@ -182,6 +182,54 @@ pub fn create_system7_smoke_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 D6", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
+        // ====================================================================
+        // S7-8: Unloading the ADT spares the IA slot (the ETS download shape)
+        // ====================================================================
+        //
+        // ETS's ProductProcedure unloads the GA table first and rewrites
+        // the blob *around* the IA bytes at 4001h-4002h — it never
+        // re-sends them. Unload therefore clears the loadable part (count
+        // + group addresses) but must leave the co-located IA resource
+        // intact (03/05/01 §4.23.2.3.2: unload declares the loadable data
+        // invalid, erasure is not mandated), or the device re-addresses
+        // itself to 0.0.0 in the middle of its own download.
+        TestCase::new("S7-8 ADT unload spares the IA slot").with_steps(vec![
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            comment("Machine 1 (ADT), event Unload: control byte 14h"),
+            inject("BC #EDI #BDUT 64 42 81 01 04 14"),
+            expect("B0 #BDUT #EDI 60 C2", 500),
+            comment("Load state is Unloaded"),
+            inject("BC #EDI #BDUT 63 46 01 B6 EA"),
+            expect("B0 #BDUT #EDI 60 C6", 0),
+            expect("BC #BDUT #EDI 64 42 41 B6 EA 00", 400),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            comment("Count cleared, IA slot survives"),
+            inject("BC #EDI #BDUT 63 4A 03 40 00"),
+            expect("B0 #BDUT #EDI 60 CA", 0),
+            expect("BC #BDUT #EDI 66 46 43 40 00 00 10 01", 400),
+            inject_delay("B0 #EDI #BDUT 60 C6", 200),
+            comment("Restore the fixture the way ETS would: StartLoading,"),
+            comment("rewrite the blob around the IA bytes, LoadCompleted"),
+            inject("BC #EDI #BDUT 64 4E 81 01 04 11"),
+            expect("B0 #BDUT #EDI 60 CE", 500),
+            inject("BC #EDI #BDUT 64 52 81 40 00 07"),
+            expect("B0 #BDUT #EDI 60 D2", 500),
+            inject("BC #EDI #BDUT 6B 56 88 40 03 08 01 10 00 10 01 10 02"),
+            expect("B0 #BDUT #EDI 60 D6", 500),
+            inject("BC #EDI #BDUT 69 5A 86 40 0B 10 03 10 05 2D 05"),
+            expect("B0 #BDUT #EDI 60 DA", 500),
+            inject("BC #EDI #BDUT 64 5E 81 01 04 12"),
+            expect("B0 #BDUT #EDI 60 DE", 500),
+            inject("BC #EDI #BDUT 63 62 01 B6 EA"),
+            expect("B0 #BDUT #EDI 60 E2", 0),
+            expect("BC #BDUT #EDI 64 4A 41 B6 EA 01", 400),
+            inject_delay("B0 #EDI #BDUT 60 CA", 200),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+            comment("Group traffic still resolves over the restored tables"),
+            inject_delay("BC #EDI 10 00 E1 00 81", 100),
+            inject("BC #EDI 10 00 E1 00 00"),
+            expect("BC #BDUT 10 00 E1 00 41", 400),
+        ]),
     ];
 
     TestSuite::new("S7 System 7 smoke", vars).with_cases(cases).system7()

@@ -80,6 +80,21 @@ impl<const N: usize> TableMemory for AddrTab8Impl<N> {
     fn data_ref_mut(&mut self) -> &mut [u8] {
         &mut self.data
     }
+
+    /// Unload clears the loadable part — the count and the group
+    /// addresses — but spares the Individual Address slot at offsets
+    /// 1–2. The IA is a separate resource that merely shares the RT8
+    /// memory window (03/05/01 §4.16.9 gives it a dedicated slot ahead
+    /// of the group addresses); Unload only declares the *loadable*
+    /// data invalid, without mandating erasure (§4.23.2.3.2). ETS's
+    /// `ProductProcedure` counts on this: it unloads the table and then
+    /// rewrites the blob around the IA bytes, never re-sending them —
+    /// wiping the slot would re-address the device to 0.0.0 in the
+    /// middle of its own download.
+    fn clear_on_unload(&mut self) {
+        self.data[0] = 0;
+        self.data[3..].fill(0);
+    }
 }
 
 impl<const N: usize> AddressTable for Table<AddrTab8Impl<N>, AbsoluteAlloc> {
@@ -200,6 +215,23 @@ mod test {
         assert_eq!(a.entry_count(), 10);
         assert_eq!(a.address(10), Some(GroupAddress::from_bytes(&[0, 0])));
         assert_eq!(a.address(11), None);
+    }
+
+    /// Unload clears the loadable part but must spare the IA slot: ETS's
+    /// `ProductProcedure` unloads the table first and rewrites the blob
+    /// around bytes 1-2, so wiping them would re-address the device to
+    /// 0.0.0 mid-download.
+    #[test]
+    fn addr8_unload_preserves_individual_address() {
+        let mut a = loaded_table();
+        assert_eq!(a.individual_address(), IndividualAddress::from_bytes(&[0x10, 0x01]));
+
+        a.write_lsm(&[LoadEvent::Unload.into()], None);
+
+        assert_eq!(a.read_lsm(), [LoadState::Unloaded.into()]);
+        assert_eq!(a.entry_count(), 0, "count byte cleared");
+        assert!(a.data_ref()[3..].iter().all(|&b| b == 0), "group addresses cleared");
+        assert_eq!(a.individual_address(), IndividualAddress::from_bytes(&[0x10, 0x01]), "IA slot survives");
     }
 
     /// The IA slot is one storage shared by the service path and the

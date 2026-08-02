@@ -110,6 +110,19 @@ pub trait TableMemory: ConstDefault + Sized {
     fn write(&mut self, offset: usize, data: &[u8]) {
         self.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
     }
+
+    /// Clear the table's payload for a load-state-machine Unload.
+    ///
+    /// The Unload event only declares the loadable data invalid — "the
+    /// data is undefined", and clients "shall not rely on the fact that
+    /// the table is erased in memory" (03/05/01 §4.23.2.3.2, §4.5.3) —
+    /// so zeroing is our chosen rendering of "undefined", not a spec
+    /// obligation. Table types whose memory window co-locates a
+    /// *different* resource override this to spare it: the RT8 address
+    /// table keeps the device's Individual Address slot.
+    fn clear_on_unload(&mut self) {
+        self.data_ref_mut().fill(0);
+    }
 }
 
 pub trait HasLoadStateMachine: TableMemory {
@@ -1025,7 +1038,7 @@ impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
             }
             LoadAction::Unload => {
                 self.mcb_table.set_value([0; 8]);
-                self.table.data_ref_mut().fill(0);
+                self.table.clear_on_unload();
                 self.table_reference = 0;
             }
             LoadAction::None => {}
@@ -1402,6 +1415,19 @@ mod tests {
         assert_eq!(table.table_reference(), 0x4000);
         let mcb = McbData::ref_from_bytes(HasLoadStateMachine::mcb_bytes(&table)).expect("MCB is 8 bytes");
         assert_eq!(mcb.requested_memory_size.get(), 0x10);
+    }
+
+    /// Unload zeroes a plain table's whole blob — the default
+    /// `clear_on_unload`. (The RT8 address table overrides it to spare
+    /// its co-located Individual Address slot; see `addr8`.)
+    #[test]
+    fn unload_zeroes_plain_table() {
+        let mut table = AbsTable::new();
+        table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        table.write(0, &[0xAA; 8]);
+        table.write_lsm(&[LoadEvent::Unload.into()], None);
+        assert_eq!(table.load_state(), LoadState::Unloaded);
+        assert!(table.data_ref().iter().all(|&b| b == 0));
     }
 
     /// Task/pointer records only carry the legacy BCU firmware's entry
