@@ -28,39 +28,47 @@ use zweidraehte_knxprod::{
     ProductDef, RfRxCapabilities, RfTxCapabilities, System7MemoryLayout, System7Segment,
 };
 
+// The hardware serial numbers come from the device definition's
+// per-variant `HARDWARE_TYPE_*` constants: the knxprod hardware serial
+// and the firmware's `PID_HARDWARE_TYPE` (PID 78) are the same
+// identifier, and the System 7 load procedure verifies it with an
+// `LdCtrlCompareProp` on PID 78 before programming. Aliased here so the
+// `HardwareDef` sites below read as the catalogue entries they build.
+
 /// Hardware serial for the KNX/IP variant.
-const SERIAL_NUMBER_IP: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
+const SERIAL_NUMBER_IP: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_IP;
 
 /// Hardware serial for the TP1 variant.
-const SERIAL_NUMBER_TP1: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04];
+const SERIAL_NUMBER_TP1: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_TP1;
 
 /// Hardware serial for the Data Secure TP1 variant.
-const SERIAL_NUMBER_TP1_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x05];
+const SERIAL_NUMBER_TP1_SECURE: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_TP1_SECURE;
 
 /// Hardware serial for the KNX-RF variant. Pairs with the
 /// `stm32g0_knxrf_device` firmware.
-const SERIAL_NUMBER_RF: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x06];
+const SERIAL_NUMBER_RF: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_RF;
 
-/// Hardware serial for the Data Secure KNX-RF variant. No firmware yet —
-/// the device definition exists so the variant can be generated.
-const SERIAL_NUMBER_RF_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x07];
+/// Hardware serial for the Data Secure KNX-RF variant. Backed by the
+/// `stm32g0_knxrf_secure_light_switch` firmware.
+const SERIAL_NUMBER_RF_SECURE: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_RF_SECURE;
 
 /// Hardware serial for the Data Secure KNX-RF **retransmitter** variant.
 /// Identical to the secure RF device but advertises `IsRFRetransmitter="true"`;
 /// it reuses the same secure RF application program (retransmission is a
 /// hardware capability, not an application change). Backed by the
-/// `stm32g0_knxrf_secure_light_switch` firmware composing the retransmitter
-/// extension.
-const SERIAL_NUMBER_RF_SECURE_RT: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x08];
+/// `stm32g0_knxrf_secure_retransmitter` firmware, which reports this
+/// value as its own hardware type.
+const SERIAL_NUMBER_RF_SECURE_RT: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_RF_SECURE_RETRANSMITTER;
 
 /// Hardware serial for the combined IP Secure + Data Secure KNX/IP
 /// variant. Pairs with the `pico_eth_secure_light_switch` firmware.
-const SERIAL_NUMBER_IP_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
+const SERIAL_NUMBER_IP_SECURE: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_IP_SECURE;
 
 /// Hardware serial for the System 7 TP1 variant. Also baked into the
-/// load procedures: ETS verifies it against `PID_SERIAL_NUMBER` with
-/// `LdCtrlCompareProp` before programming.
-const SERIAL_NUMBER_TP1_S7: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0A];
+/// load procedures: ETS verifies it against `PID_HARDWARE_TYPE` (78)
+/// with `LdCtrlCompareProp` before programming — the download
+/// hard-fails if the firmware reports anything else.
+const SERIAL_NUMBER_TP1_S7: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_TP1_SYSTEM7;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();

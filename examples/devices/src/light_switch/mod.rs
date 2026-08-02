@@ -56,7 +56,41 @@ pub struct LightSwitchDevice;
 
 impl LightSwitchDevice {
     pub const MANUFACTURER_ID: u16 = 0x00FA;
-    pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x03];
+
+    // Hardware types, one per hardware entry in the knxprod catalogue.
+    //
+    // The value in `PID_HARDWARE_TYPE` (PID 78) and the knxprod
+    // Hardware's serial number are the same identifier: ETS's System 7
+    // `ProductProcedure` opens with an `LdCtrlCompareProp` on PID 78
+    // against the hardware serial and refuses the download on a
+    // mismatch. The System B load procedures never check it, but the
+    // property still identifies the hardware, so every variant reports
+    // the serial its catalogue entry publishes. The generator
+    // (`gen_light_switch_mtxml`) consumes these constants for its
+    // `HardwareDef`s, keeping the two sides one value by construction.
+
+    /// Hardware type / knxprod hardware serial for the KNX/IP variant.
+    pub const HARDWARE_TYPE_IP: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x03];
+    /// Hardware type / knxprod hardware serial for the TP1 variant.
+    pub const HARDWARE_TYPE_TP1: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x04];
+    /// Hardware type / knxprod hardware serial for the Data Secure TP1
+    /// variant.
+    pub const HARDWARE_TYPE_TP1_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x05];
+    /// Hardware type / knxprod hardware serial for the KNX-RF variant.
+    pub const HARDWARE_TYPE_RF: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x06];
+    /// Hardware type / knxprod hardware serial for the Data Secure
+    /// KNX-RF handheld variant.
+    pub const HARDWARE_TYPE_RF_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x07];
+    /// Hardware type / knxprod hardware serial for the Data Secure
+    /// KNX-RF retransmitter — distinct hardware running the same
+    /// RF-secure application as the handheld.
+    pub const HARDWARE_TYPE_RF_SECURE_RETRANSMITTER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x08];
+    /// Hardware type / knxprod hardware serial for the IP Secure + Data
+    /// Secure KNX/IP variant.
+    pub const HARDWARE_TYPE_IP_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x09];
+    /// Hardware type / knxprod hardware serial for the System 7 TP1
+    /// variant. This is the one the download actually verifies today.
+    pub const HARDWARE_TYPE_TP1_SYSTEM7: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0A];
     /// Application ID for the KNX/IP variant.
     pub const APPLICATION_ID_IP: u16 = 0x0300;
     /// Application ID for the TP1 variant. Distinct from the IP variant so
@@ -95,13 +129,14 @@ impl LightSwitchDevice {
     pub const MAX_COM_OBJECTS: u16 = 6;
     pub const PEI_TYPE: u8 = 0;
 
-    /// Build a descriptor from the only two fields that vary between this
-    /// device's variants; the remaining seven are identical everywhere.
-    const fn descriptor_for(mask: MaskVersion, application_id: u16) -> DeviceDescriptor {
+    /// Build a descriptor from the only three fields that vary between
+    /// this device's variants; the remaining six are identical
+    /// everywhere.
+    const fn descriptor_for(mask: MaskVersion, application_id: u16, hardware_type: [u8; 6]) -> DeviceDescriptor {
         DeviceDescriptor {
             mask_version: mask,
             manufacturer_id: Self::MANUFACTURER_ID,
-            hardware_type: Self::HARDWARE_TYPE,
+            hardware_type,
             application_id,
             application_version: Self::APPLICATION_VERSION,
             max_address_table_entries: Self::MAX_ADDRESS_TABLE_ENTRIES,
@@ -122,12 +157,12 @@ impl LightSwitchDevice {
     /// For the Data Secure TP1 variant see
     /// [`device_descriptor_secure_tp1`](Self::device_descriptor_secure_tp1).
     pub const fn device_descriptor(mask: MaskVersion) -> DeviceDescriptor {
-        let application_id = match mask {
-            MaskVersion::SystemBTp1 => Self::APPLICATION_ID_TP1,
-            MaskVersion::SystemBRf => Self::APPLICATION_ID_RF,
-            _ => Self::APPLICATION_ID_IP,
+        let (application_id, hardware_type) = match mask {
+            MaskVersion::SystemBTp1 => (Self::APPLICATION_ID_TP1, Self::HARDWARE_TYPE_TP1),
+            MaskVersion::SystemBRf => (Self::APPLICATION_ID_RF, Self::HARDWARE_TYPE_RF),
+            _ => (Self::APPLICATION_ID_IP, Self::HARDWARE_TYPE_IP),
         };
-        Self::descriptor_for(mask, application_id)
+        Self::descriptor_for(mask, application_id, hardware_type)
     }
 
     /// Build a device descriptor for the Data Secure TP1 variant.
@@ -138,7 +173,7 @@ impl LightSwitchDevice {
     /// [`APPLICATION_ID_TP1_SECURE`](Self::APPLICATION_ID_TP1_SECURE) so
     /// both variants coexist in the same knxprod catalogue.
     pub const fn device_descriptor_secure_tp1() -> DeviceDescriptor {
-        Self::descriptor_for(MaskVersion::SystemBTp1, Self::APPLICATION_ID_TP1_SECURE)
+        Self::descriptor_for(MaskVersion::SystemBTp1, Self::APPLICATION_ID_TP1_SECURE, Self::HARDWARE_TYPE_TP1_SECURE)
     }
 
     /// Build a device descriptor for the Data Secure KNX-RF variant.
@@ -152,7 +187,23 @@ impl LightSwitchDevice {
     /// [`device_descriptor_secure_tp1`](Self::device_descriptor_secure_tp1);
     /// the matching firmware is not implemented yet.
     pub const fn device_descriptor_secure_rf() -> DeviceDescriptor {
-        Self::descriptor_for(MaskVersion::SystemBRf, Self::APPLICATION_ID_RF_SECURE)
+        Self::descriptor_for(MaskVersion::SystemBRf, Self::APPLICATION_ID_RF_SECURE, Self::HARDWARE_TYPE_RF_SECURE)
+    }
+
+    /// Build a device descriptor for the Data Secure KNX-RF
+    /// retransmitter.
+    ///
+    /// Same mask and application as
+    /// [`device_descriptor_secure_rf`](Self::device_descriptor_secure_rf)
+    /// — the retransmitter runs the RF-secure application — but it is a
+    /// different hardware entry in the catalogue, so it reports its own
+    /// hardware type.
+    pub const fn device_descriptor_secure_rf_retransmitter() -> DeviceDescriptor {
+        Self::descriptor_for(
+            MaskVersion::SystemBRf,
+            Self::APPLICATION_ID_RF_SECURE,
+            Self::HARDWARE_TYPE_RF_SECURE_RETRANSMITTER,
+        )
     }
 
     /// Build a device descriptor for the combined IP Secure + Data Secure
@@ -165,7 +216,7 @@ impl LightSwitchDevice {
     /// variants coexist in the same knxprod catalogue. Pairs with the
     /// `pico_eth_secure_light_switch` firmware.
     pub const fn device_descriptor_secure_ip() -> DeviceDescriptor {
-        Self::descriptor_for(MaskVersion::SystemBKnxIp, Self::APPLICATION_ID_IP_SECURE)
+        Self::descriptor_for(MaskVersion::SystemBKnxIp, Self::APPLICATION_ID_IP_SECURE, Self::HARDWARE_TYPE_IP_SECURE)
     }
 
     /// Build a device descriptor for the System 7 TP1 variant
@@ -176,7 +227,7 @@ impl LightSwitchDevice {
     /// (RT8 tables at absolute addresses, `ProductProcedure` load
     /// procedures, 16 access levels) — differs.
     pub const fn device_descriptor_system7_tp1() -> DeviceDescriptor {
-        Self::descriptor_for(MaskVersion::System7Tp1, Self::APPLICATION_ID_TP1_SYSTEM7)
+        Self::descriptor_for(MaskVersion::System7Tp1, Self::APPLICATION_ID_TP1_SYSTEM7, Self::HARDWARE_TYPE_TP1_SYSTEM7)
     }
 }
 
@@ -200,6 +251,12 @@ pub const DEVICE_DESCRIPTOR_TP1_SECURE: DeviceDescriptor = LightSwitchDevice::de
 /// [`DEVICE_DESCRIPTOR_TP1_SECURE`] so the secure RF variant can already
 /// be generated into the knxprod catalogue.
 pub const DEVICE_DESCRIPTOR_RF_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_secure_rf();
+
+/// Device descriptor for the Data Secure KNX-RF retransmitter — the
+/// same RF-secure application on its own hardware entry. Pairs with the
+/// `stm32g0_knxrf_secure_retransmitter` firmware.
+pub const DEVICE_DESCRIPTOR_RF_SECURE_RETRANSMITTER: DeviceDescriptor =
+    LightSwitchDevice::device_descriptor_secure_rf_retransmitter();
 
 /// Device descriptor for the combined IP Secure + Data Secure KNX/IP
 /// variant (mask version 57B0, application ID 0x0305). Pairs with the

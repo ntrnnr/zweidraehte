@@ -28,7 +28,11 @@ pub struct IpInterfaceDevice;
 
 impl IpInterfaceDevice {
     pub const MANUFACTURER_ID: u16 = 0x00FA;
-    pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x10];
+    /// Hardware type — also the knxprod hardware serial number
+    /// ([`SERIAL_NUMBER`]): `PID_HARDWARE_TYPE` (PID 78) and the
+    /// catalogue's Hardware serial are the same identifier, and
+    /// System 7 downloads verify the equality with `LdCtrlCompareProp`.
+    pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x10];
     pub const APPLICATION_ID: u16 = 0x1000;
     pub const APPLICATION_VERSION: u8 = 0x01;
     /// 1 device IA + 4 additional IAs for tunneling connections.
@@ -58,8 +62,9 @@ impl IpInterfaceDevice {
 /// Device descriptor for the IP Interface (mask version 07B0, TP1).
 pub const DEVICE_DESCRIPTOR: DeviceDescriptor = IpInterfaceDevice::device_descriptor();
 
-/// Serial number for the IP Interface hardware.
-pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x10];
+/// Serial number for the IP Interface hardware — the same identifier
+/// the device reports as `PID_HARDWARE_TYPE`.
+pub const SERIAL_NUMBER: [u8; 6] = IpInterfaceDevice::HARDWARE_TYPE;
 
 // ============================================================================
 // Parameters (empty — no application settings)

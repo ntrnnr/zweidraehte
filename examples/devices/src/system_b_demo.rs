@@ -71,7 +71,11 @@ use zweidraehte_proto::dpt::*;
 pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
     mask_version: MaskVersion::SystemBKnxIp,
     manufacturer_id: 0x00FA,
-    hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x02],
+    // The knxprod hardware serial and `PID_HARDWARE_TYPE` are the same
+    // identifier (System 7 downloads verify the equality with
+    // `LdCtrlCompareProp`; System B never checks, but the value must
+    // not lie).
+    hardware_type: SERIAL_NUMBER,
     application_id: 0x0200,
     application_version: 0x01,
     max_address_table_entries: 16,
@@ -80,7 +84,7 @@ pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
     pei_type: 0,
 };
 
-/// Serial number for test device.
+/// Serial number for test device — also the device's hardware type.
 pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0xDE, 0xAD, 0xBE, 0xEF];
 
 /// Device metadata anchor for the demo device.

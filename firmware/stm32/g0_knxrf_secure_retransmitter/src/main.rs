@@ -98,7 +98,7 @@ bind_interrupts!(struct Irqs {
 // Device Definition
 // ================================================================================
 
-const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_RF_SECURE;
+const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_RF_SECURE_RETRANSMITTER;
 
 /// P2P Key Table capacity — zero: this device does only tool access and secure
 /// group telegrams, no point-to-point secure links. (See the TP1 secure variant
