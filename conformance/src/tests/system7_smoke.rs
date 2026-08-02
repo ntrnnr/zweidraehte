@@ -1,9 +1,10 @@
 //! System 7 DUT smoke suite.
 //!
-//! Not a transcription of a certification template (no EITT template
-//! exists for the System 7 masks in our set) — this drives the System 7
-//! family's own management surface end-to-end through the real engine
-//! and DUT process:
+//! Not a transcription of a certification template — the generic EITT
+//! templates run against this DUT through `conformance-eitt` with the
+//! `tp1-system7.toml` profile. This suite drives the System 7 family's
+//! own management surface end-to-end through the real engine and DUT
+//! process:
 //!
 //! - DD0 answering mask 0705h
 //! - the programming-mode byte at 0060h (memory ↔ property, one flag)
@@ -126,10 +127,10 @@ pub fn create_system7_smoke_suite() -> TestSuite {
         TestCase::new("S7-5 RT8 table blob at 4000h").with_steps(vec![
             comment("Resources §4.16.9: [len][IA][GAs sorted], fixed at 4000h"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Read the first 7 bytes: len=2, IA=1.0.1, GA 0/0/1, GA 0/0/2"),
+            comment("Read the first 7 bytes: len=7, IA=1.0.1, GA 1/0/1, first octet of 2/0/0"),
             inject("BC #EDI #BDUT 63 42 07 40 00"),
             expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 6A 42 47 40 00 02 10 01 00 01 00 02", 400),
+            expect("BC #BDUT #EDI 6A 42 47 40 00 07 10 01 08 01 10 00", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
@@ -137,13 +138,13 @@ pub fn create_system7_smoke_suite() -> TestSuite {
         // S7-6: Group communication over the RT8 tables
         // ====================================================================
         TestCase::new("S7-6 Group round trip").with_steps(vec![
-            comment("GroupValue_Write to 0/0/1, then read it back"),
-            inject_delay("BC #EDI 00 01 E1 00 81", 100),
-            inject("BC #EDI 00 01 E1 00 00"),
-            expect("BC #BDUT 00 01 E1 00 41", 400),
-            comment("The second object (0/0/2) is independent"),
-            inject("BC #EDI 00 02 E1 00 00"),
-            expect("BC #BDUT 00 02 E1 00 40", 400),
+            comment("GroupValue_Write to GO0 at 2/0/0, then read it back"),
+            inject_delay("BC #EDI 10 00 E1 00 81", 100),
+            inject("BC #EDI 10 00 E1 00 00"),
+            expect("BC #BDUT 10 00 E1 00 41", 400),
+            comment("GO6 at 5/5/5 is independent"),
+            inject("BC #EDI 2D 05 E1 00 00"),
+            expect("BC #BDUT 2D 05 E1 00 40", 400),
         ]),
         // ====================================================================
         // S7-7: 16-level authorization

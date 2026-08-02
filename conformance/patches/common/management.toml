@@ -129,9 +129,11 @@ insert = [{ expect = { data = "BC 10 02 00 00 EB 03 DD #BDUT_SERIAL_NUMBER 00 00
 # and_data 33h / xor_data 55h over five octets and expects 56h back,
 # which is (0Fh AND 33h) XOR 55h. The collection says as much in its own
 # `MEM` field, sixteen octets of 0Fh described as "Accessible memory from
-# first position", and 0Fh is exactly what our linear memory holds
-# factory-fresh (`linear_memory: [0x0F; _]` in
-# ConformanceDeviceConfig::default_snapshot).
+# first position", and 0Fh is exactly what our DUTs' accessible memory
+# holds factory-fresh (`linear_memory: [0x0F; _]` in both
+# `ConformanceDeviceConfig::default_snapshot` and
+# `System7DutConfig::factory_snapshot` — each profile points MEMPOS at
+# its own device's window).
 #
 # By the time 2.10 runs it is not 0Fh any more. Collection 2.6-2.7 spends
 # 29 cases writing its own `MEM` — 01h, 02h, 03h … — over the same

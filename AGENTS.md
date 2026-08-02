@@ -106,8 +106,11 @@ Two things we commit, neither containing vendor test content:
   one it has — for us `collections = ["UINT1"]`. Leaving the selection
   empty runs every collection, which for that template means running
   eight cases against an object of the wrong width.
-- `conformance/patches/*.toml` — harness-specific edits anchored on the
-  GUID that the template gives every telegram. Mostly the
+- `conformance/patches/{common,systemb,system7}/*.toml` — harness-specific
+  edits anchored on the GUID that the template gives every telegram.
+  `common/` holds patch sets valid for every DUT of ours (each profile
+  lists the files that apply to its device); `systemb/` and `system7/`
+  hold the device-specific ones. Mostly the
   `trigger_read` / `trigger_write` kicks that 1.4.1.1 and 1.4.1.3 need
   because EITT assumes a BCU whose Group Object Server transmits by
   itself when the application sets the request flag; plus the two
@@ -123,7 +126,16 @@ the patch was compensating for needs re-checking.
 
 The group-object, network-layer, transport-layer, load/run-state-machine,
 management and TSSJ data-security templates run today, and all 524
-lowered cases pass. The data-security one is the only overlap with a
+lowered cases pass against the System B profile
+(`conformance/profiles/tp1-systemb.toml`). The six non-secure templates
+also run against the System 7 DUT via
+`conformance/profiles/tp1-system7.toml` (215 cases, all passing): same
+template files, with the family differences expressed as profile
+variables (mask, serial, the EEPROM-based memory windows, the
+absolute-allocation load record, the Application Program object at
+index 3 because System 7 has no Group Object Table object) and one
+System 7 patch (the 16-level model's free level 15 in the
+illegal-key authorization response). The data-security one is the only overlap with a
 hand-written suite rather than new device coverage; clearing it took
 harness defects, device fixes and fixture patches in roughly equal
 measure, so when a newer template revision fails, re-derive which of

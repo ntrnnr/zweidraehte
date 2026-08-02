@@ -48,7 +48,7 @@ pause = "ignore"
 [[template]]
 file = "KnxConformanceTestTemplate-GroupObjects.xml"
 collections = ["UINT1"]
-patches = ["conformance/patches/group-objects.toml"]
+patches = ["conformance/patches/common/group-objects.toml"]
 
 [[template.skipped_collection]]
 name = "UINT8"
@@ -91,7 +91,7 @@ GO_ADDR = "08 01"
 
 [[template]]
 file = "KnxConformanceTestTemplate-TransportLayer.xml"
-patches = ["conformance/patches/transport-layer.toml"]
+patches = ["conformance/patches/common/transport-layer.toml"]
 
 # EITT plays two remote devices at once here, from two tool interfaces
 # it switches on and off around the cases that need the second one. We
@@ -115,7 +115,7 @@ why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run
 
 [[template]]
 file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
-patches = ["conformance/patches/load-state-machines.toml"]
+patches = ["conformance/patches/common/load-state-machines.toml"]
 
 # Suite 2.3 loads the association table for real: it writes three
 # entries to the segment's start address and reads them back. The
@@ -155,7 +155,7 @@ gets there by changing the level 0 key instead.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-RunStateMachines.xml"
-patches = ["conformance/patches/run-state-machines.toml"]
+patches = ["conformance/patches/common/run-state-machines.toml"]
 
 [[template.not_applicable]]
 id = "97DB686D-39CF-4D28-B315-2E3851DD8AC3"
@@ -200,7 +200,7 @@ and 2.5.2.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-Management.xml"
-patches = ["conformance/patches/management.toml"]
+patches = ["conformance/patches/common/management.toml"]
 collections = [
   "2.3 - 2.4 Individual Address",
   "2.5 Device Descriptor",
@@ -406,7 +406,7 @@ still be a human reading the trace.\
 [[template]]
 file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"
 dut = "secure"
-patches = ["conformance/patches/data-security.toml"]
+patches = ["conformance/patches/systemb/data-security.toml"]
 
 [template.variables]
 # The template's own default is 11 01; our secure DUT is at 1.0.1, the

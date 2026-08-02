@@ -1,9 +1,11 @@
 //! Conformance DUT child process — System 7 stack (mask 0705h).
 //!
-//! Spawned by the conformance-runner parent for the System 7 suites.
-//! Same lifecycle as the plain DUT (`dut.rs`), specialised for
-//! `IpcSystem7TestStack`; no shadow-object hook and no extra test memory
-//! regions — the System 7 memory map is the surface under test.
+//! Spawned by the conformance-runner parent for the System 7 suites and
+//! the System 7 EITT profile. Same lifecycle as the plain DUT
+//! (`dut.rs`), specialised for `IpcSystem7TestStack`: the shadow-object
+//! hook and the EEPROM test regions live in the conformance wrapper
+//! types (`harness::system7_stack`), with the family memory map
+//! underneath as the surface under test.
 //!
 //! Usage: `conformance-dut-system7 --shm-fd <N> --socket-fd <M>`
 
@@ -15,10 +17,9 @@ use zweidraehte_conformance::dut_common::{self, CommandChannel, ShmCell};
 use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::harness::shm::SharedMemory;
 use zweidraehte_conformance::harness::system7_stack::{
-    IpcSystem7TestStack, System7DutConfig, device_info, state_init_from_snapshot,
+    ConformanceSystem7MemoryMap, IpcSystem7TestStack, System7DutConfig, device_info, state_init_from_snapshot,
 };
 
-use zweidraehte_device::bcus::system_7::System7MemoryMap;
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
@@ -104,7 +105,15 @@ async fn main(spawner: Spawner) {
     let resources = STACK_RESOURCES.init(StackResources::new());
 
     let (stack, runner) =
-        zweidraehte_device::new(resources, link_layer_builder, state_init, (), System7MemoryMap::new(), ());
+        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceSystem7MemoryMap::new(), ());
+
+    // The shadow-object hook needs the live CoTab; the stack's tables live in
+    // STACK_RESOURCES, which is 'static, so the pointer remains valid for the
+    // process.
+    // SAFETY: the pointer outlives the stack (process-lifetime).
+    unsafe {
+        zweidraehte_conformance::harness::system7_stack::set_system7_cot(stack.communication_object_table());
+    }
 
     // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its
     // subscriber is registered on the PubSubChannel before the AL's

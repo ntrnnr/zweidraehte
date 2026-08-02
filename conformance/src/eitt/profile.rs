@@ -30,7 +30,7 @@
 //!
 //! [[template]]
 //! file = "KnxConformanceTestTemplate-GroupObjects.xml"
-//! patches = ["conformance/patches/group-objects.toml"]
+//! patches = ["conformance/patches/common/group-objects.toml"]
 //! not_applicable = [
 //!   { id = "2B58DCC3-...", why = "UINT8 variant; our GO0 is 1 bit" },
 //! ]
@@ -260,6 +260,8 @@ pub enum Dut {
     Plain,
     /// `conformance-dut-secure`.
     Secure,
+    /// `conformance-dut-system7` — System 7 family (mask 0705h).
+    System7,
 }
 
 impl From<Dut> for DutMode {
@@ -267,6 +269,7 @@ impl From<Dut> for DutMode {
         match d {
             Dut::Plain => DutMode::Plain,
             Dut::Secure => DutMode::Secure,
+            Dut::System7 => DutMode::System7,
         }
     }
 }

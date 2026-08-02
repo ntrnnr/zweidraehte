@@ -1,0 +1,399 @@
+# Device profile for the TP1 System 7 conformance DUT (mask 0705h).
+#
+# Run every template it lists:
+#
+#   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
+#     cargo run --bin conformance-eitt -- \
+#       --profile conformance/profiles/tp1-system7.toml
+#
+# or one of them, by a substring of its file name:
+#
+#   ... --profile conformance/profiles/tp1-system7.toml --template GroupObjects
+#
+# See conformance/src/eitt/profile.rs. The System B twin of this file is
+# tp1-systemb.toml; entries below that differ from it do so because the
+# families differ (memory map, load controls, authorization model), and
+# each difference says why.
+
+medium = "tp"
+dut = "system7"
+
+[addresses]
+# Must match conformance/src/harness/system7_stack.rs: the DUT's
+# individual address is 1.0.1 (inside the RT8 address-table blob) and
+# the tests address it as the BDUT.
+EDI = "AF FE"   # 10.15.254, the tool
+BDUT = "10 01"  # 1.0.1, the device under test
+
+[commands]
+# `@@`-family commands block for an operator, of which a headless run
+# has none. Everything else stays at the default `error`: an ignored
+# `@if-` or `@#` changes what runs.
+pause = "ignore"
+
+# ============================================================================
+# 8/3/7 — Group Objects
+# ============================================================================
+#
+# The System 7 DUT carries the same UINT1 fixture as the System B DUT —
+# GO0 with its shadow objects at the template's default addresses
+# 1000h-1005h — so the template runs unmodified, with the same
+# trigger-kick patches (they name ASAPs, and GO0 is ASAP 1 on both DUTs).
+
+[[template]]
+file = "KnxConformanceTestTemplate-GroupObjects.xml"
+collections = ["UINT1"]
+patches = ["conformance/patches/common/group-objects.toml"]
+
+[[template.skipped_collection]]
+name = "UINT8"
+why = """
+the UINT8 collection is the alternative to UINT1, not a second half of \
+the run: both drive group addresses 1000h-1005h and each opens by naming \
+the sample application program that "shall be loaded into the BDUT". Only \
+one can be loaded, because GO0 at 1000h is either 1 bit or 8 bits. The \
+System 7 DUT's GO0 is DPT_Switch (the same fixture as the System B DUT), \
+so it runs UINT1.\
+"""
+
+# ============================================================================
+# 8/3/3 — Network Layer
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-NetworkLayer.xml"
+
+# 3.1 checks the routing count on an answer, and the template's device
+# answers in the long form — its group object holds a whole octet. Ours
+# at the template's default address is one bit, which answers in the
+# short form and never matches. GO5 at 1/0/1 is the 8-bit object, at the
+# same address as on the System B DUT.
+[template.variables]
+GO_ADDR = "08 01"
+
+# ============================================================================
+# 8/3/4 — Transport Layer
+# ============================================================================
+#
+# System 7 mandates the same TL Style 3 as System B (06 Profiles
+# v02.02.01 §4.1.2 for both families), so the style-choice patch carries
+# over unchanged.
+
+[[template]]
+file = "KnxConformanceTestTemplate-TransportLayer.xml"
+patches = ["conformance/patches/common/transport-layer.toml"]
+
+# The template's SER_NUM default is the System B DUT's serial number;
+# the System 7 DUT answers with its own.
+[template.variables]
+SER_NUM = "FE ED 07 05 CA FE"
+
+# EITT plays two remote devices at once here, from two tool interfaces
+# it switches on and off around the cases that need the second one. We
+# drive a single mock link layer that models no L2 acknowledgement, so
+# there is nothing to switch: both tool addresses are always on the bus
+# and the source address in each telegram already says which of them is
+# speaking.
+[[template.command]]
+category = "interface"
+policy = "ignore"
+why = "one mock bus carries both tool addresses, so @if+/@if- have nothing to switch"
+
+[[template.not_applicable]]
+id = "6E6FDBCA-0912-40BA-A10A-97955BD1CE61"
+why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run"
+
+# ============================================================================
+# 8 TSS G — Load State Machines
+# ============================================================================
+#
+# The template parameterises the allocation record it loads the
+# association table with, and its defaults describe the System B
+# mechanism: segment type 0Bh is Data Relative Allocation, which
+# 06 Profiles v02.02.01 Annex A.2.4.1 Table 7 marks n/a for the System 7
+# masks. The variables below switch it to the family's mandatory
+# AllocAbsDataSeg record (type 00h, 03/05/02 §3.31): segment 0 at the
+# DUT's association-table home 4100h, length 000Fh — the RT8 blob's
+# byte size for the fixture's seven associations.
+
+[[template]]
+file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
+patches = ["conformance/patches/common/load-state-machines.toml"]
+
+[template.variables]
+LOAD_EVENT_SEGMENT_TYPE = "00"
+LOAD_EVENT_SEGMENT_CODING = "00 41 00 00 0F 00 00 00"
+LOAD_EVENT_03_START_ADDR = "41 00"
+
+[template.tl_sequence]
+recompute = true
+why = """
+this template's own sequence numbers are stale. 2.2.2 and 2.3.2 open \
+with the identical connect and request and then expect different \
+acknowledgements from it — 60 C2 and 60 C6 — so no reading of the \
+literals is self-consistent. EITT never reads them either: it computes \
+a sequence number for every management telegram before running the \
+sequence (manual 12.2.3.14). Same entry as the System B profile; the \
+staleness is the template's, not the device's.\
+"""
+
+# Note: 2.6 ("Test without access rights") runs here, unlike on
+# System B. Its preparation writes keys for levels 0-3 and expects each
+# accepted; System B's level 3 is keyless by construction (3 keys,
+# levels 0-2) and had to answer 0xFF, so the case was not applicable
+# there. System 7 has keys on levels 0-14 with level 15 as the free
+# level (06 Profiles v02.02.01 §4.2 row 12), so all four key writes
+# succeed and the unauthorised connection sits at level 15 — below the
+# load state machine's write level 2, which is the denial the case is
+# after.
+
+# ============================================================================
+# 8 TSS I — Run State Machines
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-RunStateMachines.xml"
+patches = ["conformance/patches/common/run-state-machines.toml"]
+
+# The template's default 04 is the Application Program object's index on
+# a System B roster, where the Group Object Table object occupies
+# index 3. System 7 has no Group Object Table object, so its roster is
+# Device(0), AddrTab(1), AssocTab(2), AppProg(3), AppProg2(4) — the
+# Application Program the template means sits at 3. Left at 4, the run
+# controls land on Application Program 2, which the boot cascade
+# rightly does not start — the three power-up cases then read
+# RUNSTATE_HALTED where the started application would show RUNNING.
+[template.variables]
+TEST_OBJ_IDX = "03"
+
+[[template.not_applicable]]
+id = "97DB686D-39CF-4D28-B315-2E3851DD8AC3"
+why = """
+2.1 is an example, as its name says: it factory-resets the BDUT and then \
+writes an individual address by serial number, using a serial number and \
+an address the template invented. Its own comments say to adapt or \
+deactivate it ("Example for medium RF; please modify or deactivate telegram \
+accordingly", "BDUT specific: Possibly do further BDUT configuration"). Run \
+against us unmodified it wipes the address table, leaves the DUT at \
+15.15.255 and takes the other thirty cases with it. Our DUT starts \
+configured, so there is nothing here to adapt it to.\
+"""
+
+[[template.not_applicable]]
+id = "384257FA-38AF-4780-9231-D1EAEF52A087"
+why = """
+2.2.2 scopes itself out: "Only applicable for devices complying with \
+System 2/BCU2 profiles or mask versions 0300h and 2300h. For all other \
+system profiles, this test does not apply as the initial state can not be \
+provoked." We are System 7, mask 0705h. The preparation shows why: it \
+reaches the initial state — HALTED with the executable part loaded — by \
+sending RUNCONTROL_STOP and expecting RUNSTATE_HALTED, annotated "(only \
+mask 0300h or 2300h, otherwise RUNSTATE_TERMINATED)". 03/05/01 \
+§4.24.2.3.3 Table 97 footnote a says the same thing normatively, so for us \
+STOP against a loaded application is TERMINATED and the state this case \
+starts from is unreachable by construction. The RESTART transition it \
+would have tested is covered from every reachable state by 2.3.3, 2.4.3 \
+and 2.5.2.\
+"""
+
+# ============================================================================
+# 8/3/7 — AIL & Management
+# ============================================================================
+#
+# Same collection selection as the System B profile: it is about which
+# management services the device has, and the two DUTs implement the
+# same set. The variables differ where the families do — the mask, the
+# serial number, and the memory map. The System 7 DUT's test memory
+# lives in the family's user EEPROM span (4000h-CFFFh, 06 Profiles
+# v02.02.01 §4.2): accessible block at 5000h (factory 0Fh, which the
+# MemoryBit cases' literal expectations are computed from), read-only /
+# write-only / level-guarded regions behind it, user memory at the
+# template's default 7FF0h. See ConformanceSystem7MemoryMap in
+# conformance/src/harness/system7_stack.rs.
+
+[[template]]
+file = "KnxConformanceTestTemplate-Management.xml"
+patches = [
+  "conformance/patches/common/management.toml",
+  "conformance/patches/system7/management.toml",
+]
+collections = [
+  "2.3 - 2.4 Individual Address",
+  "2.5 Device Descriptor",
+  "2.6 - 2.7 Memory Access",
+  "2.8 ADC",
+  "2.9 Restart",
+  "2.10 MemoryBit Access",
+  "2.11 Authorization",
+  "2.12 Key Access",
+  "2.16 - 2.17 Individual Address Serial Number",
+  "2.20 Illegal APCI",
+  "2.25 Service Information Indication",
+  "2.31 - 2.33 User Memory Access",
+  "2.33 User Manufacturer Info Access",
+  "Test of structure of Address Table",
+]
+
+[template.tl_sequence]
+recompute = true
+why = """
+this template's sequence numbers do not survive contact with a running \
+connection. 2.7.4 sends a property write and then a memory write on the \
+same connection, both encoding sequence 0 in their Data, and then expects \
+the two acknowledgements 60 C2 and 60 C6 — numbers only a running counter \
+produces. EITT computes one for every management telegram before running \
+a sequence (manual 12.2.3.14), so what the XML carries is whatever its \
+author last typed. The 46 telegrams that pin TLSeqNum still win over the \
+recomputation. Same entry as the System B profile; the staleness is the \
+template's, not the device's.\
+"""
+
+# What the template cannot know about our device. The key variables
+# (LEVEL_0_KEY etc.) stay at their defaults: the template installs its
+# keys itself with A_Key_Write, and on System 7 the factory state — all
+# fifteen keys at FF FF FF FF — makes the default key grant level 0 and
+# leaves level 2 answering to FF FF FF FF once levels 0 and 1 are
+# overwritten, the same levels the System B run sees.
+[template.variables]
+# The template invents "000000" as ASCII. Ours is in
+# `system7_stack::device_info::SERIAL_NUMBER`.
+BDUT_SERIAL_NUMBER = "FE ED 07 05 CA FE"
+# Declared as "?? ??", a wildcard for a field EITT expects the operator
+# to fill in from the data sheet. Pinning it also makes 2.5.1 assert our
+# mask rather than accept whatever comes back.
+DD0_RESPONSE = "07 05"
+# The accessible memory block. The template defaults describe the
+# System B DUT's linear memory at 0200h; on System 7 that address range
+# belongs to the fixed low resources (OptionReg at 0100h, load control
+# at 0104h), so the test block lives in user EEPROM at 5000h.
+MEMPOS = "50 00"
+MEMPOS_LASTACCESS = "50 FF"
+# "Protected" for 2.6.3 and 2.7.5 means an address the map does not
+# serve at all. 2000h sits in the unmapped gap between the RAM window
+# (0700h-07FFh) and the RT8 address table (4000h).
+MEMPOS_PROTECTED = "20 00"
+# The level-guarded blocks sit behind the accessible block and the
+# read-only/write-only regions (5100h-511Fh), in that order, so that
+# partly-protected accesses have somewhere to straddle into.
+MEM_START_BLOCK_LEVEL_2 = "51 20"
+MEM_START_BLOCK_LEVEL_1 = "52 00"
+
+# Cases the template scopes out itself, in its own prose, against a
+# device capability we happen to exceed. Same set as the System B
+# profile: MAX_APDU_LENGTH is 254 (`MAX_APDU_LENGTH_EXTENDED` in
+# conformance/src/harness/system7_stack.rs) and we support extended
+# frames, so every "not applicable if MAX_APDU_LENGTH is equal or
+# greater than N" case is out for N of 19, 66 and 195 alike.
+
+[[template.not_applicable]]
+id = "256CBE07-D937-4476-A915-61D7476ED34E"
+why = "2.6.5 is \"for devices not supporting EFF\"; we support extended frames"
+
+[[template.not_applicable]]
+id = "60178AF4-0215-49A6-8FAF-5086FF3733D8"
+why = "2.6.7 is \"conditional for devices supporting MAX_APDU_LENGTH < 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "7B32A143-B03A-4393-B88B-314AA67D0CD7"
+why = "2.7.10: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "F41CB375-5B93-47D2-B14D-CB697FBBE3D7"
+why = "2.7.15: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "8784BD49-3441-4287-9A65-0908E5E70C2D"
+why = "2.7.17: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 66\"; ours is 254"
+
+[[template.not_applicable]]
+id = "47DF0849-EF46-4377-A68C-49B13304A00B"
+why = "2.31.4 is \"for devices supporting SFF only\"; we support extended frames"
+
+[[template.not_applicable]]
+id = "76887E41-4EDC-4297-83D2-563F64A7747F"
+why = "2.31.6: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 195\"; ours is 254"
+
+[[template.not_applicable]]
+id = "C0BEA8A5-DAC0-48ED-BF38-47FA60051574"
+why = "2.32.9: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.not_applicable]]
+id = "2D805C32-EB0B-40D6-95EC-B1A4EEA1C2B8"
+why = "2.32.11: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.not_applicable]]
+id = "332EA8BC-338E-42B7-8ABF-4D7439C38646"
+why = "2.32.15: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.not_applicable]]
+id = "0795F3D4-8D17-4A7A-B971-878C8684257E"
+why = "2.32.17: \"CONDITIONAL and not applicable if the MAX_APDU_LENGTH is equal or greater than 19\"; ours is 254"
+
+[[template.skipped_collection]]
+name = "2.13 to 2.15 Property Access"
+why = """
+the collection wants an application built for it: three interface \
+objects each guarded by its own access key (OBJ_0/1/2_ACCESS_KEY, \
+installed by its preparation suite and removed by its cleanup suite), \
+and System 7 authorisation is device-global rather than per-object, \
+exactly like System B's. It also wants writable properties of 7, 4 and \
+11 octets plus a PDT_GENERIC_20 at PID E0h, which no object in our \
+fixed property tables provides. The property services themselves are \
+implemented and are exercised elsewhere; it is the fixture that does \
+not exist — the same gap the System B profile records.\
+"""
+
+[[template.skipped_collection]]
+name = "2.18 Network Parameter Access"
+why = """
+A_NetworkParameter_Read and A_NetworkParameter_Write have no ApciCode \
+entry in zweidraehte-proto and no service behind them. The template makes \
+the supported parameters a manufacturer declaration — its NP_OBJ_TYPE, \
+NP_PID and NP_TEST_INFO fields are there to be filled in from the PIXIT — \
+and we declare none.\
+"""
+
+[[template.skipped_collection]]
+name = "2.22 to 2.24 Routing Table Access"
+why = """
+A_FilterTable_Read/Write and A_RouterMemory_Read/Write, which are router \
+services. We are a TP1 end device of mask 0705 with no filter table and \
+no router memory, and the APCIs do not exist in zweidraehte-proto.\
+"""
+
+[[template.skipped_collection]]
+name = "2.27-2.29 Domain Address Access"
+why = """
+domain addresses exist on RF and PL, not on TP1. DomainAddressService \
+and RfDomainAddressService are implemented but deliberately left out of \
+StandardAlServices, and the System 7 TP1 state type implements neither \
+HasDomainAddress nor HasRfDomainAddress, so they could not be wired in \
+without giving the device a domain it does not have.\
+"""
+
+[[template.skipped_collection]]
+name = "2.30 Domain Address Selective"
+why = "selective domain-address addressing, same reason as 2.27-2.29 — RF and PL only"
+
+[[template.skipped_collection]]
+name = "2.34 Domain Address Serial Number Access (RF only)"
+why = "the collection name says it: RF only, same reason as 2.27-2.29"
+
+[[template.skipped_collection]]
+name = "Test of structure of Association Table"
+why = """
+the collection is configured and judged by a human. Every case opens \
+with an operator instruction — "Please configure the BDUT with a Group \
+Address that is linked to a single 1-bit DPT (Group Object)", "…with two \
+Group Addresses that each link to a single, but different, 1-bit DPT" — \
+and closes with an @@! verdict prompt, "verify if the returned status \
+value has changed according to the written values". Neither end exists \
+without the operator: the template cannot say which addresses to use, so \
+GA_1/GA_2/GA_3 default to 0900h..0902h, which our DUT does not answer on. \
+Same reasoning as the System B profile — the fixture the cases need (a \
+status object that transmits to a second group address by itself) is not \
+in this DUT either.\
+"""
+
+# No data-security template entry: this profile is the non-secure
+# System 7 device, and there is no Data Secure System 7 stack yet.

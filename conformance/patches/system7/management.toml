@@ -1,0 +1,32 @@
+# System 7 patches for the EITT management template — the places where
+# the template's literals describe a 4-level reference device and the
+# 16-level System 7 authorization model (06 Profiles v02.02.01 §4.2
+# row 12: keys on levels 0-14, level 15 free) answers differently.
+#
+# Applied on top of conformance/patches/common/management.toml by
+# conformance/profiles/tp1-system7.toml. Anchors are the GUIDs the
+# template gives every telegram; one that stops resolving is a hard
+# error — the signal the template has been revised and the compensation
+# here needs re-checking.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-Management"
+
+# ============================================================================
+# 2.11.2 — Authorization with an illegal key returns the free level
+# ============================================================================
+#
+# The case's own prose hedges the number: "Acceptance A: no
+# authorization is returned (e.g. 3)". 3 is the free level of the
+# 4-level reference device the literal was computed on; on System 7 the
+# free level is 15, so the A_Authorize_Response carries 0Fh. Acceptance
+# B — the memory read for the level-1 block failing — is the actual
+# security property, and runs against us unmodified.
+
+[[patch]]
+replace = "C11B1154-363B-471D-9BD8-755314221B0C"
+why = "2.11.2: an illegal key falls to the free level, which is 15 on System 7's 16-level model, not the 4-level reference device's 3"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 62 43 D2 0F", timeout_ms = 1000 } },
+]
