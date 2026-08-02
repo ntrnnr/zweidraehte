@@ -151,6 +151,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         tests::security::section_6::create_section_6_suite(),
         tests::security::section_6::create_section_6_2_suite(),
         tests::security::section_3_2::create_section_3_2_suite(),
+        tests::system7_smoke::create_system7_smoke_suite(),
     ];
 
     let has_test_case_filter =
@@ -167,6 +168,23 @@ async fn main(_spawner: embassy_executor::Spawner) {
                 suite_matches || case_matches
             })
             .collect()
+    };
+
+    // The System 7 suites need their own DUT binary. When every retained
+    // suite is a System 7 suite (e.g. filter "system 7"), switch the run
+    // to the System 7 DUT; otherwise drop them from this run.
+    let dut_mode = if !suites.is_empty() && suites.iter().all(|s| s.use_system7_dut) {
+        DutMode::System7
+    } else {
+        let before = suites.len();
+        suites.retain(|s| !s.use_system7_dut);
+        let skipped = before - suites.len();
+        if skipped > 0 && filters.is_empty() {
+            println!("ℹ️  {} System 7 suite(s) run separately: conformance-runner \"System 7\"", skipped);
+        } else if skipped > 0 {
+            println!("⚠️  Skipped {} System 7 suite(s) — mixed-DUT runs are not supported", skipped);
+        }
+        dut_mode
     };
 
     if dut_mode == DutMode::Plain {

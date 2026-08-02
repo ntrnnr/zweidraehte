@@ -739,6 +739,8 @@ pub struct TestSuite {
     pub teardown: Vec<TestStep>,
     /// Whether this suite requires the secure DUT (`conformance-dut-secure`).
     pub use_secure_dut: bool,
+    /// Whether this suite requires the System 7 DUT (`conformance-dut-system7`).
+    pub use_system7_dut: bool,
 }
 
 impl TestSuite {
@@ -750,6 +752,7 @@ impl TestSuite {
             cases: Vec::new(),
             teardown: Vec::new(),
             use_secure_dut: false,
+            use_system7_dut: false,
         }
     }
 
@@ -770,6 +773,12 @@ impl TestSuite {
 
     pub fn secure(mut self) -> Self {
         self.use_secure_dut = true;
+        self
+    }
+
+    /// Run this suite against the System 7 DUT.
+    pub fn system7(mut self) -> Self {
+        self.use_system7_dut = true;
         self
     }
 }

@@ -1216,6 +1216,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
     println!("DUT mode: {}", match opts.dut_mode {
         DutMode::Secure => "secure (conformance-dut-secure)",
         DutMode::Plain => "plain (conformance-dut)",
+        DutMode::System7 => "System 7 (conformance-dut-system7)",
     });
 
     harness.spawn_and_wait_roi().await.expect("spawn DUT child");

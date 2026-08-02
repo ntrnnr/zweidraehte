@@ -1,0 +1,128 @@
+//! Conformance DUT child process — System 7 stack (mask 0705h).
+//!
+//! Spawned by the conformance-runner parent for the System 7 suites.
+//! Same lifecycle as the plain DUT (`dut.rs`), specialised for
+//! `IpcSystem7TestStack`; no shadow-object hook and no extra test memory
+//! regions — the System 7 memory map is the surface under test.
+//!
+//! Usage: `conformance-dut-system7 --shm-fd <N> --socket-fd <M>`
+
+use embassy_executor::Spawner;
+use embassy_time::{Duration, Timer};
+use static_cell::StaticCell;
+
+use zweidraehte_conformance::dut_common::{self, CommandChannel, ShmCell};
+use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
+use zweidraehte_conformance::harness::shm::SharedMemory;
+use zweidraehte_conformance::harness::system7_stack::{
+    IpcSystem7TestStack, System7DutConfig, device_info, state_init_from_snapshot,
+};
+
+use zweidraehte_device::bcus::system_7::System7MemoryMap;
+use zweidraehte_device::{Runner, Stack, StackResources};
+use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
+
+// ============================================================================
+// Static Resources
+// ============================================================================
+
+static STACK_RESOURCES: StaticCell<StackResources<IpcSystem7TestStack, { device_info::BUFFER_SIZE }, 4>> =
+    StaticCell::new();
+static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = StaticCell::new();
+static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
+static COMMAND_CHANNEL: StaticCell<CommandChannel> = StaticCell::new();
+static SHM: StaticCell<ShmCell> = StaticCell::new();
+
+// ============================================================================
+// Embassy tasks
+// ============================================================================
+
+#[embassy_executor::task]
+async fn run_stack(runner: Runner<'static, IpcSystem7TestStack>) {
+    runner.run().await;
+}
+
+#[embassy_executor::task]
+async fn handle_commands(
+    stack: Stack<'static, IpcSystem7TestStack>,
+    commands: &'static CommandChannel,
+    shm: &'static ShmCell,
+) {
+    loop {
+        let cmd = commands.receive().await;
+        dut_common::handle_ipc_command::<IpcSystem7TestStack>(stack, shm, cmd).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn handle_restarts(stack: Stack<'static, IpcSystem7TestStack>, shm: &'static ShmCell) {
+    loop {
+        let request = stack.receive_restart_request().await;
+        dut_common::handle_restart_request::<IpcSystem7TestStack>(stack, shm, request.erase_code).await;
+    }
+}
+
+// ============================================================================
+// Entry point
+// ============================================================================
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    let (shm_fd, socket_fd) = dut_common::parse_args("conformance-dut-system7");
+
+    set_primary_socket_fd(socket_fd);
+    dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
+
+    // SAFETY: the parent passed us a valid fd for a SHM region.
+    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
+
+    // Deserialize state from SHM. Parent always writes the initial
+    // snapshot before spawning us.
+    let snapshot: System7DutConfig = shm
+        .read_state()
+        .expect("read shared memory")
+        .expect("shared memory uninitialized — parent should have written initial state");
+
+    let state_init = state_init_from_snapshot(snapshot);
+    let shm = SHM.init(ShmCell::new(shm));
+
+    let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
+    // SAFETY: single-threaded buffer manager over our static buffers.
+    let buffer_manager = INJECTION_BUFFER_MANAGER.init(unsafe { BufferManager::new(buffers) });
+    let dyn_buffer_manager = buffer_manager.dyn_buffer_manager();
+    // SAFETY: buffer manager lives in a StaticCell ('static).
+    let dyn_buffer_manager: DynBufferManager<'static> = unsafe { core::mem::transmute(dyn_buffer_manager) };
+
+    let command_channel = COMMAND_CHANNEL.init(CommandChannel::new());
+    let command_tx = command_channel.dyn_sender();
+    // SAFETY: the channel is static.
+    let command_tx = unsafe { core::mem::transmute(command_tx) };
+
+    let link_layer_builder =
+        IpcLinkLayerBuilder::new(socket_fd, dyn_buffer_manager, command_tx).expect("build IPC link layer");
+
+    let resources = STACK_RESOURCES.init(StackResources::new());
+
+    let (stack, runner) =
+        zweidraehte_device::new(resources, link_layer_builder, state_init, (), System7MemoryMap::new(), ());
+
+    // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its
+    // subscriber is registered on the PubSubChannel before the AL's
+    // first `poll()` publishes `ReadOnInitComplete`.
+    let lifecycle_sub = stack.lifecycle_events();
+    // SAFETY: `stack` lives for the duration of the process via
+    // `STACK_RESOURCES: StaticCell<...>`, so the subscriber borrows
+    // from a `'static` channel.
+    let lifecycle_sub: embassy_sync::pubsub::DynSubscriber<'static, zweidraehte_device::lifecycle::LifecycleEvent> =
+        unsafe { core::mem::transmute(lifecycle_sub) };
+    spawner.spawn(dut_common::bridge_lifecycle_to_ipc(lifecycle_sub)).expect("spawn lifecycle bridge");
+
+    spawner.spawn(run_stack(runner)).expect("spawn stack runner");
+    spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
+    spawner.spawn(handle_restarts(stack, shm)).expect("spawn restart handler");
+
+    // Main keeps the executor alive; the worker tasks handle IO.
+    loop {
+        Timer::after(Duration::from_secs(3600)).await;
+    }
+}

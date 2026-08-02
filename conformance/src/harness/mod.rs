@@ -18,6 +18,7 @@ pub mod protocol;
 pub mod secure_stack;
 pub mod shm;
 pub mod stack;
+pub mod system7_stack;
 
 pub use frame_source::CapturedLinkLayerMessage;
 pub use lifecycle::{ChildLifecycle, DutMode};

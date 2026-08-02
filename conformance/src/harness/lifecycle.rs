@@ -59,6 +59,8 @@ pub enum DutMode {
     Plain,
     /// `conformance-dut-secure` — Data Secure enabled.
     Secure,
+    /// `conformance-dut-system7` — System 7 family (mask 0705h).
+    System7,
 }
 
 impl DutMode {
@@ -66,6 +68,7 @@ impl DutMode {
         match self {
             Self::Plain => "conformance-dut",
             Self::Secure => "conformance-dut-secure",
+            Self::System7 => "conformance-dut-system7",
         }
     }
 }
@@ -136,6 +139,7 @@ impl ChildLifecycle {
         match mode {
             DutMode::Plain => shm.write_state(&ConformanceDeviceConfig::default_snapshot())?,
             DutMode::Secure => shm.write_state(&SecureConformanceDeviceConfig::default_snapshot())?,
+            DutMode::System7 => shm.write_state(&crate::harness::system7_stack::default_snapshot())?,
         }
         Ok(Self { shm, state: LifecycleState::Dead, mode, next_seq: 0, unsolicited_frames: VecDeque::new() })
     }
@@ -195,6 +199,7 @@ impl ChildLifecycle {
     pub fn reset_shared_memory(&mut self) -> io::Result<()> {
         match self.mode {
             DutMode::Plain => self.shm.write_state(&ConformanceDeviceConfig::default_snapshot())?,
+            DutMode::System7 => self.shm.write_state(&crate::harness::system7_stack::default_snapshot())?,
             DutMode::Secure => {
                 self.shm.write_state(&SecureConformanceDeviceConfig::default_snapshot())?;
                 // Seq region is OUTSIDE the postcard payload (tail of
