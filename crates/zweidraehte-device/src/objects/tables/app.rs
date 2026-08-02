@@ -140,6 +140,17 @@ impl<D: ConstDefault + IntoBytes + KnownLayout + Immutable> TableMemory for Appl
 
     const MAX_SIZE: usize = core::mem::size_of::<D>();
 
+    /// The application program's load state machine owns every segment
+    /// of the application — on System 7 that is the group object table
+    /// *and* the parameter block, each larger than or unrelated to the
+    /// params struct backing this table. The allocation records are
+    /// acknowledgements of the product database's fixed layout; each
+    /// region is bounds-checked by its own memory window when the
+    /// bytes arrive.
+    fn accepts_segment(_len: usize) -> bool {
+        true
+    }
+
     fn read(&self, offset: usize, data: &mut [u8]) {
         let src = self.data_ref();
         let end = (offset + data.len()).min(src.len());

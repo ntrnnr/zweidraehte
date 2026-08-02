@@ -361,7 +361,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             System7Segment {
                 name: "4200",
                 address: 0x4200,
-                size: 2 + LightSwitchDevice::MAX_COM_OBJECTS as u32 * 2,
+                // The M112 group object table ETS's System 7 formatter
+                // writes here: count + RAM-flags pointer + one 4-octet
+                // entry per ComObject Number 0..=max. Must match the
+                // firmware's `cot_address`/COT window size.
+                size: 3 + (LightSwitchDevice::MAX_COM_OBJECTS as u32 + 1) * 4,
                 memory_type: None,
                 data: None,
                 mask: None,

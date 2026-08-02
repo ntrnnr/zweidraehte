@@ -158,9 +158,9 @@ mod test {
         let mut a = AddrTab8::<10>::new();
 
         a.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        // AllocAbsDataSeg: [type 00h][segment_ID][start 4000h][length][access][memtype][memattr][reserved]
+        // AllocAbsDataSeg: [type 00h][start 4000h][length 0017h][access][memtype][memattr][reserved]
         a.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x40, 0x00, 0x00, 0x09, 0x33, 0x03, 0x00, 0x00],
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x40, 0x00, 0x00, 0x17, 0xFF, 0x03, 0x80, 0x00],
             None,
         );
 

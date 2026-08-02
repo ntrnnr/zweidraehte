@@ -12,8 +12,10 @@
 //! 0700h..07FFh     RAM window ("resources from 0700h")
 //! 4000h..          RT8 group address table (fixed, Resources §4.16.9.2)
 //! B6EAh..B6EDh     load-state bytes: ADT / AST / APP / APP2
-//! dynamic          association table, GO table, application segment —
-//!                  each located by its own table reference
+//! product const    group object table (`System7ProductLayout::COT_ADDRESS` —
+//!                  no location resource exists for it)
+//! dynamic          association table and application segment, each
+//!                  located by its own table reference
 //! ```
 //!
 //! The load-control record at 0104h packs the target state machine and
@@ -35,7 +37,7 @@ use crate::{
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::AccessPolicy;
 
-use super::{SYSTEM7_RAM_SIZE, System7DeviceState};
+use super::{SYSTEM7_RAM_SIZE, System7DeviceState, System7ProductLayout};
 
 /// Memory map for System 7 devices.
 ///
@@ -53,7 +55,8 @@ impl System7MemoryMap {
     /// Load-control write window (03/05/02 §3.31.2).
     pub const LOAD_CONTROL_ADDR: u16 = 0x0104;
     /// Maximum load-control record length (per the master data's
-    /// resource length; the records themselves are 11 octets).
+    /// resource length; the absolute-segment records themselves are
+    /// 10 octets — event + type + 8, 03/05/02 §3.31.3).
     pub const LOAD_CONTROL_LEN: usize = 12;
     /// Start of the RAM window ("resources from 0700h").
     pub const RAM_ADDR: u16 = 0x0700;
@@ -78,7 +81,7 @@ impl<
     const ADT_SIZE: usize,
     const AST_SIZE: usize,
     const COT_SIZE: usize,
-    D: StackDefinition,
+    D: StackDefinition + System7ProductLayout,
     ES: ExtensionState + HasSecurityMode,
 > MemoryMap<System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>> for System7MemoryMap
 {
@@ -148,9 +151,13 @@ impl<
             return Ok(need);
         }
 
-        let cot_ref = state.cot.borrow().table_reference() as u16;
-        if cot_ref != 0 && fits(address, need, cot_ref, COT_SIZE) {
-            state.cot.borrow().read((address - cot_ref) as usize, data);
+        // The group object table window is a product constant: the
+        // table has no location resource and no load state machine of
+        // its own (its segment is allocated to the Application
+        // Program's), so nothing at runtime could ever establish a
+        // reference for it — see `System7ProductLayout`.
+        if fits(address, need, D::COT_ADDRESS, COT_SIZE) {
+            state.cot.borrow().read((address - D::COT_ADDRESS) as usize, data);
             return Ok(need);
         }
 
@@ -230,9 +237,12 @@ impl<
             return Ok(need);
         }
 
-        let cot_ref = state.cot.borrow().table_reference() as u16;
-        if cot_ref != 0 && fits(address, need, cot_ref, COT_SIZE) {
-            state.cot.borrow_mut().write((address - cot_ref) as usize, data);
+        // Product-constant window; see the read path. Checked before
+        // the application's reference window: ETS writes the group
+        // object table while the Application Program's only recorded
+        // segment is still this one.
+        if fits(address, need, D::COT_ADDRESS, COT_SIZE) {
+            state.cot.borrow_mut().write((address - D::COT_ADDRESS) as usize, data);
             return Ok(need);
         }
 

@@ -33,7 +33,7 @@ use crate::{
         tables::{
             AbsoluteAlloc, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
             HasLoadStateMachine, HasPeiApplication, Table, addr8::AddrTab8Impl, app::Application, asso8::AssoTab8Impl,
-            co7::CoTab7Impl,
+            co_m112::CoTabM112Impl,
         },
     },
     restart::EraseCode,
@@ -116,7 +116,7 @@ pub struct System7DeviceState<
 
     /// Group object table (CO type + flags). Internal — no interface
     /// object exposes it; ETS writes it inside the application segment.
-    pub cot: RefCell<Table<CoTab7Impl<COT_SIZE>, AbsoluteAlloc>>,
+    pub cot: RefCell<Table<CoTabM112Impl<COT_SIZE>, AbsoluteAlloc>>,
 
     /// Application program (interface object index 3).
     pub app: RefCell<Application<D::P, AbsoluteAlloc>>,
@@ -636,7 +636,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
     HasCommunicationObjectTable for System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
-    type COT = Table<CoTab7Impl<COT_SIZE>, AbsoluteAlloc>;
+    type COT = Table<CoTabM112Impl<COT_SIZE>, AbsoluteAlloc>;
 
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot

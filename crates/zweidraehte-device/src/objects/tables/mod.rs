@@ -111,6 +111,19 @@ pub trait TableMemory: ConstDefault + Sized {
         self.data_ref_mut()[offset..offset + data.len()].copy_from_slice(data);
     }
 
+    /// Whether an absolute-segment allocation of `len` bytes is
+    /// acceptable for this table.
+    ///
+    /// The default bounds segments by the table's own capacity. The
+    /// application program overrides this to accept any length: on
+    /// System 7 its load state machine owns *all* the application's
+    /// segments — the group object table and the parameters — and each
+    /// region is bounds-checked by its own memory window at write
+    /// time, not by the allocation record.
+    fn accepts_segment(len: usize) -> bool {
+        len <= Self::MAX_SIZE
+    }
+
     /// Clear the table's payload for a load-state-machine Unload.
     ///
     /// The Unload event only declares the loadable data invalid — "the
@@ -269,17 +282,25 @@ impl LoadControlPolicy for RelativeAlloc {
 /// `DM_LoadStateMachineWrite` — mandatory for masks 0701h/0705h per
 /// 06 Profiles v02.02.01 Annex A.2.4.1 Table 7.
 ///
-/// `AllocAbsDataSeg` (type 00h) carries
-/// `[segment_ID:1][start_address:2BE][length:2BE][access:1][memory_type:1][memory_attributes:1][reserved:1]`;
-/// the start address becomes the table reference (the segments are fixed
+/// `AllocAbsDataSeg` (type 00h) carries, after the type octet
+/// (03/05/02 §3.31.3):
+///
+/// ```text
+/// [start_address:2BE][length:2BE][access_attributes:1]
+/// [memory_type:1][memory_attributes:1][reserved 00h]
+/// ```
+///
+/// The start address becomes the table reference (the segments are fixed
 /// in the profile's absolute memory map, so nothing is allocated — the
-/// record is acknowledged and recorded). The task/pointer records
+/// record is acknowledged and recorded). Access attributes carry the
+/// write level in bits 0–3 and the read level in bits 4–7; memory type
+/// bits 0–2 name the memory class (3 = EEPROM). The task/pointer records
 /// (types 01h–05h) exist for the legacy BCU firmware's entry points and
 /// are accepted as no-ops. `RelativeData` (0Bh) is not part of this
 /// profile family and is rejected.
 // TODO: memory_attributes bit 7 requests checksum control for the
-// segment (03/05/02 §3.31); wire it to the MCB's CRC handling when a
-// System 7 product actually sets it.
+// segment (03/05/02 §3.31.3); ETS sends it set (80h) — wire it to the
+// MCB's CRC handling when checksum verification is implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AbsoluteAlloc;
 
@@ -296,7 +317,6 @@ impl LoadControlPolicy for AbsoluteAlloc {
 
         match additional_data.take_byte_front().map(LoadSegment::from) {
             Some(LoadSegment::AbsoluteData) => {
-                let _segment_id = additional_data.take_byte_front().ok_or(LoadError::UndefinedLoadCommand)?;
                 let start_address =
                     additional_data.take_obj_front::<U16>().ok_or(LoadError::UndefinedLoadCommand)?.get();
                 let length = additional_data.take_obj_front::<U16>().ok_or(LoadError::UndefinedLoadCommand)?.get();
@@ -304,7 +324,7 @@ impl LoadControlPolicy for AbsoluteAlloc {
                 // reserved follow; nothing in them changes what this
                 // device does with the segment, so they are not decoded.
 
-                if length as usize > T::MAX_SIZE {
+                if !T::accepts_segment(length as usize) {
                     return Err(LoadError::MaxTableLengthExceeded);
                 }
 
@@ -1089,6 +1109,10 @@ impl<T: TableMemory, P: LoadControlPolicy> TableMemory for Table<T, P> {
 
     const MAX_SIZE: usize = T::MAX_SIZE;
 
+    fn accepts_segment(len: usize) -> bool {
+        T::accepts_segment(len)
+    }
+
     fn read(&self, offset: usize, data: &mut [u8]) {
         self.table.read(offset, data)
     }
@@ -1291,6 +1315,10 @@ impl<T: HasLoadStateMachine + TableMemory> TableMemory for RunnableApplication<T
 
     const MAX_SIZE: usize = T::MAX_SIZE;
 
+    fn accepts_segment(len: usize) -> bool {
+        T::accepts_segment(len)
+    }
+
     fn read(&self, offset: usize, data: &mut [u8]) {
         self.table.read(offset, data)
     }
@@ -1363,6 +1391,7 @@ pub mod app;
 pub mod asso6;
 pub mod asso8;
 pub mod co7;
+pub mod co_m112;
 
 // Re-export commonly-used concrete table types so consumers can write
 // `objects::tables::AddrTab7` instead of `objects::tables::addr7::AddrTab7`.
@@ -1371,6 +1400,7 @@ pub use addr8::{AddrTab8, AddrTab8Impl};
 pub use app::{Application, PeiApplication};
 pub use asso6::{AssoTab6, AssoTab6Impl};
 pub use asso8::{AssoTab8, AssoTab8Impl};
+pub use co_m112::{CoTabM112, CoTabM112Impl};
 pub use co7::{CoTab7, CoTab7Alloc, CoTab7Impl};
 
 #[cfg(test)]
@@ -1406,15 +1436,46 @@ mod tests {
     fn absolute_alloc_records_reference_and_size() {
         let mut table = AbsTable::new();
         table.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        // [event][type 00h][segment_ID][start 4000h][length 0010h][access][memtype][memattr][reserved]
+        // [event][type 00h][start 4000h][length 0010h][access][memtype][memattr][reserved]
         table.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x40, 0x00, 0x00, 0x10, 0x33, 0x03, 0x00, 0x00],
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x40, 0x00, 0x00, 0x10, 0xFF, 0x03, 0x80, 0x00],
             None,
         );
         assert_eq!(table.load_state(), LoadState::Loading);
         assert_eq!(table.table_reference(), 0x4000);
         let mcb = McbData::ref_from_bytes(HasLoadStateMachine::mcb_bytes(&table)).expect("MCB is 8 bytes");
         assert_eq!(mcb.requested_memory_size.get(), 0x10);
+    }
+
+    /// The application program's load state machine accepts absolute
+    /// segments larger than its own params buffer: on System 7 it owns
+    /// the group object table and the parameter block together, and the
+    /// records only acknowledge the product database's fixed layout.
+    /// The reference tracks the last record (our generator emits the
+    /// parameter segment last).
+    // TODO: record-order independence — match the params segment by
+    // its product address instead of relying on emission order, once a
+    // second System 7 product exercises a different procedure shape.
+    #[test]
+    fn application_accepts_multiple_absolute_segments() {
+        let mut app = Application::<u64, AbsoluteAlloc>::new();
+        app.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        // GO table segment: 14 bytes at 4200h — larger than the 8-byte
+        // params struct, still accepted.
+        app.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x42, 0x00, 0x00, 0x0E, 0xFF, 0x03, 0x80, 0x00],
+            None,
+        );
+        assert_eq!(app.read_lsm(), [LoadState::Loading.into()]);
+        // Parameter segment: 8 bytes at 4300h.
+        app.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x43, 0x00, 0x00, 0x08, 0xFF, 0x03, 0x80, 0x00],
+            None,
+        );
+        assert_eq!(app.read_lsm(), [LoadState::Loading.into()]);
+        assert_eq!(app.table_reference(), 0x4300, "last record wins");
+        app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
+        assert_eq!(app.read_lsm(), [LoadState::Loaded.into()]);
     }
 
     /// Unload zeroes a plain table's whole blob — the default
@@ -1462,7 +1523,7 @@ mod tests {
         let mut table = RelTable::new();
         table.write_lsm(&[LoadEvent::StartLoading.into()], None);
         table.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x40, 0x00, 0x00, 0x10, 0x33, 0x03, 0x00, 0x00],
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x40, 0x00, 0x00, 0x10, 0xFF, 0x03, 0x80, 0x00],
             None,
         );
         assert_eq!(table.load_state(), LoadState::Err);
@@ -1477,7 +1538,7 @@ mod tests {
         table.write_lsm(&[LoadEvent::StartLoading.into()], None);
         // length 0x0100 > MAX_SIZE 32
         table.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x40, 0x00, 0x01, 0x00, 0x33, 0x03, 0x00, 0x00],
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x40, 0x00, 0x01, 0x00, 0xFF, 0x03, 0x80, 0x00],
             None,
         );
         assert_eq!(table.load_state(), LoadState::Err);

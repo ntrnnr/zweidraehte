@@ -103,6 +103,10 @@ struct S7TestStack;
 
 type S7TestState = System7DeviceState<ADT, AST, COT, S7TestStack>;
 
+impl zweidraehte_device::bcus::system_7::System7ProductLayout for S7TestStack {
+    const COT_ADDRESS: u16 = 0x4200;
+}
+
 impl StackDefinition for S7TestStack {
     const DEVICE: &'static DeviceDescriptor = &S7_DEVICE;
     const TL_STYLE: TlStyle = TlStyle::Style3;
@@ -339,7 +343,7 @@ mod memory_map {
         // Machine 1 (ADT): StartLoading, then AllocAbsDataSeg at 4000h.
         MAP.write(&state, 0x0104, &[0x11], CTX).expect("start loading");
         assert_eq!(read1(&state, 0xB6EA), u8::from(LoadState::Loading));
-        MAP.write(&state, 0x0104, &[0x13, 0x00, 0x00, 0x40, 0x00, 0x00, 0x09, 0x33, 0x03, 0x00, 0x00], CTX)
+        MAP.write(&state, 0x0104, &[0x13, 0x00, 0x40, 0x00, 0x00, 0x09, 0xFF, 0x03, 0x80, 0x00], CTX)
             .expect("alloc record");
         assert_eq!(state.adt.borrow().table_reference(), 0x4000);
 
@@ -376,7 +380,7 @@ mod memory_map {
 
         // Machine 2 (AST): StartLoading + AllocAbsDataSeg at 4100h.
         MAP.write(&state, 0x0104, &[0x21], CTX).expect("ast start");
-        MAP.write(&state, 0x0104, &[0x23, 0x00, 0x00, 0x41, 0x00, 0x00, 0x07, 0x33, 0x03, 0x00, 0x00], CTX)
+        MAP.write(&state, 0x0104, &[0x23, 0x00, 0x41, 0x00, 0x00, 0x07, 0xFF, 0x03, 0x80, 0x00], CTX)
             .expect("ast alloc");
 
         // [count=1][TSAP 1 -> ASAP 1]
@@ -527,6 +531,7 @@ mod macros {
     zweidraehte_device::system_7_standard_stack! {
         stack: MacroStack,
         device: &MACRO_DEVICE,
+        cot_address: 0x4200,
         tl_style: TlStyle::Style3,
         params: NoParams,
         com_objects: NoCo,

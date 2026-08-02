@@ -21,6 +21,25 @@ use super::objects::{DefaultSystem7InterfaceObjects, create_system_7_objects};
 /// System 7 macro and devices stay within their family's namespace.
 pub use crate::bcus::system_b::ExtensionAugmentFor;
 
+/// The product-defined memory placements a System 7 device must know
+/// about itself.
+///
+/// On System 7 the group object table has no device-side location
+/// resource: the ETS master data locates `MV-0705`'s `GroupObjectTable`
+/// with `AddressSpace="None"`, and ETS takes the address purely from
+/// the product database's `ComObjectTable` segment binding. The device
+/// firmware and the product database come from the same device
+/// definition, so the address is a compile-time constant here — the
+/// same shape as the RT8 address table's fixed 4000h, just
+/// per-product. [`System7MemoryMap`] serves the group-object-table
+/// window at this address unconditionally; the table's load lifecycle
+/// rides on the Application Program's load state machine, which is why
+/// no allocation record ever names the table itself.
+pub trait System7ProductLayout {
+    /// Where the product database places the group object table.
+    const COT_ADDRESS: u16;
+}
+
 /// Supertrait for System 7 devices that use [`System7MemoryMap`].
 ///
 /// Provides the RT8-shaped table sizes derived from
@@ -32,7 +51,7 @@ pub use crate::bcus::system_b::ExtensionAugmentFor;
 /// ```rust,ignore
 /// impl System7StackDefinition for MyDevice {}
 /// ```
-pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> {
+pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> + System7ProductLayout {
     /// RT8 address table byte size: 1-octet count + 2-octet IA +
     /// 2 octets per group address.
     const ADT_SIZE: usize = 3 + Self::DEVICE.max_address_table_entries as usize * 2;
@@ -41,8 +60,10 @@ pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> {
     /// entry (TSAP u8 + ASAP u8).
     const AST_SIZE: usize = 1 + Self::DEVICE.max_association_table_entries as usize * 2;
 
-    /// Group object table byte size (Type 7 format, internal only).
-    const COT_SIZE: usize = 2 + Self::DEVICE.max_com_objects as usize * 2;
+    /// Group object table byte size in the M112 memory format ETS's
+    /// System 7 formatter writes: 3-octet header (count + RAM-flags
+    /// pointer) plus one 4-octet entry per ASAP `0..=max`.
+    const COT_SIZE: usize = 3 + (Self::DEVICE.max_com_objects as usize + 1) * 4;
 
     /// Number of address-table entries (group addresses).
     const ADT_ENTRIES: usize = Self::DEVICE.max_address_table_entries as usize;
@@ -111,6 +132,7 @@ macro_rules! system_7_standard_stack {
     (
         stack: $stack:ty,
         device: $device:expr,
+        cot_address: $cot_address:expr,
         tl_style: $tl_style:expr,
         params: $params:ty,
         com_objects: $com_objects:ty,
@@ -128,6 +150,10 @@ macro_rules! system_7_standard_stack {
         $(, extra { $($extra:item)* })?
         $(,)?
     ) => {
+        impl $crate::bcus::system_7::System7ProductLayout for $stack {
+            const COT_ADDRESS: u16 = $cot_address;
+        }
+
         impl $crate::bcus::system_7::System7StackDefinition for $stack {}
 
         impl $crate::StackDefinition for $stack {

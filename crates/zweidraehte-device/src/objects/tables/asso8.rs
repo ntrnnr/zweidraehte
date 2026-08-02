@@ -214,7 +214,7 @@ mod test {
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
         // AllocAbsDataSeg at 4100h, 7 bytes.
         ast.write_lsm(
-            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x41, 0x00, 0x00, 0x07, 0x33, 0x03, 0x00, 0x00],
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x41, 0x00, 0x00, 0x07, 0xFF, 0x03, 0x80, 0x00],
             None,
         );
 

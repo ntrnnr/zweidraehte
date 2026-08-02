@@ -14,8 +14,11 @@
 ///
 /// - `AddrTab` / `AssoTab` are the RT8 types
 ///   ([`AddrTab8`](crate::objects::tables::addr8::AddrTab8) /
-///   [`AssoTab8`](crate::objects::tables::asso8::AssoTab8)); `CoTab`
-///   stays the Type 7 format both families share.
+///   [`AssoTab8`](crate::objects::tables::asso8::AssoTab8)); `CoTab` is
+///   the M112 memory format
+///   ([`CoTabM112`](crate::objects::tables::CoTabM112)) that ETS's
+///   System 7 formatter writes. ASAPs must be contiguous from 1 — the
+///   M112 table is indexed by ASAP (compile-time checked).
 /// - The parsed `individual_address` is *also* baked into the address
 ///   table's IA slot — on System 7 that slot is the device's address
 ///   storage.
@@ -48,12 +51,12 @@ macro_rules! system7_stack_config {
             pub individual_address: ::zweidraehte_proto::address::IndividualAddress,
             addr8_data: [u8; Self::ADDR8_SIZE],
             asso8_data: [u8; Self::ASSO8_SIZE],
-            co7_data: [u8; Self::CO7_SIZE],
+            cot_data: [u8; Self::COT_SIZE],
         }
 
         pub type AddrTab = $crate::objects::tables::addr8::AddrTab8<{ $name::NUM_GROUP_ADDRS }>;
         pub type AssoTab = $crate::objects::tables::asso8::AssoTab8<{ $name::NUM_ASSOCIATIONS }>;
-        pub type CoTab = $crate::objects::tables::CoTab7Alloc<{ $name::NUM_COMM_OBJECTS }>;
+        pub type CoTab = $crate::objects::tables::CoTabM112<{ $name::NUM_COMM_OBJECTS }>;
 
         impl $name {
             pub const NUM_GROUP_ADDRS: usize = $crate::knx_stack_config!(@count $($tsap)*);
@@ -63,7 +66,10 @@ macro_rules! system7_stack_config {
 
             pub const ADDR8_SIZE: usize = 3 + Self::NUM_GROUP_ADDRS * 2;
             pub const ASSO8_SIZE: usize = 1 + Self::NUM_ASSOCIATIONS * 2;
-            pub const CO7_SIZE: usize = 2 + Self::NUM_COMM_OBJECTS * 2;
+            /// M112 group object table: header (count + RAM-flags ptr)
+            /// plus one 4-octet entry per ASAP `0..=NUM` (index 0 is
+            /// the unused slot in front of 1-based ASAPs).
+            pub const COT_SIZE: usize = 3 + (Self::NUM_COMM_OBJECTS + 1) * 4;
 
             /// The fixed location of the RT8 address table
             /// (03/05/01 Resources §4.16.9.2).
@@ -180,25 +186,35 @@ macro_rules! system7_stack_config {
                 )*
                 assert!(asso_idx == Self::ASSO8_SIZE);
 
-                // Build the communication object table (Type 7 format).
-                let mut co7_data = [0u8; Self::CO7_SIZE];
-                co7_data[0] = (Self::NUM_COMM_OBJECTS >> 8) as u8;
-                co7_data[1] = (Self::NUM_COMM_OBJECTS & 0xFF) as u8;
+                // Build the group object table in the M112 memory
+                // format: [count][RAM-flags ptr:2] then one
+                // [data ptr:2][config][type] entry per ASAP. Entry
+                // index = ASAP; index 0 stays zeroed in front of the
+                // 1-based ASAPs. The pointers are wire-compat only —
+                // this stack keeps the runtime values and flags in the
+                // device's `ComObjects` struct.
+                let mut cot_data = [0u8; Self::COT_SIZE];
+                cot_data[0] = (Self::NUM_COMM_OBJECTS + 1) as u8;
 
-                let mut co_idx = 2;
+                let mut expected_asap = 1;
                 $(
+                    assert!(
+                        ($asap as usize) == expected_asap,
+                        "system7_stack_config!: ASAPs must be contiguous from 1 — the M112 table is indexed by ASAP"
+                    );
                     let priority = $crate::knx_stack_config!(@get_priority $($prio)?);
-                    co7_data[co_idx] = $flags | priority;
-                    co7_data[co_idx + 1] = $size;
-                    co_idx += 2;
+                    let entry = 3 + ($asap as usize) * 4;
+                    cot_data[entry + 2] = $flags | priority;
+                    cot_data[entry + 3] = $size;
+                    expected_asap += 1;
                 )*
-                assert!(co_idx == Self::CO7_SIZE);
+                let _ = expected_asap;
 
                 Self {
                     individual_address,
                     addr8_data,
                     asso8_data,
-                    co7_data,
+                    cot_data,
                 }
             }
 
@@ -210,8 +226,8 @@ macro_rules! system7_stack_config {
                 &self.asso8_data
             }
 
-            pub const fn co7_data(&self) -> &[u8] {
-                &self.co7_data
+            pub const fn cot_data(&self) -> &[u8] {
+                &self.cot_data
             }
 
             /// Create pre-loaded table instances.
@@ -226,7 +242,7 @@ macro_rules! system7_stack_config {
 
                 let addr_tab = Table::with_data(CONFIG.addr8_data(), Self::ADT_ADDRESS);
                 let asso_tab = Table::with_data(CONFIG.asso8_data(), ast_address);
-                let co_tab = Table::with_data(CONFIG.co7_data(), cot_address);
+                let co_tab = Table::with_data(CONFIG.cot_data(), cot_address);
 
                 (addr_tab, asso_tab, co_tab)
             }

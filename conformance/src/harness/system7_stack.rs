@@ -37,7 +37,7 @@ use zweidraehte_device::{
     PlainDeviceBuilder,
     bcus::system_7::{
         ExtensionAugmentFor, System7DeviceConfig, System7DeviceModel, System7DeviceState, System7MemoryMap,
-        System7StateInit, Tp1ExtensionConfig, Tp1ExtensionState, create_system_7_objects,
+        System7ProductLayout, System7StateInit, Tp1ExtensionConfig, Tp1ExtensionState, create_system_7_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
@@ -279,7 +279,7 @@ pub(crate) mod table_sizes {
 
     pub const ADT: usize = System7ConformanceConfig::ADDR8_SIZE;
     pub const AST: usize = System7ConformanceConfig::ASSO8_SIZE;
-    pub const COT: usize = System7ConformanceConfig::CO7_SIZE;
+    pub const COT: usize = System7ConformanceConfig::COT_SIZE;
 }
 
 // ============================================================================
@@ -664,6 +664,13 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
 /// System B DUT hand-writes its `StackDefinition`.
 #[derive(Debug, Clone, Copy)]
 pub struct IpcSystem7TestStack;
+
+// The group object table window is a product constant on System 7 (no
+// location resource exists for it); ours matches the product-database
+// choice above.
+impl System7ProductLayout for IpcSystem7TestStack {
+    const COT_ADDRESS: u16 = COT_ADDRESS as u16;
+}
 
 impl StackDefinition for IpcSystem7TestStack {
     const DEVICE: &'static DeviceDescriptor = &device_info::DEVICE;

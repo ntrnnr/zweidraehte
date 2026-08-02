@@ -141,6 +141,9 @@ pub struct Stm32G0System7LightSwitchAugments<'a> {
 zweidraehte_device::system_7_standard_stack! {
     stack: Stm32G0System7LightSwitch,
     device: &DEVICE_DESCRIPTOR,
+    // Where the product database places the group object table — must
+    // match `gen_light_switch_mtxml`'s System 7 "4200" segment.
+    cot_address: 0x4200,
     tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,

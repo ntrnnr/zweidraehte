@@ -112,9 +112,11 @@ why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run
 # mechanism: segment type 0Bh is Data Relative Allocation, which
 # 06 Profiles v02.02.01 Annex A.2.4.1 Table 7 marks n/a for the System 7
 # masks. The variables below switch it to the family's mandatory
-# AllocAbsDataSeg record (type 00h, 03/05/02 §3.31): segment 0 at the
-# DUT's association-table home 4100h, length 000Fh — the RT8 blob's
-# byte size for the fixture's seven associations.
+# AllocAbsDataSeg record (type 00h, 03/05/02 §3.31.3):
+# `[start:2][length:2][access][memory type][memory attributes][reserved]`
+# — the DUT's association-table home 4100h, length 000Fh (the RT8 blob's
+# byte size for the fixture's seven associations), then the field values
+# ETS itself sends (access FFh, memory type 03h EEPROM, attributes 80h).
 
 [[template]]
 file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
@@ -122,7 +124,7 @@ patches = ["conformance/patches/common/load-state-machines.toml"]
 
 [template.variables]
 LOAD_EVENT_SEGMENT_TYPE = "00"
-LOAD_EVENT_SEGMENT_CODING = "00 41 00 00 0F 00 00 00"
+LOAD_EVENT_SEGMENT_CODING = "41 00 00 0F FF 03 80 00"
 LOAD_EVENT_03_START_ADDR = "41 00"
 
 [template.tl_sequence]
