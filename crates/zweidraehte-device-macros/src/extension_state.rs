@@ -416,7 +416,7 @@ fn gen_config_struct(
 
         #default_impl
 
-        impl ::zweidraehte_device::bcus::system_b::ExtensionConfig for #config_ident {}
+        impl ::zweidraehte_device::extension::ExtensionConfig for #config_ident {}
     }
 }
 
@@ -566,7 +566,7 @@ fn gen_extension_state_impl(
     };
 
     quote! {
-        impl #impl_generics ::zweidraehte_device::bcus::system_b::ExtensionState
+        impl #impl_generics ::zweidraehte_device::extension::ExtensionState
             for #state_ident #ty_generics #where_clause
         {
             type Config = #config_ident;

@@ -58,6 +58,9 @@ pub use crate::objects::tables::{
 // Table events and memory types (used in StackDefinition impls and memory maps)
 pub use crate::objects::tables::{ComObjectFlags, LoadEvent, RunEvent, Table, TableMemory};
 
+// Extension vocabulary (BCU-agnostic persistence + augmentation)
+pub use crate::extension::{Extension, ExtensionConfig, ExtensionState};
+
 // Storage and identity
 pub use crate::storage::{DeviceIdentity, SecureDeviceIdentity, StaticIdentity, StaticSecureIdentity};
 // Storage extension points a device author implements for a custom backend.

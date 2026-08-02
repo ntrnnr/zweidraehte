@@ -223,7 +223,7 @@ pub trait StackDefinition: Copy + 'static {
     /// For non-IP devices (TP1, USB), use the default `()`.
     ///
     /// The platform is stored in the stack's `Inner` and passed to
-    /// [`Extension::create_augment`](crate::bcus::system_b::Extension::create_augment)
+    /// [`Extension::create_augment`](crate::extension::Extension::create_augment)
     /// during interface object construction.
     type Platform: 'static = ();
 
@@ -257,7 +257,7 @@ pub trait StackDefinition: Copy + 'static {
 
     /// Medium extension state (persistence + interface-object augmentation).
     ///
-    /// Most extensions implement [`Extension`](crate::bcus::system_b::Extension) so the default
+    /// Most extensions implement [`Extension`](crate::extension::Extension) so the default
     /// [`create_augments`](Self::create_augments) path can build their
     /// augment from the platform alone; the macro-emitted default bounds on
     /// it at the use site. `SecureExtensionState` deliberately does not —

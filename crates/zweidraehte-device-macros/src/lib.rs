@@ -118,7 +118,7 @@ pub fn derive_service_registry(input: TokenStream) -> TokenStream {
     }
 }
 
-/// Derive [`ExtensionState`](::zweidraehte_device::bcus::system_b::ExtensionState)
+/// Derive [`ExtensionState`](::zweidraehte_device::extension::ExtensionState)
 /// and the persisted `*Config` mirror for a runtime `*State` struct.
 ///
 /// The runtime state is the single source of truth: the config type, its

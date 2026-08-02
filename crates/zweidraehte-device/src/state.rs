@@ -321,7 +321,7 @@ pub trait HasPersistence {
 /// Interface Object's flag. Non-secure extensions use the default
 /// (`false`).
 ///
-/// Separated from [`ExtensionState`](crate::bcus::system_b::ExtensionState)
+/// Separated from [`ExtensionState`](crate::extension::ExtensionState)
 /// because security mode is not a persistence concern — TP1 and IP
 /// extensions should not need to know about it.
 pub trait HasSecurityMode {

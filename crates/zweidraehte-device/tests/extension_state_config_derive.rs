@@ -12,8 +12,8 @@
 //! factory `Default` are unchanged. They use `serde_json` (hence `std`)
 //! because JSON is exactly what the device's `JsonStorage` backend writes.
 
-use zweidraehte_device::bcus::system_b::ExtensionState;
 use zweidraehte_device::bcus::system_b::{RfExtensionConfig, RfExtensionState, Tp1ExtensionConfig, Tp1ExtensionState};
+use zweidraehte_device::extension::ExtensionState;
 
 // ===========================================================================
 // TP1 extension (also exercises stacking the derive with
@@ -103,8 +103,8 @@ fn rf_state_config_round_trip() {
 
 #[cfg(feature = "knxip")]
 mod ip {
-    use zweidraehte_device::bcus::system_b::ExtensionState;
     use zweidraehte_device::bcus::system_b::{IpExtensionConfig, IpExtensionState};
+    use zweidraehte_device::extension::ExtensionState;
 
     /// The generated `IpExtensionConfig` keeps the hand-written struct's field
     /// names and wire types — note `friendly_name_len` persists as a number

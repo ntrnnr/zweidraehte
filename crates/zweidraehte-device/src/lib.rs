@@ -92,6 +92,7 @@ pub mod config;
 pub mod context;
 pub mod device_model;
 pub mod ets;
+pub mod extension;
 pub mod layers;
 pub mod lifecycle;
 pub mod memory;
