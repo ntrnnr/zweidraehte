@@ -1,4 +1,5 @@
 use core::cell::RefCell;
+use core::marker::PhantomData;
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
@@ -163,6 +164,157 @@ pub enum LoadError {
     /// other malformed load command. Maps to "undefined load command
     /// received" in DPT 20.011.
     UndefinedLoadCommand = 14,
+}
+
+// ============================================================================
+// Load-control policies
+// ============================================================================
+
+/// How a [`Table`] answers the `AdditionalLoadControls` (03h) load event.
+///
+/// The event itself is profile-neutral, but the segment records it carries
+/// are not: System B allocates its tables with *Data Relative Allocation*
+/// (segment type 0Bh) while System 7 uses the absolute-segment records of
+/// the classic BCU2/BIM lineage (types 00h–05h) — 06 Profiles v02.02.01
+/// Annex A.2.4.1 Table 7 makes each set mandatory for one family and n/a
+/// for the other. The policy is a zero-sized compile-time strategy so a
+/// device binary carries only the record handling its profile needs.
+pub trait LoadControlPolicy {
+    /// Handle the payload following the `AdditionalLoadControls` event
+    /// byte: `[segment_type:1][...record...]`.
+    ///
+    /// On success the policy has updated the MCB (requested size) and,
+    /// where the record carries or implies one, the table reference. On
+    /// failure the caller moves the load state machine to `Err` with the
+    /// returned code.
+    fn handle_alloc<T: TableMemory>(
+        table: &mut T,
+        mcb_table: &mut PDT_Generic08,
+        table_reference: &mut u32,
+        additional_data: &[u8],
+        alloc_address: Option<u32>,
+    ) -> Result<(), LoadError>;
+}
+
+/// System B allocation: *Data Relative Allocation* (segment type 0Bh,
+/// 03/05/01 Resources §4.23.2). The record is an [`McbData`]; the device
+/// assigns the virtual address (`alloc_address`) itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelativeAlloc;
+
+impl LoadControlPolicy for RelativeAlloc {
+    fn handle_alloc<T: TableMemory>(
+        table: &mut T,
+        mcb_table: &mut PDT_Generic08,
+        table_reference: &mut u32,
+        mut additional_data: &[u8],
+        alloc_address: Option<u32>,
+    ) -> Result<(), LoadError> {
+        // `BufferView` is implemented on `&mut &[u8]`, so the cursor the
+        // take_* methods advance is a mutable borrow of the slice binding.
+        let mut additional_data = &mut additional_data;
+
+        match additional_data.take_byte_front().map(LoadSegment::from) {
+            Some(LoadSegment::RelativeData) => {
+                // Truncated RelativeData payload — the allocation descriptor
+                // is incomplete; treat the command as malformed.
+                let data = additional_data.take_obj_front::<McbData>().ok_or(LoadError::UndefinedLoadCommand)?;
+
+                let req_mem_sz = data.requested_memory_size.get() as usize;
+                if req_mem_sz > T::MAX_SIZE {
+                    // Allocation request larger than the table buffer.
+                    return Err(LoadError::MaxTableLengthExceeded);
+                }
+
+                // Fill requested?
+                if data.mode & 1 != 0 {
+                    table.data_ref_mut()[..req_mem_sz].fill(data.fill);
+                }
+
+                // Store the length in the MCB table
+                // CRC will be calculated later on LoadEnd
+                let stored_mcb = McbData::mut_from_bytes(mcb_table.as_mut_bytes())
+                    .expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
+                stored_mcb.requested_memory_size = data.requested_memory_size;
+                stored_mcb.mode = 0x00;
+                stored_mcb.fill = 0xFF;
+                stored_mcb.crc.set(0xFFFF);
+
+                if let Some(addr) = alloc_address {
+                    *table_reference = addr;
+                }
+                Ok(())
+            }
+            // Unknown segment type (or missing segment byte) — the load
+            // command is malformed.
+            _ => Err(LoadError::UndefinedLoadCommand),
+        }
+    }
+}
+
+/// System 7 allocation: the absolute-segment records of 03/05/02 §3.31
+/// `DM_LoadStateMachineWrite` — mandatory for masks 0701h/0705h per
+/// 06 Profiles v02.02.01 Annex A.2.4.1 Table 7.
+///
+/// `AllocAbsDataSeg` (type 00h) carries
+/// `[segment_ID:1][start_address:2BE][length:2BE][access:1][memory_type:1][memory_attributes:1][reserved:1]`;
+/// the start address becomes the table reference (the segments are fixed
+/// in the profile's absolute memory map, so nothing is allocated — the
+/// record is acknowledged and recorded). The task/pointer records
+/// (types 01h–05h) exist for the legacy BCU firmware's entry points and
+/// are accepted as no-ops. `RelativeData` (0Bh) is not part of this
+/// profile family and is rejected.
+// TODO: memory_attributes bit 7 requests checksum control for the
+// segment (03/05/02 §3.31); wire it to the MCB's CRC handling when a
+// System 7 product actually sets it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AbsoluteAlloc;
+
+impl LoadControlPolicy for AbsoluteAlloc {
+    fn handle_alloc<T: TableMemory>(
+        _table: &mut T,
+        mcb_table: &mut PDT_Generic08,
+        table_reference: &mut u32,
+        mut additional_data: &[u8],
+        _alloc_address: Option<u32>,
+    ) -> Result<(), LoadError> {
+        // See `RelativeAlloc::handle_alloc` on the cursor shape.
+        let mut additional_data = &mut additional_data;
+
+        match additional_data.take_byte_front().map(LoadSegment::from) {
+            Some(LoadSegment::AbsoluteData) => {
+                let _segment_id = additional_data.take_byte_front().ok_or(LoadError::UndefinedLoadCommand)?;
+                let start_address =
+                    additional_data.take_obj_front::<U16>().ok_or(LoadError::UndefinedLoadCommand)?.get();
+                let length = additional_data.take_obj_front::<U16>().ok_or(LoadError::UndefinedLoadCommand)?.get();
+                // access attributes / memory type / memory attributes /
+                // reserved follow; nothing in them changes what this
+                // device does with the segment, so they are not decoded.
+
+                if length as usize > T::MAX_SIZE {
+                    return Err(LoadError::MaxTableLengthExceeded);
+                }
+
+                let stored_mcb = McbData::mut_from_bytes(mcb_table.as_mut_bytes())
+                    .expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
+                stored_mcb.requested_memory_size.set(length as u32);
+                stored_mcb.mode = 0x00;
+                stored_mcb.fill = 0xFF;
+                stored_mcb.crc.set(0xFFFF);
+
+                *table_reference = start_address as u32;
+                Ok(())
+            }
+            Some(
+                LoadSegment::AbsoluteStack
+                | LoadSegment::AbsoluteTask
+                | LoadSegment::AbsolutePointer
+                | LoadSegment::TaskCtrl1
+                | LoadSegment::TaskCtrl2,
+            ) => Ok(()),
+            _ => Err(LoadError::UndefinedLoadCommand),
+        }
+    }
 }
 
 pub trait AddressTable: HasLoadStateMachine {
@@ -708,31 +860,36 @@ pub struct McbData {
 //       Maybe not necessary as w already have TableMemory which could do this
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Table<T: TableMemory> {
+#[serde(bound(serialize = "T: Serialize", deserialize = "T: Deserialize<'de>"))]
+pub struct Table<T: TableMemory, P: LoadControlPolicy = RelativeAlloc> {
     // TODO: add alloc() and free() to TableMemory and use these instead of directly filling them? Would allow for Boxed Tables etc.
     pub(super) table: T,
     pub(super) state: LoadState,
     pub(super) mcb_table: PDT_Generic08,
-    /// Base address of allocated memory, set during RelativeData allocation, cleared on unload
+    /// Base address of the table in the device's management address space:
+    /// assigned by the device during relative allocation, or taken from the
+    /// absolute-segment record. Cleared on unload.
     pub(super) table_reference: u32,
     /// Last load error code (DPT_ErrorClass_System). Mirrors the LSM Err
     /// state — set when entering `LoadState::Err` and cleared on every
     /// transition out of it (per Resources spec 4.2.28).
     #[serde(default)]
     pub(super) last_error_code: u8,
+    #[serde(skip)]
+    pub(super) _policy: PhantomData<P>,
 }
 
-impl<T: TableMemory> ConstDefault for Table<T> {
+impl<T: TableMemory, P: LoadControlPolicy> ConstDefault for Table<T, P> {
     const DEFAULT: Self = Table::new();
 }
 
-impl<T: TableMemory> Default for Table<T> {
+impl<T: TableMemory, P: LoadControlPolicy> Default for Table<T, P> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: TableMemory> Table<T> {
+impl<T: TableMemory, P: LoadControlPolicy> Table<T, P> {
     pub const fn new() -> Self {
         Self {
             table: T::DEFAULT,
@@ -740,6 +897,7 @@ impl<T: TableMemory> Table<T> {
             mcb_table: PDT_Generic08::with_value([0; 8]),
             table_reference: 0,
             last_error_code: 0,
+            _policy: PhantomData,
         }
     }
 
@@ -833,7 +991,7 @@ impl<T: TableMemory> Table<T> {
     }
 }
 
-impl<T: TableMemory> HasLoadStateMachine for Table<T> {
+impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
     fn write_lsm(&mut self, mut buf: &[u8], alloc_address: Option<u32>) -> LoadAction {
         let mut buf = &mut buf;
         // An empty LOAD_STATE_CONTROL write carries no event — treat as a no-op.
@@ -846,52 +1004,16 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
         match action {
             LoadAction::LoadStart => {}
             LoadAction::Alloc => {
-                let mut additional_data = &mut buf.take_rest_front();
-
-                match additional_data.take_byte_front().map(LoadSegment::from) {
-                    Some(LoadSegment::RelativeData) => {
-                        // Truncated RelativeData payload — the allocation descriptor
-                        // is incomplete; treat the command as malformed.
-                        let data = match additional_data.take_obj_front::<McbData>() {
-                            Some(d) => d,
-                            None => {
-                                self.last_error_code = LoadError::UndefinedLoadCommand as u8;
-                                self.state = LoadState::Err;
-                                return LoadAction::None;
-                            }
-                        };
-
-                        let req_mem_sz = data.requested_memory_size.get() as usize;
-                        if req_mem_sz <= T::MAX_SIZE {
-                            // Fill requested?
-                            if data.mode & 1 != 0 {
-                                self.table.data_ref_mut()[..req_mem_sz].fill(data.fill);
-                            }
-
-                            // Store the length in the MCB table
-                            // CRC will be calculated later on LoadEnd
-                            let stored_mcb = McbData::mut_from_bytes(self.mcb_table.as_mut_bytes())
-                                .expect("McbData is 8 unaligned bytes, matching PDT_Generic08");
-                            stored_mcb.requested_memory_size = data.requested_memory_size;
-                            stored_mcb.mode = 0x00;
-                            stored_mcb.fill = 0xFF;
-                            stored_mcb.crc.set(0xFFFF);
-
-                            if let Some(addr) = alloc_address {
-                                self.table_reference = addr;
-                            }
-                        } else {
-                            // Allocation request larger than the table buffer.
-                            new_state = LoadState::Err;
-                            self.last_error_code = LoadError::MaxTableLengthExceeded as u8;
-                        }
-                    }
-                    // Unknown segment type (or missing segment byte) — the load
-                    // command is malformed.
-                    _ => {
-                        new_state = LoadState::Err;
-                        self.last_error_code = LoadError::UndefinedLoadCommand as u8;
-                    }
+                let additional_data = buf.take_rest_front();
+                if let Err(code) = P::handle_alloc(
+                    &mut self.table,
+                    &mut self.mcb_table,
+                    &mut self.table_reference,
+                    additional_data,
+                    alloc_address,
+                ) {
+                    new_state = LoadState::Err;
+                    self.last_error_code = code as u8;
                 }
             }
             LoadAction::LoadEnd => {
@@ -943,7 +1065,7 @@ impl<T: TableMemory> HasLoadStateMachine for Table<T> {
     }
 }
 
-impl<T: TableMemory> TableMemory for Table<T> {
+impl<T: TableMemory, P: LoadControlPolicy> TableMemory for Table<T, P> {
     fn data_ref(&self) -> &[u8] {
         self.table.data_ref()
     }
@@ -1250,5 +1372,85 @@ mod tests {
             let back: u8 = cot.into();
             assert_eq!(back, v, "ComObjectType round-trip failed for value {v}");
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Load-control policies
+    // ------------------------------------------------------------------
+
+    /// 32-byte AddrTab7 buffer as a stand-in table for policy tests.
+    type RelTable = Table<AddrTab7Impl<32>, RelativeAlloc>;
+    type AbsTable = Table<AddrTab7Impl<32>, AbsoluteAlloc>;
+
+    /// `AllocAbsDataSeg` (03/05/02 §3.31): the start address becomes the
+    /// table reference, the length lands in the MCB, and the state
+    /// machine stays in `Loading`.
+    #[test]
+    fn absolute_alloc_records_reference_and_size() {
+        let mut table = AbsTable::new();
+        table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        // [event][type 00h][segment_ID][start 4000h][length 0010h][access][memtype][memattr][reserved]
+        table.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x40, 0x00, 0x00, 0x10, 0x33, 0x03, 0x00, 0x00],
+            None,
+        );
+        assert_eq!(table.load_state(), LoadState::Loading);
+        assert_eq!(table.table_reference(), 0x4000);
+        let mcb = McbData::ref_from_bytes(HasLoadStateMachine::mcb_bytes(&table)).expect("MCB is 8 bytes");
+        assert_eq!(mcb.requested_memory_size.get(), 0x10);
+    }
+
+    /// Task/pointer records only carry the legacy BCU firmware's entry
+    /// points — accepted without any state change.
+    #[test]
+    fn absolute_alloc_accepts_task_records_as_noops() {
+        let mut table = AbsTable::new();
+        table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        for segment_type in [0x01u8, 0x02, 0x03, 0x04, 0x05] {
+            table.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), segment_type, 0, 0, 0, 0, 0, 0, 0, 0, 0], None);
+            assert_eq!(table.load_state(), LoadState::Loading, "segment type {segment_type:#04x}");
+        }
+        assert_eq!(table.table_reference(), 0);
+    }
+
+    /// A RelativeData record under the absolute policy is a foreign
+    /// profile's mechanism — undefined load command.
+    #[test]
+    fn absolute_alloc_rejects_relative_data() {
+        let mut table = AbsTable::new();
+        table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        table.write_lsm(&[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0, 0, 0, 16, 0, 0, 0xFF, 0xFF], None);
+        assert_eq!(table.load_state(), LoadState::Err);
+        assert_eq!(table.last_error_code(), LoadError::UndefinedLoadCommand as u8);
+    }
+
+    /// The mirror image: an absolute-segment record under the relative
+    /// policy (the System B default) stays rejected, as before the
+    /// policies were split.
+    #[test]
+    fn relative_alloc_rejects_absolute_segment() {
+        let mut table = RelTable::new();
+        table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        table.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x40, 0x00, 0x00, 0x10, 0x33, 0x03, 0x00, 0x00],
+            None,
+        );
+        assert_eq!(table.load_state(), LoadState::Err);
+        assert_eq!(table.last_error_code(), LoadError::UndefinedLoadCommand as u8);
+    }
+
+    /// An absolute allocation larger than the backing buffer must fail
+    /// the same way a relative one does.
+    #[test]
+    fn absolute_alloc_over_capacity_errors() {
+        let mut table = AbsTable::new();
+        table.write_lsm(&[LoadEvent::StartLoading.into()], None);
+        // length 0x0100 > MAX_SIZE 32
+        table.write_lsm(
+            &[LoadEvent::AdditionalLoadControls.into(), 0x00, 0x00, 0x40, 0x00, 0x01, 0x00, 0x33, 0x03, 0x00, 0x00],
+            None,
+        );
+        assert_eq!(table.load_state(), LoadState::Err);
+        assert_eq!(table.last_error_code(), LoadError::MaxTableLengthExceeded as u8);
     }
 }
