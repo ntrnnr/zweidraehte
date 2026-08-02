@@ -1,0 +1,238 @@
+//! System 7 stack definition supertrait and the standard-stack macro.
+//!
+//! [`System7StackDefinition`] extends [`StackDefinition`] with the
+//! RT8-shaped table-size consts and the interface-object helper;
+//! [`system_7_standard_stack!`](crate::system_7_standard_stack)
+//! collapses the always-identical half of a device's `StackDefinition`
+//! impl, mirroring `system_b_standard_stack!`.
+
+use crate::StackDefinition;
+use crate::context::layer::LayerContext;
+use crate::objects::tables::{
+    HasAddressTable, HasApplication, HasAssociationTable, HasLoadStateMachine, HasPeiApplication, HasRunStateMachine,
+};
+use crate::service::Augment;
+
+use super::memory_map::System7MemoryMap;
+use super::objects::{DefaultSystem7InterfaceObjects, create_system_7_objects};
+
+/// The augment type produced by `D`'s extension state — same projection
+/// as System B's alias of the same name, re-exported here so the
+/// System 7 macro and devices stay within their family's namespace.
+pub use crate::bcus::system_b::ExtensionAugmentFor;
+
+/// Supertrait for System 7 devices that use [`System7MemoryMap`].
+///
+/// Provides the RT8-shaped table sizes derived from
+/// [`DEVICE`](StackDefinition::DEVICE) (the byte formulas differ from
+/// System B: RT8 tables carry 1-octet counts and the address table
+/// embeds the individual address) and the standard interface-object
+/// helper. Implement with an empty body:
+///
+/// ```rust,ignore
+/// impl System7StackDefinition for MyDevice {}
+/// ```
+pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> {
+    /// RT8 address table byte size: 1-octet count + 2-octet IA +
+    /// 2 octets per group address.
+    const ADT_SIZE: usize = 3 + Self::DEVICE.max_address_table_entries as usize * 2;
+
+    /// RT8 association table byte size: 1-octet count + 2 octets per
+    /// entry (TSAP u8 + ASAP u8).
+    const AST_SIZE: usize = 1 + Self::DEVICE.max_association_table_entries as usize * 2;
+
+    /// Group object table byte size (Type 7 format, internal only).
+    const COT_SIZE: usize = 2 + Self::DEVICE.max_com_objects as usize * 2;
+
+    /// Number of address-table entries (group addresses).
+    const ADT_ENTRIES: usize = Self::DEVICE.max_address_table_entries as usize;
+
+    /// Number of communication objects.
+    const COT_ENTRIES: usize = Self::DEVICE.max_com_objects as usize;
+
+    /// The (stateless) memory map. Pass to
+    /// [`zweidraehte_device::new()`](crate::new).
+    fn memory_map() -> System7MemoryMap {
+        System7MemoryMap::new()
+    }
+
+    /// Build the standard System 7 interface-object container; the
+    /// canonical body of `StackDefinition::create_interface_objects`
+    /// (which Rust cannot inherit from a supertrait — see the System B
+    /// twin for the rationale).
+    fn default_interface_objects<'a>(
+        state: &'a Self::State,
+        _platform: &'a Self::Platform,
+        layer_ctx: &'a LayerContext<Self>,
+        augments: &'a Self::Augments<'a>,
+    ) -> Self::InterfaceObjects<'a>
+    where
+        Self::State: 'a,
+        Self::Platform: 'a,
+        Self::State: HasPeiApplication,
+        <Self::State as HasAddressTable>::ADT: HasLoadStateMachine,
+        <Self::State as HasAssociationTable>::AST: HasLoadStateMachine,
+        <Self::State as HasApplication>::APP: HasLoadStateMachine + HasRunStateMachine,
+        <Self::State as HasPeiApplication>::PEI: HasLoadStateMachine + HasRunStateMachine,
+        Self::Augments<'a>: Augment<Self>,
+        DefaultSystem7InterfaceObjects<'a, Self, Self::Augments<'a>>: Into<Self::InterfaceObjects<'a>>,
+    {
+        create_system_7_objects::<Self, _>(state, layer_ctx, augments).into()
+    }
+}
+
+/// TP1 System 7 state for `D`, with sizes drawn from `D::DEVICE`.
+pub type Tp1StateFor7<D>
+where
+    D: System7StackDefinition,
+= super::System7DeviceState<
+    { <D as System7StackDefinition>::ADT_SIZE },
+    { <D as System7StackDefinition>::AST_SIZE },
+    { <D as System7StackDefinition>::COT_SIZE },
+    D,
+    super::extensions::Tp1ExtensionState,
+>;
+
+// ============================================================================
+// system_7_standard_stack! — collapse the always-identical StackDefinition shell
+// ============================================================================
+
+/// Generate the boilerplate half of a System 7 device's
+/// [`StackDefinition`](crate::StackDefinition) impl.
+///
+/// The System 7 twin of
+/// [`system_b_standard_stack!`](crate::system_b_standard_stack): same
+/// slots, same semantics, but pinning the family types
+/// (`System7MemoryMap`, `System7StateInit`, `System7InterfaceObjectsFor`,
+/// `System7DeviceModel`). There is no `security:` story yet — a Data
+/// Secure System 7 profile (mask 5705h lineage) would add its own slot.
+#[macro_export]
+macro_rules! system_7_standard_stack {
+    (
+        stack: $stack:ty,
+        device: $device:expr,
+        tl_style: $tl_style:expr,
+        params: $params:ty,
+        com_objects: $com_objects:ty,
+        link_layer_builder: $llb:ty,
+        platform: $platform:ty,
+        extension_state: $es:ty,
+        state: $state:ty,
+        al_extensions: $al_extensions:ty,
+        layer_builder: $layer_builder:ty
+        $(, resources: $resources:ty)?
+        $(, augments: {
+            bundle: $aug_bundle:ident,
+            create: |$aug_state:ident, $aug_platform:ident, $aug_lctx:ident| $aug_body:expr $(,)?
+        })?
+        $(, extra { $($extra:item)* })?
+        $(,)?
+    ) => {
+        impl $crate::bcus::system_7::System7StackDefinition for $stack {}
+
+        impl $crate::StackDefinition for $stack {
+            // ---- device-specific bill of materials -------------------------
+            const DEVICE: &'static $crate::ets::DeviceDescriptor = $device;
+            const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
+
+            type P = $params;
+            type CO = $com_objects;
+            type LLB = $llb;
+            type Platform = $platform;
+            type ES = $es;
+            type State = $state;
+            type AlExtensions = $al_extensions;
+            type LayerBuilder = $layer_builder;
+
+            // ---- always-identical shell ------------------------------------
+            type Mem = $crate::bcus::system_7::System7MemoryMap;
+            type StateInit = $crate::bcus::system_7::System7StateInit<
+                Self::Identity,
+                <$state as $crate::storage::HasDeviceConfig>::Config
+                $(, $resources)?
+            >;
+
+            fn create_state(init: Self::StateInit) -> Self::State {
+                <$state>::from_init(init)
+            }
+
+            type InterfaceObjects<'a> = $crate::bcus::system_7::System7InterfaceObjectsFor<'a, Self>;
+
+            fn create_interface_objects<'a>(
+                state: &'a Self::State,
+                platform: &'a Self::Platform,
+                layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
+                augments: &'a Self::Augments<'a>,
+            ) -> Self::InterfaceObjects<'a>
+            where
+                Self::State: 'a,
+                Self::Platform: 'a,
+            {
+                <Self as $crate::bcus::system_7::System7StackDefinition>::default_interface_objects(
+                    state, platform, layer_ctx, augments,
+                )
+            }
+
+            type DeviceModel<'a> = $crate::bcus::system_7::System7DeviceModel<'a, Self>;
+
+            fn create_device_model<'a>(
+                state: &'a Self::State,
+                layer_context: &'a $crate::context::layer::LayerContext<Self>,
+                interface_objects: &'a Self::InterfaceObjects<'static>,
+            ) -> Self::DeviceModel<'a>
+            where
+                Self::State: 'a,
+            {
+                $crate::bcus::system_7::System7DeviceModel::new(state, layer_context, interface_objects)
+            }
+
+            $crate::system_7_standard_stack!(@augments $es $(, {
+                bundle: $aug_bundle,
+                create: |$aug_state, $aug_platform, $aug_lctx| $aug_body
+            })?);
+
+            $($($extra)*)?
+        }
+    };
+
+    // ---- internal: default single-extension augment chain ----------------
+    (@augments $es:ty) => {
+        type Augments<'a> = $crate::bcus::system_7::ExtensionAugmentFor<'a, Self>;
+
+        fn create_augments<'a>(
+            state: &'a Self::State,
+            platform: &'a Self::Platform,
+            _layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
+        ) -> Self::Augments<'a>
+        where
+            Self::State: 'a,
+            Self::Platform: 'a,
+        {
+            let es = <Self::State as $crate::HasExtensionState>::extension_state(state);
+            <$es as $crate::extension::Extension<Self::Platform>>::create_augment::<Self>(es, platform)
+        }
+    };
+
+    // ---- internal: caller-supplied augment bundle -------------------------
+    (@augments $es:ty, {
+        bundle: $aug_bundle:ident,
+        create: |$aug_state:ident, $aug_platform:ident, $aug_lctx:ident| $aug_body:expr
+    }) => {
+        type Augments<'a> = $aug_bundle<'a>;
+
+        fn create_augments<'a>(
+            state: &'a Self::State,
+            platform: &'a Self::Platform,
+            layer_ctx: &'a $crate::context::layer::LayerContext<Self>,
+        ) -> Self::Augments<'a>
+        where
+            Self::State: 'a,
+            Self::Platform: 'a,
+        {
+            let $aug_state = state;
+            let $aug_platform = platform;
+            let $aug_lctx = layer_ctx;
+            $aug_body
+        }
+    };
+}
