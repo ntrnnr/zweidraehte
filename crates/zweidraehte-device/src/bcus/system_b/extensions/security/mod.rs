@@ -1290,6 +1290,120 @@ pub type SecureRfExtensionState<const GRP: usize, const P2P: usize, const GO: us
 pub type SecureRfRetransmitterExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
     SecureExtensionState<RfRetransmitterExtension, GRP, P2P, GO>;
 
+/// Expansion of the `security:` block of
+/// [`knx_stack_config!`](crate::knx_stack_config) — the Data Secure
+/// constants and the `create_security_config()` constructor.
+///
+/// Lives next to [`SecurityExtensionConfig`] / [`SecurityTable`] so the
+/// generic config macro does not name Data Secure types; it only
+/// delegates here. Invoked by `knx_stack_config!`, not by device code.
+#[macro_export]
+macro_rules! secure_stack_config {
+    (
+        name: $name:ident,
+        p2p_key_capacity: $p2p_cap:expr,
+        siat_capacity: $siat_cap:expr,
+        tool_key: $tool_key_hex:expr,
+
+        group_keys: {
+            $($gk_tsap:expr => $gk_hex:expr),* $(,)?
+        },
+
+        go_flags: {
+            $($gf_co:expr => $gf_val:expr),* $(,)?
+        } $(,)?
+    ) => {
+        impl $name {
+            /// Max P2P Key Table entries.
+            ///
+            /// Independent of `SIAT_CAPACITY`: the P2P Key Table only
+            /// carries entries for partners with whom the device has a
+            /// secure P2P link (03/05/01 §6.3.6 NOTE 98). A group-only
+            /// secure device therefore has `P2P_CAPACITY = 0`.
+            pub const P2P_CAPACITY: usize = $p2p_cap;
+
+            /// Max SIAT entries.
+            ///
+            /// Per 03/03/07 §5.3 the Security Individual Address Table
+            /// stores LastValidSeqNr for every non-tool secure sender —
+            /// including senders that only write to group addresses —
+            /// so this sizes the union of P2P and group-secure senders,
+            /// not just P2P.
+            pub const SIAT_CAPACITY: usize = $siat_cap;
+
+            /// Number of pre-configured group key entries.
+            pub const NUM_GROUP_KEYS: usize = $crate::knx_stack_config!(@count $($gk_tsap)*);
+
+            /// Number of pre-configured GO security flag entries.
+            pub const NUM_GO_FLAGS: usize = $crate::knx_stack_config!(@count $($gf_co)*);
+
+            /// Create a pre-populated security extension config.
+            ///
+            /// Group keys and GO flags are built at compile time from the
+            /// `security` block in `knx_stack_config!`.
+            ///
+            /// Capacities are entry counts: the group key table holds at
+            /// most one key per group address (`NUM_GROUP_ADDRS`), the GO
+            /// flags table one byte per communication object
+            /// (`NUM_COMM_OBJECTS`).
+            pub fn create_security_config() -> $crate::bcus::system_b::SecurityExtensionConfig<
+                { Self::NUM_GROUP_ADDRS },
+                { Self::P2P_CAPACITY },
+                { Self::NUM_COMM_OBJECTS },
+            > {
+                use $crate::bcus::system_b::{SecurityExtensionConfig, SecurityTable};
+
+                let tool_key = $crate::config::parse_hex_key::<16>($tool_key_hex);
+
+                // Build group key table: each entry is 18 bytes (2-byte TSAP + 16-byte key).
+                let mut grp_data = [[0u8; 18]; Self::NUM_GROUP_ADDRS];
+                let mut _gk_idx = 0usize;
+                $(
+                    {
+                        let tsap_bytes = ($gk_tsap as u16).to_be_bytes();
+                        let key = $crate::config::parse_hex_key::<16>($gk_hex);
+                        grp_data[_gk_idx][0] = tsap_bytes[0];
+                        grp_data[_gk_idx][1] = tsap_bytes[1];
+                        let mut ki = 0;
+                        while ki < 16 {
+                            grp_data[_gk_idx][2 + ki] = key[ki];
+                            ki += 1;
+                        }
+                        _gk_idx += 1;
+                    }
+                )*
+                let grp_keys = SecurityTable::from_entries(grp_data, _gk_idx as u16);
+
+                // Build GO security flags table: each entry is 1 byte.
+                let mut go_data = [[0u8; 1]; Self::NUM_COMM_OBJECTS];
+                $(
+                    // CO indices are 1-based in the config but 0-based in the table.
+                    go_data[$gf_co - 1] = [$gf_val];
+                )*
+                // Count of populated entries = max CO index used.
+                // The GO flags table count should equal the number of comm objects
+                // so that all GOs have an entry (defaulting to 0x00 = plain).
+                let go_flags = SecurityTable::from_entries(go_data, Self::NUM_COMM_OBJECTS as u16);
+
+                SecurityExtensionConfig {
+                    security_mode_enabled: false,
+                    tool_key,
+                    load_state: $crate::objects::tables::LoadState::Unloaded,
+                    failures_log: Default::default(),
+                    grp_keys,
+                    p2p_keys: SecurityTable::new(),
+                    go_flags,
+                    // A boot image reports no security failures and does
+                    // not report spontaneously; both are the KNX defaults
+                    // (03/05/01 §6.3.11.3, §6.3.12.3).
+                    security_report: 0,
+                    security_report_enabled: false,
+                }
+            }
+        }
+    };
+}
+
 #[cfg(test)]
 mod tests {
     use super::SecurityTable;
