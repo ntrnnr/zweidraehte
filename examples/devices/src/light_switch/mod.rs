@@ -207,7 +207,8 @@ pub const DEVICE_DESCRIPTOR_RF_SECURE: DeviceDescriptor = LightSwitchDevice::dev
 pub const DEVICE_DESCRIPTOR_IP_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_secure_ip();
 
 /// Device descriptor for the System 7 TP1 variant (mask version 0705,
-/// application ID 0x0306). No firmware target yet — the definition
-/// exists so the System 7 product can be generated and the family's
-/// `ProductProcedure` generator path stays exercised.
+/// application ID 0x0306). Pairs with the
+/// `stm32g0_tp1_system7_light_switch` firmware; the same descriptor
+/// also drives the family's `ProductProcedure` generator path in
+/// `gen_light_switch_mtxml`.
 pub const DEVICE_DESCRIPTOR_TP1_SYSTEM7: DeviceDescriptor = LightSwitchDevice::device_descriptor_system7_tp1();

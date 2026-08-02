@@ -1,0 +1,40 @@
+[package]
+edition = "2024"
+license.workspace = true
+name = "stm32g0_tp1_system7_light_switch"
+version = "0.1.0"
+
+[dependencies]
+# Embassy core
+embassy-executor = { workspace = true, features = ["arch-cortex-m", "executor-thread", "defmt"] }
+embassy-time = { workspace = true, features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
+embassy-stm32 = { workspace = true, features = ["defmt", "stm32g0b0re", "unstable-pac", "memory-x", "time-driver-any", "exti"] }
+embassy-futures = { workspace = true }
+
+# Cortex-M / embedded
+cortex-m = { workspace = true, features = ["critical-section-single-core"] }
+cortex-m-rt = { workspace = true }
+embedded-hal = { workspace = true }
+embedded-hal-async = { workspace = true }
+embedded-io-async = { workspace = true }
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+static_cell = { workspace = true }
+
+# KNX stack and device definitions
+zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt", "tp1"] }
+zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
+zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["defmt"] }
+
+# Shared STM32 platform code (DirectUart, StmFlashStorage)
+stm32-common = { path = "../common" }
+# HAL-agnostic helpers (DebouncedButton, CortexMSystem)
+embedded-common = { path = "../../common/embedded-common", features = ["tp1"] }
+embassy-sync = { workspace = true }
+
+[build-dependencies]
+dev-provisioning-build = { path = "../../common/dev-provisioning-build" }
+
+[features]
+provision-on-boot = ["stm32-common/provision-on-boot"]

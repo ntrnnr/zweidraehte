@@ -702,10 +702,13 @@ Layout: `common/` holds chip-agnostic crates (`embedded-common`, the `knxrf`
 SX1211 driver, `dev-provisioning-build`); `stm32/` and `rp2040/` each hold a
 family `common/` HAL-glue crate plus the device projects. Directory names
 drop the chip prefix (`stm32/g0_blink`, `rp2040/eth_light_switch`), package names keep it
-(`stm32g0_blink`, `pico_eth_light_switch`). `linux/` holds host-target device
-shells following the same `<medium>[_secure]_<role>` naming (package prefix
-`linux_`); these build with a plain `cargo build` in the project directory —
-no target override.
+(`stm32g0_blink`, `pico_eth_light_switch`). A non-default BCU family is
+named between medium and role: `stm32/g0_tp1_system7_light_switch` is the
+mask-0705h sibling of `stm32/g0_tp1_light_switch`, same hardware and
+device definition, System 7 management model. `linux/` holds host-target
+device shells following the same `<medium>[_secure]_<role>` naming
+(package prefix `linux_`); these build with a plain `cargo build` in the
+project directory — no target override.
 
 Notable devices:
 - `linux/eth_light_switch/` (package `linux_eth_light_switch`) - Linux-hosted

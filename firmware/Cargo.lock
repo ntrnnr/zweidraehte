@@ -2867,6 +2867,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32g0_tp1_system7_light_switch"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "dev-provisioning-build",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-stm32",
+ "embassy-sync",
+ "embassy-time",
+ "embedded-common",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-io-async 0.6.1",
+ "panic-probe",
+ "static_cell",
+ "stm32-common",
+ "zweidraehte-device",
+ "zweidraehte-devices",
+ "zweidraehte-platform",
+]
+
+[[package]]
 name = "string_cache"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
