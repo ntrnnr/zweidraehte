@@ -191,7 +191,7 @@ type SecAugment<'a> = SecureAugmentBundle<
 /// the GO/operation-mode diagnostics augment, plus the demo Easter Egg
 /// augment. As a secure device it uses the `WithSecureGoSend` strategy
 /// so the secure GO-diagnostics send-paths are wired up.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct Stm32G0SecureAugments<'a> {
     #[service(augment)]
     pub sec: SecAugment<'a>,
@@ -214,7 +214,7 @@ zweidraehte_device::system_b_standard_stack! {
     // communication object), matching `SecureStateFor`'s invariant.
     extension_state: SecureTp1ExtensionState<{ Self::ADT_ENTRIES }, P2P_SIZE, { Self::COT_ENTRIES }>,
     state: Stm32G0SecureState,
-    al_extensions: zweidraehte_device::layers::application::services::SystemBSecureAlServices,
+    al_extensions: StandardSecureAlServices,
     layer_builder: SecureDeviceBuilder,
     // The FRAM sequence-number storage is built in `main` and threaded
     // through `StateInit` as a construction-time resource.
@@ -249,6 +249,10 @@ zweidraehte_device::system_b_standard_stack! {
 // Import the full re-exported set from system_b so the ES alias
 // arguments above resolve. (`SecureResources`, `SecureDeviceIdentity`,
 // `SecureTp1ExtensionState`, etc. all live here.)
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::StandardSecureAlServices;
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::SecureDeviceIdentity;
 
 // ================================================================================
@@ -333,7 +337,7 @@ zweidraehte_device::storage_task! {
 
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, Stm32G0SecureLightSwitch>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 #[embassy_executor::task]
@@ -353,7 +357,8 @@ async fn app_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, btn_pin: ExtiIn
 
         let event = btn.wait_for_press(debounce, Some(long_press)).await;
 
-        let dim_ramping = event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
+        let dim_ramping =
+            event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
         if dim_ramping {
             let up = dim_direction_for_long_press(&params, ButtonId::Btn1, dim_up);
             DIM_RAMP.store(if up { 1 } else { -1 }, Ordering::Relaxed);
@@ -520,11 +525,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             Stm32G0SecureLightSwitch,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(
-                    <Stm32G0SecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH,
-                )
-            },
+            { buffer_size_for_apdu(<Stm32G0SecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 

@@ -172,6 +172,12 @@ type SeqRegion = FlashSiatRegion<{ 6 * SECTOR_SIZE }, SEQ_RECORDS, SEQ_CACHE, 25
 // All three regions have stores-struct slots — the SIAT store is owned by
 // the stores struct too; the secure stack pulls it out through
 // `HasSeqStore`.
+use zweidraehte_device::bcus::system_b::IpSecureResources;
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::StandardSecureAlServices;
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::service::ServiceRegistry;
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureIpStorage, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -212,7 +218,7 @@ type SecAugment<'a> = SecureAugmentBundle<
 /// secure augment bundles the IP augment internally (the secure extension
 /// wraps the IP Secure interface extension), so there is no separate
 /// `ip:` field as in the insecure `pico_eth_light_switch`.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct PicoEthSecureAugments<'a> {
     #[service(augment)]
     sec: SecAugment<'a>,
@@ -255,7 +261,7 @@ zweidraehte_device::system_b_standard_stack! {
         { Self::COT_ENTRIES },
     >,
     state: PicoEthSecureState,
-    al_extensions: zweidraehte_device::layers::application::services::SystemBSecureAlServices,
+    al_extensions: StandardSecureAlServices,
     layer_builder: SecureIpDeviceBuilder,
     // The RAM sequence-number storage + the IP Secure FDSK seed are built
     // in `main` and threaded through `StateInit`. `SecureResources::inner`
@@ -345,13 +351,13 @@ async fn prog_task(knx: Stack<'static, PicoEthSecureLightSwitch>, prog_btn_pin: 
 zweidraehte_device::storage_task! {
     device: PicoEthSecureLightSwitch,
     system: embedded_common::CortexMSystem,
-    guard: zweidraehte_device::storage::NoSaveGuard,
+    guard: NoSaveGuard,
 }
 
 /// Lifecycle event logger.
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, PicoEthSecureLightSwitch>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 /// Main application task: handles button 1 and button 2 presses.
@@ -604,7 +610,7 @@ async fn main(spawner: Spawner) {
     // Authentication Code (PID 92), the other the Data Secure tool key
     // (Security IO PID 56).
     let fdsk = *SecureDeviceIdentity::fdsk(&identity_data);
-    let resources = SecureResources { inner: zweidraehte_device::bcus::system_b::IpSecureResources { fdsk }, fdsk };
+    let resources = SecureResources { inner: IpSecureResources { fdsk }, fdsk };
     let state_init = SystemBStateInit { identity: identity_data.clone(), loaded_config, resources };
 
     // Wait for an IP address.
@@ -639,11 +645,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoEthSecureLightSwitch,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(
-                    <PicoEthSecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH,
-                )
-            },
+            { buffer_size_for_apdu(<PicoEthSecureLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 

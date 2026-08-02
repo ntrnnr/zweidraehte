@@ -61,6 +61,10 @@ type PicoWState = IpStateFor<PicoWLightSwitch, KnxIpDeviceUdp>;
 // The device's storage memory map: a single config blob carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};
+use zweidraehte_device::service::ServiceRegistry;
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -81,7 +85,7 @@ pub struct PicoWLightSwitch;
 
 /// Augment chain: KNXnet/IP medium augment plus the demo Easter Egg
 /// augment.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct PicoWAugments<'a> {
     #[service(augment)]
     ip: IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>,
@@ -112,8 +116,8 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: IpExtensionFor<KnxIpDeviceUdp>,
     state: PicoWState,
     al_extensions: (
-        zweidraehte_device::layers::application::services::SystemBAlServices,
-        zweidraehte_device::layers::application::services::DomainAddressService,
+        StandardAlServices,
+        DomainAddressService,
     ),
     layer_builder: PlainIpDeviceBuilder,
     augments: {
@@ -161,7 +165,7 @@ async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'sta
 zweidraehte_device::storage_task! {
     device: PicoWLightSwitch,
     system: embedded_common::CortexMSystem,
-    guard: zweidraehte_device::storage::NoSaveGuard,
+    guard: NoSaveGuard,
 }
 
 // ================================================================================
@@ -364,9 +368,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoWLightSwitch,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH)
-            },
+            { buffer_size_for_apdu(<PicoWLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 

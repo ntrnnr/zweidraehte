@@ -102,6 +102,10 @@ type Stm32G0State = Tp1StateFor<Stm32G0LightSwitch>;
 // The device's storage memory map: a single config blob on the `StmFlash`
 // chip, carrying this device's state as its payload. The `Placed` entry
 // derives its placement, store type, and open() from the layout.
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::StandardAlServices;
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -121,7 +125,7 @@ pub struct Stm32G0LightSwitch;
 /// augment. Derives `Augment<D>` from the
 /// `#[service(augment)]` field annotations — the runtime then routes
 /// every property hook through this struct's chain.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct Stm32G0LightSwitchAugments<'a> {
     #[service(augment)]
     pub tp1: Tp1Augment<'a>,
@@ -139,7 +143,7 @@ zweidraehte_device::system_b_standard_stack! {
     platform: (),
     extension_state: Tp1ExtensionState,
     state: Stm32G0State,
-    al_extensions: zweidraehte_device::layers::application::services::SystemBAlServices,
+    al_extensions: StandardAlServices,
     layer_builder: PlainDeviceBuilder,
     augments: {
         bundle: Stm32G0LightSwitchAugments,
@@ -301,7 +305,7 @@ zweidraehte_device::storage_task! {
 
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, Stm32G0LightSwitch>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 /// Application task — a single user button (PC11) driving `Btn1`.
@@ -338,7 +342,8 @@ async fn app_task(knx: Stack<'static, Stm32G0LightSwitch>, btn_pin: ExtiInput<'s
         // `app::handle_dimmer`. We deliberately don't try to flip
         // `dim_up` ourselves — the helper does that — so the two stay
         // in sync across consecutive long presses.
-        let dim_ramping = event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
+        let dim_ramping =
+            event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
         if dim_ramping {
             let up = dim_direction_for_long_press(&params, ButtonId::Btn1, dim_up);
             DIM_RAMP.store(if up { 1 } else { -1 }, Ordering::Relaxed);
@@ -514,11 +519,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             Stm32G0LightSwitch,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(
-                    <Stm32G0LightSwitch as StackDefinition>::MAX_APDU_LENGTH,
-                )
-            },
+            { buffer_size_for_apdu(<Stm32G0LightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 

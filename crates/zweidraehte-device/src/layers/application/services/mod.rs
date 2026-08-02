@@ -21,7 +21,11 @@
 //!
 //! # Convenience Aliases
 //!
-//! [`SystemBAlServices`] composes the standard set for System B devices.
+//! [`StandardAlServices`] composes the standard management-server set;
+//! [`StandardSecureAlServices`] adds the extended-APCI services the
+//! Secure profiles require. BCU families re-export them under their own
+//! names (e.g. `SystemBAlServices` in
+//! [`bcus::system_b`](crate::bcus::system_b)).
 
 pub mod adc;
 pub mod address_serial;
@@ -47,13 +51,13 @@ pub use rf_domain_addr::RfDomainAddressService;
 pub use system_network_parameter::SystemNetworkParameterService;
 pub use user_memory::UserMemoryService;
 
-/// Standard AL services for System B devices.
+/// Standard AL services for S-Mode management servers.
 ///
-/// Composes the services commonly used by System B devices (mask
-/// 07B0h/27B0h): memory access, user memory, authorization, serial
-/// number addressing, ADC, user-manufacturer info, and function
-/// properties. Use this as `type AlExtensions = SystemBAlServices;` for
-/// the standard System B behaviour.
+/// Composes the services commonly used by end devices (System B, System
+/// 7, …): memory access, user memory, authorization, serial number
+/// addressing, ADC, user-manufacturer info, and function properties.
+/// Use this as `type AlExtensions = StandardAlServices;` for the
+/// standard management-server behaviour.
 ///
 /// For devices that also need domain address or extended property
 /// services, extend the tuple directly:
@@ -66,11 +70,11 @@ pub use user_memory::UserMemoryService;
 /// ```
 ///
 /// Per the KNX spec profile matrix (06 Profiles §4.2), only a subset
-/// of these are strictly mandatory on every System B profile —
-/// `AdcService` in particular is legacy BCU1/BCU2 and harmless on
-/// System B, but devices that target the smallest possible footprint
-/// can drop it by spelling out a smaller tuple.
-pub type SystemBAlServices = (
+/// of these are strictly mandatory on every profile — `AdcService` in
+/// particular is legacy BCU1/BCU2 and harmless elsewhere, but devices
+/// that target the smallest possible footprint can drop it by spelling
+/// out a smaller tuple.
+pub type StandardAlServices = (
     MemoryService,
     UserMemoryService,
     AuthorizationService,
@@ -83,21 +87,21 @@ pub type SystemBAlServices = (
 
 /// Standard AL services for KNX Secure / KNX Data Security devices.
 ///
-/// Composes [`SystemBAlServices`] with [`PropertyExtValueService`] —
+/// Composes [`StandardAlServices`] with [`PropertyExtValueService`] —
 /// the latter covers all extended-APCI management services
 /// (`A_PropertyExtValue_*`, `A_PropertyExtDescription_Read`,
 /// `A_FunctionPropertyExt*`, `A_MemoryExtended_*`) that spec Vol 6
 /// Profiles §9.1.2.3 marks Mandatory for every KNX Secure / KNXnet/IP
 /// Security / KNX Data Security profile.
 ///
-/// Use this as `type AlExtensions = SystemBSecureAlServices;` in any
+/// Use this as `type AlExtensions = StandardSecureAlServices;` in any
 /// `StackDefinition` paired with
 /// [`SecureDeviceBuilder`](crate::composition::SecureDeviceBuilder).
-/// For non-Secure System B devices continue using
-/// [`SystemBAlServices`] — the extended services are not mandatory
-/// for those profiles and carry a code-size cost that
-/// memory-constrained plain devices may prefer to avoid.
-pub type SystemBSecureAlServices = (
+/// For non-Secure devices continue using [`StandardAlServices`] — the
+/// extended services are not mandatory for those profiles and carry a
+/// code-size cost that memory-constrained plain devices may prefer to
+/// avoid.
+pub type StandardSecureAlServices = (
     MemoryService,
     UserMemoryService,
     AuthorizationService,

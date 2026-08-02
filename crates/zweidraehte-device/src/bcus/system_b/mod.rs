@@ -209,6 +209,17 @@ pub use memory_map::*;
 pub use objects::*;
 pub use storage::*;
 
+/// The standard AL service set under its System B name.
+///
+/// Identical to [`StandardAlServices`](crate::layers::application::services::StandardAlServices);
+/// spell it this way in a System B `StackDefinition` for discoverability.
+pub type SystemBAlServices = crate::layers::application::services::StandardAlServices;
+
+/// The Secure AL service set under its System B name.
+///
+/// Identical to [`StandardSecureAlServices`](crate::layers::application::services::StandardSecureAlServices).
+pub type SystemBSecureAlServices = crate::layers::application::services::StandardSecureAlServices;
+
 /// Generate the standard pure-delegation trait impls for a newtype that
 /// wraps a [`SystemBDeviceState`] (or any state with the same trait
 /// surface) in a named field.

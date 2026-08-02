@@ -17,7 +17,7 @@
 //! include it. Compose it into an RF device's `type AlExtensions`, e.g.
 //!
 //! ```rust,ignore
-//! type AlExtensions = (SystemBAlServices, DomainAddressService, RfDomainAddressService);
+//! type AlExtensions = (StandardAlServices, DomainAddressService, RfDomainAddressService);
 //! ```
 
 use crate::{

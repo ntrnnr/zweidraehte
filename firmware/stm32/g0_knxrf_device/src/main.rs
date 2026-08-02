@@ -85,6 +85,13 @@ type Stm32G0State = RfStateFor<Stm32G0KnxRf>;
 // The region declares its payload (this device's state) and derives its
 // placement, store type, and open() from the layout — the store type is
 // never spelled out.
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::{
+    DomainAddressService, RfDomainAddressService, StandardAlServices,
+};
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::service::ServiceRegistry;
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -101,7 +108,7 @@ pub struct Stm32G0KnxRf;
 
 /// Augment chain: the RF medium augment (RF Medium Object) plus the demo Easter
 /// Egg augment. The `#[service(augment)]` fields derive the `Augment<D>` chain.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct Stm32G0KnxRfAugments<'a> {
     #[service(augment)]
     pub rf: RfAugment<'a>,
@@ -123,9 +130,9 @@ zweidraehte_device::system_b_standard_stack! {
     // configuration: the serial-number variant (`DomainAddressService`) and the
     // programming-mode broadcast variant (`RfDomainAddressService`, RF-only).
     al_extensions: (
-        zweidraehte_device::layers::application::services::SystemBAlServices,
-        zweidraehte_device::layers::application::services::DomainAddressService,
-        zweidraehte_device::layers::application::services::RfDomainAddressService,
+        StandardAlServices,
+        DomainAddressService,
+        RfDomainAddressService,
     ),
     layer_builder: PlainDeviceBuilder,
     augments: {
@@ -191,12 +198,12 @@ async fn prog_task(knx: Stack<'static, Stm32G0KnxRf>, prog_btn_pin: ExtiInput<'s
 zweidraehte_device::storage_task! {
     device: Stm32G0KnxRf,
     system: embedded_common::CortexMSystem,
-    guard: zweidraehte_device::storage::NoSaveGuard,
+    guard: NoSaveGuard,
 }
 
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, Stm32G0KnxRf>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 /// Application task — a single user button (PC8) driving `Btn1`.
@@ -329,10 +336,7 @@ async fn main(spawner: Spawner) {
 
     // --- KNX stack -----------------------------------------------------------
     static KNX_RESOURCES: StaticCell<
-        StackResources<
-            Stm32G0KnxRf,
-            { zweidraehte_device::config::buffer_size_for_apdu(<Stm32G0KnxRf as StackDefinition>::MAX_APDU_LENGTH) },
-        >,
+        StackResources<Stm32G0KnxRf, { buffer_size_for_apdu(<Stm32G0KnxRf as StackDefinition>::MAX_APDU_LENGTH) }>,
     > = StaticCell::new();
 
     let (knx_stack, knx_runner) = zweidraehte_device::new(

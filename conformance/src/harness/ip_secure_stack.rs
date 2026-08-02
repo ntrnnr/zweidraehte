@@ -29,6 +29,7 @@ use zweidraehte_device::bcus::system_b::{
     IpSecureInterfaceExtensionFor, IpSecureResources, SystemBDeviceState, SystemBStackDefinition,
 };
 use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
+use zweidraehte_device::layers::application::services::{PropertyExtValueService, StandardAlServices};
 use zweidraehte_device::layers::linklayers::knxip::{
     KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureDeviceTcp,
 };
@@ -38,6 +39,7 @@ use zweidraehte_device::objects::comm::{
 };
 use zweidraehte_device::prelude::IpPlatform;
 use zweidraehte_device::storage::HasDeviceConfig;
+use zweidraehte_device::{DEFAULT_MULTICAST_ADDR, PlainIpDeviceBuilder};
 use zweidraehte_platform::{IpConfig, LinuxIpTransport, NetworkConfig};
 
 use super::secure_stack::GetrandomRng;
@@ -224,10 +226,10 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: IpSecureDutExtension,
     state: IpSecureDutState,
     al_extensions: (
-        zweidraehte_device::layers::application::services::SystemBAlServices,
-        zweidraehte_device::layers::application::services::PropertyExtValueService,
+        StandardAlServices,
+        PropertyExtValueService,
     ),
-    layer_builder: zweidraehte_device::PlainIpDeviceBuilder,
+    layer_builder: PlainIpDeviceBuilder,
     resources: IpSecureResources,
     extra {
         type Rng = GetrandomRng;
@@ -284,7 +286,7 @@ pub fn secure_routing_enabled() -> bool {
 
 /// The routing multicast group for this DUT instance.
 pub fn dut_multicast_group() -> Ipv4Addr {
-    std::env::var(MCAST_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(zweidraehte_device::DEFAULT_MULTICAST_ADDR)
+    std::env::var(MCAST_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_MULTICAST_ADDR)
 }
 
 /// Secure the Routing family and provision the Appendix A backbone key

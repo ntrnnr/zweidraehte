@@ -126,6 +126,13 @@ type Stm32G0SecureState = SecureRfRetransmitterStateFor<Stm32G0KnxRfRetransmitte
 // on the separate `Fram` chip. Each `Placed` entry derives its placement,
 // store type, and open() from the layout; the secure stack reaches the seq
 // store through `HasSeqStore`.
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::{
+    DomainAddressService, RfDomainAddressService, StandardSecureAlServices,
+};
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::service::ServiceRegistry;
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureStorage, StorageLayout, StoreOf};
 
 type FramChip = Fram<StmFramSpi, StmFramCs>;
@@ -160,7 +167,7 @@ type SecAugment<'a> = SecureAugmentBundle<
 /// GO/operation-mode diagnostics augment, plus the demo Easter Egg
 /// augment. As a secure device it uses the `WithSecureGoSend` strategy
 /// so the secure GO-diagnostics send-paths are wired up.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct Stm32G0SecureAugments<'a> {
     #[service(augment)]
     pub sec: SecAugment<'a>,
@@ -190,9 +197,9 @@ zweidraehte_device::system_b_standard_stack! {
     // Secure AL services plus the RF domain-address management services (the
     // serial-number variant and the RF-only programming-mode broadcast variant).
     al_extensions: (
-        zweidraehte_device::layers::application::services::SystemBSecureAlServices,
-        zweidraehte_device::layers::application::services::DomainAddressService,
-        zweidraehte_device::layers::application::services::RfDomainAddressService,
+        StandardSecureAlServices,
+        DomainAddressService,
+        RfDomainAddressService,
     ),
     layer_builder: SecureDeviceBuilder,
     resources: SecureResources<RfRetransmitterExtension>,
@@ -263,12 +270,12 @@ async fn prog_task(knx: Stack<'static, Stm32G0KnxRfRetransmitter>, prog_btn_pin:
 zweidraehte_device::storage_task! {
     device: Stm32G0KnxRfRetransmitter,
     system: embedded_common::CortexMSystem,
-    guard: zweidraehte_device::storage::NoSaveGuard,
+    guard: NoSaveGuard,
 }
 
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, Stm32G0KnxRfRetransmitter>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 #[embassy_executor::task]
@@ -413,11 +420,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             Stm32G0KnxRfRetransmitter,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(
-                    <Stm32G0KnxRfRetransmitter as StackDefinition>::MAX_APDU_LENGTH,
-                )
-            },
+            { buffer_size_for_apdu(<Stm32G0KnxRfRetransmitter as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 

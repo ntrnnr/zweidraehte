@@ -16,9 +16,11 @@ use devices::light_switch::{
     DEVICE_DESCRIPTOR_IP, LightSwitchParams, comm_objs::LightSwitchComObjects, easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::bcus::system_b::{Extension, IpAugmentFor, IpExtensionFor, IpStateFor};
+use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceTcp};
 use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
+use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::ConfigStorage;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
 
@@ -39,7 +41,7 @@ pub struct LinuxEthLightSwitch;
 
 /// Augment chain: the IP medium augment (KNXnet/IP Parameter object) plus the
 /// Easter Egg demo augment, matching the RP2040 light switch.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct LightSwitchAugments<'a> {
     #[service(augment)]
     ip: IpAugmentFor<'a, LinuxIpPlatform, KnxIpDeviceTcp>,
@@ -74,8 +76,8 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: IpExtensionFor<KnxIpDeviceTcp>,
     state: LightSwitchState,
     al_extensions: (
-        zweidraehte_device::layers::application::services::SystemBAlServices,
-        zweidraehte_device::layers::application::services::DomainAddressService,
+        StandardAlServices,
+        DomainAddressService,
     ),
     layer_builder: PlainIpDeviceBuilder,
     augments: {

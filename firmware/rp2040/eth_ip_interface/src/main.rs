@@ -96,6 +96,10 @@ type IpIfState = IpInterfaceStateFor<PicoIpInterface, KnxIpInterfaceTcp<MAX_TUNN
 // The device's storage memory map: a single config blob carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -142,8 +146,8 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: IpInterfaceExtensionFor<KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>>,
     state: IpIfState,
     al_extensions: (
-        zweidraehte_device::layers::application::services::SystemBAlServices,
-        zweidraehte_device::layers::application::services::DomainAddressService,
+        StandardAlServices,
+        DomainAddressService,
     ),
     layer_builder: PlainIpDeviceBuilder,
     extra {
@@ -200,13 +204,13 @@ async fn prog_task(knx: Stack<'static, PicoIpInterface>, prog_btn_pin: Input<'st
 zweidraehte_device::storage_task! {
     device: PicoIpInterface,
     system: embedded_common::CortexMSystem,
-    guard: zweidraehte_device::storage::NoSaveGuard,
+    guard: NoSaveGuard,
 }
 
 /// Lifecycle event logger.
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, PicoIpInterface>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 // ================================================================================
@@ -364,7 +368,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoIpInterface,
-            { zweidraehte_device::config::buffer_size_for_apdu(<PicoIpInterface as StackDefinition>::MAX_APDU_LENGTH) },
+            { buffer_size_for_apdu(<PicoIpInterface as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 

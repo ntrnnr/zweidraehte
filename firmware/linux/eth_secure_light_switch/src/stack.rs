@@ -36,6 +36,8 @@ use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
 
 use support::storage::{FileSecureIdentity, JsonStorage, LinuxSiatStore};
 use support::util::GetrandomRng;
+use zweidraehte_device::layers::application::services::StandardSecureAlServices;
+use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::{SecureStorage, StaticIdentity};
 
 // ============================================================================
@@ -103,7 +105,7 @@ type SecAugment<'a> = SecureAugmentBundle<
 /// bundles the IP augment internally (the secure extension wraps the IP Secure
 /// interface extension), so there is no separate `ip:` field as on the insecure
 /// target.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct LightSwitchSecureAugments<'a> {
     #[service(augment)]
     sec: SecAugment<'a>,
@@ -141,7 +143,7 @@ zweidraehte_device::system_b_standard_stack! {
         { Self::COT_ENTRIES },
     >,
     state: LightSwitchSecureState,
-    al_extensions: zweidraehte_device::layers::application::services::SystemBSecureAlServices,
+    al_extensions: StandardSecureAlServices,
     layer_builder: SecureIpDeviceBuilder,
     // The IP Secure FDSK seed is built in `main` and threaded through
     // `StateInit`. `SecureResources::inner` is the IP Secure extension's own

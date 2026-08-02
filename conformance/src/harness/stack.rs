@@ -21,10 +21,14 @@ use const_default::ConstDefault;
 
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    bcus::system_b::{ExtensionAugmentFor, MemoryLayout, Tp1SystemBDeviceState},
+    bcus::system_b::{
+        ExtensionAugmentFor, MemoryLayout, SystemBDeviceModel, SystemBInterfaceObjectsFor, Tp1ExtensionState,
+        Tp1SystemBDeviceState, create_system_b_objects,
+    },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
     objects::tables::Application,
+    restart::EraseCode,
     storage::StaticIdentity,
 };
 use zweidraehte_proto::AccessContext;
@@ -1182,12 +1186,11 @@ impl StackDefinition for IpcConformanceTestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    const TL_STYLE: zweidraehte_device::layers::transport::TlStyle =
-        zweidraehte_device::layers::transport::TlStyle::Style3;
+    const TL_STYLE: TlStyle = TlStyle::Style3;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
-    type ES = zweidraehte_device::bcus::system_b::Tp1ExtensionState;
+    type ES = Tp1ExtensionState;
     type State = ConformanceState;
     type StateInit = ConformanceStateInit;
     type Mem = ConformanceMemoryMap;
@@ -1201,7 +1204,7 @@ impl StackDefinition for IpcConformanceTestStack {
         }
     }
 
-    type InterfaceObjects<'a> = zweidraehte_device::bcus::system_b::SystemBInterfaceObjectsFor<'a, Self>;
+    type InterfaceObjects<'a> = SystemBInterfaceObjectsFor<'a, Self>;
     type Augments<'a> = ExtensionAugmentFor<'a, Self>;
 
     fn create_interface_objects<'a>(
@@ -1214,15 +1217,10 @@ impl StackDefinition for IpcConformanceTestStack {
         Self::State: 'a,
         Self::Platform: 'a,
     {
-        zweidraehte_device::bcus::system_b::create_system_b_objects::<Self, _>(
-            state,
-            layer_ctx,
-            &CONFORMANCE_MEMORY_LAYOUT,
-            augments,
-        )
+        create_system_b_objects::<Self, _>(state, layer_ctx, &CONFORMANCE_MEMORY_LAYOUT, augments)
     }
 
-    type DeviceModel<'a> = zweidraehte_device::bcus::system_b::SystemBDeviceModel<'a, Self>;
+    type DeviceModel<'a> = SystemBDeviceModel<'a, Self>;
 
     fn create_device_model<'a>(
         state: &'a Self::State,
@@ -1232,13 +1230,13 @@ impl StackDefinition for IpcConformanceTestStack {
     where
         Self::State: 'a,
     {
-        zweidraehte_device::bcus::system_b::SystemBDeviceModel::new(state, layer_context, interface_objects)
+        SystemBDeviceModel::new(state, layer_context, interface_objects)
     }
 
     fn create_augments<'a>(
         state: &'a Self::State,
         platform: &'a Self::Platform,
-        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+        _layer_ctx: &'a LayerContext<Self>,
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
@@ -1249,7 +1247,7 @@ impl StackDefinition for IpcConformanceTestStack {
         state.extension_state().create_augment::<Self>(platform)
     }
 
-    type AlExtensions = zweidraehte_device::layers::application::services::SystemBAlServices;
+    type AlExtensions = StandardAlServices;
     type LayerBuilder = PlainDeviceBuilder;
 }
 
@@ -1268,7 +1266,7 @@ impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
         state.to_device_config()
     }
 
-    fn apply_erase_code(state: &Self::State, code: zweidraehte_device::restart::EraseCode) {
+    fn apply_erase_code(state: &Self::State, code: EraseCode) {
         crate::dut_common::apply_erase_code_to_system_b(state.inner(), code);
     }
 }
@@ -1286,6 +1284,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::bcus::system_b::{DeviceConfig, Tp1ExtensionConfig};
+use zweidraehte_device::layers::application::services::StandardAlServices;
 use zweidraehte_device::storage::HasDeviceConfig;
 
 /// The persisted state type for the inner `Tp1SystemBDeviceState`.

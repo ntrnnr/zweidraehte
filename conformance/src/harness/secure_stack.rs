@@ -13,20 +13,25 @@ use core::cell::{Cell, RefCell};
 use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, WithSecureGoSend};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
-    HasExtensionState, HasSecurityMode, StackDefinition,
+    HasExtensionState, HasSecurityMode, Rng, SecureRng, StackDefinition,
     bcus::system_b::{
         DeviceConfig, SecureAugmentBundle, SecureExtensionConfig, SecureResources, SecureTp1DeviceState,
-        SecureTp1ExtensionState, SystemBInterfaceObjectsFor, Tp1Augment, Tp1ExtensionConfig, create_system_b_objects,
+        SecureTp1ExtensionState, SystemBDeviceModel, SystemBInterfaceObjectsFor, Tp1Augment, Tp1ExtensionConfig,
+        create_system_b_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
+    layers::secure_application::WithP2p,
     memory::MemoryMap,
     objects::interface::{
-        FullPropertyReadRequest, FullPropertyWriteRequest, PropertyError, PropertyRead, WriteResponse,
+        FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult,
+        PropertyError, PropertyRead, WriteResponse, interface_object_augment, pid,
     },
     objects::tables::{
         Application, HasAddressTable, HasAssociationTable, HasCommunicationObjectTable, HasLoadStateMachine, LoadEvent,
     },
+    restart::EraseCode,
+    service::{ServiceCtx, ServiceRegistry},
     storage::HasDeviceConfig,
 };
 use zweidraehte_proto::AccessContext;
@@ -232,13 +237,13 @@ zweidraehte_device::forward_system_b_state_traits!(impl SecureConformanceState =
 
 pub struct GetrandomRng;
 
-impl zweidraehte_device::Rng for GetrandomRng {
+impl Rng for GetrandomRng {
     fn fill(buf: &mut [u8]) {
         getrandom::fill(buf).expect("getrandom failed");
     }
 }
 
-impl zweidraehte_device::SecureRng for GetrandomRng {}
+impl SecureRng for GetrandomRng {}
 
 // ============================================================================
 // DeviceModelNotifier
@@ -264,10 +269,10 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         address: u16,
         data: &mut [u8],
         ctx: AccessContext,
-    ) -> Result<usize, zweidraehte_device::memory::MemoryError> {
+    ) -> Result<usize, MemoryError> {
         // Delegate to the same memory map logic, just with different state type.
         // The memory regions are identical.
-        use zweidraehte_device::memory::MemoryError;
+        use MemoryError;
         use zweidraehte_device::objects::tables::TableMemory;
 
         let end_address = address.saturating_add(data.len() as u16);
@@ -406,8 +411,8 @@ impl MemoryMap<SecureConformanceState> for ConformanceMemoryMap {
         address: u16,
         data: &[u8],
         ctx: AccessContext,
-    ) -> Result<usize, zweidraehte_device::memory::MemoryError> {
-        use zweidraehte_device::memory::MemoryError;
+    ) -> Result<usize, MemoryError> {
+        use MemoryError;
         use zweidraehte_device::objects::tables::TableMemory;
 
         let end_address = address.saturating_add(data.len() as u16);
@@ -610,13 +615,13 @@ const CERT_PID51_POLICY: AccessPolicy = AccessPolicy::new(0x3FF, 0x0FF);
 /// per-request access check needs `req.ctx`, which the macro's standard
 /// `read = |this| ...` closure form doesn't expose. The bespoke logic
 /// lives in `handle_extra_pid_read` / `handle_extra_pid_write` below.
-#[zweidraehte_device::objects::interface::interface_object_augment(
+#[interface_object_augment(
     additional_objects = [CERTIFICATION_OBJECT_TYPE],
 )]
 pub struct CertificationObjectAugment {
     // PID 1 OBJECT_TYPE — fixed `0xC351` read.
     #[io(
-        pid = zweidraehte_device::objects::interface::pid::OBJECT_TYPE,
+        pid = pid::OBJECT_TYPE,
         pdt = zweidraehte_proto::dpt::PDT_UnsignedInt,
         access = RO,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
@@ -818,7 +823,7 @@ impl CertificationObjectAugment {
 
     pub fn handle_extra_pid_read<D: StackDefinition>(
         &self,
-        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FullPropertyReadRequest,
         buf: &mut [u8],
@@ -844,7 +849,7 @@ impl CertificationObjectAugment {
 
     pub fn handle_extra_pid_write<D: StackDefinition>(
         &self,
-        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
@@ -952,19 +957,19 @@ impl CertificationObjectAugment {
     /// that the property answers as a function property at all — so this
     /// echoes the service ID and the stored byte rather than a constant,
     /// which makes a wrong-PID answer visible in a trace.
-    fn function_body(&self, req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>) -> [u8; 3] {
+    fn function_body(&self, req: &FunctionPropertyRequest<'_>) -> [u8; 3] {
         let service_id = req.service_data.get(1).copied().unwrap_or(0);
         [service_id, self.value.get(), 0x00]
     }
 
     pub fn handle_extra_pid_function_command<D: StackDefinition>(
         &self,
-        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
-        req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
-    ) -> Option<zweidraehte_device::objects::interface::FunctionPropertyResult> {
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
         match req.prop_id {
-            cert_pid::FUNCTION => Some(zweidraehte_device::objects::interface::FunctionPropertyResult::with_code(
+            cert_pid::FUNCTION => Some(FunctionPropertyResult::with_code(
                 zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode::Success,
                 &self.function_body(req),
             )),
@@ -974,12 +979,12 @@ impl CertificationObjectAugment {
 
     pub fn handle_extra_pid_function_state_read<D: StackDefinition>(
         &self,
-        _ctx: &zweidraehte_device::service::ServiceCtx<'_, D>,
+        _ctx: &ServiceCtx<'_, D>,
         _object_type: InterfaceObjectType,
-        req: &zweidraehte_device::objects::interface::FunctionPropertyRequest<'_>,
-    ) -> Option<zweidraehte_device::objects::interface::FunctionPropertyResult> {
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
         match req.prop_id {
-            cert_pid::FUNCTION => Some(zweidraehte_device::objects::interface::FunctionPropertyResult::with_code(
+            cert_pid::FUNCTION => Some(FunctionPropertyResult::with_code(
                 zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode::Success,
                 &self.function_body(req),
             )),
@@ -1007,7 +1012,7 @@ type SecAugment<'a> = SecureAugmentBundle<
 /// diagnostics augment that mirrors a real device's PID 56 surface.
 /// Bundled into a small registry struct so it can be `flatten`-ed
 /// into the outer device augment chain below.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct ConformanceExtras<'a> {
     #[service(augment)]
     pub cert: CertificationObjectAugment,
@@ -1023,7 +1028,7 @@ pub struct ConformanceExtras<'a> {
 /// extras' two augments into this struct's `Augment<D>`
 /// chain so they participate in the property hooks, IO list
 /// aggregation, and lifecycle as if they were declared directly here.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct SecureConformanceAugments<'a> {
     #[service(augment)]
     pub sec: SecAugment<'a>,
@@ -1058,8 +1063,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     const DEVICE_DESCRIPTOR_TYPE2: Option<&'static [u8; 14]> = Some(&CONFORMANCE_DD2);
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
-    const TL_STYLE: zweidraehte_device::layers::transport::TlStyle =
-        zweidraehte_device::layers::transport::TlStyle::Style3;
+    const TL_STYLE: TlStyle = TlStyle::Style3;
 
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;
@@ -1091,7 +1095,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         create_system_b_objects::<Self, _>(state, layer_ctx, &CONFORMANCE_MEMORY_LAYOUT, augments)
     }
 
-    type DeviceModel<'a> = zweidraehte_device::bcus::system_b::SystemBDeviceModel<'a, Self>;
+    type DeviceModel<'a> = SystemBDeviceModel<'a, Self>;
 
     fn create_device_model<'a>(
         state: &'a Self::State,
@@ -1101,13 +1105,13 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     where
         Self::State: 'a,
     {
-        zweidraehte_device::bcus::system_b::SystemBDeviceModel::new(state, layer_context, interface_objects)
+        SystemBDeviceModel::new(state, layer_context, interface_objects)
     }
 
     fn create_augments<'a>(
         state: &'a Self::State,
         platform: &'a Self::Platform,
-        layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<Self>,
+        layer_ctx: &'a LayerContext<Self>,
     ) -> Self::Augments<'a>
     where
         Self::State: 'a,
@@ -1132,11 +1136,8 @@ impl StackDefinition for IpcSecureConformanceTestStack {
         }
     }
 
-    type AlExtensions = (
-        zweidraehte_device::layers::application::services::SystemBAlServices,
-        zweidraehte_device::layers::application::services::PropertyExtValueService,
-    );
-    type LayerBuilder = SecureDeviceBuilder<zweidraehte_device::layers::secure_application::WithP2p>;
+    type AlExtensions = (StandardAlServices, PropertyExtValueService);
+    type LayerBuilder = SecureDeviceBuilder<WithP2p>;
     type Rng = GetrandomRng;
 }
 
@@ -1156,7 +1157,7 @@ impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
         state.to_device_config()
     }
 
-    fn apply_erase_code(state: &Self::State, code: zweidraehte_device::restart::EraseCode) {
+    fn apply_erase_code(state: &Self::State, code: EraseCode) {
         crate::dut_common::apply_erase_code_to_system_b(state.inner(), code);
     }
 }
@@ -1165,9 +1166,10 @@ impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
 // Sequence Number Storage
 // ============================================================================
 
+use zweidraehte_device::layers::application::services::{PropertyExtValueService, StandardAlServices};
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
 use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{HasSeqStore, SiatStore};
+use zweidraehte_device::storage::{HasSeqStore, SiatStore, seq};
 
 /// An [`ByteIo`] over the `mmap(MAP_SHARED)` seq region, addressed by a raw
 /// pointer.
@@ -1251,9 +1253,9 @@ impl HasSeqStore for ConformanceSecureStorage {
 // handle composes for a `seq:` store on real devices. The DUT's restart path
 // (`dut_common::flush_and_exit`) drives it through the same trait the
 // generic storage task uses.
-impl zweidraehte_device::storage::StorageHooks for ConformanceSecureStorage {
-    fn erase(&self, code: zweidraehte_device::restart::EraseCode) {
-        zweidraehte_device::storage::seq::erase_seq_on_factory_reset(&mut *self.seq.borrow_mut(), code);
+impl StorageHooks for ConformanceSecureStorage {
+    fn erase(&self, code: EraseCode) {
+        seq::erase_seq_on_factory_reset(&mut *self.seq.borrow_mut(), code);
     }
 }
 

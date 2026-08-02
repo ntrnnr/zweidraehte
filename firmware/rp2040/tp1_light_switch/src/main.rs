@@ -70,6 +70,10 @@ type PicoTp1State = Tp1StateFor<PicoTp1LightSwitch>;
 // The device's storage memory map: a single config blob carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::StandardAlServices;
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -91,7 +95,7 @@ pub struct PicoTp1LightSwitch;
 /// Augment chain: the TP1 medium augment (borrows the extension state)
 /// plus the demo Easter Egg augment. Derives `Augment<D>` from the field
 /// annotations.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct PicoTp1Augments<'a> {
     #[service(augment)]
     tp1: Tp1Augment<'a>,
@@ -109,7 +113,7 @@ zweidraehte_device::system_b_standard_stack! {
     platform: (),
     extension_state: Tp1ExtensionState,
     state: PicoTp1State,
-    al_extensions: zweidraehte_device::layers::application::services::SystemBAlServices,
+    al_extensions: StandardAlServices,
     layer_builder: PlainDeviceBuilder,
     augments: {
         bundle: PicoTp1Augments,
@@ -198,7 +202,7 @@ zweidraehte_device::storage_task! {
 /// programming completing (or unloading) via defmt.
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, PicoTp1LightSwitch>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 /// Main application task: handles button 1 and button 2 presses.
@@ -349,11 +353,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoTp1LightSwitch,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(
-                    <PicoTp1LightSwitch as StackDefinition>::MAX_APDU_LENGTH,
-                )
-            },
+            { buffer_size_for_apdu(<PicoTp1LightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 

@@ -68,6 +68,11 @@ type PicoEthState = IpStateFor<PicoEthLightSwitch, KnxIpDeviceUdp>;
 // The device's storage memory map: a single config blob carrying this
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
+use zweidraehte_device::config::buffer_size_for_apdu;
+use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};
+use zweidraehte_device::lifecycle::lifecycle_event_logger;
+use zweidraehte_device::service::ServiceRegistry;
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -88,7 +93,7 @@ pub struct PicoEthLightSwitch;
 
 /// Augment chain: IP medium augment (KNXnet/IP Parameter object) plus
 /// the Easter Egg demo augment.
-#[derive(zweidraehte_device::service::ServiceRegistry)]
+#[derive(ServiceRegistry)]
 pub struct PicoEthAugments<'a> {
     #[service(augment)]
     ip: IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>,
@@ -115,8 +120,8 @@ zweidraehte_device::system_b_standard_stack! {
     extension_state: IpExtensionFor<KnxIpDeviceUdp>,
     state: PicoEthState,
     al_extensions: (
-        zweidraehte_device::layers::application::services::SystemBAlServices,
-        zweidraehte_device::layers::application::services::DomainAddressService,
+        StandardAlServices,
+        DomainAddressService,
     ),
     layer_builder: PlainIpDeviceBuilder,
     augments: {
@@ -204,7 +209,7 @@ async fn prog_task(knx: Stack<'static, PicoEthLightSwitch>, prog_btn_pin: Input<
 zweidraehte_device::storage_task! {
     device: PicoEthLightSwitch,
     system: embedded_common::CortexMSystem,
-    guard: zweidraehte_device::storage::NoSaveGuard,
+    guard: NoSaveGuard,
 }
 
 /// Lifecycle event logger.
@@ -213,7 +218,7 @@ zweidraehte_device::storage_task! {
 /// programming completing (or unloading) via defmt.
 #[embassy_executor::task]
 async fn lifecycle_task(knx: Stack<'static, PicoEthLightSwitch>) -> ! {
-    zweidraehte_device::lifecycle::lifecycle_event_logger(knx).await
+    lifecycle_event_logger(knx).await
 }
 
 /// Main application task: handles button 1 and button 2 presses.
@@ -481,11 +486,7 @@ async fn main(spawner: Spawner) {
     static KNX_RESOURCES: StaticCell<
         StackResources<
             PicoEthLightSwitch,
-            {
-                zweidraehte_device::config::buffer_size_for_apdu(
-                    <PicoEthLightSwitch as StackDefinition>::MAX_APDU_LENGTH,
-                )
-            },
+            { buffer_size_for_apdu(<PicoEthLightSwitch as StackDefinition>::MAX_APDU_LENGTH) },
         >,
     > = StaticCell::new();
 
