@@ -22,6 +22,12 @@ extern crate self as zweidraehte_device;
 extern crate zweidraehte_util;
 extern crate zweidraehte_proto;
 
+// `forward_to_field!` is used by both device-state families and by the
+// family-neutral wrapper extensions, so it is declared here — textual
+// macro scoping makes it visible to every module declared after this one.
+#[macro_use]
+mod forward;
+
 mod state;
 pub use state::{
     DiagnosticsView, HasAuthorization, HasDiagnosticsContext, HasExtensionState, HasPersistence, HasSecurityMode,
@@ -102,5 +108,6 @@ pub mod prelude;
 pub mod provisioning;
 pub mod restart;
 pub mod router;
+pub mod security;
 pub mod service;
 pub mod storage;

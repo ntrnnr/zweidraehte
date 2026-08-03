@@ -17,7 +17,6 @@ use core::cell::{Cell, RefCell};
 use serde::{Deserialize, Serialize};
 
 use crate::StackDefinition;
-use crate::bcus::system_b::extensions::security::{SecurityTable, read_table_with_count_probe, write_security_table};
 use crate::bcus::system_b::{Extension, ExtensionState};
 use crate::ip::{HasIpSecureView, IpSecureStateView};
 use crate::objects::interface::{
@@ -25,6 +24,7 @@ use crate::objects::interface::{
     WriteResponse, interface_object_augment, pid,
 };
 use crate::restart::EraseCode;
+use crate::security::{SecurityTable, read_table_with_count_probe, write_security_table};
 use crate::service::ServiceCtx;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{

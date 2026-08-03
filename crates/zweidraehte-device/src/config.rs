@@ -376,6 +376,8 @@ macro_rules! knx_stack_config {
         // types, so this generic macro names no extension-specific types.
         $crate::secure_stack_config! {
             name: $name,
+            // System B numbers communication objects from 1.
+            first_asap: 1,
             p2p_key_capacity: $p2p_cap,
             siat_capacity: $siat_cap,
             tool_key: $tool_key_hex,

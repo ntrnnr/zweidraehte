@@ -716,7 +716,7 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
 /// `start_idx == 0` returns the current entry count as a 2-byte big-endian
 /// value (the "count probe"); `start_idx >= 1` reads `count` entries
 /// starting at the 0-based offset `start_idx - 1`.
-pub(in crate::bcus::system_b::extensions) fn read_table_with_count_probe<const N: usize, const ES: usize>(
+pub(crate) fn read_table_with_count_probe<const N: usize, const ES: usize>(
     table: &SecurityTable<N, ES>,
     req: &FullPropertyReadRequest,
     buf: &mut [u8],
@@ -738,7 +738,7 @@ pub(in crate::bcus::system_b::extensions) fn read_table_with_count_probe<const N
 ///
 /// Element-count writes expect exactly 2 bytes (u16 BE new count).
 /// Setting count to 0 clears the table.
-pub(in crate::bcus::system_b::extensions) fn write_security_table<const N: usize, const ES: usize>(
+pub(crate) fn write_security_table<const N: usize, const ES: usize>(
     table: &mut SecurityTable<N, ES>,
     req: &FullPropertyWriteRequest<'_>,
 ) -> Result<WriteResponse, PropertyError> {

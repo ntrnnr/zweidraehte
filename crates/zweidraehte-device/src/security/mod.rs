@@ -1,8 +1,15 @@
 //! Security extension: persistent state, augment, and composable wrappers.
 //!
 //! Adds the KNX Data Secure Security Interface Object (Object Type 0x11)
-//! to System B devices. This module is orthogonal to the medium extension
-//! (TP1 or IP) — it composes with them via [`SecureExtensionState`].
+//! to a device. KNX Data Security is a *profile module* (06 Profiles
+//! v02.02.01 §9.1 "Profile Module S-AL") composed onto a base profile
+//! rather than a profile of its own, so nothing here names a BCU family:
+//! the medium extension it wraps is a type parameter of
+//! [`SecureExtensionState`], and the device state it attaches to reaches
+//! it through `HasExtensionState`. Each family contributes only its own
+//! aliases, re-exported from its `bcus::*` root: which medium extension
+//! each secure state wraps, and how the security table capacities fall
+//! out of that family's table sizes.
 //!
 //! # Architecture
 //!
@@ -43,9 +50,11 @@ mod augment;
 
 pub use augment::SecurityAugment;
 // Array-property read/write helpers shared with the IP Secure augment
-// (PIDs 93/97 use the same SecurityTable count semantics).
+// (PIDs 93/97 use the same SecurityTable count semantics). That augment
+// lives under `bcus::system_b::extensions::ip`, so the visibility is
+// crate-wide rather than scoped to one module subtree.
 #[cfg(feature = "ip-secure")]
-pub(in crate::bcus::system_b::extensions) use augment::{read_table_with_count_probe, write_security_table};
+pub(crate) use augment::{read_table_with_count_probe, write_security_table};
 use zweidraehte_proto::messages::knx::RequiredSecurity;
 
 use core::cell::{Cell, RefCell};
@@ -54,10 +63,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::HasSecurityMode;
 use crate::StackDefinition;
-use crate::bcus::system_b::{
-    Extension, ExtensionConfig, ExtensionState, RfExtensionState, RfRetransmitterExtension, SystemBDeviceState,
-    Tp1ExtensionState,
-};
+use crate::extension::{Extension, ExtensionConfig, ExtensionState};
 use crate::logging::debug;
 use crate::objects::comm::HasGoSecurityView;
 use crate::objects::interface::{
@@ -777,16 +783,16 @@ pub struct SecureExtensionState<Inner: ExtensionState, const GRP: usize, const P
 }
 
 // The secure wrapper is transparent to the medium-specific accessor traits: it
-// forwards each to the inner extension so the medium-specific `SystemBDeviceState`
-// forwarding impls stay satisfied whether or not a device is wrapped in Data
+// forwards each to the inner extension so the device state's own forwarding
+// impls stay satisfied whether or not a device is wrapped in Data
 // Secure. `HasMaxRetryCount` (TP1), `HasDomainAddress` (the generic Domain
 // Address used by `A_DomainAddressSerialNumber`), `HasRfDomainAddress` (RF
 // Medium Object PID 56, required by the KNX-RF link layer's context trait), and
 // `HasRfRetransmitter` (RF Medium Object PID 57 / Device Object PID 74, required
 // by the `RetransmitEnabled` link layer) are all pure delegations.
-// `forward_to_field!` (defined in `bcus::system_b`) generates the pure
-// delegation to `self.inner`; the wrapper takes no persistence side-effect
-// here (the device state above is what marks dirty). The six-parameter
+// `forward_to_field!` generates the delegation to `self.inner`; the wrapper
+// takes no persistence side-effect here (the device state above is what
+// marks dirty). The six-parameter
 // generic header — `Inner: ExtensionState + <bound>` plus `SEQ` and the
 // four table-size consts — is the same for every forwarded trait; only the
 // `<bound>` and the method set vary. There is no `mark_dirty` on a secure
@@ -1238,58 +1244,6 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
     }
 }
 
-// ============================================================================
-// Type Aliases
-// ============================================================================
-
-/// TP1 extension state with Data Secure support.
-pub type SecureTp1ExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<Tp1ExtensionState, GRP, P2P, GO>;
-
-/// TP1 device state with Data Secure support, sized from raw table byte sizes.
-///
-/// Used where there is no [`SystemBStackDefinition`](crate::bcus::system_b::SystemBStackDefinition) to project sizes from (the
-/// conformance harness, pinned to a custom `Mem`); devices that have one size
-/// their state through `SecureTp1StateFor` in `definition.rs` instead.
-///
-/// `GRP` (group key table capacity) and `GO` (GO security flags table
-/// capacity) are **entry counts** derived from the byte-size parameters:
-/// the group key table holds one key per address table entry
-/// (`(ADT_SIZE - 2) / 2`, inverting the `2 + entries · 2` table layout)
-/// and the GO flags table one byte per communication object
-/// (`(COT_SIZE - 2) / 2`).
-///
-/// `P2P` sizes the P2P Key Table. The Security Individual Address Table is **not**
-/// a parameter here — its capacity is the `N` of the
-/// [`SiatStore`](crate::storage::views::SiatStore) chosen for `SEQ` (the SIAT lives in
-/// the sequence store, not as a const generic). Per 03/03/07 §5.3 that `N` must
-/// cover the union of P2P and group-secure senders.
-pub type SecureTp1DeviceState<
-    const ADT_SIZE: usize,
-    const AST_SIZE: usize,
-    const COT_SIZE: usize,
-    D,
-    const P2P: usize,
-> = SystemBDeviceState<
-    ADT_SIZE,
-    AST_SIZE,
-    COT_SIZE,
-    D,
-    SecureTp1ExtensionState<{ (ADT_SIZE - 2) / 2 }, P2P, { (COT_SIZE - 2) / 2 }>,
->;
-
-/// KNX-RF extension state with Data Secure support. Wraps the RF Medium Object /
-/// Domain Address extension in the secure wrapper.
-pub type SecureRfExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<RfExtensionState, GRP, P2P, GO>;
-
-/// KNX-RF **retransmitter** extension state with Data Secure support. As
-/// [`SecureRfExtensionState`], but the wrapped inner extension is
-/// [`RfRetransmitterExtension`], so the device also gains the PID 57 / PID 74
-/// retransmitter surface (`SecureExtensionState<RfRetransmitterExtension<RfExtensionState>, …>`).
-pub type SecureRfRetransmitterExtensionState<const GRP: usize, const P2P: usize, const GO: usize> =
-    SecureExtensionState<RfRetransmitterExtension, GRP, P2P, GO>;
-
 /// Expansion of the `security:` block of
 /// [`knx_stack_config!`](crate::knx_stack_config) — the Data Secure
 /// constants and the `create_security_config()` constructor.
@@ -1301,6 +1255,7 @@ pub type SecureRfRetransmitterExtensionState<const GRP: usize, const P2P: usize,
 macro_rules! secure_stack_config {
     (
         name: $name:ident,
+        first_asap: $first_asap:expr,
         p2p_key_capacity: $p2p_cap:expr,
         siat_capacity: $siat_cap:expr,
         tool_key: $tool_key_hex:expr,
@@ -1346,12 +1301,12 @@ macro_rules! secure_stack_config {
             /// most one key per group address (`NUM_GROUP_ADDRS`), the GO
             /// flags table one byte per communication object
             /// (`NUM_COMM_OBJECTS`).
-            pub fn create_security_config() -> $crate::bcus::system_b::SecurityExtensionConfig<
+            pub fn create_security_config() -> $crate::security::SecurityExtensionConfig<
                 { Self::NUM_GROUP_ADDRS },
                 { Self::P2P_CAPACITY },
                 { Self::NUM_COMM_OBJECTS },
             > {
-                use $crate::bcus::system_b::{SecurityExtensionConfig, SecurityTable};
+                use $crate::security::{SecurityExtensionConfig, SecurityTable};
 
                 let tool_key = $crate::config::parse_hex_key::<16>($tool_key_hex);
 
@@ -1374,11 +1329,17 @@ macro_rules! secure_stack_config {
                 )*
                 let grp_keys = SecurityTable::from_entries(grp_data, _gk_idx as u16);
 
-                // Build GO security flags table: each entry is 1 byte.
+                // Build GO security flags table: each entry is 1 byte,
+                // positional — element n carries the flags of the group
+                // object at table slot n (03/05/01 §6.3.15).
                 let mut go_data = [[0u8; 1]; Self::NUM_COMM_OBJECTS];
                 $(
-                    // CO indices are 1-based in the config but 0-based in the table.
-                    go_data[$gf_co - 1] = [$gf_val];
+                    // The `go_flags` keys are written in the family's own
+                    // ASAP numbering, which starts at `FIRST_ASAP` — 1 for
+                    // System B, 0 for System 7's M112 table. Subtracting it
+                    // lands each flag on its own object's slot; getting the
+                    // base wrong secures every object as its neighbour.
+                    go_data[$gf_co - $first_asap] = [$gf_val];
                 )*
                 // Count of populated entries = max CO index used.
                 // The GO flags table count should equal the number of comm objects
