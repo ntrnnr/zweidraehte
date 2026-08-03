@@ -11,6 +11,13 @@ we can replace different layers and servers in the stack for different
 use cases when building devices. It's best to stick to existing
 patterns where applicable.
 
+Two BCU families are implemented: **System B** (07B0 TP1 / 27B0 RF /
+57B0 KNX/IP, with Data Secure and IP Secure) is the default for any new
+device, and **System 7** (0705 TP1 only, non-secure) exists for devices
+that must match an existing System 7 installed base — and as the second
+family that keeps the "generic" core honest. Prefer System B unless
+asked otherwise.
+
 We are also working on a product definition XML generator: device
 definitions in Rust macros (parameters, communication objects, dynamic
 ETS pages) from which we generate the MTXML/`.knxprod` files that ETS
@@ -515,6 +522,20 @@ Subdirectories:
     - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
     - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all firmware devices use it). `#[macro_export]`ed, so it is invoked as `zweidraehte_device::system_b_standard_stack!` (crate root), not via the `bcus::system_b` path
+  - `system_7/` - System 7 BCU implementation, TP1 mask 0705 only, **no
+    Data Secure**. Same shape as `system_b/`
+    (`System7StackDefinition` + `System7ProductLayout` supertraits,
+    `system_7_standard_stack!`, `System7DeviceState`,
+    `System7MemoryMap`, `config.rs`'s `system7_stack_config!`). Differs
+    in the management model: RT8 tables (`AddrTab8`/`AssoTab8`, IA
+    inside the address-table blob at 4000h) plus the M112 group object
+    table at a compile-time product address, fixed absolute memory map
+    with memory-mapped load controls (0104h/B6EAh), absolute-segment
+    load procedures, 16 authorization levels, no Group Object Table
+    interface object (so AppProg sits at index 3), and communication
+    objects numbered from 0 (`StackDefinition::FIRST_ASAP`).
+    **New devices should use System B** — System 7 is for matching an
+    existing System 7 installed base, and buys nothing otherwise.
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware

@@ -563,6 +563,31 @@ vocabulary.
 
 ## Defining a New Device
 
+### Step 0: Pick a BCU family
+
+**Use System B.** It carries all three media (TP1, KNX-RF, KNX/IP),
+KNX Data Secure and KNX IP Secure, and the deepest conformance
+coverage; everything below this line is written for it.
+
+The stack also implements **System 7 on TP1** (mask 0705h) *without*
+Data Secure. Choose it only when a device has to match an existing
+System 7 installed base or toolchain — the mask a product declares is
+the manufacturer's choice, and nothing in ETS rewards the older
+family. Building on it costs no extra effort (swap
+`system_b_standard_stack!` for `system_7_standard_stack!` plus its
+`cot_address:` slot, and `Tp1StateFor` for `Tp1StateFor7`; see
+[`firmware/stm32/g0_tp1_system7_light_switch`](../firmware/stm32/g0_tp1_system7_light_switch/)
+next to its System B sibling, both running the same
+`devices::light_switch` definition), but you give up Data Secure, RF
+and KNX/IP. The family differences are catalogued in
+[`STACK_ARCHITECTURE.md` §3.11](STACK_ARCHITECTURE.md#311-bcus--system_b-and-system_7).
+
+One difference reaches the device definition either way:
+`#[ets(index = N)]` on a communication object is a **0-based logical
+index**, and the object number ETS shows is `N + FIRST_ASAP` — 0 on
+System 7, 1 on System B, whose CO table cannot express ASAP 0. Write
+definitions from 0 and a shared one works on both families.
+
 ### Step 1: Device Descriptor
 
 ```rust

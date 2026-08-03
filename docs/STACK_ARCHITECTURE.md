@@ -25,9 +25,9 @@ is shaped the way it is, *which* extension point to reach for, or
   (the `firmware/` subtree) and on embedded Linux userspace (the
   `examples/devices` demo binaries).
 - Be generic over link medium (TP1, KNX/IP, USB, IP-interface,
-  mock), over BCU style (System B today; more later), and over
-  per-device extensions (security, diagnostics, custom interface
-  objects).
+  mock), over BCU style (System B and non-secure System 7 TP1 today;
+  more later), and over per-device extensions (security, diagnostics,
+  custom interface objects).
 - Stay conformance-compliant against the KNX specifications in
   `spec/` without fossilising any single device's wiring into the
   core.
@@ -775,15 +775,16 @@ Implementations:
 The AL's `MemoryService` and `UserMemoryService` consume the memory
 map through `StackContext::memory_map()`.
 
-### 3.11 BCUs — `system_b`
+### 3.11 BCUs — `system_b` and `system_7`
 
 **Directory:**
 [`crates/zweidraehte-device/src/bcus/system_b/`](../crates/zweidraehte-device/src/bcus/system_b/)
 
 A complete pre-assembled implementation for mask versions `07B0`
-(TP1) and `57B0` (KNX/IP). A device that wants to be System B
-implements the `SystemBStackDefinition` supertrait and gets most
-choices made for it.
+(TP1), `27B0` (KNX-RF) and `57B0` (KNX/IP). A device that wants to be
+System B implements the `SystemBStackDefinition` supertrait and gets
+most choices made for it. This is the family to build a new device
+on; the System 7 sibling below is documented after it.
 
 Key pieces:
 
@@ -871,6 +872,56 @@ All firmware devices use the macro; a fully hand-written
 `impl StackDefinition` is only needed for a non-standard
 `InterfaceObjects` wrapper, custom `Mem`, or custom `StateInit`
 shape (the conformance DUTs do this for `ConformanceMemoryMap`).
+
+#### `system_7` — the second family
+
+**Directory:**
+[`crates/zweidraehte-device/src/bcus/system_7/`](../crates/zweidraehte-device/src/bcus/system_7/)
+
+The same shape one family over, for mask version `0705` (TP1),
+**without** Data Secure: `System7StackDefinition` +
+`System7ProductLayout` are the supertraits,
+`system_7_standard_stack!` the macro, `System7DeviceState` the state
+type, `System7MemoryMap` the map. What genuinely differs is the
+management model, and it is worth knowing which pieces those are:
+
+- **Tables.** Realisation Type 8 throughout
+  ([`objects/tables/addr8.rs`](../crates/zweidraehte-device/src/objects/tables/addr8.rs),
+  [`asso8.rs`](../crates/zweidraehte-device/src/objects/tables/asso8.rs)):
+  1-octet counts, the individual address living *inside* the address
+  table blob at its fixed 4000h home, and 2-octet association
+  entries. The group object table is the M112 memory format
+  ([`co_m112.rs`](../crates/zweidraehte-device/src/objects/tables/co_m112.rs))
+  at a compile-time product address — the spec assigns System 7 no
+  GO-table realisation and ETS's own formatter is the normative
+  source.
+- **Memory and load procedures.** A fixed absolute map (user EEPROM
+  4000h–CFFFh) with memory-mapped load controls at 0104h/B6EAh,
+  driven by absolute-segment allocation records rather than System
+  B's Data Relative Allocation.
+- **Interface objects.** No Group Object Table object, so the roster
+  is Device(0), AddrTab(1), AssocTab(2), AppProg(3), AppProg2(4) —
+  the Application Program sits one index lower than on System B.
+- **Authorization.** 16 access levels against System B's 4, with
+  level 15 free.
+- **Object numbering.** `#[ets(index = N)]` is a 0-based logical
+  index; the wire ASAP and the number ETS shows are
+  `N + D::FIRST_ASAP` (System 7: 0, System B: 1, whose
+  RealizationType-7 CO table cannot express ASAP 0). This is why a
+  device definition can be shared across both families — see
+  [`light_switch`](../examples/devices/src/light_switch/) and its two
+  firmware targets.
+
+Everything else — the router, the layers, the property machinery, the
+storage vocabulary, `forward_system_b_state_traits!` (family-agnostic
+despite its name) — is shared. That was the point of adding a second
+family: the places where "generic" code had grown System B
+assumptions only became visible once something else had to compile
+against it.
+
+**For a new device, prefer System B.** System 7 exists for devices
+that must match an existing System 7 installed base or toolchain; it
+has no Data Secure here, no RF or KNX/IP sibling, and less coverage.
 
 ### 3.12 Extensions, augments, and `D::Augments<'a>`
 
