@@ -29,7 +29,7 @@ mod traits;
 
 pub use ctx::{AlCtx, ServiceCtx};
 pub use registry::{LayerRegistry, LifecycleHook};
-pub use traits::{ApciHandler, Augment, Layer};
+pub use traits::{ApciHandler, Augment, Layer, debug_assert_no_duplicate_object_types};
 
 /// Derive [`LayerRegistry<D>`] and [`Augment<D>`] for a
 /// device's services struct from `#[service(handler | augment)]`

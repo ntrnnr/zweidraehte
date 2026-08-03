@@ -45,7 +45,7 @@ use crate::storage::HasDeviceConfig;
 use crate::{HasDiagnosticsContext, HasExtensionState, HasSecurityMode};
 
 use super::{SYSTEM7_MAX_ACCESS_LEVELS, SYSTEM7_NUM_AUTH_KEYS, System7DeviceConfig, System7StateInit};
-use crate::bcus::system_b::OperationModeState;
+use crate::diagnostics::OperationModeState;
 
 /// Size of the RAM window at 0700h.
 ///

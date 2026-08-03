@@ -241,3 +241,41 @@ pub trait Augment<D: StackDefinition> {
 /// explicit `()` impl lets devices that don't use augments name `()`
 /// as their `StackDefinition::Augments` without any custom type.
 impl<D: StackDefinition> Augment<D> for () {}
+
+/// Panic in debug builds if an augment contributes an interface object
+/// whose type a base object already provides.
+///
+/// The IO list an object container publishes is its base types followed
+/// by its augments' additional types, concatenated without any check, so
+/// a duplicate would appear twice in `PID_IO_LIST` and give two object
+/// indexes the same type. That matters because a Management Client
+/// discovers the Security Interface Object by reading exactly that
+/// property (06 Profiles v02.02.01 §9.1.2.6.2's note on PID_IO_LIST).
+///
+/// The mistake this catches is a real one: `GroupObjectTableAugment`
+/// supplies Object Type 9 to a profile that has no such base object
+/// (System 7), and composing it on a profile that does (System B, where
+/// the object sits at base index 3) would be silently wrong.
+///
+/// Called from the object containers' constructors, so it fires once per
+/// stack construction in any debug or test build — including the
+/// conformance DUTs — and compiles away in release.
+pub fn debug_assert_no_duplicate_object_types<D: StackDefinition, A: Augment<D> + ?Sized>(
+    base_types: &[InterfaceObjectType],
+    augments: &A,
+) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    for i in 0..augments.additional_object_count() {
+        let Some(added) = augments.additional_object_type_at(i) else { continue };
+        // `core::assert!` rather than the bare macro: on a no_std device
+        // `assert!` resolves to defmt's, whose format strings do not take
+        // `{x:?}` captures.
+        core::assert!(
+            !base_types.contains(&added),
+            "augment contributes an interface object type this profile already provides \
+             as a base object; it would appear twice in PID_IO_LIST"
+        );
+    }
+}

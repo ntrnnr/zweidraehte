@@ -18,9 +18,14 @@ mod ip;
 #[cfg(feature = "knxip")]
 pub use ip::*;
 
-pub mod operation_mode;
-pub use operation_mode::{
-    DiagnosticsAugment, NoSecureGoSend, OperationModeState, SecureGoSender, SecureSendOutcome, WithSecureGoSend,
+// GO Diagnostics is a profile module of its own (06 Profiles
+// v02.02.01 §9.2, "functionality with can be added to any KNX Profile
+// that supports Group Objects"), so it lives at the crate root. Kept
+// re-exported here because every existing device names it through
+// `bcus::system_b`.
+pub use crate::diagnostics::{
+    DiagnosticsAugment, GroupObjectTableAugment, NoSecureGoSend, OperationModeState, SecureGoSender, SecureSendOutcome,
+    WithSecureGoSend,
 };
 
 pub mod security;

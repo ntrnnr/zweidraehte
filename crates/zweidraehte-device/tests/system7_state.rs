@@ -567,3 +567,104 @@ mod macros {
         assert_eq!(state.ast.borrow().sending_tsap(1), Some(2));
     }
 }
+
+// ============================================================================
+// The Group Object Table Object a secure System 7 device has to grow
+// ============================================================================
+
+/// 06 Profiles v02.02.01 §9.2.1.1.1.1 lists the Group Object Table
+/// Object (Type 9) as **M** for the GO Diagnostics profile module, and
+/// §9.1.2.4 row 6.2 footnote b makes GO Diagnostics itself mandatory for
+/// S-Mode Data Secure devices that have Group Objects. System 7's base
+/// roster stops at five objects, so a secure System 7 device composes
+/// `GroupObjectTableAugment` to give PID_GO_DIAGNOSTICS (66) a home.
+///
+/// The end-to-end path — PID 66 arriving on object index 5 and reaching
+/// `DiagnosticsAugment` — is exercised by the System 7 secure DUT; what
+/// is pinned here is the contract the container relies on.
+mod go_table_object {
+    use super::S7TestStack;
+    use zweidraehte_device::bcus::system_b::GroupObjectTableAugment;
+    use zweidraehte_device::objects::interface::pid;
+    use zweidraehte_device::service::Augment;
+    use zweidraehte_proto::access::{AccessLevel, AccessLevelSpec};
+    use zweidraehte_proto::dpt::InterfaceObjectType;
+
+    type Aug = GroupObjectTableAugment;
+
+    #[test]
+    fn contributes_exactly_the_group_object_table_object() {
+        let augment = Aug::new();
+        assert_eq!(<Aug as Augment<S7TestStack>>::additional_object_count(&augment), 1);
+        assert_eq!(
+            <Aug as Augment<S7TestStack>>::additional_object_type_at(&augment, 0),
+            Some(InterfaceObjectType::GroupObjectTable)
+        );
+        assert_eq!(<Aug as Augment<S7TestStack>>::additional_object_type_at(&augment, 1), None);
+    }
+
+    #[test]
+    fn answers_the_mandatory_object_type_property() {
+        let augment = Aug::new();
+        let d = <Aug as Augment<S7TestStack>>::property_descriptor(
+            &augment,
+            InterfaceObjectType::GroupObjectTable,
+            pid::OBJECT_TYPE,
+        )
+        .expect("PID_OBJECT_TYPE is mandatory on every interface object");
+        // Resolved against System 7's 16 levels: runtime read is 15.
+        assert_eq!(d.read_level, 15);
+    }
+
+    /// §9.1.2.6.3 gives this object PID_OBJECT_TYPE (M) and
+    /// PID_OBJECT_NAME (O) and nothing else. No load state machine in
+    /// particular: the M112 group object table is written by absolute
+    /// memory writes, so a PID_LOAD_STATE_CONTROL here would invent a
+    /// fifth load state machine no product database drives.
+    #[test]
+    fn carries_no_load_state_machine() {
+        let pids: [u16; 2] = core::array::from_fn(|i| Aug::DESCRIPTORS[i].1.pid);
+        assert_eq!(Aug::DESCRIPTORS.len(), 2);
+        assert_eq!(pids, [pid::OBJECT_TYPE, pid::OBJECT_NAME]);
+    }
+
+    /// Composing this augment on a profile that already has Object
+    /// Type 9 in its base roster — System B, where it sits at index 3 —
+    /// would list the type twice in `PID_IO_LIST` and give two object
+    /// indexes the same type. That is how a Management Client discovers
+    /// the Security Interface Object (§9.1.2.6.2), so the object
+    /// containers assert against it on construction.
+    #[test]
+    #[should_panic(expected = "would appear twice in PID_IO_LIST")]
+    fn is_rejected_on_a_profile_that_already_has_the_object() {
+        use zweidraehte_proto::dpt::InterfaceObjectType as Iot;
+        let augment = Aug::new();
+        zweidraehte_device::service::debug_assert_no_duplicate_object_types::<S7TestStack, _>(
+            // System B's base roster, which already carries Type 9.
+            &[Iot::Device, Iot::AddressTable, Iot::AssociationTable, Iot::GroupObjectTable, Iot::ApplicationProgram],
+            &augment,
+        );
+    }
+
+    /// System 7's own roster stops before Type 9, so the same augment is
+    /// exactly what that profile is missing.
+    #[test]
+    fn is_accepted_on_a_profile_that_lacks_it() {
+        use zweidraehte_proto::dpt::InterfaceObjectType as Iot;
+        let augment = Aug::new();
+        zweidraehte_device::service::debug_assert_no_duplicate_object_types::<S7TestStack, _>(
+            &[Iot::Device, Iot::AddressTable, Iot::AssociationTable, Iot::ApplicationProgram, Iot::InterfaceProgram],
+            &augment,
+        );
+    }
+
+    /// The levels are symbolic on the augment, because the augment does
+    /// not know which profile will host it.
+    #[test]
+    fn levels_stay_symbolic_until_a_device_resolves_them() {
+        let (_, d) = Aug::DESCRIPTORS.iter().find(|(_, d)| d.pid == pid::OBJECT_TYPE).expect("declared");
+        assert_eq!(d.read_level, AccessLevelSpec::Audience(AccessLevel::Runtime));
+        assert_eq!(d.for_levels(4).read_level, 3);
+        assert_eq!(d.for_levels(16).read_level, 15);
+    }
+}

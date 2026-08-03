@@ -154,6 +154,7 @@ where
         routing_count: u8,
         augments: &'a Aug,
     ) -> Self {
+        crate::service::debug_assert_no_duplicate_object_types::<D, _>(&BASE_IO_TYPES, augments);
         let mut device = DeviceObject::from_descriptor(state, device);
         device.routing_count = RoutingCount::from(routing_count);
         Self {

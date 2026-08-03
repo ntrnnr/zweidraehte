@@ -97,6 +97,7 @@ pub mod bcus;
 pub mod config;
 pub mod context;
 pub mod device_model;
+pub mod diagnostics;
 pub mod ets;
 pub mod extension;
 pub mod layers;
