@@ -40,6 +40,14 @@ const SECURITY_OBJECT_NAME: [u8; 10] = *b"SecurityIO";
 /// This augment reports one additional interface object
 /// (`InterfaceObjectType::Security`) and handles property dispatch for
 /// all Security IO PIDs.
+///
+/// Profiles §9.1.2.6.4 writes the Security IO's access levels in the
+/// 4-level notation — `3/X` on PID 1, 2, 55 and 57 — but this object is
+/// composed onto whichever base profile hosts it, and the number of
+/// authorisation levels belongs to that profile (§4.2 row 12: 4 for
+/// System B, 16 for System 7). So the levels below name their audience
+/// from 03/04/01 Table 1 and the device resolves them: `Runtime`
+/// lands on 3 or 15, `Configuration` on 2 either way.
 //
 // Access policies per KNX Profiles v02.02.01, page 116. The macro
 // generates the descriptor table, `property_descriptor`,
@@ -77,7 +85,7 @@ pub struct SecurityAugment<
         pdt = PDT_UnsignedInt,
         access = RO,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
-        rl = 3, wl = 0,
+        rl = Runtime, wl = SystemManufacturer,
         read = |_this: &Self| -> [u8; 2] {
             let v: u16 = InterfaceObjectType::Security.into();
             v.to_be_bytes()
@@ -95,7 +103,7 @@ pub struct SecurityAugment<
         pdt = PDT_UnsignedChar,
         access = RO,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
-        rl = 3, wl = 0,
+        rl = Runtime, wl = SystemManufacturer,
         array(max = 10),
         manual,
     )]
@@ -107,7 +115,7 @@ pub struct SecurityAugment<
         pdt = PDT_Control,
         access = RW,
         policy = AccessPolicy::RESTRICTED, // 15F/04C
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         manual,
     )]
     _load_state_control_io: (),
@@ -118,7 +126,7 @@ pub struct SecurityAugment<
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::RESTRICTED, // 15F/04C
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         manual,
     )]
     _security_mode_io: (),
@@ -129,7 +137,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic20,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY, // 00C/00C
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         array(max = 0),
         manual,
     )]
@@ -141,7 +149,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic18,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         array(max = 0),
         manual,
     )]
@@ -153,7 +161,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic08,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         array(max = 0),
         manual,
     )]
@@ -170,7 +178,7 @@ pub struct SecurityAugment<
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::new(0x1FF, 0x0CC),
-        rl = 3, wl = 2,
+        rl = Runtime, wl = Configuration,
         array(max = 1),
         manual,
     )]
@@ -182,7 +190,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic16,
         access = WO,
         policy = AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
-        rl = 0, wl = 2,
+        rl = SystemManufacturer, wl = Configuration,
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
             if data.len() < 16 {
                 return Err(PropertyError::BufferTooSmall);
@@ -202,7 +210,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic01,
         access = RW,
         policy = AccessPolicy::new(0x1FF, 0x0CC),
-        rl = 3, wl = 2,
+        rl = Runtime, wl = Configuration,
         read = |this: &Self| -> [u8; 1] { [this.state.security_report()] },
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
             if data.is_empty() {
@@ -221,7 +229,7 @@ pub struct SecurityAugment<
         pdt = PDT_BinaryInformation,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY, // 00C/00C
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         read = |this: &Self| -> [u8; 1] {
             [if this.state.security_report_enabled() { 0x01 } else { 0x00 }]
         },
@@ -241,7 +249,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic06,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY, // 00C/00C
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         manual,
     )]
     _sequence_number_sending_io: (),
@@ -254,7 +262,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic01,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         array(max = 0),
         manual,
     )]
@@ -267,7 +275,7 @@ pub struct SecurityAugment<
         pdt = PDT_Generic02,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY,
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         array(max = 4),
         manual,
     )]

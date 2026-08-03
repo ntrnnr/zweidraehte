@@ -304,9 +304,11 @@ impl Extension<()> for RfRetransmitterExtension {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use zweidraehte_proto::properties::PropertyDescriptor;
+    use zweidraehte_proto::properties::PropertyDescriptorSpec;
 
-    type DescriptorRow = (InterfaceObjectType, PropertyDescriptor);
+    // An augment's descriptors are profile-independent specs; this test
+    // only reads PIDs off them, so no resolution is needed.
+    type DescriptorRow = (InterfaceObjectType, PropertyDescriptorSpec);
 
     /// Collect the descriptor PIDs from a `DESCRIPTORS` table for one object
     /// type, in declaration order (the order that drives the index-based

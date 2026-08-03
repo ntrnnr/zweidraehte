@@ -3,7 +3,7 @@
 use core::fmt;
 
 use crate::AccessContext;
-use crate::access::AccessPolicy;
+use crate::access::{AccessLevelSpec, AccessPolicy};
 use crate::dpt::PropertyDataDefinition;
 use crate::messages::apdu::property_ext::PropertyReturnCode;
 
@@ -185,6 +185,15 @@ impl PropertyDescriptor {
         Self::new(pid, T::ID, 1, access, read_level, write_level, policy)
     }
 
+    /// Replace the two access levels, leaving everything else alone.
+    ///
+    /// Used by [`PropertyDescriptorSpec::for_levels`] to turn a
+    /// profile-independent spec into the descriptor a given device
+    /// answers with.
+    pub const fn with_levels(self, read_level: u8, write_level: u8) -> Self {
+        Self { read_level: read_level & 0x0F, write_level: write_level & 0x0F, ..self }
+    }
+
     /// Create a property descriptor for an array property of the typed
     /// PDT `T`. Convenience over [`new`](Self::new) for runtime-built
     /// descriptors whose `max_elements` value isn't known at compile
@@ -254,6 +263,65 @@ impl PropertyDescriptor {
     /// Like [`can_function_write_secure`], skips the PropertyAccess check.
     pub const fn can_function_read_secure(&self, ctx: &AccessContext, device_security_on: bool) -> bool {
         self.policy.can_read(ctx, device_security_on)
+    }
+}
+
+/// A property descriptor whose two access levels have not been resolved
+/// against a profile yet.
+///
+/// The access octet of 03/03/07 §3.4.3.2 holds numbers, but which number
+/// an audience gets depends on whether the hosting profile has 4 or 16
+/// authorisation levels (03/04/01 §4.3.2.2 Table 1). An interface object
+/// that belongs to exactly one profile resolves that at its definition
+/// site and publishes plain [`PropertyDescriptor`]s. An object shared
+/// between profiles publishes these instead, and the device resolves
+/// them from its own
+/// `HasAuthorization::MAX_ACCESS_LEVELS`.
+#[derive(Clone, Copy, Debug)]
+pub struct PropertyDescriptorSpec {
+    /// Property Identifier (PID)
+    pub pid: u16,
+    /// Property Data Type identifier (PDT)
+    pub pdt_id: u8,
+    /// Maximum number of elements (0 = current count, for variable-length properties)
+    pub max_elements: u16,
+    /// Access rights
+    pub access: PropertyAccess,
+    /// Read access level, before resolution.
+    pub read_level: AccessLevelSpec,
+    /// Write access level, before resolution.
+    pub write_level: AccessLevelSpec,
+    /// KNX Data Secure access policy.
+    pub policy: AccessPolicy,
+}
+
+impl PropertyDescriptorSpec {
+    /// Create a spec. Mirrors [`PropertyDescriptor::new`]'s argument
+    /// order, with the two levels given as specs rather than numbers.
+    pub const fn new(
+        pid: u16,
+        pdt_id: u8,
+        max_elements: u16,
+        access: PropertyAccess,
+        read_level: AccessLevelSpec,
+        write_level: AccessLevelSpec,
+        policy: AccessPolicy,
+    ) -> Self {
+        Self { pid, pdt_id, max_elements, access, read_level, write_level, policy }
+    }
+
+    /// Resolve into the descriptor a device with `max_levels`
+    /// authorisation levels answers with.
+    pub const fn for_levels(&self, max_levels: u8) -> PropertyDescriptor {
+        PropertyDescriptor::new(
+            self.pid,
+            self.pdt_id,
+            self.max_elements,
+            self.access,
+            self.read_level.for_levels(max_levels),
+            self.write_level.for_levels(max_levels),
+            self.policy,
+        )
     }
 }
 

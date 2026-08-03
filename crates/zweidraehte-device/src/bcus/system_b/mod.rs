@@ -133,9 +133,8 @@ macro_rules! forward_system_b_state_traits {
         }
 
         impl $crate::HasAuthorization for $outer {
-            fn max_access_levels(&self) -> u8 {
-                self.$field.max_access_levels()
-            }
+            const MAX_ACCESS_LEVELS: u8 = <$inner as $crate::HasAuthorization>::MAX_ACCESS_LEVELS;
+
             fn default_access_level(&self) -> u8 {
                 self.$field.default_access_level()
             }

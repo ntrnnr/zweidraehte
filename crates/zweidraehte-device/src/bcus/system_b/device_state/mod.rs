@@ -694,9 +694,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
     HasAuthorization for SystemBDeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
-    fn max_access_levels(&self) -> u8 {
-        MAX_ACCESS_LEVELS as u8
-    }
+    const MAX_ACCESS_LEVELS: u8 = crate::__macro_support::access::MAX_ACCESS_LEVELS as u8;
 
     fn default_access_level(&self) -> u8 {
         self.authorize(&[0xFF, 0xFF, 0xFF, 0xFF])

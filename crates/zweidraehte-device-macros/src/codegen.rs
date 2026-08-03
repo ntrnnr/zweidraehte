@@ -11,11 +11,11 @@
 //! against `self.state: &'a S`. The macro auto-injects the `state` field
 //! when at least one property is state-backed.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::ItemStruct;
 
-use crate::parse::{Access, Backing, ObjectAttrs, PropertyAttrs};
+use crate::parse::{Access, Backing, LevelAttr, ObjectAttrs, PropertyAttrs};
 
 /// `props` is parallel to `item.fields` — `None` entries are non-property
 /// struct fields kept verbatim, `Some(_)` entries are property metadata.
@@ -72,7 +72,14 @@ pub(crate) fn gen_object(
     // `descriptor_for` helper (also used by the augment path, which
     // passes an `Expr`) can take a uniform parameter.
     let object_type_expr: syn::Expr = syn::parse_quote!(#object_type);
-    let descriptor_entries = property_props.iter().map(|p| descriptor_for(p, &object_type_expr));
+    // An interface object belongs to exactly one profile, so its named
+    // access levels resolve here, at const-evaluation time. `levels = 16`
+    // on a System 7 object is what turns `Runtime` into 15.
+    let levels = match &obj_attrs.levels {
+        Some(e) => quote! { ((#e) as u8) },
+        None => quote! { 4u8 },
+    };
+    let descriptor_entries = property_props.iter().map(|p| descriptor_for(p, &object_type_expr, &levels));
 
     let read_arms = property_props.iter().map(|p| read_arm(p));
     let write_arms = property_props.iter().map(|p| write_arm(p));
@@ -94,16 +101,17 @@ pub(crate) fn gen_object(
             pub const PROPERTY_DESCRIPTORS: &'static [
                 ::zweidraehte_proto::properties::PropertyDescriptor
             ] = &[
-                // OBJECT_TYPE (PID 1) — always first, ReadOnly, level 3/0,
-                // policy READ_OPEN_WRITE_TOOL. This is mandated by KNX spec
-                // for every interface object.
+                // OBJECT_TYPE (PID 1) — always first, ReadOnly, readable
+                // at runtime and not writable, policy READ_OPEN_WRITE_TOOL.
+                // Mandated by the KNX spec for every interface object.
                 ::zweidraehte_proto::properties::PropertyDescriptor::new(
                     ::zweidraehte_device::objects::interface::pid::OBJECT_TYPE,
                     <::zweidraehte_proto::dpt::PDT_UnsignedInt
                         as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
                     1,
                     ::zweidraehte_proto::properties::PropertyAccess::ReadOnly,
-                    3, 0,
+                    ::zweidraehte_proto::access::AccessLevel::Runtime.for_levels(#levels),
+                    ::zweidraehte_proto::access::AccessLevel::SystemManufacturer.for_levels(#levels),
                     ::zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
                 ),
                 #( #descriptor_entries , )*
@@ -371,7 +379,7 @@ pub(crate) fn gen_augment(
     // ----------------------------------------------------------------------
     let descriptor_entries = property_props.iter().map(|p| {
         let target = pid_target(p);
-        let desc = descriptor_for(p, &default_target);
+        let desc = descriptor_spec_for(p);
         // Pair each descriptor with its target so `property_descriptor`
         // can filter. We encode the pair as `(target, descriptor)` in a
         // separate const so DESCRIPTORS itself stays a flat
@@ -480,7 +488,7 @@ pub(crate) fn gen_augment(
             #[allow(clippy::type_complexity)]
             pub const DESCRIPTORS: &'static [(
                 ::zweidraehte_proto::dpt::InterfaceObjectType,
-                ::zweidraehte_proto::properties::PropertyDescriptor,
+                ::zweidraehte_proto::properties::PropertyDescriptorSpec,
             )] = &[
                 #( #descriptor_entries , )*
             ];
@@ -498,7 +506,7 @@ pub(crate) fn gen_augment(
                 if let Some(d) = Self::DESCRIPTORS
                     .iter()
                     .find(|(t, d)| *t == object_type && d.pid == prop_id)
-                    .map(|(_, d)| *d)
+                    .map(|(_, d)| d.for_levels(<<D as ::zweidraehte_device::StackDefinition>::State as ::zweidraehte_device::HasAuthorization>::MAX_ACCESS_LEVELS))
                 {
                     return Some(d);
                 }
@@ -524,12 +532,14 @@ pub(crate) fn gen_augment(
                         .enumerate()
                         .find(|(_, (_, d))| d.pid == pid)
                         .map(|(idx, (_, d))| {
-                            Ok(PropertyDescriptionResponse::from_descriptor(object_idx, idx as u16, d))
+                            let d = d.for_levels(<<D as ::zweidraehte_device::StackDefinition>::State as ::zweidraehte_device::HasAuthorization>::MAX_ACCESS_LEVELS);
+                            Ok(PropertyDescriptionResponse::from_descriptor(object_idx, idx as u16, &d))
                         }),
                     PropertyLookup::ByIndex(idx) => filtered
                         .nth(idx as usize)
                         .map(|(_, d)| {
-                            Ok(PropertyDescriptionResponse::from_descriptor(object_idx, idx, d))
+                            let d = d.for_levels(<<D as ::zweidraehte_device::StackDefinition>::State as ::zweidraehte_device::HasAuthorization>::MAX_ACCESS_LEVELS);
+                            Ok(PropertyDescriptionResponse::from_descriptor(object_idx, idx, &d))
                         }),
                 }
             }
@@ -811,7 +821,48 @@ fn augment_function_state_arm(p: &PropertyAttrs) -> Option<TokenStream> {
 // Per-property descriptor entry
 // ---------------------------------------------------------------------------
 
-fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr) -> TokenStream {
+/// The two access levels of a property, as `AccessLevelSpec` expressions.
+///
+/// Defaults follow the KNX convention for the access mode: a readable
+/// property is readable at runtime, a writable one is writable by a
+/// controller, and the unreachable half of a read-only or write-only
+/// property sits at the most privileged level. Spelling those defaults
+/// as audiences rather than numbers is what lets a shared object be
+/// hosted by either authorisation model — see
+/// `zweidraehte_proto::access::AccessLevel`.
+fn level_specs(p: &PropertyAttrs) -> (TokenStream, TokenStream) {
+    let audience = |name: &str| -> TokenStream {
+        let ident = syn::Ident::new(name, Span::call_site());
+        quote! {
+            ::zweidraehte_proto::access::AccessLevelSpec::Audience(
+                ::zweidraehte_proto::access::AccessLevel::#ident
+            )
+        }
+    };
+    let render = |lvl: &LevelAttr| -> TokenStream {
+        match lvl {
+            LevelAttr::Audience(ident) => quote! {
+                ::zweidraehte_proto::access::AccessLevelSpec::Audience(
+                    ::zweidraehte_proto::access::AccessLevel::#ident
+                )
+            },
+            LevelAttr::Literal(e) => quote! {
+                ::zweidraehte_proto::access::AccessLevelSpec::Literal((#e) as u8)
+            },
+        }
+    };
+
+    let (default_rl, default_wl) = match p.access {
+        Access::Ro => (audience("Runtime"), audience("SystemManufacturer")),
+        Access::Rw => (audience("Runtime"), audience("Controller")),
+        Access::Wo => (audience("SystemManufacturer"), audience("Controller")),
+    };
+    let rl = p.rl.as_ref().map(render).unwrap_or(default_rl);
+    let wl = p.wl.as_ref().map(render).unwrap_or(default_wl);
+    (rl, wl)
+}
+
+fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr, levels: &TokenStream) -> TokenStream {
     let pid = &p.pid;
     let policy = &p.policy;
     // PDT is either a named type (`pdt = PDT_Foo`, takes `::ID`) or a raw
@@ -830,15 +881,7 @@ fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr) -> TokenStream {
         Access::Wo => quote! { ::zweidraehte_proto::properties::PropertyAccess::WriteOnly },
     };
 
-    // Default access levels follow KNX convention: RO=3/0, RW=3/3, WO=0/3.
-    // Explicit `rl=` / `wl=` attributes override.
-    let (default_rl, default_wl) = match p.access {
-        Access::Ro => (3u8, 0u8),
-        Access::Rw => (3u8, 3u8),
-        Access::Wo => (0u8, 3u8),
-    };
-    let rl = p.rl.unwrap_or(default_rl);
-    let wl = p.wl.unwrap_or(default_wl);
+    let (rl, wl) = level_specs(p);
 
     let max_elements = if let Some(n) = &p.array_max {
         // `array(max = <expr>)` — `<expr>` is forwarded verbatim and
@@ -854,6 +897,48 @@ fn descriptor_for(p: &PropertyAttrs, _object_type: &syn::Expr) -> TokenStream {
 
     quote! {
         ::zweidraehte_proto::properties::PropertyDescriptor::new(
+            #pid,
+            #pdt_id,
+            #max_elements,
+            #access,
+            (#rl).for_levels(#levels),
+            (#wl).for_levels(#levels),
+            #policy,
+        )
+    }
+}
+
+/// The augment form of [`descriptor_for`]: levels stay symbolic.
+///
+/// An augment can be composed onto either authorisation model — the
+/// Security Interface Object is composed onto both — so it publishes
+/// specs and the generated `Augment<D>` methods resolve them against the
+/// device's own `MAX_ACCESS_LEVELS`.
+fn descriptor_spec_for(p: &PropertyAttrs) -> TokenStream {
+    let pid = &p.pid;
+    let policy = &p.policy;
+    let pdt_id = if let Some(raw) = p.pdt_raw {
+        quote! { #raw u8 }
+    } else {
+        let pdt = p.pdt.as_ref().expect("parser checked exactly one of pdt/pdt_raw");
+        quote! { <#pdt as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID }
+    };
+    let access = match p.access {
+        Access::Ro => quote! { ::zweidraehte_proto::properties::PropertyAccess::ReadOnly },
+        Access::Rw => quote! { ::zweidraehte_proto::properties::PropertyAccess::ReadWrite },
+        Access::Wo => quote! { ::zweidraehte_proto::properties::PropertyAccess::WriteOnly },
+    };
+    let (rl, wl) = level_specs(p);
+    let max_elements = if let Some(n) = &p.array_max {
+        quote! { (#n) as u16 }
+    } else if p.computed_max.is_some() {
+        quote! { 0u16 }
+    } else {
+        quote! { 1u16 }
+    };
+
+    quote! {
+        ::zweidraehte_proto::properties::PropertyDescriptorSpec::new(
             #pid,
             #pdt_id,
             #max_elements,

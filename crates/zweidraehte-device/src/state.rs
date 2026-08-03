@@ -192,12 +192,21 @@ pub trait StackState {
 ///
 /// All methods have defaults that grant minimum access (no key table).
 pub trait HasAuthorization {
+    /// The number of access levels this profile has: 4 (levels 0-3) or
+    /// 16 (levels 0-15), per 06 Profiles v02.02.01 §4.2 row 12.
+    ///
+    /// A compile-time property of the profile, not a runtime one, so
+    /// that a property descriptor can name an audience from 03/04/01
+    /// Table 1 ([`AccessLevel`](zweidraehte_proto::access::AccessLevel))
+    /// and have the number resolved when the descriptor table is built.
+    const MAX_ACCESS_LEVELS: u8 = 4;
+
     /// Get the maximum number of access levels supported.
     ///
-    /// Returns 4 for levels 0-3, or 16 for levels 0-15.
-    /// Default is 4 (levels 0-3).
+    /// The value form of [`MAX_ACCESS_LEVELS`](Self::MAX_ACCESS_LEVELS),
+    /// for the runtime paths that hold a state rather than a type.
     fn max_access_levels(&self) -> u8 {
-        4
+        Self::MAX_ACCESS_LEVELS
     }
 
     /// Get the default access level for new connections.

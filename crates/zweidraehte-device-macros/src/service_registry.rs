@@ -93,8 +93,30 @@ pub(crate) fn derive(input: &DeriveInput) -> syn::Result<TokenStream2> {
     });
     let struct_lifetimes: Vec<_> =
         input.generics.params.iter().filter(|p| matches!(p, syn::GenericParam::Lifetime(_))).collect();
-    let struct_non_lifetime_params: Vec<_> =
-        input.generics.params.iter().filter(|p| !matches!(p, syn::GenericParam::Lifetime(_))).collect();
+    // Type and const parameters may carry a default on the struct
+    // (`const FREE: u8 = 3`), but defaults are a declaration-site feature
+    // — repeating one in the `impl<...>` list we emit is a hard error.
+    // Strip them here rather than forbidding defaults on registry structs.
+    let struct_non_lifetime_params: Vec<syn::GenericParam> = input
+        .generics
+        .params
+        .iter()
+        .filter(|p| !matches!(p, syn::GenericParam::Lifetime(_)))
+        .cloned()
+        .map(|p| match p {
+            syn::GenericParam::Type(mut t) => {
+                t.eq_token = None;
+                t.default = None;
+                syn::GenericParam::Type(t)
+            }
+            syn::GenericParam::Const(mut c) => {
+                c.eq_token = None;
+                c.default = None;
+                syn::GenericParam::Const(c)
+            }
+            other => other,
+        })
+        .collect();
     let struct_lifetime_separator = if struct_lifetimes.is_empty() {
         quote! {}
     } else {

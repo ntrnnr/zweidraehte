@@ -22,6 +22,46 @@ use syn::{Expr, Field, Path, parse::Parse, spanned::Spanned};
 // drives `additional_object_count` / `additional_object_type_at` for
 // augments that *add* an object to the device's IO list.
 
+/// The five audiences of 03/04/01 §4.3.2.2 Table 1, spelled bare in an
+/// `#[io(...)]` attribute (`rl = Runtime`).
+///
+/// Recognised by name so an object can state *who* a level is for
+/// instead of what number it happens to be on one profile. Only
+/// `Runtime` actually differs between the 4-level and 16-level
+/// models (3 vs 15), but `3` is ambiguous between `Runtime` and
+/// `Controller` precisely because of that, so the audience has to
+/// be named rather than inferred from the number.
+const AUDIENCE_NAMES: [&str; 5] =
+    ["SystemManufacturer", "ProductManufacturer", "Configuration", "Controller", "Runtime"];
+
+/// An access level as written in `#[io(rl = ..., wl = ...)]`.
+pub(crate) enum LevelAttr {
+    /// A bare audience name from [`AUDIENCE_NAMES`]. Resolved against the
+    /// hosting profile's level count.
+    Audience(syn::Ident),
+    /// Anything else: a number, or a const expression evaluating to one.
+    /// Exact for levels 0-2 (identical in both models); a literal `3` is
+    /// only right on a 4-level profile.
+    Literal(Expr),
+}
+
+impl LevelAttr {
+    fn parse(expr: Expr) -> Self {
+        // A bare single-segment path whose name is one of the five
+        // audiences. Anything qualified or numeric falls through to
+        // `Literal`, so existing `rl = 3` sites are untouched.
+        if let Expr::Path(p) = &expr
+            && p.qself.is_none()
+            && p.path.segments.len() == 1
+            && let Some(seg) = p.path.segments.first()
+            && AUDIENCE_NAMES.contains(&seg.ident.to_string().as_str())
+        {
+            return Self::Audience(seg.ident.clone());
+        }
+        Self::Literal(expr)
+    }
+}
+
 pub(crate) struct ObjectAttrs {
     /// Set on `#[interface_object]` only. The augment macro uses
     /// `target_objects` instead.
@@ -47,6 +87,18 @@ pub(crate) struct ObjectAttrs {
     /// Syntax: `where_bounds(D::State: HasApplication + ...)`.
     /// Multiple predicates are comma-separated.
     pub extra_where: Option<TokenStream>,
+
+    /// Set on `#[interface_object]` only: how many authorisation levels
+    /// the profile this object belongs to has — 4 or 16 (06 Profiles
+    /// v02.02.01 §4.2 row 12). Named access levels in the object's
+    /// `#[io(...)]` attributes resolve against it at const-evaluation
+    /// time, so `rl = Runtime` becomes 3 on a System B object and 15
+    /// on a System 7 one.
+    ///
+    /// Defaults to 4. An augment does not take this: it may be hosted by
+    /// either profile, so it keeps its levels symbolic and the device
+    /// resolves them.
+    pub levels: Option<Expr>,
 }
 
 impl ObjectAttrs {
@@ -58,6 +110,7 @@ impl ObjectAttrs {
         let mut target_objects: Vec<Expr> = Vec::new();
         let mut additional_objects: Vec<Expr> = Vec::new();
         let mut extra_where: Option<TokenStream> = None;
+        let mut levels: Option<Expr> = None;
 
         let parser = syn::meta::parser(|meta| {
             if meta.path.is_ident("object_type") {
@@ -68,6 +121,9 @@ impl ObjectAttrs {
                 Ok(())
             } else if meta.path.is_ident("additional_objects") {
                 additional_objects = parse_expr_list(&meta)?;
+                Ok(())
+            } else if meta.path.is_ident("levels") {
+                levels = Some(meta.value()?.parse()?);
                 Ok(())
             } else if meta.path.is_ident("where_bounds") {
                 // Parenthesised raw token group — the macro emits these
@@ -80,13 +136,13 @@ impl ObjectAttrs {
                 Err(meta.error(
                     "unknown attribute — expected `object_type`, \
                      `target_objects = [...]`, `additional_objects = [...]`, \
-                     or `where_bounds(...)`",
+                     `levels = ...`, or `where_bounds(...)`",
                 ))
             }
         });
         syn::parse::Parser::parse2(parser, args)?;
 
-        Ok(Self { object_type, target_objects, additional_objects, extra_where })
+        Ok(Self { object_type, target_objects, additional_objects, extra_where, levels })
     }
 }
 
@@ -147,8 +203,10 @@ pub(crate) struct PropertyAttrs {
     pub policy: Expr,
 
     // Optional -----------------------------------------------------------
-    pub rl: Option<u8>,
-    pub wl: Option<u8>,
+    /// `rl = <level>` / `wl = <level>` — the read and write access levels
+    /// of 03/03/07 §3.4.3.2's access octet. See [`LevelAttr`].
+    pub rl: Option<LevelAttr>,
+    pub wl: Option<LevelAttr>,
     pub array_max: Option<Expr>,
     pub computed_max: Option<Expr>,
     pub backing: Backing,
@@ -204,8 +262,8 @@ impl PropertyAttrs {
         let mut pdt: Option<Path> = None;
         let mut access: Option<Access> = None;
         let mut policy: Option<Expr> = None;
-        let mut rl: Option<u8> = None;
-        let mut wl: Option<u8> = None;
+        let mut rl: Option<LevelAttr> = None;
+        let mut wl: Option<LevelAttr> = None;
         let mut array_max: Option<Expr> = None;
         let mut computed_max: Option<Expr> = None;
         let mut read_fn: Option<Expr> = None;
@@ -243,11 +301,9 @@ impl PropertyAttrs {
                 } else if key.is_ident("policy") {
                     policy = Some(meta.value()?.parse()?);
                 } else if key.is_ident("rl") {
-                    let lit: syn::LitInt = meta.value()?.parse()?;
-                    rl = Some(lit.base10_parse()?);
+                    rl = Some(LevelAttr::parse(meta.value()?.parse()?));
                 } else if key.is_ident("wl") {
-                    let lit: syn::LitInt = meta.value()?.parse()?;
-                    wl = Some(lit.base10_parse()?);
+                    wl = Some(LevelAttr::parse(meta.value()?.parse()?));
                 } else if key.is_ident("array") {
                     // `array(max = <expr>)` — `<expr>` evaluates to a
                     // `u16`. A bare integer literal is the common case

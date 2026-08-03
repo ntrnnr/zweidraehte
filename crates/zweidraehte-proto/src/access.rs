@@ -33,6 +33,104 @@ pub const MAX_ACCESS_LEVELS: usize = 4;
 /// Level 3 is "access for everyone" and has no key - it's what you get when auth fails.
 pub const NUM_AUTH_KEYS: usize = 3;
 
+/// An access level named by the audience it is for, per 03/04/01
+/// §4.3.2.2 Table 1 "Use of access levels for different purposes and
+/// Profiles".
+///
+/// | purpose | audience | 4 levels | 16 levels |
+/// |---|---|---|---|
+/// | read access | runtime | 3 | **15** |
+/// | end-user adjustable parameters | controller | 3 | 3 |
+/// | configuration | ETS | 2 | 2 |
+/// | product manufacturer | DevEdit/TransApp | 1 | 1 |
+/// | system manufacturer | DevEdit/TransApp | 0 | 0 |
+///
+/// Four of the five audiences have the same number in both authorisation
+/// models. Only runtime read moves, and the consequence is that the
+/// number `3` means **two different things** on a 16-level device: an
+/// end-user parameter stays at 3 while a runtime read becomes 15. So a
+/// level cannot be rescaled between models arithmetically — the audience
+/// has to be named, which is what this enum is for.
+///
+/// 06 Profiles Annex A tabulates every mask's levels in the 4-level
+/// notation regardless of the mask's own model (§A.1.2.1 NOTE 2, "This
+/// AN uses the access levels from 0 to 3. For the relation to access
+/// levels 0 to 15 as used in certain Profiles, please refer to [10]"),
+/// so reading a level off Annex A means deciding which of the two
+/// audiences a `3` in that table stands for.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AccessLevel {
+    /// Level 0 in both models. DevEdit/TransApp.
+    SystemManufacturer,
+    /// Level 1 in both models. DevEdit/TransApp.
+    ProductManufacturer,
+    /// Level 2 in both models — the level ETS configures with.
+    Configuration,
+    /// Level 3 in both models — a controller adjusting end-user
+    /// parameters. *Not* the same audience as [`Self::Runtime`] despite
+    /// sharing a number on a 4-level device.
+    Controller,
+    /// Unrestricted: what a connection has before it authorises. Level 3
+    /// on a 4-level profile, level 15 on a 16-level one.
+    Runtime,
+}
+
+impl AccessLevel {
+    /// Resolve to the wire value for a profile with `max_levels`
+    /// authorisation levels (4 for System B, 16 for System 7).
+    ///
+    /// Only [`Runtime`](Self::Runtime) depends on the argument.
+    pub const fn for_levels(self, max_levels: u8) -> u8 {
+        match self {
+            Self::SystemManufacturer => 0,
+            Self::ProductManufacturer => 1,
+            Self::Configuration => 2,
+            Self::Controller => 3,
+            // The highest level the profile has. `default_access_level`
+            // computes the same number from the other direction: it is
+            // the level a connection holds before it authorises.
+            Self::Runtime => max_levels - 1,
+        }
+    }
+}
+
+/// How a property descriptor states one of its two access levels before
+/// the profile is known.
+///
+/// An interface object that belongs to one profile can write the number
+/// straight into its descriptor, because its profile is fixed. An object
+/// that is *shared* between profiles — the Security Interface Object is
+/// the one we have — cannot: it has to say which audience it means and
+/// let the device resolve it (see [`AccessLevel`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AccessLevelSpec {
+    /// A named audience from 03/04/01 Table 1. Resolves per profile.
+    Audience(AccessLevel),
+    /// A number read off 06 Profiles Annex A whose audience has not been
+    /// determined.
+    ///
+    /// Levels 0, 1 and 2 mean the same thing in both authorisation
+    /// models, so a literal is exact for them. A literal `3` is only
+    /// correct on a 4-level profile — Annex A writes both
+    /// [`Controller`](AccessLevel::Controller) and
+    /// [`Runtime`](AccessLevel::Runtime) as `3` (§A.1.2.1
+    /// NOTE 2), and they part company at 16 levels. Reusing such an
+    /// object on a 16-level profile means going back to Annex A and
+    /// naming the audience.
+    Literal(u8),
+}
+
+impl AccessLevelSpec {
+    /// Resolve to the wire value for a profile with `max_levels`
+    /// authorisation levels.
+    pub const fn for_levels(self, max_levels: u8) -> u8 {
+        match self {
+            Self::Audience(level) => level.for_levels(max_levels),
+            Self::Literal(n) => n,
+        }
+    }
+}
+
 // ============================================================================
 // Security Types (KNX Data Secure)
 // ============================================================================

@@ -63,22 +63,22 @@ fn write_rsm_with_notify<T: HasLoadStateMachine + HasRunStateMachine>(
 macro_rules! system_7_program_object {
     ($(#[$doc:meta])* $name:ident, $object_type:ident, $run_target:ident) => {
         $(#[$doc])*
-        #[interface_object(object_type = InterfaceObjectType::$object_type)]
+        #[interface_object(object_type = InterfaceObjectType::$object_type, levels = 16)]
         pub struct $name<'a, T: HasLoadStateMachine + HasRunStateMachine> {
             pub app: &'a RefCell<T>,
             /// Notifier for DeviceModel events (RSM lifecycle transitions).
             pub notifier: &'a dyn DeviceModelNotifier,
 
             #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 15, wl = 15)]
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
             pub program_version: PDT_Generic05,
 
             #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 15, wl = 15)]
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
             pub pei_type: PDT_UnsignedChar,
 
             #[io(pid = pid::LOAD_STATE_CONTROL, pdt = PDT_Control, access = RW,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 15, wl = 1,
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = ProductManufacturer,
                  read = |this: &Self| this.app.borrow().read_lsm(),
                  write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
                      write_lsm_with_cascade(this.app, this.notifier, RunTarget::$run_target, data)
@@ -86,7 +86,7 @@ macro_rules! system_7_program_object {
             load_state_control: (),
 
             #[io(pid = pid::RUN_STATE_CONTROL, pdt = PDT_Control, access = RW,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 15, wl = 1,
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = ProductManufacturer,
                  read = |this: &Self| this.app.borrow().read_rsm(),
                  write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
                      write_rsm_with_notify(this.app, this.notifier, RunTarget::$run_target, data)
@@ -94,12 +94,12 @@ macro_rules! system_7_program_object {
             run_state_control: (),
 
             #[io(pid = pid::TABLE_REFERENCE, pdt = PDT_UnsignedLong, access = RO,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 15, wl = 0,
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
                  read = |this: &Self| this.app.borrow().table_reference().to_be_bytes())]
             table_reference: (),
 
             #[io(pid = pid::MCB_TABLE, pdt = PDT_Generic08, access = RO,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 15, wl = 0,
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
                  read = |this: &Self| -> [u8; 8] {
                      let app = this.app.borrow();
                      let src = app.mcb_bytes();
@@ -111,7 +111,7 @@ macro_rules! system_7_program_object {
             mcb_table: (),
 
             #[io(pid = pid::ERROR_CODE, pdt = PDT_UnsignedChar, access = RO,
-                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 15, wl = 0,
+                 policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
                  read = |this: &Self| [this.app.borrow().last_error_code()])]
             error_code: (),
         }
