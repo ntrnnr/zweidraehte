@@ -110,6 +110,7 @@ impl zweidraehte_device::bcus::system_7::System7ProductLayout for S7TestStack {
 impl StackDefinition for S7TestStack {
     const DEVICE: &'static DeviceDescriptor = &S7_DEVICE;
     const TL_STYLE: TlStyle = TlStyle::Style3;
+    const FIRST_ASAP: u16 = 0;
 
     type P = NoParams;
     type CO = NoCo;
@@ -504,12 +505,12 @@ mod macros {
             2 => "0/0/2",
         },
         comm_objects: {
-            1 => (1, zweidraehte_device::config::CE | zweidraehte_device::config::TE),
-            2 => (1, zweidraehte_device::config::CE | zweidraehte_device::config::WE),
+            0 => (1, zweidraehte_device::config::CE | zweidraehte_device::config::TE),
+            1 => (1, zweidraehte_device::config::CE | zweidraehte_device::config::WE),
         },
         associations: {
-            1 => [1],
-            2 => [2],
+            1 => [0],
+            2 => [1],
         },
     }
 
@@ -563,6 +564,6 @@ mod macros {
         assert_eq!(state.individual_address(), IndividualAddress::new(1, 0, 5));
         assert_eq!(state.adt.borrow().table_reference(), 0x4000);
         assert_eq!(state.adt.borrow().tsap(GroupAddress::from_three_level(0, 0, 2)), Some(2));
-        assert_eq!(state.ast.borrow().sending_tsap(2), Some(2));
+        assert_eq!(state.ast.borrow().sending_tsap(1), Some(2));
     }
 }

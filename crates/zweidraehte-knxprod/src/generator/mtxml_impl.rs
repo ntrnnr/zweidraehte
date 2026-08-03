@@ -363,9 +363,12 @@ impl MtxmlGenerator {
         }
 
         if let Some(obj_name) = ref_path.strip_prefix("obj::") {
-            // Find comm object by name - check device-level objects
+            // Find comm object by name - check device-level objects. The
+            // O-id carries the family-adjusted object number, matching
+            // build_com_object_table.
             if let Some(obj) = config.comm_objects.iter().find(|o| o.name == obj_name) {
-                return Ok(vec![format!("{}_O-{}", app_id, obj.index)]);
+                let adjusted_index = obj.index + config.mask_family().com_object_start_index();
+                return Ok(vec![format!("{}_O-{}", app_id, adjusted_index)]);
             }
             // Check module objects if modules are defined.
             // Module comm object IDs use the format {app_id}_MD-{N}_O-2-{obj_index},

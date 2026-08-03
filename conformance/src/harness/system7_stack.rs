@@ -162,7 +162,10 @@ impl ComObjectBusHook for System7ComObjects {
                 self.go_1_comm_flags.value.as_mut()[0] = flags;
             }
             Some(CoIndex::Go2ConfigFlags) => {
-                // GO0 is at ASAP 1 (index 1 in the COT).
+                // GO0 is at wire ASAP 1 — this DUT's numbering starts at
+                // 1 because the EITT templates pin its ASAPs (and with
+                // FIRST_ASAP = 0, logical == wire). The COT is
+                // wire-indexed.
                 if let Some(cot) = system7_cot()
                     && let Some(flags) = cot.borrow().object_flags(1)
                 {
@@ -184,7 +187,7 @@ impl ComObjectBusHook for System7ComObjects {
                 self.go_0.status = ComObjectStatus::from_flags_byte(flags);
             }
             Some(CoIndex::Go2ConfigFlags) => {
-                // GO0 is at ASAP 1 (index 1 in the COT).
+                // GO0 is at wire ASAP 1 (see prepare_read above).
                 if let Some(cot) = system7_cot() {
                     let new_flags = ComObjectFlags::from_byte(self.go_2_config_flags.value.as_ref()[0]);
                     cot.borrow_mut().set_object_flags(1, new_flags);
@@ -678,6 +681,12 @@ impl StackDefinition for IpcSystem7TestStack {
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
     const TL_STYLE: TlStyle = TlStyle::Style3;
+    // System 7 numbers objects from 0, but this DUT deliberately keeps
+    // its objects at wire ASAP 1..7: the EITT templates pin those ASAPs
+    // literally (trigger-kick patches, the LoadStateMachines RT8
+    // association blob), so logical == wire here and M112 slot 0 is a
+    // spare.
+    const FIRST_ASAP: u16 = 0;
     type P = TestParameters;
     type CO = System7ComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;

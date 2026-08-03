@@ -123,15 +123,16 @@ fn _assert_covariant<'a, 'b: 'a, D: StackDefinition>(x: Stack<'b, D>) -> Stack<'
 
 impl<'d, D: StackDefinition> Stack<'d, D> {
     /// Try to claim an object for transmission by setting its status.
+    /// `logical` is the object's 0-based DSL index.
     ///
     /// Returns `true` if the object was claimed (status was not `Busy`),
     /// `false` if it was already busy transmitting.
-    fn try_claim_object(&self, asap: u16, status: ComObjectStatus) -> bool {
+    fn try_claim_object(&self, logical: u16, status: ComObjectStatus) -> bool {
         self.inner.with_comm_objs(|co| {
-            if co.status(asap) == Some(ComObjectStatus::Busy) {
+            if co.status(logical) == Some(ComObjectStatus::Busy) {
                 return false;
             }
-            co.set_status(asap, status);
+            co.set_status(logical, status);
             true
         })
     }
@@ -223,22 +224,28 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.write_object_by_asap(asap.index()).await
     }
 
-    /// Send a write request for a communication object by ASAP number.
+    /// Send a write request for a communication object by wire ASAP.
     ///
-    /// This is a lower-level version of `write_object` that takes a raw ASAP number
-    /// instead of the type-safe Index type.
+    /// This is a lower-level version of `write_object` that takes the raw
+    /// wire ASAP (the number ETS shows and the association table carries,
+    /// `logical + FIRST_ASAP`) instead of the type-safe Index type. An
+    /// ASAP below the family base is rejected as `Busy` — it cannot name
+    /// an object.
     ///
     /// # Returns
     /// * `Ok(())` - The write request was accepted
     /// * `Err(UpdateObjectError::Busy)` - The object is already transmitting
     pub async fn write_object_by_asap(&self, asap: u16) -> Result<(), UpdateObjectError> {
-        if !self.try_claim_object(asap, ComObjectStatus::WriteRequest) {
+        let Some(logical) = asap.checked_sub(D::FIRST_ASAP) else {
+            return Err(UpdateObjectError::Busy);
+        };
+        if !self.try_claim_object(logical, ComObjectStatus::WriteRequest) {
             return Err(UpdateObjectError::Busy);
         }
 
         ActorRequest::<D::Mutex, _, _>::request(
             &self.app_request_sender,
-            ApplicationLayerService::GroupValueWriteRequest(asap),
+            ApplicationLayerService::GroupValueWriteRequest(logical),
         )
         .await;
         Ok(())
@@ -259,22 +266,26 @@ impl<'d, D: StackDefinition> Stack<'d, D> {
         self.read_object_by_asap(asap.index()).await
     }
 
-    /// Send a read request for a communication object by ASAP number.
+    /// Send a read request for a communication object by wire ASAP.
     ///
-    /// This is a lower-level version of `read_object` that takes a raw ASAP number
-    /// instead of the type-safe Index type.
+    /// This is a lower-level version of `read_object` that takes the raw
+    /// wire ASAP (`logical + FIRST_ASAP`) instead of the type-safe Index
+    /// type — see [`write_object_by_asap`](Self::write_object_by_asap).
     ///
     /// # Returns
     /// * `Ok(())` - The read request was accepted
     /// * `Err(ReadObjectError::Busy)` - The object is already transmitting
     pub async fn read_object_by_asap(&self, asap: u16) -> Result<(), ReadObjectError> {
-        if !self.try_claim_object(asap, ComObjectStatus::ReadRequest) {
+        let Some(logical) = asap.checked_sub(D::FIRST_ASAP) else {
+            return Err(ReadObjectError::Busy);
+        };
+        if !self.try_claim_object(logical, ComObjectStatus::ReadRequest) {
             return Err(ReadObjectError::Busy);
         }
 
         ActorRequest::<D::Mutex, _, _>::request(
             &self.app_request_sender,
-            ApplicationLayerService::GroupValueReadRequest(asap),
+            ApplicationLayerService::GroupValueReadRequest(logical),
         )
         .await;
         Ok(())

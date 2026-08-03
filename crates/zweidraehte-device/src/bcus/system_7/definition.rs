@@ -62,8 +62,14 @@ pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> + Syst
 
     /// Group object table byte size in the M112 memory format ETS's
     /// System 7 formatter writes: 3-octet header (count + RAM-flags
-    /// pointer) plus one 4-octet entry per ASAP `0..=max`.
-    const COT_SIZE: usize = 3 + (Self::DEVICE.max_com_objects as usize + 1) * 4;
+    /// pointer) plus one 4-octet entry per ASAP `0..=max`. The table is
+    /// indexed directly by ASAP, so the highest ASAP is
+    /// `FIRST_ASAP + max_com_objects - 1` and the entry span covers
+    /// `FIRST_ASAP + max_com_objects` slots. Products have
+    /// `FIRST_ASAP = 0`; the formula must agree with the
+    /// `system7_stack_config!` COT layout (a mismatch fails to compile
+    /// as an array-size conflict in `Tp1StateFor7`).
+    const COT_SIZE: usize = 3 + (Self::FIRST_ASAP as usize + Self::DEVICE.max_com_objects as usize) * 4;
 
     /// Number of address-table entries (group addresses).
     const ADT_ENTRIES: usize = Self::DEVICE.max_address_table_entries as usize;
@@ -160,6 +166,9 @@ macro_rules! system_7_standard_stack {
             // ---- device-specific bill of materials -------------------------
             const DEVICE: &'static $crate::ets::DeviceDescriptor = $device;
             const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
+            // System 7 numbers communication objects from 0 (M112 table,
+            // ASAP 0 valid).
+            const FIRST_ASAP: u16 = 0;
 
             type P = $params;
             type CO = $com_objects;

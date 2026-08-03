@@ -52,7 +52,16 @@ impl MaskFamilyExt for MaskFamily {
     }
 
     fn com_object_start_index(&self) -> u16 {
-        0
+        // `#[ets(index = N)]` is a 0-based logical index; the XML `Number`
+        // (and thus the wire ASAP ETS writes into the association table) is
+        // `index + start`. System B numbers objects from 1 because its
+        // RealizationType-7 CO table cannot express ASAP 0; System 7's M112
+        // table is indexed by ASAP with 0 valid, so it numbers from 0, as
+        // do the BCU-era families.
+        match self {
+            MaskFamily::SystemB => 1,
+            MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => 0,
+        }
     }
 
     fn has_com_object_table(&self) -> bool {

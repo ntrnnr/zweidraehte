@@ -540,7 +540,7 @@ pub struct MyComObjects {
 
 | Attribute | Description | Example |
 |-----------|-------------|---------|
-| `index = N` | Object ASAP index | `index = 0` |
+| `index = N` | 0-based logical object index (ETS number = N + family start: System 7 +0, System B +1) | `index = 0` |
 | `display = "..."` | Display name in ETS | `display = "Switch Output"` |
 | `function = "..."` | Function text | `function = "Switching"` |
 | `name = "..."` | Override internal name | `name = "Eingang 0"` |

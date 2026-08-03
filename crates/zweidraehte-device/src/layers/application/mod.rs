@@ -49,9 +49,11 @@ use zweidraehte_proto::messages::{
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ApplicationLayerService {
-    /// Request to send a `A_GroupValue_Write.req` for the given ASAP
+    /// Request to send a `A_GroupValue_Write.req` for the object at the
+    /// given logical (DSL) index
     GroupValueWriteRequest(u16),
-    /// Request to send a `A_GroupValue_Read.req` for the given ASAP
+    /// Request to send a `A_GroupValue_Read.req` for the object at the
+    /// given logical (DSL) index
     GroupValueReadRequest(u16),
     /// Request to initiate an S-A_Sync_Req to a peer.
     SyncRequest { peer_ia: u16, tool_access: bool, is_broadcast: bool },

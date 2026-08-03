@@ -19,26 +19,31 @@ use zweidraehte_proto::messages::knx::Priority;
 // GroupValueSender
 // ============================================================================
 
-/// Ability to request outgoing group-value reads and writes by ASAP.
+/// Ability to request outgoing group-value reads and writes by
+/// communication object.
 ///
 /// The provider is responsible for the full send pipeline: checking load
 /// and run state, resolving the TSAP via the association table, building
 /// the `T_GroupData_Req` telegram, pushing it to the outbox, and
 /// bookkeeping the pending send for the eventual transport-layer
-/// confirmation. Callers just name the communication object.
+/// confirmation. Callers just name the communication object by its
+/// 0-based logical (DSL) index — what `ComObject::index()` returns; the
+/// provider derives the wire ASAP (`logical + FIRST_ASAP`) itself.
 pub trait GroupValueSender {
-    /// Request a group-value write for the communication object at `asap`.
+    /// Request a group-value write for the communication object at
+    /// logical index `logical`.
     ///
     /// Returns `true` when the request was accepted (even if the send was
     /// quietly suppressed by run/load state or a missing association);
     /// `false` means the application is not running and the request must
     /// be retried later.
-    fn request_group_write(&self, asap: u16) -> bool;
+    fn request_group_write(&self, logical: u16) -> bool;
 
-    /// Request a group-value read for the communication object at `asap`.
+    /// Request a group-value read for the communication object at
+    /// logical index `logical`.
     ///
     /// Same return semantics as [`request_group_write`](Self::request_group_write).
-    fn request_group_read(&self, asap: u16) -> bool;
+    fn request_group_read(&self, logical: u16) -> bool;
 }
 
 // ============================================================================

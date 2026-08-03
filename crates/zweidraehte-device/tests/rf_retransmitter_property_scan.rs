@@ -147,6 +147,9 @@ impl SystemBStackDefinition for RfTestStack {}
 impl StackDefinition for RfTestStack {
     const DEVICE: &'static DeviceDescriptor = &RF_DEVICE;
     const TL_STYLE: TlStyle = TlStyle::Style3;
+    // System B state under test; no group objects, but the base must be
+    // the family's.
+    const FIRST_ASAP: u16 = 1;
 
     type P = NoParams;
     type CO = NoCo;

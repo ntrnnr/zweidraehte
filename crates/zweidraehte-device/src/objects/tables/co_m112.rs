@@ -17,8 +17,11 @@
 //! ```
 //!
 //! The entry index is the product database's ComObject Number — our
-//! ASAP — so `count` covers indices `0..=max` and entry 0 is unused
-//! when numbering starts at 1. The config octet is bit-identical to
+//! wire ASAP — and `count` covers indices `0..=max`. System 7 products
+//! number from 0, so entry 0 is the first object; a device whose
+//! numbering starts at 1 (the EITT conformance DUT, whose ASAPs the
+//! vendor templates pin) simply leaves entry 0 zeroed. The config
+//! octet is bit-identical to
 //! [`ComObjectFlags`] and the type octet to the 0-based
 //! [`ComObjectType`] coding.
 //!

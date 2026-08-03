@@ -1064,6 +1064,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
     const TL_STYLE: TlStyle = TlStyle::Style3;
+    const FIRST_ASAP: u16 = 1;
 
     type P = TestParameters;
     type CO = super::stack::comm_objs::ConformanceComObjects;

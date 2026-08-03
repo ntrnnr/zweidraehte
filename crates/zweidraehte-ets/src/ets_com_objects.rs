@@ -72,6 +72,11 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
         return generate_module_based_impl(struct_name, &struct_attrs, &com_objects, &module_field);
     }
 
+    // The lowest logical index in the struct, exposed as
+    // `ComObjects::FIRST_INDEX` (the AL's read-on-init self-detection
+    // probes this object's status).
+    let first_index = com_objects.iter().filter_map(|obj| obj.attrs.index).min().unwrap_or(0);
+
     // Generate the Index enum
     let index_variants: Vec<_> = com_objects
         .iter()
@@ -345,6 +350,8 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
         quote! {
             impl zweidraehte_device::objects::comm::ComObjects for #struct_name {
                 type Index = Index;
+
+                const FIRST_INDEX: u16 = #first_index;
 
                 fn new() -> Self {
                     Self {

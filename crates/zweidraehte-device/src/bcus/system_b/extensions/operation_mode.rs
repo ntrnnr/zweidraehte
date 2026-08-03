@@ -612,7 +612,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         };
 
         match service_id {
-            0x00 => self.handle_go_diag_write_local(ctx.state, req),
+            0x00 => self.handle_go_diag_write_local(ctx.state, D::FIRST_ASAP, req),
             0x01 => self.handle_go_diag_direct_write(ctx, req),
             0x02 => self.handle_go_diag_transmit(ctx, req),
             0x03 => self.handle_go_diag_direct_read(ctx, req),
@@ -643,7 +643,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
             // read-config needs the per-GO security flags via the strategy, so
             // it takes the full `ctx`; read-value is security-free.
             0x00 => self.handle_go_diag_read_config(ctx, req),
-            0x01 => self.handle_go_diag_read_value(ctx.state, req),
+            0x01 => self.handle_go_diag_read_value(ctx.state, D::FIRST_ASAP, req),
             _ => {
                 // Invalid ReadServiceID → F2 (E_COMMAND_INVALID).
                 FunctionPropertyResult::with_code(PropertyReturnCode::CommandInvalid, &[service_id])
@@ -659,9 +659,15 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
     ///
     /// Request: [reserved, 0x00, GO_idx_hi, GO_idx_lo, value...]
     /// Success: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
+    ///
+    /// The GO index on the wire is the family ASAP; `first_asap` (the
+    /// stack's `FIRST_ASAP`) converts it to the logical index that keys
+    /// `ComObjects` — passed in because this handler is generic over the
+    /// state alone.
     fn handle_go_diag_write_local<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
         &self,
         state: &S,
+        first_asap: u16,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         let data = req.service_data;
@@ -702,12 +708,18 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 
         drop(cot); // Release borrow before accessing comm objects.
 
+        // `ComObjects` is keyed by the logical index (wire − FIRST_ASAP);
+        // an index below the family base cannot name an object.
+        let Some(logical) = go_idx.checked_sub(first_asap) else {
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x00]);
+        };
+
         // Write the value to the comm object. The COT entry existing does not
         // guarantee the comm-object container covers this index (both tables
         // are downloaded independently), so treat a miss as a void GO.
         {
             let mut co = state.comm_objects().borrow_mut();
-            let Some(dest) = co.value_mut(go_idx) else {
+            let Some(dest) = co.value_mut(logical) else {
                 return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x00]);
             };
             if dest.len() < value_data.len() {
@@ -716,12 +728,13 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
             dest[..value_data.len()].copy_from_slice(value_data);
         }
 
-        // Build success response with current value and status.
+        // Build success response with current value and status. The
+        // response echoes the wire GO index.
         let co = state.comm_objects().borrow();
         // GO diagnostics status uses only the low nibble of the flags byte
         // (stripping the idle indicator in bit 6).
-        let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
-        go_diag_success(0x00, go_idx, status, co.value(go_idx).unwrap_or(&[]))
+        let status = co.status(logical).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
+        go_diag_success(0x00, go_idx, status, co.value(logical).unwrap_or(&[]))
     }
 
     // ================================================================
@@ -901,18 +914,24 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
             return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x02]);
         };
 
+        // The wire GO index is the family ASAP; `ComObjects` below is
+        // keyed by the logical index.
+        let Some(logical) = go_idx.checked_sub(D::FIRST_ASAP) else {
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x02]);
+        };
+
         // Build success response with current value (before building the
         // telegram, since we need the borrow for the value data). The COT
         // entry existing does not guarantee the comm-object container covers
         // this index — both tables are downloaded independently.
         let co = ctx.state.comm_objects().borrow();
-        let Some(value) = co.value(go_idx) else {
+        let Some(value) = co.value(logical) else {
             return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x02]);
         };
         if value.len() < object_size {
             return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoSizeMismatch, &[0x02]);
         }
-        let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
+        let status = co.status(logical).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
         let resp = go_diag_success(0x02, go_idx, status, value);
 
         // ================================================================
@@ -1146,9 +1165,14 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
     ///
     /// Request: [reserved, 0x01, GO_idx_hi, GO_idx_lo]
     /// Success: rc=0x21, [service_id, GO_idx_hi, GO_idx_lo, status, value...]
+    /// The GO index on the wire is the family ASAP; `first_asap` (the
+    /// stack's `FIRST_ASAP`) converts it to the logical index that keys
+    /// `ComObjects` — passed in because this handler is generic over the
+    /// state alone.
     fn handle_go_diag_read_value<S: StackState + HasCommunicationObjectTable + HasCommObjects>(
         &self,
         state: &S,
+        first_asap: u16,
         req: &FunctionPropertyRequest<'_>,
     ) -> FunctionPropertyResult {
         let data = req.service_data;
@@ -1165,14 +1189,18 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
         }
         drop(cot);
 
+        let Some(logical) = go_idx.checked_sub(first_asap) else {
+            return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x01]);
+        };
+
         let co = state.comm_objects().borrow();
         // The COT entry existing does not guarantee the comm-object container
         // covers this index — both tables are downloaded independently.
-        let Some(value) = co.value(go_idx) else {
+        let Some(value) = co.value(logical) else {
             return FunctionPropertyResult::go_diag(GoDiagReturnCode::GoVoid, &[0x01]);
         };
         // GO diagnostics status uses only the low nibble (strip idle indicator).
-        let status = co.status(go_idx).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
+        let status = co.status(logical).map(|s| s.to_flags_byte() & 0x0F).unwrap_or(0);
         go_diag_success(0x01, go_idx, status, value)
     }
 }

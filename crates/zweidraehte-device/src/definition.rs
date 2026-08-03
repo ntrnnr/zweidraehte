@@ -184,6 +184,20 @@ pub trait StackDefinition: Copy + 'static {
     /// applies here.
     const TL_MAX_OUTGOING: usize = 0;
 
+    /// The wire ASAP of the device's first communication object.
+    ///
+    /// `#[ets(index = N)]` is a family-agnostic 0-based logical index; the
+    /// value ETS shows as the object `Number`, writes into the association
+    /// table, and that the group-object tables are keyed by is
+    /// `logical + FIRST_ASAP`. System 7 numbers objects from 0
+    /// (`FIRST_ASAP = 0`); System B numbers from 1 (`FIRST_ASAP = 1`),
+    /// because its RealizationType-7 CO table cannot express ASAP 0.
+    ///
+    /// No default: the wrong base silently shifts every group-object
+    /// lookup by one, so each family's stack macro states it explicitly
+    /// (`system_b_standard_stack!` emits 1, the System 7 macros 0).
+    const FIRST_ASAP: u16;
+
     /// Transport layer state machine style per KNX spec 03/03/04 section 5.4.
     ///
     /// Determines connection-oriented error recovery behavior. Must be chosen

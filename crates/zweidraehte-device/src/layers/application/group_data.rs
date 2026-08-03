@@ -38,8 +38,9 @@ use zweidraehte_proto::messages::{
 /// Tracks a pending group value send for deferred CO status update.
 #[derive(Debug, Clone, Copy)]
 pub struct PendingGroupSend {
-    /// The ASAP (communication object index) being sent
-    pub asap: u16,
+    /// The logical (DSL) index of the object being sent — not the wire
+    /// ASAP, because the deferred update only touches `ComObjects`.
+    pub logical: u16,
     /// Whether this was a read request (vs write)
     pub read: bool,
 }
@@ -50,7 +51,8 @@ pub struct PendingGroupSend {
 pub enum ReadOnInitState {
     /// No ROI cycle active — ready to start on next app startup.
     Idle,
-    /// Scanning objects, sending reads. The `u16` is the next ASAP to check.
+    /// Scanning objects, sending reads. The `u16` is the next wire ASAP
+    /// to check (the scan walks the wire-indexed COT).
     Scanning(u16),
     /// Scan completed for this app run. Resets to `Idle` when the app stops
     /// (so a restart triggers a fresh scan).
@@ -191,6 +193,15 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         for asap in self.state.ast().borrow().asaps_for_tsap(ind.get_connection_nr()) {
             trace!("AL processing ASAP: {}", asap);
 
+            // The association table and the CO table are keyed by the wire
+            // ASAP; `ComObjects` and the event `Index` are keyed by the
+            // logical DSL index (wire = logical + FIRST_ASAP). A wire ASAP
+            // below the family base cannot name an object.
+            let Some(logical) = asap.checked_sub(D::FIRST_ASAP) else {
+                error!("Invalid ASAP: {}", asap);
+                continue;
+            };
+
             let Some(cot_info) = self.state.cot().borrow().object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
@@ -252,7 +263,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                     // size from the downloaded CO table — neither is trusted. An
                     // out-of-range ASAP or a size that disagrees with the actual
                     // storage must drop the write, not panic the device.
-                    let Some(dst) = objs.value_mut(asap) else {
+                    let Some(dst) = objs.value_mut(logical) else {
                         warn!("AL ASAP {} outside comm-object range, dropping group write", asap);
                         continue;
                     };
@@ -261,14 +272,14 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                         continue;
                     }
                     dst.copy_from_slice(&ind.buf()[msg_offset..msg_offset + object_size]);
-                    objs.set_status(asap, ComObjectStatus::Updated);
+                    objs.set_status(logical, ComObjectStatus::Updated);
 
                     // Call write hook
-                    objs.handle_write(asap);
+                    objs.handle_write(logical);
                 }
 
                 // Publish event to the event channel
-                if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
+                if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(logical) {
                     match apci {
                         ApciCode::GroupValueWrite => {
                             self.lctx.publish_event(index, ComObjectEvent::Updated);
@@ -284,7 +295,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                     "AL ASAP {} updated via {:?}: {:?}",
                     asap,
                     apci,
-                    zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap).unwrap_or(&[]))
+                    zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(logical).unwrap_or(&[]))
                 );
             } else {
                 error!("Length of telegram not enough to contain object value");
@@ -335,6 +346,13 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         for asap in self.state.ast().borrow().asaps_for_tsap(tsap) {
             trace!("AL processing GroupValueRead for ASAP: {}", asap);
 
+            // Wire ASAP for COT/AST/security, logical index for
+            // `ComObjects` — see `handle_write_or_response`.
+            let Some(logical) = asap.checked_sub(D::FIRST_ASAP) else {
+                error!("Invalid ASAP: {}", asap);
+                continue;
+            };
+
             let Some(cot_info) = self.state.cot().borrow().object(asap) else {
                 error!("Invalid ASAP: {}", asap);
                 continue;
@@ -377,14 +395,14 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             info!("AL sending GroupValueResponse for ASAP {} TSAP {} size {}", asap, response_tsap, object_size);
 
             // Call read hook
-            self.state.comm_objects().borrow_mut().prepare_read(asap);
+            self.state.comm_objects().borrow_mut().prepare_read(logical);
 
             // The ASAP comes from the downloaded association table; an entry
             // outside the device's comm-object range (or whose storage size
             // disagrees with the downloaded CO table) must not panic us.
             {
                 let objs = self.state.comm_objects().borrow();
-                let Some(value) = objs.value(asap) else {
+                let Some(value) = objs.value(logical) else {
                     warn!("AL ASAP {} outside comm-object range, dropping group read", asap);
                     continue;
                 };
@@ -417,7 +435,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             .with_application(ApciCode::GroupValueResponse)
             .with_data(|buf| {
                 buf[msg_offset..msg_offset + object_size].copy_from_slice(
-                    self.state.comm_objects().borrow().value(asap).expect("ASAP validated above in this iteration"),
+                    self.state.comm_objects().borrow().value(logical).expect("ASAP validated above in this iteration"),
                 );
             });
 
@@ -426,11 +444,11 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             trace!(
                 "AL sent GroupValueResponse for ASAP {}: {:?}",
                 asap,
-                zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(asap).unwrap_or(&[]))
+                zweidraehte_util::fmt::Bytes(self.state.comm_objects().borrow().value(logical).unwrap_or(&[]))
             );
 
             // Publish read event to the event channel
-            if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(asap) {
+            if let Some(index) = <<D as StackDefinition>::CO as ComObjects>::Index::from_index(logical) {
                 self.lctx.publish_event(index, ComObjectEvent::Read);
             }
         }
@@ -442,10 +460,15 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
     /// Send `A_GroupValue_Write.req` or `A_GroupValue_Read.req`
     ///
-    /// Called when the local application wants to send a group value to the bus.
+    /// Called when the local application wants to send a group value to the
+    /// bus. `logical` is the object's 0-based DSL index (what
+    /// `ComObject::index()` returns); the wire ASAP used for the COT and
+    /// AST lookups is `logical + FIRST_ASAP`.
     /// Returns `true` if the request was processed, `false` if rejected because
     /// the application is not running.
-    pub fn send_group_value_request(&self, asap: u16, read: bool) -> bool {
+    pub fn send_group_value_request(&self, logical: u16, read: bool) -> bool {
+        let asap = logical + D::FIRST_ASAP;
+
         // Check if application is running before sending group data
         if !self.state.app().borrow().is_running() {
             debug!("AL GroupValue request ignored: application not running");
@@ -463,7 +486,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             return true; // Not an "app not running" error
         };
 
-        let Some(status) = self.state.comm_objects().borrow().status(asap) else {
+        let Some(status) = self.state.comm_objects().borrow().status(logical) else {
             error!("ASAP {} outside comm-object range", asap);
             return true; // Not an "app not running" error
         };
@@ -480,7 +503,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // Communication disabled - set error status but preserve the request type
             // BCU1/BCU2 behavior: Read/Write request stays pending with error indication
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-            self.state.comm_objects().borrow_mut().set_status(asap, new_status);
+            self.state.comm_objects().borrow_mut().set_status(logical, new_status);
 
             debug!("AL comm object {} not enabled for communication (flags=0x{:02x})", asap, cot_info.flags.to_byte());
             return true;
@@ -489,13 +512,13 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         if !cot_info.flags.transmission_enable() {
             // Transmission disabled - set error status but preserve the request type
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-            self.state.comm_objects().borrow_mut().set_status(asap, new_status);
+            self.state.comm_objects().borrow_mut().set_status(logical, new_status);
 
             debug!("AL comm object {} transmission not enabled", asap);
             return true;
         }
 
-        self.state.comm_objects().borrow_mut().set_status(asap, ComObjectStatus::Busy);
+        self.state.comm_objects().borrow_mut().set_status(logical, ComObjectStatus::Busy);
 
         // We only send to the first TSAP per spec.
         // Extract TSAP before entering the block to avoid holding the RefCell
@@ -547,7 +570,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 );
                 let new_status =
                     if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-                self.state.comm_objects().borrow_mut().set_status(asap, new_status);
+                self.state.comm_objects().borrow_mut().set_status(logical, new_status);
                 return true;
             }
 
@@ -579,14 +602,14 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 // this branch because `size_in_bytes()` returns `(_, false)`
                 // for them.
                 let value_byte =
-                    self.state.comm_objects().borrow().value(asap).and_then(|v| v.first().copied()).unwrap_or(0);
+                    self.state.comm_objects().borrow().value(logical).and_then(|v| v.first().copied()).unwrap_or(0);
                 builder
                     .with_application(ApciCode::GroupValueWrite)
                     .with_data(|buf| GroupValueWriteRequest::write_short(buf, value_byte))
             } else {
                 // Full write: copy the CO value into the APDU area.
                 let co = self.state.comm_objects().borrow();
-                let value = co.value(asap).expect("ASAP status was validated at function entry");
+                let value = co.value(logical).expect("ASAP status was validated at function entry");
                 builder
                     .with_application(ApciCode::GroupValueWrite)
                     .with_data(|buf| GroupValueWriteRequest::write_full(buf, value))
@@ -594,7 +617,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
             // Store pending state so the TL confirmation (arriving later on
             // conf_rx) can update the CO status.
-            self.lctx.group_data.pending_group_send.set(Some(PendingGroupSend { asap, read }));
+            self.lctx.group_data.pending_group_send.set(Some(PendingGroupSend { logical, read }));
 
             // Send fire-and-forget to TL — confirmation handled in handle_tl_confirmation
             debug!("AL -> TL: GroupValue {} ASAP {} TSAP {}", if read { "Read" } else { "Write" }, asap, tsap);
@@ -602,7 +625,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         } else {
             // No sending TSAP found - error
             let new_status = if read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-            self.state.comm_objects().borrow_mut().set_status(asap, new_status);
+            self.state.comm_objects().borrow_mut().set_status(logical, new_status);
 
             error!("AL no sending TSAP or transmission flag not set for ASAP {} - Flags: {:?}", asap, cot_info.flags);
         }
@@ -623,18 +646,18 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             return false;
         };
 
-        debug!("AL TL confirmation for ASAP {}: {:?}", pending.asap, conf.service_type());
+        debug!("AL TL confirmation for CO {}: {:?}", pending.logical, conf.service_type());
 
         if conf.ctrl_field().c() == Confirm::NoError {
             if pending.read {
-                self.state.comm_objects().borrow_mut().set_status(pending.asap, ComObjectStatus::ReadRequest);
+                self.state.comm_objects().borrow_mut().set_status(pending.logical, ComObjectStatus::ReadRequest);
             } else {
-                self.state.comm_objects().borrow_mut().set_status(pending.asap, ComObjectStatus::IdleOk);
+                self.state.comm_objects().borrow_mut().set_status(pending.logical, ComObjectStatus::IdleOk);
             }
         } else {
             let new_status =
                 if pending.read { ComObjectStatus::ReadRequestError } else { ComObjectStatus::WriteRequestError };
-            self.state.comm_objects().borrow_mut().set_status(pending.asap, new_status);
+            self.state.comm_objects().borrow_mut().set_status(pending.logical, new_status);
         }
 
         true
@@ -654,10 +677,12 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             ReadOnInitState::Idle => {
                 // Self-detect: when the app is running and AST is loaded but
                 // comm objects are still Uninitialized (the DeviceModel resets
-                // them on app start), a ROI scan is needed.
+                // them on app start), a ROI scan is needed. The device's first
+                // object stands in for "all of them" — the reset is global.
                 if self.state.app().borrow().is_running()
                     && self.state.ast().borrow().is_loaded()
-                    && self.state.comm_objects().borrow().status(1) == Some(ComObjectStatus::Uninitialized)
+                    && self.state.comm_objects().borrow().status(<D::CO as ComObjects>::FIRST_INDEX)
+                        == Some(ComObjectStatus::Uninitialized)
                 {
                     Some(embassy_time::Instant::now())
                 } else {
@@ -686,10 +711,11 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         if self.lctx.group_data.read_on_init.get() == ReadOnInitState::Idle
             && self.state.app().borrow().is_running()
             && self.state.ast().borrow().is_loaded()
-            && self.state.comm_objects().borrow().status(1) == Some(ComObjectStatus::Uninitialized)
+            && self.state.comm_objects().borrow().status(<D::CO as ComObjects>::FIRST_INDEX)
+                == Some(ComObjectStatus::Uninitialized)
         {
             info!("AL read-on-init: starting cycle (detected uninitialized objects)");
-            self.lctx.group_data.read_on_init.set(ReadOnInitState::Scanning(1));
+            self.lctx.group_data.read_on_init.set(ReadOnInitState::Scanning(D::FIRST_ASAP));
         }
 
         self.read_on_init_step();
@@ -748,7 +774,10 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         let entry_count = self.state.cot().borrow().entry_count();
         let mut cursor = start;
 
-        // COT is 1-indexed: valid ASAPs are 1..=entry_count.
+        // The COT is wire-indexed. Which ASAPs the stored count covers is
+        // a table-format detail (RealizationType 7 serves 1..=count, M112
+        // serves 0..count), so scan the widest range either format can
+        // answer and let `object()` reject what it doesn't hold.
         while cursor <= entry_count {
             let asap = cursor;
             cursor += 1;
@@ -762,9 +791,14 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
                 continue;
             }
 
+            // ComObjects below are keyed by the logical DSL index.
+            let Some(logical) = asap.checked_sub(D::FIRST_ASAP) else {
+                continue;
+            };
+
             // 2. Object must still be uninitialized (value not yet valid).
             // An out-of-range ASAP (None) is skipped via the same branch.
-            if self.state.comm_objects().borrow().status(asap) != Some(ComObjectStatus::Uninitialized) {
+            if self.state.comm_objects().borrow().status(logical) != Some(ComObjectStatus::Uninitialized) {
                 debug!("AL read-on-init: ASAP {} skipped (value already valid)", asap);
                 continue;
             }
@@ -793,8 +827,8 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
             // The CO status update (ReadRequest → IdleOk or error) happens
             // asynchronously when the TL confirmation arrives on conf_rx.
             info!("AL read-on-init: sending GroupValueRead for ASAP {}", asap);
-            self.state.comm_objects().borrow_mut().set_status(asap, ComObjectStatus::ReadRequest);
-            self.send_group_value_request(asap, true);
+            self.state.comm_objects().borrow_mut().set_status(logical, ComObjectStatus::ReadRequest);
+            self.send_group_value_request(logical, true);
 
             // Save cursor for next call and return (one object per step)
             self.lctx.group_data.read_on_init.set(ReadOnInitState::Scanning(cursor));
@@ -818,13 +852,13 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
 
 impl<D: StackDefinition> GroupValueSender for GroupDataProvider<'_, D> {
     #[inline]
-    fn request_group_write(&self, asap: u16) -> bool {
-        self.send_group_value_request(asap, false)
+    fn request_group_write(&self, logical: u16) -> bool {
+        self.send_group_value_request(logical, false)
     }
 
     #[inline]
-    fn request_group_read(&self, asap: u16) -> bool {
-        self.send_group_value_request(asap, true)
+    fn request_group_read(&self, logical: u16) -> bool {
+        self.send_group_value_request(logical, true)
     }
 }
 

@@ -39,7 +39,7 @@ pub struct LightSwitchComObjects {
     /// - Blind: sends DPT_UpDown move on long press
     /// - Scene: sends DPT_SceneControl recall/store
     #[ets(
-        index = 1,
+        index = 0,
         display = "Button 1 switching",
         function = "Primary output",
         flags = C | T,
@@ -57,7 +57,7 @@ pub struct LightSwitchComObjects {
     /// determine what to send when toggling (invert last known state).
     /// Write + Update flags: the device receives status from the bus.
     #[ets(
-        index = 2,
+        index = 1,
         display = "Button 1 status",
         function = "Status feedback",
         flags = C | W | T | U | ROI,
@@ -72,7 +72,7 @@ pub struct LightSwitchComObjects {
     /// - Dimmer: sends DPT_Control_Dimming on long press
     /// - Blind: sends DPT_Step step/stop on short press
     #[ets(
-        index = 3,
+        index = 2,
         display = "Button 1 dimming/step",
         function = "Secondary output",
         flags = C | T,
@@ -87,7 +87,7 @@ pub struct LightSwitchComObjects {
     // ====================================================================
     /// Button 2 primary output — same pattern as button 1.
     #[ets(
-        index = 4,
+        index = 3,
         display = "Button 2 switching",
         function = "Primary output",
         flags = C | T,
@@ -101,7 +101,7 @@ pub struct LightSwitchComObjects {
 
     /// Button 2 status feedback — receives current actuator state.
     #[ets(
-        index = 5,
+        index = 4,
         display = "Button 2 status",
         function = "Status feedback",
         flags = C | W | T | U | ROI,
@@ -113,7 +113,7 @@ pub struct LightSwitchComObjects {
 
     /// Button 2 secondary output — only active in Dimmer and Blind modes.
     #[ets(
-        index = 6,
+        index = 5,
         display = "Button 2 dimming/step",
         function = "Secondary output",
         flags = C | T,

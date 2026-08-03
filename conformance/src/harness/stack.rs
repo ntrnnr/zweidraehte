@@ -65,7 +65,7 @@ pub mod comm_objs {
         // ================================================================
         /// GO0: Main 1-bit object (UINT1)
         /// This is the primary test object whose flags/value are accessed via GO1-GO3
-        #[ets(index = 1)]
+        #[ets(index = 0)]
         pub go_0: ComObject<DPT_Switch>,
 
         /// GO1: Communication flags (4-bit / UINT4)
@@ -73,7 +73,7 @@ pub mod comm_objs {
         /// Bit 1: Write/Transmission request pending
         /// Bit 2: Error flag (0=OK, 1=Error)
         /// Bit 3: Update flag
-        #[ets(index = 2)]
+        #[ets(index = 1)]
         pub go_1_comm_flags: ComObject<DPT_Value_1_Ucount>,
 
         /// GO2: Configuration flags (8-bit / UINT8)
@@ -88,11 +88,11 @@ pub mod comm_objs {
         /// Seeded with GO0's default flags byte so the shadow value is
         /// sensible even before the first `prepare_read` recomputes it
         /// from the live CoTab.
-        #[ets(index = 3, initial = DPT_Value_1_Ucount::from(0xDFu8))]
+        #[ets(index = 2, initial = DPT_Value_1_Ucount::from(0xDFu8))]
         pub go_2_config_flags: ComObject<DPT_Value_1_Ucount>,
 
         /// GO3: Value of GO0 as 8-bit (for reading/writing without affecting flags)
-        #[ets(index = 4)]
+        #[ets(index = 3)]
         pub go_3_value: ComObject<DPT_Value_1_Ucount>,
 
         // ================================================================
@@ -100,35 +100,35 @@ pub mod comm_objs {
         // For invalid data length tests (1.4.1.4a)
         // ================================================================
         /// GO0_BYTE3: 3-byte version of GO0 for invalid data length tests
-        #[ets(index = 5)]
+        #[ets(index = 4)]
         pub go_0_byte3: ComObject<DPT_Colour_RGB>,
 
         /// GO1_BYTE3: Communication flags for GO0_BYTE3
-        #[ets(index = 6)]
+        #[ets(index = 5)]
         pub go_1_byte3_comm_flags: ComObject<DPT_Value_1_Ucount>,
 
         /// GO2_BYTE3: Configuration flags for GO0_BYTE3 (same default
         /// seed rationale as GO2).
-        #[ets(index = 7, initial = DPT_Value_1_Ucount::from(0xDFu8))]
+        #[ets(index = 6, initial = DPT_Value_1_Ucount::from(0xDFu8))]
         pub go_2_byte3_config_flags: ComObject<DPT_Value_1_Ucount>,
 
         /// GO3_BYTE3: Value of GO0_BYTE3 as 3-byte (for reading/writing without affecting flags)
-        #[ets(index = 8)]
+        #[ets(index = 7)]
         pub go_3_byte3_value: ComObject<DPT_Colour_RGB>,
 
         // ================================================================
         // Additional test objects (ASAP 9-11)
         // ================================================================
         /// GO4: For Read on Init testing
-        #[ets(index = 9)]
+        #[ets(index = 8)]
         pub go_4: ComObject<DPT_Value_1_Ucount>,
 
         /// GO5: 8-bit object for network layer test 3.1 (long format response)
-        #[ets(index = 10)]
+        #[ets(index = 9)]
         pub go_5_network_test: ComObject<DPT_Value_1_Ucount>,
 
         /// GO6: 1-bit object for transport layer test 2.1 + security GO test
-        #[ets(index = 11)]
+        #[ets(index = 10)]
         pub go_6_transport_test: ComObject<DPT_Switch>,
 
         // ================================================================
@@ -136,17 +136,17 @@ pub mod comm_objs {
         // ================================================================
         /// GO_SEC_0: 1-bit object for security GO flag testing.
         /// Receives on 1/1/1 (TSAP 2), transmits on 2/2/2 (TSAP 12).
-        #[ets(index = 12)]
+        #[ets(index = 11)]
         pub go_sec_0: ComObject<DPT_Switch>,
 
         /// GO_SEC_1: 1-bit object for security GO flag testing.
         /// Receives on 3/3/3 (TSAP 15), transmits on 4/4/4 (TSAP 16).
-        #[ets(index = 13)]
+        #[ets(index = 12)]
         pub go_sec_1: ComObject<DPT_Switch>,
 
         /// GO_SEC_3: 1-bit object for security GO flag testing (C-only).
         /// Receives on 6/6/6 (TSAP 18).
-        #[ets(index = 14)]
+        #[ets(index = 13)]
         pub go_sec_3: ComObject<DPT_Switch>,
 
         // ================================================================
@@ -154,17 +154,17 @@ pub mod comm_objs {
         // ================================================================
         /// GO_DIAG_NO_C: 1-byte object WITHOUT communication enable flag.
         /// Used by 6.2.6 and 6.2.14 for config flags error tests.
-        #[ets(index = 15)]
+        #[ets(index = 14)]
         pub go_diag_no_c: ComObject<DPT_Value_1_Ucount>,
 
         /// GO_DIAG_NO_W: 1-byte object WITHOUT write enable flag.
         /// Used by 6.2.6 for "W-flag not set" test.
-        #[ets(index = 16)]
+        #[ets(index = 15)]
         pub go_diag_no_w: ComObject<DPT_Value_1_Ucount>,
 
         /// GO_DIAG_NO_T: 1-byte object WITHOUT transmission enable flag.
         /// Used by 6.2.14 for "T-flag not set" test.
-        #[ets(index = 17)]
+        #[ets(index = 16)]
         pub go_diag_no_t: ComObject<DPT_Value_1_Ucount>,
     }
 }
@@ -1187,6 +1187,7 @@ impl StackDefinition for IpcConformanceTestStack {
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = Some(&CONFORMANCE_USER_MANUFACTURER_INFO);
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
     const TL_STYLE: TlStyle = TlStyle::Style3;
+    const FIRST_ASAP: u16 = 1;
     type P = TestParameters;
     type CO = ConformanceComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;

@@ -292,11 +292,11 @@ pub fn derive_ets_enum(input: TokenStream) -> TokenStream {
 /// #[derive(EtsComObjects)]
 /// pub struct MyComObjects {
 ///     /// Simple switch input
-///     #[ets(index = 1, display = "Switch Input", function = "On/Off")]
+///     #[ets(index = 0, display = "Switch Input", function = "On/Off")]
 ///     pub switch_in: DPT_Switch,
 ///
 ///     /// Temperature value
-///     #[ets(index = 2, display = "Temperature")]
+///     #[ets(index = 1, display = "Temperature")]
 ///     pub temperature: DPT_Value_Temp,
 /// }
 /// ```
@@ -310,7 +310,7 @@ pub fn derive_ets_enum(input: TokenStream) -> TokenStream {
 /// #[ets(selector_enum = ButtonMode)]
 /// pub struct MyComObjects {
 ///     /// Multi-type output controlled by button_mode parameter
-///     #[ets(index = 1, display = "Output", flags = 0x5F)]
+///     #[ets(index = 0, display = "Output", flags = 0x5F)]
 ///     #[ets_ref(dpt = DPT_Switch, when = ButtonMode::Switch)]
 ///     #[ets_ref(dpt = DPT_Scaling, when = ButtonMode::Dimmer)]
 ///     pub output: (),  // Placeholder - replaced with ComObjectStorage<N>
@@ -319,10 +319,10 @@ pub fn derive_ets_enum(input: TokenStream) -> TokenStream {
 /// // Generated: ButtonModeObjs enum for typed access
 /// match params.button_mode.comm_objects(&mut objs) {
 ///     ButtonModeObjs::Switch { output, .. } => {
-///         // output is TypedComObj<DPT_Switch, 1>
+///         // output is TypedComObj<DPT_Switch, 0>
 ///     }
 ///     ButtonModeObjs::Dimmer { output, .. } => {
-///         // output is TypedComObj<DPT_Scaling, 1>
+///         // output is TypedComObj<DPT_Scaling, 0>
 ///     }
 /// }
 /// ```
@@ -334,7 +334,9 @@ pub fn derive_ets_enum(input: TokenStream) -> TokenStream {
 /// - `#[ets(selector_enum = EnumType)]` - Generate selector-based typed access
 ///
 /// ## On fields (base object):
-/// - `#[ets(index = N)]` - **Required**. ASAP index for this comm object
+/// - `#[ets(index = N)]` - **Required**. 0-based logical index for this comm object
+///   (the ETS object number is `N` plus the mask family's start index: 0 for
+///   System 7, 1 for System B)
 /// - `#[ets(display = "...")]` - Human-readable name for ETS
 /// - `#[ets(function = "...")]` - Function text (for simple objects)
 /// - `#[ets(flags = 0xNN)]` - Default flags byte (default: 0xDF)

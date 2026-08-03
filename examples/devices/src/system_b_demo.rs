@@ -165,7 +165,7 @@ pub mod comm_objs {
         /// DPT changes based on channel_a_config union selector.
         /// Storage size 1 = max(sizeof(DPT_Switch)=1, sizeof(DPT_Value_1_Ucount)=1)
         #[ets(
-            index = 1,
+            index = 0,
             display = "Channel A Input",
             function = "Control input",
             selector_param = "channel_a_config_selector"
@@ -178,7 +178,7 @@ pub mod comm_objs {
         /// Channel A output - sends current state to bus
         /// DPT changes based on channel_a_config union selector
         #[ets(
-            index = 2,
+            index = 1,
             display = "Channel A Output",
             function = "Status output",
             flags = C | R | W | T | LOW,
@@ -194,7 +194,7 @@ pub mod comm_objs {
         // ====================================================================
         /// Channel B input - receives control commands
         #[ets(
-            index = 3,
+            index = 2,
             display = "Channel B Input",
             function = "Control input",
             selector_param = "channel_b_config_selector"
@@ -206,7 +206,7 @@ pub mod comm_objs {
 
         /// Channel B output - sends current state to bus
         #[ets(
-            index = 4,
+            index = 3,
             display = "Channel B Output",
             function = "Status output",
             flags = C | R | W | T | LOW,
@@ -221,19 +221,19 @@ pub mod comm_objs {
         // Fixed-type objects (no ComObjectRefs)
         // ====================================================================
         /// Scene control input - receives scene recall/store commands
-        #[ets(index = 5, display = "Scene Control", function = "Scene recall/store (DPT 17.001)")]
+        #[ets(index = 4, display = "Scene Control", function = "Scene recall/store (DPT 17.001)")]
         pub scene_control: ComObject<DPT_Value_1_Ucount>,
 
         /// Lock input - enables/disables output locking
-        #[ets(index = 6, display = "Lock", function = "Output lock control")]
+        #[ets(index = 5, display = "Lock", function = "Output lock control")]
         pub lock_in: ComObject<DPT_Switch>,
 
         /// General status output - always a switch type
-        #[ets(index = 7, display = "In Operation", function = "Device in operation status", flags = C | W | T | LOW)]
+        #[ets(index = 6, display = "In Operation", function = "Device in operation status", flags = C | W | T | LOW)]
         pub in_operation: ComObject<DPT_Switch>,
 
         /// Error status output
-        #[ets(index = 8, display = "Error", function = "Error status output", flags = C | W | T | LOW)]
+        #[ets(index = 7, display = "Error", function = "Error status output", flags = C | W | T | LOW)]
         pub error_status: ComObject<DPT_Switch>,
     }
 }
