@@ -21,7 +21,7 @@ use futures_lite::StreamExt;
 
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::config::MAX_APDU_LENGTH_EXTENDED;
-use zweidraehte_proto::usb_hid::bus_access::{BusAccessFrameBuilder, BusAccessResponse};
+use zweidraehte_proto::usb_hid::bus_access::{BusAccessFrameBuilder, BusAccessResponse, SupportedEmiTypes};
 use zweidraehte_proto::usb_hid::hid::{HidReport, MAX_REPORT_SIZE, ReassemblyBuffer, fragment_frame};
 use zweidraehte_proto::usb_hid::is_known_knx_device;
 use zweidraehte_proto::usb_hid::protocol::{EmiId, TransferFrame, encode_cemi_frame};
@@ -29,7 +29,9 @@ use zweidraehte_proto::usb_hid::protocol::{EmiId, TransferFrame, encode_cemi_fra
 use crate::connector::{ConnectorInfo, KnxConnector};
 use crate::error::{Error, Result};
 
-/// Timeout for Bus Access Server and local device management exchanges.
+/// Timeout for Bus Access Server and local device management exchanges
+/// (both specify a 1 s response time; 09/03 Couplers v01.04.03 §3.5.3.2.1
+/// and §3.4.2).
 const LOCAL_MGMT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Transfer frame buffer size: 8-byte header + largest KNX frame (263).
@@ -79,6 +81,15 @@ impl UsbConnector {
         let mut devices = backend.enumerate().await.map_err(|e| Error::Usb(format!("enumeration failed: {e:?}")))?;
 
         while let Some(device) = devices.next().await {
+            log::trace!(
+                "HID device: {} ({:04X}:{:04X}) usage_page={:04X} usage_id={:04X} id={:?}",
+                device.name,
+                device.vendor_id,
+                device.product_id,
+                device.usage_page,
+                device.usage_id,
+                device.id
+            );
             let matches = match selector {
                 UsbSelector::AutoDiscover => is_known_knx_device(device.vendor_id, device.product_id),
                 UsbSelector::VidPid { vendor_id, product_id } => {
@@ -90,10 +101,12 @@ impl UsbConnector {
             }
 
             log::info!(
-                "Opening KNX USB interface: {} ({:04X}:{:04X})",
+                "Opening KNX USB interface: {} ({:04X}:{:04X}) usage_page={:04X} usage_id={:04X}",
                 device.name,
                 device.vendor_id,
-                device.product_id
+                device.product_id,
+                device.usage_page,
+                device.usage_id
             );
             let (reader, writer): DeviceReaderWriter =
                 device.open().await.map_err(|e| Error::Usb(format!("open failed: {e:?}")))?;
@@ -112,30 +125,41 @@ impl UsbConnector {
 
     async fn bring_up(&mut self) -> Result<ConnectorInfo> {
         // EMI negotiation: the interface must speak cEMI.
-        let supported = self.bus_access_get(BusAccessFrameBuilder::get_supported_emi_type).await?;
-        let supported = supported.get_supported_emi_types().ok_or(Error::Parse("SupportedEmiType response"))?;
+        log::debug!("Bring-up: querying supported EMI types");
+        let supported = self.supported_emi_types().await?;
         if !supported.supports_cemi() {
             return Err(Error::Usb("interface does not support cEMI".into()));
         }
 
-        let active = self.bus_access_get(BusAccessFrameBuilder::get_active_emi_type).await?;
-        let active = active.get_active_emi_type().ok_or(Error::Parse("ActiveEmiType response"))?;
+        log::debug!("Bring-up: querying active EMI type");
+        let active = self.active_emi_type().await?;
         if active != EmiId::CEmi {
             log::info!("Activating cEMI mode (was {:?})", active);
-            let response =
-                self.bus_access_get(|buf| BusAccessFrameBuilder::set_active_emi_type(EmiId::CEmi, buf)).await?;
-            if response.get_active_emi_type() != Some(EmiId::CEmi) {
+            // Device Feature Set is unconfirmed by design — 09/03 Couplers
+            // v01.04.03 §3.5.3.2.1: "only the Device Feature Get service is
+            // confirmed by a Device Feature Response service. The Device
+            // Feature Set- and the Device Feature Info services shall not be
+            // answered by the receiver." So send the Set without expecting
+            // anything back and verify through a fresh Get.
+            let mut buf = [0u8; TRANSFER_BUF_SIZE];
+            let len = BusAccessFrameBuilder::set_active_emi_type(EmiId::CEmi, &mut buf)
+                .map_err(|e| Error::Usb(format!("request build failed: {e:?}")))?;
+            self.write_transfer(&buf[..len]).await?;
+
+            if self.active_emi_type().await? != EmiId::CEmi {
                 return Err(Error::Usb("failed to activate cEMI mode".into()));
             }
         }
 
         // Data-link-layer mode on the cEMI server, so L_Data flows.
+        log::debug!("Bring-up: setting comm mode to data link layer");
         self.prop_write(interface::CEMI_SERVER_OBJECT, interface::PID_COMM_MODE, &[
             interface::COMM_MODE_DATA_LINK_LAYER,
         ])
         .await?;
 
         // The interface's own individual address and APDU limit.
+        log::debug!("Bring-up: reading interface individual address");
         let subnet = self.prop_read(interface::DEVICE_OBJECT, interface::PID_SUBNET_ADDR).await?;
         let device_addr = self.prop_read(interface::DEVICE_OBJECT, interface::PID_DEVICE_ADDR).await?;
         let (&subnet, &device_addr) = match (subnet.first(), device_addr.first()) {
@@ -161,24 +185,28 @@ impl UsbConnector {
     // Bus Access Server + local device management
     // ========================================================================
 
-    /// Send a Bus Access Server request built by `build` and wait for the
-    /// matching response body.
-    async fn bus_access_get(
-        &mut self,
-        build: impl FnOnce(&mut [u8]) -> core::result::Result<usize, zweidraehte_proto::usb_hid::bus_access::BusAccessError>,
-    ) -> Result<BusAccessResponseOwned> {
+    /// Feature Get: the EMI types the interface supports.
+    async fn supported_emi_types(&mut self) -> Result<SupportedEmiTypes> {
         let mut buf = [0u8; TRANSFER_BUF_SIZE];
-        let len = build(&mut buf).map_err(|e| Error::Usb(format!("request build failed: {e:?}")))?;
-        self.write_transfer(&buf[..len]).await?;
+        let len = BusAccessFrameBuilder::get_supported_emi_type(&mut buf)
+            .map_err(|e| Error::Usb(format!("request build failed: {e:?}")))?;
+        let body = self.exchange(&buf[..len], |kind, _| kind == FrameKind::BusAccess).await?;
+        BusAccessResponse::parse(&body)
+            .ok()
+            .and_then(|r| r.get_supported_emi_types())
+            .ok_or(Error::Parse("SupportedEmiType response"))
+    }
 
-        let deadline = tokio::time::Instant::now() + LOCAL_MGMT_TIMEOUT;
-        loop {
-            let (kind, body) = self.read_transfer_frame(Some(deadline)).await?;
-            if kind == FrameKind::BusAccess {
-                return BusAccessResponseOwned::parse(body);
-            }
-            log::debug!("Ignoring non-BAS frame while waiting for feature response");
-        }
+    /// Feature Get: the currently active EMI type.
+    async fn active_emi_type(&mut self) -> Result<EmiId> {
+        let mut buf = [0u8; TRANSFER_BUF_SIZE];
+        let len = BusAccessFrameBuilder::get_active_emi_type(&mut buf)
+            .map_err(|e| Error::Usb(format!("request build failed: {e:?}")))?;
+        let body = self.exchange(&buf[..len], |kind, _| kind == FrameKind::BusAccess).await?;
+        BusAccessResponse::parse(&body)
+            .ok()
+            .and_then(|r| r.get_active_emi_type())
+            .ok_or(Error::Parse("ActiveEmiType response"))
     }
 
     /// Local M_PropRead on the interface. Returns the property data bytes.
@@ -207,15 +235,24 @@ impl UsbConnector {
     async fn local_mgmt_request(&mut self, cemi: &[u8], expected_con: u8) -> Result<Vec<u8>> {
         let mut buf = [0u8; TRANSFER_BUF_SIZE];
         let len = encode_cemi_frame(cemi, &mut buf).map_err(|e| Error::Usb(format!("frame encode failed: {e:?}")))?;
-        self.write_transfer(&buf[..len]).await?;
+        self.exchange(&buf[..len], |kind, body| kind == FrameKind::Cemi && body.first() == Some(&expected_con)).await
+    }
+
+    /// Send a transfer frame and wait for the response `accept` matches.
+    ///
+    /// One attempt, no retransmission: USB interrupt transfers don't lose
+    /// reports the way UDP loses datagrams, and the confirmed services
+    /// (Feature Get, tunnelled M_Prop) answer within their 1 s spec window
+    /// (09/03 Couplers v01.04.03 §3.5.3.2.1, §3.4.2) or not at all.
+    async fn exchange(&mut self, request: &[u8], accept: impl Fn(FrameKind, &[u8]) -> bool) -> Result<Vec<u8>> {
+        self.write_transfer(request).await?;
 
         let deadline = tokio::time::Instant::now() + LOCAL_MGMT_TIMEOUT;
         loop {
-            let (kind, body) = self.read_transfer_frame(Some(deadline)).await?;
-            if kind == FrameKind::Cemi && body.first() == Some(&expected_con) {
-                return Ok(body);
+            match self.read_transfer_frame(Some(deadline)).await? {
+                (kind, body) if accept(kind, &body) => return Ok(body),
+                _ => log::debug!("Ignoring frame while waiting for local mgmt response"),
             }
-            log::debug!("Ignoring cEMI frame while waiting for local mgmt confirmation");
         }
     }
 
@@ -225,7 +262,9 @@ impl UsbConnector {
 
     /// Fragment a transfer frame into HID reports and write them.
     async fn write_transfer(&mut self, frame: &[u8]) -> Result<()> {
+        log::trace!("TX transfer frame ({} bytes): {:02X?}", frame.len(), frame);
         for report in fragment_frame(frame) {
+            log::trace!("TX HID report: {:02X?}", &report[..(3 + report[2] as usize).min(report.len())]);
             self.writer.write_output_report(&report).await.map_err(|e| Error::Usb(format!("write failed: {e:?}")))?;
         }
         Ok(())
@@ -246,7 +285,8 @@ impl UsbConnector {
                 },
                 None => read.await,
             };
-            let _len = result.map_err(|e| Error::Usb(format!("read failed: {e:?}")))?;
+            let len = result.map_err(|e| Error::Usb(format!("read failed: {e:?}")))?;
+            log::trace!("RX HID report ({} bytes): {:02X?}", len, &report_buf[..len.min(MAX_REPORT_SIZE)]);
 
             let Ok(report) = HidReport::parse(&report_buf) else {
                 log::warn!("Dropping malformed HID report");
@@ -282,32 +322,6 @@ impl UsbConnector {
 enum FrameKind {
     Cemi,
     BusAccess,
-}
-
-/// Owned copy of a Bus Access Server response body (the borrowed
-/// [`BusAccessResponse`] can't outlive the read buffer).
-struct BusAccessResponseOwned {
-    body: Vec<u8>,
-}
-
-impl BusAccessResponseOwned {
-    fn parse(body: Vec<u8>) -> Result<Self> {
-        // Validate eagerly so callers get a parse error at the await point.
-        BusAccessResponse::parse(&body).map_err(|_| Error::Parse("Bus Access Server response"))?;
-        Ok(Self { body })
-    }
-
-    fn response(&self) -> BusAccessResponse<'_> {
-        BusAccessResponse::parse(&self.body).expect("validated in parse()")
-    }
-
-    fn get_supported_emi_types(&self) -> Option<zweidraehte_proto::usb_hid::bus_access::SupportedEmiTypes> {
-        self.response().get_supported_emi_types()
-    }
-
-    fn get_active_emi_type(&self) -> Option<EmiId> {
-        self.response().get_active_emi_type()
-    }
 }
 
 impl KnxConnector for UsbConnector {
