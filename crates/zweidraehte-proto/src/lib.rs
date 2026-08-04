@@ -36,4 +36,6 @@ pub mod error;
 pub mod messages;
 pub mod properties;
 pub mod transport;
+#[cfg(feature = "usb-hid")]
+pub mod usb_hid;
 pub mod util;

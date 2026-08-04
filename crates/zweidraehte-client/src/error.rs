@@ -56,6 +56,9 @@ pub enum Error {
     #[error("parse error: {0}")]
     Parse(&'static str),
 
+    #[error("USB interface error: {0}")]
+    Usb(String),
+
     #[error("bus task terminated")]
     WorkerGone,
 }

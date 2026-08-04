@@ -5,11 +5,16 @@ edition.workspace = true
 description = "KNX/IP client library for device management"
 
 [dependencies]
-zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std", "log", "knxip"] }
+zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std", "log", "knxip", "usb-hid"] }
 
 tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros", "signal"] }
 log = { workspace = true }
 thiserror = { workspace = true }
+
+# USB connector: KNX USB interfaces are HID devices. async-hid brings its
+# own reactor threads, so it composes with tokio without a bridge.
+async-hid = { workspace = true }
+futures-lite = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }

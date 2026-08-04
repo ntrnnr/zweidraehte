@@ -100,7 +100,7 @@ ip-secure = ["knxip", "zweidraehte-proto/ip-secure"]
 tp1 = []
 rf = []
 ip-interface = ["knxip", "tp1"]
-usb = ["std", "dep:async-hid", "dep:futures-lite"]
+usb = ["std", "dep:async-hid", "dep:futures-lite", "zweidraehte-proto/usb-hid"]
 conformance = ["std"]
 
 [target.'cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))'.dependencies]

@@ -37,6 +37,10 @@ log = ["dep:log", "zweidraehte-util/log", "zweidraehte-platform/log"]
 alloc = []
 std = ["alloc", "zweidraehte-platform/std"]
 knxip = []
+# KNX USB interface framing (HID reports, USB Transfer Protocol, Bus
+# Access Server). Pure codec shared by the device stack's USB host link
+# layer and the client library's USB connector.
+usb-hid = []
 # KNX IP Secure session-key derivation (X25519 + SHA-256). Separate from
 # `knxip` because curve25519 is a heavy dependency that size-constrained
 # non-secure IP builds must not pay for. The IP-Secure CCM and the secure

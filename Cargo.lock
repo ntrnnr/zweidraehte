@@ -6816,7 +6816,9 @@ dependencies = [
 name = "zweidraehte-client"
 version = "0.1.0"
 dependencies = [
+ "async-hid",
  "env_logger",
+ "futures-lite",
  "log",
  "thiserror 2.0.18",
  "tokio",

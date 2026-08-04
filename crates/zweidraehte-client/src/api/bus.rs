@@ -13,7 +13,7 @@ use zweidraehte_proto::messages::knx::ApciCode;
 
 use crate::api::device_conn::DeviceConnection;
 use crate::api::network_mgmt::NetworkManagement;
-use crate::connector::{ConnectorInfo, IpTunnelConnector, KnxConnector};
+use crate::connector::{ConnectorInfo, IpTunnelConnector, KnxConnector, UsbConnector, UsbSelector};
 use crate::core::frames;
 use crate::core::group::GroupTelegram;
 use crate::driver::{BusCommand, BusTask};
@@ -46,6 +46,12 @@ impl KnxBus {
     /// Connect through a KNX/IP interface via tunneling.
     pub async fn connect_ip(server: SocketAddrV4) -> Result<Self> {
         let (connector, info) = IpTunnelConnector::connect(server).await?;
+        Ok(Self::with_connector(connector, info))
+    }
+
+    /// Connect through a KNX USB interface.
+    pub async fn connect_usb(selector: &UsbSelector) -> Result<Self> {
+        let (connector, info) = UsbConnector::connect(selector).await?;
         Ok(Self::with_connector(connector, info))
     }
 

@@ -54,7 +54,7 @@ mod driver;
 mod error;
 
 pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck};
-pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector};
+pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector, UsbConnector, UsbSelector};
 pub use core::group::{GroupService, GroupTelegram};
 pub use core::management::{FunctionPropertyResult, PropertyDescription};
 pub use error::{Error, Result};

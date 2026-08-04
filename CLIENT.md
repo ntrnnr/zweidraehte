@@ -243,29 +243,38 @@ Deferred, with room left in the design: AN163 ext-property request builders,
 
 Each chunk ends compilable and tested.
 
-- **A. Proto TL SM move** — `proto/src/transport/`, `ConnectionCore`, generic
-  `process_event`, device-crate re-exports + `impl ConnectionCore for
-  Connection`. Verify: `cargo test -p zweidraehte-proto -p
-  zweidraehte-device`; run the conformance transport suites (`cargo build`
-  first; `cargo run --bin conformance-runner transport`) — zero regressions.
-- **B. Proto APDU symmetry** — the table above. Verify: proto unit tests.
-- **C. Client skeleton + connector trait** — module tree, `KnxConnector`,
-  refactor `tunnel/worker.rs` connect/send/recv into
-  `connector/ip_tunnel.rs`. Verify: builds.
-- **D. Session FSM + bus task + group comm** — `core/session.rs` (pure,
-  unit-tested against recorded exchanges), `driver/bus_task.rs`, `KnxBus`
+- **A. Proto TL SM move** *(done)* — `proto/src/transport/`,
+  `ConnectionCore`, generic `process_event`, device-crate re-exports +
+  `impl ConnectionCore for Connection`. Verified against the full
+  hand-written conformance suite (556/556).
+- **B. Proto APDU symmetry** *(done)* — the table above, each addition
+  with a round-trip unit test.
+- **C. Client skeleton + connector trait** *(done)* — module tree,
+  `KnxConnector` (raw cEMI both ways; constructed-open, no `open()`
+  method), `connector/ip_tunnel.rs`.
+- **D. Session FSM + bus task + group comm** *(done)* —
+  `core/session.rs` (pure, unit-tested: handshake, ack retry, heartbeat
+  loss, duplicate sequences), `driver/bus_task.rs`, `KnxBus`
   connect/disconnect, group write/read/subscribe.
-- **E. TL client + DeviceConnection** — `core/tl_client.rs` over the proto
-  SM, frame classification into `TlEvent`s, T_ACK sending, the full
-  management service set including `memory_write_verify` and `master_reset`.
-- **F. Network management** — `api/network_mgmt.rs` + `core/nm.rs`: IA
-  read/write (broadcast), serial-number read/write, scan collection, ported
-  RCl ops.
-- **G. USB connector** — proto `usb_hid` extraction + `connector/usb.rs` +
-  `KnxBus::connect_usb`.
-- **H. Examples + docs** — port `function_property.rs` and
-  `mdt_bootloader.rs`; add `group_monitor.rs`, `device_scan.rs`; update this
-  file's status.
+- **E. TL client + DeviceConnection** *(done)* — `core/tl_client.rs` over
+  the proto SM, frame classification into `TlEvent`s, T_ACK sending, the
+  full management service set including `memory_write_verify` and
+  `master_reset`.
+- **F. Network management** *(done)* — `api/network_mgmt.rs`: IA
+  read/write (broadcast), serial-number read/write, scan collection,
+  connectionless RCl ops (moved from the old `KnxClient`).
+- **G. USB connector** *(done, untested on hardware)* — HID framing /
+  transfer protocol / Bus Access Server moved to
+  `proto/src/usb_hid/` (feature `usb-hid`, device crate re-exports),
+  `connector/usb.rs` with the full bring-up (EMI negotiation, comm-mode
+  DLL, IA + max-APDU reads), `KnxBus::connect_usb`. async-hid composes
+  with tokio directly (its own backend threads) — the dedicated-thread
+  fallback was not needed. Needs a smoke test against a physical
+  interface.
+- **H. Examples + docs** *(mostly done)* — `function_property.rs` and
+  `mdt_bootloader.rs` ported; `group_monitor.rs` and `device_scan.rs`
+  added. Outstanding: the hermetic loopback tunnel-server fixture (tier 2
+  below) and hardware smoke tests.
 
 ### Verification / integration-test story
 

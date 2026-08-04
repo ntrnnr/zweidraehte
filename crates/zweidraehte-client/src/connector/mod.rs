@@ -17,8 +17,10 @@ use zweidraehte_proto::address::IndividualAddress;
 use crate::error::Result;
 
 mod ip_tunnel;
+mod usb;
 
 pub use ip_tunnel::IpTunnelConnector;
+pub use usb::{UsbConnector, UsbSelector};
 
 /// What the driver learns from a connector once it is open.
 #[derive(Debug, Clone, Copy)]
