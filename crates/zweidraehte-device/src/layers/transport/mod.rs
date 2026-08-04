@@ -51,7 +51,9 @@ pub const CEMI_PSEUDO_ADDR: zweidraehte_proto::address::IndividualAddress =
     zweidraehte_proto::address::IndividualAddress::new(0, 0, 0);
 
 pub use connection::{Connection, ConnectionState, ConnectionTable};
-pub use state_machine::{ActionBuffer, MAX_REPETITIONS, ProcessResult, TlAction, TlEvent, TlStyle, process_event};
+pub use state_machine::{
+    ActionBuffer, MAX_REPETITIONS, ProcessResult, ProcessResultExt, TlAction, TlEvent, TlStyle, process_event,
+};
 
 use embassy_time::{Duration, Instant};
 

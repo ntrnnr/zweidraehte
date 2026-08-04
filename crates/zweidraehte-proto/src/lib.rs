@@ -35,4 +35,5 @@ pub mod encoding;
 pub mod error;
 pub mod messages;
 pub mod properties;
+pub mod transport;
 pub mod util;

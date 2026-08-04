@@ -7,33 +7,9 @@
 use embassy_time::Instant;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::{buffers::Buffer, knx::KnxMessageBuffer};
+use zweidraehte_proto::transport::ConnectionCore;
 
-// ============================================================================
-// Connection State
-// ============================================================================
-
-/// Connection state per KNX spec 03/03/04 section 5.1
-///
-/// The `#[repr(u8)]` is used for indexing into the transition tables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum ConnectionState {
-    /// No active connection
-    #[default]
-    Closed = 0,
-    /// Connection established, waiting for data or ready to send
-    OpenIdle = 1,
-    /// Sent data, waiting for ACK/NACK
-    OpenWait = 2,
-    /// Client only. Waiting for an IACK after trying to connect to a
-    /// remote partner. Only used by Style 3.
-    Connecting = 3,
-}
-
-impl ConnectionState {
-    /// Total number of states (for transition table sizing)
-    pub const COUNT: usize = 4;
-}
+pub use zweidraehte_proto::transport::ConnectionState;
 
 // ============================================================================
 // Connection
@@ -161,6 +137,44 @@ impl Connection {
     /// Get the previous receive sequence number
     pub fn prev_seq_recv(&self) -> u8 {
         self.seq_no_recv.wrapping_sub(1) & 0x0F
+    }
+}
+
+/// Wire this connection slot into the shared transport-layer state machine
+/// (`zweidraehte_proto::transport::process_event`).
+impl ConnectionCore for Connection {
+    fn state(&self) -> ConnectionState {
+        self.state
+    }
+    fn set_state(&mut self, state: ConnectionState) {
+        self.state = state;
+    }
+    fn remote_addr(&self) -> IndividualAddress {
+        self.remote_addr
+    }
+    fn set_remote_addr(&mut self, addr: IndividualAddress) {
+        self.remote_addr = addr;
+    }
+    fn seq_no_send(&self) -> u8 {
+        self.seq_no_send
+    }
+    fn set_seq_no_send(&mut self, seq: u8) {
+        self.seq_no_send = seq;
+    }
+    fn seq_no_recv(&self) -> u8 {
+        self.seq_no_recv
+    }
+    fn set_seq_no_recv(&mut self, seq: u8) {
+        self.seq_no_recv = seq;
+    }
+    fn rep_count(&self) -> u8 {
+        self.rep_count
+    }
+    fn set_rep_count(&mut self, count: u8) {
+        self.rep_count = count;
+    }
+    fn has_queued_incoming(&self) -> bool {
+        self.queued_incoming.is_some()
     }
 }
 
