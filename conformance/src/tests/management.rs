@@ -1338,18 +1338,33 @@ pub fn create_restart_suite() -> TestSuite {
             expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
         ]),
         // ====================================================================
-        // M-2.9.5 Send Master Reset - ResetIA (connectionless)
+        // M-2.9.5 / 2.9.6 — ResetIA and ResetAP on a Data Secure device
+        //
+        // The vendor Management template expects both erase codes to be
+        // performed and answered with error code 00h. That is the *base*
+        // profile's behaviour, and 06 Profiles v02.02.01 has no
+        // erase-code table for the base profiles at all — the only one
+        // is §9.1.2.5.1, which belongs to the KNX Data Security profile
+        // module and marks ResetIA (03h) and ResetAP (04h) `X`: a device
+        // implementing the security module shall not implement them.
+        //
+        // This suite runs against the secure DUT (the runner's default),
+        // so the answer that is correct *here* is 02h
+        // UnsupportedEraseCode. The base-profile behaviour these cases
+        // were transcribed from is covered where it belongs: the EITT
+        // Management template runs against `dut = "plain"` in
+        // conformance/profiles/tp1-systemb.toml.
+        //
+        // Nothing resets, so unlike the template originals these cases
+        // need no address restoration afterwards.
         // ====================================================================
         TestCase::new("M-2.9.5 Send Master Reset - ResetIA (connectionless)").with_steps(vec![
             comment("Testcase 2.9.5 Send Master Reset - ResetIA (connectionless)"),
             // Send ResetIA (erase code 0x03)
             inject("BC #EDI #BDUT 63 03 81 03 00"),
-            expect("BC #BDUT #EDI 64 03 A1 00 ?? ??", 2000),
-            comment("Acceptance: IA shall be reset to medium specific default"),
-            comment("Clean up: Restore BDUT address"),
-            inject_delay("BC #EDI #BDUT_DEFAULT_ADDR 66 03 D7 00 36 10 01 01", 2000),
-            expect("BC #BDUT_DEFAULT_ADDR #EDI 66 03 D6 00 36 10 01 01", 500),
-            inject("BC #EDI 00 00 E3 00 C0 #BDUT"),
+            expect("BC #BDUT #EDI 64 03 A1 02 ?? ??", 2000),
+            comment("Acceptance: erase code refused as unsupported; the IA is untouched"),
+            // The address is unchanged, so the device still answers on it.
             inject_delay("BC #EDI #BDUT 66 03 D7 00 36 10 01 00", 200),
             expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
         ]),
@@ -1363,17 +1378,11 @@ pub fn create_restart_suite() -> TestSuite {
             // Send ResetIA (erase code 0x03)
             inject("B0 #EDI #BDUT 63 43 81 03 00"),
             expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("B0 #BDUT #EDI 64 43 A1 00 ?? ??", 400),
+            expect("B0 #BDUT #EDI 64 43 A1 02 ?? ??", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             // T_Disconnect
             inject_delay("B0 #EDI #BDUT 60 81", 200),
-            comment("Acceptance: IA shall be reset to medium specific default"),
-            comment("Clean up"),
-            inject_delay("BC #EDI #BDUT_DEFAULT_ADDR 66 03 D7 00 36 10 01 01", 2000),
-            expect("BC #BDUT_DEFAULT_ADDR #EDI 66 03 D6 00 36 10 01 01", 500),
-            inject("BC #EDI 00 00 E3 00 C0 #BDUT"),
-            inject_delay("BC #EDI #BDUT 66 03 D7 00 36 10 01 00", 200),
-            expect("BC #BDUT #EDI 66 03 D6 00 36 10 01 00", 500),
+            comment("Acceptance: erase code refused as unsupported; the IA is untouched"),
         ]),
         // ====================================================================
         // M-2.9.6 Send Master Reset - ResetAP (connectionless)
@@ -1382,8 +1391,8 @@ pub fn create_restart_suite() -> TestSuite {
             comment("Testcase 2.9.6 Send Master Reset - ResetAP (connectionless)"),
             // Send ResetAP (erase code 0x04)
             inject("BC #EDI #BDUT 63 03 81 04 00"),
-            expect("BC #BDUT #EDI 64 03 A1 00 ?? ??", 2000),
-            comment("Acceptance: Application Program Memory shall be reset to default"),
+            expect("BC #BDUT #EDI 64 03 A1 02 ?? ??", 2000),
+            comment("Acceptance: erase code refused as unsupported; the application is untouched"),
         ]),
         // ====================================================================
         // M-2.9.6a Send Master Reset - ResetAP (connection oriented)
@@ -1395,11 +1404,11 @@ pub fn create_restart_suite() -> TestSuite {
             // Send ResetAP (erase code 0x04)
             inject("B0 #EDI #BDUT 63 43 81 04 00"),
             expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("B0 #BDUT #EDI 64 43 A1 00 ?? ??", 400),
+            expect("B0 #BDUT #EDI 64 43 A1 02 ?? ??", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             // T_Disconnect
             inject_delay("B0 #EDI #BDUT 60 81", 200),
-            comment("Acceptance: Application Program Memory shall be reset to default"),
+            comment("Acceptance: erase code refused as unsupported; the application is untouched"),
         ]),
         // ====================================================================
         // M-2.9.7 Send Master Reset - ResetParam (connectionless)

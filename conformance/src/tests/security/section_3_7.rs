@@ -452,6 +452,9 @@ fn test_3_7_2_8() -> TestCase {
 //
 // With security + programming mode activated, tests that the DUT:
 // - Ignores basic restart (type=0) when sent plain or auth-only
+// - Returns UnsupportedEraseCode (0x02) for erase codes 0x03 and 0x04,
+//   which 06 Profiles §9.1.2.5.1 forbids a Data Secure device from
+//   implementing at all
 // - Returns UnsupportedEraseCode (0x02) for erase code 0xFE
 // - Returns AccessDenied (0x01) for erase codes 0x01, 0x02, 0x07 when plain or auth-only
 // - Remains in programming mode after all tests
@@ -484,6 +487,39 @@ fn test_3_7_2_9() -> TestCase {
         inject("B0 #EDI #BDUT_ADDR 60 80"),
         inject_secure_ao("BC #EDI #BDUT_ADDR 61 43 80", "TK1"),
         expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        // ============================================================
+        // Master Reset erase=0x03 / 0x04 → UnsupportedEraseCode (0x02)
+        //
+        // 06 Profiles v02.02.01 §9.1.2.5.1 marks ResetIA (03h) and
+        // ResetAP (04h) `X` for every Data Secure profile: a device
+        // implementing the security module shall not implement them at
+        // all, so it reports them unsupported rather than refusing them
+        // on access grounds (which is what 03/04/01 Table 8's policies
+        // would otherwise produce — 3FF/000 for 03h gives AccessDenied,
+        // and 3FF/00C for 04h would let Tool access through).
+        //
+        // The vendor template tests exactly this in its own 3.7.2.9 and
+        // its purpose text still says so, but the telegrams have been
+        // inside an XML comment ("Removed after KonCert meeting
+        // 10-05-2019") ever since, so the EITT run cannot catch it.
+        // This is the replacement coverage.
+        // ============================================================
+        comment("Master Reset erase=03 (ResetIA) -> UnsupportedEraseCode"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject("BC #EDI #BDUT_ADDR 63 43 81 03 00"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect("BC #BDUT_ADDR #EDI 64 43 A1 02 00 00", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
+        inject("B0 #EDI #BDUT_ADDR 60 81"),
+        // Tool access must not buy it either — the code does not exist
+        // on this device, so the answer does not depend on the sender.
+        comment("Master Reset erase=04 (ResetAP) under tool access -> UnsupportedEraseCode"),
+        inject("B0 #EDI #BDUT_ADDR 60 80"),
+        inject_secure_ac("3C 60 #EDI #BDUT_ADDR 03 43 81 04 00", "TK1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        expect_secure_ac("3C 60 #BDUT_ADDR #EDI 04 43 A1 02 00 00", "TK1", TIMEOUT),
+        inject("B0 #EDI #BDUT_ADDR 60 C2"),
         inject("B0 #EDI #BDUT_ADDR 60 81"),
         // ============================================================
         // Master Reset erase=0xFE — plain → UnsupportedEraseCode (0x02)

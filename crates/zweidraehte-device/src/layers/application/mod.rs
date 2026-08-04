@@ -106,6 +106,11 @@ pub struct ApplicationLayer<'a, D: StackDefinition> {
 
     /// Optional APCI extension set for profile-specific handlers.
     extensions: D::AlExtensions,
+
+    /// Whether this device implements the KNX Data Security profile
+    /// module, which forbids two erase codes the base profiles allow —
+    /// see [`Self::with_data_secure`].
+    data_secure: bool,
 }
 
 // ============================================================================
@@ -122,7 +127,27 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
             memory_map: ctx.memory_map(),
             group_data: group_data::GroupDataProvider::new(ctx.state(), ctx.layer_context()),
             extensions: Default::default(),
+            data_secure: false,
         }
+    }
+
+    /// Mark this application layer as belonging to a Data Secure device.
+    ///
+    /// The one behaviour that turns on: 06 Profiles v02.02.01 §9.1.2.5.1
+    /// marks erase codes 03h (ResetIA) and 04h (ResetAP) **X** for every
+    /// Data Secure profile — a device implementing the security module
+    /// shall not implement them at all — while the base profiles put no
+    /// constraint on erase codes. So the same `handle_restart` has to
+    /// answer differently depending on which profile hosts it.
+    ///
+    /// Crate-private and called from exactly one place:
+    /// [`SecureApplicationLayer::new`](crate::layers::secure_application::SecureApplicationLayer::new),
+    /// the only constructor of the wrapper. Neither a device nor a
+    /// future layer-stack composition can forget it, because a device
+    /// is Data Secure precisely when that wrapper is in its stack.
+    pub(crate) fn with_data_secure(mut self) -> Self {
+        self.data_secure = true;
+        self
     }
 
     /// Resolve the effective [`AccessContext`] for a message.
@@ -964,6 +989,20 @@ impl<'a, D: StackDefinition> ApplicationLayer<'a, D> {
 
         if matches!(erase_code, EraseCode::Other(_)) {
             warn!("AL Restart: unsupported erase code {:?}", erase_code);
+            if needs_response {
+                self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0);
+            }
+            return;
+        }
+
+        // 06 Profiles §9.1.2.5.1: ResetIA and ResetAP are `X` for every
+        // Data Secure profile, so a secure device reports them
+        // unsupported rather than refusing them on access grounds. It
+        // has to precede the policy check — 03/04/01 Table 8 gives both
+        // codes a policy, and applying it would answer `AccessDenied`
+        // for a code this device is not allowed to have at all.
+        if self.data_secure && matches!(erase_code, EraseCode::ResetIA | EraseCode::ResetAP) {
+            warn!("AL Restart: erase code {:?} is not implementable on a Data Secure device", erase_code);
             if needs_response {
                 self.send_restart_response(ind, RestartError::UnsupportedEraseCode, 0);
             }

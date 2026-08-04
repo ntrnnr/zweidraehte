@@ -31,7 +31,7 @@ mod forward;
 mod state;
 pub use state::{
     DiagnosticsView, HasAuthorization, HasDiagnosticsContext, HasExtensionState, HasPersistence, HasSecurityMode,
-    ReadObjectError, StackState, UpdateObjectError,
+    HasSecurityState, ReadObjectError, StackState, UpdateObjectError,
 };
 
 pub mod actor;

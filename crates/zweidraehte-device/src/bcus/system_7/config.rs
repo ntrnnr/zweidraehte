@@ -269,4 +269,64 @@ macro_rules! system7_stack_config {
             }
         }
     };
+
+    // ====================================================================
+    // Security-extended arm: base tables + Data Secure configuration
+    // ====================================================================
+    (
+        name: $name:ident,
+        individual_address: $addr:expr,
+
+        group_addresses: {
+            $($tsap:expr => $group_addr:expr),* $(,)?
+        },
+
+        comm_objects: {
+            $($asap:expr => ($size:expr, $flags:expr $(, @priority($prio:ident))?)),* $(,)?
+        },
+
+        associations: {
+            $($assoc_tsap:expr => [$($assoc_asap:expr),* $(,)?]),* $(,)?
+        },
+
+        security: {
+            p2p_key_capacity: $p2p_cap:expr,
+            siat_capacity: $siat_cap:expr,
+            tool_key: $tool_key_hex:expr,
+
+            group_keys: {
+                $($gk_tsap:expr => $gk_hex:expr),* $(,)?
+            },
+
+            go_flags: {
+                $($gf_co:expr => $gf_val:expr),* $(,)?
+            } $(,)?
+        } $(,)?
+    ) => {
+        // Base tables come from the non-security arm above.
+        $crate::system7_stack_config! {
+            name: $name,
+            individual_address: $addr,
+            group_addresses: { $($tsap => $group_addr),* },
+            comm_objects: { $($asap => ($size, $flags $(, @priority($prio))?)),* },
+            associations: { $($assoc_tsap => [$($assoc_asap),*]),* },
+        }
+
+        // Data Secure is a profile module (06 Profiles v02.02.01 §9.1),
+        // so the constants and `create_security_config()` come from the
+        // same macro System B uses. The one family-specific input is the
+        // ASAP base: System 7 numbers communication objects from 0
+        // (`StackDefinition::FIRST_ASAP`), and the GO security flags
+        // table is positional, so the `go_flags` keys are 0-based here
+        // where System B's are 1-based.
+        $crate::secure_stack_config! {
+            name: $name,
+            first_asap: 0,
+            p2p_key_capacity: $p2p_cap,
+            siat_capacity: $siat_cap,
+            tool_key: $tool_key_hex,
+            group_keys: { $($gk_tsap => $gk_hex),* },
+            go_flags: { $($gf_co => $gf_val),* },
+        }
+    };
 }

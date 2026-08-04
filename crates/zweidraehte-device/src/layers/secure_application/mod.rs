@@ -151,9 +151,18 @@ pub struct SecureApplicationLayer<
 impl<'a, D: StackDefinition, SEQ: SequenceNumberStorage + SiatAccess, P2P: P2pFeature>
     SecureApplicationLayer<'a, D, SEQ, P2P>
 {
+    /// Wrap a plain application layer in KNX Data Security.
+    ///
+    /// The inner layer is marked Data Secure here rather than by the
+    /// caller. A device implements the security profile module exactly
+    /// when its application layer is wrapped in this one, and this is
+    /// the only constructor, so the two cannot disagree — there is no
+    /// way to build a `SecureApplicationLayer` over an unmarked inner
+    /// layer, and no way to mark one without wrapping it
+    /// (`with_data_secure` is crate-private).
     pub fn new(inner: ApplicationLayer<'a, D>, seq_storage: &'a RefCell<SEQ>) -> Self {
         Self {
-            inner,
+            inner: inner.with_data_secure(),
             seq_storage,
             p2p_state: P2P::State::default(),
             last_sync_response: Cell::new(None),

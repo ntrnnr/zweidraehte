@@ -120,6 +120,44 @@ where
     super::extensions::Tp1ExtensionState,
 >;
 
+/// System 7 state with KNX Data Secure, wrapping the medium extension
+/// `Inner`.
+///
+/// The System 7 twin of
+/// [`SecureStateFor`](crate::bcus::system_b::SecureStateFor), and the
+/// single place the Data Secure table-capacity invariant is stated for
+/// this family: `GRP = ADT_ENTRIES` — one group key slot per address
+/// table entry — and `GO = COT_ENTRIES` — one security-flag byte per
+/// communication object, the positional table of 03/05/01 §6.3.15.
+///
+/// `P2P` sizes the Point-to-point Key Table, which is `C` rather than
+/// `M` (06 Profiles v02.02.01 §9.1.2.6.4 footnote c: only mandatory when
+/// P2P communication uses a key other than the Tool Key or FDSK), so a
+/// group-only device passes 0. The Security Individual Address Table is
+/// not a parameter here at all — its capacity is the `N` of the
+/// [`SiatStore`](crate::storage::views::SiatStore) behind the device's
+/// sequence store.
+pub type SecureStateFor7<D, Inner, const P2P: usize>
+where
+    D: System7StackDefinition,
+    Inner: crate::extension::ExtensionState,
+= super::System7DeviceState<
+    { <D as System7StackDefinition>::ADT_SIZE },
+    { <D as System7StackDefinition>::AST_SIZE },
+    { <D as System7StackDefinition>::COT_SIZE },
+    D,
+    crate::security::SecureExtensionState<
+        Inner,
+        { <D as System7StackDefinition>::ADT_ENTRIES },
+        P2P,
+        { <D as System7StackDefinition>::COT_ENTRIES },
+    >,
+>;
+
+/// TP1 System 7 state with KNX Data Secure — the secure twin of
+/// [`Tp1StateFor7`].
+pub type SecureTp1StateFor7<D, const P2P: usize> = SecureStateFor7<D, super::extensions::Tp1ExtensionState, P2P>;
+
 // ============================================================================
 // system_7_standard_stack! — collapse the always-identical StackDefinition shell
 // ============================================================================

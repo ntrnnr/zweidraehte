@@ -668,3 +668,93 @@ mod go_table_object {
         assert_eq!(d.for_levels(16).read_level, 15);
     }
 }
+
+// ============================================================================
+// The `security:` arm of `system7_stack_config!`
+// ============================================================================
+
+/// The Group Object security flags table is *positional*: element n
+/// carries the flags of the group object in table slot n (03/05/01
+/// §6.3.15). The `go_flags` keys are written in the family's own ASAP
+/// numbering, and the two families do not agree on where that starts —
+/// System B numbers communication objects from 1, System 7 pins
+/// `StackDefinition::FIRST_ASAP = 0` for the M112 table. Subtract the
+/// wrong base and every object is secured as its neighbour's, which no
+/// type checks and which a running device reports as working.
+mod security_config {
+    use zweidraehte_device::config::{CE, TE, WE};
+
+    zweidraehte_device::system7_stack_config! {
+        name: SecureConfig,
+        individual_address: "1.0.5",
+        group_addresses: {
+            1 => "0/0/1",
+            2 => "0/0/2",
+        },
+        comm_objects: {
+            // ASAP 0 is a real, addressable object on System 7.
+            0 => (1, CE | TE),
+            1 => (1, CE | WE),
+            2 => (1, CE | WE),
+        },
+        associations: {
+            1 => [0],
+            2 => [1],
+        },
+        security: {
+            p2p_key_capacity: 0,
+            siat_capacity: 4,
+            tool_key: "000102030405060708090A0B0C0D0E0F",
+            group_keys: {
+                1 => "101112131415161718191A1B1C1D1E1F",
+            },
+            // Secure the first and the last object, leave the middle one
+            // plain — an asymmetric pattern, so an off-by-one shows up.
+            go_flags: {
+                0 => 0x01,
+                2 => 0x01,
+            },
+        },
+    }
+
+    #[test]
+    fn go_flags_land_on_their_own_object() {
+        let config = SecureConfig::create_security_config();
+        let flags = |slot: u16| *config.go_flags.get(slot).expect("one entry per communication object");
+
+        assert_eq!(flags(0), [0x01], "ASAP 0 is secured");
+        assert_eq!(flags(1), [0x00], "ASAP 1 is plain");
+        assert_eq!(flags(2), [0x01], "ASAP 2 is secured");
+    }
+
+    /// The table is sized to the object count and fully populated, so
+    /// every group object has an entry — a missing one would read as
+    /// "plain" rather than as an error.
+    #[test]
+    fn every_communication_object_has_an_entry() {
+        let config = SecureConfig::create_security_config();
+        assert_eq!(config.go_flags.count(), SecureConfig::NUM_COMM_OBJECTS as u16);
+    }
+
+    #[test]
+    fn the_group_key_and_tool_key_survive_the_macro() {
+        let config = SecureConfig::create_security_config();
+        assert_eq!(config.tool_key, [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F
+        ]);
+        assert_eq!(config.grp_keys.count(), 1);
+        let entry = config.grp_keys.get(0).expect("one group key");
+        assert_eq!(&entry[..2], &1u16.to_be_bytes(), "keyed by TSAP");
+        assert_eq!(&entry[2..], &[
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F
+        ]);
+    }
+
+    /// Security Mode is off in a boot image; ETS turns it on during
+    /// commissioning (06 Profiles §9.1.2.7 makes "enabled ex-factory"
+    /// optional, and our devices do not).
+    #[test]
+    fn security_mode_is_off_in_the_boot_image() {
+        assert!(!SecureConfig::create_security_config().security_mode_enabled);
+    }
+}
