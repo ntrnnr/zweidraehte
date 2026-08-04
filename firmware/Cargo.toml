@@ -12,6 +12,7 @@ members = [
     "stm32/g0_tp1_light_switch",
     "stm32/g0_tp1_secure_light_switch",
     "stm32/g0_tp1_system7_light_switch",
+    "stm32/g0_tp1_system7_secure_light_switch",
     "stm32/g0_knxrf_device",
     "stm32/g0_knxrf_secure_light_switch",
     "stm32/g0_knxrf_secure_retransmitter",

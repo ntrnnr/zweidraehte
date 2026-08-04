@@ -1,10 +1,12 @@
 //! Generate MTXML / knxprod / knxproj from the light switch device definition.
 //!
 //! Produces a multi-device package containing KNX/IP, TP1 (TPUART),
-//! TP1 Data Secure, KNX-RF, and KNX-RF Data Secure variants of the same
-//! light switch. All share the same application logic, parameters, and
-//! page layout — they differ only in mask version (medium type) and
-//! whether Data Secure is declared.
+//! TP1 Data Secure, TP1 System 7 (plain and Data Secure), KNX-RF, and
+//! KNX-RF Data Secure variants of the same light switch. All share the
+//! same application logic, parameters, and page layout — they differ
+//! only in mask version (medium type), download model (System B
+//! relative vs. System 7 absolute segments), and whether Data Secure is
+//! declared.
 //!
 //! Usage:
 //!   cargo run --bin gen_light_switch_mtxml              # MTXML only
@@ -18,8 +20,9 @@ use const_default::ConstDefault;
 
 use devices::light_switch::{
     DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_IP_SECURE, DEVICE_DESCRIPTOR_RF, DEVICE_DESCRIPTOR_RF_SECURE,
-    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_SECURE, DEVICE_DESCRIPTOR_TP1_SYSTEM7, LightSwitchDevice,
-    LightSwitchParams, comm_objs, params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
+    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_SECURE, DEVICE_DESCRIPTOR_TP1_SYSTEM7,
+    DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE, LightSwitchDevice, LightSwitchParams, comm_objs,
+    params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
 };
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
@@ -69,6 +72,11 @@ const SERIAL_NUMBER_IP_SECURE: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_IP_SEC
 /// with `LdCtrlCompareProp` before programming — the download
 /// hard-fails if the firmware reports anything else.
 const SERIAL_NUMBER_TP1_S7: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_TP1_SYSTEM7;
+
+/// Hardware serial for the Data Secure System 7 TP1 variant. Verified
+/// by the same `LdCtrlCompareProp` on PID 78 as the plain System 7
+/// variant.
+const SERIAL_NUMBER_TP1_S7_SECURE: [u8; 6] = LightSwitchDevice::HARDWARE_TYPE_TP1_SYSTEM7_SECURE;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
@@ -392,6 +400,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serial_number: SERIAL_NUMBER_TP1_S7,
     };
 
+    // The Data Secure System 7 sibling shares the segment map — the
+    // security profile module adds interface objects and services, not
+    // memory (06 Profiles v02.02.01 §9.1) — but the load procedure must
+    // verify the *secure* hardware, so only the compared serial differs.
+    let system7_secure_layout =
+        System7MemoryLayout { serial_number: SERIAL_NUMBER_TP1_S7_SECURE, ..system7_layout.clone() };
+
     let app_tp1_system7 = ApplicationProgramDef {
         name: "LightSwitch2TPS7",
         device: &DEVICE_DESCRIPTOR_TP1_SYSTEM7,
@@ -423,9 +438,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_p2p_key_table_entries: None,
     };
 
-    // Build a multi-device package: seven application programs, seven
+    // Data Secure System 7 variant: the ProductProcedure download model
+    // of `app_tp1_system7` with the security declaration of
+    // `app_tp1_secure` — same mask (0705h), same absolute segments, and
+    // the secure table capacities the firmware holds (see the SIAT
+    // rationale on `app_tp1_secure`).
+    let app_tp1_system7_secure = ApplicationProgramDef {
+        name: "LightSwitch2TPS7Secure",
+        device: &DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE,
+        params: LightSwitchParams::ETS_PARAMS_EXT,
+        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
+        param_defaults: param_bytes,
+        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
+        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+        union_fields: Some(LightSwitchParams::ETS_UNIONS),
+        channel_name: "General",
+        absolute_segment_address: None,
+        system7_layout: Some(system7_secure_layout),
+        application_hash: None,
+        non_reg_relevant_data_version: None,
+        replaces_versions: None,
+        application_data_hash: None,
+        page_layout: Some(LightSwitchDevice::page_layout()),
+        modules: None,
+        baggages: None,
+        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
+        is_secure_enabled: Some(true),
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
+        max_security_individual_address_entries: Some(32),
+        max_security_group_key_table_entries: Some(10),
+        max_security_p2p_key_table_entries: Some(0),
+    };
+
+    // Build a multi-device package: eight application programs, nine
     // hardware definitions (IP, IP-Secure, TP1, TP1-Secure, TP1-System7,
-    // RF, RF-Secure), and a single catalog section with all of them.
+    // TP1-System7-Secure, RF, RF-Secure, RF-Secure-Retransmitter), and a
+    // single catalog section with all of them.
     let mut builder = KnxprodBuilder::new(LightSwitchDevice::MANUFACTURER_ID);
     let app_ip_ref = builder.application_program(&app_ip);
     let app_ip_secure_ref = builder.application_program(&app_ip_secure);
@@ -434,6 +486,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_rf_ref = builder.application_program(&app_rf);
     let app_rf_secure_ref = builder.application_program(&app_rf_secure);
     let app_tp1_system7_ref = builder.application_program(&app_tp1_system7);
+    let app_tp1_system7_secure_ref = builder.application_program(&app_tp1_system7_secure);
 
     let hw_ip_ref = builder.hardware(HardwareDef {
         serial_number: SERIAL_NUMBER_IP,
@@ -525,6 +578,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             visible_description: None,
         }],
         application_programs: vec![app_tp1_system7_ref],
+    });
+
+    // Secure System 7 hardware: same TP1 characteristics as
+    // `hw_tp1_system7_ref`, linked to the secure-enabled System 7
+    // application program.
+    let hw_tp1_system7_secure_ref = builder.hardware(HardwareDef {
+        serial_number: SERIAL_NUMBER_TP1_S7_SECURE,
+        hardware_version: 1,
+        name: "2-Button Light Switch TP1 System 7 Secure",
+        bus_current: Some(10),
+        is_ip_enabled: None,
+        is_rf_retransmitter: None,
+        rf_rx_capabilities: None,
+        rf_tx_capabilities: None,
+        products: vec![ProductDef {
+            name: "Light Switch 2-fold (TP1, System 7, Secure)",
+            order_number: "LS-0002-TP-S7-SEC",
+            is_rail_mounted: false,
+            visible_description: None,
+        }],
+        application_programs: vec![app_tp1_system7_secure_ref],
     });
 
     // The RF light switch is a battery/bus-less end device: not a
@@ -626,6 +700,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 application_program: app_tp1_system7_ref,
             },
             CatalogEntryDef {
+                name: "Light Switch 2-fold (TP1, System 7, Secure)",
+                hardware: hw_tp1_system7_secure_ref,
+                product_order_number: "LS-0002-TP-S7-SEC",
+                application_program: app_tp1_system7_secure_ref,
+            },
+            CatalogEntryDef {
                 name: "Light Switch 2-fold (RF)",
                 hardware: hw_rf_ref,
                 product_order_number: "LS-0002-RF",
@@ -682,6 +762,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardware: hw_tp1_system7_ref,
             product_order_number: "LS-0002-TP-S7",
             application_program: app_tp1_system7_ref,
+        });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch TP1 System 7 Secure",
+            hardware: hw_tp1_system7_secure_ref,
+            product_order_number: "LS-0002-TP-S7-SEC",
+            application_program: app_tp1_system7_secure_ref,
         });
         builder.device_instance(DeviceInstanceDef {
             name: "2-Button Light Switch RF",

@@ -91,6 +91,9 @@ impl LightSwitchDevice {
     /// Hardware type / knxprod hardware serial for the System 7 TP1
     /// variant. This is the one the download actually verifies today.
     pub const HARDWARE_TYPE_TP1_SYSTEM7: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0A];
+    /// Hardware type / knxprod hardware serial for the Data Secure
+    /// System 7 TP1 variant.
+    pub const HARDWARE_TYPE_TP1_SYSTEM7_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0B];
     /// Application ID for the KNX/IP variant.
     pub const APPLICATION_ID_IP: u16 = 0x0300;
     /// Application ID for the TP1 variant. Distinct from the IP variant so
@@ -123,6 +126,13 @@ impl LightSwitchDevice {
     /// programs it through the `ProductProcedure` load procedures with
     /// absolute memory segments instead of System B's relative model.
     pub const APPLICATION_ID_TP1_SYSTEM7: u16 = 0x0306;
+    /// Application ID for the Data Secure System 7 TP1 variant. Same
+    /// mask as the plain System 7 variant (`System7Tp1` / 0x0705) —
+    /// KNX Data Security is a *profile module* (06 Profiles v02.02.01
+    /// §9.1) composed onto a base profile, never a mask of its own —
+    /// but a different application ID so both coexist in one catalogue,
+    /// exactly as the System B pair does.
+    pub const APPLICATION_ID_TP1_SYSTEM7_SECURE: u16 = 0x0307;
     pub const APPLICATION_VERSION: u8 = 0x02;
     pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
     pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
@@ -229,6 +239,21 @@ impl LightSwitchDevice {
     pub const fn device_descriptor_system7_tp1() -> DeviceDescriptor {
         Self::descriptor_for(MaskVersion::System7Tp1, Self::APPLICATION_ID_TP1_SYSTEM7, Self::HARDWARE_TYPE_TP1_SYSTEM7)
     }
+
+    /// Descriptor for the Data Secure System 7 TP1 variant.
+    ///
+    /// The System 7 download model of
+    /// [`device_descriptor_system7_tp1`](Self::device_descriptor_system7_tp1)
+    /// with KNX Data Security composed on: the mask is unchanged,
+    /// because the security profile module adds interface objects and
+    /// services rather than a BCU family.
+    pub const fn device_descriptor_system7_secure_tp1() -> DeviceDescriptor {
+        Self::descriptor_for(
+            MaskVersion::System7Tp1,
+            Self::APPLICATION_ID_TP1_SYSTEM7_SECURE,
+            Self::HARDWARE_TYPE_TP1_SYSTEM7_SECURE,
+        )
+    }
 }
 
 /// Device descriptor for KNX/IP (mask version 57B0).
@@ -269,3 +294,9 @@ pub const DEVICE_DESCRIPTOR_IP_SECURE: DeviceDescriptor = LightSwitchDevice::dev
 /// also drives the family's `ProductProcedure` generator path in
 /// `gen_light_switch_mtxml`.
 pub const DEVICE_DESCRIPTOR_TP1_SYSTEM7: DeviceDescriptor = LightSwitchDevice::device_descriptor_system7_tp1();
+
+/// Device descriptor for the Data Secure System 7 TP1 variant (mask
+/// version 0705, application ID 0x0307). Pairs with the
+/// `stm32g0_tp1_system7_secure_light_switch` firmware.
+pub const DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE: DeviceDescriptor =
+    LightSwitchDevice::device_descriptor_system7_secure_tp1();
