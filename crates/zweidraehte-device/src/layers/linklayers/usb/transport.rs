@@ -208,20 +208,18 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         let len = BusAccessFrameBuilder::set_active_emi_type(emi_id, self.transfer_buf)
             .map_err(|_| UsbHidError::WriteError("Failed to build request".into()))?;
 
-        let response = self.send_bus_access_request(&self.transfer_buf[..len].to_vec()).await?;
+        // Device Feature Set is unconfirmed by design — 09/03 Couplers
+        // v01.04.03 §3.5.3.2.1: "only the Device Feature Get service is
+        // confirmed by a Device Feature Response service. The Device Feature
+        // Set- and the Device Feature Info services shall not be answered by
+        // the receiver." So send the Set without expecting anything back and
+        // verify through a fresh Get.
+        self.send_bus_access_frame(&self.transfer_buf[..len].to_vec()).await?;
 
-        // Per spec, a successful Set gets a Response with the same feature ID echoed back
-        let response = BusAccessResponse::parse(&response).map_err(|_| UsbHidError::InvalidReport)?;
-
-        // Verify the response contains the ActiveEmiType feature and matches what we set
-        if let Some(active) = response.get_active_emi_type() {
-            if active == emi_id {
-                Ok(())
-            } else {
-                Err(UsbHidError::WriteError("Set EMI type returned wrong value".into()))
-            }
+        if self.get_active_emi_type().await? == emi_id {
+            Ok(())
         } else {
-            Err(UsbHidError::WriteError("Set EMI type failed".into()))
+            Err(UsbHidError::WriteError("Set EMI type not applied".into()))
         }
     }
 
@@ -237,13 +235,19 @@ impl<'a, D: UsbHidDevice> UsbCemiTransport<'a, D> {
         response.get_bus_connection_status().ok_or(UsbHidError::InvalidReport)
     }
 
-    /// Send a Bus Access Server request and wait for response
-    async fn send_bus_access_request(&mut self, request: &[u8]) -> Result<Vec<u8>, UsbHidError> {
-        // Fragment and send
+    /// Send a Bus Access Server frame without awaiting a response
+    /// (for the unconfirmed Set services)
+    async fn send_bus_access_frame(&mut self, request: &[u8]) -> Result<(), UsbHidError> {
         for report in fragment_frame(request) {
             *self.tx_report = report;
             self.device.write_report(self.tx_report).await?;
         }
+        Ok(())
+    }
+
+    /// Send a Bus Access Server request and wait for response
+    async fn send_bus_access_request(&mut self, request: &[u8]) -> Result<Vec<u8>, UsbHidError> {
+        self.send_bus_access_frame(request).await?;
 
         // Wait for response with timeout
         let deadline = Instant::now() + BUS_ACCESS_TIMEOUT;
