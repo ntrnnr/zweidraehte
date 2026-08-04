@@ -11,11 +11,14 @@
 //!         --property 52 \
 //!         --data 01020304
 //!
-//! The `--data` argument is hex-encoded service data (optional, defaults to empty).
+//! `--usb [vid:pid]` connects through a KNX USB interface instead of
+//! `--server`. The `--data` argument is hex-encoded service data
+//! (optional, defaults to empty).
 
-use std::net::SocketAddrV4;
+mod common;
 
-use zweidraehte_client::{IndividualAddress, KnxBus};
+use common::BusTarget;
+use zweidraehte_client::IndividualAddress;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,12 +28,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = parse_args(&args)?;
 
     // ========================================================================
-    // Connect to the KNX/IP interface
+    // Connect to the bus
     // ========================================================================
 
-    println!("Connecting to KNX/IP interface at {}...", config.server_addr);
-
-    let bus = KnxBus::connect_ip(config.server_addr).await?;
+    let bus = config.target.connect().await?;
 
     println!("Connected. Assigned address: {}", bus.assigned_address());
 
@@ -80,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 // ============================================================================
 
 struct Config {
-    server_addr: SocketAddrV4,
+    target: BusTarget,
     device_addr: IndividualAddress,
     object_idx: u8,
     property_id: u16,
@@ -88,7 +89,7 @@ struct Config {
 }
 
 fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
-    let mut server_addr: Option<SocketAddrV4> = None;
+    let mut target: Option<BusTarget> = None;
     let mut device_addr: Option<IndividualAddress> = None;
     let mut object_idx: Option<u8> = None;
     let mut property_id: Option<u16> = None;
@@ -99,7 +100,10 @@ fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
         match args[i].as_str() {
             "--server" | "-s" => {
                 i += 1;
-                server_addr = Some(args[i].parse()?);
+                target = Some(BusTarget::Ip(args[i].parse()?));
+            }
+            "--usb" => {
+                target = Some(common::parse_usb_arg(args, &mut i)?);
             }
             "--device" | "-d" => {
                 i += 1;
@@ -131,7 +135,7 @@ fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
     }
 
     Ok(Config {
-        server_addr: server_addr.ok_or("--server is required")?,
+        target: target.ok_or("--server or --usb is required")?,
         device_addr: device_addr.ok_or("--device is required")?,
         object_idx: object_idx.ok_or("--object is required")?,
         property_id: property_id.ok_or("--property is required")?,
@@ -141,11 +145,11 @@ fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
 
 fn print_usage() {
     eprintln!(
-        "Usage: function_property --server <ip:port> --device <a.l.d> --object <idx> --property <id> [--data <hex>]"
+        "Usage: function_property (--server <ip:port> | --usb [vid:pid]) --device <a.l.d> --object <idx> --property <id> [--data <hex>]"
     );
     eprintln!();
     eprintln!("Options:");
-    eprintln!("  --server, -s   KNX/IP interface address (e.g. 192.168.1.100:3671)");
+    eprintln!("{}", common::TARGET_USAGE);
     eprintln!("  --device, -d   Target device individual address (e.g. 1.1.1)");
     eprintln!("  --object, -o   Interface object index (0-255)");
     eprintln!("  --property, -p Property ID (0-255)");

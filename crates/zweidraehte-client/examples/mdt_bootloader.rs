@@ -8,6 +8,9 @@
 //!     cargo run -p zweidraehte-client --example mdt_bootloader -- \
 //!         --server 192.168.1.100:3671 --device 1.0.101 <command>
 //!
+//! `--usb [vid:pid]` connects through a KNX USB interface instead of
+//! `--server`.
+//!
 //! Commands:
 //!     state       Read current bootloader state
 //!     bsl-info    Read BSL info structure
@@ -17,8 +20,9 @@
 //!     switch-bt   Switch device to bootloader mode
 //!     switch-app  Switch device to application mode
 
-use std::net::SocketAddrV4;
+mod common;
 
+use common::BusTarget;
 use zweidraehte_client::{IndividualAddress, KnxBus};
 
 // ============================================================================
@@ -372,13 +376,13 @@ fn print_hex_dump(label: &str, data: &[u8]) {
 // ============================================================================
 
 struct Config {
-    server_addr: SocketAddrV4,
+    target: BusTarget,
     device_addr: IndividualAddress,
     command: String,
 }
 
 fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
-    let mut server_addr: Option<SocketAddrV4> = None;
+    let mut target: Option<BusTarget> = None;
     let mut device_addr: Option<IndividualAddress> = None;
     let mut command: Option<String> = None;
 
@@ -387,7 +391,10 @@ fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
         match args[i].as_str() {
             "--server" | "-s" => {
                 i += 1;
-                server_addr = Some(args.get(i).ok_or("--server requires a value")?.parse()?);
+                target = Some(BusTarget::Ip(args.get(i).ok_or("--server requires a value")?.parse()?));
+            }
+            "--usb" => {
+                target = Some(common::parse_usb_arg(args, &mut i)?);
             }
             "--device" | "-d" => {
                 i += 1;
@@ -410,14 +417,17 @@ fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
     }
 
     Ok(Config {
-        server_addr: server_addr.ok_or("--server is required")?,
+        target: target.ok_or("--server or --usb is required")?,
         device_addr: device_addr.ok_or("--device is required")?,
         command: command.ok_or("command is required")?,
     })
 }
 
 fn print_usage() {
-    eprintln!("Usage: mdt_bootloader --server <ip:port> --device <a.l.d> <command>");
+    eprintln!("Usage: mdt_bootloader (--server <ip:port> | --usb [vid:pid]) --device <a.l.d> <command>");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("{}", common::TARGET_USAGE);
     eprintln!();
     eprintln!("Commands:");
     eprintln!("  state       Read current bootloader state");
@@ -451,10 +461,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let config = parse_args(&args)?;
 
-    // Connect to the KNX/IP interface.
-    println!("Connecting to {}...", config.server_addr);
-    let bus = KnxBus::connect_ip(config.server_addr).await?;
-    println!("Connected. Assigned address: {}, tunnel max APDU: {}", bus.assigned_address(), bus.max_apdu());
+    // Connect to the bus.
+    let bus = config.target.connect().await?;
+    println!("Connected. Assigned address: {}, interface max APDU: {}", bus.assigned_address(), bus.max_apdu());
 
     // Dispatch the requested command.
     let result = run_command(&bus, config.device_addr, &config.command).await;
