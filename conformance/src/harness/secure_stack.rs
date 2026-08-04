@@ -89,7 +89,7 @@ pub const SECURE_FDSK: [u8; 16] = [0x11; 16];
 /// shared-memory key-value backend. `K = 0` persists the sending counter at its
 /// exact value (no skip-ahead) so the value read back via PID 59 across
 /// power-down / reset matches what the conformance suite asserts.
-type ShmSiatStore = SiatStore<ShmSeqStorage, { sec_table_sizes::SIAT }, 0>;
+pub type ShmSiatStore = SiatStore<ShmSeqStorage, { sec_table_sizes::SIAT }, 0>;
 
 type SecureInnerState = SecureTp1DeviceState<
     { table_sizes::ADT },
@@ -610,6 +610,11 @@ const CERT_PID51_POLICY: AccessPolicy = AccessPolicy::new(0x3FF, 0x0FF);
 /// | none | —                 | no   | no    |
 /// | Tool | A or A+C          | yes  | yes   |
 ///
+/// The access levels are written as audiences (03/04/01 §4.3.2.2
+/// Table 1) rather than numbers: this augment is composed onto both
+/// secure DUTs, and a literal `3` would be a *privileged* level on the
+/// 16-level System 7 device rather than "free".
+///
 /// PID 1 (OBJECT_TYPE) is auto-emitted by the macro from the
 /// `additional_objects` entry. PID 51 is marked `manual` because the
 /// per-request access check needs `req.ctx`, which the macro's standard
@@ -625,7 +630,7 @@ pub struct CertificationObjectAugment {
         pdt = zweidraehte_proto::dpt::PDT_UnsignedInt,
         access = RO,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
-        rl = 3, wl = 0,
+        rl = Runtime, wl = SystemManufacturer,
         read = |_this: &Self| -> [u8; 2] { 0xC351u16.to_be_bytes() },
     )]
     _object_type_io: (),
@@ -637,7 +642,7 @@ pub struct CertificationObjectAugment {
         pdt = zweidraehte_proto::dpt::PDT_UnsignedChar,
         access = RW,
         policy = CERT_PID51_POLICY,
-        rl = 3, wl = 3,
+        rl = Runtime, wl = Runtime,
         manual,
     )]
     _roles_io: (),
@@ -661,7 +666,7 @@ pub struct CertificationObjectAugment {
         pdt = zweidraehte_proto::dpt::PDT_Generic02,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF/0CC
-        rl = 0, wl = 0,
+        rl = SystemManufacturer, wl = SystemManufacturer,
         manual,
     )]
     _generic02_io: (),
@@ -672,7 +677,7 @@ pub struct CertificationObjectAugment {
         pdt = zweidraehte_proto::dpt::PDT_Generic01,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = 3, wl = 3,
+        rl = Runtime, wl = Runtime,
         manual,
     )]
     _ranged_io: (),
@@ -685,7 +690,7 @@ pub struct CertificationObjectAugment {
         pdt = zweidraehte_proto::dpt::PDT_Function,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = 3, wl = 3,
+        rl = Runtime, wl = Runtime,
         manual,
     )]
     _function_io: (),
@@ -696,7 +701,7 @@ pub struct CertificationObjectAugment {
         pdt = zweidraehte_proto::dpt::PDT_Generic01,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = 3, wl = 3,
+        rl = Runtime, wl = Runtime,
         array(max = CERT_LONG_ARRAY_LEN as u16),
         manual,
     )]

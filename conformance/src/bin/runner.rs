@@ -152,6 +152,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         tests::security::section_6::create_section_6_2_suite(),
         tests::security::section_3_2::create_section_3_2_suite(),
         tests::system7_smoke::create_system7_smoke_suite(),
+        tests::system7_secure_smoke::create_system7_secure_smoke_suite(),
     ];
 
     let has_test_case_filter =
@@ -170,21 +171,40 @@ async fn main(_spawner: embassy_executor::Spawner) {
             .collect()
     };
 
-    // The System 7 suites need their own DUT binary. When every retained
-    // suite is a System 7 suite (e.g. filter "system 7"), switch the run
-    // to the System 7 DUT; otherwise drop them from this run.
-    let dut_mode = if !suites.is_empty() && suites.iter().all(|s| s.use_system7_dut) {
-        DutMode::System7
+    // The System 7 suites need their own DUT binaries, and a run drives
+    // exactly one binary. Resolution order: a pure System 7 *secure*
+    // selection runs that DUT; otherwise the secure suite is dropped
+    // first — so the filter "system 7", which matches both smoke
+    // suites by name, still runs the plain System 7 ones — and a
+    // then-pure System 7 selection runs the plain System 7 DUT.
+    // Anything mixed beyond that falls back to the System B DUTs with
+    // the System 7 suites dropped.
+    let dut_mode = if !suites.is_empty() && suites.iter().all(|s| s.use_system7_secure_dut) {
+        DutMode::System7Secure
     } else {
         let before = suites.len();
-        suites.retain(|s| !s.use_system7_dut);
-        let skipped = before - suites.len();
-        if skipped > 0 && filters.is_empty() {
-            println!("ℹ️  {} System 7 suite(s) run separately: conformance-runner \"System 7\"", skipped);
-        } else if skipped > 0 {
-            println!("⚠️  Skipped {} System 7 suite(s) — mixed-DUT runs are not supported", skipped);
+        suites.retain(|s| !s.use_system7_secure_dut);
+        let skipped_secure = before - suites.len();
+        if skipped_secure > 0 && !filters.is_empty() {
+            println!("⚠️  Skipped {} System 7 secure suite(s): conformance-runner \"S7S\"", skipped_secure);
         }
-        dut_mode
+
+        if !suites.is_empty() && suites.iter().all(|s| s.use_system7_dut) {
+            DutMode::System7
+        } else {
+            let before = suites.len();
+            suites.retain(|s| !s.use_system7_dut);
+            let skipped = before - suites.len();
+            if (skipped > 0 || skipped_secure > 0) && filters.is_empty() {
+                println!(
+                    "ℹ️  {} System 7 suite(s) run separately: conformance-runner \"System 7\" / \"S7S\"",
+                    skipped + skipped_secure
+                );
+            } else if skipped > 0 {
+                println!("⚠️  Skipped {} System 7 suite(s) — mixed-DUT runs are not supported", skipped);
+            }
+            dut_mode
+        }
     };
 
     if dut_mode == DutMode::Plain {

@@ -741,6 +741,9 @@ pub struct TestSuite {
     pub use_secure_dut: bool,
     /// Whether this suite requires the System 7 DUT (`conformance-dut-system7`).
     pub use_system7_dut: bool,
+    /// Whether this suite requires the System 7 secure DUT
+    /// (`conformance-dut-system7-secure`).
+    pub use_system7_secure_dut: bool,
 }
 
 impl TestSuite {
@@ -753,6 +756,7 @@ impl TestSuite {
             teardown: Vec::new(),
             use_secure_dut: false,
             use_system7_dut: false,
+            use_system7_secure_dut: false,
         }
     }
 
@@ -779,6 +783,16 @@ impl TestSuite {
     /// Run this suite against the System 7 DUT.
     pub fn system7(mut self) -> Self {
         self.use_system7_dut = true;
+        self
+    }
+
+    /// Run this suite against the System 7 **secure** DUT. Also marks
+    /// the suite secure: the engine's security context (keys, sequence
+    /// numbers) exists for `use_secure_dut` suites, and every secure
+    /// step needs it regardless of which secure binary answers.
+    pub fn system7_secure(mut self) -> Self {
+        self.use_system7_secure_dut = true;
+        self.use_secure_dut = true;
         self
     }
 }

@@ -262,6 +262,10 @@ pub enum Dut {
     Secure,
     /// `conformance-dut-system7` — System 7 family (mask 0705h).
     System7,
+    /// `conformance-dut-system7-secure` — System 7 family with Data
+    /// Secure. Spelled `system7-secure` in profile TOML.
+    #[serde(rename = "system7-secure")]
+    System7Secure,
 }
 
 impl From<Dut> for DutMode {
@@ -270,6 +274,7 @@ impl From<Dut> for DutMode {
             Dut::Plain => DutMode::Plain,
             Dut::Secure => DutMode::Secure,
             Dut::System7 => DutMode::System7,
+            Dut::System7Secure => DutMode::System7Secure,
         }
     }
 }

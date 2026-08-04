@@ -61,6 +61,9 @@ pub enum DutMode {
     Secure,
     /// `conformance-dut-system7` — System 7 family (mask 0705h).
     System7,
+    /// `conformance-dut-system7-secure` — System 7 family with Data
+    /// Secure.
+    System7Secure,
 }
 
 impl DutMode {
@@ -69,6 +72,7 @@ impl DutMode {
             Self::Plain => "conformance-dut",
             Self::Secure => "conformance-dut-secure",
             Self::System7 => "conformance-dut-system7",
+            Self::System7Secure => "conformance-dut-system7-secure",
         }
     }
 }
@@ -140,6 +144,7 @@ impl ChildLifecycle {
             DutMode::Plain => shm.write_state(&ConformanceDeviceConfig::default_snapshot())?,
             DutMode::Secure => shm.write_state(&SecureConformanceDeviceConfig::default_snapshot())?,
             DutMode::System7 => shm.write_state(&crate::harness::system7_stack::default_snapshot())?,
+            DutMode::System7Secure => shm.write_state(&crate::harness::system7_secure_stack::default_snapshot())?,
         }
         Ok(Self { shm, state: LifecycleState::Dead, mode, next_seq: 0, unsolicited_frames: VecDeque::new() })
     }
@@ -206,6 +211,11 @@ impl ChildLifecycle {
                 // SHM) — clear it so the respawned secure DUT doesn't
                 // replay-reject the harness's first secure frame
                 // against a stale tool seq.
+                self.shm.clear_seq_region();
+            }
+            DutMode::System7Secure => {
+                self.shm.write_state(&crate::harness::system7_secure_stack::default_snapshot())?;
+                // Same seq-tail contract as the System B secure DUT.
                 self.shm.clear_seq_region();
             }
         }

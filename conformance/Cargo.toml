@@ -55,3 +55,7 @@ path = "src/bin/dut_ip_secure.rs"
 [[bin]]
 name = "conformance-dut-system7"
 path = "src/bin/dut_system7.rs"
+
+[[bin]]
+name = "conformance-dut-system7-secure"
+path = "src/bin/dut_system7_secure.rs"
