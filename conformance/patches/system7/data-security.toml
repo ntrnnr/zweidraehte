@@ -1,0 +1,52 @@
+# TSSJ data-security patches that hold for System 7 and not for System B.
+#
+# The template encodes an assumption about the reference device that a
+# 0705h device does not share. It does not show up on the System B
+# profile because that family's group objects are numbered from 1.
+#
+# See conformance/src/eitt/patch.rs.
+
+template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
+
+# ============================================================================
+# "Invalid GO number" is spelled 0000, which is a real slot here
+# ============================================================================
+#
+# 6.2.4, 6.2.12 and 6.2.25 each probe the E_GD_GO_VOID path by naming
+# GO number 0000 — 6.2.4 by way of a `??` wildcard octet in a telegram
+# EITT *sends*, which our frame builder renders as 00.
+#
+# That is invalid only on a device whose group objects are numbered
+# from 1. System 7's group object table is the M112 format, directly
+# indexed from 0 (`StackDefinition::FIRST_ASAP = 0`), and its entry
+# count covers slot 0 — our fixture leaves that slot as unconfigured
+# padding, but it is a slot, so `cot.object(0)` answers with it. The
+# device then reports what it actually found: A2h E_GD_GO_CONFIG_FLAGS
+# for the two write services (an object with no C/W flags set), and a
+# successful config read for the state read.
+#
+# So the telegrams name a GO number that is genuinely out of range on
+# this family instead — 00FFh, past the fixture's eighteen slots. That
+# is the case's own intent ("invalid GO number → E_GD_GO_VOID"); 0000
+# was only ever the reference device's way of spelling it.
+
+[[patch]]
+replace = "38D2A039-8F75-41B0-97FE-EEAE3FA2982B"
+why = "6.2.4: GO number 0000 is a real (unconfigured) M112 slot on System 7 — use 00FFh, which is past the table"
+insert = [
+  { inject = { data = "BC #EDI #BDUT_ADDR 6B 01 D4 00 09 00 10 42 00 00 00 FF AA" } },
+]
+
+[[patch]]
+replace = "41B99A7C-1ED2-4C6B-9BAD-796E5EC0D0E2"
+why = "6.2.12: GO number 0000 is a real (unconfigured) M112 slot on System 7 — use 00FFh, which is past the table"
+insert = [
+  { inject = { data = "BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 00 FF" } },
+]
+
+[[patch]]
+replace = "2AE82907-3A00-4D64-876A-2321255EFF98"
+why = "6.2.25: GO number 0000 is a real (unconfigured) M112 slot on System 7 — use 00FFh, which is past the table"
+insert = [
+  { inject = { data = "BC #EDI #BDUT_ADDR 6A 01 D5 00 09 00 10 42 00 00 00 FF" } },
+]

@@ -115,6 +115,10 @@ Two things we commit, neither containing vendor test content:
   eight cases against an object of the wrong width.
 - `conformance/patches/{common,systemb,system7}/*.toml` — harness-specific
   edits anchored on the GUID that the template gives every telegram.
+  A patch that `replace`s a telegram still lets it advance the
+  TL-sequence recomputation — the frame happens either way, and
+  dropping it from the bookkeeping mis-numbers everything after it in
+  the same connection.
   `common/` holds patch sets valid for every DUT of ours (each profile
   lists the files that apply to its device); `systemb/` and `system7/`
   hold the device-specific ones. Mostly the
@@ -134,19 +138,23 @@ the patch was compensating for needs re-checking.
 The group-object, network-layer, transport-layer, load/run-state-machine,
 management and TSSJ data-security templates run today, and all 524
 lowered cases pass against the System B profile
-(`conformance/profiles/tp1-systemb.toml`). The six non-secure templates
-also run against the System 7 DUT via
-`conformance/profiles/tp1-system7.toml` (215 cases, all passing): same
-template files, with the family differences expressed as profile
-variables (mask, serial, the EEPROM-based memory windows, the
+(`conformance/profiles/tp1-systemb.toml`). All eight also run against
+System 7 via `conformance/profiles/tp1-system7.toml` (525 cases, all
+passing): same template files, with the family differences expressed as
+profile variables (mask, serial, the EEPROM-based memory windows, the
 absolute-allocation load record, the Application Program object at
-index 3 because System 7 has no Group Object Table object) and one
-System 7 patch (the 16-level model's free level 15 in the
-illegal-key authorization response). The data-security one is the only overlap with a
-hand-written suite rather than new device coverage; clearing it took
-harness defects, device fixes and fixture patches in roughly equal
-measure, so when a newer template revision fails, re-derive which of
-the three it is rather than assuming.
+index 3 because System 7 has no Group Object Table object, the Security
+Interface Object at index 5 rather than 6) and three System 7 patch
+sets. The six non-secure templates drive `conformance-dut-system7`; the
+TSSJ data-security one drives `conformance-dut-system7-secure`, which
+is the same fixture with Data Secure and the two extra augment-provided
+objects the secure profile requires.
+
+The data-security template is the only overlap with a hand-written
+suite rather than new device coverage; clearing it took harness
+defects, device fixes and fixture patches in roughly equal measure, so
+when a newer template revision fails, re-derive which of the three it
+is rather than assuming.
 
 ### EITT template semantics worth knowing
 

@@ -1,9 +1,22 @@
-# Harness patches for the EITT TSSJ data-security template.
+# Harness patches for the EITT TSSJ data-security template — the
+# device-neutral majority.
 #
 # Anchors are the GUIDs the template gives every telegram. If one stops
 # resolving the run fails rather than quietly dropping the patch — that
 # is the signal the template has been revised and the compensation here
 # needs re-checking.
+#
+# Every patch here compensates for something about the *template* or the
+# harness rather than about a BCU family: a stray token, a countdown the
+# run's timing cannot produce, an operator action the bench cannot
+# perform, a device the template factory-resets and never restores. Both
+# secure profiles list this file.
+#
+# What is NOT here: the patches that relocate the GO security flags onto
+# our fixture's own communication objects. Those encode a property
+# element index, and the two families number communication objects
+# differently — see `systemb/data-security-go-flags.toml` and
+# `system7/data-security-go-flags.toml`.
 #
 # See conformance/src/eitt/patch.rs.
 
@@ -540,134 +553,6 @@ insert = [
 
 
 # ============================================================================
-# 3.8.17.1 writes its GO security flags where the reference app keeps them
-# ============================================================================
-#
-# The case writes PID_GO_SECURITY_FLAGS elements 1-3 because the
-# reference application's three secure group objects are GOs 0-2. Ours
-# are COs 11-13 (2D05h "5/5/5" on CO 11, 0901h "1/1/1" on CO 12, 1B03h
-# "3/3/3" on CO 13 — see the TSAP map in conformance/src/harness/
-# stack.rs), so the same writes land on elements 11-13 (property element
-# N addresses CO N: the table entry is element-1, and the receive check
-# reads entry asap-1) with the values reordered to follow: the
-# template's `01 03 00` puts A-only on the 1/1/1 object, A+C on the
-# 3/3/3 one and plain on 5/5/5, which for our numbering is `00 01 03`.
-# The group exchanges that verify the flags are untouched — same
-# fixture-relocation reasoning as 6.2.6/6.2.24.
-
-[[patch]]
-replace = "C6A18B55-54F5-48D5-886D-80C234D7CDF8"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B 00 00 00", key = "TK1" } },
-]
-
-[[patch]]
-replace = "23CBA994-FB27-43A6-B52C-6AD62DDFFFDA"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "F118EB00-8624-48A8-9241-4F67B8EE8665"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B 00 01 03", key = "TK1" } },
-]
-
-[[patch]]
-replace = "4D895B12-81CB-4BA0-8898-C08D185F54A5"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "FD9D2000-40A3-4212-9AE0-E25F06C2EFE5"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B", key = "TK1" } },
-]
-
-[[patch]]
-replace = "00824CAF-DD89-4518-BAC1-00BD40A82FBF"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B 00 01 03", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "8BD13B3C-8D3E-4A7B-BA0D-EEDD3C31324B"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B FC FD FF", key = "TK1" } },
-]
-
-[[patch]]
-replace = "EDB7BB22-AFF0-4F69-B013-344753E15405"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "7442542C-ED23-44B9-8F66-98CA42EE88C3"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B 00 00 00", key = "TK1" } },
-]
-
-[[patch]]
-replace = "7F8D59E3-5302-4FDB-9D05-B753DF4386AC"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "AA0619B4-2456-44EE-84BC-FD077967A807"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B 00 01 03", key = "TK1" } },
-]
-
-[[patch]]
-replace = "2C678815-AB26-452F-B1A6-1BA7103079EB"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "B8347973-6DD9-4BB5-93D9-3507176B318B"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "3C 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B", key = "TK1" } },
-]
-
-[[patch]]
-replace = "6BC7F680-3517-42CC-AE6F-025278FF7FB9"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "3C 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B 00 01 03", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "87FA9668-0DBE-4325-8285-287AD55CCF06"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 0C 01 CE 00 11 00 10 3D 03 00 0B FC FD FF", key = "TK1" } },
-]
-
-[[patch]]
-replace = "83CB2C93-A02D-4F22-98E1-5690F4D28E15"
-why = "3.8.17.1: the reference app's secure GOs are 0-2, ours are COs 11-13 — same flags, elements 11-13, values reordered to keep each GA's protection"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0A 01 CF 00 11 00 10 3D 03 00 0B 00", key = "TK1", timeout_ms = 200 } },
-]
-
-# ============================================================================
 # The local-reset cases wipe the application and never put it back
 # ============================================================================
 #
@@ -713,87 +598,6 @@ insert = [
   { wait = 1500 },
 ]
 
-
-# ============================================================================
-# 3.8.17.2/.3/.5 read the same relocated GO-flag fixture back
-# ============================================================================
-#
-# The collection's later cases verify that the refused writes and the
-# restarts left the reserved-bits values from 3.8.17.1 in place. Those
-# values now live at elements 11-13 (our COs) in the reordered
-# `FC FD FF`, so the verification reads move with them. The refused
-# plain/A-only reads and writes are untouched: their responses echo the
-# request with count 0, so the element index never reaches a table.
-
-[[patch]]
-replace = "16C26799-9667-4A51-A443-8C9901326635"
-why = "3.8.17.2: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B", key = "TK1" } },
-]
-
-[[patch]]
-replace = "3E5844E7-17EC-455B-8900-D856FFA028F7"
-why = "3.8.17.2: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B FC FD FF", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "79CAFD4E-683B-4AF3-93FA-DFBF76DD2306"
-why = "3.8.17.3: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B", key = "TK1" } },
-]
-
-[[patch]]
-replace = "5792DA35-C58A-4461-ACAD-C2CE2A828CAC"
-why = "3.8.17.3: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B FC FD FF", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "91DF6071-9B14-471A-AE13-1F3C5DE4C72E"
-why = "3.8.17.5: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B", key = "TK1" } },
-]
-
-[[patch]]
-replace = "1ABF0CDF-581B-4308-9008-681123C7994D"
-why = "3.8.17.5: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B FC FD FF", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "C85B7E07-127F-422A-9388-35E80F740B1F"
-why = "3.8.17.5: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B", key = "TK1" } },
-]
-
-[[patch]]
-replace = "683E1676-8193-48F1-8A98-D428E1437644"
-why = "3.8.17.5: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B FC FD FF", key = "TK1", timeout_ms = 200 } },
-]
-
-[[patch]]
-replace = "6FE1758B-E1B5-4E53-9871-E9200097759E"
-why = "3.8.17.5: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { inject_secure = { data = "30 60 #EDI #BDUT_ADDR 09 01 CC 00 11 00 10 3D 03 00 0B", key = "TK1" } },
-]
-
-[[patch]]
-replace = "7BE393AB-F87E-479B-8891-460DAEFD2E62"
-why = "3.8.17.5: the GO-flag fixture lives at elements 11-13 for our COs (see the 3.8.17.1 patches); the verification read moves with it"
-insert = [
-  { expect_secure = { data = "30 60 #BDUT_ADDR #EDI 0C 01 CD 00 11 00 10 3D 03 00 0B FC FD FF", key = "TK1", timeout_ms = 200 } },
-]
 
 # ============================================================================
 # Cleanup re-provisions a device the boundary restores already restored

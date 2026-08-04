@@ -307,9 +307,17 @@ pub fn lower(
             // off the run: a secure step without one fails with
             // "InjectSecure used without SecurityTestContext". The
             // profile already says which DUT this template wants, and
-            // wanting the secure one is exactly what makes its suites
-            // secure.
-            suites.push(if profile.dut == crate::eitt::profile::Dut::Secure { lowered.secure() } else { lowered });
+            // wanting a secure one — System B or System 7 — is exactly
+            // what makes its suites secure. The `secure()` marker only
+            // asks the engine for a security context; which secure DUT
+            // binary answers is the profile's `dut` and is decided
+            // downstream, so both variants take the same marker here.
+            use crate::eitt::profile::Dut;
+            let lowered = match profile.dut {
+                Dut::Secure | Dut::System7Secure => lowered.secure(),
+                Dut::Plain | Dut::System7 => lowered,
+            };
+            suites.push(lowered);
         }
     }
 
@@ -467,6 +475,17 @@ fn lower_sequence(
 
         if let Some((patch, _)) = has(Anchor::Replace) {
             report.applied_patches.push(format!("replaced a step — {}", patch.why));
+            // A replaced telegram still *happens* on the connection, so
+            // the sequence machine has to see it. How we chose to spell
+            // the frame is our business; whether it advances SeqNoSend
+            // is the transport layer's. Without this a `replace` on an
+            // acknowledgement silently desynchronises every numbered
+            // frame after it in the same connection — the replacement
+            // lands correctly and the *next* template telegram is
+            // numbered as though the acknowledgement never arrived.
+            if let (SequenceItem::Telegram(t), Some(tracker)) = (item, tl_sequence.as_mut()) {
+                advance_tl_sequence(t, tracker, vars);
+            }
             steps.extend(patch.insert.iter().map(|s| s.to_step()));
         } else {
             match item {
@@ -1057,6 +1076,24 @@ fn write_seq(mut tpci: Tpci, seq: u8) -> String {
 /// `Data` stands. A pinned telegram deliberately does not advance the
 /// counters — pinning is how a template writes a number that the
 /// running sequence would not have produced.
+/// Run a telegram through the sequence machine for its side effect only.
+///
+/// Used when a patch replaces a telegram: the frame is still part of the
+/// connection, so `SeqNoSend` / `SeqNoRcv` must move as if it had been
+/// lowered normally. Anything the machine cannot read — a telegram with
+/// no literal TPCI, one that pins its own `TLSeqNum` — leaves the
+/// counters alone, which is what lowering it would have done too.
+fn advance_tl_sequence(t: &schema::Telegram, tracker: &mut TlSequence, vars: &BTreeMap<String, TestVariable>) {
+    if t.tl_seq_num.as_deref().map(str::trim).is_some_and(|s| !s.is_empty()) {
+        return;
+    }
+    let Some(data) = t.data.as_deref() else { return };
+    let inbound = t.cway.as_deref().map(str::trim).is_some_and(|d| d.eq_ignore_ascii_case("IN"));
+    if let Ok(Some(tpci)) = locate_tpci(data, vars) {
+        tracker.number(tpci.value, inbound);
+    }
+}
+
 fn apply_tl_sequence(
     data: &str,
     pinned: Option<&str>,
@@ -1550,6 +1587,43 @@ mod tests {
         go("B0 #EDI #BDUT 60 81", true);
         // Back to zero, not to one.
         assert_eq!(go("BC #EDI #BDUT 6F 4B D7 02", true), "BC #EDI #BDUT 6F 43 D7 02");
+    }
+
+    #[test]
+    fn a_replaced_telegram_still_advances_the_numbering() {
+        // A `replace` patch changes how we express a frame, not whether
+        // the frame happens. The connection's sequence machine has to
+        // see it either way — otherwise the *next* template telegram in
+        // the same connection is numbered one short, and every numbered
+        // frame after it slips.
+        //
+        // Found on TSS J 5.1.3, where the template spells the DUT's
+        // first acknowledgement at Low priority and correcting it with a
+        // `replace` left the following A_Key_Write numbered 0 instead
+        // of 1.
+        let vars = addr_vars();
+        let mut tl = TlSequence::default();
+
+        // Baseline: acknowledgement lowered normally.
+        apply_tl_sequence("BC #EDI #BDUT 66 43 D1 00", None, Some(&mut tl), true, &vars).expect("numbers");
+        apply_tl_sequence("B0 #BDUT #EDI 60 C2", None, Some(&mut tl), false, &vars).expect("numbers");
+        let normal = apply_tl_sequence("BC #EDI #BDUT 66 43 D3 03", None, Some(&mut tl), true, &vars).expect("numbers");
+
+        // Same exchange, but the acknowledgement is replaced by a patch
+        // and only fed to the machine for its side effect.
+        let mut tl = TlSequence::default();
+        apply_tl_sequence("BC #EDI #BDUT 66 43 D1 00", None, Some(&mut tl), true, &vars).expect("numbers");
+        let ack = schema::Telegram {
+            data: Some("BC #BDUT #EDI 60 C2".to_string()),
+            cway: Some("OUT".to_string()),
+            ..Default::default()
+        };
+        advance_tl_sequence(&ack, &mut tl, &vars);
+        let replaced =
+            apply_tl_sequence("BC #EDI #BDUT 66 43 D3 03", None, Some(&mut tl), true, &vars).expect("numbers");
+
+        assert_eq!(replaced, normal, "a replaced acknowledgement must leave the numbering where lowering it would");
+        assert_eq!(replaced, "BC #EDI #BDUT 66 47 D3 03", "the second data packet is sequence 1");
     }
 
     #[test]

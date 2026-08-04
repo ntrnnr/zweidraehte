@@ -397,5 +397,176 @@ status object that transmits to a second group address by itself) is not \
 in this DUT either.\
 """
 
-# No data-security template entry: this profile is the non-secure
-# System 7 device, and there is no Data Secure System 7 stack yet.
+
+
+# ============================================================================
+# 8 TSS J — Data Security (System 7)
+# ============================================================================
+#
+# The vendor TSSJ template against the System 7 secure DUT
+# (`conformance-dut-system7-secure`). Same template file as the System B
+# profile runs; the family differences are expressed here as variables
+# and — where a telegram itself differs by family — as a System 7 patch
+# set layered on top of the shared one.
+#
+# The DUT fixture is the System B secure DUT's, carried onto RT8 tables
+# (conformance/src/harness/system7_secure_stack.rs), so the group
+# addresses, TSAPs, keys and GO flags are congruent and the same
+# GUID-anchored patches resolve.
+
+[[template]]
+file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"
+dut = "system7-secure"
+patches = [
+  "conformance/patches/common/data-security.toml",
+  "conformance/patches/system7/data-security-go-flags.toml",
+  "conformance/patches/system7/data-security.toml",
+]
+
+[template.variables]
+# The BDUT sits at 1.0.1, the same address every DUT of ours uses and
+# the hand-written security suites expect.
+BDUT_ADDR = "10 01"
+
+# System 7 identity: mask 0705h and the System 7 secure DUT's serial.
+DD0_RESPONSE = "07 05"
+SER_NUM = "FE ED 07 05 CA FE"
+BDUT_SERIAL_NUMBER = "FE ED 07 05 CA FE"
+
+# The Security Interface Object is at index 5 on System 7 (FirstAppObj =
+# 5, so the first augment-provided object lands there); the template
+# defaults to 6, which is System B's position.
+SEC_INTF_OBJ_INDEX = "05"
+
+# AN177 extended-memory regions — the System 7 secure DUT's map
+# (conformance/src/harness/system7_secure_stack.rs), all inside the
+# family's user EEPROM span. The template's defaults (A000h/B000h/C000h)
+# belong to nobody's device; left unset every extended-memory case would
+# address memory we do not have and read back E_ADDRESS_VOID.
+READWRITE_MEM_START = "00 50 00"   # LINEAR_MEMORY_BASE (5000h), 256 bytes
+READWRITE_MEM_END = "00 50 FF"
+READONLY_MEM_START = "00 51 00"    # READONLY_MEMORY_BASE (5100h), 16 bytes
+READONLY_MEM_END = "00 51 0F"
+WRITEONLY_MEM_START = "00 51 10"   # WRITEONLY_MEMORY_BASE (5110h)
+
+# The two access-policy sub-regions, carved from the level-2 block tail
+# (the System B map puts them at 03D0h/03E0h; ours at 51D0h/51E0h).
+# Unlike the System B profile — where the template defaults happen to
+# fall in the level-2 block — the System 7 map is elsewhere, so both are
+# set explicitly.
+MEM_AP_000_000 = "00 51 D0"        # access policy 000/000
+MEM_AP_3FF_00C = "00 51 E0"        # access policy 3FF/00C
+
+# 4.5.4 reads property descriptions by index; the index is
+# implementation-defined (03/03/07 §3.4.3.2, numbered from the object's
+# own table). The System 7 Device Object's table is not System B's, so
+# these are re-counted against it.
+INDX_PID_SERIAL_NO = "08"
+INDX_PID_DEVICE_CTRL = "01"
+
+[template.tl_sequence]
+recompute = true
+why = """
+this template's connection-oriented sequence numbers are stale where \
+they matter — 4.2.11 and its siblings pin key writes at TPCI sequence \
+1/2/3 on a freshly opened connection, numbers only a connection that \
+already carried a frame could produce. Same entry as the System B \
+profile; the staleness is the template's, not the device's.\
+"""
+
+# Cases the template scopes to media or device models we are not — the
+# same seven the System B profile records, for the same
+# family-independent reasons (TP1-only device, no KNXnet/IP Parameter
+# Object, no RF medium). The System B profile's other two entries
+# (5.1.3, 5.2.2) do NOT carry over: their mechanic — a key written for
+# level 3 — is impossible on a 4-level device whose level 3 is keyless
+# by construction, but perfectly possible on this family's 16-level
+# model, so the cases run here.
+
+[[template.not_applicable]]
+id = "B85CC6FC-F6EB-477D-A852-DE84BBC3E4B0"
+why = """
+3.7.2.4 expects a Domain Address Response \"in all cases\"; the domain \
+address is an open-media resource (3.7.2.11 marks the write half \
+\"[only open media]\" itself) and a TP1-only device has none to answer \
+with — every branch, plain included, gets silence\
+"""
+
+[[template.not_applicable]]
+id = "75C11A96-AA15-440B-9119-D81832182D99"
+why = """
+3.7.2.5 is the selective-read sibling of 3.7.2.4: an open-media domain \
+address a TP1-only device does not have\
+"""
+
+[[template.not_applicable]]
+id = "87877840-77DD-43F8-B223-F975CA47F166"
+why = "3.7.2.11 marks itself \"[only open media]\"; a TP1-only device has no domain address to write"
+
+[[template.not_applicable]]
+id = "36892560-E67E-428E-BBED-34770A0103F4"
+why = """
+3.7.2.12.1 \"For 4 octet (IP)\" verifies the write through PID 66 of the \
+KNXnet/IP Parameter Object (reads back 224.0.23.12); we have no IP object\
+"""
+
+[[template.not_applicable]]
+id = "CC08EB3D-172C-4FE7-B5B6-8C4982CCA5B9"
+why = "3.7.2.12.2 \"For 6 octet (RF)\" writes an RF domain address; we have no RF medium"
+
+[[template.not_applicable]]
+id = "7EAD5561-5284-48D3-9286-B5944929527C"
+why = """
+3.7.2.12.3 \"For 21 octet (IP)\" verifies the write through PID 66 of the \
+KNXnet/IP Parameter Object; we have no IP object\
+"""
+
+[[template.not_applicable]]
+id = "13B93F60-E73F-4152-8FE2-67CAE860A015"
+why = """
+3.8.19.1 scopes itself to \"Device Model 0x091A (IP-Router)\": \"The \
+Parameter Memory of the Device Model 0x091A is related to the BCU1 memory \
+Model\" at 0100h-01FFh, \"related only to legacy tool usage and legacy \
+data base entries\". We are mask 0705h — our 0100h holds the System 7 \
+OptionReg and load-control window, not BCU1 legacy parameter memory — \
+and 3.8.19 has no case for any other device model.\
+"""
+
+# The two Conditional cases of collection 5. The System B profile marks
+# these `not_applicable` too, but for a reason that does *not* hold
+# here: they lock the device by writing a key for level 3, which on a
+# 4-level device is the keyless "everyone" level. System 7 has sixteen
+# levels and fifteen keys, so level 3 is an ordinary keyed level and
+# that half of each case runs green. They still cannot pass, for a
+# reason about the fixture rather than the family — recorded below so a
+# future attempt does not re-derive it.
+
+[[template.not_applicable]]
+id = "42F07BED-FD70-4BA2-A462-9751CCF9C750"
+why = """
+5.1.3 needs `READWRITE_MEM_START` to name memory a level-2 client may \
+NOT write ("send MemoryExtended_Write to memory that requires higher \
+access level"), while 5.1.1, 5.1.6, 5.2.1 and 5.2.5 write and read the \
+same field with no A_Authorize at all — so it must equally name memory \
+an unauthorised client MAY write. Collection 5 has one address field \
+and our extended-memory block is the freely accessible one; pointing it \
+at a level-guarded block instead would trade these two cases for four. \
+The case also asks for "the LSM of the memory in state loading", which \
+our conformance memory has no load state machine for. \
+\
+Note for whoever revisits this: the case additionally spells the DUT's \
+first two acknowledgements with control byte BCh (Low priority) where \
+the template's other 159 `#BDUT_ADDR → #EDI 60 Cx` frames use B0h \
+(System). Correcting that with a `replace` patch works, but only \
+because a replaced telegram now still advances the TL sequence \
+recomputation — it did not before, and the symptom was every numbered \
+frame after it in the same connection being numbered one short.\
+"""
+
+[[template.not_applicable]]
+id = "8288ED21-986B-4429-BED0-0EC9C1B9C67F"
+why = """
+5.2.2 is 5.1.3's read twin and fails on the same contradiction: the one \
+`READWRITE_MEM_START` field has to be both refused at level 2 (here) \
+and readable unauthenticated (5.2.1, 5.2.5).\
+"""
