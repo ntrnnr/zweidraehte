@@ -419,3 +419,36 @@ mod erase_codes {
         }
     }
 }
+
+// ============================================================================
+// GO security flags: positional table, family ASAP base
+// ============================================================================
+
+/// The GO security flags table is positional (element n for the group
+/// object in table slot n, 03/05/01 §6.3.15), while the wire ASAP is
+/// numbered from the family's `FIRST_ASAP` — 1 on System B, 0 on
+/// System 7's M112 table. The device state translates wire → slot when
+/// forwarding to the family-blind extension state; a hardcoded `- 1`
+/// there (the original System B code) would shift every System 7
+/// object's security requirement onto its neighbour.
+mod go_flag_base {
+    use super::*;
+    use zweidraehte_device::objects::comm::HasGoSecurityView;
+    use zweidraehte_proto::messages::knx::RequiredSecurity;
+
+    #[test]
+    fn wire_asap_zero_is_slot_zero_on_system_7() {
+        let state = fresh_state();
+
+        // An asymmetric pattern so an off-by-one cannot pass: slot 0
+        // auth-only, slot 1 plain, slot 2 auth+conf, slot 3 plain.
+        let mut table = zweidraehte_device::security::SecurityTable::<4, 1>::new();
+        table.write_entries(0, &[0x01, 0x00, 0x03, 0x00]).expect("four entries fit");
+        *state.extension_state().security.go_flags().borrow_mut() = table;
+
+        assert_eq!(state.required_security_for_asap(0), RequiredSecurity::Auth, "ASAP 0 is slot 0");
+        assert_eq!(state.required_security_for_asap(1), RequiredSecurity::Plain);
+        assert_eq!(state.required_security_for_asap(2), RequiredSecurity::AuthConf);
+        assert_eq!(state.required_security_for_asap(3), RequiredSecurity::Plain);
+    }
+}

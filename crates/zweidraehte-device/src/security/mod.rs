@@ -973,11 +973,17 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize> HasGoSecurityView
     for SecureExtensionState<Inner, GRP, P2P, GO>
 {
-    fn required_security_for_asap(&self, asap: u16) -> RequiredSecurity {
-        // ASAPs are 1-based at the wire/property layer; the GO flags table is
-        // indexed 0-based. An ASAP of 0 (which never appears in a real frame)
-        // saturates harmlessly.
-        let go_index = asap.saturating_sub(1);
+    fn required_security_for_asap(&self, go_slot: u16) -> RequiredSecurity {
+        // At this level the argument is already the 0-based GO-flags table
+        // slot. Which wire ASAP that corresponds to depends on the hosting
+        // family's numbering base (`StackDefinition::FIRST_ASAP` — 1 for
+        // System B, 0 for System 7's M112 table), and the extension state
+        // does not know its family — so the device state's forwarding impl
+        // performs the `asap - FIRST_ASAP` translation before this is
+        // reached. Keying the table positionally matches how
+        // `secure_stack_config!` lays the flags down (element n for the
+        // group object in table slot n, 03/05/01 §6.3.15).
+        let go_index = go_slot;
 
         // Absent entries → no security required for this GO. Spec §6.3.15
         // permits divergent flags across ASAPs sharing a GA — by indexing

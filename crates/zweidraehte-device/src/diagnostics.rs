@@ -335,7 +335,13 @@ where
     }
 
     fn go_security_flags(ctx: &ServiceCtx<'_, D>, go_idx: u16) -> u8 {
-        ctx.state.extension_state().go_security_flags_for(go_idx).unwrap_or(0)
+        // `go_idx` is the wire GO index from the AN170 request; the flags
+        // table is positional from `FIRST_ASAP`. Passing the wire index
+        // straight through was off by one against the send path (which
+        // subtracts the base) and against `secure_stack_config!`'s
+        // layout — invisible to TSS J only because its read-config cases
+        // never probe a flagged object.
+        ctx.state.extension_state().go_security_flags_for(go_idx.saturating_sub(D::FIRST_ASAP)).unwrap_or(0)
     }
 }
 

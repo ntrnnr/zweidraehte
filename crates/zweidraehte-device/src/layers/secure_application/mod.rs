@@ -210,11 +210,12 @@ where
         let ast = self.inner.state().ast().borrow();
 
         for asap in ast.asaps_for_tsap(tsap) {
-            // The GO flags table is indexed by 0-based position, written via
-            // PID_GO_SECURITY_FLAGS with 1-based property indexing. The ASAP
-            // from the association table is the 1-based communication object
-            // number, so we subtract 1 to get the 0-based GO flag index.
-            let go_index = asap.saturating_sub(1);
+            // The GO flags table is indexed by 0-based position. The ASAP
+            // from the association table is the wire communication-object
+            // number, whose base is the family's (`FIRST_ASAP`: 1 on
+            // System B, 0 on System 7's M112 table) — subtracting it gives
+            // the table slot.
+            let go_index = asap.saturating_sub(D::FIRST_ASAP);
             if let Some(go_flag) = security_state.go_security_flags_for(go_index) {
                 let required = go_flag & 0x03;
                 if required != received_security_bits {

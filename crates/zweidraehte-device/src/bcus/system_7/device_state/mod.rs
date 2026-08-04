@@ -683,7 +683,11 @@ impl<
 > HasGoSecurityView for System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
     fn required_security_for_asap(&self, asap: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
-        self.extension_state.required_security_for_asap(asap)
+        // The GO security flags table is positional; the wire ASAP is
+        // numbered from `FIRST_ASAP` (1 on System B, 0 on System 7).
+        // This is the one place that translation happens — the extension
+        // state below is family-blind and stores by slot.
+        self.extension_state.required_security_for_asap(asap.saturating_sub(D::FIRST_ASAP))
     }
 
     fn required_security_for_p2p(&self, peer_ia: u16) -> zweidraehte_proto::messages::knx::RequiredSecurity {
