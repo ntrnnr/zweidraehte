@@ -5,6 +5,7 @@
 //! data (descriptor type, channel number, etc.). The write functions preserve
 //! the high APCI bits while setting the data bits.
 
+use crate::address::IndividualAddress;
 use crate::messages::knx::offsets;
 
 // ============================================================================
@@ -38,7 +39,7 @@ impl DeviceDescriptorRead {
     }
 }
 
-/// Writer for `A_DeviceDescriptor_Response`.
+/// Writer/parser for `A_DeviceDescriptor_Response`.
 pub struct DeviceDescriptorResponse;
 
 impl DeviceDescriptorResponse {
@@ -48,6 +49,46 @@ impl DeviceDescriptorResponse {
     pub const TYPE2_MSG_LEN: usize = offsets::MSG_APCI + 16;
     /// Message length for an error response (APCI only).
     pub const ERROR_MSG_LEN: usize = offsets::MSG_APCI + 2;
+
+    /// Descriptor type marking an unsupported descriptor request (error).
+    pub const ERROR_DESCRIPTOR_TYPE: u8 = 0x3F;
+
+    /// Extract the descriptor type (low 6 bits of APCI byte 1).
+    ///
+    /// [`ERROR_DESCRIPTOR_TYPE`](Self::ERROR_DESCRIPTOR_TYPE) means the
+    /// device rejected the requested type.
+    pub fn descriptor_type(buf: &[u8]) -> Option<u8> {
+        if buf.len() < Self::ERROR_MSG_LEN {
+            return None;
+        }
+        Some(buf[offsets::MSG_APCI + 1] & 0x3F)
+    }
+
+    /// Parse a type-0 response into its mask version.
+    ///
+    /// Returns `None` if the response carries a different descriptor type or
+    /// is too short.
+    pub fn parse_type0(buf: &[u8]) -> Option<[u8; 2]> {
+        if Self::descriptor_type(buf)? != 0 || buf.len() < Self::TYPE0_MSG_LEN {
+            return None;
+        }
+        let mut mask = [0u8; 2];
+        mask.copy_from_slice(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4]);
+        Some(mask)
+    }
+
+    /// Parse a type-2 response into the 14-byte DD2 block.
+    ///
+    /// Returns `None` if the response carries a different descriptor type or
+    /// is too short.
+    pub fn parse_type2(buf: &[u8]) -> Option<[u8; 14]> {
+        if Self::descriptor_type(buf)? != 2 || buf.len() < Self::TYPE2_MSG_LEN {
+            return None;
+        }
+        let mut dd2 = [0u8; 14];
+        dd2.copy_from_slice(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 16]);
+        Some(dd2)
+    }
 
     /// Write a type-0 response (mask version).
     pub fn write_type0(buf: &mut [u8], mask_version: &[u8; 2]) {
@@ -72,13 +113,14 @@ impl DeviceDescriptorResponse {
 // IndividualAddress (Read / Write / SerialNumber variants)
 // ============================================================================
 
-/// Parsed fields from `A_IndividualAddress_Write`.
+/// Parser/writer for `A_IndividualAddress_Write`.
 ///
 /// The new address is at APDU[2-3].
 pub struct IndividualAddressWrite;
 
 impl IndividualAddressWrite {
     pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 4;
+    pub const MSG_LEN: usize = Self::MIN_MSG_LEN;
 
     /// Extract the new individual address bytes from the buffer.
     pub fn address_bytes(buf: &[u8]) -> Option<&[u8]> {
@@ -87,13 +129,21 @@ impl IndividualAddressWrite {
         }
         Some(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4])
     }
+
+    /// Write the new individual address into a request buffer (client side,
+    /// NM_IndividualAddress_Write — the device is selected by programming
+    /// mode, so the address is the only payload).
+    pub fn write(buf: &mut [u8], addr: IndividualAddress) {
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 4].copy_from_slice(addr.as_bytes());
+    }
 }
 
-/// Parsed fields from `A_IndividualAddressSerialNumber_Read`.
+/// Parser/writer for `A_IndividualAddressSerialNumber_Read`.
 pub struct IndividualAddressSerialNumberRead;
 
 impl IndividualAddressSerialNumberRead {
     pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 8;
+    pub const MSG_LEN: usize = Self::MIN_MSG_LEN;
 
     /// Extract the serial number (6 bytes) from the buffer.
     pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
@@ -102,9 +152,15 @@ impl IndividualAddressSerialNumberRead {
         }
         Some(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8])
     }
+
+    /// Write the serial number into a request buffer (client side,
+    /// NM_IndividualAddress_SerialNumber_Read).
+    pub fn write(buf: &mut [u8], serial: &[u8; 6]) {
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(serial);
+    }
 }
 
-/// Writer for `A_IndividualAddressSerialNumber_Response`.
+/// Writer/parser for `A_IndividualAddressSerialNumber_Response`.
 pub struct IndividualAddressSerialNumberResponse;
 
 impl IndividualAddressSerialNumberResponse {
@@ -117,13 +173,24 @@ impl IndividualAddressSerialNumberResponse {
     pub fn write_serial(buf: &mut [u8], serial: &[u8; 6]) {
         buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(serial);
     }
+
+    /// Extract the serial number (6 bytes) from a received response (client
+    /// side). The responding device's individual address is the frame's
+    /// source address, not part of this payload.
+    pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
+        if buf.len() < Self::MSG_LEN {
+            return None;
+        }
+        Some(&buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8])
+    }
 }
 
-/// Parsed fields from `A_IndividualAddressSerialNumber_Write`.
+/// Parser/writer for `A_IndividualAddressSerialNumber_Write`.
 pub struct IndividualAddressSerialNumberWrite;
 
 impl IndividualAddressSerialNumberWrite {
     pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 14;
+    pub const MSG_LEN: usize = Self::MIN_MSG_LEN;
 
     /// Extract the serial number (6 bytes) from the buffer.
     pub fn serial_number(buf: &[u8]) -> Option<&[u8]> {
@@ -139,6 +206,14 @@ impl IndividualAddressSerialNumberWrite {
             return None;
         }
         Some(&buf[offsets::MSG_APCI + 8..offsets::MSG_APCI + 10])
+    }
+
+    /// Write serial number and new individual address into a request buffer
+    /// (client side, NM_IndividualAddress_SerialNumber_Write). The trailing
+    /// 4 reserved octets (APDU[10-13]) stay zero.
+    pub fn write(buf: &mut [u8], serial: &[u8; 6], addr: IndividualAddress) {
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 8].copy_from_slice(serial);
+        buf[offsets::MSG_APCI + 8..offsets::MSG_APCI + 10].copy_from_slice(addr.as_bytes());
     }
 }
 
@@ -390,5 +465,71 @@ mod tests {
         assert_eq!(sn, &[0x00, 0x83, 0x01, 0x02, 0x03, 0x04]);
         let addr = IndividualAddressSerialNumberWrite::address_bytes(&buf).unwrap();
         assert_eq!(addr, &[0x11, 0x05]);
+    }
+
+    #[test]
+    fn device_descriptor_response_type0_roundtrip() {
+        let mut buf = [0u8; DeviceDescriptorResponse::TYPE0_MSG_LEN];
+        buf[offsets::MSG_APCI + 1] = 0xC0;
+        DeviceDescriptorResponse::write_type0(&mut buf, &[0x07, 0xB0]);
+        assert_eq!(DeviceDescriptorResponse::descriptor_type(&buf), Some(0));
+        assert_eq!(DeviceDescriptorResponse::parse_type0(&buf), Some([0x07, 0xB0]));
+        assert_eq!(DeviceDescriptorResponse::parse_type2(&buf), None);
+    }
+
+    #[test]
+    fn device_descriptor_response_type2_roundtrip() {
+        let mut buf = [0u8; DeviceDescriptorResponse::TYPE2_MSG_LEN];
+        buf[offsets::MSG_APCI + 1] = 0xC0;
+        let dd2: [u8; 14] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
+        DeviceDescriptorResponse::write_type2(&mut buf, &dd2);
+        assert_eq!(DeviceDescriptorResponse::parse_type2(&buf), Some(dd2));
+        assert_eq!(DeviceDescriptorResponse::parse_type0(&buf), None);
+    }
+
+    #[test]
+    fn device_descriptor_response_error_detected() {
+        let mut buf = [0u8; DeviceDescriptorResponse::ERROR_MSG_LEN];
+        buf[offsets::MSG_APCI + 1] = 0xC0;
+        DeviceDescriptorResponse::write_error(&mut buf);
+        assert_eq!(
+            DeviceDescriptorResponse::descriptor_type(&buf),
+            Some(DeviceDescriptorResponse::ERROR_DESCRIPTOR_TYPE)
+        );
+        assert_eq!(DeviceDescriptorResponse::parse_type0(&buf), None);
+    }
+
+    #[test]
+    fn individual_address_write_roundtrip() {
+        let mut buf = [0u8; IndividualAddressWrite::MSG_LEN];
+        IndividualAddressWrite::write(&mut buf, IndividualAddress::new(1, 1, 42));
+        let bytes = IndividualAddressWrite::address_bytes(&buf).unwrap();
+        assert_eq!(IndividualAddress::from_bytes(bytes), IndividualAddress::new(1, 1, 42));
+    }
+
+    #[test]
+    fn serial_number_read_write_roundtrip() {
+        let serial = [0x00, 0x83, 0x01, 0x02, 0x03, 0x04];
+        let mut buf = [0u8; IndividualAddressSerialNumberRead::MSG_LEN];
+        IndividualAddressSerialNumberRead::write(&mut buf, &serial);
+        assert_eq!(IndividualAddressSerialNumberRead::serial_number(&buf).unwrap(), &serial);
+    }
+
+    #[test]
+    fn serial_number_response_parse() {
+        let serial = [0x00, 0x83, 0x01, 0x02, 0x03, 0x04];
+        let mut buf = [0u8; IndividualAddressSerialNumberResponse::MSG_LEN];
+        IndividualAddressSerialNumberResponse::write_serial(&mut buf, &serial);
+        assert_eq!(IndividualAddressSerialNumberResponse::serial_number(&buf).unwrap(), &serial);
+    }
+
+    #[test]
+    fn serial_number_write_builder_roundtrip() {
+        let serial = [0x00, 0x83, 0x01, 0x02, 0x03, 0x04];
+        let mut buf = [0u8; IndividualAddressSerialNumberWrite::MSG_LEN];
+        IndividualAddressSerialNumberWrite::write(&mut buf, &serial, IndividualAddress::new(2, 3, 4));
+        assert_eq!(IndividualAddressSerialNumberWrite::serial_number(&buf).unwrap(), &serial);
+        let addr = IndividualAddressSerialNumberWrite::address_bytes(&buf).unwrap();
+        assert_eq!(IndividualAddress::from_bytes(addr), IndividualAddress::new(2, 3, 4));
     }
 }

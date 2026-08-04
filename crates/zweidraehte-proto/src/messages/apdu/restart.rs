@@ -105,13 +105,25 @@ impl RestartParsed {
             Some(Self { is_master_reset: false, erase_code: 0, channel: 0 })
         }
     }
+
+    /// Write a master-reset request into the message buffer (client side).
+    ///
+    /// Sets the master-reset bit (APCI bit 0) and writes the erase code and
+    /// channel. A *basic* restart needs no writer: it is APCI-only, the
+    /// builder's `with_application(ApciCode::Restart)` already produces it at
+    /// [`BASIC_MIN_MSG_LEN`](Self::BASIC_MIN_MSG_LEN).
+    pub fn write_master_reset(buf: &mut [u8], erase_code: EraseCode, channel: u8) {
+        buf[offsets::MSG_APCI + 1] |= 0x01;
+        buf[offsets::MSG_APCI + 2] = erase_code.into();
+        buf[offsets::MSG_APCI + 3] = channel;
+    }
 }
 
 // ============================================================================
 // Restart Response
 // ============================================================================
 
-/// Writer for `A_Restart_Response` (master reset response).
+/// Writer/parser for `A_Restart_Response` (master reset response).
 ///
 /// The response uses a special APCI encoding (0x03A1) that differs from the
 /// request. The writer sets the raw APCI bytes directly.
@@ -120,6 +132,21 @@ pub struct RestartResponse;
 impl RestartResponse {
     /// Response: APCI(2) + Error(1) + ProcessTime(2) = 5 bytes APDU.
     pub const MSG_LEN: usize = offsets::MSG_APCI + 5;
+
+    /// Parse a restart response (client side).
+    ///
+    /// Returns the error code and the process time in 100 ms units — the
+    /// time the device says it needs before it is reachable again.
+    /// Returns `None` if the buffer is too short or APCI byte 1 is not the
+    /// A_Restart_Response encoding (0xA1).
+    pub fn parse(buf: &[u8]) -> Option<(RestartError, u16)> {
+        if buf.len() < Self::MSG_LEN || buf[offsets::MSG_APCI + 1] != 0xA1 {
+            return None;
+        }
+        let error = RestartError::from(buf[offsets::MSG_APCI + 2]);
+        let process_time = ((buf[offsets::MSG_APCI + 3] as u16) << 8) | buf[offsets::MSG_APCI + 4] as u16;
+        Some((error, process_time))
+    }
 
     /// Write a restart response into the message buffer.
     ///
@@ -166,6 +193,34 @@ mod tests {
         let mut buf = [0u8; 9];
         buf[offsets::MSG_APCI + 1] = 0x81; // master reset but buffer too short
         assert!(RestartParsed::parse(&buf).is_none());
+    }
+
+    #[test]
+    fn master_reset_write_roundtrip() {
+        let mut buf = [0u8; RestartParsed::MASTER_MIN_MSG_LEN];
+        buf[offsets::MSG_APCI + 1] = 0x80; // APCI low byte from ApciCode::Restart
+        RestartParsed::write_master_reset(&mut buf, EraseCode::FactoryReset, 4);
+        let r = RestartParsed::parse(&buf).unwrap();
+        assert!(r.is_master_reset);
+        assert_eq!(EraseCode::from(r.erase_code), EraseCode::FactoryReset);
+        assert_eq!(r.channel, 4);
+    }
+
+    #[test]
+    fn restart_response_roundtrip() {
+        let mut buf = [0u8; RestartResponse::MSG_LEN];
+        RestartResponse::write(&mut buf, RestartError::AccessDenied.into(), 300);
+        let (error, time) = RestartResponse::parse(&buf).unwrap();
+        assert_eq!(error, RestartError::AccessDenied);
+        assert_eq!(time, 300);
+    }
+
+    #[test]
+    fn restart_response_parse_rejects_wrong_apci() {
+        let mut buf = [0u8; RestartResponse::MSG_LEN];
+        RestartResponse::write(&mut buf, 0, 100);
+        buf[offsets::MSG_APCI + 1] = 0x81; // request encoding, not response
+        assert!(RestartResponse::parse(&buf).is_none());
     }
 
     #[test]

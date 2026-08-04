@@ -756,6 +756,58 @@ impl<B: SplitByteSlice> ParsablePacket<B, ()> for TunnelingFeatureSet {
     }
 }
 
+/// Builder for TunnelingFeatureSet message (client side).
+///
+/// The feature value bytes follow the 4-byte feature header directly — unlike
+/// the response there is no return code octet.
+pub struct TunnelingFeatureSetBuilder<'a> {
+    pub communication_channel_id: u8,
+    pub sequence_counter: u8,
+    pub feature_identifier: u8,
+    /// Feature value bytes (variable length, typically 1-2 bytes).
+    pub feature_value: &'a [u8],
+}
+
+impl<'a> TunnelingFeatureSetBuilder<'a> {
+    pub fn new(
+        communication_channel_id: u8,
+        sequence_counter: u8,
+        feature_identifier: u8,
+        feature_value: &'a [u8],
+    ) -> Self {
+        Self { communication_channel_id, sequence_counter, feature_identifier, feature_value }
+    }
+}
+
+impl SerializablePacket for TunnelingFeatureSetBuilder<'_> {
+    fn bytes_len(&self) -> usize {
+        mem::size_of::<KNXnetIPHeader>() + mem::size_of::<raw::TunnelingFeatureHeader>() + self.feature_value.len()
+    }
+
+    fn serialize<B: SplitByteSliceMut, BV: BufferViewMut<B>>(&self, bv: &mut BV) {
+        let header = KNXnetIPHeader {
+            header_size: mem::size_of::<KNXnetIPHeader>() as u8,
+            version: KNXnetIPVersion::Version10.into(),
+            service_type: U16::from(u16::from(KNXnetIPServiceType::TunnelingFeatureSet)),
+            total_length: (self.bytes_len() as u16).into(),
+        };
+        bv.write_obj_front(&header).expect("too few bytes for KNXnet/IP header");
+
+        let feat_header = raw::TunnelingFeatureHeader {
+            structure_length: mem::size_of::<raw::TunnelingFeatureHeader>() as u8,
+            communication_channel_id: self.communication_channel_id,
+            sequence_counter: self.sequence_counter,
+            feature_identifier: self.feature_identifier,
+        };
+        bv.write_obj_front(&feat_header).expect("too few bytes for feature header");
+
+        if !self.feature_value.is_empty() {
+            let mut value_buf = bv.take_front(self.feature_value.len()).expect("too few bytes for feature value");
+            value_buf.deref_mut().copy_from_slice(self.feature_value);
+        }
+    }
+}
+
 // ============================================================================
 // TUNNELING FEATURE INFO
 // ============================================================================
@@ -866,6 +918,25 @@ mod tests {
         // Verify
         assert_eq!(parsed.communication_channel_id, 20);
         assert_eq!(parsed.sequence_counter, 5);
+    }
+
+    #[test]
+    fn test_tunneling_feature_set_round_trip() {
+        let builder = TunnelingFeatureSetBuilder::new(20, 5, tunneling_feature_id::FEATURE_INFO_ENABLE, &[0x01]);
+
+        // Serialize
+        let mut buffer = [0u8; 16];
+        let mut cursor = &mut buffer[..];
+        let (written, _) = cursor.serialize(&builder);
+        assert_eq!(written.len(), builder.bytes_len());
+
+        // Parse (the feature value bytes stay in the buffer for the caller)
+        let mut parse_buf = written;
+        let parsed = parse_buf.parse::<TunnelingFeatureSet>().unwrap();
+
+        assert_eq!(parsed.communication_channel_id, 20);
+        assert_eq!(parsed.sequence_counter, 5);
+        assert_eq!(parsed.feature_identifier, tunneling_feature_id::FEATURE_INFO_ENABLE);
     }
 
     #[test]

@@ -48,7 +48,7 @@ impl AuthorizeRequest {
     }
 }
 
-/// Writer for `A_Authorize_Response`.
+/// Writer/parser for `A_Authorize_Response`.
 pub struct AuthorizeResponse;
 
 impl AuthorizeResponse {
@@ -57,6 +57,14 @@ impl AuthorizeResponse {
 
     pub fn write(buf: &mut [u8], access_level: u8) {
         buf[offsets::MSG_APCI + 2] = access_level;
+    }
+
+    /// Parse the granted access level from a response (client side).
+    pub fn parse(buf: &[u8]) -> Option<u8> {
+        if buf.len() < Self::MSG_LEN {
+            return None;
+        }
+        Some(buf[offsets::MSG_APCI + 2])
     }
 }
 
@@ -130,6 +138,14 @@ mod tests {
         let mut buf = [0u8; 9];
         AuthorizeResponse::write(&mut buf, 3);
         assert_eq!(buf[offsets::MSG_APCI + 2], 3);
+    }
+
+    #[test]
+    fn authorize_response_roundtrip() {
+        let mut buf = [0u8; AuthorizeResponse::MSG_LEN];
+        AuthorizeResponse::write(&mut buf, 15);
+        assert_eq!(AuthorizeResponse::parse(&buf), Some(15));
+        assert_eq!(AuthorizeResponse::parse(&buf[..AuthorizeResponse::MSG_LEN - 1]), None);
     }
 
     #[test]

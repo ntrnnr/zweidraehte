@@ -103,10 +103,20 @@ impl MemoryWriteRequest {
     }
 }
 
-/// Writer for `A_Memory_Response`.
+/// Writer/parser for `A_Memory_Response`.
 pub struct MemoryResponse;
 
 impl MemoryResponse {
+    /// Parse a memory response (client side).
+    ///
+    /// The wire format is identical to `A_Memory_Write` (count | APCI,
+    /// address, data), so this reuses [`MemoryAccess::parse_write`]. A
+    /// response with `count == 0` signals a refused read (the device-side
+    /// error encoding, see [`write_error`](Self::write_error)).
+    pub fn parse(buf: &[u8]) -> Option<MemoryAccess<'_>> {
+        MemoryAccess::parse_write(buf)
+    }
+
     /// Write a memory response into a message buffer.
     ///
     /// Sets count in the low 6 bits of APCI byte 1 (preserving the high 2 bits
@@ -315,6 +325,17 @@ mod tests {
         assert_eq!(buf[offsets::MSG_APCI + 1] & 0xC0, 0xC0);
         // Verify data
         assert_eq!(&buf[offsets::MSG_APCI + 4..offsets::MSG_APCI + 9], &[1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn memory_response_parse_client_side() {
+        let mut buf = [0u8; 16];
+        buf[offsets::MSG_APCI + 1] = 0x40; // APCI high bits
+        MemoryResponse::write(&mut buf, 3, 0x4000, &[0xAA, 0xBB, 0xCC]);
+        let acc = MemoryResponse::parse(&buf[..MemoryResponse::msg_len(3)]).unwrap();
+        assert_eq!(acc.count, 3);
+        assert_eq!(acc.address, 0x4000);
+        assert_eq!(acc.data, &[0xAA, 0xBB, 0xCC]);
     }
 
     #[test]
