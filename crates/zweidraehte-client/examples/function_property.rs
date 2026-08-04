@@ -15,7 +15,7 @@
 
 use std::net::SocketAddrV4;
 
-use zweidraehte_client::{IndividualAddress, KnxClient};
+use zweidraehte_client::{IndividualAddress, KnxBus};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -30,19 +30,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Connecting to KNX/IP interface at {}...", config.server_addr);
 
-    let (client, mut worker, mut cmd_rx) = KnxClient::connect(config.server_addr).await?;
+    let bus = KnxBus::connect_ip(config.server_addr).await?;
 
-    println!("Connected. Assigned address: {}", client.assigned_address());
-
-    // Spawn the tunnel worker as a background task.
-    let worker_handle = tokio::spawn(async move {
-        if let Err(e) = worker.run(&mut cmd_rx).await {
-            log::error!("Tunnel worker exited: {}", e);
-        }
-    });
+    println!("Connected. Assigned address: {}", bus.assigned_address());
 
     // ========================================================================
-    // Send FunctionPropertyCommand
+    // Send FunctionPropertyCommand (connectionless)
     // ========================================================================
 
     println!(
@@ -53,7 +46,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         hex_string(&config.service_data),
     );
 
-    let result = client
+    let result = bus
+        .network_management()
         .function_property_command(config.device_addr, config.object_idx, config.property_id, &config.service_data)
         .await;
 
@@ -76,8 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Disconnect
     // ========================================================================
 
-    client.disconnect().await?;
-    let _ = worker_handle.await;
+    bus.disconnect().await?;
 
     Ok(())
 }

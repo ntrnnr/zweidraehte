@@ -3,6 +3,7 @@
 use core::net::SocketAddrV4;
 
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::apdu::restart::RestartError;
 use zweidraehte_proto::messages::knxip::ConnectionStatus;
 
 #[derive(Debug, thiserror::Error)]
@@ -16,6 +17,9 @@ pub enum Error {
     #[error("tunnel disconnected by server")]
     Disconnected,
 
+    #[error("connection lost: heartbeat unanswered")]
+    HeartbeatLost,
+
     #[error("request timed out")]
     Timeout,
 
@@ -28,11 +32,14 @@ pub enum Error {
     #[error("transport connection to {0} failed")]
     TransportConnectFailed(IndividualAddress),
 
-    #[error("transport connection closed unexpectedly")]
+    #[error("transport connection closed by the device")]
     TransportClosed,
 
-    #[error("transport NACK (expected seq {expected}, got {actual})")]
-    TransportNack { expected: u8, actual: u8 },
+    #[error("a transport connection is already open (one at a time)")]
+    ConnectionBusy,
+
+    #[error("another request is already in flight")]
+    RequestInFlight,
 
     #[error("unexpected response")]
     UnexpectedResponse,
@@ -40,10 +47,16 @@ pub enum Error {
     #[error("device returned error (return code {0:#x})")]
     DeviceError(u8),
 
+    #[error("device rejected restart: {0}")]
+    RestartRefused(RestartError),
+
+    #[error("memory verify mismatch at address {address:#06x}")]
+    VerifyMismatch { address: u16 },
+
     #[error("parse error: {0}")]
     Parse(&'static str),
 
-    #[error("worker task terminated")]
+    #[error("bus task terminated")]
     WorkerGone,
 }
 

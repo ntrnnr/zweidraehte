@@ -1,48 +1,65 @@
-//! KNX/IP client library for device management.
-//!
-//! This crate provides a client-side KNX/IP tunneling connection with support
-//! for both connected and unconnected device management services.
+//! KNX client library: bus access, group communication, and device
+//! management from the management-client side (the role ETS or a
+//! commissioning tool plays).
 //!
 //! # Architecture
 //!
-//! The client spawns a background worker task that owns the UDP socket and
-//! manages the KNX/IP tunnel lifecycle (connection, heartbeat, sequence
-//! numbers). The user-facing API communicates with the worker via channels.
+//! ```text
+//!  KnxBus ── group_write / group_read / group_events()
+//!    ├── connect_device(ia) → DeviceConnection   (RCo: connected mgmt)
+//!    └── network_management() → NetworkManagement (NM_* + RCl mgmt)
+//!         │
+//!    BusCommand channel
+//!         ▼
+//!  BusTask (tokio task) ── TL client state machine (proto), procedure
+//!         │                matching, group fan-out
+//!         ▼
+//!  KnxConnector (cEMI frames) ── IpTunnelConnector (UDP + sans-io
+//!                                 TunnelSession), USB (planned)
+//! ```
+//!
+//! Protocol logic is sans-io under [`mod@core`]; tokio I/O lives in the
+//! connectors and the bus task. See `CLIENT.md` in the repository root for
+//! the design document and roadmap.
 //!
 //! # Usage
 //!
 //! ```rust,ignore
-//! use zweidraehte_client::KnxClient;
-//! use zweidraehte_proto::address::IndividualAddress;
+//! use zweidraehte_client::{KnxBus, GroupValueEncoding};
 //!
-//! let client = KnxClient::connect("192.168.1.100:3671".parse().unwrap()).await?;
+//! let bus = KnxBus::connect_ip("192.168.1.100:3671".parse()?).await?;
 //!
-//! // Unconnected: read device descriptor
-//! let desc = client.device_descriptor_read(IndividualAddress::new(1, 1, 1)).await?;
+//! // Group traffic — no device connection needed.
+//! bus.group_write("2/0/3".parse()?, &[1], GroupValueEncoding::Short).await?;
+//! let mut events = bus.group_events();
 //!
-//! // Connected: open transport connection for management
-//! let device = client.open_connection(IndividualAddress::new(1, 1, 1)).await?;
-//! let props = device.property_read(0, 56, 1, 1).await?;
+//! // Connected (RCo) device management.
+//! let mut device = bus.connect_device("1.1.42".parse()?).await?;
+//! let serial = device.property_read(0, 11, 1, 1).await?;
 //! device.close().await?;
 //!
-//! client.disconnect().await?;
+//! // Network management.
+//! let found = bus.network_management()
+//!     .read_individual_addresses(std::time::Duration::from_secs(3)).await?;
+//!
+//! bus.disconnect().await?;
 //! ```
 
 #![allow(async_fn_in_trait)]
 
-mod client;
-mod device;
+mod api;
+pub mod connector;
+pub mod core;
+mod driver;
 mod error;
-mod management;
-mod transport;
-pub mod tunnel;
 
-pub use client::KnxClient;
-pub use device::DeviceConnection;
-pub use error::Error;
-pub use management::{FunctionPropertyResult, PropertyDescription};
-pub use tunnel::CemiMode;
-pub use tunnel::worker::TunnelWorker;
+pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck};
+pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector};
+pub use core::group::{GroupService, GroupTelegram};
+pub use core::management::{FunctionPropertyResult, PropertyDescription};
+pub use error::{Error, Result};
 
 /// Re-export commonly used proto types for convenience.
-pub use zweidraehte_proto::address::IndividualAddress;
+pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+pub use zweidraehte_proto::messages::apdu::group_value::GroupValueEncoding;
+pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};

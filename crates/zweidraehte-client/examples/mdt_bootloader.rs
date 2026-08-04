@@ -19,7 +19,7 @@
 
 use std::net::SocketAddrV4;
 
-use zweidraehte_client::{IndividualAddress, KnxClient};
+use zweidraehte_client::{IndividualAddress, KnxBus};
 
 // ============================================================================
 // Protocol Constants
@@ -138,7 +138,7 @@ struct ChecksumBlock {
 ///
 /// Returns the BSL response payload (everything after the command echo byte).
 async fn bsl_command(
-    client: &KnxClient,
+    client: &KnxBus,
     device: IndividualAddress,
     cmd: u8,
     seq: u8,
@@ -147,7 +147,10 @@ async fn bsl_command(
     let mut service_data = vec![0x00, cmd, seq];
     service_data.extend_from_slice(extra_data);
 
-    let result = client.function_property_command(device, BSL_OBJECT_IDX, BSL_PROPERTY_ID, &service_data).await?;
+    let result = client
+        .network_management()
+        .function_property_command(device, BSL_OBJECT_IDX, BSL_PROPERTY_ID, &service_data)
+        .await?;
 
     log::debug!(
         "BSL cmd={:#04x} seq={}: return_code={:#04x}, data=[{}]",
@@ -194,7 +197,7 @@ async fn bsl_command(
 /// Fragments are requested sequentially from seq=0 to seq=max_seq. The
 /// payloads are concatenated to reassemble the full info structure.
 async fn bsl_read_multipart(
-    client: &KnxClient,
+    client: &KnxBus,
     device: IndividualAddress,
     cmd: u8,
 ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
@@ -450,31 +453,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Connect to the KNX/IP interface.
     println!("Connecting to {}...", config.server_addr);
-    let (client, mut worker, mut cmd_rx) = KnxClient::connect(config.server_addr).await?;
-    println!(
-        "Connected. Assigned address: {}, tunnel max APDU: {}",
-        client.assigned_address(),
-        client.tunnel_max_apdu()
-    );
-
-    let worker_handle = tokio::spawn(async move {
-        if let Err(e) = worker.run(&mut cmd_rx).await {
-            log::error!("Tunnel worker exited: {}", e);
-        }
-    });
+    let bus = KnxBus::connect_ip(config.server_addr).await?;
+    println!("Connected. Assigned address: {}, tunnel max APDU: {}", bus.assigned_address(), bus.max_apdu());
 
     // Dispatch the requested command.
-    let result = run_command(&client, config.device_addr, &config.command).await;
+    let result = run_command(&bus, config.device_addr, &config.command).await;
 
     // Always try to disconnect cleanly.
-    let _ = client.disconnect().await;
-    let _ = worker_handle.await;
+    let _ = bus.disconnect().await;
 
     result
 }
 
 async fn run_command(
-    client: &KnxClient,
+    client: &KnxBus,
     device: IndividualAddress,
     command: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
