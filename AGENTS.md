@@ -13,10 +13,10 @@ patterns where applicable.
 
 Two BCU families are implemented: **System B** (07B0 TP1 / 27B0 RF /
 57B0 KNX/IP, with Data Secure and IP Secure) is the default for any new
-device, and **System 7** (0705 TP1 only, non-secure) exists for devices
-that must match an existing System 7 installed base — and as the second
-family that keeps the "generic" core honest. Prefer System B unless
-asked otherwise.
+device, and **System 7** (0705 TP1 only, with Data Secure as a
+composable profile module) exists for devices that must match an
+existing System 7 installed base — and as the second family that keeps
+the "generic" core honest. Prefer System B unless asked otherwise.
 
 We are also working on a product definition XML generator: device
 definitions in Rust macros (parameters, communication objects, dynamic
@@ -530,8 +530,8 @@ Subdirectories:
     - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
     - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all firmware devices use it). `#[macro_export]`ed, so it is invoked as `zweidraehte_device::system_b_standard_stack!` (crate root), not via the `bcus::system_b` path
-  - `system_7/` - System 7 BCU implementation, TP1 mask 0705 only, **no
-    Data Secure**. Same shape as `system_b/`
+  - `system_7/` - System 7 BCU implementation, TP1 mask 0705 only. Same
+    shape as `system_b/`
     (`System7StackDefinition` + `System7ProductLayout` supertraits,
     `system_7_standard_stack!`, `System7DeviceState`,
     `System7MemoryMap`, `config.rs`'s `system7_stack_config!`). Differs
@@ -540,8 +540,16 @@ Subdirectories:
     table at a compile-time product address, fixed absolute memory map
     with memory-mapped load controls (0104h/B6EAh), absolute-segment
     load procedures, 16 authorization levels, no Group Object Table
-    interface object (so AppProg sits at index 3), and communication
-    objects numbered from 0 (`StackDefinition::FIRST_ASAP`).
+    interface object in the base roster (so AppProg sits at index 3),
+    and communication objects numbered from 0
+    (`StackDefinition::FIRST_ASAP`). KNX Data Secure composes onto it
+    through the family-neutral `crate::security` module
+    (`SecureStateFor7`/`SecureTp1StateFor7`, the `resources:` and
+    `augments:` slots of `system_7_standard_stack!`); a secure System 7
+    device additionally carries `GroupObjectTableAugment` because the
+    GO Diagnostics module requires OT 9 (06 Profiles §9.2.1.1.1.1) and
+    the base roster has none. The Security IO lands at index 5 (System
+    B: 6).
     **New devices should use System B** — System 7 is for matching an
     existing System 7 installed base, and buys nothing otherwise.
 
@@ -734,7 +742,8 @@ drop the chip prefix (`stm32/g0_blink`, `rp2040/eth_light_switch`), package name
 (`stm32g0_blink`, `pico_eth_light_switch`). A non-default BCU family is
 named between medium and role: `stm32/g0_tp1_system7_light_switch` is the
 mask-0705h sibling of `stm32/g0_tp1_light_switch`, same hardware and
-device definition, System 7 management model. `linux/` holds host-target
+device definition, System 7 management model; its Data Secure crossing is
+`stm32/g0_tp1_system7_secure_light_switch`. `linux/` holds host-target
 device shells following the same `<medium>[_secure]_<role>` naming
 (package prefix `linux_`); these build with a plain `cargo build` in the
 project directory — no target override.

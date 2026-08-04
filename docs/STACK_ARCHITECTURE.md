@@ -25,8 +25,8 @@ is shaped the way it is, *which* extension point to reach for, or
   (the `firmware/` subtree) and on embedded Linux userspace (the
   `examples/devices` demo binaries).
 - Be generic over link medium (TP1, KNX/IP, USB, IP-interface,
-  mock), over BCU style (System B and non-secure System 7 TP1 today;
-  more later), and over per-device extensions (security, diagnostics,
+  mock), over BCU style (System B and System 7 TP1 today; more
+  later), and over per-device extensions (security, diagnostics,
   custom interface objects).
 - Stay conformance-compliant against the KNX specifications in
   `spec/` without fossilising any single device's wiring into the
@@ -878,12 +878,15 @@ shape (the conformance DUTs do this for `ConformanceMemoryMap`).
 **Directory:**
 [`crates/zweidraehte-device/src/bcus/system_7/`](../crates/zweidraehte-device/src/bcus/system_7/)
 
-The same shape one family over, for mask version `0705` (TP1),
-**without** Data Secure: `System7StackDefinition` +
-`System7ProductLayout` are the supertraits,
+The same shape one family over, for mask version `0705` (TP1):
+`System7StackDefinition` + `System7ProductLayout` are the supertraits,
 `system_7_standard_stack!` the macro, `System7DeviceState` the state
-type, `System7MemoryMap` the map. What genuinely differs is the
-management model, and it is worth knowing which pieces those are:
+type, `System7MemoryMap` the map. KNX Data Secure composes onto it
+exactly as onto System B — the family-neutral `crate::security` module
+plugged in through the macro's `resources:` and `augments:` slots, with
+`SecureStateFor7`/`SecureTp1StateFor7` as the state aliases. What
+genuinely differs is the management model, and it is worth knowing
+which pieces those are:
 
 - **Tables.** Realisation Type 8 throughout
   ([`objects/tables/addr8.rs`](../crates/zweidraehte-device/src/objects/tables/addr8.rs),
@@ -899,9 +902,14 @@ management model, and it is worth knowing which pieces those are:
   4000h–CFFFh) with memory-mapped load controls at 0104h/B6EAh,
   driven by absolute-segment allocation records rather than System
   B's Data Relative Allocation.
-- **Interface objects.** No Group Object Table object, so the roster
-  is Device(0), AddrTab(1), AssocTab(2), AppProg(3), AppProg2(4) —
-  the Application Program sits one index lower than on System B.
+- **Interface objects.** No Group Object Table object in the base
+  roster, so it is Device(0), AddrTab(1), AssocTab(2), AppProg(3),
+  AppProg2(4) — the Application Program sits one index lower than on
+  System B, and a secure device's Security IO lands at index 5
+  (System B: 6). A *secure* System 7 device adds
+  `GroupObjectTableAugment` to provide OT 9 as a pure host for
+  `PID_GO_DIAGNOSTICS` (06 Profiles §9.2.1.1.1.1) — no load state
+  machine, the M112 CoTab stays memory-mapped.
 - **Authorization.** 16 access levels against System B's 4, with
   level 15 free.
 - **Object numbering.** `#[ets(index = N)]` is a 0-based logical
@@ -921,7 +929,7 @@ against it.
 
 **For a new device, prefer System B.** System 7 exists for devices
 that must match an existing System 7 installed base or toolchain; it
-has no Data Secure here, no RF or KNX/IP sibling, and less coverage.
+has no RF or KNX/IP sibling, and less coverage.
 
 ### 3.12 Extensions, augments, and `D::Augments<'a>`
 

@@ -11,7 +11,7 @@ A KNX device stack in Rust — *zwei Drähte*, "two wires", after the TP1
 twisted pair.
 
 zweidraehte implements the full KNX device side (System B profile, plus
-non-secure System 7 on TP1) with a `no_std`, allocation-free core that
+System 7 on TP1) with a `no_std`, allocation-free core that
 runs unchanged on bare-metal microcontrollers and on embedded Linux.
 Devices are composed at compile time: layers, medium extensions,
 interface objects, and storage are all selected through trait-level
@@ -36,12 +36,12 @@ breakdown of what works, what needs testing, and what is missing.
 - System B device profile (mask versions 07B0 TP1, 27B0 KNX-RF,
   57B0 KNX/IP); the TP1 + Data Secure core is validated by the
   in-repo conformance suite
-- System 7 device profile, TP1 only (mask version 0705, **without**
-  Data Secure): RT8 tables, the fixed absolute memory map,
-  memory-mapped load controls, 16 authorization levels, and the ETS
-  `ProductProcedure` download. **For a new custom device you normally
-  want System B** — see "Which profile for a custom device?" in the
-  [FAQ](#faq)
+- System 7 device profile, TP1 only (mask version 0705, with Data
+  Secure as a composable profile module): RT8 tables, the fixed
+  absolute memory map, memory-mapped load controls, 16 authorization
+  levels, and the ETS `ProductProcedure` download. **For a new custom
+  device you normally want System B** — see "Which profile for a
+  custom device?" in the [FAQ](#faq)
 - Media / link layers: TP1 (TP-UART 1/2, NCN5120, E981.03), KNX-RF
   (SX1211, RF-Ready), KNXnet/IP (routing, tunneling server, discovery,
   device management, remote configuration), USB HID, and a composite
@@ -67,9 +67,10 @@ breakdown of what works, what needs testing, and what is missing.
 
 **Reference firmware** (in `firmware/`, a separate workspace)
 
-- STM32G0: TP1 and KNX-RF light switches (plain and Data Secure), a
-  System 7 TP1 light switch (same hardware and device definition as its
-  System B sibling, different management model), an RF retransmitter
+- STM32G0: TP1 and KNX-RF light switches (plain and Data Secure),
+  System 7 TP1 light switches (plain and Data Secure — same hardware
+  and device definition as their System B siblings, different
+  management model), an RF retransmitter
 - RP2040: KNX/IP light switches over W5500 Ethernet (plain and IP
   Secure), WiFi (Pico W), TP1, and a KNX/IP↔TP1 interface (tunneling
   server bridging Ethernet to the TP1 bus)
@@ -84,12 +85,16 @@ breakdown of what works, what needs testing, and what is missing.
   binaries.
 - **KNX/IP core**: routing, discovery, device management,
   connectionless remote configuration.
-- **System 7 TP1 (0705h), non-secure**: the six non-secure conformance
-  templates (group objects, network layer, transport layer, load and
-  run state machines, management) run against the System 7 DUT as they
-  do against the System B one — 215 cases, all passing. ETS commissions
-  the STM32G0 System 7 firmware end to end over the `ProductProcedure`
-  download, verified on hardware.
+- **System 7 TP1 (0705h) incl. KNX Data Secure**: all eight vendor
+  conformance templates (group objects, network layer, transport
+  layer, load and run state machines, management, TSSJ data security)
+  run against the System 7 DUTs as they do against the System B ones —
+  525 cases, all passing. ETS commissions the STM32G0 System 7
+  firmware end to end over the `ProductProcedure` download, verified
+  on hardware for the non-secure variant; the secure variant exchanges
+  secure group telegrams with System B secure devices on real
+  hardware, but a full ETS Data Secure download onto the 0705h mask is
+  still unverified.
 - **Storage layer**: region-anchored flash/FRAM layouts,
   wear-levelled key-value store, sequence-number persistence; runs on
   the real hardware targets.
@@ -146,10 +151,10 @@ breakdown of what works, what needs testing, and what is missing.
 - **Line couplers / routers** are not implemented yet — no coupler
   network layer with filter tables, and no KNX/IP router acting as a
   backbone/line coupler.
-- **Profiles**: System B (07B0/27B0/57B0) and System 7 TP1 (0705) are
-  implemented. System 7 is **non-secure only** — there is no Data
-  Secure System 7 stack — and exists on TP1 alone; its RF (2705) and
-  KNX/IP (5705) siblings are not built. No other mask is implemented:
+- **Profiles**: System B (07B0/27B0/57B0) and System 7 TP1 (0705,
+  incl. Data Secure) are implemented. System 7 exists on TP1 alone;
+  its RF (2705) and KNX/IP (5705) siblings are not built. No other
+  mask is implemented:
   no couplers or routers (0912/091A/2920), no USB interface masks, and
   the legacy families (BCU 1/2, System 300, old BIM M112) are
   deliberately out of scope.
@@ -392,12 +397,12 @@ the core honest about being BCU-agnostic — a second family flushed out
 the places where "generic" code had quietly grown System B assumptions
 — and to support devices that have to match an existing System 7
 installed base or toolchain. Reach for it when that constraint is real,
-knowing what you give up here: no Data Secure (the profile allows it,
-our implementation does not have it), TP1 only, and less coverage than
+knowing what you give up here: TP1 only, and less coverage than
 System B has. What you get is a genuinely different management model —
 RT8 tables, a fixed absolute memory map, absolute-segment load
 procedures, 16 authorization levels — commissioned by ETS through the
-`ProductProcedure` download.
+`ProductProcedure` download, with KNX Data Secure available as the
+same composable profile module System B uses.
 
 Practically, the two are the same amount of work to build a device on:
 the STM32G0 System 7 light switch and its System B sibling share their
