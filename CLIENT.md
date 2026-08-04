@@ -271,26 +271,27 @@ Each chunk ends compilable and tested.
   with tokio directly (its own backend threads) — the dedicated-thread
   fallback was not needed. Needs a smoke test against a physical
   interface.
-- **H. Examples + docs** *(mostly done)* — `function_property.rs` and
+- **H. Examples + docs** *(done)* — `function_property.rs` and
   `mdt_bootloader.rs` ported; `group_monitor.rs` and `device_scan.rs`
-  added. Outstanding: the hermetic loopback tunnel-server fixture (tier 2
-  below) and hardware smoke tests.
+  added; env-var-gated live tests in `tests/live_tunnel.rs`.
+  Outstanding beyond the milestone: hardware smoke tests (tunnel + USB)
+  and the loopback fixture (see below).
 
 ### Verification / integration-test story
 
 - Unit: the sans-io cores are tested purely — feed inputs including timer
   expiries, assert outputs. That is the point of sans-io.
-- Integration, two tiers:
-  1. Env-var-gated tests (`KNX_TUNNEL_ADDR`, `KNX_USB=1`) run the real
-     end-to-end paths against an actual interface and device; the ported
-     examples double as smoke tests.
-  2. Loopback fixture (follow-up within the milestone): a small workspace
-     binary running the device stack with the knxip tunneling `FeatureSet`
-     enabled on 127.0.0.1. Client tests then run hermetically: tunnel
-     connect → group exchange → connect_device → property / memory / NM
-     round-trips. If wiring the tunneling feature on a host shell turns out
-     disproportionate, tier 1 remains the milestone gate and the fixture
-     moves to the roadmap.
+- Integration: env-var-gated live tests in
+  `crates/zweidraehte-client/tests/live_tunnel.rs` (`KNX_TUNNEL_ADDR`,
+  optional `KNX_TARGET_IA`) run tunnel connect/disconnect, an NM scan,
+  and read-only device management against real hardware; they skip
+  silently otherwise. The ported examples double as smoke tests.
+- The hermetic loopback fixture moved to the roadmap: plain
+  `WithTunneling` is currently wired for the TP1-bridged IP-interface
+  role (`IpInterfaceStateFor`, additional-IA plumbing, subnet bridge),
+  so a tunnel server whose frames terminate in the *local* stack needs
+  its own wiring first. Until then the env-var tier is the milestone
+  gate.
 - `linux_eth_light_switch` (routing-only) becomes relevant once the routing
   connector lands.
 
@@ -314,6 +315,10 @@ Each chunk ends compilable and tested.
 6. **More connectors**: IP routing (multicast, group-only), TPUART serial,
    secure routing; keyring (`.knxkeys`) import for security material.
 7. **AN163 ext property services** for managing secure System B devices.
+8. **Loopback test fixture**: a host binary running the device stack with
+   a tunneling server whose tunnel traffic terminates in the local stack,
+   so the client test suite runs hermetically (tunnel connect → group
+   exchange → RCo/RCl management round-trips) without hardware.
 
 ## Risks / notes
 
