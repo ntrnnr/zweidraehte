@@ -1,0 +1,383 @@
+//! Data Secure end-to-end tests over an in-memory connector.
+//!
+//! A channel-backed connector plays the bus; the test body plays the
+//! secure device, using the same `SecureChannel` primitives from the
+//! opposite side (wrap/unwrap are symmetric — the device's tool-access
+//! traffic is the mirror image of ours). Time is tokio-paused, so the
+//! sync-timeout paths run instantly.
+
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::mpsc;
+use tokio::time::Duration;
+
+use zweidraehte_client::core::frames;
+use zweidraehte_client::security::channel::{SecureChannel, seq_from_bytes, seq_to_bytes};
+use zweidraehte_client::security::{MemSeqStore, SeqNumberStore};
+use zweidraehte_client::{ConnectorInfo, Error, IndividualAddress, KnxBus, KnxConnector, SecurityEntry, SecurityStore};
+use zweidraehte_proto::crypto::ccm;
+use zweidraehte_proto::encoding::cemi::CemiMessageCode;
+use zweidraehte_proto::messages::apdu::property::PropertyValueResponse;
+use zweidraehte_proto::messages::apdu::secure::{self, SyncReqRef};
+use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, Tpci};
+
+const FDSK: [u8; 16] = [
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, //
+    0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+];
+const SERIAL: [u8; 6] = [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78];
+
+fn client_ia() -> IndividualAddress {
+    IndividualAddress::new(15, 15, 250)
+}
+fn device_ia() -> IndividualAddress {
+    IndividualAddress::new(1, 1, 42)
+}
+
+// ============================================================================
+// Channel connector + mock-device plumbing
+// ============================================================================
+
+struct ChannelConnector {
+    to_device: mpsc::UnboundedSender<Vec<u8>>,
+    from_device: mpsc::UnboundedReceiver<Vec<u8>>,
+}
+
+impl KnxConnector for ChannelConnector {
+    async fn send_cemi(&mut self, cemi: &[u8]) -> zweidraehte_client::Result<()> {
+        self.to_device.send(cemi.to_vec()).map_err(|_| Error::Disconnected)
+    }
+
+    async fn recv_cemi(&mut self) -> zweidraehte_client::Result<Vec<u8>> {
+        self.from_device.recv().await.ok_or(Error::Disconnected)
+    }
+
+    async fn close(&mut self) -> zweidraehte_client::Result<()> {
+        Ok(())
+    }
+}
+
+/// The test's handle on the fake bus: receive what the client sent,
+/// inject indications back.
+struct MockBus {
+    from_client: mpsc::UnboundedReceiver<Vec<u8>>,
+    to_client: mpsc::UnboundedSender<Vec<u8>>,
+}
+
+impl MockBus {
+    /// Next internal-format frame the client put on the bus.
+    async fn recv(&mut self) -> Vec<u8> {
+        let cemi = tokio::time::timeout(Duration::from_secs(30), self.from_client.recv())
+            .await
+            .expect("client frame within timeout")
+            .expect("connector channel open");
+        frames::cemi_to_internal(&cemi)
+    }
+
+    /// Positive L_Data.con echo of a frame the client sent.
+    fn confirm(&self, internal: &[u8]) {
+        let cemi = frames::internal_to_cemi(internal, CemiMessageCode::LDataCon);
+        self.to_client.send(cemi).expect("connector channel open");
+    }
+
+    /// L_Data.ind of a device-originated frame.
+    fn indicate(&self, internal: &[u8]) {
+        let cemi = frames::internal_to_cemi(internal, CemiMessageCode::LDataInd);
+        self.to_client.send(cemi).expect("connector channel open");
+    }
+}
+
+/// A seq store the test can inspect after the bus task consumed it.
+#[derive(Clone, Default)]
+struct SharedSeqStore(Arc<Mutex<MemSeqStore>>);
+
+impl SeqNumberStore for SharedSeqStore {
+    fn load_tool_seq(&self, serial: &[u8; 6]) -> u64 {
+        self.0.lock().expect("store mutex").load_tool_seq(serial)
+    }
+    fn save_tool_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
+        self.0.lock().expect("store mutex").save_tool_seq(serial, seq)
+    }
+    fn load_table_seq(&self, serial: &[u8; 6]) -> u64 {
+        self.0.lock().expect("store mutex").load_table_seq(serial)
+    }
+    fn save_table_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
+        self.0.lock().expect("store mutex").save_table_seq(serial, seq)
+    }
+}
+
+fn secure_bus(entry: SecurityEntry) -> (KnxBus, MockBus, SharedSeqStore) {
+    let (to_device_tx, to_device_rx) = mpsc::unbounded_channel();
+    let (to_client_tx, to_client_rx) = mpsc::unbounded_channel();
+    let connector = ChannelConnector { to_device: to_device_tx, from_device: to_client_rx };
+    let info = ConnectorInfo { assigned_address: client_ia(), max_apdu: 254 };
+
+    let store = SharedSeqStore::default();
+    let mut security = SecurityStore::with_store(Box::new(store.clone()));
+    security.set_device_security(device_ia(), entry);
+
+    let bus = KnxBus::with_connector_and_security(connector, info, security);
+    (bus, MockBus { from_client: to_device_rx, to_client: to_client_tx }, store)
+}
+
+// ============================================================================
+// Device-side crypto helpers
+// ============================================================================
+
+/// Answer a verified sync request: advertise the device's next sending
+/// seq (`seq_remote`) and its expectation of the tool (`seq_local`).
+fn build_sync_res(challenge: &[u8; 6], seq_remote: u64, seq_local: u64) -> Vec<u8> {
+    let random: [u8; 6] = [0xAA; 6];
+    let mut cxr = [0u8; 6];
+    for i in 0..6 {
+        cxr[i] = challenge[i] ^ random[i];
+    }
+    // SCF 0x93: tool access + A+C + SyncResponse.
+    let scf_byte = 0x93u8;
+    let src = u16::from_be_bytes(device_ia().0);
+    let dst = u16::from_be_bytes(client_ia().0);
+
+    let mut payload = [0u8; 12];
+    payload[0..6].copy_from_slice(&seq_to_bytes(seq_remote));
+    payload[6..12].copy_from_slice(&seq_to_bytes(seq_local));
+    let mac = ccm::encrypt_and_mac_sync_res(&FDSK, &random, src, dst, 0x00, 0x03F1, scf_byte, &mut payload);
+
+    let mut buf = vec![0u8; secure::sync::FRAME_LEN];
+    let mac_offset = secure::build_sync_response(
+        &mut buf,
+        0xB0,
+        src,
+        dst,
+        0x60,
+        0x00,
+        scf_byte,
+        &cxr,
+        &payload[0..6].try_into().expect("6-byte slice"),
+        &payload[6..12].try_into().expect("6-byte slice"),
+    );
+    buf[mac_offset..mac_offset + secure::MAC_LEN].copy_from_slice(&mac);
+    buf
+}
+
+/// Drive the T_Connect + S-A_Sync opening from the device side.
+///
+/// Returns the device's `SecureChannel`, primed with the advertised
+/// counters (`seq_remote` = its sending counter, `seq_local` = what it
+/// expects from the tool).
+async fn accept_secure_connect(bus: &mut MockBus, seq_remote: u64, seq_local: u64) -> SecureChannel {
+    let connect = bus.recv().await;
+    assert_eq!(KnxMessageBuffer::from_buffer(connect.as_slice()).get_tpci(), Some(Tpci::Connect));
+    bus.confirm(&connect);
+
+    let sync_req = bus.recv().await;
+    let req = SyncReqRef::parse(&sync_req).expect("31-byte sync request");
+    let serial = req.knx_serial_number();
+    assert_eq!(serial, [0u8; 6], "P2P sync request carries a zero serial");
+
+    let mut challenge = [0u8; 6];
+    challenge.copy_from_slice(req.challenge());
+    let ctx = req.ccm_context();
+    let mut mac = req.mac();
+    ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &serial, &mut challenge, &mut mac)
+        .expect("sync request verifies under the FDSK");
+
+    bus.indicate(&build_sync_res(&challenge, seq_remote, seq_local));
+
+    // The device tracks the tool's traffic with the mirrored counters.
+    SecureChannel::new(FDSK, SERIAL, seq_remote, seq_local)
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[tokio::test(start_paused = true)]
+async fn secure_connect_and_property_read_roundtrip() {
+    let (bus, mut mock, store) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+    let device = tokio::spawn(async move {
+        let mut dev_channel = accept_secure_connect(&mut mock, 100, 50).await;
+
+        // The wrapped property read arrives; unwrap it device-side.
+        let request = mock.recv().await;
+        let (plain, _) = dev_channel.unwrap(&request).expect("client frame verifies");
+        let msg = KnxMessageBuffer::from_buffer(plain.as_slice());
+        assert_eq!(msg.get_apci_code(), ApciCode::PropertyValueRead);
+        assert_eq!(msg.get_tpci(), Some(Tpci::DataConnected(0)));
+        bus_ack(&mock, 0);
+
+        // Wrapped response: serial number property, 6 bytes.
+        let mut response = frames::build_individual_frame(
+            device_ia(),
+            client_ia(),
+            Tpci::DataConnected(0),
+            ApciCode::PropertyValueResponse,
+            PropertyValueResponse::msg_len(6),
+            |buf| PropertyValueResponse::write(buf, 0, 11, 1, 1, &SERIAL),
+        );
+        frames::set_connected_seq(&mut response, 0);
+        let (wrapped, _) = dev_channel.wrap(u16::from_be_bytes(device_ia().0), &response);
+        mock.indicate(&wrapped);
+
+        mock
+    });
+
+    let mut dev = bus.connect_device(device_ia()).await.expect("secure connect succeeds");
+    let value = dev.property_read(0, 11, 1, 1).await.expect("wrapped property read succeeds");
+    assert_eq!(value, SERIAL);
+
+    device.await.expect("mock device runs to completion");
+
+    // The device used seq 100 → we now require 101; our first frame
+    // consumed the advertised tool seq 50 → next is 51.
+    assert_eq!(store.load_table_seq(&SERIAL), 101);
+    assert_eq!(store.load_tool_seq(&SERIAL), 51);
+}
+
+fn bus_ack(mock: &MockBus, seq: u8) {
+    let ack = frames::build_transport_frame(device_ia(), client_ia(), Tpci::Ack(seq));
+    mock.indicate(&ack);
+}
+
+#[tokio::test(start_paused = true)]
+async fn plain_device_skips_handshake() {
+    let (bus, mut mock, _) = secure_bus(SecurityEntry::plain(SERIAL));
+
+    let device = tokio::spawn(async move {
+        let connect = mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(connect.as_slice()).get_tpci(), Some(Tpci::Connect));
+        mock.confirm(&connect);
+    });
+
+    bus.connect_device(device_ia()).await.expect("plain connect succeeds without sync");
+    device.await.expect("mock device runs to completion");
+}
+
+#[tokio::test(start_paused = true)]
+async fn sync_timeout_retries_once_then_fails() {
+    let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+    let device = tokio::spawn(async move {
+        let connect = mock.recv().await;
+        mock.confirm(&connect);
+
+        // Two sync requests (initial + retry), never answered.
+        let first = mock.recv().await;
+        SyncReqRef::parse(&first).expect("first sync request");
+        let second = mock.recv().await;
+        SyncReqRef::parse(&second).expect("retried sync request");
+        assert_ne!(
+            SyncReqRef::parse(&first).expect("parsed above").challenge(),
+            SyncReqRef::parse(&second).expect("parsed above").challenge(),
+            "retry uses a fresh challenge"
+        );
+
+        // The failed open closes the connection.
+        let disconnect = mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
+    });
+
+    let Err(err) = bus.connect_device(device_ia()).await else { panic!("sync must time out") };
+    assert!(matches!(err, Error::SecuritySyncTimeout), "got {err:?}");
+    device.await.expect("mock device runs to completion");
+}
+
+#[tokio::test(start_paused = true)]
+async fn tampered_sync_response_fails_connect() {
+    let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+    let device = tokio::spawn(async move {
+        let connect = mock.recv().await;
+        mock.confirm(&connect);
+
+        let sync_req = mock.recv().await;
+        let req = SyncReqRef::parse(&sync_req).expect("sync request");
+        let mut challenge = [0u8; 6];
+        challenge.copy_from_slice(req.challenge());
+        let ctx = req.ccm_context();
+        let mut mac = req.mac();
+        ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &[0u8; 6], &mut challenge, &mut mac)
+            .expect("sync request verifies");
+
+        let mut res = build_sync_res(&challenge, 100, 50);
+        let last = res.len() - 1;
+        res[last] ^= 0x01;
+        mock.indicate(&res);
+
+        let disconnect = mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
+    });
+
+    let Err(err) = bus.connect_device(device_ia()).await else { panic!("tampered sync response must fail") };
+    assert!(matches!(err, Error::SecurityMacMismatch), "got {err:?}");
+    device.await.expect("mock device runs to completion");
+}
+
+#[tokio::test(start_paused = true)]
+async fn missing_key_fails_secure_connect() {
+    let entry = SecurityEntry {
+        mode: zweidraehte_client::DeviceSecurityMode::Secure,
+        tool_key: None,
+        fdsk: None,
+        serial: SERIAL,
+    };
+    let (bus, mut mock, _) = secure_bus(entry);
+
+    let device = tokio::spawn(async move {
+        let connect = mock.recv().await;
+        mock.confirm(&connect);
+        let disconnect = mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
+    });
+
+    let Err(err) = bus.connect_device(device_ia()).await else { panic!("keyless secure entry must fail") };
+    assert!(matches!(err, Error::SecurityMissingKey), "got {err:?}");
+    device.await.expect("mock device runs to completion");
+}
+
+#[tokio::test(start_paused = true)]
+async fn replayed_device_frame_is_dropped() {
+    let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+    let device = tokio::spawn(async move {
+        let mut dev_channel = accept_secure_connect(&mut mock, 100, 50).await;
+
+        let request = mock.recv().await;
+        dev_channel.unwrap(&request).expect("client frame verifies");
+        bus_ack(&mock, 0);
+
+        // A stale frame (secure seq below the synced 100) must be
+        // ignored, the genuine response afterwards still delivered.
+        // The two frames need distinct TL sequence numbers — the stale
+        // one is dropped at the *secure* layer, after the transport
+        // layer has already consumed its sequence number.
+        let build_response = |tl_seq: u8| {
+            let mut response = frames::build_individual_frame(
+                device_ia(),
+                client_ia(),
+                Tpci::DataConnected(0),
+                ApciCode::PropertyValueResponse,
+                PropertyValueResponse::msg_len(1),
+                |buf| PropertyValueResponse::write(buf, 0, 11, 1, 1, &[0xEE]),
+            );
+            frames::set_connected_seq(&mut response, tl_seq);
+            response
+        };
+
+        let mut stale_channel = SecureChannel::new(FDSK, SERIAL, 3, 1);
+        let (stale, _) = stale_channel.wrap(u16::from_be_bytes(device_ia().0), &build_response(0));
+        mock.indicate(&stale);
+
+        let (genuine, _) = dev_channel.wrap(u16::from_be_bytes(device_ia().0), &build_response(1));
+        mock.indicate(&genuine);
+
+        // Keep the channels open — the client still sends T_ACKs for
+        // both incoming data frames; a closed connector kills the task.
+        mock
+    });
+
+    let mut dev = bus.connect_device(device_ia()).await.expect("secure connect succeeds");
+    let value = dev.property_read(0, 11, 1, 1).await.expect("genuine response arrives after the replay");
+    assert_eq!(value, [0xEE]);
+    drop(device.await.expect("mock device runs to completion"));
+}

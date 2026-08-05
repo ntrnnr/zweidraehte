@@ -18,6 +18,7 @@ use crate::core::frames;
 use crate::core::group::GroupTelegram;
 use crate::driver::{BusCommand, BusTask};
 use crate::error::{Error, Result};
+use crate::security::{SecurityEntry, SecurityStore};
 
 /// Capacity of the command channel between API handles and the bus task.
 const COMMAND_CHANNEL_CAPACITY: usize = 8;
@@ -49,17 +50,46 @@ impl KnxBus {
         Ok(Self::with_connector(connector, info))
     }
 
+    /// [`connect_ip`](Self::connect_ip) with a pre-built security store
+    /// (keyring entries and/or a persistent sequence-number store such
+    /// as [`crate::JsonSeqStore`]).
+    pub async fn connect_ip_with_security(server: SocketAddrV4, security: SecurityStore) -> Result<Self> {
+        let (connector, info) = IpTunnelConnector::connect(server).await?;
+        Ok(Self::with_connector_and_security(connector, info, security))
+    }
+
     /// Connect through a KNX USB interface.
     pub async fn connect_usb(selector: &UsbSelector) -> Result<Self> {
         let (connector, info) = UsbConnector::connect(selector).await?;
         Ok(Self::with_connector(connector, info))
     }
 
+    /// [`connect_usb`](Self::connect_usb) with a pre-built security store.
+    pub async fn connect_usb_with_security(selector: &UsbSelector, security: SecurityStore) -> Result<Self> {
+        let (connector, info) = UsbConnector::connect(selector).await?;
+        Ok(Self::with_connector_and_security(connector, info, security))
+    }
+
     /// Wrap an already opened custom connector.
+    ///
+    /// Data Secure starts disabled (empty keyring, in-memory sequence
+    /// counters); add devices with
+    /// [`set_device_security`](Self::set_device_security) or start from
+    /// [`with_connector_and_security`](Self::with_connector_and_security).
     pub fn with_connector<C: KnxConnector>(connector: C, info: ConnectorInfo) -> Self {
+        Self::with_connector_and_security(connector, info, SecurityStore::new())
+    }
+
+    /// Wrap an already opened custom connector with a pre-built security
+    /// store.
+    pub fn with_connector_and_security<C: KnxConnector>(
+        connector: C,
+        info: ConnectorInfo,
+        security: SecurityStore,
+    ) -> Self {
         let (cmd_tx, cmd_rx) = mpsc::channel(COMMAND_CHANNEL_CAPACITY);
         let (group_tx, _) = broadcast::channel(GROUP_CHANNEL_CAPACITY);
-        let task = tokio::spawn(BusTask::new(connector, info, cmd_rx, group_tx.clone()).run());
+        let task = tokio::spawn(BusTask::new(connector, info, cmd_rx, group_tx.clone(), security).run());
         Self { cmd_tx, group_tx, info, task }
     }
 
@@ -150,6 +180,29 @@ impl KnxBus {
     /// scanning, connectionless management).
     pub fn network_management(&self) -> NetworkManagement<'_> {
         NetworkManagement::new(&self.cmd_tx, self.info.assigned_address)
+    }
+
+    // ========================================================================
+    // Data Secure
+    // ========================================================================
+
+    /// Register or replace a device's Data Secure keyring entry.
+    ///
+    /// A subsequent [`connect_device`](Self::connect_device) to an IA
+    /// whose entry has [`DeviceSecurityMode::Secure`]
+    /// (crate::DeviceSecurityMode::Secure) runs the S-A_Sync handshake
+    /// on open and wraps all management traffic under the entry's
+    /// active key (tool key, or FDSK while none is set). Entries with
+    /// mode `Plain` document known keys without enabling security —
+    /// required for secure-capable devices whose security mode is
+    /// switched off.
+    ///
+    /// Takes effect for connections opened afterwards, not for one
+    /// already open.
+    pub async fn set_device_security(&self, ia: IndividualAddress, entry: SecurityEntry) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx.send(BusCommand::SetDeviceSecurity { ia, entry, tx }).await.map_err(|_| Error::WorkerGone)?;
+        rx.await.map_err(|_| Error::WorkerGone)
     }
 
     // ========================================================================

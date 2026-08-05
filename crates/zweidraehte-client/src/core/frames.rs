@@ -110,6 +110,69 @@ pub fn build_group_frame(
     msg.into_inner()
 }
 
+/// Build a complete S-A_Sync_Req frame (tool access, P2P, connectionless).
+///
+/// The sync service may ride `T_Data_Individual` or `T_Data_Connected`
+/// per 03/03/07 §5.3.2; we send it connectionless, like ETS and the
+/// device stack's own sync initiator, so it stays outside the TL
+/// sequence numbering.
+///
+/// Unlike the other builders this one takes the real `source` address —
+/// it is part of the CCM nonce, so the MAC is only valid for the
+/// address actually stamped on the wire. The serial-number field is
+/// all-zero (valid for P2P; a serial is only required on broadcast).
+///
+/// `seq_nr_local` is the channel's peeked tool sequence number — the
+/// sync service advertises the *next* number to be used, so nothing is
+/// consumed here.
+pub fn build_sync_req_frame(
+    source: IndividualAddress,
+    dest: IndividualAddress,
+    key: &[u8; 16],
+    seq_nr_local: &[u8; 6],
+    challenge: &[u8; 6],
+) -> Vec<u8> {
+    use zweidraehte_proto::crypto::ccm::{self, CcmContext};
+    use zweidraehte_proto::crypto::scf::{SecureServiceType, SecurityControlField};
+    use zweidraehte_proto::messages::apdu::secure::{self, sync};
+
+    let mut msg = new_frame(sync::FRAME_LEN, Priority::System);
+    msg.set_source_addr(source);
+    msg.set_dest_addr(DestinationAddress::Individual(dest));
+    msg.set_tpci(Tpci::DataIndividual);
+
+    let scf_byte = SecurityControlField {
+        service: SecureServiceType::SyncRequest,
+        system_broadcast: false,
+        confidentiality: true,
+        tool_access: true,
+    }
+    .encode();
+
+    let buf = msg.buf_mut();
+    let tpci_high = buf[offsets::MSG_TPCI] & 0xFC;
+    buf[offsets::MSG_TPCI] = tpci_high | 0x03;
+    buf[offsets::MSG_TPCI + 1] = 0xF1;
+    buf[secure::SCF] = scf_byte;
+    buf[secure::SEQ_NR..secure::SEQ_NR + 6].copy_from_slice(seq_nr_local);
+    buf[sync::SERIAL_NUMBER..sync::SERIAL_NUMBER + 6].fill(0);
+
+    let ccm_ctx = CcmContext {
+        seq_nr: *seq_nr_local,
+        src: u16::from_be_bytes(source.0),
+        dst: u16::from_be_bytes(dest.0),
+        addr_type: buf[offsets::MSG_ADDR_TYPE] & 0x80,
+        tpci_apci: u16::from_be_bytes([tpci_high | 0x03, 0xF1]),
+    };
+    let mut challenge_enc = *challenge;
+    let mac = ccm::encrypt_and_mac_sync_req(key, &ccm_ctx, scf_byte, &[0u8; 6], &mut challenge_enc);
+
+    buf[sync::CHALLENGE..sync::CHALLENGE + 6].copy_from_slice(&challenge_enc);
+    buf[sync::FRAME_LEN - secure::MAC_LEN..sync::FRAME_LEN].copy_from_slice(&mac);
+
+    msg.into_inner()
+}
+
 /// Stamp the connected-transport sequence number into an already built
 /// internal-format frame (built with `Tpci::DataConnected(0)`).
 ///

@@ -295,12 +295,63 @@ Each chunk ends compilable and tested.
 - `linux_eth_light_switch` (routing-only) becomes relevant once the routing
   connector lands.
 
+## KNX Data Secure (done, untested on hardware)
+
+Roadmap item 1, implemented August 2026. Management (RCo) against
+devices with Data Secure active, under the tool key or FDSK.
+
+- **`src/security/`**: `SecurityStore` (bus-level keyring keyed by IA;
+  `SecurityEntry { mode, tool_key, fdsk, serial }` — the *explicit*
+  `DeviceSecurityMode` decides whether a connection is wrapped, so a
+  known FDSK on a security-disabled device does not force secure
+  comms; active key = tool key, else FDSK, mirroring the device's own
+  fallback). `SecureChannel` (sans-io wrap/unwrap + the two counters:
+  `tool_seq` our sending number, `table_seq` next accepted from the
+  device; replay check before MAC, counter advance after).
+  `SeqNumberStore` trait keyed by device serial (IAs are reassignable)
+  + `MemSeqStore` and the file-backed `JsonSeqStore` (temp-file +
+  rename). Unit-tested against the spec Annex C.1.1 vectors.
+- **Proto**: `SyncResRef` added to `messages/apdu/secure.rs` (typed
+  parser for the tool-received S-A_Sync_Res; tested against C.1.4).
+- **Bus task**: outgoing connected frames wrap **once at store time**
+  (retransmissions stay byte-identical; re-encrypting would burn a
+  sequence number per retry); incoming `SecureService` frames unwrap
+  at `IndicateData` before response matching, so `ResponseMatcher`
+  and every management parser see plaintext unchanged. `tool_seq`
+  persists on `ConfirmData`, `table_seq` after each verified frame.
+  MAC failure fails the in-flight procedure and closes the connection;
+  plaintext on a secure connection is dropped (downgrade path).
+- **S-A_Sync on open**: after T_Connect confirms, the handshake runs
+  connectionless (T_Data_Individual — 03/03/07 §5.3.2 allows either)
+  with a `getrandom` challenge; both counters adopt the response's
+  "next valid SeqNr" values (`table_seq = seq_remote`, **not** +1 —
+  the sync service advertises next-valid, unlike a data frame's
+  consumed number; `seq_local == 0` ignored, no rewind). One retry
+  with a fresh challenge after 1.5 s (device rate-limits sync
+  responses to 1/s), then the open fails with `SecuritySyncTimeout`
+  and the TL connection is torn down.
+- **API**: `KnxBus::set_device_security(ia, entry)`,
+  `connect_{ip,usb}_with_security(..., SecurityStore)` /
+  `with_connector_and_security`; `connect_device` goes secure
+  automatically when the keyring says so.
+- **Tests**: `tests/secure_bus.rs` drives the full handshake +
+  wrapped-request round-trip against an in-memory connector with the
+  test body playing the secure device (paused tokio time). Env-gated
+  live test `secure_connect_and_read` in `tests/live_tunnel.rs`
+  (`KNX_TOOL_KEY`/`KNX_FDSK` + `KNX_DEVICE_SERIAL` on top of the
+  tunnel vars); example `secure_device_info`.
+
+Known limitations: a crash between send and L_Data.con can reuse one
+tool sequence number (persist-on-confirm; the device-side persists
+pre-send — tighten later). Unsolicited device-initiated S-A_Sync_Req
+is not answered (devices only initiate sync for P2P group traffic,
+not toward the tool). Group-traffic Data Secure (GA key tables) and
+secure commissioning are the later roadmap items. Hardware smoke test
+still owed — `linux_eth_secure_light_switch` is the natural target.
+
 ## Later phases roadmap
 
-1. **KNX Data Secure**: security config (tool keys per IA, persistent
-   sequence-number store), secure APDU wrap/unwrap on the TL path via the
-   existing proto crypto (`ccm.rs`, `scf.rs`), `S-A_Sync` handshake on secure
-   connection open.
+1. ~~**KNX Data Secure**~~ *(done — see above)*
 2. **KNX IP Secure**: `IpSecureTunnelingConnector` wrapping the plain tunnel
    connector with the Session handshake + `SecureWrapper` (proto types
    exist).

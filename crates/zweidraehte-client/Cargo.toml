@@ -11,6 +11,12 @@ tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros", "sig
 log = { workspace = true }
 thiserror = { workspace = true }
 
+# Data Secure: OS CSPRNG for the sync-handshake challenge, serde for the
+# JSON sequence-number store.
+getrandom = "0.4"
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true }
+
 # USB connector: KNX USB interfaces are HID devices. async-hid brings its
 # own reactor threads, so it composes with tokio without a bridge.
 async-hid = { workspace = true }
@@ -18,3 +24,5 @@ futures-lite = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+# start_paused test runtime for the secure-handshake timeout tests.
+tokio = { version = "1", features = ["test-util"] }

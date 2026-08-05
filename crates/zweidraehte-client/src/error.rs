@@ -59,6 +59,15 @@ pub enum Error {
     #[error("USB interface error: {0}")]
     Usb(String),
 
+    #[error("secure MAC verification failed (wrong key or tampered frame)")]
+    SecurityMacMismatch,
+
+    #[error("S-A_Sync handshake timed out (no sync response from device)")]
+    SecuritySyncTimeout,
+
+    #[error("device is marked Secure in the keyring but has neither tool key nor FDSK")]
+    SecurityMissingKey,
+
     #[error("bus task terminated")]
     WorkerGone,
 }

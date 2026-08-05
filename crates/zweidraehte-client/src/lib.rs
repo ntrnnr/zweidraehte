@@ -52,12 +52,14 @@ pub mod connector;
 pub mod core;
 mod driver;
 mod error;
+pub mod security;
 
 pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck};
 pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector, UsbConnector, UsbSelector};
 pub use core::group::{GroupService, GroupTelegram};
 pub use core::management::{FunctionPropertyResult, PropertyDescription};
 pub use error::{Error, Result};
+pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
 
 /// Re-export commonly used proto types for convenience.
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
