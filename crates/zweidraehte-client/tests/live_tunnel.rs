@@ -22,7 +22,8 @@
 use std::net::SocketAddrV4;
 use std::time::Duration;
 
-use zweidraehte_client::{IndividualAddress, KnxBus, SecurityEntry, SecurityStore};
+use zweidraehte_client::security::Keyring;
+use zweidraehte_client::{GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, SecurityEntry, SecurityStore};
 
 /// PID_SERIAL_NUMBER on the Device Object.
 const PID_SERIAL_NUMBER: u16 = 11;
@@ -153,5 +154,104 @@ async fn secure_connect_and_read() {
     eprintln!("secure device {} mask: {:02X?}", target, descriptor);
     device.close().await.expect("T_Disconnect");
 
+    bus.disconnect().await.expect("tunnel disconnects");
+}
+
+fn keyring_security() -> Option<SecurityStore> {
+    let path = std::env::var("KNX_KEYRING").ok()?;
+    let password = std::env::var("KNX_KEYRING_PASSWORD").ok()?;
+    let keyring = Keyring::load(&path, &password).expect("keyring loads");
+    let mut security = SecurityStore::new();
+    security.import_keyring(&keyring);
+    Some(security)
+}
+
+fn group_ga(var: &str) -> Option<GroupAddress> {
+    let s = std::env::var(var).ok()?;
+    let parts: Vec<u16> = s.split('/').map(|p| p.parse().expect("GA is main/mid/sub")).collect();
+    let [main, mid, sub] = parts[..] else {
+        panic!("{var} is main/mid/sub");
+    };
+    Some(GroupAddress::from_three_level(main as u8, mid as u8, sub as u8))
+}
+
+/// Receive-only: listen on a secured group address and expect at least
+/// one authenticated telegram. Additionally needs:
+///
+/// ```bash
+/// KNX_KEYRING=<path to .knxkeys>  KNX_KEYRING_PASSWORD=<pw>
+/// KNX_GROUP_GA=2/0/3              # a GA with secure traffic on it
+/// ```
+#[tokio::test]
+async fn secure_group_monitor() {
+    let Some(addr) = tunnel_addr() else {
+        eprintln!("skipped: KNX_TUNNEL_ADDR not set");
+        return;
+    };
+    let Some(security) = keyring_security() else {
+        eprintln!("skipped: KNX_KEYRING / KNX_KEYRING_PASSWORD not set");
+        return;
+    };
+    let Some(ga) = group_ga("KNX_GROUP_GA") else {
+        eprintln!("skipped: KNX_GROUP_GA not set");
+        return;
+    };
+
+    let bus = KnxBus::connect_ip_with_security(addr, security).await.expect("tunnel connects");
+    let mut events = bus.group_events();
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let telegram = tokio::time::timeout_at(deadline, events.recv())
+            .await
+            .expect("a secured telegram arrives on KNX_GROUP_GA within 15 s")
+            .expect("broadcast channel open");
+        eprintln!(
+            "{} -> {} [{}{:?}] {:02X?}",
+            telegram.source,
+            telegram.group,
+            if telegram.secured { "secure " } else { "" },
+            telegram.service,
+            telegram.data
+        );
+        if telegram.group == ga && telegram.secured {
+            break;
+        }
+    }
+
+    bus.disconnect().await.expect("tunnel disconnects");
+}
+
+/// Sends ONE secured group write. Only runs with an explicit target so
+/// nobody flips a light by accident. Additionally needs:
+///
+/// ```bash
+/// KNX_KEYRING=... KNX_KEYRING_PASSWORD=...
+/// KNX_GROUP_WRITE_GA=2/0/3
+/// KNX_GROUP_WRITE_VALUE=1         # single 6-bit value, short encoding
+/// ```
+#[tokio::test]
+async fn secure_group_write_live() {
+    let Some(addr) = tunnel_addr() else {
+        eprintln!("skipped: KNX_TUNNEL_ADDR not set");
+        return;
+    };
+    let Some(security) = keyring_security() else {
+        eprintln!("skipped: KNX_KEYRING / KNX_KEYRING_PASSWORD not set");
+        return;
+    };
+    let Some(ga) = group_ga("KNX_GROUP_WRITE_GA") else {
+        eprintln!("skipped: KNX_GROUP_WRITE_GA not set");
+        return;
+    };
+    let Some(value) = std::env::var("KNX_GROUP_WRITE_VALUE").ok().map(|v| v.parse::<u8>().expect("0..=63")) else {
+        eprintln!("skipped: KNX_GROUP_WRITE_VALUE not set");
+        return;
+    };
+
+    let bus = KnxBus::connect_ip_with_security(addr, security).await.expect("tunnel connects");
+    bus.group_write(ga, &[value], GroupValueEncoding::Short)
+        .await
+        .expect("secured group write accepted by the interface");
     bus.disconnect().await.expect("tunnel disconnects");
 }

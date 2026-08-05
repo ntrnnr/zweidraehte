@@ -93,7 +93,7 @@ pub fn parse_ia(s: &str) -> Result<IndividualAddress, String> {
 #[allow(dead_code)]
 pub fn parse_hex_vec(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("odd number of hex chars".into());
     }
     (0..s.len() / 2)

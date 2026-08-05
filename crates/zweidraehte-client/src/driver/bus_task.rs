@@ -31,7 +31,7 @@ use crate::core::group::GroupTelegram;
 use crate::core::management::{RESPONSE_TIMEOUT, ResponseMatcher};
 use crate::core::tl_client::{TL_ACK_TIMEOUT, TL_CONNECTION_TIMEOUT, TlClientCore};
 use crate::error::{Error, Result};
-use crate::security::channel::{SecureChannel, seq_from_bytes};
+use crate::security::channel::{SecureChannel, group_unwrap, group_wrap, seq_from_bytes};
 use crate::security::{SecureError, SecurityEntry, SecurityStore};
 
 /// How long one S-A_Sync attempt waits for the response. The device
@@ -263,7 +263,19 @@ impl<C: KnxConnector> BusTask<C> {
 
     async fn handle_command(&mut self, cmd: BusCommand) -> Result<()> {
         match cmd {
-            BusCommand::SendOnly { frame, tx } => {
+            BusCommand::SendOnly { mut frame, tx } => {
+                // A frame to a secured group address gets wrapped here —
+                // the one place that knows both the group key and our
+                // assigned bus address (the CCM nonce covers the source).
+                // Both group_write and group_read arrive on this path.
+                let msg = KnxMessageBuffer::from_buffer(frame.as_slice());
+                if let DestinationAddress::Group(ga) = msg.get_dest_addr()
+                    && let Some(&key) = self.security.get_group_key(u16::from_be_bytes(ga.0))
+                {
+                    let seq = self.security.next_group_seq();
+                    let src = u16::from_be_bytes(self.info.assigned_address.0);
+                    frame = group_wrap(&key, seq, src, &frame);
+                }
                 let result = self.send_internal(&frame).await;
                 let _ = tx.send(result);
             }
@@ -414,10 +426,51 @@ impl<C: KnxConnector> BusTask<C> {
         let source = msg.get_source_addr();
 
         match msg.get_dest_addr() {
-            DestinationAddress::Group(_) => {
-                if let Some(telegram) = GroupTelegram::parse(internal) {
-                    // No receivers is fine — nobody subscribed (yet).
-                    let _ = self.group_tx.send(telegram);
+            DestinationAddress::Group(ga) => {
+                let is_secure = decode_apci_code(internal) == Some(ApciCode::SecureService);
+                match (self.security.get_group_key(u16::from_be_bytes(ga.0)), is_secure) {
+                    (Some(&key), true) => {
+                        // Replay protection is per sender IA — the same
+                        // slot a device keeps in its SIAT; the floor
+                        // only moves once the MAC has verified.
+                        let floor = self.security.sender_seq_floor(source);
+                        match group_unwrap(&key, internal, floor) {
+                            Ok((plain, new_floor)) => {
+                                self.security.save_sender_seq(source, new_floor);
+                                if let Some(mut telegram) = GroupTelegram::parse(&plain) {
+                                    telegram.secured = true;
+                                    // No receivers is fine — nobody subscribed (yet).
+                                    let _ = self.group_tx.send(telegram);
+                                }
+                            }
+                            Err(SecureError::Replay { received, expected }) => {
+                                // A retransmission carries floor - 1 and
+                                // lands here like any older number.
+                                log::debug!(
+                                    "dropping replayed secure group frame from {source} on {ga} \
+                                     (seq {received}, expected >= {expected})"
+                                );
+                            }
+                            Err(e) => {
+                                log::warn!("dropping secure group frame from {source} on {ga}: {e}");
+                            }
+                        }
+                    }
+                    (Some(_), false) => {
+                        // Plaintext on a secured group address is the
+                        // downgrade path — devices with a secured group
+                        // object drop it, and so do we.
+                        log::warn!("dropping plaintext group telegram from {source} on secured {ga}");
+                    }
+                    (None, true) => {
+                        log::debug!("dropping secure group telegram on {ga} (no group key)");
+                    }
+                    (None, false) => {
+                        if let Some(telegram) = GroupTelegram::parse(internal) {
+                            // No receivers is fine — nobody subscribed (yet).
+                            let _ = self.group_tx.send(telegram);
+                        }
+                    }
                 }
                 Ok(())
             }
@@ -612,10 +665,11 @@ impl<C: KnxConnector> BusTask<C> {
                 TlAction::ConfirmData { success, .. } => {
                     // The wrapped frame made it onto the bus: its tool
                     // sequence number is spent for good, persist it.
-                    if success && let Some(seq) = self.tl_pending_tool_seq.take() {
-                        if let Some(serial) = self.tl_security.as_ref().and_then(|sec| sec.serial().copied()) {
-                            self.security.save_tool_seq(&serial, seq);
-                        }
+                    if success
+                        && let Some(seq) = self.tl_pending_tool_seq.take()
+                        && let Some(serial) = self.tl_security.as_ref().and_then(|sec| sec.serial().copied())
+                    {
+                        self.security.save_tool_seq(&serial, seq);
                     }
                     if let Some(Pending::TlRequest { matcher, expects_response, tx, .. }) = self.pending.take() {
                         if !success {

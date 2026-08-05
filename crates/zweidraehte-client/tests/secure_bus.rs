@@ -12,9 +12,12 @@ use tokio::sync::mpsc;
 use tokio::time::Duration;
 
 use zweidraehte_client::core::frames;
-use zweidraehte_client::security::channel::{SecureChannel, seq_from_bytes, seq_to_bytes};
+use zweidraehte_client::security::channel::{SecureChannel, seq_to_bytes};
 use zweidraehte_client::security::{MemSeqStore, SeqNumberStore};
-use zweidraehte_client::{ConnectorInfo, Error, IndividualAddress, KnxBus, KnxConnector, SecurityEntry, SecurityStore};
+use zweidraehte_client::{
+    ConnectorInfo, Error, GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, KnxConnector, SecurityEntry,
+    SecurityStore,
+};
 use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::encoding::cemi::CemiMessageCode;
 use zweidraehte_proto::messages::apdu::property::PropertyValueResponse;
@@ -104,6 +107,18 @@ impl SeqNumberStore for SharedSeqStore {
     fn save_table_seq(&mut self, serial: &[u8; 6], seq: u64) -> std::io::Result<()> {
         self.0.lock().expect("store mutex").save_table_seq(serial, seq)
     }
+    fn load_own_seq(&self) -> u64 {
+        self.0.lock().expect("store mutex").load_own_seq()
+    }
+    fn save_own_seq(&mut self, seq: u64) -> std::io::Result<()> {
+        self.0.lock().expect("store mutex").save_own_seq(seq)
+    }
+    fn load_sender_seq(&self, ia: IndividualAddress) -> u64 {
+        self.0.lock().expect("store mutex").load_sender_seq(ia)
+    }
+    fn save_sender_seq(&mut self, ia: IndividualAddress, seq: u64) -> std::io::Result<()> {
+        self.0.lock().expect("store mutex").save_sender_seq(ia, seq)
+    }
 }
 
 fn secure_bus(entry: SecurityEntry) -> (KnxBus, MockBus, SharedSeqStore) {
@@ -177,8 +192,8 @@ async fn accept_secure_connect(bus: &mut MockBus, seq_remote: u64, seq_local: u6
     let mut challenge = [0u8; 6];
     challenge.copy_from_slice(req.challenge());
     let ctx = req.ccm_context();
-    let mut mac = req.mac();
-    ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &serial, &mut challenge, &mut mac)
+    let mac = req.mac();
+    ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &serial, &mut challenge, &mac)
         .expect("sync request verifies under the FDSK");
 
     bus.indicate(&build_sync_res(&challenge, seq_remote, seq_local));
@@ -295,8 +310,8 @@ async fn tampered_sync_response_fails_connect() {
         let mut challenge = [0u8; 6];
         challenge.copy_from_slice(req.challenge());
         let ctx = req.ccm_context();
-        let mut mac = req.mac();
-        ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &[0u8; 6], &mut challenge, &mut mac)
+        let mac = req.mac();
+        ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &[0u8; 6], &mut challenge, &mac)
             .expect("sync request verifies");
 
         let mut res = build_sync_res(&challenge, 100, 50);
@@ -380,4 +395,128 @@ async fn replayed_device_frame_is_dropped() {
     let value = dev.property_read(0, 11, 1, 1).await.expect("genuine response arrives after the replay");
     assert_eq!(value, [0xEE]);
     drop(device.await.expect("mock device runs to completion"));
+}
+
+// ============================================================================
+// Group traffic
+// ============================================================================
+
+const GROUP_KEY: [u8; 16] = [
+    0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, //
+    0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+];
+
+fn secured_ga() -> GroupAddress {
+    GroupAddress::from_three_level(2, 0, 3)
+}
+
+fn secured_ga_raw() -> u16 {
+    u16::from_be_bytes(secured_ga().0)
+}
+
+/// A bus whose keyring secures [`secured_ga`] and nothing else.
+fn group_secure_bus() -> (KnxBus, MockBus, SharedSeqStore) {
+    let (to_device_tx, to_device_rx) = mpsc::unbounded_channel();
+    let (to_client_tx, to_client_rx) = mpsc::unbounded_channel();
+    let connector = ChannelConnector { to_device: to_device_tx, from_device: to_client_rx };
+    let info = ConnectorInfo { assigned_address: client_ia(), max_apdu: 254 };
+
+    let store = SharedSeqStore::default();
+    let mut security = SecurityStore::with_store(Box::new(store.clone()));
+    security.set_group_key(secured_ga_raw(), GROUP_KEY);
+
+    let bus = KnxBus::with_connector_and_security(connector, info, security);
+    (bus, MockBus { from_client: to_device_rx, to_client: to_client_tx }, store)
+}
+
+/// A plain A_GroupValue_Write, value 1 (6-bit), from `source`.
+fn plain_group_write(source: IndividualAddress, ga: GroupAddress) -> Vec<u8> {
+    use zweidraehte_proto::messages::apdu::group_value::GroupValueWriteRequest;
+    frames::build_group_frame(source, ga, ApciCode::GroupValueWrite, GroupValueWriteRequest::SHORT_MSG_LEN, |buf| {
+        GroupValueWriteRequest::write_short(buf, 1)
+    })
+}
+
+#[tokio::test(start_paused = true)]
+async fn group_write_on_secured_ga_is_wrapped() {
+    let (bus, mut mock, store) = group_secure_bus();
+
+    bus.group_write(secured_ga(), &[1], GroupValueEncoding::Short).await.expect("group write accepted");
+
+    let frame = mock.recv().await;
+    assert_eq!(&frame[6..8], &[0x03, 0xF1], "SecureService APCI on the wire");
+    assert_eq!(frame[secure::SCF], 0x10, "group data SCF: A+C, no tool access");
+
+    // The device side verifies with the same group key; a fresh sender
+    // is at floor 1 and the timestamp-seeded seq is far above it.
+    let (plain, _) = zweidraehte_client::security::group_unwrap(&GROUP_KEY, &frame, 1).expect("frame verifies");
+    let msg = KnxMessageBuffer::from_buffer(plain.as_slice());
+    assert_eq!(msg.get_apci_code(), ApciCode::GroupValueWrite);
+
+    // The consumed sending seq was persisted (successor of the
+    // timestamp-floored counter).
+    assert!(store.load_own_seq() > 200_000_000_000, "own seq persisted, got {}", store.load_own_seq());
+}
+
+#[tokio::test(start_paused = true)]
+async fn group_write_on_plain_ga_stays_plaintext() {
+    let (bus, mut mock, _) = group_secure_bus();
+    let other_ga = GroupAddress::from_three_level(2, 0, 4);
+
+    bus.group_write(other_ga, &[1], GroupValueEncoding::Short).await.expect("group write accepted");
+
+    let frame = mock.recv().await;
+    let msg = KnxMessageBuffer::from_buffer(frame.as_slice());
+    assert_eq!(msg.get_apci_code(), ApciCode::GroupValueWrite, "no secure envelope on an unkeyed GA");
+}
+
+#[tokio::test(start_paused = true)]
+async fn secure_group_indication_is_decrypted_and_replay_dropped() {
+    let (bus, mock, store) = group_secure_bus();
+    let mut events = bus.group_events();
+
+    // The device sends a secured write with its own sending seq.
+    let plain = plain_group_write(device_ia(), secured_ga());
+    let wrapped = zweidraehte_client::security::group_wrap(&GROUP_KEY, 500, u16::from_be_bytes(device_ia().0), &plain);
+    mock.indicate(&wrapped);
+
+    let telegram = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("decrypted telegram delivered")
+        .expect("broadcast channel open");
+    assert_eq!(telegram.group, secured_ga());
+    assert_eq!(telegram.source, device_ia());
+    assert_eq!(telegram.data, vec![1]);
+    assert!(telegram.secured, "telegram flagged as secured");
+
+    // The sender's replay floor advanced and was persisted.
+    assert_eq!(store.load_sender_seq(device_ia()), 501);
+
+    // The identical frame again is a replay: nothing reaches subscribers.
+    mock.indicate(&wrapped);
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), events.recv()).await.is_err(),
+        "replayed frame must not be delivered"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn plaintext_on_secured_ga_is_dropped() {
+    let (bus, mock, _) = group_secure_bus();
+    let mut events = bus.group_events();
+
+    // Downgrade attempt: plaintext write on the secured address.
+    mock.indicate(&plain_group_write(device_ia(), secured_ga()));
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), events.recv()).await.is_err(),
+        "plaintext on a secured GA must not be delivered"
+    );
+
+    // Plaintext on an unkeyed address still flows, unflagged.
+    mock.indicate(&plain_group_write(device_ia(), GroupAddress::from_three_level(2, 0, 4)));
+    let telegram = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .expect("plain telegram delivered")
+        .expect("broadcast channel open");
+    assert!(!telegram.secured);
 }

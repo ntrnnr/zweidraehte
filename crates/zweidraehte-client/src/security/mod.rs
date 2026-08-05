@@ -22,7 +22,7 @@ pub mod keyring;
 pub mod knxkeys;
 pub mod store;
 
-pub use channel::SecureChannel;
+pub use channel::{SecureChannel, group_unwrap, group_wrap};
 pub use file_store::JsonSeqStore;
 pub use keyring::{DeviceSecurityMode, SecurityEntry, SecurityStore};
 pub use knxkeys::{Keyring, KeyringDevice, KnxKeysError};
@@ -45,6 +45,9 @@ pub enum SecureError {
 
     #[error("secure frame too short")]
     TooShort,
+
+    #[error("tool-access flag on a group frame")]
+    ToolAccessOnGroup,
 
     #[error("security entry has mode Secure but neither tool key nor FDSK")]
     MissingKey,

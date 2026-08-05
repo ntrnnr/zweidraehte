@@ -98,8 +98,6 @@ impl SecureChannel {
     /// Returns the secure frame and the *new* `tool_seq` for
     /// persistence.
     pub fn wrap(&mut self, src: u16, frame: &[u8]) -> (Vec<u8>, u64) {
-        assert!(frame.len() > offsets::MSG_TPCI, "frame too short for wrapping");
-
         let seq_nr = seq_to_bytes(self.tool_seq);
         self.tool_seq += 1;
 
@@ -109,34 +107,8 @@ impl SecureChannel {
             confidentiality: true,
             tool_access: true,
         };
-        let scf_byte = scf.encode();
 
-        let dst = u16::from_be_bytes([frame[offsets::MSG_DEST_ADDR], frame[offsets::MSG_DEST_ADDR + 1]]);
-        let addr_type = frame[offsets::MSG_ADDR_TYPE] & 0x80;
-
-        // The protected payload is the whole plaintext APDU including
-        // its TPCI/APCI; the secure envelope repeats the TPCI bits with
-        // the Secure Service APCI (03F1h) in the escape position.
-        let plain_apdu = &frame[offsets::MSG_TPCI..];
-        let tpci_high = plain_apdu[0] & 0xFC;
-        let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
-
-        let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
-
-        let mut payload = plain_apdu.to_vec();
-        let mac = ccm::encrypt_and_mac(&self.key, &ccm_ctx, scf_byte, &mut payload);
-
-        let mut out = Vec::with_capacity(frame.len() + secure::OVERHEAD);
-        out.extend_from_slice(&frame[..offsets::MSG_TPCI]);
-        out[offsets::MSG_SOURCE_ADDR..offsets::MSG_SOURCE_ADDR + 2].copy_from_slice(&src.to_be_bytes());
-        out.push(tpci_high | 0x03);
-        out.push(0xF1);
-        out.push(scf_byte);
-        out.extend_from_slice(&seq_nr);
-        out.extend_from_slice(&payload);
-        out.extend_from_slice(&mac);
-
-        (out, self.tool_seq)
+        (wrap_with_scf(&self.key, scf, seq_nr, src, frame), self.tool_seq)
     }
 
     /// Unwrap an incoming Secure APDU frame from the device.
@@ -149,54 +121,13 @@ impl SecureChannel {
     /// Returns the plaintext internal-format frame (original header +
     /// decrypted APDU) and the *new* `table_seq` for persistence.
     pub fn unwrap(&mut self, frame: &[u8]) -> Result<(Vec<u8>, u64), SecureError> {
-        if frame.len() < secure::MIN_FRAME_LEN {
-            return Err(SecureError::TooShort);
-        }
-
-        let scf = SecurityControlField::parse(frame[secure::SCF]).map_err(|_| SecureError::InvalidScf)?;
-        if scf.service != SecureServiceType::Data {
-            return Err(SecureError::UnexpectedService);
-        }
-
-        let mut seq_nr = [0u8; 6];
-        seq_nr.copy_from_slice(&frame[secure::SEQ_NR..secure::SEQ_NR + 6]);
-        let received = seq_from_bytes(&seq_nr);
-        if received < self.table_seq {
-            return Err(SecureError::Replay { received, expected: self.table_seq });
-        }
-
-        let src = u16::from_be_bytes([frame[offsets::MSG_SOURCE_ADDR], frame[offsets::MSG_SOURCE_ADDR + 1]]);
-        let dst = u16::from_be_bytes([frame[offsets::MSG_DEST_ADDR], frame[offsets::MSG_DEST_ADDR + 1]]);
-        let addr_type = frame[offsets::MSG_ADDR_TYPE] & 0x80;
-        let tpci_apci = u16::from_be_bytes([frame[offsets::MSG_TPCI], frame[offsets::MSG_TPCI + 1]]);
-
-        let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci };
-
-        let scf_byte = frame[secure::SCF];
-        let mac_start = frame.len() - secure::MAC_LEN;
-        let mut received_mac = [0u8; 4];
-        received_mac.copy_from_slice(&frame[mac_start..]);
-
-        let mut payload = frame[secure::PAYLOAD..mac_start].to_vec();
-        if scf.confidentiality {
-            ccm::verify_and_decrypt(&self.key, &ccm_ctx, scf_byte, &mut payload, &received_mac)
-                .map_err(|_| SecureError::MacMismatch)?;
-        } else {
-            ccm::verify_mac_auth_only(&self.key, &ccm_ctx, scf_byte, &payload, &received_mac)
-                .map_err(|_| SecureError::MacMismatch)?;
-        }
+        let (plain, received) = unwrap_with_floor(&self.key, frame, self.table_seq)?;
 
         // Only advance the counter after the MAC verified — an attacker
         // must not be able to move it with an unauthenticated frame.
         self.table_seq = received + 1;
 
-        // Plaintext frame = original header + decrypted APDU (which
-        // starts with the plain TPCI/APCI).
-        let mut out = Vec::with_capacity(offsets::MSG_TPCI + payload.len());
-        out.extend_from_slice(&frame[..offsets::MSG_TPCI]);
-        out.extend_from_slice(&payload);
-
-        Ok((out, self.table_seq))
+        Ok((plain, self.table_seq))
     }
 
     /// Apply the counters from a verified S-A_Sync_Res.
@@ -217,6 +148,153 @@ impl SecureChannel {
         }
         (self.tool_seq, self.table_seq)
     }
+}
+
+/// Wrap a plaintext internal-format frame into a Secure APDU frame
+/// under `scf` with the given sequence number.
+///
+/// `src` is written into the output header and into the CCM nonce, so
+/// it must match what actually goes on the wire — the receiver
+/// recomputes the MAC from the received header. The TPCI bits of the
+/// plaintext are preserved on the secure envelope.
+fn wrap_with_scf(key: &[u8; 16], scf: SecurityControlField, seq_nr: [u8; 6], src: u16, frame: &[u8]) -> Vec<u8> {
+    assert!(frame.len() > offsets::MSG_TPCI, "frame too short for wrapping");
+
+    let scf_byte = scf.encode();
+
+    let dst = u16::from_be_bytes([frame[offsets::MSG_DEST_ADDR], frame[offsets::MSG_DEST_ADDR + 1]]);
+    let addr_type = frame[offsets::MSG_ADDR_TYPE] & 0x80;
+
+    // The protected payload is the whole plaintext APDU including
+    // its TPCI/APCI; the secure envelope repeats the TPCI bits with
+    // the Secure Service APCI (03F1h) in the escape position.
+    let plain_apdu = &frame[offsets::MSG_TPCI..];
+    let tpci_high = plain_apdu[0] & 0xFC;
+    let secure_tpci_apci = u16::from_be_bytes([tpci_high | 0x03, 0xF1]);
+
+    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci: secure_tpci_apci };
+
+    let mut payload = plain_apdu.to_vec();
+    let mac = ccm::encrypt_and_mac(key, &ccm_ctx, scf_byte, &mut payload);
+
+    let mut out = Vec::with_capacity(frame.len() + secure::OVERHEAD);
+    out.extend_from_slice(&frame[..offsets::MSG_TPCI]);
+    out[offsets::MSG_SOURCE_ADDR..offsets::MSG_SOURCE_ADDR + 2].copy_from_slice(&src.to_be_bytes());
+    out.push(tpci_high | 0x03);
+    out.push(0xF1);
+    out.push(scf_byte);
+    out.extend_from_slice(&seq_nr);
+    out.extend_from_slice(&payload);
+    out.extend_from_slice(&mac);
+
+    out
+}
+
+/// Verify and decrypt a Secure APDU frame against a replay floor
+/// (`floor` = lowest sequence number still accepted).
+///
+/// The replay check runs before the MAC — same order as the device —
+/// but the caller must only move its floor on `Ok`, since the sequence
+/// number is unauthenticated until the MAC verifies. Accepts both A+C
+/// and auth-only frames. Returns the plaintext internal-format frame
+/// and the *received* sequence number.
+fn unwrap_with_floor(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8>, u64), SecureError> {
+    if frame.len() < secure::MIN_FRAME_LEN {
+        return Err(SecureError::TooShort);
+    }
+
+    let scf = SecurityControlField::parse(frame[secure::SCF]).map_err(|_| SecureError::InvalidScf)?;
+    if scf.service != SecureServiceType::Data {
+        return Err(SecureError::UnexpectedService);
+    }
+
+    let mut seq_nr = [0u8; 6];
+    seq_nr.copy_from_slice(&frame[secure::SEQ_NR..secure::SEQ_NR + 6]);
+    let received = seq_from_bytes(&seq_nr);
+    if received < floor {
+        return Err(SecureError::Replay { received, expected: floor });
+    }
+
+    let src = u16::from_be_bytes([frame[offsets::MSG_SOURCE_ADDR], frame[offsets::MSG_SOURCE_ADDR + 1]]);
+    let dst = u16::from_be_bytes([frame[offsets::MSG_DEST_ADDR], frame[offsets::MSG_DEST_ADDR + 1]]);
+    let addr_type = frame[offsets::MSG_ADDR_TYPE] & 0x80;
+    let tpci_apci = u16::from_be_bytes([frame[offsets::MSG_TPCI], frame[offsets::MSG_TPCI + 1]]);
+
+    let ccm_ctx = CcmContext { seq_nr, src, dst, addr_type, tpci_apci };
+
+    let scf_byte = frame[secure::SCF];
+    let mac_start = frame.len() - secure::MAC_LEN;
+    let mut received_mac = [0u8; 4];
+    received_mac.copy_from_slice(&frame[mac_start..]);
+
+    let mut payload = frame[secure::PAYLOAD..mac_start].to_vec();
+    if scf.confidentiality {
+        ccm::verify_and_decrypt(key, &ccm_ctx, scf_byte, &mut payload, &received_mac)
+            .map_err(|_| SecureError::MacMismatch)?;
+    } else {
+        ccm::verify_mac_auth_only(key, &ccm_ctx, scf_byte, &payload, &received_mac)
+            .map_err(|_| SecureError::MacMismatch)?;
+    }
+
+    // Plaintext frame = original header + decrypted APDU (which
+    // starts with the plain TPCI/APCI).
+    let mut out = Vec::with_capacity(offsets::MSG_TPCI + payload.len());
+    out.extend_from_slice(&frame[..offsets::MSG_TPCI]);
+    out.extend_from_slice(&payload);
+
+    Ok((out, received))
+}
+
+/// Wrap a plaintext group frame (A_GroupValue_*) into a Secure APDU
+/// under a group key.
+///
+/// Group traffic is always sent A+C without tool access (SCF 0x10) —
+/// ETS programs S-mode secured group objects as auth+conf only, and a
+/// tool-access flag on a group frame is rejected by every receiver
+/// (TSSJ §3.2.6). `seq` is the client-wide secure sending sequence
+/// number; the caller consumes it from [`super::SecurityStore`] before
+/// calling.
+pub fn group_wrap(key: &[u8; 16], seq: u64, src: u16, frame: &[u8]) -> Vec<u8> {
+    debug_assert_eq!(frame[offsets::MSG_ADDR_TYPE] & 0x80, 0x80, "group_wrap needs a group-addressed frame");
+
+    let scf = SecurityControlField {
+        service: SecureServiceType::Data,
+        system_broadcast: false,
+        confidentiality: true,
+        tool_access: false,
+    };
+
+    wrap_with_scf(key, scf, seq_to_bytes(seq), src, frame)
+}
+
+/// Unwrap an incoming secure group frame under a group key.
+///
+/// `floor` is the next sequence number accepted from this *sender IA*
+/// (replay protection is per sender, not per group address — the same
+/// slot a device keeps in its SIAT). A retransmission carries the
+/// sender's last valid number, i.e. `floor - 1`, and lands in the
+/// `Replay` arm like any older number. Sequence number 0 is always
+/// rejected, and a tool-access flag on group traffic is refused
+/// outright (TSSJ §3.2.6). Accepts A+C (SCF 0x10) and auth-only
+/// (SCF 0x00) frames.
+///
+/// Returns the plaintext frame and the new floor (`received + 1`) for
+/// the caller to store — only on `Ok`, so an unauthenticated frame
+/// can never move the floor.
+pub fn group_unwrap(key: &[u8; 16], frame: &[u8], floor: u64) -> Result<(Vec<u8>, u64), SecureError> {
+    if frame.len() < secure::MIN_FRAME_LEN {
+        return Err(SecureError::TooShort);
+    }
+    let scf = SecurityControlField::parse(frame[secure::SCF]).map_err(|_| SecureError::InvalidScf)?;
+    if scf.tool_access {
+        return Err(SecureError::ToolAccessOnGroup);
+    }
+
+    // Sequence number 0 is invalid on any S-A_Data frame; enforce it
+    // even if a caller passed a zero floor.
+    let (plain, received) = unwrap_with_floor(key, frame, floor.max(1))?;
+
+    Ok((plain, received + 1))
 }
 
 #[cfg(test)]
@@ -336,5 +414,112 @@ mod tests {
         // SCF 0x92 = SyncRequest — not S-A_Data.
         frame[secure::SCF] = 0x92;
         assert_eq!(ch.unwrap(&frame), Err(SecureError::UnexpectedService));
+    }
+
+    // ---- group traffic ----
+    //
+    // The spec Annex C carries no group-communication vector, so these
+    // tests anchor on round-trips through the CCM primitives that the
+    // C.1.1 vector above already pins down, plus byte-level checks of
+    // the envelope (SCF, APCI, sequence number).
+
+    const GROUP_KEY: [u8; 16] = [
+        0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11, //
+        0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+    ];
+
+    /// A plain A_GroupValue_Write to GA 2/3/4 (1304h), value 1 (6-bit).
+    fn group_plain_frame() -> Vec<u8> {
+        // CTRL, SRC (stamped by wrap), DST = 1304h, NPDU: group-addressed
+        // (bit 7), length 1; TPCI/APCI 0080h | value.
+        vec![0xBC, 0x00, 0x00, 0x13, 0x04, 0xE1, 0x00, 0x81]
+    }
+
+    #[test]
+    fn group_wrap_envelope_bytes() {
+        let secure = group_wrap(&GROUP_KEY, 5, 0x110A, &group_plain_frame());
+
+        assert_eq!(&secure[..6], &[0xBC, 0x11, 0x0A, 0x13, 0x04, 0xE1], "header with src stamped");
+        assert_eq!(&secure[6..8], &[0x03, 0xF1], "SecureService APCI");
+        assert_eq!(secure[secure::SCF], 0x10, "group data SCF: A+C, no tool access");
+        assert_eq!(&secure[secure::SEQ_NR..secure::SEQ_NR + 6], &seq_to_bytes(5));
+        assert_eq!(secure.len(), group_plain_frame().len() + secure::OVERHEAD);
+    }
+
+    #[test]
+    fn group_wrap_unwrap_roundtrip() {
+        let plain = group_plain_frame();
+        let secure = group_wrap(&GROUP_KEY, 5, 0x110A, &plain);
+
+        let (recovered, new_floor) = group_unwrap(&GROUP_KEY, &secure, 1).expect("own frame verifies");
+        assert_eq!(&recovered[6..], &plain[6..], "plain APDU recovered");
+        assert_eq!(&recovered[..6], &secure[..6], "header preserved");
+        assert_eq!(new_floor, 6, "floor = received + 1");
+    }
+
+    #[test]
+    fn group_unwrap_replay_rejected() {
+        let secure = group_wrap(&GROUP_KEY, 5, 0x110A, &group_plain_frame());
+
+        // A retransmission carries the last valid number: floor - 1.
+        assert_eq!(group_unwrap(&GROUP_KEY, &secure, 6), Err(SecureError::Replay { received: 5, expected: 6 }));
+        // Anything older is equally dead.
+        assert_eq!(group_unwrap(&GROUP_KEY, &secure, 100), Err(SecureError::Replay { received: 5, expected: 100 }));
+        // At the floor it is fresh.
+        group_unwrap(&GROUP_KEY, &secure, 5).expect("seq == floor is accepted");
+    }
+
+    #[test]
+    fn group_unwrap_seq_zero_rejected_even_with_zero_floor() {
+        let secure = group_wrap(&GROUP_KEY, 0, 0x110A, &group_plain_frame());
+        assert_eq!(group_unwrap(&GROUP_KEY, &secure, 0), Err(SecureError::Replay { received: 0, expected: 1 }));
+    }
+
+    #[test]
+    fn group_unwrap_tool_access_rejected() {
+        // The same frame wrapped with the tool SCF (0x90) — a receiver
+        // must refuse tool access on group traffic (TSSJ §3.2.6),
+        // before any MAC work.
+        let mut ch = SecureChannel::new(GROUP_KEY, SERIAL, 5, 1);
+        let (tool_wrapped, _) = ch.wrap(0x110A, &group_plain_frame());
+
+        assert_eq!(group_unwrap(&GROUP_KEY, &tool_wrapped, 1), Err(SecureError::ToolAccessOnGroup));
+    }
+
+    #[test]
+    fn group_unwrap_auth_only_accepted() {
+        // Hand-build an auth-only (SCF 0x00) frame: payload rides in
+        // clear, MAC covers SCF + payload.
+        use zweidraehte_proto::crypto::ccm;
+
+        let plain = group_plain_frame();
+        let seq_nr = seq_to_bytes(9);
+        let src = 0x110Au16;
+        let ctx = CcmContext { seq_nr, src, dst: 0x1304, addr_type: 0x80, tpci_apci: 0x03F1 };
+        let payload = plain[offsets::MSG_TPCI..].to_vec();
+        let mac = ccm::compute_mac_auth_only(&GROUP_KEY, &ctx, 0x00, &payload);
+
+        let mut frame = vec![0xBC, 0x11, 0x0A, 0x13, 0x04, 0xE1, 0x03, 0xF1, 0x00];
+        frame.extend_from_slice(&seq_nr);
+        frame.extend_from_slice(&payload);
+        frame.extend_from_slice(&mac);
+
+        let (recovered, new_floor) = group_unwrap(&GROUP_KEY, &frame, 1).expect("auth-only frame verifies");
+        assert_eq!(&recovered[6..], &plain[6..]);
+        assert_eq!(new_floor, 10);
+    }
+
+    #[test]
+    fn group_unwrap_tampered_mac_rejected() {
+        let mut secure = group_wrap(&GROUP_KEY, 5, 0x110A, &group_plain_frame());
+        let last = secure.len() - 1;
+        secure[last] ^= 0x01;
+        assert_eq!(group_unwrap(&GROUP_KEY, &secure, 1), Err(SecureError::MacMismatch));
+    }
+
+    #[test]
+    fn group_unwrap_wrong_key_rejected() {
+        let secure = group_wrap(&GROUP_KEY, 5, 0x110A, &group_plain_frame());
+        assert_eq!(group_unwrap(&TOOL_KEY, &secure, 1), Err(SecureError::MacMismatch));
     }
 }

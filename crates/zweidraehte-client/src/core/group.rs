@@ -26,6 +26,11 @@ pub struct GroupTelegram {
     pub group: GroupAddress,
     pub service: GroupService,
     pub data: Vec<u8>,
+    /// Whether the telegram arrived in a KNX Data Secure envelope and
+    /// was authenticated (and decrypted) under the group key. Plaintext
+    /// telegrams on a secured group address never reach subscribers, so
+    /// on such addresses this is always `true`.
+    pub secured: bool,
 }
 
 impl GroupTelegram {
@@ -50,7 +55,7 @@ impl GroupTelegram {
             _ => return None,
         };
 
-        Some(Self { source, group, service, data })
+        Some(Self { source, group, service, data, secured: false })
     }
 
     /// Extract the value payload, handling both encodings: a frame ending
@@ -75,8 +80,10 @@ mod tests {
         GroupAddress::from_three_level(2, 0, 3)
     }
 
+    type ApduWriter = Box<dyn FnOnce(&mut [u8])>;
+
     fn build_write(data: &[u8], encoding: GroupValueEncoding) -> Vec<u8> {
-        let (msg_len, writer): (usize, Box<dyn FnOnce(&mut [u8])>) = match encoding {
+        let (msg_len, writer): (usize, ApduWriter) = match encoding {
             GroupValueEncoding::Short => {
                 let v = data[0];
                 (

@@ -295,10 +295,12 @@ Each chunk ends compilable and tested.
 - `linux_eth_light_switch` (routing-only) becomes relevant once the routing
   connector lands.
 
-## KNX Data Secure (done, untested on hardware)
+## KNX Data Secure (done)
 
 Roadmap item 1, implemented August 2026. Management (RCo) against
 devices with Data Secure active, under the tool key or FDSK.
+Hardware-confirmed against the Teststand Mobil installation (secure
+connect + wrapped reads under the ETS keyring, August 2026).
 
 - **`src/security/`**: `SecurityStore` (bus-level keyring keyed by IA;
   `SecurityEntry { mode, tool_key, fdsk, serial }` — the *explicit*
@@ -362,9 +364,65 @@ Known limitations: a crash between send and L_Data.con can reuse one
 tool sequence number (persist-on-confirm; the device-side persists
 pre-send — tighten later). Unsolicited device-initiated S-A_Sync_Req
 is not answered (devices only initiate sync for P2P group traffic,
-not toward the tool). Group-traffic Data Secure (GA key tables) and
-secure commissioning are the later roadmap items. Hardware smoke test
-still owed — `linux_eth_secure_light_switch` is the natural target.
+not toward the tool). Secure commissioning is a later roadmap item.
+
+### Data Secure group traffic (done, August 2026)
+
+Secure group telegrams under the keyring's group keys, transparent to
+the existing group API:
+
+- **`SecurityStore` group keys**: `set_group_key(raw_ga, key)` /
+  `get_group_key`; `import_keyring` consumes the keyring's
+  `group_keys` (already parsed since the keyring import landed). A
+  group address with a key is secure in both directions: outgoing
+  frames on it are wrapped, incoming plaintext is dropped (downgrade
+  protection, the same gate a device applies to secured group
+  objects). Secure frames on unkeyed GAs are dropped at debug level
+  (nothing to decrypt them with). The keyring interfaces' per-tunnel
+  sender lists are not consumed (devices don't enforce sender
+  membership either; TODO in `import_keyring`).
+- **Wire shape** (`security/channel.rs` `group_wrap`/`group_unwrap`,
+  free functions — `SecureChannel`'s tool SCF and per-connection
+  counters don't fit group traffic): SCF 0x10 (A+C, never tool
+  access — TSSJ §3.2.6 rejects the tool flag on group frames; A-only
+  0x00 accepted incoming), CCM over the real GA with `addr_type`
+  0x80 authenticated in B0.
+- **Sending seq**: one client-wide counter for all outgoing secure
+  group frames (03/03/07 keeps one Sequence Number Sending per
+  station). Persisted at consume time and floored to milliseconds
+  since 2018-01-05T00:00Z (the ETS/xknx convention) so it never
+  regresses — receivers keep our last valid number per sender IA and
+  no group-addressed sync exists to recover a rewind; the floor also
+  covers a tunnel IA previously used by another tool.
+- **Replay protection**: per-sender-IA floor (the device-side analog
+  is the SIAT slot, shared between its P2P and group receive), moved
+  only after the MAC verifies, persisted per verified frame (TODO:
+  watermark batching if the per-frame JSON rewrite ever matters).
+  Floors seed from the keyring's exported `SequenceNumber + 1` — for
+  every device with one, keyed or not.
+- **`SeqNumberStore`** gained `load/save_own_seq` and
+  `load/save_sender_seq(ia)`; `JsonSeqStore` stores them as two new
+  `serde(default)` fields (`own_seq`, `sender_seq` keyed by hex raw
+  IA), so pre-group files stay readable.
+- **API**: unchanged — `group_write`/`group_read` wrap automatically
+  when the GA has a key; `GroupTelegram` gained `secured: bool`
+  (always `true` on keyed GAs, since plaintext there never reaches
+  subscribers). `group_monitor` takes
+  `--keyring/--keyring-password/--seq-file` and tags secured
+  telegrams.
+- **Tests**: wrap/unwrap unit tests anchor on round-trips through the
+  Annex-C-pinned CCM primitives (the spec Annex C has no group
+  vector); `tests/secure_bus.rs` covers wrapped sends, decrypted
+  delivery, replay drop and the downgrade drop against the mock bus;
+  env-gated `secure_group_monitor` / `secure_group_write_live` in
+  `tests/live_tunnel.rs` (`KNX_KEYRING`, `KNX_KEYRING_PASSWORD`,
+  `KNX_GROUP_GA` / `KNX_GROUP_WRITE_GA` + `_VALUE`).
+
+Limitations: no runtime group-key injection command — load the
+keyring into the `SecurityStore` before `connect_*_with_security`
+(TODO if a use case appears). Incoming S-A_Sync_Req is still not
+answered; with the timestamp-floored sending counter a peer never
+needs to sync us.
 
 ## Later phases roadmap
 
