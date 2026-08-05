@@ -38,25 +38,27 @@ pub struct SecurityEntry {
     pub tool_key: Option<[u8; 16]>,
     pub fdsk: Option<[u8; 16]>,
     /// KNX serial number — the stable identity the sequence counters
-    /// are persisted under.
-    pub serial: [u8; 6],
+    /// are persisted under. `None` (e.g. a keyring device exported
+    /// without its serial) means the counters are not persisted; the
+    /// sync handshake recovers them on every connect.
+    pub serial: Option<[u8; 6]>,
 }
 
 impl SecurityEntry {
     /// Secure device with a commissioned tool key.
     pub fn secure_with_tool_key(tool_key: [u8; 16], serial: [u8; 6]) -> Self {
-        Self { mode: DeviceSecurityMode::Secure, tool_key: Some(tool_key), fdsk: None, serial }
+        Self { mode: DeviceSecurityMode::Secure, tool_key: Some(tool_key), fdsk: None, serial: Some(serial) }
     }
 
     /// Factory-fresh secure device — the FDSK acts as the tool key.
     pub fn secure_with_fdsk(fdsk: [u8; 16], serial: [u8; 6]) -> Self {
-        Self { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: Some(fdsk), serial }
+        Self { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: Some(fdsk), serial: Some(serial) }
     }
 
     /// Device spoken to plain (e.g. secure-capable but security mode
     /// disabled). Any keys carried alongside are inert.
     pub fn plain(serial: [u8; 6]) -> Self {
-        Self { mode: DeviceSecurityMode::Plain, tool_key: None, fdsk: None, serial }
+        Self { mode: DeviceSecurityMode::Plain, tool_key: None, fdsk: None, serial: Some(serial) }
     }
 
     /// The key secure traffic runs under: tool key if set, else FDSK.
@@ -109,9 +111,14 @@ impl SecurityStore {
             return Ok(None);
         }
         let key = entry.active_key().ok_or(SecureError::MissingKey)?;
-        let tool_seq = self.seq_store.load_tool_seq(&entry.serial);
-        let table_seq = self.seq_store.load_table_seq(&entry.serial);
-        Ok(Some(SecureChannel::new(key, entry.serial, tool_seq, table_seq)))
+        Ok(Some(match entry.serial {
+            Some(serial) => {
+                let tool_seq = self.seq_store.load_tool_seq(&serial);
+                let table_seq = self.seq_store.load_table_seq(&serial);
+                SecureChannel::new(key, serial, tool_seq, table_seq)
+            }
+            None => SecureChannel::new_unpersisted(key, 1, 1),
+        }))
     }
 
     /// Persist our sending counter; a failing store is logged, not
@@ -127,6 +134,39 @@ impl SecurityStore {
         if let Err(e) = self.seq_store.save_table_seq(serial, seq) {
             log::warn!("failed to persist table seq for {serial:02x?}: {e}");
         }
+    }
+
+    /// Insert a `Secure` entry for every keyring device that carries a
+    /// key, replacing existing entries for the same IA.
+    ///
+    /// For devices with a serial, the keyring's `SequenceNumber` (the
+    /// device's last observed sending number at export) seeds the
+    /// sequence store as `table_seq = SequenceNumber + 1` — forward-only,
+    /// and the sync handshake on connect corrects it either way.
+    /// Devices with neither tool key nor FDSK are skipped: there is
+    /// nothing to secure with.
+    ///
+    /// Returns how many entries were added.
+    pub fn import_keyring(&mut self, keyring: &super::knxkeys::Keyring) -> usize {
+        let mut added = 0;
+        for device in &keyring.devices {
+            if device.tool_key.is_none() && device.fdsk.is_none() {
+                continue;
+            }
+            if let Some(serial) = device.serial
+                && device.sequence_number > 0
+            {
+                self.save_table_seq(&serial, device.sequence_number + 1);
+            }
+            self.set_device_security(device.individual_address, SecurityEntry {
+                mode: DeviceSecurityMode::Secure,
+                tool_key: device.tool_key,
+                fdsk: device.fdsk,
+                serial: device.serial,
+            });
+            added += 1;
+        }
+        added
     }
 }
 
@@ -176,9 +216,74 @@ mod tests {
     #[test]
     fn secure_without_key_is_an_error() {
         let mut store = SecurityStore::new();
-        let entry = SecurityEntry { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: None, serial: SERIAL };
+        let entry =
+            SecurityEntry { mode: DeviceSecurityMode::Secure, tool_key: None, fdsk: None, serial: Some(SERIAL) };
         store.set_device_security(ia(), entry);
         assert!(matches!(store.make_channel(ia()), Err(SecureError::MissingKey)));
+    }
+
+    #[test]
+    fn import_keyring_fills_entries_and_seeds_seq() {
+        use crate::security::knxkeys::{Keyring, KeyringDevice};
+
+        let devices = vec![
+            // Fully exported: tool key + FDSK + serial + seq.
+            KeyringDevice {
+                individual_address: IndividualAddress::new(1, 0, 203),
+                tool_key: Some(KEY),
+                fdsk: Some(FDSK),
+                serial: Some(SERIAL),
+                sequence_number: 1000,
+                management_password: None,
+                authentication: None,
+            },
+            // No serial: entry still lands, counters unpersisted.
+            KeyringDevice {
+                individual_address: IndividualAddress::new(1, 0, 201),
+                tool_key: Some(KEY),
+                fdsk: None,
+                serial: None,
+                sequence_number: 500,
+                management_password: None,
+                authentication: None,
+            },
+            // No key material at all: skipped.
+            KeyringDevice {
+                individual_address: IndividualAddress::new(1, 0, 7),
+                tool_key: None,
+                fdsk: None,
+                serial: None,
+                sequence_number: 0,
+                management_password: None,
+                authentication: None,
+            },
+        ];
+        let keyring = Keyring {
+            project: "test".into(),
+            created_by: "6.4.1".into(),
+            created: "2026-08-05T00:00:00".into(),
+            backbone: None,
+            interfaces: Vec::new(),
+            group_keys: Default::default(),
+            devices,
+        };
+
+        let mut store = SecurityStore::new();
+        assert_eq!(store.import_keyring(&keyring), 2, "keyless device is skipped");
+
+        let full = store.get_entry(IndividualAddress::new(1, 0, 203)).expect("keyed device imported");
+        assert_eq!(full.mode, DeviceSecurityMode::Secure);
+        assert_eq!(full.tool_key, Some(KEY));
+        assert_eq!(full.fdsk, Some(FDSK));
+
+        let ch = store.make_channel(IndividualAddress::new(1, 0, 203)).expect("keyed").expect("secure");
+        assert_eq!(ch.key(), &KEY, "tool key preferred over FDSK");
+
+        // The keyring seq number seeded the store: table_seq = seq + 1.
+        assert_eq!(store.seq_store.load_table_seq(&SERIAL), 1001);
+
+        assert!(store.get_entry(IndividualAddress::new(1, 0, 201)).is_some());
+        assert!(store.get_entry(IndividualAddress::new(1, 0, 7)).is_none());
     }
 
     #[test]

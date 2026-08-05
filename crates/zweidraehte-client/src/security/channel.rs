@@ -38,7 +38,11 @@ pub fn seq_from_bytes(bytes: &[u8; 6]) -> u64 {
 /// returns.
 pub struct SecureChannel {
     key: [u8; 16],
-    serial: [u8; 6],
+    /// `None` for devices whose keyring entry carries no serial —
+    /// their counters cannot be persisted (no stable key to store
+    /// them under) and live only as long as the connection; the
+    /// S-A_Sync handshake recovers them on the next connect.
+    serial: Option<[u8; 6]>,
     /// Next sequence number we will send with.
     tool_seq: u64,
     /// Next sequence number we accept from the device.
@@ -47,12 +51,18 @@ pub struct SecureChannel {
 
 impl SecureChannel {
     pub fn new(key: [u8; 16], serial: [u8; 6], tool_seq: u64, table_seq: u64) -> Self {
-        Self { key, serial, tool_seq, table_seq }
+        Self { key, serial: Some(serial), tool_seq, table_seq }
     }
 
-    /// The device serial this channel's counters are stored under.
-    pub fn serial(&self) -> &[u8; 6] {
-        &self.serial
+    /// A channel without counter persistence (device serial unknown).
+    pub fn new_unpersisted(key: [u8; 16], tool_seq: u64, table_seq: u64) -> Self {
+        Self { key, serial: None, tool_seq, table_seq }
+    }
+
+    /// The device serial this channel's counters are stored under,
+    /// if known.
+    pub fn serial(&self) -> Option<&[u8; 6]> {
+        self.serial.as_ref()
     }
 
     /// The active key (for the sync handshake's own CCM calls).

@@ -319,7 +319,7 @@ async fn missing_key_fails_secure_connect() {
         mode: zweidraehte_client::DeviceSecurityMode::Secure,
         tool_key: None,
         fdsk: None,
-        serial: SERIAL,
+        serial: Some(SERIAL),
     };
     let (bus, mut mock, _) = secure_bus(entry);
 

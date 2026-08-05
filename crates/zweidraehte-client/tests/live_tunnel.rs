@@ -142,7 +142,7 @@ async fn secure_connect_and_read() {
         mode: zweidraehte_client::DeviceSecurityMode::Secure,
         tool_key,
         fdsk,
-        serial,
+        serial: Some(serial),
     });
     let bus = KnxBus::connect_ip_with_security(addr, security).await.expect("tunnel connects");
 

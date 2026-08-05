@@ -613,8 +613,7 @@ impl<C: KnxConnector> BusTask<C> {
                     // The wrapped frame made it onto the bus: its tool
                     // sequence number is spent for good, persist it.
                     if success && let Some(seq) = self.tl_pending_tool_seq.take() {
-                        if let Some(sec) = &self.tl_security {
-                            let serial = *sec.serial();
+                        if let Some(serial) = self.tl_security.as_ref().and_then(|sec| sec.serial().copied()) {
                             self.security.save_tool_seq(&serial, seq);
                         }
                     }
@@ -655,8 +654,9 @@ impl<C: KnxConnector> BusTask<C> {
                             match decode_apci_code(frame) {
                                 Some(ApciCode::SecureService) => match sec.unwrap(frame) {
                                     Ok((plain, new_table_seq)) => {
-                                        let serial = *sec.serial();
-                                        self.security.save_table_seq(&serial, new_table_seq);
+                                        if let Some(serial) = sec.serial().copied() {
+                                            self.security.save_table_seq(&serial, new_table_seq);
+                                        }
                                         self.feed_pending_response(&plain);
                                     }
                                     Err(SecureError::Replay { received, expected }) => {
@@ -802,9 +802,10 @@ impl<C: KnxConnector> BusTask<C> {
 
         let sec = self.tl_security.as_mut().expect("checked above");
         let (tool_seq, table_seq) = sec.apply_sync_response(seq_nr_remote, seq_nr_local);
-        let serial = *sec.serial();
-        self.security.save_tool_seq(&serial, tool_seq);
-        self.security.save_table_seq(&serial, table_seq);
+        if let Some(serial) = sec.serial().copied() {
+            self.security.save_tool_seq(&serial, tool_seq);
+            self.security.save_table_seq(&serial, table_seq);
+        }
 
         log::debug!("secure sync complete: tool_seq={tool_seq}, table_seq={table_seq}");
         if let Some(Pending::TlOpen { tx, .. }) = self.pending.take() {

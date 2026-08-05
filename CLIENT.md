@@ -340,6 +340,23 @@ devices with Data Secure active, under the tool key or FDSK.
   live test `secure_connect_and_read` in `tests/live_tunnel.rs`
   (`KNX_TOOL_KEY`/`KNX_FDSK` + `KNX_DEVICE_SERIAL` on top of the
   tunnel vars); example `secure_device_info`.
+- **`.knxkeys` keyring import** (`security/knxkeys.rs`, August 2026 —
+  the roadmap-item-6 keyring half, pulled forward): parses the ETS
+  export, verifies the SHA-256 document signature (which doubles as
+  the password check), and decrypts everything — device tool keys,
+  FDSKs, group keys, backbone key, interface (tunnel) credentials.
+  Crypto per the Falcon scheme (PBKDF2-HMAC-SHA256 over salt
+  `1.keyring.ets.knx.org`, AES-128-CBC with IV = SHA-256(Created)),
+  cross-checked against xknx and Calimero and validated by an inline
+  real-ETS-6.4.1 fixture whose dev-provisioned FDSKs decrypt to the
+  repo's `DEFAULT_FDSK`. `SecurityStore::import_keyring` fills the
+  bus keyring (tool key + FDSK per device, `table_seq` seeded from
+  the exported `SequenceNumber + 1`); `Keyring::load(path, password)`
+  is the entry point; `secure_device_info --keyring/--keyring-password`
+  uses it. Devices exported without a serial get unpersisted counters
+  (`SecurityEntry.serial` is now `Option`); group keys and interface
+  credentials ride along on the `Keyring` struct for the group-traffic
+  and IP Secure phases. `*.knxkeys` is git-ignored.
 
 Known limitations: a crash between send and L_Data.con can reuse one
 tool sequence number (persist-on-confirm; the device-side persists

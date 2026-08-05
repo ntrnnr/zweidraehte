@@ -14,3 +14,4 @@ converter_key.xml
 device_identity.json
 secure_device_identity.json
 *_seq.bin
+*.knxkeys
