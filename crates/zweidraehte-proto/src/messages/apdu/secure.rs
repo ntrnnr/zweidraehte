@@ -427,6 +427,88 @@ impl<'a> SyncReqRef<'a> {
     }
 }
 
+/// Read-only view of an S-A_Sync_Res frame.
+///
+/// This is the tool/client-role counterpart to [`SyncReqRef`]: the side
+/// that sent an S-A_Sync_Req parses the device's response with this view,
+/// recovers `Random = challenge XOR challenge_xor_random`, and verifies
+/// and decrypts the payload with [`ccm::verify_and_decrypt_sync_res`]
+/// (nonce = Random, not a sequence number).
+///
+/// Sync response layout (after header):
+/// ```text
+/// [TPCI/APCI(2)] [SCF(1)] [Chal^Rand(6)] [SeqNr_remote(6)] [SeqNr_local(6)] [MAC(4)]
+///  6..8           8        9..15           15..21             21..27           27..31
+/// ```
+pub struct SyncResRef<'a> {
+    buf: &'a [u8],
+}
+
+impl<'a> SyncResRef<'a> {
+    /// Parse a sync response from a raw message buffer.
+    ///
+    /// Validates that the frame is at least 31 bytes.
+    pub fn parse(buf: &'a [u8]) -> Result<Self, SecureApduError> {
+        if buf.len() < sync::FRAME_LEN {
+            return Err(SecureApduError::TooShort);
+        }
+        Ok(Self { buf })
+    }
+
+    /// Raw SCF byte.
+    pub fn scf_byte(&self) -> u8 {
+        self.buf[SCF]
+    }
+
+    /// Parsed Security Control Field.
+    pub fn scf(&self) -> Result<SecurityControlField, InvalidScf> {
+        SecurityControlField::parse(self.scf_byte())
+    }
+
+    /// 6-byte Challenge XOR Random field. XOR with the challenge sent in
+    /// the S-A_Sync_Req to recover the device's Random (the CCM nonce).
+    pub fn challenge_xor_random(&self) -> [u8; 6] {
+        let mut cxr = [0u8; 6];
+        cxr.copy_from_slice(&self.buf[sync::CHALLENGE_XOR_RANDOM..sync::CHALLENGE_XOR_RANDOM + 6]);
+        cxr
+    }
+
+    /// The 12-byte encrypted payload: SeqNr_remote(6) + SeqNr_local(6).
+    /// Copy for in-place decryption with [`ccm::verify_and_decrypt_sync_res`].
+    pub fn payload_enc(&self) -> [u8; 12] {
+        let mut payload = [0u8; 12];
+        payload.copy_from_slice(&self.buf[sync::SEQ_NR_REMOTE..sync::SEQ_NR_REMOTE + 12]);
+        payload
+    }
+
+    /// 4-byte MAC.
+    pub fn mac(&self) -> [u8; 4] {
+        let mut mac = [0u8; 4];
+        mac.copy_from_slice(&self.buf[sync::FRAME_LEN - MAC_LEN..sync::FRAME_LEN]);
+        mac
+    }
+
+    /// Source address from the message header.
+    pub fn src(&self) -> u16 {
+        u16::from_be_bytes([self.buf[offsets::MSG_SOURCE_ADDR], self.buf[offsets::MSG_SOURCE_ADDR + 1]])
+    }
+
+    /// Destination address from the message header.
+    pub fn dst(&self) -> u16 {
+        u16::from_be_bytes([self.buf[offsets::MSG_DEST_ADDR], self.buf[offsets::MSG_DEST_ADDR + 1]])
+    }
+
+    /// Address type byte (bit 7 of NPDU byte).
+    pub fn addr_type(&self) -> u8 {
+        self.buf[offsets::MSG_ADDR_TYPE] & 0x80
+    }
+
+    /// TPCI/APCI field.
+    pub fn tpci_apci(&self) -> u16 {
+        u16::from_be_bytes([self.buf[offsets::MSG_TPCI], self.buf[offsets::MSG_TPCI + 1]])
+    }
+}
+
 /// Build an S-A_Sync_Res frame in a buffer.
 ///
 /// Writes header, SCF, challenge_xor_random, and plaintext
@@ -523,4 +605,99 @@ pub fn build_sync_request(
 
     // Return MAC offset. Caller writes 4 bytes of MAC here.
     sync::FRAME_LEN - MAC_LEN
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::ccm;
+
+    // Annex C.1.4 material: SA = FF00h, DA = FF67h, TPCI/APCI = 43F1h,
+    // SCF = 93h (Tool + A+C + SyncRes), Challenge = 000000000003h,
+    // Random = AAAAAAAAAAAAh, expected ciphertext 9c023ad25e146470693e638d,
+    // expected MAC 5b70cac4 under the spec tool key.
+    const TOOL_KEY: [u8; 16] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, //
+        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+    ];
+    const CHALLENGE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x03];
+    const RANDOM: [u8; 6] = [0xAA; 6];
+    const SCF_SYNC_RES: u8 = 0x93;
+
+    /// Build the C.1.4 sync response as it would arrive on the wire.
+    fn c1_4_frame() -> [u8; sync::FRAME_LEN] {
+        let mut cxr = [0u8; 6];
+        for i in 0..6 {
+            cxr[i] = CHALLENGE[i] ^ RANDOM[i];
+        }
+        let mut payload: [u8; 12] = [
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x03, // SeqNr_remote
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x04, // SeqNr_local
+        ];
+        let mac =
+            ccm::encrypt_and_mac_sync_res(&TOOL_KEY, &RANDOM, 0xFF00, 0xFF67, 0x00, 0x43F1, SCF_SYNC_RES, &mut payload);
+
+        let mut buf = [0u8; sync::FRAME_LEN];
+        let mac_offset = build_sync_response(
+            &mut buf,
+            0xB0,
+            0xFF00,
+            0xFF67,
+            0x0E, // NPDU byte: individual address (bit 7 clear), length field
+            0x43,
+            SCF_SYNC_RES,
+            &cxr,
+            &payload[0..6].try_into().expect("6-byte slice"),
+            &payload[6..12].try_into().expect("6-byte slice"),
+        );
+        buf[mac_offset..mac_offset + MAC_LEN].copy_from_slice(&mac);
+        buf
+    }
+
+    #[test]
+    fn sync_res_ref_parses_annex_c1_4() {
+        let frame = c1_4_frame();
+        let res = SyncResRef::parse(&frame).expect("31-byte frame parses");
+
+        assert_eq!(res.scf_byte(), SCF_SYNC_RES);
+        let scf = res.scf().expect("valid SCF");
+        assert!(scf.tool_access);
+        assert!(scf.confidentiality);
+        assert_eq!(res.src(), 0xFF00);
+        assert_eq!(res.dst(), 0xFF67);
+        assert_eq!(res.addr_type(), 0x00);
+        assert_eq!(res.tpci_apci(), 0x43F1);
+        assert_eq!(res.mac(), [0x5b, 0x70, 0xca, 0xc4]);
+        assert_eq!(res.payload_enc(), [0x9c, 0x02, 0x3a, 0xd2, 0x5e, 0x14, 0x64, 0x70, 0x69, 0x3e, 0x63, 0x8d]);
+
+        // Recover Random from the challenge and decrypt — the full client-side flow.
+        let cxr = res.challenge_xor_random();
+        let mut random = [0u8; 6];
+        for i in 0..6 {
+            random[i] = CHALLENGE[i] ^ cxr[i];
+        }
+        assert_eq!(random, RANDOM);
+
+        let mut payload = res.payload_enc();
+        ccm::verify_and_decrypt_sync_res(
+            &TOOL_KEY,
+            &random,
+            res.src(),
+            res.dst(),
+            res.addr_type(),
+            res.tpci_apci(),
+            res.scf_byte(),
+            &mut payload,
+            &res.mac(),
+        )
+        .expect("C.1.4 MAC verifies");
+        assert_eq!(&payload[0..6], &[0x00, 0x00, 0x00, 0x00, 0x00, 0x03], "SeqNr_remote");
+        assert_eq!(&payload[6..12], &[0x00, 0x00, 0x00, 0x00, 0x00, 0x04], "SeqNr_local");
+    }
+
+    #[test]
+    fn sync_res_ref_too_short_rejected() {
+        let frame = c1_4_frame();
+        assert!(matches!(SyncResRef::parse(&frame[..30]), Err(SecureApduError::TooShort)));
+    }
 }
