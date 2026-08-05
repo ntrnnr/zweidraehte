@@ -23,144 +23,81 @@
 
 mod common;
 
-use common::BusTarget;
+use clap::Parser;
+use common::{BusTarget, TargetArgs};
 use zweidraehte_client::security::Keyring;
 use zweidraehte_client::{IndividualAddress, JsonSeqStore, SecurityEntry, SecurityStore};
 
+/// Read device information over a KNX Data Secure connection.
+#[derive(Parser)]
 struct Args {
-    target: BusTarget,
+    #[command(flatten)]
+    target: TargetArgs,
+
+    /// Target device individual address, e.g. 1.1.42
+    #[arg(long, value_parser = common::parse_ia)]
     ia: IndividualAddress,
-    /// Manual key material (`--tool-key`/`--fdsk`/`--serial`)...
-    entry: Option<SecurityEntry>,
-    /// ...or a whole ETS keyring export.
-    keyring: Option<(String, String)>,
+
+    /// Commissioned tool key (32 hex chars)
+    #[arg(long, value_parser = common::parse_hex_array::<16>, conflicts_with = "keyring")]
+    tool_key: Option<[u8; 16]>,
+
+    /// Factory-default setup key (32 hex chars)
+    #[arg(long, value_parser = common::parse_hex_array::<16>, conflicts_with = "keyring")]
+    fdsk: Option<[u8; 16]>,
+
+    /// Device KNX serial number (12 hex chars)
+    #[arg(long, value_parser = common::parse_hex_array::<6>, conflicts_with = "keyring")]
+    serial: Option<[u8; 6]>,
+
+    /// ETS keyring export (.knxkeys) to load keys from
+    #[arg(long, requires = "keyring_password")]
+    keyring: Option<String>,
+
+    /// Password the keyring was exported with
+    #[arg(long, requires = "keyring")]
+    keyring_password: Option<String>,
+
+    /// JSON file persisting the sequence counters across runs
+    #[arg(long)]
     seq_file: Option<String>,
-}
-
-fn parse_hex<const N: usize>(s: &str, what: &str) -> Result<[u8; N], String> {
-    let s = s.trim();
-    if s.len() != N * 2 {
-        return Err(format!("{what}: expected {} hex chars, got {}", N * 2, s.len()));
-    }
-    let mut out = [0u8; N];
-    for (i, chunk) in out.iter_mut().enumerate() {
-        *chunk = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).map_err(|_| format!("{what}: not hex"))?;
-    }
-    Ok(out)
-}
-
-fn parse_ia(s: &str) -> Result<IndividualAddress, String> {
-    let parts: Vec<&str> = s.split('.').collect();
-    let [area, line, device] = parts[..] else {
-        return Err(format!("'{s}': expected a.l.d"));
-    };
-    Ok(IndividualAddress::new(
-        area.parse().map_err(|_| "bad area")?,
-        line.parse().map_err(|_| "bad line")?,
-        device.parse().map_err(|_| "bad device")?,
-    ))
-}
-
-fn take_value(args: &[String], i: &mut usize, name: &str) -> Result<String, String> {
-    *i += 1;
-    args.get(*i).cloned().ok_or_else(|| format!("{name} requires a value"))
-}
-
-fn parse_args(args: &[String]) -> Result<Args, String> {
-    let mut target = None;
-    let mut ia = None;
-    let mut tool_key: Option<[u8; 16]> = None;
-    let mut fdsk: Option<[u8; 16]> = None;
-    let mut serial: Option<[u8; 6]> = None;
-    let mut keyring_path = None;
-    let mut keyring_password = None;
-    let mut seq_file = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--server" | "-s" => {
-                let addr = take_value(args, &mut i, "--server")?;
-                target = Some(BusTarget::Ip(addr.parse().map_err(|e| format!("{e}"))?));
-            }
-            "--usb" => target = Some(common::parse_usb_arg(args, &mut i)?),
-            "--ia" => ia = Some(parse_ia(&take_value(args, &mut i, "--ia")?)?),
-            "--tool-key" => tool_key = Some(parse_hex(&take_value(args, &mut i, "--tool-key")?, "--tool-key")?),
-            "--fdsk" => fdsk = Some(parse_hex(&take_value(args, &mut i, "--fdsk")?, "--fdsk")?),
-            "--serial" => serial = Some(parse_hex(&take_value(args, &mut i, "--serial")?, "--serial")?),
-            "--keyring" => keyring_path = Some(take_value(args, &mut i, "--keyring")?),
-            "--keyring-password" => keyring_password = Some(take_value(args, &mut i, "--keyring-password")?),
-            "--seq-file" => seq_file = Some(take_value(args, &mut i, "--seq-file")?),
-            other => return Err(format!("unknown argument: {other}")),
-        }
-        i += 1;
-    }
-
-    let usage = format!(
-        "usage: secure_device_info --server <ip:port> | --usb [vid:pid]\n\
-         \x20   --ia <a.l.d>\n\
-         \x20   (--tool-key <32 hex> | --fdsk <32 hex>) --serial <12 hex>\n\
-         \x20   | --keyring <file.knxkeys> --keyring-password <pw>\n\
-         \x20   [--seq-file <path>]\n{}",
-        common::TARGET_USAGE
-    );
-
-    let target = target.ok_or_else(|| usage.clone())?;
-    let ia = ia.ok_or("--ia is required")?;
-
-    let keyring = match (keyring_path, keyring_password) {
-        (Some(path), Some(pw)) => Some((path, pw)),
-        (Some(_), None) => return Err("--keyring requires --keyring-password".into()),
-        (None, Some(_)) => return Err("--keyring-password requires --keyring".into()),
-        (None, None) => None,
-    };
-
-    let entry = if keyring.is_some() {
-        None
-    } else {
-        let serial = serial.ok_or("--serial is required (the device's 6-byte KNX serial)")?;
-        if tool_key.is_none() && fdsk.is_none() {
-            return Err("one of --tool-key / --fdsk (or --keyring) is required".into());
-        }
-        Some(SecurityEntry {
-            mode: zweidraehte_client::DeviceSecurityMode::Secure,
-            tool_key,
-            fdsk,
-            serial: Some(serial),
-        })
-    };
-    Ok(Args { target, ia, entry, keyring, seq_file })
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let args: Vec<String> = std::env::args().collect();
-    let args = parse_args(&args)?;
+    let args = Args::parse();
 
     let mut security = match &args.seq_file {
         Some(path) => SecurityStore::with_store(Box::new(JsonSeqStore::open(path)?)),
         None => SecurityStore::new(),
     };
-    match (&args.entry, &args.keyring) {
-        (Some(entry), _) => security.set_device_security(args.ia, entry.clone()),
-        (None, Some((path, password))) => {
-            let keyring = Keyring::load(path, password)?;
-            let imported = security.import_keyring(&keyring);
-            println!("Keyring '{}': imported {} secure device(s).", keyring.project, imported);
+    if let Some((path, password)) = args.keyring.as_deref().zip(args.keyring_password.as_deref()) {
+        let keyring = Keyring::load(path, password)?;
+        let imported = security.import_keyring(&keyring);
+        println!("Keyring '{}': imported {} secure device(s).", keyring.project, imported);
+    } else {
+        if args.tool_key.is_none() && args.fdsk.is_none() {
+            return Err("one of --tool-key / --fdsk (or --keyring) is required".into());
         }
-        (None, None) => unreachable!("parse_args enforces one source of key material"),
+        let serial = args.serial.ok_or("--serial is required with manual key material")?;
+        security.set_device_security(args.ia, SecurityEntry {
+            mode: zweidraehte_client::DeviceSecurityMode::Secure,
+            tool_key: args.tool_key,
+            fdsk: args.fdsk,
+            serial: Some(serial),
+        });
     }
 
-    let bus = match &args.target {
+    let bus = match args.target.to_target() {
         BusTarget::Ip(addr) => {
             println!("Connecting to KNX/IP interface at {}...", addr);
-            zweidraehte_client::KnxBus::connect_ip_with_security(*addr, security).await?
+            zweidraehte_client::KnxBus::connect_ip_with_security(addr, security).await?
         }
         BusTarget::Usb(selector) => {
             println!("Connecting to KNX USB interface ({:?})...", selector);
-            zweidraehte_client::KnxBus::connect_usb_with_security(selector, security).await?
+            zweidraehte_client::KnxBus::connect_usb_with_security(&selector, security).await?
         }
     };
 

@@ -6859,6 +6859,7 @@ dependencies = [
  "async-hid",
  "base64",
  "cbc",
+ "clap",
  "env_logger",
  "futures-lite",
  "getrandom 0.4.2",

@@ -9,20 +9,12 @@
 //!         --server 192.168.1.100:3671 --device 1.0.101 <command>
 //!
 //! `--usb [vid:pid]` connects through a KNX USB interface instead of
-//! `--server`.
-//!
-//! Commands:
-//!     state       Read current bootloader state
-//!     bsl-info    Read BSL info structure
-//!     dev-info    Read device info (raw hex dump)
-//!     app-info    Read application info structure
-//!     exchange    Read exchange data (raw hex dump)
-//!     switch-bt   Switch device to bootloader mode
-//!     switch-app  Switch device to application mode
+//! `--server`; see `--help` for the command list.
 
 mod common;
 
-use common::BusTarget;
+use clap::{Parser, ValueEnum};
+use common::TargetArgs;
 use zweidraehte_client::{IndividualAddress, KnxBus};
 
 // ============================================================================
@@ -375,79 +367,37 @@ fn print_hex_dump(label: &str, data: &[u8]) {
 // CLI
 // ============================================================================
 
+/// Talk to an MDT device bootloader (BSL protocol).
+#[derive(Parser)]
 struct Config {
-    target: BusTarget,
-    device_addr: IndividualAddress,
-    command: String,
+    #[command(flatten)]
+    target: TargetArgs,
+
+    /// Target device individual address, e.g. 1.0.101
+    #[arg(short, long, value_parser = common::parse_ia)]
+    device: IndividualAddress,
+
+    /// What to do on the bootloader
+    #[arg(value_enum)]
+    command: Command,
 }
 
-fn parse_args(args: &[String]) -> Result<Config, Box<dyn std::error::Error>> {
-    let mut target: Option<BusTarget> = None;
-    let mut device_addr: Option<IndividualAddress> = None;
-    let mut command: Option<String> = None;
-
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--server" | "-s" => {
-                i += 1;
-                target = Some(BusTarget::Ip(args.get(i).ok_or("--server requires a value")?.parse()?));
-            }
-            "--usb" => {
-                target = Some(common::parse_usb_arg(args, &mut i)?);
-            }
-            "--device" | "-d" => {
-                i += 1;
-                device_addr = Some(parse_individual_address(args.get(i).ok_or("--device requires a value")?)?);
-            }
-            "--help" | "-h" => {
-                print_usage();
-                std::process::exit(0);
-            }
-            arg if !arg.starts_with('-') && command.is_none() => {
-                command = Some(arg.to_string());
-            }
-            other => {
-                eprintln!("Unknown argument: {}", other);
-                print_usage();
-                std::process::exit(1);
-            }
-        }
-        i += 1;
-    }
-
-    Ok(Config {
-        target: target.ok_or("--server or --usb is required")?,
-        device_addr: device_addr.ok_or("--device is required")?,
-        command: command.ok_or("command is required")?,
-    })
-}
-
-fn print_usage() {
-    eprintln!("Usage: mdt_bootloader (--server <ip:port> | --usb [vid:pid]) --device <a.l.d> <command>");
-    eprintln!();
-    eprintln!("Options:");
-    eprintln!("{}", common::TARGET_USAGE);
-    eprintln!();
-    eprintln!("Commands:");
-    eprintln!("  state       Read current bootloader state");
-    eprintln!("  bsl-info    Read BSL info structure");
-    eprintln!("  dev-info    Read device info (raw hex dump)");
-    eprintln!("  app-info    Read application info structure");
-    eprintln!("  exchange    Read exchange data (raw hex dump)");
-    eprintln!("  switch-bt   Switch device to bootloader mode");
-    eprintln!("  switch-app  Switch device to application mode");
-}
-
-fn parse_individual_address(s: &str) -> Result<IndividualAddress, Box<dyn std::error::Error>> {
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() != 3 {
-        return Err(format!("Invalid address '{}': expected area.line.device", s).into());
-    }
-    let area: u8 = parts[0].parse()?;
-    let line: u8 = parts[1].parse()?;
-    let device: u8 = parts[2].parse()?;
-    Ok(IndividualAddress::new(area, line, device))
+#[derive(Clone, Copy, ValueEnum)]
+enum Command {
+    /// Read current bootloader state
+    State,
+    /// Read BSL info structure
+    BslInfo,
+    /// Read device info (raw hex dump)
+    DevInfo,
+    /// Read application info structure
+    AppInfo,
+    /// Read exchange data (raw hex dump)
+    Exchange,
+    /// Switch device to bootloader mode
+    SwitchBt,
+    /// Switch device to application mode
+    SwitchApp,
 }
 
 // ============================================================================
@@ -458,15 +408,14 @@ fn parse_individual_address(s: &str) -> Result<IndividualAddress, Box<dyn std::e
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let args: Vec<String> = std::env::args().collect();
-    let config = parse_args(&args)?;
+    let config = Config::parse();
 
     // Connect to the bus.
-    let bus = config.target.connect().await?;
+    let bus = config.target.to_target().connect().await?;
     println!("Connected. Assigned address: {}, interface max APDU: {}", bus.assigned_address(), bus.max_apdu());
 
     // Dispatch the requested command.
-    let result = run_command(&bus, config.device_addr, &config.command).await;
+    let result = run_command(&bus, config.device, config.command).await;
 
     // Always try to disconnect cleanly.
     let _ = bus.disconnect().await;
@@ -477,10 +426,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run_command(
     client: &KnxBus,
     device: IndividualAddress,
-    command: &str,
+    command: Command,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match command {
-        "state" => {
+        Command::State => {
             let data = bsl_command(client, device, BslCmd::StateRequest as u8, 0, &[]).await?;
             if data.is_empty() {
                 return Err("Empty state response".into());
@@ -489,7 +438,7 @@ async fn run_command(
             println!("Device state: {}", state);
         }
 
-        "bsl-info" => {
+        Command::BslInfo => {
             let data = bsl_read_multipart(client, device, BslCmd::ReadBslInfo as u8).await?;
             print_hex_dump("BSL Info (raw)", &data);
             println!();
@@ -499,12 +448,12 @@ async fn run_command(
             }
         }
 
-        "dev-info" => {
+        Command::DevInfo => {
             let data = bsl_read_multipart(client, device, BslCmd::ReadDevInfo as u8).await?;
             print_hex_dump("Device Info", &data);
         }
 
-        "app-info" => {
+        Command::AppInfo => {
             let data = bsl_read_multipart(client, device, BslCmd::ReadAppInfo as u8).await?;
             print_hex_dump("App Info (raw)", &data);
             println!();
@@ -514,12 +463,12 @@ async fn run_command(
             }
         }
 
-        "exchange" => {
+        Command::Exchange => {
             let data = bsl_read_multipart(client, device, BslCmd::ReadExchange as u8).await?;
             print_hex_dump("Exchange Data", &data);
         }
 
-        "switch-bt" => {
+        Command::SwitchBt => {
             // SwitchToBt only needs [0x00, 0x01] — no sequence number.
             let data = bsl_command(client, device, BslCmd::SwitchToBt as u8, 0, &[]).await?;
             println!("Switch to bootloader: OK");
@@ -528,16 +477,12 @@ async fn run_command(
             }
         }
 
-        "switch-app" => {
+        Command::SwitchApp => {
             let data = bsl_command(client, device, BslCmd::SwitchToApp as u8, 0, &[]).await?;
             println!("Switch to application: OK");
             if !data.is_empty() {
                 println!("  Response data: {}", hex_bytes(&data));
             }
-        }
-
-        other => {
-            return Err(format!("Unknown command: '{}'. Run with --help for usage.", other).into());
         }
     }
 

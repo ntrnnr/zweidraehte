@@ -7,35 +7,23 @@
 
 mod common;
 
-use common::BusTarget;
+use clap::Parser;
+use common::TargetArgs;
 use zweidraehte_client::GroupService;
 
-fn parse_target(args: &[String]) -> Result<BusTarget, String> {
-    let mut target = None;
-    let mut i = 1;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--server" | "-s" => {
-                i += 1;
-                let addr = args.get(i).ok_or("--server requires a value")?;
-                target = Some(BusTarget::Ip(addr.parse().map_err(|e| format!("{e}"))?));
-            }
-            "--usb" => target = Some(common::parse_usb_arg(args, &mut i)?),
-            other => return Err(format!("unknown argument: {}", other)),
-        }
-        i += 1;
-    }
-    target.ok_or_else(|| format!("usage: group_monitor --server <ip:port> | --usb [vid:pid]\n{}", common::TARGET_USAGE))
+/// Monitor group telegrams on the bus.
+#[derive(Parser)]
+struct Args {
+    #[command(flatten)]
+    target: TargetArgs,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let args: Vec<String> = std::env::args().collect();
-    let target = parse_target(&args)?;
-
-    let bus = target.connect().await?;
+    let args = Args::parse();
+    let bus = args.target.to_target().connect().await?;
     println!("Connected as {}. Monitoring group traffic (Ctrl-C to stop).", bus.assigned_address());
 
     let mut events = bus.group_events();

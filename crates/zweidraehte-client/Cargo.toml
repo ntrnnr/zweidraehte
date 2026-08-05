@@ -33,6 +33,7 @@ sha2 = { workspace = true }
 quick-xml = { workspace = true }
 
 [dev-dependencies]
+clap = { workspace = true }
 env_logger = { workspace = true }
 # start_paused test runtime for the secure-handshake timeout tests.
 tokio = { version = "1", features = ["test-util"] }
