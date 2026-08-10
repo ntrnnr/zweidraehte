@@ -17,6 +17,15 @@ mod mtxml;
 mod project;
 mod traversal;
 
+// The packaging half — signing, ZIP archives, `.knxproj` topology —
+// needs the crypto/HTTP/ZIP stack, so it is gated here, once per
+// module, rather than on the individual items. Everything above builds
+// with quick-xml alone.
+#[cfg(feature = "packaging")]
+mod packaging;
+#[cfg(feature = "packaging")]
+mod project_gen;
+
 use std::collections::BTreeMap;
 
 use crate::definition::module::ModuleCollection;

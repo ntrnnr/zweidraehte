@@ -20,7 +20,7 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 
-use super::SigningError;
+use crate::signing::SigningError;
 
 /// KNX Certification public key.
 /// Used for verifying officially certified products.

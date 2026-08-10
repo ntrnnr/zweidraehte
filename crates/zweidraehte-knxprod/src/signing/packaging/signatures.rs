@@ -20,8 +20,9 @@ use super::hashes::{
 use super::keys::{KeyType, get_converter_private_key, get_converter_public_key, get_knx_cert_public_key};
 use super::{
     DirectorySignatureResult, Hardware2ProgramHashResult, HardwareVerificationResult, ProductHashResult,
-    RegistrationSignatureResult, SigningError,
+    RegistrationSignatureResult,
 };
+use crate::signing::SigningError;
 
 /// Sign data with RSA-PKCS1v15-SHA1.
 ///

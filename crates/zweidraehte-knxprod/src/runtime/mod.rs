@@ -19,10 +19,16 @@ pub mod master_data;
 pub mod model;
 pub mod parser;
 
+/// Reading `.knxprod` archives (needs the `zip` dependency).
+#[cfg(feature = "product-files")]
+pub mod knxprod;
+
 // Re-export key types for convenience
 pub use baggage::BaggageIndex;
 pub use device::Device;
 pub use device_info::DeviceInfo;
+#[cfg(feature = "product-files")]
+pub use knxprod::KnxprodArchive;
 pub use master_data::MasterData;
 pub use model::{ConditionEvaluator, DynamicVisitor, VisibilityVisitor, VisitorModuleContext, walk_dynamic};
 pub use parser::{ParseError, parse_application_program, parse_application_program_from_file};

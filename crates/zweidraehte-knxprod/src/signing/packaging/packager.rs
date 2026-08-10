@@ -1,9 +1,7 @@
 //! ZIP packaging and directory signing for .knxprod files.
 
 use std::collections::HashMap;
-use std::fs;
 use std::io::{Cursor, Seek, Write};
-use std::path::PathBuf;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use quick_xml::events::{BytesStart, Event};
@@ -11,58 +9,9 @@ use quick_xml::{Reader, Writer};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
-use super::{KnxSchemaVersion, MasterDataSource, SigningConfig, SigningError};
-
-/// Get or download the KNX master data.
-pub fn get_master_data(source: &MasterDataSource) -> Result<String, SigningError> {
-    match source {
-        MasterDataSource::Download => download_and_cache_master_data(KnxSchemaVersion::default()),
-        MasterDataSource::DownloadVersion(version) => download_and_cache_master_data(*version),
-        MasterDataSource::File(path) => Ok(fs::read_to_string(path)?),
-        MasterDataSource::Content(content) => Ok(content.clone()),
-    }
-}
-
-/// Download master data and cache it locally.
-fn download_and_cache_master_data(version: KnxSchemaVersion) -> Result<String, SigningError> {
-    // Cache filename includes version to support multiple versions
-    let cache_filename = format!("knx_master_v{}.xml", version.as_str());
-
-    // Check cache first
-    if let Some(cache_dir) = get_cache_dir() {
-        let cache_path = cache_dir.join(&cache_filename);
-        if cache_path.exists()
-            && let Ok(content) = fs::read_to_string(&cache_path)
-        {
-            log::info!("Using cached {} from {:?}", cache_filename, cache_path);
-            return Ok(content);
-        }
-    }
-
-    // Download
-    let url = version.master_data_url();
-    log::info!("Downloading knx_master.xml from {}", url);
-    let response = reqwest::blocking::get(&url)?;
-    let content = response.text()?;
-
-    // Cache for future use
-    if let Some(cache_dir) = get_cache_dir() {
-        let _ = fs::create_dir_all(&cache_dir);
-        let cache_path = cache_dir.join(&cache_filename);
-        if let Err(e) = fs::write(&cache_path, &content) {
-            log::warn!("Failed to cache {}: {}", cache_filename, e);
-        } else {
-            log::info!("Cached {} to {:?}", cache_filename, cache_path);
-        }
-    }
-
-    Ok(content)
-}
-
-/// Get the cache directory for KNX data.
-fn get_cache_dir() -> Option<PathBuf> {
-    directories::ProjectDirs::from("org", "knx", "knxprod").map(|dirs| dirs.cache_dir().to_path_buf())
-}
+use super::SigningConfig;
+use crate::signing::master_data::get_master_data;
+use crate::signing::{MasterDataSource, SigningError};
 
 /// Sign Hardware.xml in-place (updates Hash and RegistrationInfo).
 ///
@@ -634,11 +583,5 @@ mod tests {
 
         let hashes = extract_app_program_hashes(xml).expect("parse");
         assert_eq!(hashes.get("M-0083_A-009B-14-E59D"), Some(&"abc123==".to_string()));
-    }
-
-    #[test]
-    fn test_get_cache_dir() {
-        // Just verify it returns something or None, doesn't panic
-        let _ = get_cache_dir();
     }
 }

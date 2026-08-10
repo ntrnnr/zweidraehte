@@ -312,15 +312,22 @@ impl DeviceInfo {
             for proc in &procedures.procedures {
                 for control in &proc.controls {
                     if let LoadControl::LdCtrlRelSegment(rel_seg) = control {
-                        let entry = lsm_map.entry(rel_seg.lsm_idx).or_insert_with(|| LoadStateMachineInfo {
-                            lsm_idx: rel_seg.lsm_idx,
+                        // MTXML fragments always address by LsmIdx; the
+                        // ObjType-addressed form only occurs in master-data
+                        // templates, which never reach this MTXML-side
+                        // extraction.
+                        let Some(lsm_idx) = rel_seg.lsm_idx else { continue };
+                        let entry = lsm_map.entry(lsm_idx).or_insert_with(|| LoadStateMachineInfo {
+                            lsm_idx,
                             merge_id: proc.merge_id,
                             segment_ids: Vec::new(),
                             total_size: 0,
                         });
 
                         // Extract segment ID from applies_to (format: "M-XXXX_..._RS-1")
-                        entry.segment_ids.push(rel_seg.applies_to.clone());
+                        if let Some(applies_to) = &rel_seg.applies_to {
+                            entry.segment_ids.push(applies_to.clone());
+                        }
                         entry.total_size += rel_seg.size;
                     }
                 }

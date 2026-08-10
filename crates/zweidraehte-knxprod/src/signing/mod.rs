@@ -1,19 +1,24 @@
-//! KNX Product Signing and Packaging
+//! KNX product signing vocabulary, and the gate to the machinery.
 //!
-//! This module provides cryptographic signing and ZIP packaging functionality
-//! for creating valid `.knxprod` files that can be imported into ETS.
+//! This module is split by what a *consumer* needs rather than by
+//! topic, because the two halves have wildly different dependency
+//! weights:
 //!
-//! # Overview
+//! - **Here**: the vocabulary every caller touches — [`KnxSchemaVersion`]
+//!   (which project schema an XML targets), [`MasterDataSource`] (where
+//!   `knx_master.xml` comes from) and [`SigningError`]. Plain data;
+//!   quick-xml and thiserror are the only dependencies.
+//! - **[`mod@packaging`]**: everything that actually signs and zips —
+//!   SHA1/RSA hashing, the `.knxprod`/`.knxproj` writers, and the
+//!   master-data download cache. That pulls in rsa, sha1, zip, reqwest
+//!   and icu, so the whole subtree sits behind the `packaging` feature
+//!   (on by default).
 //!
-//! KNX product files require several layers of signing:
-//!
-//! 1. **Product Hashes** - SHA1 hashes of Hardware and Product element attributes
-//! 2. **Hardware2Program Hashes** - SHA1 hashes including application program references
-//! 3. **Registration Signatures** - RSA-SHA1 signatures on RegistrationInfo elements
-//! 4. **Directory Signatures** - RSA-SHA1 signature of all file hashes in the manufacturer directory
-//!
-//! All signing uses a well-known "converter key" (RSA 1024-bit) that's embedded
-//! in the ETS toolchain.
+//! Consumers that only parse XML — the client library's
+//! master-data-driven download procedures, for instance — take this
+//! crate with `default-features = false` and never build the crypto
+//! stack. The split is at the module boundary precisely so that
+//! `#[cfg]` appears once rather than on every item.
 //!
 //! # Example
 //!
@@ -34,25 +39,23 @@
 //! std::fs::write("MyDevice.knxprod", knxprod_bytes)?;
 //! ```
 
-mod attributes;
-mod binary_writer;
-mod hashes;
-mod keys;
-mod packager;
-mod signatures;
+#[cfg(feature = "master-data")]
+pub mod master_data;
+#[cfg(feature = "packaging")]
+pub mod packaging;
 
 use std::io;
 use std::path::PathBuf;
 
 use thiserror::Error;
 
-// Re-export public API
-pub use attributes::normalize_appl_prog_id;
-pub use hashes::{compute_application_program_hash, compute_hardware2program_hash, compute_product_hash};
-pub use packager::{ProjectConfig, create_knxprod, create_knxproj, sign_application_program_xml, sign_hardware_xml};
-pub use signatures::{
-    sign_directory_contents, verify_directory_signature, verify_hardware_xml, verify_registration_signature,
-};
+// Re-exported flat so `signing::create_knxprod` and
+// `signing::get_master_data` keep working; the submodules are public
+// as well for callers that prefer the long path.
+#[cfg(feature = "master-data")]
+pub use master_data::get_master_data;
+#[cfg(feature = "packaging")]
+pub use packaging::*;
 
 /// Errors that can occur during signing operations.
 #[derive(Debug, Error)]
@@ -79,15 +82,24 @@ pub enum SigningError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    // The three variants below are the only per-item `#[cfg]`s in the
+    // crate, and unavoidably so: each wraps a type that does not exist
+    // without its dependency. Each therefore follows the feature that
+    // brings that dependency in, not `packaging` as a whole. The enum
+    // itself stays unconditional because `BuilderError` embeds it in
+    // feature-less builds too.
+    #[cfg(feature = "product-files")]
     #[error("ZIP error: {0}")]
     Zip(#[from] zip::result::ZipError),
 
+    #[cfg(feature = "packaging")]
     #[error("RSA error: {0}")]
     Rsa(#[from] rsa::Error),
 
     #[error("Base64 decode error: {0}")]
     Base64(#[from] base64::DecodeError),
 
+    #[cfg(feature = "master-data")]
     #[error("HTTP error: {0}")]
     Http(#[from] reqwest::Error),
 
@@ -99,29 +111,6 @@ pub enum SigningError {
 
     #[error("Signature verification failed: {0}")]
     VerificationFailed(String),
-}
-
-/// Configuration for signing a KNX product package.
-#[derive(Debug, Clone)]
-pub struct SigningConfig {
-    /// Manufacturer ID (e.g., "00FA")
-    pub manufacturer_id: String,
-
-    /// Application programs as `(program_id, xml_content)` pairs.
-    ///
-    /// Each entry becomes a separate XML file in the knxprod package,
-    /// named `<program_id>.xml`. The program ID is also used to compute
-    /// hashes that are embedded in Hardware.xml.
-    pub application_programs: Vec<(String, String)>,
-
-    /// Hardware XML content (will have hashes/signatures injected)
-    pub hardware: String,
-
-    /// Catalog XML content
-    pub catalog: String,
-
-    /// Optional baggage files (icons, etc.) as (relative_path, content) pairs
-    pub baggage_files: Vec<(String, Vec<u8>)>,
 }
 
 /// KNX XML schema version for master data downloads.
@@ -191,70 +180,4 @@ pub enum MasterDataSource {
 
     /// Use provided XML content directly.
     Content(String),
-}
-
-/// Result of verifying a Hardware.xml file.
-#[derive(Debug, Clone)]
-pub struct HardwareVerificationResult {
-    /// Results for Product hash verification
-    pub products: Vec<ProductHashResult>,
-
-    /// Results for Hardware2Program hash verification
-    pub hardware2programs: Vec<Hardware2ProgramHashResult>,
-
-    /// Results for RegistrationSignature verification
-    pub registration_signatures: Vec<RegistrationSignatureResult>,
-}
-
-/// Result of verifying a single Product hash.
-#[derive(Debug, Clone)]
-pub struct ProductHashResult {
-    pub id: String,
-    pub hardware_id: String,
-    pub expected: String,
-    pub computed: String,
-    pub valid: bool,
-}
-
-/// Result of verifying a single Hardware2Program hash.
-#[derive(Debug, Clone)]
-pub struct Hardware2ProgramHashResult {
-    pub id: String,
-    pub hardware_id: String,
-    pub expected: String,
-    pub computed: String,
-    pub valid: bool,
-    pub app_refs: Vec<String>,
-    pub app_hashes_found: usize,
-}
-
-/// Result of verifying a single RegistrationSignature.
-#[derive(Debug, Clone)]
-pub struct RegistrationSignatureResult {
-    pub parent_id: String,
-    pub parent_type: String,
-    pub status: Option<String>,
-    pub date: Option<String>,
-    pub number: Option<String>,
-    pub valid: bool,
-    pub key: Option<String>,
-    pub error: Option<String>,
-}
-
-/// Result of verifying a directory signature.
-#[derive(Debug, Clone)]
-pub struct DirectorySignatureResult {
-    pub valid: bool,
-    pub key: Option<String>,
-    pub files: usize,
-    pub error: Option<String>,
-}
-
-impl HardwareVerificationResult {
-    /// Returns true if all hashes and signatures are valid.
-    pub fn all_valid(&self) -> bool {
-        self.products.iter().all(|p| p.valid)
-            && self.hardware2programs.iter().all(|h| h.valid)
-            && self.registration_signatures.iter().all(|s| s.valid)
-    }
 }

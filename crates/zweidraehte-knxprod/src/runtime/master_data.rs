@@ -42,6 +42,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::str::FromStr;
 
+use crate::schema::LoadControl;
+
 /// Root element of the KNX XML file (wraps MasterData).
 #[derive(Debug, Clone, Deserialize)]
 pub struct KnxRoot {
@@ -202,7 +204,33 @@ impl MaskVersion {
         self.get_resource(ResourceName::GroupObjectTable)
     }
 
+    /// All programming procedures of this mask (empty slice when the
+    /// master data carries none).
+    pub fn procedures(&self) -> &[Procedure] {
+        self.hawk_config().and_then(|hc| hc.procedures.as_ref()).map(|p| p.procedures.as_slice()).unwrap_or_default()
+    }
+
+    /// Find a procedure by type (`"Load"` / `"Unload"`) and subtype
+    /// (`"all"`, `"grp"`, …), preferring one a remote client may run.
+    pub fn find_procedure(&self, procedure_type: &str, sub_type: &str) -> Option<&Procedure> {
+        let matches =
+            |p: &&Procedure| p.procedure_type == procedure_type && p.procedure_sub_type.as_deref() == Some(sub_type);
+        // Should a mask ever list the same procedure twice with
+        // different Access scopes, prefer the remote-capable one —
+        // we are always the bus-side client.
+        self.procedures()
+            .iter()
+            .find(|p| matches(p) && p.allows_remote())
+            .or_else(|| self.procedures().iter().find(matches))
+    }
+
     /// Build a lookup table of all resources by name.
+    /// Resources of the **first** `HawkConfigurationData` block only
+    /// (see [`hawk_config`](Self::hawk_config)): a mask may carry
+    /// several blocks (MV-07B0 has two, differing in `Access` scope),
+    /// and the first is the complete remote-access one — the later
+    /// blocks are subsets. Widening this to merge all blocks would
+    /// have to decide collision semantics first.
     pub fn resource_map(&self) -> HashMap<&str, &Resource> {
         let mut map = HashMap::new();
         if let Some(hc) = self.hawk_config()
@@ -229,8 +257,9 @@ pub enum ResourceName {
     GroupAddressTableLoadControl,
     /// Association table load control
     GroupAssociationTableLoadControl,
-    /// Application program load control
-    ApplicationProgramLoadControl,
+    /// Application program load control. The published master data
+    /// spells the prefix `Application`, not `ApplicationProgram`.
+    ApplicationLoadControl,
     /// PEI program load control
     PeiprogLoadControl,
 }
@@ -244,7 +273,7 @@ impl ResourceName {
             ResourceName::GroupObjectTable => "GroupObjectTable",
             ResourceName::GroupAddressTableLoadControl => "GroupAddressTableLoadControl",
             ResourceName::GroupAssociationTableLoadControl => "GroupAssociationTableLoadControl",
-            ResourceName::ApplicationProgramLoadControl => "ApplicationProgramLoadControl",
+            ResourceName::ApplicationLoadControl => "ApplicationLoadControl",
             ResourceName::PeiprogLoadControl => "PeiprogLoadControl",
         }
     }
@@ -262,15 +291,70 @@ pub struct HawkConfigurationData {
     #[serde(rename = "Resources", default)]
     pub resources: Option<Resources>,
 
+    /// The per-mask programming procedure templates (`LdCtrl*`
+    /// instruction streams). System B masks carry complete generic
+    /// Load procedures (with `LdCtrlMerge` splice points for the
+    /// product's MTXML fragments); System 7 / BIM M112 masks carry
+    /// only `Unload all` — their Load procedures are entirely
+    /// product-specific.
+    #[serde(rename = "Procedures", default)]
+    pub procedures: Option<Procedures>,
+
     // These are present but we skip them (use default to ignore)
     #[serde(rename = "InterfaceObjects", default)]
     _interface_objects: IgnoredElement,
 
     #[serde(rename = "MemorySegments", default)]
     _memory_segments: IgnoredElement,
+}
 
-    #[serde(rename = "Procedures", default)]
-    _procedures: IgnoredElement,
+/// Container for the programming procedures of a mask version.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct Procedures {
+    #[serde(rename = "Procedure", default)]
+    pub procedures: Vec<Procedure>,
+}
+
+/// One programming procedure: a typed stream of `LdCtrl*`
+/// instructions, reusing the MTXML [`LoadControl`] vocabulary from
+/// [`crate::schema`] (master data uses the same element language
+/// plus the tool-side-only superset).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Procedure {
+    /// `"Load"` or `"Unload"`.
+    #[serde(rename = "@ProcedureType")]
+    pub procedure_type: String,
+
+    /// What the procedure covers: `"all"`, `"grp"` (group addresses +
+    /// associations), `"par"` (parameters), `"par,grp"`, `"cfg"`, or
+    /// `"ap1"` (application 1 only).
+    #[serde(rename = "@ProcedureSubType", default)]
+    pub procedure_sub_type: Option<String>,
+
+    /// Where the procedure may run from (e.g. `"remote local1
+    /// local2"`); `remote` is the bus-client path.
+    #[serde(rename = "@Access", default)]
+    pub access: Option<String>,
+
+    #[serde(rename = "$value", default)]
+    pub controls: Vec<LoadControl>,
+}
+
+impl Procedure {
+    pub fn is_load(&self) -> bool {
+        self.procedure_type == "Load"
+    }
+
+    pub fn is_unload(&self) -> bool {
+        self.procedure_type == "Unload"
+    }
+
+    /// Whether a remote management client (our case: the bus-side
+    /// tool) may run this procedure. Procedures without an `Access`
+    /// attribute carry no restriction.
+    pub fn allows_remote(&self) -> bool {
+        self.access.as_deref().is_none_or(|a| a.split_whitespace().any(|part| part == "remote"))
+    }
 }
 
 /// A placeholder struct for XML elements we want to ignore during parsing.
@@ -583,8 +667,10 @@ mod tests {
     #[test]
     #[ignore] // Run with: cargo test -p knxprod parse_master_data_file -- --ignored
     fn parse_master_data_file() {
-        // Tests run from workspace root
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../manuf_tool_data/VC-EASY-03_MDT_KP_V35/knx_master.xml");
+        // manuf_tool_data sits at the workspace root (git-ignored:
+        // licensed KNX XML stays out of the repository), two levels up
+        // from this crate.
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../manuf_tool_data/VC-EASY-03_MDT_KP_V35/knx_master.xml");
         let master = MasterData::from_file(path).expect("Failed to parse master data");
 
         println!("Loaded {} mask versions", master.mask_version_count());
@@ -630,6 +716,183 @@ mod tests {
 
         println!("MV-07B0: {:?}", mv_07b0.address_table().map(|r| &r.location));
         println!("MV-0705: {:?}", mv_0705.address_table().map(|r| &r.location));
+
+        // ------------------------------------------------------------
+        // Programming procedures.
+        //
+        // System 7 (BIM M112) masks carry ONLY "Unload all" — the Load
+        // procedures are product-specific and live in each product's
+        // .knxprod. System B carries the full generic template set.
+        // ------------------------------------------------------------
+        let procs_0705 = mv_0705.procedures();
+        assert_eq!(procs_0705.len(), 1, "MV-0705 must carry exactly the Unload-all procedure");
+        let unload = &procs_0705[0];
+        assert!(unload.is_unload());
+        assert_eq!(unload.procedure_sub_type.as_deref(), Some("all"));
+        // Connect, Unload LSM 1-4, Disconnect.
+        assert_eq!(unload.controls.len(), 6);
+        assert!(matches!(unload.controls[0], LoadControl::LdCtrlConnect(_)));
+        for (i, lsm) in (1..=4).enumerate() {
+            match &unload.controls[1 + i] {
+                LoadControl::LdCtrlUnload(u) => assert_eq!(u.lsm_idx, Some(lsm)),
+                other => panic!("expected LdCtrlUnload, got {other:?}"),
+            }
+        }
+        assert!(matches!(unload.controls[5], LoadControl::LdCtrlDisconnect(_)));
+
+        // `procedures()` reads the primary HawkConfigurationData only —
+        // System B carries a second, `LegacyVersion="1"` config (with
+        // its own Unload-all) that a current tool must not execute.
+        let subtypes_07b0: Vec<_> =
+            mv_07b0.procedures().iter().map(|p| (p.procedure_type.as_str(), p.procedure_sub_type.as_deref())).collect();
+        assert_eq!(subtypes_07b0, [
+            ("Load", Some("ap1")),
+            ("Load", Some("all")),
+            ("Load", Some("grp")),
+            ("Load", Some("par")),
+            ("Load", Some("par,grp")),
+            ("Load", Some("cfg")),
+            ("Unload", Some("all")),
+        ]);
+        assert_eq!(mv_07b0.hawk_configs.len(), 2, "System B has a primary and a LegacyVersion config");
+
+        // The System B "Load all" template exercises the merge/splice
+        // machinery: it must contain LdCtrlMerge points and
+        // whole-blob relative writes.
+        let load_all = mv_07b0.find_procedure("Load", "all").expect("System B Load-all template");
+        assert!(load_all.allows_remote());
+        assert!(load_all.controls.iter().any(|c| matches!(c, LoadControl::LdCtrlMerge(m) if m.merge_id == 4)));
+        assert!(
+            load_all
+                .controls
+                .iter()
+                .any(|c| matches!(c, LoadControl::LdCtrlWriteRelMem(w) if w.obj_idx == Some(3) && w.verify))
+        );
+    }
+
+    /// Hermetic exercise of the full master-data procedure vocabulary
+    /// on a hand-written snippet (the licensed knx_master.xml stays
+    /// out of the repository; this is our own minimal expression of
+    /// the same element language, shaped after the project-23 file).
+    #[test]
+    fn parse_procedures_full_vocabulary() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278">
+    <MaskVersions>
+      <MaskVersion Id="MV-0012" MaskVersion="18" Name="1.2" ManagementModel="Bcu1">
+        <HawkConfigurationData>
+          <Procedures>
+            <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote local1 local2">
+              <LdCtrlConnect />
+              <LdCtrlSetControlVariable Name="EnableVerifyOnWriteDirect" Value="true" />
+              <LdCtrlLoadImageMem Address="278" Size="1" />
+              <LdCtrlWriteMem Address="269" Size="1" Verify="true" InlineData="00" />
+              <LdCtrlWriteMem Address="281" Size="230" Verify="true" />
+              <LdCtrlCompareMem Address="278" Size="1" InlineData="01" />
+              <LdCtrlDelay MilliSeconds="500" />
+              <LdCtrlRestart />
+            </Procedure>
+          </Procedures>
+        </HawkConfigurationData>
+      </MaskVersion>
+      <MaskVersion Id="MV-07B0" MaskVersion="1968" Name="System B" ManagementModel="SystemB">
+        <HawkConfigurationData>
+          <Procedures>
+            <Procedure ProcedureType="Load" ProcedureSubType="ap1" Access="remote local2">
+              <LdCtrlConnect />
+              <LdCtrlMerge MergeId="1" />
+              <LdCtrlMapError OriginalError="3221498632" MappedError="0" />
+              <LdCtrlUnload LsmIdx="5" />
+              <LdCtrlLoad LsmIdx="3" />
+              <LdCtrlRelSegment LsmIdx="3" Size="2" Mode="0" Fill="0" />
+              <LdCtrlWriteRelMem ObjIdx="3" Offset="0" Size="1048576" Verify="true" />
+              <LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="0000000000" />
+              <LdCtrlLoadImageProp ObjIdx="4" PropId="7" />
+              <LdCtrlCompareProp ObjIdx="4" PropId="7" InlineData="00000000" />
+              <LdCtrlLoadCompleted LsmIdx="3" />
+              <LdCtrlRestart />
+            </Procedure>
+          </Procedures>
+        </HawkConfigurationData>
+      </MaskVersion>
+      <MaskVersion Id="MV-0020" MaskVersion="32" Name="2.0" ManagementModel="Bcu2">
+        <HawkConfigurationData>
+          <Procedures>
+            <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote">
+              <LdCtrlConnect />
+              <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+              <LdCtrlTaskPtr LsmIdx="3" InitPtr="284" SavePtr="285" SerialPtr="0" />
+              <LdCtrlTaskCtrl1 LsmIdx="3" Address="0" Count="0" />
+              <LdCtrlTaskCtrl2 LsmIdx="3" Callback="20609" Address="282" Seg0="208" Seg1="208" />
+              <LdCtrlAbsSegment LsmIdx="1" SegType="0" Address="16384" Size="12" Access="255" MemType="3" SegFlags="128" />
+              <LdCtrlWriteProp ObjIdx="1" PropId="53" Count="0" Verify="true" />
+            </Procedure>
+            <Procedure ProcedureType="Unload" ProcedureSubType="all" Access="local1">
+              <LdCtrlClearLCFilterTable UseFunctionProp="true" />
+              <LdCtrlLoad ObjType="6" Occurrence="1" />
+              <LdCtrlRelSegment ObjType="6" Occurrence="1" Size="8192" Mode="0" Fill="0" />
+              <LdCtrlWriteMem AddressSpace="LcFilter" Address="0" Size="8192" Verify="false" />
+              <LdCtrlMasterReset EraseCode="7" ChannelNumber="0" />
+            </Procedure>
+          </Procedures>
+        </HawkConfigurationData>
+      </MaskVersion>
+    </MaskVersions>
+  </MasterData>
+</KNX>"#;
+
+        let master: MasterData = xml.parse().expect("snippet mirrors the master-data shape");
+
+        // BCU1-style raw-memory download.
+        let bcu1 = master.get_mask_version("MV-0012").expect("snippet defines MV-0012");
+        let load = bcu1.find_procedure("Load", "all").expect("snippet defines Load all");
+        assert!(load.allows_remote());
+        assert_eq!(load.controls.len(), 8);
+        assert!(matches!(&load.controls[1], LoadControl::LdCtrlSetControlVariable(v)
+            if v.name == "EnableVerifyOnWriteDirect" && v.value == "true"));
+        assert!(matches!(&load.controls[2], LoadControl::LdCtrlLoadImageMem(m)
+            if m.address == 278 && m.size == 1));
+        assert!(matches!(&load.controls[3], LoadControl::LdCtrlWriteMem(w)
+            if w.address == 269 && w.inline_data.as_deref() == Some("00")));
+        assert!(matches!(&load.controls[4], LoadControl::LdCtrlWriteMem(w)
+            if w.size == 230 && w.inline_data.is_none()));
+        assert!(matches!(&load.controls[5], LoadControl::LdCtrlCompareMem(c)
+            if c.inline_data == "01"));
+        assert!(matches!(&load.controls[6], LoadControl::LdCtrlDelay(d) if d.milli_seconds == 500));
+
+        // System B template with merge/error scaffolding.
+        let systemb = master.get_mask_version("MV-07B0").expect("snippet defines MV-07B0");
+        let ap1 = systemb.find_procedure("Load", "ap1").expect("snippet defines Load ap1");
+        assert!(matches!(&ap1.controls[1], LoadControl::LdCtrlMerge(m) if m.merge_id == 1));
+        assert!(matches!(&ap1.controls[2], LoadControl::LdCtrlMapError(m)
+            if m.original_error == 3221498632 && m.mapped_error == 0));
+        assert!(matches!(&ap1.controls[5], LoadControl::LdCtrlRelSegment(r)
+            if r.lsm_idx == Some(3) && r.applies_to.is_none() && r.size == 2));
+        assert!(matches!(&ap1.controls[6], LoadControl::LdCtrlWriteRelMem(w)
+            if w.obj_idx == Some(3) && w.size == 1_048_576 && w.verify));
+
+        // BCU2 task plumbing + ObjType addressing + line-coupler ops.
+        let bcu2 = master.get_mask_version("MV-0020").expect("snippet defines MV-0020");
+        let load = bcu2.find_procedure("Load", "all").expect("snippet defines Load all");
+        assert!(matches!(&load.controls[2], LoadControl::LdCtrlTaskPtr(t)
+            if t.init_ptr == 284 && t.save_ptr == 285));
+        assert!(matches!(&load.controls[4], LoadControl::LdCtrlTaskCtrl2(t)
+            if t.callback == 20609 && t.seg0 == 208));
+        assert!(matches!(&load.controls[5], LoadControl::LdCtrlAbsSegment(s)
+            if s.address == 16384 && s.seg_flags == 128));
+        assert!(matches!(&load.controls[6], LoadControl::LdCtrlWriteProp(w)
+            if w.obj_idx == Some(1) && w.count == Some(0)));
+
+        let unload = bcu2.find_procedure("Unload", "all").expect("snippet defines Unload all");
+        assert!(!unload.allows_remote());
+        assert!(matches!(&unload.controls[0], LoadControl::LdCtrlClearLCFilterTable(c)
+            if c.use_function_prop == Some(true)));
+        assert!(matches!(&unload.controls[1], LoadControl::LdCtrlLoad(l)
+            if l.lsm_idx.is_none() && l.obj_type == Some(6) && l.occurrence == Some(1)));
+        assert!(matches!(&unload.controls[3], LoadControl::LdCtrlWriteMem(w)
+            if w.address_space.as_deref() == Some("LcFilter") && !w.verify));
+        assert!(matches!(&unload.controls[4], LoadControl::LdCtrlMasterReset(m)
+            if m.erase_code == 7 && m.channel_number == 0));
     }
 
     #[test]

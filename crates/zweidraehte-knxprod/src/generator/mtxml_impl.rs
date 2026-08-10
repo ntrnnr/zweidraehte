@@ -2362,38 +2362,57 @@ impl MtxmlGenerator {
                     merge_id: Some(2),
                     controls: vec![
                         LoadControl::LdCtrlRelSegment(LdCtrlRelSegment {
-                            applies_to: "full".to_string(),
-                            lsm_idx: 4,
+                            applies_to: Some("full".to_string()),
+                            lsm_idx: Some(4),
                             size: param_size,
                             mode: 1,
                             fill: 0,
+                            ..Default::default()
                         }),
                         LoadControl::LdCtrlRelSegment(LdCtrlRelSegment {
-                            applies_to: "par".to_string(),
-                            lsm_idx: 4,
+                            applies_to: Some("par".to_string()),
+                            lsm_idx: Some(4),
                             size: param_size,
                             mode: 0,
                             fill: 0,
+                            ..Default::default()
                         }),
                     ],
                 },
                 LoadProcedure {
                     merge_id: Some(4),
                     controls: vec![LoadControl::LdCtrlWriteRelMem(LdCtrlWriteRelMem {
-                        applies_to: "full,par".to_string(),
-                        obj_idx: 4,
+                        applies_to: Some("full,par".to_string()),
+                        obj_idx: Some(4),
                         offset: 0,
                         size: param_size,
                         verify: true,
+                        ..Default::default()
                     })],
                 },
                 LoadProcedure {
                     merge_id: Some(7),
                     controls: vec![
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 1, prop_id: 27 }),
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 2, prop_id: 27 }),
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 3, prop_id: 27 }),
-                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp { obj_idx: 4, prop_id: 27 }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
+                            obj_idx: Some(1),
+                            prop_id: 27,
+                            ..Default::default()
+                        }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
+                            obj_idx: Some(2),
+                            prop_id: 27,
+                            ..Default::default()
+                        }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
+                            obj_idx: Some(3),
+                            prop_id: 27,
+                            ..Default::default()
+                        }),
+                        LoadControl::LdCtrlLoadImageProp(LdCtrlLoadImageProp {
+                            obj_idx: Some(4),
+                            prop_id: 27,
+                            ..Default::default()
+                        }),
                     ],
                 },
             ],
@@ -2430,20 +2449,19 @@ impl MtxmlGenerator {
         // Pad to 10 bytes (20 hex chars) like MDT does
         let serial_padded = format!("{:0<20}", serial_hex);
         controls.push(LoadControl::LdCtrlCompareProp(LdCtrlCompareProp {
-            obj_idx: 0,
+            obj_idx: Some(0),
             prop_id: 78, // PID_SERIAL_NUMBER
             inline_data: Some(serial_padded),
-            range: None,
-            on_error: None,
+            ..Default::default()
         }));
 
         // 3. Unload existing LSMs (1, 2, 3)
-        controls.push(LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: 1 }));
-        controls.push(LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: 2 }));
-        controls.push(LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: 3 }));
+        controls.push(LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(1), ..Default::default() }));
+        controls.push(LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(2), ..Default::default() }));
+        controls.push(LoadControl::LdCtrlUnload(LdCtrlUnload { lsm_idx: Some(3), ..Default::default() }));
 
         // 4. Load LSM 1 - Address Table
-        controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: 1 }));
+        controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(1), ..Default::default() }));
         if let Some(seg) = layout.segments.iter().find(|s| s.name == layout.address_table_segment) {
             controls.push(LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
                 lsm_idx: 1,
@@ -2457,10 +2475,10 @@ impl MtxmlGenerator {
             controls
                 .push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 1, address: seg.address as u16 }));
         }
-        controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: 1 }));
+        controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(1), ..Default::default() }));
 
         // 5. Load LSM 2 - Association Table
-        controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: 2 }));
+        controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(2), ..Default::default() }));
         if let Some(seg) = layout.segments.iter().find(|s| s.name == layout.association_table_segment) {
             controls.push(LoadControl::LdCtrlAbsSegment(LdCtrlAbsSegment {
                 lsm_idx: 2,
@@ -2474,10 +2492,10 @@ impl MtxmlGenerator {
             controls
                 .push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 2, address: seg.address as u16 }));
         }
-        controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: 2 }));
+        controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(2), ..Default::default() }));
 
         // 6. Load LSM 3 - Application (RAM segments, COT, Parameters)
-        controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: 3 }));
+        controls.push(LoadControl::LdCtrlLoad(LdCtrlLoad { lsm_idx: Some(3), ..Default::default() }));
 
         // Add RAM segments first
         for seg in &layout.segments {
@@ -2528,7 +2546,7 @@ impl MtxmlGenerator {
             .map(|s| s.address as u16)
             .unwrap_or(17408);
         controls.push(LoadControl::LdCtrlTaskSegment(LdCtrlTaskSegment { lsm_idx: 3, address: cot_address }));
-        controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: 3 }));
+        controls.push(LoadControl::LdCtrlLoadCompleted(LdCtrlLoadCompleted { lsm_idx: Some(3), ..Default::default() }));
 
         // 7. Restart and disconnect
         controls.push(LoadControl::LdCtrlRestart(LdCtrlRestart {}));
