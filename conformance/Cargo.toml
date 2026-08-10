@@ -8,7 +8,15 @@ license = "AGPL-3.0-only"
 [dependencies]
 zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "ip-secure", "conformance"] }
 zweidraehte-proto = { path = "../crates/zweidraehte-proto", features = ["log", "knxip", "ip-secure", "std"] }
-# The parent-side runners are tokio; the DUT children are embassy.
+# The configuration runner drives the real client library against the
+# DUT; tokio is its runtime (the harness's async-io/embassy-time bits
+# are executor-agnostic and run under it unchanged).
+zweidraehte-client = { path = "../crates/zweidraehte-client" }
+# The configuration runner generates each DUT's product file
+# in-process and reads it back through the client — a full
+# generator/parser round-trip; see harness::system7_product and
+# harness::system_b_product.
+zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 embassy-sync = { workspace = true }
 embassy-time = { workspace = true, features = ["std"] }
@@ -42,6 +50,12 @@ path = "src/bin/runner.rs"
 [[bin]]
 name = "conformance-eitt"
 path = "src/bin/eitt.rs"
+
+# Drives the real zweidraehte-client library (configuration download)
+# against the System 7 and System B DUTs; see src/bin/configuration.rs.
+[[bin]]
+name = "conformance-configuration"
+path = "src/bin/configuration.rs"
 
 [[bin]]
 name = "conformance-dut-systemb"

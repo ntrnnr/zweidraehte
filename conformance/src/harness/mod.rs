@@ -9,6 +9,7 @@
 //!   state (transport connections, programming mode, etc.) while persistent
 //!   state survives in shared memory
 
+pub mod client_bridge;
 pub mod fixture_common;
 pub mod frame_source;
 pub mod framing;
@@ -17,8 +18,10 @@ pub mod ipc;
 pub mod lifecycle;
 pub mod protocol;
 pub mod shm;
+pub mod system7_product;
 pub mod system7_secure_stack;
 pub mod system7_stack;
+pub mod system_b_product;
 pub mod systemb_secure_stack;
 pub mod systemb_stack;
 
