@@ -240,10 +240,8 @@ async fn main(spawner: Spawner) {
     // so we refuse to start. The config backend keeps the serial only — it
     // never touches the FDSK, which stays with the device identity.
     let seq = open_siat_store(SEQ_FILE_PATH).expect("open sequence/SIAT store");
-    let config = JsonStorage::<LightSwitchSecureState, _>::new(
-        STATE_FILE_PATH,
-        StaticIdentity::new(*identity.serial_number()),
-    );
+    let config =
+        JsonStorage::<LightSwitchSecureState, _>::new(STATE_FILE_PATH, StaticIdentity::new(*identity.serial_number()));
     static STORAGE: StaticCell<LightSwitchSecureStorage> = StaticCell::new();
     let storage = &*STORAGE.init(SecureStorage::new(config, seq));
 
