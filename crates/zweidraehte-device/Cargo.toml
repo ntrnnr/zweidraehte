@@ -70,6 +70,7 @@ critical-section = { version = "1.2.0", features = ["std"] }
 # JSON (field names / serde defaults) as the hand-written structs they replaced,
 # so a saved config keeps round-tripping.
 serde_json = { workspace = true }
+insta = "1.48.0"
 
 # The RF-retransmitter property-description scan test builds a real interface-
 # object container on the host, which needs the std critical-section impl for
