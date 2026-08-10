@@ -19,7 +19,7 @@
 //!
 //! ```toml
 //! medium = "tp"
-//! dut = "plain"
+//! dut = "systemb"
 //!
 //! [addresses]
 //! EDI  = "AF FE"
@@ -112,7 +112,7 @@ pub struct TemplateRef {
     /// Which DUT this template needs, when it is not the profile's.
     ///
     /// The data-security template has to be driven against
-    /// `conformance-dut-secure`, which boots with the tool and group
+    /// `conformance-dut-systemb-secure`, which boots with the tool and group
     /// keys installed; the other templates want the plain DUT, which has
     /// no security at all. One profile covers both because they are the
     /// same device otherwise — same medium, same addresses, same tables.
@@ -255,11 +255,13 @@ fn default_medium() -> String {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dut {
-    /// `conformance-dut`.
+    /// `conformance-dut-systemb`. Spelled `systemb` in profile TOML.
     #[default]
-    Plain,
-    /// `conformance-dut-secure`.
-    Secure,
+    SystemB,
+    /// `conformance-dut-systemb-secure`. Spelled `systemb-secure` in profile
+    /// TOML.
+    #[serde(rename = "systemb-secure")]
+    SystemBSecure,
     /// `conformance-dut-system7` — System 7 family (mask 0705h).
     System7,
     /// `conformance-dut-system7-secure` — System 7 family with Data
@@ -271,8 +273,8 @@ pub enum Dut {
 impl From<Dut> for DutMode {
     fn from(d: Dut) -> Self {
         match d {
-            Dut::Plain => DutMode::Plain,
-            Dut::Secure => DutMode::Secure,
+            Dut::SystemB => DutMode::SystemB,
+            Dut::SystemBSecure => DutMode::SystemBSecure,
             Dut::System7 => DutMode::System7,
             Dut::System7Secure => DutMode::System7Secure,
         }
@@ -489,7 +491,7 @@ mod tests {
     fn a_minimal_profile_gets_safe_defaults() {
         let p: Profile = toml::from_str("").expect("empty profile");
         assert_eq!(p.medium, "tp");
-        assert_eq!(p.dut, Dut::Plain);
+        assert_eq!(p.dut, Dut::SystemB);
         // Pauses are inert without an operator; everything else stops
         // the run until someone decides what it means here.
         assert_eq!(p.commands.pause, Policy::Ignore);

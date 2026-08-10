@@ -59,7 +59,7 @@ pub const GK6: [u8; 16] =
 
 /// FDSK — Factory Default Setup Key.
 ///
-/// Must match `SECURE_FDSK` in [`crate::harness::secure_stack`]. Distinct
+/// Must match `SECURE_FDSK` in [`crate::harness::fixture_common`]. Distinct
 /// from TK1 so tests that factory-reset the DUT can observe the tool
 /// key reverting to FDSK and re-provision TK1 via an FDSK-encrypted
 /// `PID_TOOL_KEY` write, per the reference XML (see 3.8.13.1/8).
@@ -156,7 +156,7 @@ pub fn create_security_variables() -> BTreeMap<String, TestVariable> {
 
     // The four accessible properties the reference XML expects on IO1.
     // Their shapes come from its own field comments; see
-    // `cert_pid` in `harness::secure_stack` for the implementations.
+    // `cert_pid` in `harness::fixture_common` for the implementations.
     // PROP1: PDT_GENERIC_02 ReadWrite, restricted write level (PID 52).
     vars.insert("ACCESSIBLE_PROP1".into(), TestVariable::Bytes(vec![0x34]));
     // PROP2: PDT_GENERIC_01 ReadWrite with a validated range (PID 201).

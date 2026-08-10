@@ -1,6 +1,6 @@
 //! Conformance DUT child process — System 7 family with KNX Data Secure.
 //!
-//! Identical structure to [`dut_secure.rs`](conformance-dut-secure); the
+//! Identical structure to [`dut_systemb_secure.rs`](conformance-dut-systemb-secure); the
 //! variations are the stack type (`IpcSystem7SecureTestStack`, mask
 //! 0705h) and the CoTab publication for this DUT's own shadow-object
 //! hook.
@@ -12,8 +12,8 @@ use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::dut_common::{self, CommandChannel, ShmCell};
+use zweidraehte_conformance::harness::fixture_common::set_seq_shm_ptr;
 use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
-use zweidraehte_conformance::harness::secure_stack::set_seq_shm_ptr;
 use zweidraehte_conformance::harness::shm::SharedMemory;
 use zweidraehte_conformance::harness::system7_secure_stack::{
     IpcSystem7SecureTestStack, SecureSystem7MemoryMap, System7SecureDutConfig, device_info, set_system7_secure_cot,
@@ -86,7 +86,7 @@ async fn main(spawner: Spawner) {
     // as the System B secure DUT. SAFETY: the region is owned by this
     // process for the duration of the program.
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let storage = zweidraehte_conformance::harness::secure_stack::init_secure_storage();
+    let storage = zweidraehte_conformance::harness::fixture_common::init_secure_storage();
     let state_init = state_init_from_snapshot(snapshot);
 
     let shm = SHM.init(ShmCell::new(shm));

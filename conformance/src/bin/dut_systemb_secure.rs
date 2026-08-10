@@ -1,22 +1,23 @@
 //! Conformance DUT (Device Under Test) child process — Data Secure stack.
 //!
-//! Identical structure to [`dut.rs`](conformance-dut); the only variations
+//! Identical structure to [`dut_systemb.rs`](conformance-dut-systemb); the only variations
 //! are the stack type (`IpcSecureConformanceTestStack`) and the seq-storage
 //! initialisation from the tail of the shared-memory region.
 //!
-//! Usage: `conformance-dut-secure --shm-fd <N> --socket-fd <M>`
+//! Usage: `conformance-dut-systemb-secure --shm-fd <N> --socket-fd <M>`
 
 use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
 use zweidraehte_conformance::dut_common::{self, CommandChannel, ShmCell};
+use zweidraehte_conformance::harness::fixture_common::set_seq_shm_ptr;
 use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
-use zweidraehte_conformance::harness::secure_stack::{
-    IpcSecureConformanceTestStack, SecureConformanceDeviceConfig, SecureConformanceStateInit, set_seq_shm_ptr,
-};
 use zweidraehte_conformance::harness::shm::SharedMemory;
-use zweidraehte_conformance::harness::stack::{ConformanceMemoryMap, device_info};
+use zweidraehte_conformance::harness::systemb_secure_stack::{
+    IpcSecureConformanceTestStack, SecureConformanceStateInit, SystemBSecureDutConfig,
+};
+use zweidraehte_conformance::harness::systemb_stack::{ConformanceMemoryMap, device_info};
 
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
@@ -67,7 +68,7 @@ async fn handle_restarts(stack: Stack<'static, IpcSecureConformanceTestStack>, s
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let (shm_fd, socket_fd) = dut_common::parse_args("conformance-dut-secure");
+    let (shm_fd, socket_fd) = dut_common::parse_args("conformance-dut-systemb-secure");
 
     set_primary_socket_fd(socket_fd);
     dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
@@ -75,7 +76,7 @@ async fn main(spawner: Spawner) {
     // SAFETY: parent passed us a valid SHM fd.
     let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    let snapshot: SecureConformanceDeviceConfig = shm
+    let snapshot: SystemBSecureDutConfig = shm
         .read_state()
         .expect("read shared memory")
         .expect("shared memory uninitialized — parent should have written initial state");
@@ -85,7 +86,7 @@ async fn main(spawner: Spawner) {
     // the program; `seq_region_ptr` stays valid until `shm` is dropped
     // (at `process::exit`).
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let storage = zweidraehte_conformance::harness::secure_stack::init_secure_storage();
+    let storage = zweidraehte_conformance::harness::fixture_common::init_secure_storage();
     let state_init = SecureConformanceStateInit::Loaded { config: snapshot };
 
     let shm = SHM.init(ShmCell::new(shm));
@@ -115,7 +116,7 @@ async fn main(spawner: Spawner) {
     // `StackResources` which is 'static — the pointer remains valid
     // for the process.
     unsafe {
-        zweidraehte_conformance::harness::stack::set_conformance_cot(stack.communication_object_table());
+        zweidraehte_conformance::harness::systemb_stack::set_conformance_cot(stack.communication_object_table());
     }
 
     // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its

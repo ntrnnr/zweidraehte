@@ -8,6 +8,8 @@ license = "AGPL-3.0-only"
 [dependencies]
 zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "ip-secure", "conformance"] }
 zweidraehte-proto = { path = "../crates/zweidraehte-proto", features = ["log", "knxip", "ip-secure", "std"] }
+# The parent-side runners are tokio; the DUT children are embassy.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 embassy-sync = { workspace = true }
 embassy-time = { workspace = true, features = ["std"] }
 embassy-futures = { workspace = true }
@@ -19,6 +21,7 @@ paste = { workspace = true }
 heapless = { workspace = true }
 log = { workspace = true, features = ["std"] }
 async-io = "2"
+futures-lite = { workspace = true }
 nix = { version = "0.29", features = ["mman", "fs"] }
 tempfile = "3"
 serde = { workspace = true, features = ["derive", "alloc", "std"] }
@@ -41,12 +44,12 @@ name = "conformance-eitt"
 path = "src/bin/eitt.rs"
 
 [[bin]]
-name = "conformance-dut"
-path = "src/bin/dut.rs"
+name = "conformance-dut-systemb"
+path = "src/bin/dut_systemb.rs"
 
 [[bin]]
-name = "conformance-dut-secure"
-path = "src/bin/dut_secure.rs"
+name = "conformance-dut-systemb-secure"
+path = "src/bin/dut_systemb_secure.rs"
 
 [[bin]]
 name = "conformance-dut-ip-secure"

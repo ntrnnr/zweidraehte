@@ -1,6 +1,6 @@
 //! KNX Conformance Test Runner.
 //!
-//! Drives `conformance-dut` / `conformance-dut-secure` child processes
+//! Drives `conformance-dut-systemb` / `conformance-dut-systemb-secure` child processes
 //! over the new postcard IPC protocol (see
 //! [`zweidraehte_conformance::harness::protocol`]). Every inject/
 //! trigger/programming-mode step is synchronous:
@@ -16,7 +16,7 @@
 //!   --realtime    Use spec-compliant timeouts (for real hardware testing).
 //!                 Without this flag, timeouts are divided by 50 for fast
 //!                 IPC-connected testing.
-//!   --non-secure  Run against the plain (`conformance-dut`) DUT and SKIP
+//!   --non-secure  Run against the plain (`conformance-dut-systemb`) DUT and SKIP
 //!                 any suite that requires the secure stack
 //!                 (`TestSuite::use_secure_dut == true`).
 //!   filter        Optional filters (case-insensitive substring match)
@@ -40,14 +40,14 @@ use zweidraehte_conformance::tests;
 // Entry Point
 // ============================================================================
 
-#[embassy_executor::main]
-async fn main(_spawner: embassy_executor::Spawner) {
+#[tokio::main]
+async fn main() {
     // Argument parsing — same surface as before: flags + filters.
     let args: Vec<String> = env::args().collect();
     let realtime = args.iter().any(|a| a == "--realtime");
     let non_secure = args.iter().any(|a| a == "--non-secure");
     let time_divisor: u64 = if realtime { 1 } else { DEFAULT_TIME_DIVISOR };
-    let dut_mode = if non_secure { DutMode::Plain } else { DutMode::Secure };
+    let dut_mode = if non_secure { DutMode::SystemB } else { DutMode::SystemBSecure };
 
     // Export the divisor so the DUT child scales its TL timers to match.
     // SAFETY: single-threaded before any child is spawned.
@@ -207,7 +207,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         }
     };
 
-    if dut_mode == DutMode::Plain {
+    if dut_mode == DutMode::SystemB {
         let before = suites.len();
         suites.retain(|s| !s.use_secure_dut);
         let skipped = before - suites.len();

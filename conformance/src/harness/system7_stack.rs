@@ -28,7 +28,7 @@
 //! user-memory window at its template-default 7FF0h; everything else
 //! falls through to the family map, which stays the surface under test.
 //!
-//! [`IpcConformanceTestStack`]: super::stack::IpcConformanceTestStack
+//! [`IpcConformanceTestStack`]: super::systemb_stack::IpcConformanceTestStack
 
 use core::cell::RefCell;
 
@@ -51,14 +51,14 @@ use zweidraehte_device::{
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
-use super::stack::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
+use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
 
 // ============================================================================
 // Communication objects — the non-secure System B fixture on RT8 tables
 // ============================================================================
 //
 // Same shadow-object arrangement the System B DUT uses for the 1.4.1
-// group-object cases (see `harness::stack` for the full rationale):
+// group-object cases (see `harness::systemb_stack` for the full rationale):
 //
 // - GO0 (ASAP 1): main 1-bit object
 // - GO1 (ASAP 2): GO0's communication flags
@@ -123,7 +123,7 @@ use zweidraehte_device::objects::tables::CommunicationObjectTable;
 // CoTab pointer for the ComObjectBusHook shadow objects
 // ============================================================================
 //
-// Same pattern as `harness::stack::set_conformance_cot`: the shadow
+// Same pattern as `harness::systemb_stack::set_conformance_cot`: the shadow
 // hook needs the live CoTab from `&mut self` alone, so the DUT binary
 // parks a pointer to it in a process-global static. The System 7 DUT is
 // its own process, so a second static per binary is fine.
@@ -277,7 +277,7 @@ pub const COT_ADDRESS: u32 = 0x4200;
 /// derived from the fixture's actual entry counts, like the System B
 /// DUT's `table_sizes`. The device descriptor advertises the profile
 /// maximum (254) independently of these buffers.
-pub(crate) mod table_sizes {
+pub mod table_sizes {
     use super::conformance_config::System7ConformanceConfig;
 
     pub const ADT: usize = System7ConformanceConfig::ADDR8_SIZE;
@@ -445,7 +445,7 @@ impl DeviceModelNotifier for ConformanceSystem7State {
 /// The regions are adjacent for the same reason the System B map's are
 /// (partly-protected accesses run off one region's end into the next,
 /// starting with MemoryBit 2.10.2 overrunning the accessible window's
-/// last octet); see `ConformanceMemoryMap` in `harness::stack`.
+/// last octet); see `ConformanceMemoryMap` in `harness::systemb_stack`.
 ///
 /// Everything else — progmode byte, OptionReg, load control, the RAM
 /// window, the RT8 tables — falls through to [`System7MemoryMap`],
@@ -698,7 +698,7 @@ impl StackDefinition for IpcSystem7TestStack {
     fn create_state(init: Self::StateInit) -> Self::State {
         match init.loaded_config {
             Some(snapshot) => ConformanceSystem7State::from_device_config(snapshot),
-            None => ConformanceSystem7State::from_device_config(System7DutConfig::factory_snapshot()),
+            None => ConformanceSystem7State::from_device_config(System7DutConfig::default_snapshot()),
         }
     }
 
@@ -789,11 +789,13 @@ pub struct System7DutConfig {
 }
 
 impl System7DutConfig {
-    /// The factory boot image: IA 1.0.1 (inside the RT8 address-table
-    /// blob), pre-loaded tables at their product-database addresses,
-    /// application loaded so the device model starts it on boot, EEPROM
-    /// test regions at their factory patterns.
-    pub fn factory_snapshot() -> Self {
+    /// The factory boot image the parent writes into shared memory
+    /// before spawning the child: IA 1.0.1 (inside the RT8
+    /// address-table blob), pre-loaded tables at their
+    /// product-database addresses, application loaded so the device
+    /// model starts it on boot, EEPROM test regions at their factory
+    /// patterns.
+    pub fn default_snapshot() -> Self {
         use conformance_config::System7ConformanceConfig;
 
         let (addr_tab, asso_tab, co_tab) = System7ConformanceConfig::create_tables(AST_ADDRESS, COT_ADDRESS);
@@ -845,12 +847,6 @@ impl ConformanceSystem7State {
             user_memory: *self.user_memory.borrow(),
         }
     }
-}
-
-/// Build the factory boot image the parent writes into shared memory
-/// before spawning the child.
-pub fn default_snapshot() -> System7DutConfig {
-    System7DutConfig::factory_snapshot()
 }
 
 /// The `StateInit` value the DUT builds from a shared-memory snapshot.

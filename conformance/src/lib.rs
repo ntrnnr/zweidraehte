@@ -737,7 +737,7 @@ pub struct TestSuite {
     pub cases: Vec<TestCase>,
     /// Optional teardown steps that run once after all test cases in the suite
     pub teardown: Vec<TestStep>,
-    /// Whether this suite requires the secure DUT (`conformance-dut-secure`).
+    /// Whether this suite requires the secure DUT (`conformance-dut-systemb-secure`).
     pub use_secure_dut: bool,
     /// Whether this suite requires the System 7 DUT (`conformance-dut-system7`).
     pub use_system7_dut: bool,

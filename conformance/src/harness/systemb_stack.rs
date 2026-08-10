@@ -17,8 +17,7 @@
 
 use core::cell::RefCell;
 
-use const_default::ConstDefault;
-
+use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     bcus::system_b::{
@@ -573,17 +572,6 @@ pub(crate) const CONFORMANCE_MEMORY_LAYOUT: MemoryLayout = MemoryLayout::calcula
 );
 
 // ============================================================================
-// Test Parameters
-// ============================================================================
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, IntoBytes, KnownLayout, Immutable)]
-pub struct TestParameters;
-
-impl ConstDefault for TestParameters {
-    const DEFAULT: Self = TestParameters;
-}
-
-// ============================================================================
 // Stack Definition
 // ============================================================================
 
@@ -634,7 +622,7 @@ pub enum ConformanceStateInit {
         app_table: Application<TestParameters>,
     },
     /// Restore from a previously-persisted config snapshot.
-    Loaded(ConformanceDeviceConfig),
+    Loaded(SystemBDutConfig),
 }
 
 /// Unified state for conformance tests.
@@ -790,12 +778,23 @@ impl DeviceModelNotifier for ConformanceState {
 pub struct ConformanceMemoryMap;
 
 impl ConformanceMemoryMap {
-    /// Base address for Address Table
+    /// Base address for Address Table — the anchor the whole layout
+    /// is computed from.
     pub const ADT_BASE: u16 = 0x0100;
-    /// Base address for Association Table
-    pub const AST_BASE: u16 = 0x0116;
-    /// Base address for Communication Object Table
-    pub const COT_BASE: u16 = 0x0150;
+    /// Base address for Association Table.
+    ///
+    /// Derived from [`CONFORMANCE_MEMORY_LAYOUT`] rather than written
+    /// out, because two things must agree and used not to: this map
+    /// serves the memory, while the layout is what the interface
+    /// objects report through `PID_TABLE_REFERENCE` *and* what they
+    /// assign during a relative allocation. When the literals here
+    /// drifted behind the fixture's growing table counts, a download
+    /// that allocated and then wrote at the reported base was refused
+    /// — which is exactly what a real ETS download does, and what the
+    /// configuration runner's System B scenario caught.
+    pub const AST_BASE: u16 = CONFORMANCE_MEMORY_LAYOUT.ast_address();
+    /// Base address for Communication Object Table; see [`Self::AST_BASE`].
+    pub const COT_BASE: u16 = CONFORMANCE_MEMORY_LAYOUT.cot_address();
     // The protected regions sit directly behind the freely writable
     // linear block, and behind each other:
     //
@@ -1133,45 +1132,8 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
     }
 }
 
-/// Device descriptor type 2 (DD2) data for conformance tests.
-///
-/// Deliberately placeholder content: these are the fourteen octets the
-/// EITT management template declares as the default of its own
-/// `DD2_RESPONSE` field, which is what 2.5.3 and 2.5.4 compare against.
-/// A real DD2 would be filled in from the data sheet.
-///
-/// DD2 is Optional for System B — 06 Profiles §4.3 "Device
-/// Identification", row "Device Descriptor Type 2", where it is M only
-/// for RF unidirectional and bidirectional and "-" for System 1/2,
-/// BCU 1 and BIM M112. We answer it so the read path is exercised.
-///
-/// Its fields are all defined in terms of an E-Mode device: 03/05/01
-/// §4.1.3 describes octets 0-1 as "the manufacturer code of the
-/// manufacturer of the E-Mode device", octet 5 as "the Management
-/// Profile of the E-Mode device", and octets 6-13 as E-Mode Channel
-/// information; §4.3.13.4 has an E-Mode Management Server deriving a
-/// device's active Group Objects from DD2 plus the Channel database.
-/// The spec does not go on to say DD2 is E-Mode only — §4.1.1 names a
-/// mode for DD0 alone ("designed for use in S-Mode") — which is why an
-/// S-Mode profile can still list it as Optional.
-///
-/// Format, against the octets below:
-/// - Bytes 0-1: Application Manufacturer (0x0102)
-/// - Bytes 2-3: Application Identification (0x0304)
-/// - Byte 4: Application Version (0x05)
-/// - Byte 5: Management Profile in bits 7-4, rest reserved (0x06)
-/// - Bytes 6-13: Channel Info 1-4, two octets each
-pub const CONFORMANCE_DD2: [u8; 14] =
-    [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E];
-
-/// User Manufacturer Info for conformance tests.
-///
-/// This must match the expected response in the conformance test suite.
-/// Format: Manufacturer ID (2 bytes) + Device Type (1 byte)
-pub const CONFORMANCE_USER_MANUFACTURER_INFO: [u8; 3] = [0x00, 0x00, 0x00];
-
 // ============================================================================
-// Stack Definition (for conformance-dut child process)
+// Stack Definition (for conformance-dut-systemb child process)
 // ============================================================================
 
 /// Stack definition for the conformance DUT child process.
@@ -1261,7 +1223,7 @@ impl StackDefinition for IpcConformanceTestStack {
 // memory region and how to apply erase codes.
 
 impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
-    type DeviceConfig = ConformanceDeviceConfig;
+    type DeviceConfig = SystemBDutConfig;
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
         state.to_device_config()
@@ -1276,14 +1238,13 @@ impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
 // Shared Memory Integration
 // ============================================================================
 //
-// The shared memory stores a `ConformanceDeviceConfig` serialized with
+// The shared memory stores a `SystemBDutConfig` serialized with
 // postcard. This wraps the stack's own `DeviceConfig` (which handles
 // auth keys, tables, load/run state, etc.) plus the test memory regions
 // that the conformance harness needs across restarts.
 
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
-use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::bcus::system_b::{DeviceConfig, Tp1ExtensionConfig};
 use zweidraehte_device::layers::application::services::StandardAlServices;
 use zweidraehte_device::storage::HasDeviceConfig;
@@ -1302,7 +1263,7 @@ type InnerDeviceConfig =
 /// built-in array support only covers sizes up to 32.
 #[serde_as]
 #[derive(Serialize, Deserialize)]
-pub struct ConformanceDeviceConfig {
+pub struct SystemBDutConfig {
     /// Core device state — serialized via the stack's `to_config()` /
     /// `from_config()` pattern, which correctly handles private fields
     /// like auth keys.
@@ -1319,7 +1280,7 @@ pub struct ConformanceDeviceConfig {
     pub user_memory: [u8; USER_MEMORY_SIZE],
 }
 
-impl ConformanceDeviceConfig {
+impl SystemBDutConfig {
     /// Build a default persisted snapshot without needing runtime state.
     ///
     /// Used by the multiprocess harness to initialize shared memory.
@@ -1358,7 +1319,7 @@ impl ConformanceState {
     /// Uses the stack's `from_config()` to reconstruct the inner
     /// device state (including auth keys, tables, load/run states),
     /// then restores the test memory regions.
-    pub fn from_device_config(snapshot: ConformanceDeviceConfig) -> Self {
+    pub fn from_device_config(snapshot: SystemBDutConfig) -> Self {
         let identity = StaticIdentity::new(device_info::SERIAL_NUMBER);
         let inner = InnerState::from_config(identity, snapshot.inner, ());
 
@@ -1376,8 +1337,8 @@ impl ConformanceState {
     ///
     /// Called by the child's restart handler right before exiting.
     /// The snapshot is then written to shared memory via postcard.
-    pub fn to_device_config(&self) -> ConformanceDeviceConfig {
-        ConformanceDeviceConfig {
+    pub fn to_device_config(&self) -> SystemBDutConfig {
+        SystemBDutConfig {
             inner: self.inner.to_config(),
             linear_memory: *self.linear_memory.borrow(),
             level2_memory: *self.level2_memory.borrow(),

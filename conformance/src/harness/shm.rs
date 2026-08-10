@@ -10,9 +10,9 @@
 //! [seq region: last 256 bytes — secure DUT only]
 //! ```
 //!
-//! The postcard payload is a `ConformanceDeviceConfig` or
-//! `SecureConformanceDeviceConfig` (see `stack.rs` /
-//! `secure_stack.rs`). The 256-byte tail region backs the secure
+//! The postcard payload is a `SystemBDutConfig` or
+//! `SystemBSecureDutConfig` (see `systemb_stack.rs` /
+//! `fixture_common.rs`). The 256-byte tail region backs the secure
 //! DUT's per-peer sequence-number storage; `clear_seq_region()`
 //! zeroes it before the first secure suite to avoid stale-seq replay
 //! rejections.

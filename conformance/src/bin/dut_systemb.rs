@@ -4,7 +4,7 @@
 //! memory, reconstructs device state, creates an IPC-backed KNX stack,
 //! and runs until told to restart or power-cycle.
 //!
-//! Usage: `conformance-dut --shm-fd <N> --socket-fd <M>`
+//! Usage: `conformance-dut-systemb --shm-fd <N> --socket-fd <M>`
 //!
 //! This binary is a thin shim over [`dut_common`]: every non-trivial
 //! task body lives there and is specialised for `IpcConformanceTestStack`
@@ -17,8 +17,8 @@ use static_cell::StaticCell;
 use zweidraehte_conformance::dut_common::{self, CommandChannel, ShmCell};
 use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::harness::shm::SharedMemory;
-use zweidraehte_conformance::harness::stack::{
-    ConformanceDeviceConfig, ConformanceMemoryMap, ConformanceStateInit, IpcConformanceTestStack, device_info,
+use zweidraehte_conformance::harness::systemb_stack::{
+    ConformanceMemoryMap, ConformanceStateInit, IpcConformanceTestStack, SystemBDutConfig, device_info,
 };
 
 use zweidraehte_device::{Runner, Stack, StackResources};
@@ -73,7 +73,7 @@ async fn handle_restarts(stack: Stack<'static, IpcConformanceTestStack>, shm: &'
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let (shm_fd, socket_fd) = dut_common::parse_args("conformance-dut");
+    let (shm_fd, socket_fd) = dut_common::parse_args("conformance-dut-systemb");
 
     set_primary_socket_fd(socket_fd);
     dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
@@ -83,7 +83,7 @@ async fn main(spawner: Spawner) {
 
     // Deserialize state from SHM. Parent always writes the initial
     // snapshot before spawning us.
-    let snapshot: ConformanceDeviceConfig = shm
+    let snapshot: SystemBDutConfig = shm
         .read_state()
         .expect("read shared memory")
         .expect("shared memory uninitialized — parent should have written initial state");
@@ -117,7 +117,7 @@ async fn main(spawner: Spawner) {
     // which is 'static, so the pointer remains valid for the process.
     // SAFETY: the pointer outlives the stack (process-lifetime).
     unsafe {
-        zweidraehte_conformance::harness::stack::set_conformance_cot(stack.communication_object_table());
+        zweidraehte_conformance::harness::systemb_stack::set_conformance_cot(stack.communication_object_table());
     }
 
     // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its

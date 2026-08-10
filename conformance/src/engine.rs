@@ -13,7 +13,11 @@
 
 use std::collections::BTreeMap;
 
-use embassy_time::{Duration, Timer};
+// Timing is runtime-agnostic: `std::time` for the clock, async-io's
+// timer (the same reactor that drives the DUT socket) for sleeping.
+// See `harness::lifecycle` on why the parent side avoids embassy.
+use async_io::Timer;
+use std::time::{Duration, Instant};
 
 use crate::harness::protocol::RunnerMessage;
 use crate::harness::{ChildLifecycle, DutMode};
@@ -419,10 +423,10 @@ async fn step_expect_block(
     }
 
     let mut claimed = vec![false; matchers.len()];
-    let deadline = embassy_time::Instant::now() + Duration::from_millis(ms);
+    let deadline = Instant::now() + Duration::from_millis(ms);
 
     'frames: while claimed.iter().any(|c| !c) {
-        let now = embassy_time::Instant::now();
+        let now = Instant::now();
         if now >= deadline {
             break;
         }
@@ -735,9 +739,9 @@ async fn step_expect_secure(
     // secure response or exhaust the budget. The deadline spans the
     // whole loop, so a flood of plain frames cannot extend the
     // effective timeout — same shape as `step_expect_block` above.
-    let deadline = embassy_time::Instant::now() + Duration::from_millis(ms);
+    let deadline = Instant::now() + Duration::from_millis(ms);
     loop {
-        let now = embassy_time::Instant::now();
+        let now = Instant::now();
         if now >= deadline {
             println!("        ❌ Timeout (no secure response)");
             return false;
@@ -1046,7 +1050,7 @@ async fn step_inject_sync_res(
         return false;
     };
     if delay_before_ms > 0 {
-        embassy_time::Timer::after_millis(scale_ms(delay_before_ms, time_divisor) as u64).await;
+        Timer::after(Duration::from_millis(scale_ms(delay_before_ms, time_divisor) as u64)).await;
     }
 
     let addr = |tmpl: &str| -> u16 {
@@ -1214,8 +1218,8 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
 
     let mut harness = ChildLifecycle::new(opts.dut_mode).expect("create child lifecycle");
     println!("DUT mode: {}", match opts.dut_mode {
-        DutMode::Secure => "secure (conformance-dut-secure)",
-        DutMode::Plain => "plain (conformance-dut)",
+        DutMode::SystemBSecure => "System B secure (conformance-dut-systemb-secure)",
+        DutMode::SystemB => "System B (conformance-dut-systemb)",
         DutMode::System7 => "System 7 (conformance-dut-system7)",
         DutMode::System7Secure => "System 7 secure (conformance-dut-system7-secure)",
     });
@@ -1232,7 +1236,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
     let mut prev_was_secure = false;
 
     for suite in suites {
-        if suite.use_secure_dut && !prev_was_secure && opts.dut_mode == DutMode::Secure {
+        if suite.use_secure_dut && !prev_was_secure && opts.dut_mode == DutMode::SystemBSecure {
             println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
             harness.kill().await;
             harness.reset_shared_memory().expect("reset shared memory before secure suite");

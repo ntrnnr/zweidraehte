@@ -26,6 +26,15 @@
 //! buffer first via [`ChildLifecycle::pop_unsolicited`] and fall
 //! through to [`ChildLifecycle::next_frame`] only when the buffer is
 //! empty.
+//!
+//! # Runtime
+//!
+//! Nothing here is tied to an async runtime: both halves of the one
+//! concurrency primitive ([`read_before`] — a socket read raced
+//! against a deadline) are driven by async-io's own reactor thread, so
+//! a runner may be a tokio program, a smol program, or anything else.
+//! Embassy belongs to the DUT *child*, which is the device stack; the
+//! parent-side harness deliberately keeps out of it.
 
 use std::collections::VecDeque;
 use std::io;
@@ -33,20 +42,45 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::process::{Child, Command};
 
-use async_io::Async;
-use embassy_futures::select::{Either, select};
-use embassy_time::{Duration, Timer};
+use core::pin::Pin;
+use core::time::Duration;
+
+use async_io::{Async, Timer};
+use futures_lite::future::or;
 
 use zweidraehte_proto::messages::knx::ServiceType;
 
 use super::frame_source::{CapturedLinkLayerMessage, FrameSource, TaggedFrame};
 use super::framing::{read_msg_async, write_msg_async};
 use super::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
-use super::secure_stack::SecureConformanceDeviceConfig;
 use super::shm::SharedMemory;
-use super::stack::ConformanceDeviceConfig;
+use super::system7_secure_stack::System7SecureDutConfig;
+use super::system7_stack::System7DutConfig;
+use super::systemb_secure_stack::SystemBSecureDutConfig;
+use super::systemb_stack::SystemBDutConfig;
 
 use crate::logger::{self, LogEntry};
+
+// ============================================================================
+// Concurrency primitive
+// ============================================================================
+
+/// Race one socket read against a deadline.
+///
+/// `Some(result)` when the socket answered first (the inner
+/// `Option<DutMessage>` is `None` on EOF, as `read_msg_async`
+/// reports it); `None` when the deadline won.
+///
+/// This is the harness's only concurrent construct. Both futures are
+/// backed by async-io's reactor, which keeps the whole parent side
+/// runtime-agnostic — see the module docs.
+async fn read_before(socket: &Async<UnixStream>, deadline: Pin<&mut Timer>) -> Option<io::Result<Option<DutMessage>>> {
+    or(async { Some(read_msg_async::<DutMessage>(socket).await) }, async {
+        deadline.await;
+        None
+    })
+    .await
+}
 
 // ============================================================================
 // DUT mode
@@ -55,10 +89,11 @@ use crate::logger::{self, LogEntry};
 /// Which DUT binary a [`ChildLifecycle`] manages. Fixed at construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DutMode {
-    /// `conformance-dut` — plain stack, no Data Secure.
-    Plain,
-    /// `conformance-dut-secure` — Data Secure enabled.
-    Secure,
+    /// `conformance-dut-systemb` — System B family (mask 07B0h), no
+    /// Data Secure.
+    SystemB,
+    /// `conformance-dut-systemb-secure` — System B family with Data Secure.
+    SystemBSecure,
     /// `conformance-dut-system7` — System 7 family (mask 0705h).
     System7,
     /// `conformance-dut-system7-secure` — System 7 family with Data
@@ -69,8 +104,8 @@ pub enum DutMode {
 impl DutMode {
     fn binary_name(self) -> &'static str {
         match self {
-            Self::Plain => "conformance-dut",
-            Self::Secure => "conformance-dut-secure",
+            Self::SystemB => "conformance-dut-systemb",
+            Self::SystemBSecure => "conformance-dut-systemb-secure",
             Self::System7 => "conformance-dut-system7",
             Self::System7Secure => "conformance-dut-system7-secure",
         }
@@ -141,10 +176,10 @@ impl ChildLifecycle {
     pub fn new(mode: DutMode) -> io::Result<Self> {
         let mut shm = SharedMemory::create()?;
         match mode {
-            DutMode::Plain => shm.write_state(&ConformanceDeviceConfig::default_snapshot())?,
-            DutMode::Secure => shm.write_state(&SecureConformanceDeviceConfig::default_snapshot())?,
-            DutMode::System7 => shm.write_state(&crate::harness::system7_stack::default_snapshot())?,
-            DutMode::System7Secure => shm.write_state(&crate::harness::system7_secure_stack::default_snapshot())?,
+            DutMode::SystemB => shm.write_state(&SystemBDutConfig::default_snapshot())?,
+            DutMode::SystemBSecure => shm.write_state(&SystemBSecureDutConfig::default_snapshot())?,
+            DutMode::System7 => shm.write_state(&System7DutConfig::default_snapshot())?,
+            DutMode::System7Secure => shm.write_state(&System7SecureDutConfig::default_snapshot())?,
         }
         Ok(Self { shm, state: LifecycleState::Dead, mode, next_seq: 0, unsolicited_frames: VecDeque::new() })
     }
@@ -203,10 +238,10 @@ impl ChildLifecycle {
     /// factory-fresh DUT (`TestStep::FullReset`).
     pub fn reset_shared_memory(&mut self) -> io::Result<()> {
         match self.mode {
-            DutMode::Plain => self.shm.write_state(&ConformanceDeviceConfig::default_snapshot())?,
-            DutMode::System7 => self.shm.write_state(&crate::harness::system7_stack::default_snapshot())?,
-            DutMode::Secure => {
-                self.shm.write_state(&SecureConformanceDeviceConfig::default_snapshot())?;
+            DutMode::SystemB => self.shm.write_state(&SystemBDutConfig::default_snapshot())?,
+            DutMode::System7 => self.shm.write_state(&System7DutConfig::default_snapshot())?,
+            DutMode::SystemBSecure => {
+                self.shm.write_state(&SystemBSecureDutConfig::default_snapshot())?;
                 // Seq region is OUTSIDE the postcard payload (tail of
                 // SHM) — clear it so the respawned secure DUT doesn't
                 // replay-reject the harness's first secure frame
@@ -214,7 +249,7 @@ impl ChildLifecycle {
                 self.shm.clear_seq_region();
             }
             DutMode::System7Secure => {
-                self.shm.write_state(&crate::harness::system7_secure_stack::default_snapshot())?;
+                self.shm.write_state(&System7SecureDutConfig::default_snapshot())?;
                 // Same seq-tail contract as the System B secure DUT.
                 self.shm.clear_seq_region();
             }
@@ -344,23 +379,23 @@ impl ChildLifecycle {
                 Some(s) => s,
                 None => return Ok(None),
             };
-            match select(read_msg_async::<DutMessage>(socket), deadline.as_mut()).await {
-                Either::First(Ok(Some(msg))) => {
+            match read_before(socket, deadline.as_mut()).await {
+                Some(Ok(Some(msg))) => {
                     if let Some(frame) = self.ingest_dut_message(msg) {
                         return Ok(Some(frame));
                     }
                     // continue — message was a log / RoiComplete /
                     // lifecycle event that next_frame swallows
                 }
-                Either::First(Ok(None)) => {
+                Some(Ok(None)) => {
                     self.mark_dead();
                     return Ok(None);
                 }
-                Either::First(Err(e)) => {
+                Some(Err(e)) => {
                     self.mark_dead();
                     return Err(e);
                 }
-                Either::Second(_) => return Ok(None),
+                None => return Ok(None),
             }
         }
     }
@@ -448,12 +483,11 @@ impl ChildLifecycle {
             // inject cadence past the DUT's 60 ms TL ACK window —
             // triggering spurious retransmissions.
             let msg = if got_step_complete {
-                use embassy_time::{Duration, Timer};
                 let deadline = Timer::after(Duration::from_millis(2));
                 let mut deadline = std::pin::pin!(deadline);
-                match select(read_msg_async::<DutMessage>(socket), deadline.as_mut()).await {
-                    Either::First(r) => r?,
-                    Either::Second(_) => return Ok(appended),
+                match read_before(socket, deadline.as_mut()).await {
+                    Some(r) => r?,
+                    None => return Ok(appended),
                 }
             } else {
                 read_msg_async::<DutMessage>(socket).await?
@@ -588,20 +622,20 @@ impl ChildLifecycle {
                     return Err(io::Error::new(io::ErrorKind::NotConnected, "child not running"));
                 }
             };
-            match select(read_msg_async::<DutMessage>(socket), deadline.as_mut()).await {
-                Either::First(Ok(Some(DutMessage::Exiting { reason }))) => {
+            match read_before(socket, deadline.as_mut()).await {
+                Some(Ok(Some(DutMessage::Exiting { reason }))) => {
                     self.transition_to_exiting(reason);
                     return Ok(reason);
                 }
-                Either::First(Ok(Some(other))) => {
+                Some(Ok(Some(other))) => {
                     // Buffer captures, forward logs, etc.
                     let _ = self.ingest_dut_message(other);
                 }
-                Either::First(Ok(None)) => {
+                Some(Ok(None)) => {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "EOF before Exiting"));
                 }
-                Either::First(Err(e)) => return Err(e),
-                Either::Second(_) => {
+                Some(Err(e)) => return Err(e),
+                None => {
                     return Err(io::Error::new(io::ErrorKind::TimedOut, "wait_for_exit timeout"));
                 }
             }

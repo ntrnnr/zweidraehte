@@ -42,7 +42,7 @@ use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::{DEFAULT_MULTICAST_ADDR, PlainIpDeviceBuilder};
 use zweidraehte_platform::{IpConfig, LinuxIpTransport, NetworkConfig};
 
-use super::secure_stack::GetrandomRng;
+use super::fixture_common::GetrandomRng;
 
 // ============================================================================
 // Fixed key material (03/08/09 Appendix A)

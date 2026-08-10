@@ -13,7 +13,7 @@
 # See conformance/src/eitt/profile.rs.
 
 medium = "tp"
-dut = "plain"
+dut = "systemb"
 
 [addresses]
 # Must match conformance/src/harness/stack.rs: the DUT's individual
@@ -405,7 +405,7 @@ still be a human reading the trace.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"
-dut = "secure"
+dut = "systemb-secure"
 patches = [
   "conformance/patches/common/data-security.toml",
   "conformance/patches/systemb/data-security-go-flags.toml",

@@ -91,8 +91,8 @@ fn parse_args() -> Result<Args, String> {
     Ok(args)
 }
 
-#[embassy_executor::main]
-async fn main(_spawner: embassy_executor::Spawner) {
+#[tokio::main]
+async fn main() {
     let code = run().await;
     std::process::exit(match code {
         ExitCode::SUCCESS => 0,

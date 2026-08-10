@@ -3,7 +3,7 @@
 //! The crossing of [`system7_stack`](super::system7_stack) (RT8 tables,
 //! the absolute System 7 memory map with EEPROM-backed test regions, the
 //! five-object base roster, 16 authorization levels) and
-//! [`secure_stack`](super::secure_stack) (KNX Data Secure over the
+//! [`systemb_secure_stack`](super::systemb_secure_stack) (KNX Data Secure over the
 //! shared-memory SIAT store, the Certification Object for AN163, the
 //! secure GO-diagnostics strategy). It exists to run the vendor TSSJ
 //! DataSecurity template against the System 7 family.
@@ -61,14 +61,16 @@ use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
-use super::secure_stack::{CertificationObjectAugment, GetrandomRng, SECURE_FDSK, ShmSiatStore, sec_table_sizes};
-use super::stack::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
+use super::fixture_common::{
+    CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, CertificationObjectAugment, GetrandomRng, SECURE_FDSK,
+    ShmSiatStore, TestParameters, sec_table_sizes,
+};
 
 // ============================================================================
 // Communication objects — the System B secure fixture on RT8 tables
 // ============================================================================
 //
-// Field-for-field the System B secure DUT's set (see `harness::stack`
+// Field-for-field the System B secure DUT's set (see `harness::systemb_stack`
 // for the shadow-object rationale), at ets indices 1..17 so the wire
 // ASAPs are identical under `FIRST_ASAP = 0`.
 
@@ -272,7 +274,7 @@ impl ComObjectBusHook for System7SecureComObjects {
 //
 // Same 18 group addresses in the same sorted order as the System B
 // secure DUT, so the TSAP numbering — and with it the group-key table —
-// is congruent. See `harness::stack` for the TSAP → CO map.
+// is congruent. See `harness::systemb_stack` for the TSAP → CO map.
 
 pub mod conformance_config {
     use zweidraehte_device::config::{CE, RE, ROI, TE, UE, WE};
@@ -816,7 +818,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     type CO = System7SecureComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
     type ES = SecureS7ExtensionState;
-    type Storage = &'static super::secure_stack::ConformanceSecureStorage;
+    type Storage = &'static super::fixture_common::ConformanceSecureStorage;
     type Identity = StaticSecureIdentity;
     type State = SecureSystem7State;
     type StateInit = System7StateInit<StaticSecureIdentity, System7SecureDutConfig, SecureResources<Tp1ExtensionState>>;
@@ -825,7 +827,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     fn create_state(init: Self::StateInit) -> Self::State {
         match init.loaded_config {
             Some(snapshot) => SecureSystem7State::from_device_config(snapshot),
-            None => SecureSystem7State::from_device_config(System7SecureDutConfig::factory_snapshot()),
+            None => SecureSystem7State::from_device_config(System7SecureDutConfig::default_snapshot()),
         }
     }
 
@@ -913,12 +915,14 @@ pub struct System7SecureDutConfig {
 }
 
 impl System7SecureDutConfig {
-    /// The factory boot image: IA 1.0.1 inside the RT8 address-table
-    /// blob, tables at their product-database addresses, application
-    /// loaded, the AN158 sample application's keys and GO flags
+    /// The factory boot image the parent writes into shared memory
+    /// before spawning the child: IA 1.0.1 inside the RT8
+    /// address-table blob, tables at their product-database addresses,
+    /// application loaded, the AN158 sample application's keys and GO
+    /// flags
     /// provisioned (TSSJ writes keys by value; a factory reset reverts
     /// the tool key to the FDSK and the affected suite re-provisions).
-    pub fn factory_snapshot() -> Self {
+    pub fn default_snapshot() -> Self {
         use conformance_config::System7SecureConfig;
 
         let (addr_tab, asso_tab, co_tab) = System7SecureConfig::create_tables(AST_ADDRESS, COT_ADDRESS);
@@ -973,12 +977,6 @@ impl SecureSystem7State {
             user_memory: *self.user_memory.borrow(),
         }
     }
-}
-
-/// Build the factory boot image the parent writes into shared memory
-/// before spawning the child.
-pub fn default_snapshot() -> System7SecureDutConfig {
-    System7SecureDutConfig::factory_snapshot()
 }
 
 /// The `StateInit` value the DUT builds from a shared-memory snapshot.

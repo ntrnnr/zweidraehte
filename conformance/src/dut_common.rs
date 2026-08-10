@@ -1,5 +1,5 @@
-//! Shared plumbing for both DUT binaries (`conformance-dut`,
-//! `conformance-dut-secure`).
+//! Shared plumbing for both DUT binaries (`conformance-dut-systemb`,
+//! `conformance-dut-systemb-secure`).
 //!
 //! The two DUT processes differ only in the stack type they build
 //! (plain vs. Data-Secure). Everything else — command-line parsing,
@@ -265,7 +265,7 @@ pub async fn bridge_lifecycle_to_ipc(
 // ConformanceStack trait — dedupe logic between plain and secure DUT binaries
 // ============================================================================
 //
-// The two DUT entry-points (`conformance-dut`, `conformance-dut-secure`) used
+// The two DUT entry-points (`conformance-dut-systemb`, `conformance-dut-systemb-secure`) used
 // to carry ~200 LoC of identical task bodies. They now delegate to the
 // generic helpers below (`handle_ipc_command`, `handle_restart_request`),
 // specialised via `<S as ConformanceStack>`. Each binary still owns its
