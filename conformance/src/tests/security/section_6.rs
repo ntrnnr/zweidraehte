@@ -1025,12 +1025,14 @@ fn test_6_2_24() -> TestCase {
         // DPT_ID stays `00 00 00 00` since our CO table doesn't track DPTs.
         comment("Get GO 1 configuration"),
         inject("BC #EDI #BDUT_ADDR 6A 01 D5 00 09 00 10 42 00 00 00 01"),
-        // Our DUT's GO 1 is configured with size code `0x01` (Uint2) in
-        // the CO table even though it holds a `DPT_Switch` (1 bit) —
-        // legacy mismatch in the harness DUT definition that is
-        // orthogonal to GO Diagnostics spec compliance. Assert the
-        // literal code the DUT advertises.
-        expect("3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 01 04 DF 01 00 00 00 00", TIMEOUT),
+        // GO 1 is a 1-bit object, so its size code is `ComObjectType::Uint1`
+        // — which is `0x00`, because the enum is 0-based. This byte is the
+        // one place a wrong CO type code is observable on the wire (the
+        // short/long APDU threshold, its only other consumer, treats every
+        // code in `Uint1..=Uint6` alike), which is why it caught the
+        // fixtures back when they passed a bit count instead of the type
+        // code and labelled this object `Uint2`.
+        expect("3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 01 04 DF 00 00 00 00 00", TIMEOUT),
         // GO 8 is a 3-byte Byte3 (size code 0x09) with the same flags
         // and linkage state → GO_config = 0x04DF, size = 0x09.
         comment("Get GO 8 configuration"),
