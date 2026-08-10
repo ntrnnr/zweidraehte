@@ -224,7 +224,7 @@ mod test {
         ast.write(5, &[2, 2]);
 
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        assert_eq!(ast.read_lsm(), [LoadState::Loaded.into()]);
+        assert_eq!(ast.read_lsm(), [u8::from(LoadState::Loaded)]);
         assert_eq!(ast.table_reference(), 0x4100);
         ast
     }

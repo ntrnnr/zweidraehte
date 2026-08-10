@@ -71,3 +71,34 @@ pub fn priority_from_flags(flags: u8) -> ComObjectPriority {
         _ => ComObjectPriority::Low,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zweidraehte_proto::com_object::ComObjectType;
+
+    /// The generator's bits→string table and proto's string→type
+    /// parser must agree on every byte width the two share, so a
+    /// System 7/B product this crate writes reads back to the type the
+    /// client's download engine expects. Pins the two tables across
+    /// the crate boundary.
+    #[test]
+    fn object_size_strings_round_trip_through_the_type_parser() {
+        // The bit widths the generator emits as "N Bit".
+        for bits in 1u8..=7 {
+            let s = object_size_to_string(bits);
+            let ty = ComObjectType::from_ets_size_string(s)
+                .unwrap_or_else(|| panic!("proto cannot parse generator size {s:?}"));
+            assert_eq!(ty.size_in_bytes().0, 1, "{s} is a sub-byte Uint");
+        }
+        // The byte widths (multiples of 8) must map to a Byte type of
+        // exactly that width.
+        for bytes in 1u32..=14 {
+            let bits = (bytes * 8) as u8;
+            let s = object_size_to_string(bits);
+            let ty = ComObjectType::from_ets_size_string(s)
+                .unwrap_or_else(|| panic!("proto cannot parse generator size {s:?}"));
+            assert_eq!(ty.size_in_bytes().0 as u32, bytes, "{s} width");
+        }
+    }
+}

@@ -172,7 +172,7 @@ mod test {
         a.write(7, GroupAddress::from_three_level(0, 0, 4).as_bytes());
 
         a.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        assert_eq!(a.read_lsm(), [LoadState::Loaded.into()]);
+        assert_eq!(a.read_lsm(), [u8::from(LoadState::Loaded)]);
         assert_eq!(a.table_reference(), 0x4000);
         a
     }
@@ -228,7 +228,7 @@ mod test {
 
         a.write_lsm(&[LoadEvent::Unload.into()], None);
 
-        assert_eq!(a.read_lsm(), [LoadState::Unloaded.into()]);
+        assert_eq!(a.read_lsm(), [u8::from(LoadState::Unloaded)]);
         assert_eq!(a.entry_count(), 0, "count byte cleared");
         assert!(a.data_ref()[3..].iter().all(|&b| b == 0), "group addresses cleared");
         assert_eq!(a.individual_address(), IndividualAddress::from_bytes(&[0x10, 0x01]), "IA slot survives");

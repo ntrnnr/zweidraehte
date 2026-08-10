@@ -27,6 +27,7 @@ pub use access::{
 };
 
 pub mod address;
+pub mod com_object;
 pub mod config;
 pub mod crypto;
 pub mod device;
@@ -34,6 +35,7 @@ pub mod dpt;
 pub mod encoding;
 pub mod error;
 pub mod messages;
+pub mod pid;
 pub mod properties;
 pub mod transport;
 #[cfg(feature = "usb-hid")]

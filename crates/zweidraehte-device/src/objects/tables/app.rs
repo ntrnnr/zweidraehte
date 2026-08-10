@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn test_initial_state() {
         let app: Application<()> = Application::new();
-        assert_eq!(app.read_lsm()[0], LoadState::Unloaded.into());
+        assert_eq!(app.read_lsm()[0], u8::from(LoadState::Unloaded));
         assert_eq!(app.run_state(), RunState::Halted);
     }
 
@@ -314,12 +314,12 @@ mod tests {
 
         // Start loading
         app.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        assert_eq!(app.read_lsm()[0], LoadState::Loading.into());
+        assert_eq!(app.read_lsm()[0], u8::from(LoadState::Loading));
         assert_eq!(app.run_state(), RunState::Halted);
 
         // Complete loading — LSM is now Loaded, RSM still Halted (no cascade)
         app.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        assert_eq!(app.read_lsm()[0], LoadState::Loaded.into());
+        assert_eq!(app.read_lsm()[0], u8::from(LoadState::Loaded));
         assert_eq!(app.run_state(), RunState::Halted);
 
         // DeviceModel cascade: Loaded → Ready, ReadyToRun → Running
@@ -371,7 +371,7 @@ mod tests {
 
         // LSM unload separately
         app.write_lsm(&[LoadEvent::Unload.into()], None);
-        assert_eq!(app.read_lsm()[0], LoadState::Unloaded.into());
+        assert_eq!(app.read_lsm()[0], u8::from(LoadState::Unloaded));
     }
 
     #[test]

@@ -25,12 +25,12 @@ impl ComObjectDescriptor {
     /// Decode a descriptor from its big-endian 16-bit representation.
     pub fn from_u16(raw: U16) -> Self {
         let val = raw.get();
-        Self { flags: ComObjectFlags((val >> 8) as u8), object_type: ComObjectType::from(val as u8) }
+        Self { flags: ComObjectFlags::from_byte((val >> 8) as u8), object_type: ComObjectType::from(val as u8) }
     }
 
     /// Encode the descriptor as a big-endian 16-bit value.
     pub fn to_u16(&self) -> U16 {
-        U16::new(((self.flags.0 as u16) << 8) | u8::from(self.object_type) as u16)
+        U16::new(((self.flags.to_byte() as u16) << 8) | u8::from(self.object_type) as u16)
     }
 }
 
@@ -112,7 +112,8 @@ pub type CoTab7<const MAX_ENTRIES: usize> = Table<CoTab7Impl<{ (MAX_ENTRIES + 1)
 
 #[cfg(test)]
 mod test {
-    use crate::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState, Priority, TableMemory};
+    use crate::objects::tables::{HasLoadStateMachine, LoadEvent, LoadState, TableMemory};
+    use zweidraehte_proto::messages::knx::Priority;
 
     use super::{CoTab7, ComObjectFlags, ComObjectType};
 
@@ -121,11 +122,11 @@ mod test {
         let mut ct = CoTab7::<10>::new();
 
         // Should start unloaded
-        assert_eq!(ct.read_lsm(), [LoadState::Unloaded.into()]);
+        assert_eq!(ct.read_lsm(), [u8::from(LoadState::Unloaded)]);
 
         // Begin loading
         ct.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        assert_eq!(ct.read_lsm(), [LoadState::Loading.into()]);
+        assert_eq!(ct.read_lsm(), [u8::from(LoadState::Loading)]);
 
         // Allocate a table with space for 3 communication objects
         ct.write_lsm(
@@ -143,7 +144,7 @@ mod test {
             ],
             None,
         );
-        assert_eq!(ct.read_lsm(), [LoadState::Loading.into()]);
+        assert_eq!(ct.read_lsm(), [u8::from(LoadState::Loading)]);
         assert_eq!(&ct.data_ref()[0..8], &[0xff; 8]);
 
         // Write data into the table:
@@ -162,7 +163,7 @@ mod test {
 
         // Issue load complete
         ct.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        assert_eq!(ct.read_lsm(), [LoadState::Loaded.into()]);
+        assert_eq!(ct.read_lsm(), [u8::from(LoadState::Loaded)]);
     }
 
     #[test]
@@ -234,11 +235,11 @@ mod test {
         // Modify object to T config
         let mut new_obj = original;
         new_obj.object_type = ComObjectType::Byte2;
-        new_obj.flags = ComObjectFlags(ComObjectFlags::CONFIG_T);
+        new_obj.flags = ComObjectFlags::from_byte(ComObjectFlags::CONFIG_T);
 
         // Save changes
         // Note: set_com_object method doesn't exist, so we'll test the modified object directly
-        let test_flags = ComObjectFlags(ComObjectFlags::CONFIG_T);
+        let test_flags = ComObjectFlags::from_byte(ComObjectFlags::CONFIG_T);
 
         // Verify changes
         // Test that flags match expected T configuration

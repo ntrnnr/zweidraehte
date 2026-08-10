@@ -89,7 +89,7 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTabM112Impl<N>, Absolu
         let off = self.entry_offset(idx)?;
         Some(ComObjectTableEntry {
             object_type: ComObjectType::from(self.table.data[off + 3]),
-            flags: ComObjectFlags(self.table.data[off + 2]),
+            flags: ComObjectFlags::from_byte(self.table.data[off + 2]),
         })
     }
 
@@ -105,7 +105,7 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTabM112Impl<N>, Absolu
         let Some(off) = self.entry_offset(idx) else {
             return false;
         };
-        self.table.data[off + 2] = flags.0;
+        self.table.data[off + 2] = flags.to_byte();
         true
     }
 }
@@ -140,10 +140,10 @@ mod test {
         cot.write(0, &ETS_BLOB);
 
         assert_eq!(cot.entry_count(), 7);
-        assert_eq!(cot.object_flags(1), Some(ComObjectFlags(0x47)));
-        assert_eq!(cot.object_flags(2), Some(ComObjectFlags(0xD7)));
+        assert_eq!(cot.object_flags(1), Some(ComObjectFlags::from_byte(0x47)));
+        assert_eq!(cot.object_flags(2), Some(ComObjectFlags::from_byte(0xD7)));
         assert_eq!(cot.object_type(3), Some(ComObjectType::Uint4));
-        assert_eq!(cot.object_flags(5), Some(ComObjectFlags(0xD3)));
+        assert_eq!(cot.object_flags(5), Some(ComObjectFlags::from_byte(0xD3)));
         assert_eq!(cot.object_type(1), Some(ComObjectType::Uint1));
         assert_eq!(cot.object_flags(7), None, "past the stored count");
     }
@@ -153,11 +153,11 @@ mod test {
         let mut cot = CoTabM112::<6>::new();
         cot.write(0, &ETS_BLOB);
 
-        assert!(cot.set_object_flags(1, ComObjectFlags(0x5F)));
-        assert_eq!(cot.object_flags(1), Some(ComObjectFlags(0x5F)));
+        assert!(cot.set_object_flags(1, ComObjectFlags::from_byte(0x5F)));
+        assert_eq!(cot.object_flags(1), Some(ComObjectFlags::from_byte(0x5F)));
         // The type octet next door is untouched.
         assert_eq!(cot.object_type(1), Some(ComObjectType::Uint1));
-        assert!(!cot.set_object_flags(7, ComObjectFlags(0)), "past the stored count");
+        assert!(!cot.set_object_flags(7, ComObjectFlags::from_byte(0)), "past the stored count");
     }
 
     /// A corrupt count larger than the physical capacity must be

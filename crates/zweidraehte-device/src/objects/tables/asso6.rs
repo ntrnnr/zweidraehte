@@ -256,11 +256,11 @@ mod test {
         let mut ast = AssoTab6::<10>::new();
 
         // Should start unloaded
-        assert_eq!(ast.read_lsm(), [LoadState::Unloaded.into()]);
+        assert_eq!(ast.read_lsm(), [u8::from(LoadState::Unloaded)]);
 
         // Begin loading
         ast.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        assert_eq!(ast.read_lsm(), [LoadState::Loading.into()]);
+        assert_eq!(ast.read_lsm(), [u8::from(LoadState::Loading)]);
 
         // Allocate a table with space for 2 entries (4 words total including length field)
         ast.write_lsm(
@@ -278,7 +278,7 @@ mod test {
             ],
             None,
         );
-        assert_eq!(ast.read_lsm(), [LoadState::Loading.into()]);
+        assert_eq!(ast.read_lsm(), [u8::from(LoadState::Loading)]);
         assert_eq!(&ast.data_ref()[0..8], &[0xff; 8]);
 
         // Write data into the table:
@@ -296,7 +296,7 @@ mod test {
 
         // Issue load complete
         ast.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        assert_eq!(ast.read_lsm(), [LoadState::Loaded.into()]);
+        assert_eq!(ast.read_lsm(), [u8::from(LoadState::Loaded)]);
     }
 
     #[test]
@@ -563,7 +563,7 @@ mod test {
 
         // Test ASAP iterator for non-existent TSAP
         let asaps: Vec<u16> = ast.asaps_for_tsap(4).collect();
-        assert_eq!(asaps, vec![]);
+        assert_eq!(asaps, Vec::<u16>::new());
 
         // Test TSAP iterator for specific ASAPs
         assert_eq!(ast.tsaps_for_asap(11).collect::<Vec<_>>(), vec![1]);
@@ -571,6 +571,6 @@ mod test {
         assert_eq!(ast.tsaps_for_asap(31).collect::<Vec<_>>(), vec![3]);
 
         // Test TSAP iterator for non-existent ASAP
-        assert_eq!(ast.tsaps_for_asap(40).collect::<Vec<_>>(), vec![]);
+        assert_eq!(ast.tsaps_for_asap(40).collect::<Vec<u16>>(), Vec::<u16>::new());
     }
 }

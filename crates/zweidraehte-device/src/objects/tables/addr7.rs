@@ -95,18 +95,18 @@ mod test {
         let mut a = AddrTab7::<10>::new();
 
         // We should be in an unloaded state
-        assert_eq!(a.read_lsm(), [LoadState::Unloaded.into()]);
+        assert_eq!(a.read_lsm(), [u8::from(LoadState::Unloaded)]);
 
         // Begin loading
         a.write_lsm(&[LoadEvent::StartLoading.into()], None);
-        assert_eq!(a.read_lsm(), [LoadState::Loading.into()]);
+        assert_eq!(a.read_lsm(), [u8::from(LoadState::Loading)]);
 
         // Allocate a table and fill it with 0xFF
         a.write_lsm(
             &[LoadEvent::AdditionalLoadControls.into(), 0x0B, 0x00, 0x00, 0x00, 0x06, 0x01, 0xff, 0x00, 0x00],
             None,
         );
-        assert_eq!(a.read_lsm(), [LoadState::Loading.into()]);
+        assert_eq!(a.read_lsm(), [u8::from(LoadState::Loading)]);
         assert_eq!(&a.data_ref()[0..6], &[0xff; 6]);
         assert_eq!(a.mcb_table.as_ref(), &[0x00, 0x00, 0x00, 0x06, 0x00, 0xFF, 0xFF, 0xFF]);
 
@@ -118,7 +118,7 @@ mod test {
 
         // Issue load complete
         a.write_lsm(&[LoadEvent::LoadCompleted.into()], None);
-        assert_eq!(a.read_lsm(), [LoadState::Loaded.into()]);
+        assert_eq!(a.read_lsm(), [u8::from(LoadState::Loaded)]);
         assert_eq!(a.mcb_table.as_ref(), &[0x00, 0x00, 0x00, 0x06, 0x00, 0xFF, 0x62, 0xCF]);
     }
 }
