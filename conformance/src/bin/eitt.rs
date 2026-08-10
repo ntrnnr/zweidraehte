@@ -33,6 +33,13 @@
 //!                    DUT. The quickest way to see what a new template
 //!                    revision changed.
 //!   filter           Case-insensitive substring match on suite/case names.
+//!                    A filter matching a suite name runs that suite in
+//!                    full, one matching case names runs those cases,
+//!                    decided per suite (see
+//!                    [`engine::select_suite`]). A filter that selects
+//!                    nothing in *any* template run fails the run — one
+//!                    template legitimately not knowing a name is
+//!                    normal, no template knowing it is a typo.
 //!
 //! Environment:
 //!   EITT_TEMPLATES   Directory holding the
@@ -46,7 +53,9 @@ use log::LevelFilter;
 
 use zweidraehte_conformance::eitt::profile::{TEMPLATES_DIR_ENV, TemplateRef};
 use zweidraehte_conformance::eitt::{self, PatchSet, Profile};
-use zweidraehte_conformance::engine::{self, DEFAULT_TIME_DIVISOR, EngineOptions, Summary, matches_filter};
+use zweidraehte_conformance::engine::{
+    self, DEFAULT_TIME_DIVISOR, EngineOptions, SuiteSelection, Summary, select_suite,
+};
 use zweidraehte_conformance::logger;
 
 /// Parsed command line.
@@ -202,24 +211,47 @@ async fn run() -> ExitCode {
 
     let mut total = Summary::default();
     let mut any_failed = false;
+    // Filter accounting is aggregate: a filter naming a case in the
+    // management template is legitimately unmatched while the
+    // group-object template runs, so only a filter that no template
+    // knows is a mistake.
+    let mut filter_matched = vec![false; args.filters.len()];
 
     for template_ref in selected {
         match run_one(template_ref, &profile, &args, time_divisor).await {
-            Ok(Some(summary)) => {
-                total.suites += summary.suites;
-                total.tests += summary.tests;
-                total.passed += summary.passed;
-                total.failed += summary.failed;
-                total.steps += summary.steps;
-                any_failed |= summary.failed > 0;
+            Ok(outcome) => {
+                for (acc, matched) in filter_matched.iter_mut().zip(outcome.matched_filters) {
+                    *acc |= matched;
+                }
+                // `None` when nothing ran: listed only, or the filters
+                // selected nothing in this template.
+                if let Some(summary) = outcome.summary {
+                    total.suites += summary.suites;
+                    total.tests += summary.tests;
+                    total.passed += summary.passed;
+                    total.failed += summary.failed;
+                    total.steps += summary.steps;
+                    any_failed |= summary.failed > 0;
+                }
             }
-            // Listed only, nothing ran.
-            Ok(None) => {}
             Err(e) => {
                 eprintln!("❌ {e}");
                 return ExitCode::FAILURE;
             }
         }
+    }
+
+    // Unlike `conformance-runner` this can only be reported after the
+    // fact — lowering every template up front just to validate the
+    // filters would parse them all twice for a check that is loud
+    // either way.
+    let unmatched: Vec<&String> =
+        args.filters.iter().zip(&filter_matched).filter(|(_, m)| !**m).map(|(f, _)| f).collect();
+    if !unmatched.is_empty() {
+        for f in &unmatched {
+            println!("❌ Filter {f:?} matched no suite or case name in any template run.");
+        }
+        any_failed = true;
     }
 
     if !args.list_only {
@@ -237,13 +269,22 @@ async fn run() -> ExitCode {
     if any_failed { ExitCode::FAILURE } else { ExitCode::SUCCESS }
 }
 
+/// What one template contributed to the run.
+struct TemplateOutcome {
+    /// `None` when nothing ran: `--list`, or no suite selected.
+    summary: Option<Summary>,
+    /// Per command-line filter, whether it selected anything here.
+    /// Unioned across templates by the caller.
+    matched_filters: Vec<bool>,
+}
+
 /// Load, lower and (unless listing) run one template.
 async fn run_one(
     template_ref: &TemplateRef,
     profile: &Profile,
     args: &Args,
     time_divisor: u64,
-) -> Result<Option<Summary>, String> {
+) -> Result<TemplateOutcome, String> {
     let path = template_ref.resolve(args.templates_dir.as_deref()).map_err(|e| e.to_string())?;
     let xml = std::fs::read_to_string(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
     let template = eitt::schema::parse(&xml).map_err(|e| format!("could not parse {}: {e}", path.display()))?;
@@ -283,32 +324,51 @@ async fn run_one(
     report.print();
     println!();
 
+    let mut matched_filters = vec![false; args.filters.len()];
     if !args.filters.is_empty() {
-        suites.retain(|s| {
-            args.filters.iter().any(|f| matches_filter(&s.name, f))
-                || s.cases.iter().any(|c| args.filters.iter().any(|f| matches_filter(&c.name, f)))
-        });
+        for (i, f) in args.filters.iter().enumerate() {
+            matched_filters[i] =
+                suites.iter().any(|s| select_suite(s, std::slice::from_ref(f)) != SuiteSelection::None);
+        }
+
+        suites.retain(|s| select_suite(s, &args.filters) != SuiteSelection::None);
         if suites.is_empty() {
             println!("No suites or cases matched filters: {:?}\n", args.filters);
-            return Ok(None);
+            return Ok(TemplateOutcome { summary: None, matched_filters });
+        }
+
+        // Per suite, because the selection is per suite: an accidental
+        // substring hit shows up here as a suite running a surprising
+        // slice of its cases. `--list` prints the cases themselves, so
+        // it needs no summary line.
+        if !args.list_only {
+            println!("Running {} suite(s) matching: {:?}", suites.len(), args.filters);
+            for suite in &suites {
+                println!("  {} — {}", suite.name, select_suite(suite, &args.filters).describe(suite));
+            }
+            println!();
         }
     }
 
     if args.list_only {
         for suite in &suites {
+            let selection = select_suite(suite, &args.filters);
             println!("Suite: {}", suite.name);
-            for case in &suite.cases {
+            // List exactly what a run would execute, not every case the
+            // suite holds — otherwise a filtered `--list` overstates
+            // the suite it is about to run.
+            for case in suite.cases.iter().enumerate().filter(|(i, _)| selection.selects(*i)).map(|(_, case)| case) {
                 println!("  {} — {} step(s)", case.name, case.steps.len());
             }
         }
         println!();
-        return Ok(None);
+        return Ok(TemplateOutcome { summary: None, matched_filters });
     }
 
     // `scoped`, not `profile`: a template may name its own DUT, and the
     // data-security one does.
     let opts = EngineOptions { divisor: time_divisor, dut_mode: scoped.dut.into(), case_filters: args.filters.clone() };
-    Ok(Some(engine::run_suites(&suites, &opts).await))
+    Ok(TemplateOutcome { summary: Some(engine::run_suites(&suites, &opts).await), matched_filters })
 }
 
 fn truncate(s: &str, max: usize) -> String {

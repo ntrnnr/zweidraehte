@@ -1180,10 +1180,10 @@ pub struct EngineOptions {
     pub divisor: u64,
     /// Which DUT binary to drive.
     pub dut_mode: DutMode,
-    /// Case-name filters. If any filter matches a case name in the
-    /// supplied suites, only matching cases run; otherwise the filters
-    /// are treated as having selected whole suites already and every
-    /// case runs.
+    /// Name filters, resolved per suite by [`select_suite`]: a filter
+    /// matching a suite's name runs that suite in full, a filter
+    /// matching case names runs those cases in the suite they live in.
+    /// Empty runs everything.
     pub case_filters: Vec<String>,
 }
 
@@ -1203,6 +1203,80 @@ pub fn matches_filter(name: &str, filter: &str) -> bool {
     name.to_lowercase().contains(&filter.to_lowercase())
 }
 
+/// What a filter set selects out of one suite.
+///
+/// The decision is deliberately made *per suite*. A filter that happens
+/// to match a case name in some other suite must not narrow a suite
+/// that was selected by its own name: filters are plain substrings, so
+/// `"4.3 Property"` matches the case `3.8.14.3 PropertyValueRead` as
+/// readily as the suite it was aimed at. Deciding this globally — one
+/// "somebody matched a case somewhere" flag gating every suite's cases
+/// — is how a run used to print a healthy suite list, execute zero
+/// cases and report zero failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuiteSelection {
+    /// Nothing in this suite matched; it is not part of the run.
+    None,
+    /// A filter matched the suite's name (or there are no filters at
+    /// all): the suite runs in full.
+    AllCases,
+    /// Only case names matched — these indices into [`TestSuite::cases`],
+    /// never empty.
+    Cases(Vec<usize>),
+}
+
+/// Resolve a filter set against one suite.
+///
+/// A suite-name match wins outright: asking for a suite asks for all of
+/// it, so case hits inside that same suite add nothing.
+pub fn select_suite(suite: &TestSuite, filters: &[String]) -> SuiteSelection {
+    if filters.is_empty() || filters.iter().any(|f| matches_filter(&suite.name, f)) {
+        return SuiteSelection::AllCases;
+    }
+
+    let cases: Vec<usize> = suite
+        .cases
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| filters.iter().any(|f| matches_filter(&c.name, f)))
+        .map(|(i, _)| i)
+        .collect();
+
+    if cases.is_empty() { SuiteSelection::None } else { SuiteSelection::Cases(cases) }
+}
+
+impl SuiteSelection {
+    /// How many cases this selection runs out of `suite`.
+    pub fn case_count(&self, suite: &TestSuite) -> usize {
+        match self {
+            SuiteSelection::None => 0,
+            SuiteSelection::AllCases => suite.cases.len(),
+            SuiteSelection::Cases(idx) => idx.len(),
+        }
+    }
+
+    /// One line describing what will run, for the pre-run report both
+    /// binaries print when filters are in play.
+    pub fn describe(&self, suite: &TestSuite) -> String {
+        match self {
+            SuiteSelection::None => "no case(s) matched".to_string(),
+            SuiteSelection::AllCases => format!("all {} case(s)", suite.cases.len()),
+            SuiteSelection::Cases(idx) => format!("{} of {} case(s) matched", idx.len(), suite.cases.len()),
+        }
+    }
+
+    /// Whether the case at `index` in the suite runs. Used by the
+    /// engine to drive the case loop and by `--list` to show the same
+    /// set the run would execute.
+    pub fn selects(&self, index: usize) -> bool {
+        match self {
+            SuiteSelection::None => false,
+            SuiteSelection::AllCases => true,
+            SuiteSelection::Cases(idx) => idx.contains(&index),
+        }
+    }
+}
+
 /// Run every suite against a freshly spawned DUT child and report the
 /// tally.
 ///
@@ -1213,8 +1287,6 @@ pub fn matches_filter(name: &str, filter: &str) -> bool {
 pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
     let time_divisor = opts.divisor;
     let filters = &opts.case_filters;
-    let has_test_case_filter =
-        filters.iter().any(|f| suites.iter().any(|s| s.cases.iter().any(|c| matches_filter(&c.name, f))));
 
     let mut harness = ChildLifecycle::new(opts.dut_mode).expect("create child lifecycle");
     println!("DUT mode: {}", match opts.dut_mode {
@@ -1227,7 +1299,10 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
     harness.spawn_and_wait_roi().await.expect("spawn DUT child");
     harness.discard_unsolicited();
 
-    let mut summary = Summary { suites: suites.len(), ..Default::default() };
+    // `suites` is counted as the loop goes rather than up front: a
+    // suite the filters select nothing out of contributes no tests, so
+    // counting it would overstate what the run covered.
+    let mut summary = Summary::default();
     let mut persistent_sec_ctx: Option<SecurityTestContext> = None;
 
     // Cross-suite plain→secure reset hook: the first secure suite needs
@@ -1236,6 +1311,15 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
     let mut prev_was_secure = false;
 
     for suite in suites {
+        // Both binaries drop unselected suites before calling us, but
+        // the engine does not rely on that — the selection rule lives
+        // in one place and is applied where the cases actually run.
+        let selection = select_suite(suite, filters);
+        if selection == SuiteSelection::None {
+            continue;
+        }
+        summary.suites += 1;
+
         if suite.use_secure_dut && !prev_was_secure && opts.dut_mode == DutMode::SystemBSecure {
             println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
             harness.kill().await;
@@ -1301,8 +1385,8 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
             }
         }
 
-        for test in &suite.cases {
-            if has_test_case_filter && !filters.iter().any(|f| matches_filter(&test.name, f)) {
+        for (case_index, test) in suite.cases.iter().enumerate() {
+            if !selection.selects(case_index) {
                 continue;
             }
             summary.tests += 1;
@@ -1442,4 +1526,76 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
     }
 
     summary
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn suite(name: &'static str, cases: &[&'static str]) -> TestSuite {
+        TestSuite::new(name, BTreeMap::new()).with_cases(cases.iter().map(|c| TestCase::new(*c)).collect())
+    }
+
+    fn filters(fs: &[&str]) -> Vec<String> {
+        fs.iter().map(|f| f.to_string()).collect()
+    }
+
+    #[test]
+    fn no_filters_runs_everything() {
+        let s = suite("3.8.4.3 PropertyValue", &["a", "b"]);
+        assert_eq!(select_suite(&s, &[]), SuiteSelection::AllCases);
+    }
+
+    #[test]
+    fn suite_name_match_runs_the_whole_suite() {
+        let s = suite("3.8.4.3 PropertyValue", &["3.8.4.3.1 read", "3.8.4.3.2 write"]);
+        assert_eq!(select_suite(&s, &filters(&["3.8.4.3"])), SuiteSelection::AllCases);
+    }
+
+    /// The regression this selection exists for: a filter aimed at one
+    /// suite's *name* also matches a case name in a different suite.
+    /// The global "somebody matched a case" flag this replaced turned
+    /// case filtering on everywhere, so the named suite ran none of its
+    /// cases and the run reported zero failures.
+    #[test]
+    fn a_case_hit_elsewhere_does_not_narrow_a_named_suite() {
+        let named = suite("3.8.4.3 PropertyValue", &["3.8.4.3.1 read", "3.8.4.3.2 write"]);
+        let other = suite("3.8.14 Sync", &["3.8.14.3 PropertyValueRead/write"]);
+        let f = filters(&["4.3 Property"]);
+
+        assert_eq!(select_suite(&named, &f), SuiteSelection::AllCases);
+        assert_eq!(select_suite(&other, &f), SuiteSelection::Cases(vec![0]));
+    }
+
+    #[test]
+    fn case_only_match_selects_those_cases() {
+        let s = suite("3.8.9 Restart", &["3.8.9.1 basic", "3.8.9.2 master", "3.8.9.3 basic again"]);
+        assert_eq!(select_suite(&s, &filters(&["basic"])), SuiteSelection::Cases(vec![0, 2]));
+    }
+
+    #[test]
+    fn no_match_excludes_the_suite() {
+        let s = suite("3.8.9 Restart", &["3.8.9.1 basic"]);
+        assert_eq!(select_suite(&s, &filters(&["nonexistent"])), SuiteSelection::None);
+    }
+
+    #[test]
+    fn matching_is_case_insensitive_on_both_levels() {
+        let s = suite("3.8.9 Restart", &["3.8.9.1 Basic"]);
+        assert_eq!(select_suite(&s, &filters(&["restart"])), SuiteSelection::AllCases);
+        assert_eq!(select_suite(&s, &filters(&["bASIc"])), SuiteSelection::Cases(vec![0]));
+    }
+
+    #[test]
+    fn several_filters_union_within_a_suite() {
+        let s = suite("3.8.9 Restart", &["one", "two", "three"]);
+        assert_eq!(select_suite(&s, &filters(&["one", "three"])), SuiteSelection::Cases(vec![0, 2]));
+    }
+
+    #[test]
+    fn describe_reports_the_selected_share() {
+        let s = suite("3.8.9 Restart", &["one", "two", "three"]);
+        assert_eq!(select_suite(&s, &[]).describe(&s), "all 3 case(s)");
+        assert_eq!(select_suite(&s, &filters(&["one"])).describe(&s), "1 of 3 case(s) matched");
+    }
 }

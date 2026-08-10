@@ -21,6 +21,14 @@
 //!                 (`TestSuite::use_secure_dut == true`).
 //!   filter        Optional filters (case-insensitive substring match)
 //!
+//! A filter matching a suite's name runs that suite in full; a filter
+//! matching case names runs those cases in the suites they live in.
+//! The two are decided per suite, so a filter that incidentally hits a
+//! case name in one suite cannot narrow another suite it selected by
+//! name (see [`engine::select_suite`]). A filter matching nothing at
+//! all aborts the run before a DUT is spawned rather than quietly
+//! reducing it — that failure mode looks exactly like a green run.
+//!
 //! Environment:
 //!   RUST_LOG    Set log level (error, warn, info, debug, trace)
 //!   LIVE_LOGS   If set, print logs in real-time instead of buffering
@@ -31,7 +39,9 @@ use std::env;
 
 use log::LevelFilter;
 
-use zweidraehte_conformance::engine::{self, DEFAULT_TIME_DIVISOR, EngineOptions, matches_filter};
+use zweidraehte_conformance::engine::{
+    self, DEFAULT_TIME_DIVISOR, EngineOptions, SuiteSelection, matches_filter, select_suite,
+};
 use zweidraehte_conformance::harness::DutMode;
 use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests;
@@ -53,8 +63,8 @@ async fn main() {
     // SAFETY: single-threaded before any child is spawned.
     unsafe { env::set_var("KNX_TIME_DIVISOR", time_divisor.to_string()) };
 
-    let filters: Vec<&str> =
-        args.iter().skip(1).filter(|s| *s != "--realtime" && *s != "--non-secure").map(|s| s.as_str()).collect();
+    let filters: Vec<String> =
+        args.iter().skip(1).filter(|s| *s != "--realtime" && *s != "--non-secure").cloned().collect();
 
     let log_level = match env::var("RUST_LOG").ok().as_deref() {
         Some("error") => LevelFilter::Error,
@@ -155,21 +165,37 @@ async fn main() {
         tests::system7_secure_smoke::create_system7_secure_smoke_suite(),
     ];
 
-    let has_test_case_filter =
-        filters.iter().any(|f| all_suites.iter().any(|s| s.cases.iter().any(|c| matches_filter(&c.name, f))));
-
-    let mut suites: Vec<_> = if filters.is_empty() {
-        all_suites
-    } else {
-        all_suites
-            .into_iter()
-            .filter(|s| {
-                let suite_matches = filters.iter().any(|f| matches_filter(&s.name, f));
-                let case_matches = s.cases.iter().any(|c| filters.iter().any(|f| matches_filter(&c.name, f)));
-                suite_matches || case_matches
-            })
-            .collect()
+    // The socket-level KNX IP Secure tests live outside the TP1 suite
+    // list, so a filter can legitimately select nothing here and still
+    // have selected work.
+    let matches_ip_secure = |f: &String| {
+        matches_filter("ip_secure", f) || tests::ip_secure::tests().iter().any(|t| matches_filter(t.name, f))
     };
+
+    // Every filter has to select something. One that selects nothing is
+    // almost always a typo or a stale name, and letting it through just
+    // shrinks the run: filters are plain substrings, and a run that
+    // executes fewer cases than asked for is indistinguishable from a
+    // green one. Checked against the *unreduced* suite list and before
+    // the DUT-mode retains below — a suite dropped because one run
+    // drives one DUT binary is a different situation, and says so
+    // itself.
+    let unmatched: Vec<&String> = filters
+        .iter()
+        .filter(|f| {
+            !matches_ip_secure(f)
+                && !all_suites.iter().any(|s| select_suite(s, std::slice::from_ref(*f)) != SuiteSelection::None)
+        })
+        .collect();
+    if !unmatched.is_empty() {
+        for f in &unmatched {
+            println!("❌ Filter {f:?} matched no suite or case name.");
+        }
+        std::process::exit(1);
+    }
+
+    let mut suites: Vec<_> =
+        all_suites.into_iter().filter(|s| select_suite(s, &filters) != SuiteSelection::None).collect();
 
     // The System 7 suites need their own DUT binaries, and a run drives
     // exactly one binary. Resolution order: a pure System 7 *secure*
@@ -216,23 +242,19 @@ async fn main() {
         }
     }
 
-    // The socket-level KNX IP Secure suite lives outside the TP1 suite
-    // list; a filter can match it alone.
-    let ip_secure_matches = filters.is_empty()
-        || filters.iter().any(|f| {
-            matches_filter("ip_secure", f) || tests::ip_secure::tests().iter().any(|t| matches_filter(t.name, f))
-        });
+    let ip_secure_matches = filters.is_empty() || filters.iter().any(matches_ip_secure);
 
+    // Reachable only through the DUT-mode retains above — every filter
+    // has already been shown to select something.
     if suites.is_empty() && !ip_secure_matches {
-        println!("No suites or tests matched filters: {:?}", filters);
+        println!("No suites left to run for filters {filters:?} once the DUT-mode skips above are applied.");
         std::process::exit(1);
     }
 
     // Filter matched only the IP Secure suite: skip the TP1 harness
     // entirely and run the socket-level tests on their own.
     if suites.is_empty() {
-        let owned_filters: Vec<String> = filters.iter().map(|f| f.to_string()).collect();
-        let (passed, failed) = tests::ip_secure::run_all(&owned_filters);
+        let (passed, failed) = tests::ip_secure::run_all(&filters);
         println!("====================================================================");
         println!("SUMMARY");
         println!("====================================================================");
@@ -243,18 +265,18 @@ async fn main() {
         std::process::exit(if failed > 0 { 1 } else { 0 });
     }
 
+    // Say per suite what the filters selected. An accidental substring
+    // hit — the reason the selection is per suite at all — shows up
+    // here as a suite running a surprising slice of its cases, before
+    // the run rather than after it.
     if !filters.is_empty() {
-        if has_test_case_filter {
-            println!("Running tests matching: {:?}\n", filters);
-        } else {
-            println!("Running {} suite(s) matching: {:?}\n", suites.len(), filters);
+        println!("Running {} suite(s) matching: {:?}", suites.len(), filters);
+        for suite in &suites {
+            println!("  {} — {}", suite.name, select_suite(suite, &filters).describe(suite));
         }
+        println!();
     }
-    let opts = EngineOptions {
-        divisor: time_divisor,
-        dut_mode,
-        case_filters: filters.iter().map(|f| f.to_string()).collect(),
-    };
+    let opts = EngineOptions { divisor: time_divisor, dut_mode, case_filters: filters.clone() };
     let mut summary = engine::run_suites(&suites, &opts).await;
 
     // ====================================================================
@@ -262,8 +284,7 @@ async fn main() {
     // test (no TP1 IPC harness involvement).
     // ====================================================================
     if ip_secure_matches {
-        let owned_filters: Vec<String> = filters.iter().map(|f| f.to_string()).collect();
-        let (ip_passed, ip_failed) = tests::ip_secure::run_all(&owned_filters);
+        let (ip_passed, ip_failed) = tests::ip_secure::run_all(&filters);
         summary.passed += ip_passed;
         summary.failed += ip_failed;
         summary.tests += ip_passed + ip_failed;
