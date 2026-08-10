@@ -284,8 +284,12 @@ Each chunk ends compilable and tested.
 - Integration: env-var-gated live tests in
   `crates/zweidraehte-client/tests/live_tunnel.rs` (`KNX_TUNNEL_ADDR`,
   optional `KNX_TARGET_IA`) run tunnel connect/disconnect, an NM scan,
-  and read-only device management against real hardware; they skip
-  silently otherwise. The ported examples double as smoke tests.
+  read-only device management, and a System 7 load-state/table
+  read-back against real hardware; they skip silently otherwise. The
+  ported examples double as smoke tests.
+- Real-device hermetic tier: `conformance-configuration` runs the
+  client library against the System 7 device stack in-process (see the
+  configuration-download section).
 - The hermetic loopback fixture moved to the roadmap: plain
   `WithTunneling` is currently wired for the TP1-bridged IP-interface
   role (`IpInterfaceStateFor`, additional-IA plumbing, subnet bridge),
@@ -424,6 +428,143 @@ keyring into the `SecurityStore` before `connect_*_with_security`
 answered; with the timestamp-floored sending counter a peer never
 needs to sync us.
 
+## Configuration download — layered as ETS layers it (August 2026)
+
+Roadmap items 4 + 5. The download engine takes its inputs from the
+same three places ETS does, with the same lifetimes:
+
+| Layer | Source | Per | Carries |
+|---|---|---|---|
+| **Mask** | `knx_master.xml` | mask version | resource locations, procedure templates |
+| **Product** | `.knxprod` / MTXML | product | segments + default data, load procedures, object and parameter layout |
+| **Project** | the caller | installation | individual address, group links, parameter values |
+
+```text
+  knx_master.xml ──► MaskDb ──┐
+                              ├─► assemble() ─► Vec<Instruction> ─┐
+  .knxprod/.mtxml ─► ProductData ─┐                               ├─► Downloader
+                                  ├─► compile() ─► DeviceImage ───┘        │
+  ProjectConfig ──────────────────┘                                        ▼
+                                                             DeviceConnection (RCo)
+```
+
+**The mask layer is always present and never hardcoded.** There is no
+built-in mask table and no cargo feature guarding it: `MaskDb` is
+required input. The reasons, in order of weight — MV-07B0 alone
+carries 145 load-control instructions across six procedure templates
+plus 40 resources, and hand-transcribing that is exactly the drift
+that bit the conformance transcriptions; nothing KNX-supplied may be
+committed to this repository; and it is what ETS itself does.
+`MaskDb::resolve()` tries `KNX_MASTER_DATA`, then (behind the
+`master-data-download` feature) the on-disk cache and a download from
+`update.knx.org`. A `.knxprod` bundles `knx_master.xml`, so one file
+can supply both upper layers.
+
+- **`src/download/`**
+  - `mask.rs` — `MaskDb` / `MaskData` keyed by the mask version a
+    device reports; `MemoryResources` read out of the mask's resource
+    list rather than hardcoded.
+  - `product.rs` — `ProductData` from a parsed `ApplicationProgram`:
+    segments (with base64 `Data` decoded), load procedures, com-object
+    definitions, parameter memory map. Reads the
+    `AddressTable`/`AssociationTable` elements that `DeviceInfo`
+    ignores.
+  - `project.rs` — `ProjectConfig` plus `compile()`, which follows
+    ETS's order: seed segments with product defaults, overlay the RT8
+    tables built from the project, patch parameter values, then insert
+    the data writes ETS performs implicitly (derived from the
+    procedure's own segment records).
+  - `assemble.rs` — mask template + product fragments → one stream.
+    System 7 takes the product's `ProductProcedure` whole; System B
+    splices product fragments into the mask template at `LdCtrlMerge`
+    points. Merges resolve here, never at run time.
+  - `ir.rs` / `interpreter.rs` — unchanged in shape;
+    `controls_to_instructions` now takes a `&[LoadControl]` so master
+    data and MTXML share one converter.
+- **`zweidraehte-knxprod`** gained `.knxprod` archive *reading*
+  (`runtime::knxprod`) and a three-way feature split — `packaging`
+  (signing + ZIP write), `master-data` (resolver + cache + download),
+  `product-files` (ZIP read) — so the client depends on it without
+  pulling HTTP, crypto or ZIP into every build.
+- **API**: `KnxBus::configure_device(&mask, &product, &project)`.
+
+### Both management models
+
+The engine drives each family the way its mask does:
+
+| | System 7 (0705) | System B (07B0) |
+|---|---|---|
+| load control | memory-mapped window at 0104h | `PID_LOAD_STATE_CONTROL` on the machine's own interface object |
+| load state | status bytes at B6EAh | the same property, read back |
+| segments | absolute — the product fixes the address | relative — the client asks for a size, the device answers with a base through `PID_TABLE_REFERENCE` |
+| procedure | the product's whole `ProductProcedure` | the mask's Load template with product fragments spliced in at `LdCtrlMerge` |
+| tables | RT8 (`addr8`/`asso8`/`co_m112`), 1-octet counts, IA inside the address table | RT7 (`addr7`/`asso6`/`co7`), 2-octet counts and identifiers |
+
+`LoadControlPath` selects the path; the IR addresses machines by
+*index* rather than a four-variant enum, because System B has five and
+on that family the index is also the interface object index.
+
+Two adjustments the compile step makes that neither layer could,
+because both depend on the project:
+
+- **Sizing relative allocations.** The mask templates carry a
+  placeholder (`Size="2"` for MV-07B0's tables); the real size is the
+  content we are about to write.
+- **Pruning empty steps.** A product with no parameters still declares
+  a segment and a write for its zero-length parameter block; both are
+  dropped, which leaves the interpreter free to treat a write with no
+  content as the bug it would otherwise be.
+
+### Test tier: `conformance-configuration`
+
+A third conformance runner beside `conformance-runner` and
+`conformance-eitt`: it drives the **real client library** against the
+System 7 DUT through `harness::client_bridge`. The DUT has no product
+file of its own, so the runner **generates one in-process** from the
+same constants the DUT stack is built from and reads it straight back
+— closing a loop across all three crates:
+
+```text
+  system7_stack_config!  ──► knxprod generator ──► MTXML
+           │                                         │
+           │                              ProductData (client parses)
+           ▼                                         ▼
+    the running DUT  ◄────── download ◄────────  KnxBus
+```
+
+    KNX_MASTER_DATA=/path/to/knx_master.xml \
+      cargo run -p zweidraehte-conformance --bin conformance-configuration
+
+Five scenarios, all passing: descriptor smoke read, programming-mode
+IA assignment, full download with table read-back **and a live group
+telegram on the rewired address**, `Unload all` assembled from the
+mask, and the load-state error path.
+
+Three real bugs this tier has caught so far:
+
+- `Table::write_lsm`'s `LoadEnd` computed the MCB CRC over
+  `data_ref()[0..requested_memory_size]`, where the length is
+  client-supplied and `ApplicationImpl` accepts segments larger than
+  its own buffer — a bus-reachable panic, now clamped with a
+  regression test.
+- The identity guard compared property values for exact equality,
+  which no real product file satisfies: they pad the expected value to
+  a fixed field width (MDT writes twenty hex characters for the
+  six-octet `PID_HARDWARE_TYPE`, and our generator mirrors that).
+  `identity_matches` now compares a prefix and requires the remainder
+  to be zero padding.
+- The conformance System B fixture kept its table base addresses in
+  two places — literals in `ConformanceMemoryMap` and computed offsets
+  in `CONFORMANCE_MEMORY_LAYOUT` — which had drifted apart. The device
+  reported one base through `PID_TABLE_REFERENCE` and served memory at
+  another, so writing where it said to write was refused. No existing
+  test allocates relatively and then writes at the reported base; a
+  real ETS download would have hit it.
+
+Runtime note: the conformance *parent* side is runtime-agnostic and
+all three runners are plain `#[tokio::main]` programs; embassy stays
+in the DUT child processes, which are the device stack.
+
 ## Later phases roadmap
 
 1. ~~**KNX Data Secure**~~ *(done — see above)*
@@ -432,19 +573,26 @@ needs to sync us.
    exist).
 3. **Secure commissioning**: FDSK-based tool-key write (`A_Key_Write`
    builder), SIAT seeding — from-factory secure setup.
-4. **Download procedures**: load/run-state-machine write/verify (RCo, Mem and
-   IO variants), chunked memory download bounded by max_apdu.
-5. **From-zero configuration**: generate address / association / GO tables
-   and blobs per mask (master-data driven, shared source of truth with
-   `zweidraehte-knxprod` / device definitions), drive the full ETS-style
-   download using 3 + 4.
+4. ~~**Download procedures**~~ *(done — both the memory-mapped and the
+   property path, both families; see above)*. Remaining: the partial
+   procedure subtypes (`grp`, `par`, `cfg`, `ap1`) and the tool-side
+   scaffolding they need (`LdCtrlMapError`,
+   `LdCtrlSetControlVariable`).
+5. ~~**From-zero configuration**~~ *(done — driven from a real
+   `.knxprod` / MTXML product file and the ETS master data; see
+   above)*.
 6. **More connectors**: IP routing (multicast, group-only), TPUART serial,
-   secure routing; keyring (`.knxkeys`) import for security material.
+   secure routing; ~~keyring (`.knxkeys`) import for security material~~
+   *(done — see the Data Secure section)*.
 7. **AN163 ext property services** for managing secure System B devices.
 8. **Loopback test fixture**: a host binary running the device stack with
    a tunneling server whose tunnel traffic terminates in the local stack,
    so the client test suite runs hermetically (tunnel connect → group
    exchange → RCo/RCl management round-trips) without hardware.
+   *(Partly obsoleted: `conformance-configuration`'s `client_bridge`
+   already gives the client a hermetic real-device tier — at cEMI
+   level, bypassing the KNX/IP tunnel layer. A loopback fixture is now
+   only needed to cover the tunnel protocol itself.)*
 
 ## Risks / notes
 

@@ -24,6 +24,13 @@ DSL: devices declare their parameters, communication objects, and ETS
 UI pages in Rust macros, and a generator emits the matching
 MTXML/`.knxprod` files.
 
+It also contains the other side of the wire: `zweidraehte-client`, a
+PC-side management client (the Falcon analogue) that connects over a
+KNX/IP tunnel or USB, does group traffic and KNX Data Secure, and
+commissions devices with an ETS-style configuration download — reading
+the mask facts from `knx_master.xml` and the product layout from a
+`.knxprod`, exactly as ETS does.
+
 This is a work in progress: the core is solid and conformance-tested,
 but some parts are implemented without rigorous testing yet, and others
 are known gaps. See [Project status](#project-status) for an honest
@@ -62,8 +69,12 @@ breakdown of what works, what needs testing, and what is missing.
   generated product data against manufacturer references
 - TUI viewer for ApplicationProgram MTXML files (very experimental)
 - Device provisioning tool (serial numbers, FDSKs) via probe-rs
-- KNX/IP tunneling **client** library (`zweidraehte-client`) for
-  device management from Linux (experimental)
+- KNX **client** library (`zweidraehte-client`) — a Falcon-style
+  management client for Linux: KNX/IP tunneling and USB connectors,
+  group traffic, connected/connectionless device management, KNX Data
+  Secure, and ETS-style **configuration download** for System 7 and
+  System B devices, driven the way ETS is — from `knx_master.xml` and
+  a product's `.knxprod`/MTXML (experimental)
 
 **Reference firmware** (in `firmware/`, a separate workspace)
 
@@ -118,9 +129,18 @@ breakdown of what works, what needs testing, and what is missing.
   only (no LTE, RF Multi, BiBat).
 - **USB HID link layer**: functional, exercised by the `usb_test`
   utility rather than a test suite.
-- **`zweidraehte-client`**: device management over tunneling works;
-  no automatic reconnection, sequential command channel, no layered
-  NL/TL/AL separation yet.
+- **`zweidraehte-client`**: group traffic, connected/connectionless
+  device management, and KNX Data Secure work over tunneling and USB.
+  The ETS-style **configuration download** (unload → allocate → write
+  tables and parameters → load → restart) runs end to end against both
+  the System 7 and System B conformance DUTs — the client generates
+  each DUT's product file, reads it back, downloads, and verifies the
+  device rewired — exercising both load-control paths (memory-mapped
+  for System 7, `PID_LOAD_STATE_CONTROL` for System B). Not yet
+  hardware-verified against a third-party product; no automatic
+  reconnection, sequential command channel, no layered NL/TL/AL
+  separation yet. Partial-download subtypes (`grp`/`par`/`cfg`/`ap1`)
+  and secure commissioning are not wired.
 - **ip_interface link layer**: the composite KNX/IP↔TP1 bridge behind
   the IP-interface firmware — implemented, but untested so far.
 
@@ -171,7 +191,7 @@ crates/
   zweidraehte-device-macros/ Proc-macros (interface objects, service registry, extension state)
   zweidraehte-ets/           Proc-macros for ETS parameter/com-object definitions
   zweidraehte-knxprod/       MTXML / .knxprod generator + parser
-  zweidraehte-client/        KNX/IP tunneling client
+  zweidraehte-client/        Management client (tunnel/USB, secure, download)
   zweidraehte-platform/      Platform abstraction (serial, sockets, Linux)
   zweidraehte-util/          Small embedded utilities
 

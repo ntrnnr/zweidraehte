@@ -409,7 +409,8 @@ crates/
   zweidraehte-device-macros/ Proc-macros for interface objects, service registries, extension state
   zweidraehte-platform/      Platform abstraction (serial, sockets, network)
   zweidraehte-ets/           Procedural macros for ETS parameter definitions
-  zweidraehte-knxprod/       XML generator for KNX product definitions
+  zweidraehte-knxprod/       KNX product data: MTXML/.knxprod generator + parser
+  zweidraehte-client/        PC-side management client (tunnel/USB, secure, ETS-style download)
   zweidraehte-util/          Embedded utility types (button input, etc.)
 
 examples/
@@ -458,6 +459,8 @@ Contains:
 - `access.rs` - Access control types (authorization levels)
 - `config.rs` - Buffer sizing and APDU constants
 - `device.rs` - Device identification (MaskVersion, MaskFamily, DeviceDescriptor)
+- `com_object.rs` - Group object descriptor coding (Table 87): `ComObjectType` (value field type) and `ComObjectFlags` (config flags + priority). Shared by the device stack (serves the tables) and the client (writes them); the device crate re-exports both.
+- `pid.rs` - Standard interface-object Property IDs (the device crate re-exports this as `objects::interface::pid`)
 - `properties.rs` - Interface object property definitions and access traits
 - `error.rs` - Protocol error types
 - `encoding/` - Low-level encoding
@@ -572,24 +575,48 @@ Subdirectories:
 
 Run with: `cargo run --bin conformance-runner [test_name_filter]`
 
-When running the conformance tests, make sure the two DUTs that are separate
-executables are rebuilt with `cargo build`!
+When running the conformance tests, make sure the DUT binaries (separate
+executables, one per family and security level) are rebuilt with
+`cargo build`!
+
+Three runners over the same DUTs + engine, differing only in where the
+test steps come from: `conformance-runner` (hand-written suites),
+`conformance-eitt` (vendor EITT XML), and `conformance-configuration`
+(the real `zweidraehte-client` library, driving actual downloads). The
+DUT children and the parent runners have a clean runtime split — the
+DUTs are embassy (they *are* the device stack), the parent side is
+runtime-agnostic and the bins are `#[tokio::main]`.
 
 Key modules:
 - `lib.rs` - `TestStep` / `TestCase` / `TestSuite` / `TestVariable`
 - `engine.rs` - Execution: time scaling, per-step dispatch, the
-  suite/case/step loop and its tally. Shared by both runners, so the
-  two are directly comparable
+  suite/case/step loop and its tally. Shared by the two scripted
+  runners, so they are directly comparable
 - `telegram.rs` - Telegram template parsing and matching (`#VAR`,
   `#VAR.N`, `#VAR±N`, `??` and nibble wildcards)
 - `logger.rs` - Test logging utilities
 - `bin/runner.rs` - Hand-written suites: the registry and CLI
 - `bin/eitt.rs` - Vendor EITT XML: CLI, load, lower, report
+- `bin/configuration.rs` - Drives `zweidraehte-client` downloads
+  against the System 7 and System B DUTs (roadmap items 4 + 5)
 
 Subdirectories:
 - `harness/` - Test harness implementations
   - `mock.rs` - Mock link layer for injection/capture
-  - `stack.rs` - Stack instance for testing
+  - `systemb_stack.rs` / `systemb_secure_stack.rs` /
+    `system7_stack.rs` / `system7_secure_stack.rs` - the DUT stack
+    fixtures, one per family and security level; each exposes its
+    persisted config type (`SystemBDutConfig`, `System7DutConfig`, ...)
+    with a `default_snapshot()` factory boot image
+  - `fixture_common.rs` - family-neutral fixture vocabulary: the
+    conformance application's constants (`CONFORMANCE_DD2`,
+    `TestParameters`), the certification object, the shm sequence
+    store and secure storage plumbing shared by all secure DUTs
+  - `ip_secure_stack.rs` - the KNX IP Secure DUT fixture
+  - `client_bridge.rs` - a `KnxConnector` over the DUT IPC, so the
+    client library can drive a DUT (used by `configuration.rs`)
+  - `system7_product.rs` / `system_b_product.rs` - generate each DUT's
+    `.knxprod` product data in-process, for the download round-trip
 - `tests/` - Hand-written test suites
   - `group_objects.rs` - Group object communication tests
   - `network_layer.rs` - Network layer conformance
@@ -656,13 +683,30 @@ Macros provided:
   ...)]`, `#[erase(default = ...)]`.
 
 #### 6. KNXPROD Generator Crate (`crates/zweidraehte-knxprod`)
-**Purpose**: XML generator for KNX product definitions (MTXML format)
+**Purpose**: KNX product data — generate *and* read. Writes MTXML /
+`.knxprod` from device definitions, and parses `knx_master.xml` and
+product files back (the client's download engine consumes the parsed
+mask and product layers).
+
+**Features** (split so the client can depend on the pure XML core
+without HTTP/crypto/ZIP): with no features the crate is quick-xml +
+serde only. `master-data` adds `MasterDataSource` resolution (fetch
+from update.knx.org + on-disk cache). `product-files` adds `.knxprod`
+archive *reading* (`runtime::knxprod::KnxprodArchive`). `packaging`
+(default) is signing + `.knxprod`/`.knxproj` writing, and implies the
+other two. Each is gated per module, not per item — `signing/master_data.rs`,
+`signing/packaging/`, `runtime/knxprod.rs`.
 
 Key modules:
 - `lib.rs` - Main library interface and documentation
 - `schema.rs` - Typed Rust structs matching KNX XSD schema
   - ApplicationProgram, Hardware, Catalog structures
+  - `load_procedures.rs` - the `LdCtrl*` load-control vocabulary, shared by MTXML `LoadProcedures` and the master-data `Procedures`
   - All XML serialization types
+- `runtime/` - reading parsed product data back
+  - `parser.rs` - MTXML `ApplicationProgram` → typed `Knx` tree
+  - `master_data.rs` - `knx_master.xml` → mask versions, resources, `Procedures`
+  - `knxprod.rs` - `.knxprod` ZIP reader (feature `product-files`)
 - `generator.rs` - Main MTXML generation engine
   - KnxprodBuilder - Unified builder API (preferred entry point)
   - MtxmlGenerator - Creates ApplicationProgram XML (used internally by builder)
@@ -675,6 +719,39 @@ Key modules:
   - PageStructure, PageBlock, PageItem
   - Conditional visibility logic
   - Parameter grouping and sections
+
+#### 6b. Client Library Crate (`crates/zweidraehte-client`)
+**Purpose**: PC-side KNX management client (the Falcon analogue) — the
+counterpart to the device stack. Connects to a bus, issues group
+traffic, and runs the 03/05/02 management procedures against remote
+devices. `std` + tokio; depends only on `zweidraehte-proto` (plus
+`zweidraehte-knxprod` with `default-features = false` for the download
+engine's mask/product parsing). Design doc + roadmap: `CLIENT.md` at
+the repo root.
+
+Structure (sans-io core + thin tokio driver):
+- `core/` - sans-io protocol logic (no sockets, no clocks): tunnel
+  session FSM, TL client, group encode/decode, management services
+- `connector/` - `KnxConnector` trait carrying raw cEMI, with IP
+  tunneling and USB HID implementations
+- `driver/bus_task.rs` - the tokio select loop wiring connector ⇄ core
+- `api/` - `KnxBus` (root handle), `DeviceConnection` (RCo),
+  `NetworkManagement` (NM_* + RCl)
+- `security/` - KNX Data Secure (channels, keyring, `.knxkeys` import,
+  sequence stores)
+- `download/` - ETS-style configuration download, layered as ETS is
+  (mask → product → project; see `CLIENT.md`): `mask.rs` (`MaskDb`
+  from `knx_master.xml`), `product.rs` (`ProductData` from
+  `.knxprod`/MTXML), `project.rs` (`ProjectConfig` + `compile`),
+  `assemble.rs` (mask template + product `LdCtrlMerge` fragments →
+  procedure), `ir.rs` (executable `Instruction` IR), `interpreter.rs`
+  (`Downloader` over both the memory-mapped and property load-control
+  paths), `image.rs` (the assembled `DeviceImage`), `table_coding.rs`
+  (the `TableCoding` trait + one declarative impl per table wire
+  format — RT8/M112 and RT7), `image_layout.rs` (per-management-model
+  definition tables: placement, ASAP base, which codings — consumed
+  by the generic compile pipeline). The end-to-end
+  test tier is `conformance-configuration` (see the conformance crate).
 
 #### 7. Device Definitions Crate (`examples/devices`, package `zweidraehte-devices`)
 **Purpose**: Device definitions only — no binaries. The no_std definitions are
