@@ -347,6 +347,7 @@ impl ComObjectBusHook for ConformanceComObjects {
 pub(crate) mod conformance_config {
     use zweidraehte_device::config::{CE, RE, ROI, TE, UE, WE};
     use zweidraehte_device::knx_stack_config;
+    use zweidraehte_device::objects::tables::ComObjectType;
 
     knx_stack_config! {
         name: ConformanceTestConfig,
@@ -381,14 +382,14 @@ pub(crate) mod conformance_config {
             // GO0-GO3: 1-bit main object and shadow objects (ASAP 1-4)
             // ================================================================
             // GO0: Main 1-bit object (UINT1) - all flags enabled by default
-            1 => (1, CE | TE | RE | WE | UE),
+            1 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
             // GO1: Communication flags (4-bit) - for accessing GO0's comm flags
-            2 => (4, CE | TE | RE | WE | UE),
+            2 => (ComObjectType::Uint4 as u8, CE | TE | RE | WE | UE),
             // GO2: Configuration flags (8-bit) - for accessing GO0's config flags
-            3 => (7, CE | TE | RE | WE | UE),
+            3 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO3: Value (8-bit) - for accessing GO0's value without flag modification
             // ROI flag is set for test 1.4.1.6 (Read-on-Init verification).
-            4 => (7, CE | TE | RE | WE | UE | ROI),
+            4 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
 
             // ================================================================
             // GO0_BYTE3-GO3_BYTE3: 3-byte main object and shadow objects (ASAP 5-8)
@@ -400,43 +401,43 @@ pub(crate) mod conformance_config {
             // association table and from the security suites, and renumbering
             // buys nothing.
             // GO0_BYTE3: 3-byte main object
-            5 => (9, CE | TE | RE | WE | UE),   // 9 = Byte3 (3 bytes)
+            5 => (ComObjectType::Byte3 as u8, CE | TE | RE | WE | UE),
             // GO1_BYTE3: Communication flags for GO0_BYTE3 (4-bit like original GO1)
-            6 => (4, CE | TE | RE | WE | UE),   // 4 = 4-bit for short format response
+            6 => (ComObjectType::Uint4 as u8, CE | TE | RE | WE | UE),   // Uint4 = 4-bit, short format
             // GO2_BYTE3: Configuration flags for GO0_BYTE3
-            7 => (7, CE | TE | RE | WE | UE),
+            7 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO3_BYTE3: Value for GO0_BYTE3 (3 bytes)
-            8 => (9, CE | TE | RE | WE | UE),   // 9 = Byte3 (3 bytes)
+            8 => (ComObjectType::Byte3 as u8, CE | TE | RE | WE | UE),
 
             // ================================================================
             // Additional test objects (ASAP 9-11)
             // ================================================================
             // GO4: Read on Init test object - has ROI flag set
-            9 => (7, CE | TE | RE | WE | UE | ROI),
+            9 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
             // GO5: 8-bit object for network layer test 3.1 (long format response)
-            10 => (7, CE | TE | RE | WE | UE),
+            10 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO6: 1-bit object for transport layer test 2.1 + security GO test
-            11 => (1, CE | TE | RE | WE | UE),
+            11 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
 
             // ================================================================
             // Security GO test objects (ASAP 12-13) — for section 3.8.17
             // ================================================================
             // GO_SEC_0: 1-bit object, receives on 1/1/1, transmits on 2/2/2
-            12 => (1, CE | TE | RE | WE | UE),
+            12 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
             // GO_SEC_1: 1-bit object, receives on 3/3/3, transmits on 4/4/4
-            13 => (1, CE | TE | RE | WE | UE),
+            13 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
             // GO_SEC_3: 1-bit object, receives on 6/6/6 (C-only flag test)
-            14 => (1, CE | TE | RE | WE | UE),
+            14 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
 
             // ================================================================
             // Diagnostic test objects (ASAP 15-17) — for Section 6.2
             // ================================================================
             // GO_DIAG_NO_C: 1-byte object, C flag NOT set (no communication)
-            15 => (7, TE | RE | WE | UE),
+            15 => (ComObjectType::Byte1 as u8, TE | RE | WE | UE),
             // GO_DIAG_NO_W: 1-byte object, W flag NOT set (no write)
-            16 => (7, CE | TE | RE | UE),
+            16 => (ComObjectType::Byte1 as u8, CE | TE | RE | UE),
             // GO_DIAG_NO_T: 1-byte object, T flag NOT set (no transmit)
-            17 => (7, CE | RE | WE | UE),
+            17 => (ComObjectType::Byte1 as u8, CE | RE | WE | UE),
         },
 
         associations: {

@@ -494,7 +494,7 @@ mod objects {
 mod macros {
     use super::*;
     use zweidraehte_device::bcus::system_7::Tp1StateFor7;
-    use zweidraehte_device::objects::tables::{AddressTable, AssociationTable};
+    use zweidraehte_device::objects::tables::{AddressTable, AssociationTable, ComObjectType};
     use zweidraehte_proto::address::GroupAddress;
 
     zweidraehte_device::system7_stack_config! {
@@ -505,8 +505,8 @@ mod macros {
             2 => "0/0/2",
         },
         comm_objects: {
-            0 => (1, zweidraehte_device::config::CE | zweidraehte_device::config::TE),
-            1 => (1, zweidraehte_device::config::CE | zweidraehte_device::config::WE),
+            0 => (ComObjectType::Uint1 as u8, zweidraehte_device::config::CE | zweidraehte_device::config::TE),
+            1 => (ComObjectType::Uint1 as u8, zweidraehte_device::config::CE | zweidraehte_device::config::WE),
         },
         associations: {
             1 => [0],
@@ -683,6 +683,7 @@ mod go_table_object {
 /// type checks and which a running device reports as working.
 mod security_config {
     use zweidraehte_device::config::{CE, TE, WE};
+    use zweidraehte_device::objects::tables::ComObjectType;
 
     zweidraehte_device::system7_stack_config! {
         name: SecureConfig,
@@ -693,9 +694,9 @@ mod security_config {
         },
         comm_objects: {
             // ASAP 0 is a real, addressable object on System 7.
-            0 => (1, CE | TE),
-            1 => (1, CE | WE),
-            2 => (1, CE | WE),
+            0 => (ComObjectType::Uint1 as u8, CE | TE),
+            1 => (ComObjectType::Uint1 as u8, CE | WE),
+            2 => (ComObjectType::Uint1 as u8, CE | WE),
         },
         associations: {
             1 => [0],

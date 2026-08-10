@@ -222,6 +222,7 @@ impl ComObjectBusHook for System7ComObjects {
 
 pub mod conformance_config {
     use zweidraehte_device::config::{CE, RE, ROI, TE, UE, WE};
+    use zweidraehte_device::objects::tables::ComObjectType;
     use zweidraehte_device::system7_stack_config;
 
     system7_stack_config! {
@@ -240,19 +241,19 @@ pub mod conformance_config {
 
         comm_objects: {
             // GO0: main 1-bit object, all flags enabled
-            1 => (1, CE | TE | RE | WE | UE),
+            1 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
             // GO1: comm flags (4-bit, short format response)
-            2 => (4, CE | TE | RE | WE | UE),
+            2 => (ComObjectType::Uint4 as u8, CE | TE | RE | WE | UE),
             // GO2: config flags (8-bit)
-            3 => (7, CE | TE | RE | WE | UE),
+            3 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO3: value (8-bit); ROI for test 1.4.1.6
-            4 => (7, CE | TE | RE | WE | UE | ROI),
+            4 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
             // GO4: read-on-init object
-            5 => (7, CE | TE | RE | WE | UE | ROI),
+            5 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE | ROI),
             // GO5: 8-bit for network layer 3.1
-            6 => (7, CE | TE | RE | WE | UE),
+            6 => (ComObjectType::Byte1 as u8, CE | TE | RE | WE | UE),
             // GO6: 1-bit for transport layer 2.1
-            7 => (1, CE | TE | RE | WE | UE),
+            7 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE | UE),
         },
 
         associations: {

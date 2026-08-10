@@ -15,6 +15,7 @@
 //!
 //! ```ignore
 //! use zweidraehte_device::config::knx_stack_config;
+//! use zweidraehte_device::objects::tables::ComObjectType;
 //!
 //! knx_stack_config! {
 //!     name: LightingController,
@@ -26,8 +27,8 @@
 //!     },
 //!
 //!     comm_objects: {
-//!         1 => (1, CE | TE | WE),
-//!         2 => (2, CE | RE | UE),
+//!         1 => (ComObjectType::Uint1 as u8, CE | TE | WE),
+//!         2 => (ComObjectType::Uint2 as u8, CE | RE | UE),
 //!     },
 //!
 //!     associations: {
@@ -100,6 +101,15 @@ const fn const_hex_digit(b: u8) -> u8 {
 ///
 /// This generates const-compatible data structures for all KNX tables
 /// that can be loaded into a stack at runtime.
+///
+/// ## `comm_objects` size argument
+/// The first element of each `comm_objects` tuple is stored verbatim as
+/// the Table 87 communication-object-type octet, so it must be a
+/// [`ComObjectType`](crate::objects::tables::ComObjectType) discriminant
+/// — write `ComObjectType::Uint1 as u8`, `ComObjectType::Byte3 as u8`,
+/// etc., not a bit or byte count. `ComObjectType` is 0-based
+/// (`Uint1 = 0`, `Uint4 = 3`), so a bare bit count is off by one for
+/// every `UintN` object.
 ///
 /// ## Flag Constants
 /// - `CE`: Communication Enable
@@ -420,6 +430,7 @@ mod tests {
         #[allow(dead_code)]
         mod test_config {
             use crate::config::{CE, RE, TE, WE};
+            use crate::objects::tables::ComObjectType;
 
             knx_stack_config! {
                 name: TestConfig,
@@ -431,8 +442,8 @@ mod tests {
                 },
 
                 comm_objects: {
-                    1 => (0, CE | TE | RE | WE),
-                    2 => (0, CE | TE | RE | WE),
+                    1 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE),
+                    2 => (ComObjectType::Uint1 as u8, CE | TE | RE | WE),
                 },
 
                 associations: {
@@ -472,6 +483,8 @@ mod tests {
 
     #[test]
     fn test_basic_config() {
+        use crate::objects::tables::ComObjectType;
+
         // Example configuration for a simple lighting controller
         knx_stack_config! {
             name: LightingController,
@@ -484,9 +497,9 @@ mod tests {
             },
 
             comm_objects: {
-                1 => (1, CE | WE | TE),
-                2 => (1, CE | RE | WE | TE),
-                3 => (1, CE | TE | UE),
+                1 => (ComObjectType::Uint1 as u8, CE | WE | TE),
+                2 => (ComObjectType::Uint1 as u8, CE | RE | WE | TE),
+                3 => (ComObjectType::Uint1 as u8, CE | TE | UE),
             },
 
             associations: {
@@ -528,6 +541,7 @@ mod tests {
         #[allow(dead_code)]
         mod priority {
             use crate::config::{CE, TE};
+            use crate::objects::tables::ComObjectType;
 
             knx_stack_config! {
                 name: PriorityTest,
@@ -541,10 +555,10 @@ mod tests {
                 },
 
                 comm_objects: {
-                    1 => (1, CE | TE, @priority(System)),  // Priority = 0
-                    2 => (1, CE | TE, @priority(High)),    // Priority = 1
-                    3 => (1, CE | TE, @priority(Alarm)),   // Priority = 2
-                    4 => (1, CE | TE),                     // Priority = 3 (default Low)
+                    1 => (ComObjectType::Uint1 as u8, CE | TE, @priority(System)),  // Priority = 0
+                    2 => (ComObjectType::Uint1 as u8, CE | TE, @priority(High)),    // Priority = 1
+                    3 => (ComObjectType::Uint1 as u8, CE | TE, @priority(Alarm)),   // Priority = 2
+                    4 => (ComObjectType::Uint1 as u8, CE | TE),                     // Priority = 3 (default Low)
                 },
 
                 associations: {

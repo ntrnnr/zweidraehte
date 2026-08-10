@@ -32,6 +32,10 @@
 ///   address: RT8 fixes it at 4000h.
 /// - No `security:` arm — there is no Data Secure System 7 profile in
 ///   the stack yet.
+///
+/// Like `knx_stack_config!`, the `comm_objects` size argument is a
+/// [`ComObjectType`](crate::objects::tables::ComObjectType) discriminant
+/// (`ComObjectType::Uint1 as u8`, ...), not a bit or byte count.
 #[macro_export]
 macro_rules! system7_stack_config {
     (
