@@ -22,6 +22,7 @@
 use std::net::SocketAddrV4;
 use std::time::Duration;
 
+use zweidraehte_client::download::MaskDb;
 use zweidraehte_client::security::Keyring;
 use zweidraehte_client::{GroupAddress, GroupValueEncoding, IndividualAddress, KnxBus, SecurityEntry, SecurityStore};
 
@@ -253,5 +254,66 @@ async fn secure_group_write_live() {
     bus.group_write(ga, &[value], GroupValueEncoding::Short)
         .await
         .expect("secured group write accepted by the interface");
+    bus.disconnect().await.expect("tunnel disconnects");
+}
+
+// ============================================================================
+// Configuration download
+// ============================================================================
+
+/// Reads back a live System 7 device's load states and table blobs
+/// through the download engine's resource map — the read-only half of
+/// the configuration path, safe against a commissioned installation.
+///
+/// ```bash
+/// KNX_TUNNEL_ADDR=... KNX_TARGET_IA=1.1.42 cargo test -p zweidraehte-client --test live_tunnel
+/// ```
+#[tokio::test]
+async fn system7_load_states_readable() {
+    let Some(addr) = tunnel_addr() else {
+        eprintln!("skipped: KNX_TUNNEL_ADDR not set");
+        return;
+    };
+    let Some(target) = target_ia() else {
+        eprintln!("skipped: KNX_TARGET_IA not set");
+        return;
+    };
+
+    // Mask facts come from the master data, as they do everywhere
+    // else — no hardcoded address table to fall back on.
+    let Ok(masks) = MaskDb::resolve() else {
+        eprintln!("skipped: no knx_master.xml (set KNX_MASTER_DATA or enable master-data-download)");
+        return;
+    };
+    let resources = masks
+        .mask(zweidraehte_client::MaskVersion::System7Tp1)
+        .and_then(|m| m.memory_resources())
+        .expect("MV-0705 is memory-mapped in the master data");
+
+    let bus = KnxBus::connect_ip(addr).await.expect("tunnel connects");
+    let mut device = bus.connect_device(target).await.expect("device connection opens");
+
+    let descriptor = device.device_descriptor_read(0).await.expect("device descriptor read");
+    assert_eq!(descriptor.len(), 2, "descriptor type 0 is two octets");
+    if descriptor != [0x07, 0x05] {
+        eprintln!("skipped: {target} is mask {descriptor:02X?}, not System 7 (0705)");
+        device.close().await.expect("connection closes");
+        bus.disconnect().await.expect("tunnel disconnects");
+        return;
+    }
+
+    // The four load-state bytes at B6EAh (ADT, AST, APP, PEI) — a
+    // commissioned device answers Loaded (01) on the first three.
+    let states = device.memory_read(resources.load_status_addr, 4).await.expect("load states read");
+    eprintln!("load states ADT/AST/APP/PEI: {states:02X?}");
+    assert_eq!(states.len(), 4);
+
+    // The RT8 address table head: count, then the device's own IA —
+    // which must be the address we are talking to.
+    let adt_head = device.memory_read(resources.address_table_addr, 3).await.expect("address table read");
+    eprintln!("address table: {} group addresses, IA {:02X?}", adt_head[0], &adt_head[1..3]);
+    assert_eq!(&adt_head[1..3], target.as_bytes(), "the address table holds the device's own IA");
+
+    device.close().await.expect("connection closes");
     bus.disconnect().await.expect("tunnel disconnects");
 }

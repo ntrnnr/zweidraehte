@@ -182,6 +182,47 @@ impl KnxBus {
         NetworkManagement::new(&self.cmd_tx, self.info.assigned_address)
     }
 
+    /// Run the full ETS-style configuration download against an
+    /// (insecure) device: unload, write tables and parameters, load,
+    /// restart (03/05/02 download procedures).
+    ///
+    /// Takes the three layers a download draws on — the mask facts
+    /// from `knx_master.xml`, the product file, and what this
+    /// installation wants — exactly as ETS does. See
+    /// [`download`](crate::download) for how to obtain the first two.
+    ///
+    /// The device must already carry `project.individual_address` —
+    /// assign it via [`network_management`](Self::network_management)
+    /// programming-mode addressing first when configuring from
+    /// factory state. On success the device restarts; give it a
+    /// moment before reconnecting.
+    ///
+    /// For finer control (a different procedure, progress inspection)
+    /// use [`download::compile`](crate::download::compile) and
+    /// [`CompiledDownload::execute`](crate::download::CompiledDownload::execute)
+    /// directly against a [`DeviceConnection`].
+    pub async fn configure_device(
+        &self,
+        mask: &crate::download::MaskData<'_>,
+        product: &crate::download::ProductData,
+        project: &crate::download::ProjectConfig,
+    ) -> Result<()> {
+        // `compile` picks the load-control path from the mask family,
+        // so this works for both System 7 (memory-mapped) and System B
+        // (property) without a branch here.
+        let compiled = crate::download::compile(mask, product, project)?;
+
+        let mut device = self.connect_device(project.individual_address).await?;
+        let max_apdu = project.max_apdu.min(self.max_apdu());
+        let result = compiled.execute(&mut device, max_apdu).await;
+
+        // The procedure ends in a restart, which takes the device's
+        // transport connection with it — closing afterwards is
+        // best-effort cleanup of our side either way.
+        let _ = device.close().await;
+        result
+    }
+
     // ========================================================================
     // Data Secure
     // ========================================================================

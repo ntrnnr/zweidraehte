@@ -6,6 +6,14 @@ description = "KNX/IP client library for device management"
 
 [dependencies]
 zweidraehte-proto = { path = "../zweidraehte-proto", features = ["std", "log", "knxip", "usb-hid"] }
+# The download engine is master-data driven the way ETS is: mask
+# resources and procedure templates come from knx_master.xml, product
+# segments and load procedures from a .knxprod / MTXML. Not optional —
+# there is no hardcoded mask table to fall back to. With no default
+# features the knxprod crate is a pure XML schema/parser; `product-files`
+# adds .knxprod (ZIP) reading. Resolving master data by *download* is
+# the client's own opt-in `master-data-download` feature below.
+zweidraehte-knxprod = { path = "../zweidraehte-knxprod", default-features = false, features = ["product-files"] }
 
 tokio = { version = "1", features = ["net", "time", "sync", "rt", "macros", "signal"] }
 log = { workspace = true }
@@ -31,6 +39,16 @@ aes = "0.8"
 base64 = "0.22"
 sha2 = { workspace = true }
 quick-xml = { workspace = true }
+
+[features]
+default = []
+
+# Let `MaskDb::resolve()` fetch knx_master.xml from update.knx.org and
+# cache it on disk, the way ETS does. Off by default: a library that
+# makes HTTP requests on its own initiative is surprising, so the
+# download stays an explicit opt-in. Without it, master data must be
+# supplied as a path, a string, or a .knxprod archive.
+master-data-download = ["zweidraehte-knxprod/master-data"]
 
 [dev-dependencies]
 clap = { workspace = true }

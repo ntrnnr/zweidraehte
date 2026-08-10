@@ -3,6 +3,7 @@
 use core::net::SocketAddrV4;
 
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::messages::apdu::load_control::{LoadState, LsmMachine};
 use zweidraehte_proto::messages::apdu::restart::RestartError;
 use zweidraehte_proto::messages::knxip::ConnectionStatus;
 
@@ -53,6 +54,33 @@ pub enum Error {
     #[error("memory verify mismatch at address {address:#06x}")]
     VerifyMismatch { address: u16 },
 
+    #[error("{machine} load state is {state} (expected {expected})")]
+    LoadState { machine: MachineRef, state: LoadState, expected: LoadState },
+
+    #[error("device identity mismatch on object {obj_idx} property {prop_id}")]
+    IdentityMismatch { obj_idx: u8, prop_id: u16 },
+
+    #[error("property write verify mismatch on object {obj_idx} property {prop_id}")]
+    PropertyVerifyMismatch { obj_idx: u8, prop_id: u16 },
+
+    #[error("memory compare mismatch at address {address:#06x}")]
+    CompareMismatch { address: u16 },
+
+    #[error("download configuration invalid: {0}")]
+    DownloadConfig(&'static str),
+
+    #[error("master data: {0}")]
+    MasterData(String),
+
+    #[error("product data: {0}")]
+    ProductData(String),
+
+    #[error("cannot assemble the download procedure: {0}")]
+    DownloadAssembly(String),
+
+    #[error("unsupported download instruction: {0}")]
+    UnsupportedInstruction(&'static str),
+
     #[error("parse error: {0}")]
     Parse(&'static str),
 
@@ -70,6 +98,34 @@ pub enum Error {
 
     #[error("bus task terminated")]
     WorkerGone,
+}
+
+/// Which load state machine a [`Error::LoadState`] is about, in the
+/// terms the failing path addressed it.
+///
+/// The two load-control paths identify machines differently, and the
+/// error reports what the engine actually knows rather than guessing
+/// a family-specific name: the memory path drives one of the four
+/// mask-defined machines (a closed set proto names); the property
+/// path drives whatever interface object the index selects, and since
+/// the object roster is the device's, the index is the only
+/// protocol-level identity there is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MachineRef {
+    /// A machine of the memory-mapped path (System 7 / BIM M112).
+    Machine(LsmMachine),
+    /// An interface object driven over `PID_LOAD_STATE_CONTROL`
+    /// (System B).
+    Object(u8),
+}
+
+impl core::fmt::Display for MachineRef {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Machine(machine) => write!(f, "the {machine}"),
+            Self::Object(idx) => write!(f, "interface object {idx}"),
+        }
+    }
 }
 
 pub type Result<T> = core::result::Result<T, Error>;

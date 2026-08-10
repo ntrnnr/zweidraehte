@@ -6872,6 +6872,7 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "tokio",
+ "zweidraehte-knxprod",
  "zweidraehte-proto",
 ]
 
@@ -6886,6 +6887,7 @@ dependencies = [
  "embassy-sync",
  "embassy-time",
  "env_logger",
+ "futures-lite",
  "getrandom 0.4.2",
  "heapless 0.9.2",
  "log",
@@ -6898,9 +6900,12 @@ dependencies = [
  "socket2",
  "static_cell",
  "tempfile",
+ "tokio",
  "toml",
  "zerocopy",
+ "zweidraehte-client",
  "zweidraehte-device",
+ "zweidraehte-knxprod",
  "zweidraehte-platform",
  "zweidraehte-proto",
 ]

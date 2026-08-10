@@ -50,6 +50,7 @@
 mod api;
 pub mod connector;
 pub mod core;
+pub mod download;
 mod driver;
 mod error;
 pub mod security;
@@ -58,10 +59,11 @@ pub use api::{DeviceConnection, KnxBus, NetworkManagement, RestartAck};
 pub use connector::{ConnectorInfo, IpTunnelConnector, KnxConnector, UsbConnector, UsbSelector};
 pub use core::group::{GroupService, GroupTelegram};
 pub use core::management::{FunctionPropertyResult, PropertyDescription};
-pub use error::{Error, Result};
+pub use error::{Error, MachineRef, Result};
 pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStore, SeqNumberStore};
 
 /// Re-export commonly used proto types for convenience.
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+pub use zweidraehte_proto::device::{MaskFamily, MaskVersion};
 pub use zweidraehte_proto::messages::apdu::group_value::GroupValueEncoding;
 pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
