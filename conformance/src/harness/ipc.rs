@@ -577,10 +577,8 @@ impl<'a> IpcLinkLayer<'a> {
 // Lifecycle helpers for the command handler task
 // ============================================================================
 
-/// Announce the pending exit, wait for the IpcLinkLayer to flush
-/// `StepComplete` + `Exiting`, then half-close the write side of the
-/// socket. Called by the restart / power-cycle / master-reset handlers
-/// immediately before `process::exit`.
+/// Announce the pending exit and wait for the IpcLinkLayer to flush
+/// `StepComplete` + `Exiting`, **without** closing the socket.
 ///
 /// The actual `DutMessage::Exiting` write is performed by
 /// [`IpcLinkLayer::emit_step_complete`] from the same async task that
@@ -588,7 +586,17 @@ impl<'a> IpcLinkLayer<'a> {
 /// socket buffer. The contiguity matters: a cross-task scheduling gap
 /// here lets the runner read `StepComplete` and close before `Exiting`
 /// is written, which surfaces as `EPIPE` (seen on macOS).
-pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
+///
+/// That is also why this is separable from the shutdown. The A_Restart
+/// path runs inside the device stack's generic storage task, which has
+/// work to do *between* the announcement and the exit — the erase, the
+/// config save, the settle delay. It announces here (from
+/// `StorageHooks::on_restart`, while the response frames are still in
+/// flight, which is the only moment the runner is listening) and closes
+/// the socket later, from `SystemControl::restart`. The IPC-command
+/// path has nothing in between and uses
+/// [`emit_exiting_and_shutdown`] to do both at once.
+pub async fn announce_exit(reason: ExitReason) {
     use embassy_time::{Duration, Timer};
 
     // Hand the exit reason off to the IpcLinkLayer, which will append
@@ -600,7 +608,13 @@ pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
     // ~50 ms against a hang if the async LL task crashed earlier —
     // we'd rather exit slightly early than deadlock the DUT.
     let _ = select(BARRIER.step_settled.wait(), Timer::after(Duration::from_millis(50))).await;
+}
 
+/// [`announce_exit`] followed by half-closing the write side of the
+/// socket. Called by the power-cycle / master-reset handlers
+/// immediately before `process::exit`.
+pub async fn emit_exiting_and_shutdown(reason: ExitReason) {
+    announce_exit(reason).await;
     shutdown_ipc_socket();
 }
 

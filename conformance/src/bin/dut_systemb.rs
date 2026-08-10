@@ -14,13 +14,14 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::dut_common::{self, CommandChannel, ShmCell};
+use zweidraehte_conformance::dut_common::{self, CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
 use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::harness::shm::SharedMemory;
 use zweidraehte_conformance::harness::systemb_stack::{
     ConformanceMemoryMap, ConformanceStateInit, IpcConformanceTestStack, SystemBDutConfig, device_info,
 };
 
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
@@ -34,6 +35,18 @@ static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = Sta
 static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
 static COMMAND_CHANNEL: StaticCell<CommandChannel> = StaticCell::new();
 static SHM: StaticCell<ShmCell> = StaticCell::new();
+static STORAGE: StaticCell<DutConfigStore<IpcConformanceTestStack>> = StaticCell::new();
+
+// The device stack's own persistence task — the same one every firmware
+// target runs, which is the point: its restart ordering is what we want
+// under test. `DutSystemControl` exits the process in place of pulling a
+// reset line, and the runner respawns us from the snapshot the task just
+// saved.
+zweidraehte_device::storage_task! {
+    device: IpcConformanceTestStack,
+    system: DutSystemControl,
+    guard: NoSaveGuard,
+}
 
 // ============================================================================
 // Embassy tasks
@@ -56,14 +69,6 @@ async fn handle_commands(
     loop {
         let cmd = commands.receive().await;
         dut_common::handle_ipc_command::<IpcConformanceTestStack>(stack, shm, cmd).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn handle_restarts(stack: Stack<'static, IpcConformanceTestStack>, shm: &'static ShmCell) {
-    loop {
-        let request = stack.receive_restart_request().await;
-        dut_common::handle_restart_request::<IpcConformanceTestStack>(stack, shm, request.erase_code).await;
     }
 }
 
@@ -90,6 +95,7 @@ async fn main(spawner: Spawner) {
 
     let state_init = ConformanceStateInit::Loaded(snapshot);
     let shm = SHM.init(ShmCell::new(shm));
+    let storage = &*STORAGE.init(DutConfigStore::new(shm));
 
     let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
     // SAFETY: single-threaded buffer manager over our static buffers.
@@ -109,7 +115,7 @@ async fn main(spawner: Spawner) {
     let resources = STACK_RESOURCES.init(StackResources::new());
 
     let (stack, runner) =
-        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, ());
+        zweidraehte_device::new(resources, link_layer_builder, state_init, (), ConformanceMemoryMap, storage);
 
     // Publish the CoTab reference used by the conformance-specific
     // shadow-object hook (`ComObjectBusHook` impl on
@@ -133,7 +139,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
     spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
-    spawner.spawn(handle_restarts(stack, shm)).expect("spawn restart handler");
+    spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     // Main keeps the executor alive; the worker tasks handle IO.
     loop {

@@ -47,7 +47,36 @@ pub const DIRTY_SAVE_POLL: Duration = Duration::from_secs(1);
 /// Empirical, not spec-derived: long enough for the already-queued
 /// A_Restart_Response to leave the link layer (and, on TP1, for the remote
 /// TL's retry window to see it) before the device disappears from the bus.
+///
+/// This is the wall-clock value; conformance builds compress it — see
+/// [`restart_settle_delay`].
 pub const RESTART_SETTLE_DELAY: Duration = Duration::from_millis(100);
+
+/// The conformance fast-mode divisor — the same `KNX_TIME_DIVISOR` contract
+/// as the transport-layer timers. 1 (spec-compliant wall clock) outside
+/// conformance builds.
+fn time_divisor() -> u64 {
+    #[cfg(feature = "conformance")]
+    {
+        extern crate std;
+        std::env::var("KNX_TIME_DIVISOR").ok().and_then(|s| s.parse().ok()).filter(|&d| d > 0).unwrap_or(1)
+    }
+    #[cfg(not(feature = "conformance"))]
+    {
+        1
+    }
+}
+
+/// [`RESTART_SETTLE_DELAY`] scaled by [`time_divisor`].
+///
+/// The delay measures a *bus* interval — how long the response needs to get
+/// clear of the device — so it compresses with the rest of the bus timing in
+/// a fast-mode run. Left unscaled it would add its full 100 ms to every
+/// restart in a suite whose other timings run 50× faster, and a harness that
+/// watches for the device going away would be left waiting through it.
+fn restart_settle_delay() -> Duration {
+    Duration::from_millis(RESTART_SETTLE_DELAY.as_millis() / time_divisor())
+}
 
 /// Cap on waiting for the router outbox to drain before applying an erase
 /// code.
@@ -121,7 +150,9 @@ impl SaveGuardToken for () {
 ///   router outbox drain (the application layer queues the A_Restart_Response
 ///   *before* the request, and the network layer stamps its source address
 ///   only on the way out — erasing earlier sends the response from the
-///   default individual address), then applies the erase code to the runtime
+///   default individual address), announces the restart
+///   ([`StorageHooks::on_restart`] — a no-op unless something outside the
+///   device is watching), then applies the erase code to the runtime
 ///   state ([`HasPersistence::apply_erase_code`]) and the durable regions
 ///   ([`StorageHooks::erase`] — mc_timer clear + sending-SeqNr exhaustion
 ///   re-init on factory codes), persists if dirty, waits
@@ -157,6 +188,13 @@ where
                 // cannot make the device unrestartable.
                 let _ = select(knx.await_outbox_drained(), Timer::after(OUTBOX_DRAIN_TIMEOUT)).await;
 
+                // Announce the restart while the response frames are still in
+                // flight — a no-op for a device that just resets, but the only
+                // moment that works for one whose restart is watched from
+                // outside (see `StorageHooks::on_restart`). Deliberately before
+                // the erase, so the announcement reports pre-erase state.
+                storage.on_restart(code).await;
+
                 // State-side erase, then durable-storage-side erase.
                 knx.state().apply_erase_code(code);
                 storage.erase(code);
@@ -170,7 +208,7 @@ where
                 // implementation ever does return (a mock refusing resets),
                 // fall through and keep serving — the *next* restart request
                 // would try again; there is no retry of this one.
-                Timer::after(RESTART_SETTLE_DELAY).await;
+                Timer::after(restart_settle_delay()).await;
                 let _ = system.restart().await;
             }
             Either3::Second(request) => match request {

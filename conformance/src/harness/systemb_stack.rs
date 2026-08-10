@@ -1158,6 +1158,7 @@ impl StackDefinition for IpcConformanceTestStack {
     type State = ConformanceState;
     type StateInit = ConformanceStateInit;
     type Mem = ConformanceMemoryMap;
+    type Storage = &'static crate::dut_common::DutConfigStore<Self>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         match init {

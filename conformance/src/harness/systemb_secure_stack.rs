@@ -11,8 +11,8 @@
 use core::cell::RefCell;
 
 use super::fixture_common::{
-    CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, CertificationObjectAugment, ConformanceSecureStorage,
-    GetrandomRng, SECURE_FDSK, ShmSiatStore, TestParameters, sec_table_sizes,
+    CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, CertificationObjectAugment, GetrandomRng, SECURE_FDSK,
+    ShmSiatStore, TestParameters, sec_table_sizes,
 };
 use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, WithSecureGoSend};
 use zweidraehte_device::layers::application::services::{PropertyExtValueService, StandardAlServices};
@@ -566,7 +566,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
     // The stores struct (here: just the shared-memory SIAT store), wired onto
     // the LayerContext so the secure layers pull it out through
     // `HasSeqStore`.
-    type Storage = &'static ConformanceSecureStorage;
+    type Storage = &'static super::fixture_common::DutSecureStorage<Self>;
     type Identity = StaticSecureIdentity;
     type State = SecureConformanceState;
     type StateInit = SecureConformanceStateInit;

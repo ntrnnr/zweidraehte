@@ -29,7 +29,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 
 use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
-use zweidraehte_device::storage::StorageHooks;
+use zweidraehte_device::storage::{HasConfigStore, StorageHooks};
 use zweidraehte_device::{Stack, StackDefinition, SyncOptions, restart::EraseCode};
 
 use crate::harness::framing;
@@ -267,10 +267,16 @@ pub async fn bridge_lifecycle_to_ipc(
 //
 // The two DUT entry-points (`conformance-dut-systemb`, `conformance-dut-systemb-secure`) used
 // to carry ~200 LoC of identical task bodies. They now delegate to the
-// generic helpers below (`handle_ipc_command`, `handle_restart_request`),
-// specialised via `<S as ConformanceStack>`. Each binary still owns its
+// generic helpers below (`handle_ipc_command`), specialised via
+// `<S as ConformanceStack>`. Each binary still owns its
 // `StaticCell`s (embassy tasks and `StackResources` both need monomorphic
-// names), but the command/restart tasks shrink to a handful of lines.
+// names), but the command task shrinks to a handful of lines.
+//
+// A_Restart is *not* handled here: the DUTs run the device stack's own
+// `storage_task`, the same one every firmware target runs, so that its
+// restart ordering is under test rather than a look-alike. See
+// [`DutConfigStore`] and [`DutSystemControl`] for the two pieces that task
+// needs from us.
 
 /// Stack-specific glue each conformance DUT binary must supply.
 ///
@@ -370,28 +376,98 @@ pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, s
     }
 }
 
-/// Handle one `A_Restart` request delivered by the stack.
+// ============================================================================
+// The two pieces the device stack's generic `storage_task` needs from a DUT
+// ============================================================================
+//
+// A_Restart is handled by `zweidraehte_device::storage::storage_task` — the
+// same task every firmware target runs — rather than by a look-alike here.
+// That is the whole point: the ordering it implements (drain the outbox
+// *before* erasing, so the A_Restart_Response is stamped with the pre-erase
+// individual address) is exactly what regressed once in production while
+// this crate's own restart handler, which had always got it right, kept the
+// suite green. Running the real task puts that ordering under test.
+//
+// The task is generic over two device-supplied pieces, which is what the
+// rest of this section provides:
+//
+// * `D::Storage`, for `HasConfigStore` (load/save the config blob) and
+//   `StorageHooks` (erase + the restart announcement) — `DutConfigStore`,
+//   wrapped by `DutSecureStorage` on the secure DUTs, which also carry a
+//   sequence/SIAT store.
+// * `SystemControl`, for the reset itself — `DutSystemControl`.
+
+/// The DUT's config store: the shared-memory snapshot, behind the interface
+/// the storage task expects.
 ///
-/// The application layer already pushed the `A_Restart_Response` to the
-/// outbox before this returns, but it hasn't traversed the router yet.
-/// If we mutate inner state right away — e.g. `FactoryReset` wipes the
-/// individual address — the response picks up `src = FF FF` on its way
-/// out. Wait for the outbox to drain via
-/// [`Stack::await_outbox_drained`] before applying the erase code and
-/// flushing state.
-pub async fn handle_restart_request<S: ConformanceStack>(
-    stack: Stack<'static, S>,
+/// A DUT "reboots" by exiting and being respawned by the runner, so its
+/// durable medium is the shm region the parent maps and the child inherits —
+/// [`flush_state`] / `SharedMemory::read_state`, the same calls the exit
+/// paths have always used, reached through [`HasConfigStore`] instead of
+/// directly.
+pub struct DutConfigStore<S: ConformanceStack> {
     shm: &'static ShmCell,
-    erase_code: EraseCode,
-) {
-    if matches!(erase_code, EraseCode::Other(_)) {
-        return;
+    _marker: core::marker::PhantomData<S>,
+}
+
+impl<S: ConformanceStack> DutConfigStore<S> {
+    pub const fn new(shm: &'static ShmCell) -> Self {
+        Self { shm, _marker: core::marker::PhantomData }
+    }
+}
+
+impl<S: ConformanceStack> HasConfigStore for DutConfigStore<S> {
+    type State = S::State;
+    type Config = S::DeviceConfig;
+
+    fn save_config(&self, state: &Self::State) {
+        flush_state(self.shm, &S::to_device_config(state));
     }
 
-    stack.await_outbox_drained().await;
+    fn load_config(&self) -> Option<Self::Config> {
+        // SAFETY: single-threaded executor.
+        unsafe { self.shm.get() }.read_state().ok().flatten()
+    }
+}
 
-    let reason = ExitReason::Restart { erase_code: u8::from(erase_code) };
-    flush_and_exit::<S>(stack, shm, Some(erase_code), reason).await;
+impl<S: ConformanceStack> StorageHooks for DutConfigStore<S> {
+    /// Nothing durable beyond the config blob, which the following
+    /// `save_config` rewrites from the freshly-erased state.
+    fn erase(&self, _code: EraseCode) {}
+
+    /// Tell the runner the DUT is going away — while the frames from this
+    /// step are still in flight.
+    ///
+    /// This is why `StorageHooks` has an `on_restart` at all. The runner
+    /// learns of an exit from a `DutMessage::Exiting` that the IPC link
+    /// layer writes back-to-back with the step's `StepComplete`, and it
+    /// only polls ~2 ms after `StepComplete` for it. Announcing any later
+    /// — after the erase, the save and the settle delay — would land long
+    /// after the link layer had already emitted `StepComplete` alone, and
+    /// the runner would carry on writing to a socket whose peer then
+    /// vanishes. So the announcement has to happen here, at the top of the
+    /// restart arm, which is precisely where the storage task calls this.
+    async fn on_restart(&self, code: EraseCode) {
+        crate::harness::ipc::announce_exit(ExitReason::Restart { erase_code: u8::from(code) }).await;
+    }
+}
+
+/// The DUT's "reset line": exit the process, and let the runner respawn us.
+///
+/// The announcement and the wait for the link layer to flush already
+/// happened in [`DutConfigStore::on_restart`]; all that is left is to
+/// half-close the socket (so the runner sees EOF) and go. By this point the
+/// storage task has erased the state and saved the snapshot the next
+/// incarnation will boot from.
+pub struct DutSystemControl;
+
+impl zweidraehte_platform::SystemControl for DutSystemControl {
+    type Error = core::convert::Infallible;
+
+    async fn restart(&mut self) -> Result<!, Self::Error> {
+        crate::harness::ipc::shutdown_ipc_socket();
+        std::process::exit(0)
+    }
 }
 
 async fn flush_and_exit<S: ConformanceStack>(

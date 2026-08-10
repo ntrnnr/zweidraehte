@@ -595,7 +595,9 @@ impl CertificationObjectAugment {
 
 use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
 use zweidraehte_device::storage::region::FramSiatRegion;
-use zweidraehte_device::storage::{HasSeqStore, SiatStore, seq};
+use zweidraehte_device::storage::{HasConfigStore, HasSeqStore, SiatStore, seq};
+
+use crate::dut_common::{ConformanceStack, DutConfigStore};
 
 /// An [`ByteIo`] over the `mmap(MAP_SHARED)` seq region, addressed by a raw
 /// pointer.
@@ -676,12 +678,64 @@ impl HasSeqStore for ConformanceSecureStorage {
 }
 
 // The storage-side half of a restart erase, exactly what the macro-emitted
-// handle composes for a `seq:` store on real devices. The DUT's restart path
-// (`dut_common::flush_and_exit`) drives it through the same trait the
-// generic storage task uses.
+// handle composes for a `seq:` store on real devices. The DUT runs the
+// generic storage task, so this is driven through the same trait, from the
+// same call site, as on a real device.
 impl StorageHooks for ConformanceSecureStorage {
     fn erase(&self, code: EraseCode) {
         seq::erase_seq_on_factory_reset(&mut *self.seq.borrow_mut(), code);
+    }
+}
+
+/// The secure DUT's complete stores handle: the shm config snapshot plus the
+/// shm SIAT/sequence store.
+///
+/// The conformance twin of `SecureStorage<C, S>` on a real device, and split
+/// the same way — a config half and a seq half — because the storage task
+/// wants both behind one `D::Storage`. It exists as a wrapper rather than as
+/// extra impls on [`ConformanceSecureStorage`] because that struct is shared
+/// verbatim by the System B and System 7 secure DUTs, while the config half
+/// is parameterised by which stack it is persisting.
+pub struct DutSecureStorage<S: ConformanceStack> {
+    config: DutConfigStore<S>,
+    secure: &'static ConformanceSecureStorage,
+}
+
+impl<S: ConformanceStack> DutSecureStorage<S> {
+    pub const fn new(config: DutConfigStore<S>, secure: &'static ConformanceSecureStorage) -> Self {
+        Self { config, secure }
+    }
+}
+
+impl<S: ConformanceStack> HasConfigStore for DutSecureStorage<S> {
+    type State = <DutConfigStore<S> as HasConfigStore>::State;
+    type Config = <DutConfigStore<S> as HasConfigStore>::Config;
+
+    fn save_config(&self, state: &Self::State) {
+        self.config.save_config(state);
+    }
+
+    fn load_config(&self) -> Option<Self::Config> {
+        self.config.load_config()
+    }
+}
+
+impl<S: ConformanceStack> HasSeqStore for DutSecureStorage<S> {
+    type Seq = ShmSiatStore;
+    fn seq_store(&self) -> &core::cell::RefCell<ShmSiatStore> {
+        self.secure.seq_store()
+    }
+}
+
+impl<S: ConformanceStack> StorageHooks for DutSecureStorage<S> {
+    /// The sequence store's erase — the config half has nothing durable of
+    /// its own beyond the snapshot the following save rewrites.
+    fn erase(&self, code: EraseCode) {
+        self.secure.erase(code);
+    }
+
+    async fn on_restart(&self, code: EraseCode) {
+        self.config.on_restart(code).await;
     }
 }
 

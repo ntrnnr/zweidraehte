@@ -11,8 +11,8 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::dut_common::{self, CommandChannel, ShmCell};
-use zweidraehte_conformance::harness::fixture_common::set_seq_shm_ptr;
+use zweidraehte_conformance::dut_common::{self, CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
+use zweidraehte_conformance::harness::fixture_common::{DutSecureStorage, set_seq_shm_ptr};
 use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
 use zweidraehte_conformance::harness::shm::SharedMemory;
 use zweidraehte_conformance::harness::system7_secure_stack::{
@@ -20,6 +20,7 @@ use zweidraehte_conformance::harness::system7_secure_stack::{
     state_init_from_snapshot,
 };
 
+use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
 use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
@@ -33,6 +34,18 @@ static INJECTION_BUFFERS: StaticCell<[[u8; device_info::BUFFER_SIZE]; 16]> = Sta
 static INJECTION_BUFFER_MANAGER: StaticCell<BufferManager<16>> = StaticCell::new();
 static COMMAND_CHANNEL: StaticCell<CommandChannel> = StaticCell::new();
 static SHM: StaticCell<ShmCell> = StaticCell::new();
+static STORAGE: StaticCell<DutSecureStorage<IpcSystem7SecureTestStack>> = StaticCell::new();
+
+// The device stack's own persistence task — the same one every firmware
+// target runs, which is the point: its restart ordering is what we want
+// under test. `DutSystemControl` exits the process in place of pulling a
+// reset line, and the runner respawns us from the snapshot the task just
+// saved.
+zweidraehte_device::storage_task! {
+    device: IpcSystem7SecureTestStack,
+    system: DutSystemControl,
+    guard: NoSaveGuard,
+}
 
 // ============================================================================
 // Embassy tasks
@@ -52,14 +65,6 @@ async fn handle_commands(
     loop {
         let cmd = commands.receive().await;
         dut_common::handle_ipc_command::<IpcSystem7SecureTestStack>(stack, shm, cmd).await;
-    }
-}
-
-#[embassy_executor::task]
-async fn handle_restarts(stack: Stack<'static, IpcSystem7SecureTestStack>, shm: &'static ShmCell) {
-    loop {
-        let request = stack.receive_restart_request().await;
-        dut_common::handle_restart_request::<IpcSystem7SecureTestStack>(stack, shm, request.erase_code).await;
     }
 }
 
@@ -86,10 +91,11 @@ async fn main(spawner: Spawner) {
     // as the System B secure DUT. SAFETY: the region is owned by this
     // process for the duration of the program.
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let storage = zweidraehte_conformance::harness::fixture_common::init_secure_storage();
+    let secure_storage = zweidraehte_conformance::harness::fixture_common::init_secure_storage();
     let state_init = state_init_from_snapshot(snapshot);
 
     let shm = SHM.init(ShmCell::new(shm));
+    let storage = &*STORAGE.init(DutSecureStorage::new(DutConfigStore::new(shm), secure_storage));
 
     let buffers = INJECTION_BUFFERS.init([[0u8; device_info::BUFFER_SIZE]; 16]);
     let buffer_manager = INJECTION_BUFFER_MANAGER.init(unsafe { BufferManager::new(buffers) });
@@ -127,7 +133,7 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(run_stack(runner)).expect("spawn stack runner");
     spawner.spawn(handle_commands(stack, command_channel, shm)).expect("spawn command handler");
-    spawner.spawn(handle_restarts(stack, shm)).expect("spawn restart handler");
+    spawner.spawn(storage_task(stack)).expect("storage_task spawnable once");
 
     loop {
         Timer::after(Duration::from_secs(3600)).await;

@@ -819,7 +819,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     type CO = System7SecureComObjects;
     type LLB = super::ipc::IpcLinkLayerBuilder;
     type ES = SecureS7ExtensionState;
-    type Storage = &'static super::fixture_common::ConformanceSecureStorage;
+    type Storage = &'static super::fixture_common::DutSecureStorage<Self>;
     type Identity = StaticSecureIdentity;
     type State = SecureSystem7State;
     type StateInit = System7StateInit<StaticSecureIdentity, System7SecureDutConfig, SecureResources<Tp1ExtensionState>>;

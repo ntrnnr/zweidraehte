@@ -211,6 +211,14 @@ impl<T: HasConfigStore> HasConfigStore for &T {
 ///   overridden only by [`SecureIpStorage`]. Everywhere else the no-op
 ///   defaults stand — and stay dead code, because only the KNX/IP Secure
 ///   link layer produces mc_timer traffic.
+/// - [`on_restart`](Self::on_restart): overridden only where a restart is
+///   *observed* from outside the device. Everywhere else the no-op default
+///   stands.
+// `async fn` (not `-> impl Future + Send`) for `on_restart`, for the same
+// reason as `SaveGuard`: the storage task runs on a single-threaded embassy
+// executor, so the lint's suggested workaround would impose a `Send` bound
+// we'd then have to fight.
+#[allow(async_fn_in_trait)]
 pub trait StorageHooks {
     /// Apply a restart erase code to the durable regions.
     fn erase(&self, code: EraseCode);
@@ -222,6 +230,24 @@ pub trait StorageHooks {
     /// Persist a watermark (vanishes without an mc_timer store; a backend
     /// failure is logged and swallowed — see the module-level error policy).
     fn save_mc_timer(&self, _value: u64) {}
+
+    /// Announce an impending restart: called at the top of the storage
+    /// task's restart arm, after the outbox has drained and before any
+    /// erase touches state.
+    ///
+    /// A device that simply resets has nothing to announce, so the default
+    /// is a no-op. It exists for devices whose restart is *observed* by an
+    /// external party that has to be told while the outgoing frames are
+    /// still in flight, rather than after the device has stopped serving
+    /// the bus. The conformance DUTs are the case in point: their harness
+    /// couples the "I am exiting" notification onto the in-flight step
+    /// reply, so announcing any later than here is indistinguishable from
+    /// the DUT dying unannounced.
+    ///
+    /// Called before [`erase`](Self::erase) so the announcement carries
+    /// pre-erase state; the erase code is passed for devices that report
+    /// *why* they are restarting.
+    async fn on_restart(&self, _code: EraseCode) {}
 }
 
 // Forwards every method — including the defaulted ones, which would
@@ -235,6 +261,9 @@ impl<T: StorageHooks> StorageHooks for &T {
     }
     fn save_mc_timer(&self, value: u64) {
         (*self).save_mc_timer(value);
+    }
+    async fn on_restart(&self, code: EraseCode) {
+        (*self).on_restart(code).await;
     }
 }
 
