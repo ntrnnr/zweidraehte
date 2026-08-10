@@ -85,7 +85,7 @@ pub struct Tp1Augment<'a> {
         pdt = PDT_Generic01,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = 3, wl = 3,
+        rl = Runtime, wl = Runtime,
         intercepts,
         read = |this: &Self| [this.state.max_retry_count.get()],
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {

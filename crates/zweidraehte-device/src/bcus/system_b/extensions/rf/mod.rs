@@ -95,7 +95,7 @@ pub struct RfAugment<'a> {
 
     // PID 1 — OBJECT_TYPE: mandatory on every augment-provided object.
     #[io(pid = pid::OBJECT_TYPE, pdt = PDT_UnsignedInt, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
          read = |_this: &Self| -> [u8; 2] {
              let v: u16 = InterfaceObjectType::RFMedium.into();
              v.to_be_bytes()
@@ -104,7 +104,7 @@ pub struct RfAugment<'a> {
 
     // PID 56 — RF_DOMAIN_ADDRESS: 6-octet, RW, non-volatile.
     #[io(pid = pid::rf::RF_DOMAIN_ADDRESS, pdt = PDT_Generic06, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| -> [u8; 6] { this.state.rf_domain_address.get() },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              if data.len() < 6 {

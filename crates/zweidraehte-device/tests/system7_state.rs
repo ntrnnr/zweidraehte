@@ -587,7 +587,7 @@ mod go_table_object {
     use zweidraehte_device::bcus::system_b::GroupObjectTableAugment;
     use zweidraehte_device::objects::interface::pid;
     use zweidraehte_device::service::Augment;
-    use zweidraehte_proto::access::{AccessLevel, AccessLevelSpec};
+    use zweidraehte_proto::access::AccessLevel;
     use zweidraehte_proto::dpt::InterfaceObjectType;
 
     type Aug = GroupObjectTableAugment;
@@ -663,7 +663,7 @@ mod go_table_object {
     #[test]
     fn levels_stay_symbolic_until_a_device_resolves_them() {
         let (_, d) = Aug::DESCRIPTORS.iter().find(|(_, d)| d.pid == pid::OBJECT_TYPE).expect("declared");
-        assert_eq!(d.read_level, AccessLevelSpec::Audience(AccessLevel::Runtime));
+        assert_eq!(d.read_level, AccessLevel::Runtime);
         assert_eq!(d.for_levels(4).read_level, 3);
         assert_eq!(d.for_levels(16).read_level, 15);
     }

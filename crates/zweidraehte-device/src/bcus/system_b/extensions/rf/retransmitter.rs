@@ -243,7 +243,7 @@ pub struct RfRetransmitterAugment<'a> {
     // PID 57 — RF_RETRANSMITTER on the RF Medium Object: 1-bit flag, RW.
     // Contributed to the RF Medium Object that `RfAugment` provides.
     #[io(pid = pid::rf::RF_RETRANSMITTER, pdt = PDT_BinaryInformation, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          target = InterfaceObjectType::RFMedium, intercepts,
          read = |this: &Self| -> [u8; 1] { [this.cells.enabled.get() as u8] },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
@@ -257,7 +257,7 @@ pub struct RfRetransmitterAugment<'a> {
 
     // PID 74 — RF_REPEAT_COUNTER on the Device Object: 1 octet, RW (intercept).
     #[io(pid = pid::device::RF_REPEAT_COUNTER, pdt = PDT_UnsignedChar, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          target = InterfaceObjectType::Device, intercepts,
          read = |this: &Self| -> [u8; 1] { [this.cells.rc_limit.get()] },
          write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {

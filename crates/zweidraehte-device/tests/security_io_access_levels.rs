@@ -18,7 +18,7 @@ use zweidraehte_device::objects::interface::pid;
 use zweidraehte_device::security::SecurityAugment;
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
-use zweidraehte_proto::access::{AccessLevel, AccessLevelSpec};
+use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::dpt::InterfaceObjectType;
 use zweidraehte_proto::properties::PropertyDescriptor;
 
@@ -58,7 +58,7 @@ fn descriptor(prop_id: u16, levels: u8) -> PropertyDescriptor {
 }
 
 /// The audience a spec names, before resolution.
-fn spec(prop_id: u16) -> AccessLevelSpec {
+fn spec(prop_id: u16) -> AccessLevel {
     SecurityAugment::<'static, Seq, 1, 0, 1>::DESCRIPTORS
         .iter()
         .find(|(t, d)| *t == InterfaceObjectType::Security && d.pid == prop_id)
@@ -75,7 +75,7 @@ fn open_reads_name_the_runtime_audience() {
     // The invariant is the audience, not the number: naming it is what
     // lets the same object be hosted by either profile.
     for prop_id in OPEN_READ_PIDS {
-        assert_eq!(spec(prop_id), AccessLevelSpec::Audience(AccessLevel::Runtime), "PID {prop_id}");
+        assert_eq!(spec(prop_id), AccessLevel::Runtime, "PID {prop_id}");
     }
 }
 

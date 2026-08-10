@@ -34,31 +34,41 @@ use syn::{Expr, Field, Path, parse::Parse, spanned::Spanned};
 const AUDIENCE_NAMES: [&str; 5] =
     ["SystemManufacturer", "ProductManufacturer", "Configuration", "Controller", "Runtime"];
 
-/// An access level as written in `#[io(rl = ..., wl = ...)]`.
-pub(crate) enum LevelAttr {
-    /// A bare audience name from [`AUDIENCE_NAMES`]. Resolved against the
-    /// hosting profile's level count.
-    Audience(syn::Ident),
-    /// Anything else: a number, or a const expression evaluating to one.
-    /// Exact for levels 0-2 (identical in both models); a literal `3` is
-    /// only right on a 4-level profile.
-    Literal(Expr),
-}
+/// An access level as written in `#[io(rl = ..., wl = ...)]`: one of the
+/// five audience names, and nothing else.
+///
+/// A number is rejected rather than accepted-and-resolved, because there
+/// is no rule that turns one back into an audience: Annex A prints both
+/// `Controller` and `Runtime` as `3`, so a `3` in the source cannot say
+/// which of the two it meant, and the two differ on a 16-level profile.
+/// The number is recoverable from the audience; the audience is not
+/// recoverable from the number.
+pub(crate) struct LevelAttr(pub(crate) syn::Ident);
 
 impl LevelAttr {
-    fn parse(expr: Expr) -> Self {
+    fn parse(expr: Expr) -> syn::Result<Self> {
         // A bare single-segment path whose name is one of the five
-        // audiences. Anything qualified or numeric falls through to
-        // `Literal`, so existing `rl = 3` sites are untouched.
+        // audiences. Anything else — a number, a qualified path — is an
+        // error that says what to write instead.
         if let Expr::Path(p) = &expr
             && p.qself.is_none()
             && p.path.segments.len() == 1
             && let Some(seg) = p.path.segments.first()
             && AUDIENCE_NAMES.contains(&seg.ident.to_string().as_str())
         {
-            return Self::Audience(seg.ident.clone());
+            return Ok(Self(seg.ident.clone()));
         }
-        Self::Literal(expr)
+        Err(syn::Error::new_spanned(
+            &expr,
+            format!(
+                "`rl`/`wl` take an access-level audience, one of: {}.\n\
+                 A number cannot be used: 06 Profiles Annex A prints its levels in the 4-level \
+                 notation whatever the mask's own model (§A.1.2.1 NOTE 2), so its `3` stands for \
+                 both `Controller` and `Runtime` — and those are 3 and 15 on a 16-level profile. \
+                 Name the audience (03/04/01 §4.3.2.2 Table 1) and it resolves per profile.",
+                AUDIENCE_NAMES.join(", ")
+            ),
+        ))
     }
 }
 
@@ -301,9 +311,9 @@ impl PropertyAttrs {
                 } else if key.is_ident("policy") {
                     policy = Some(meta.value()?.parse()?);
                 } else if key.is_ident("rl") {
-                    rl = Some(LevelAttr::parse(meta.value()?.parse()?));
+                    rl = Some(LevelAttr::parse(meta.value()?.parse()?)?);
                 } else if key.is_ident("wl") {
-                    wl = Some(LevelAttr::parse(meta.value()?.parse()?));
+                    wl = Some(LevelAttr::parse(meta.value()?.parse()?)?);
                 } else if key.is_ident("array") {
                     // `array(max = <expr>)` — `<expr>` evaluates to a
                     // `u16`. A bare integer literal is the common case

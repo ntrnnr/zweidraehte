@@ -41,6 +41,10 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
         Self { table, _spec: PhantomData }
     }
 
+    /// Raw numbers rather than audiences, for the same reason as the
+    /// System B twin (`objects::interface::TableInterfaceObject`): this
+    /// table is built only by System 7, so there is no profile left to
+    /// resolve against. The 15s are the 16-level model's "everyone".
     fn property_descriptors() -> [PropertyDescriptor; 5] {
         [
             PropertyDescriptor::new(

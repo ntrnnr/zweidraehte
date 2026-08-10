@@ -330,7 +330,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
         pdt = PDT_Generic16,
         access = WO,
         policy = AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
-        rl = 0, wl = 2,
+        rl = SystemManufacturer, wl = Configuration,
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
             if data.len() < 16 {
                 return Err(PropertyError::BufferTooSmall);
@@ -357,7 +357,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
         pdt = PDT_Generic16,
         access = WO,
         policy = AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
-        rl = 0, wl = 2,
+        rl = SystemManufacturer, wl = Configuration,
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
             if data.len() < 16 {
                 return Err(PropertyError::BufferTooSmall);
@@ -377,7 +377,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
         pdt = PDT_Generic16,
         access = WO,
         policy = AccessPolicy::TOOL_ONLY_CONFIDENTIAL, // 008/008
-        rl = 0, wl = 2,
+        rl = SystemManufacturer, wl = Configuration,
         array(max = MAX_PW as u16),
         manual,
     )]
@@ -390,7 +390,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::new(0x15D, 0x15D),
-        rl = 3, wl = 2,
+        rl = Runtime, wl = Configuration,
         manual,
     )]
     _secured_service_families_io: (),
@@ -401,7 +401,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
         pdt = PDT_UnsignedInt,
         access = RW,
         policy = AccessPolicy::new(0x15D, 0x15D),
-        rl = 3, wl = 2,
+        rl = Runtime, wl = Configuration,
         read = |this: &Self| -> [u8; 2] { this.state.multicast_latency_tolerance_ms.get().to_be_bytes() },
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
             if data.len() < 2 {
@@ -419,7 +419,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
         pdt = PDT_Scaling,
         access = RW,
         policy = AccessPolicy::new(0x15D, 0x15D),
-        rl = 3, wl = 2,
+        rl = Runtime, wl = Configuration,
         read = |this: &Self| -> [u8; 1] { [this.state.sync_latency_fraction.get()] },
         write = |this: &Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
             if data.is_empty() {
@@ -438,7 +438,7 @@ pub struct IpSecureAugment<'a, const MAX_PW: usize, const MAX_TU: usize> {
         pdt = PDT_Generic02,
         access = RW,
         policy = AccessPolicy::TOOL_ONLY, // 00C/00C
-        rl = 2, wl = 2,
+        rl = Configuration, wl = Configuration,
         array(max = MAX_TU as u16),
         manual,
     )]

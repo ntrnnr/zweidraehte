@@ -211,7 +211,7 @@ pub struct TunnellingAugment<'a, const N: usize> {
     // path, which is implemented in `handle_extra_pid_read` /
     // `handle_extra_pid_write` below.
     #[io(pid = pid::ip::ADDITIONAL_INDIVIDUAL_ADDRESSES, pdt = PDT_UnsignedInt, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          array(max = N as u16), manual)]
     _additional_individual_addresses_io: (),
 
@@ -219,8 +219,13 @@ pub struct TunnellingAugment<'a, const N: usize> {
     // lists `15F/04C` (RESTRICTED): the tunnelling-client list is
     // security-sensitive, so plain unlisted reads are forbidden once
     // Security Mode is on.
+    //
+    // The write level is decorative — `PropertyAccess::ReadOnly` is
+    // checked before it in `PropertyDescriptor::can_write` — and stays
+    // at the `Runtime` that Annex A's `3` denotes so the reported
+    // descriptor keeps its current value.
     #[io(pid = pid::ip::TUNNELLING_ADDRESSES, pdt = PDT_UnsignedChar, access = RO,
-         policy = AccessPolicy::RESTRICTED, rl = 3, wl = 3,
+         policy = AccessPolicy::RESTRICTED, rl = Runtime, wl = Runtime,
          array(max = N as u16), manual)]
     _tunnelling_addresses_io: (),
 }

@@ -3,7 +3,7 @@
 use core::fmt;
 
 use crate::AccessContext;
-use crate::access::{AccessLevelSpec, AccessPolicy};
+use crate::access::{AccessLevel, AccessPolicy};
 use crate::dpt::PropertyDataDefinition;
 use crate::messages::apdu::property_ext::PropertyReturnCode;
 
@@ -288,9 +288,9 @@ pub struct PropertyDescriptorSpec {
     /// Access rights
     pub access: PropertyAccess,
     /// Read access level, before resolution.
-    pub read_level: AccessLevelSpec,
+    pub read_level: AccessLevel,
     /// Write access level, before resolution.
-    pub write_level: AccessLevelSpec,
+    pub write_level: AccessLevel,
     /// KNX Data Secure access policy.
     pub policy: AccessPolicy,
 }
@@ -303,8 +303,8 @@ impl PropertyDescriptorSpec {
         pdt_id: u8,
         max_elements: u16,
         access: PropertyAccess,
-        read_level: AccessLevelSpec,
-        write_level: AccessLevelSpec,
+        read_level: AccessLevel,
+        write_level: AccessLevel,
         policy: AccessPolicy,
     ) -> Self {
         Self { pid, pdt_id, max_elements, access, read_level, write_level, policy }

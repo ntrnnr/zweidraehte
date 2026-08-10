@@ -58,6 +58,18 @@ pub const NUM_AUTH_KEYS: usize = 3;
 /// levels 0 to 15 as used in certain Profiles, please refer to [10]"),
 /// so reading a level off Annex A means deciding which of the two
 /// audiences a `3` in that table stands for.
+///
+/// That decision is why a descriptor names an audience and never a
+/// number: the number follows from the audience and the profile, while
+/// the audience does not follow from the number. `#[io(rl = …, wl = …)]`
+/// therefore accepts only these five names — a numeric level is a
+/// compile error, not a legal shorthand.
+///
+/// Naming the audience is necessary for reuse across profiles but not
+/// sufficient for it: a mask's Annex A column may also list a different
+/// *number* for the same property, as 0705h does for
+/// `PID_DEVICE_CONTROL` where 07B0h leaves it free. Reusing an object on
+/// a new mask still means reading that mask's column.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AccessLevel {
     /// Level 0 in both models. DevEdit/TransApp.
@@ -90,43 +102,6 @@ impl AccessLevel {
             // computes the same number from the other direction: it is
             // the level a connection holds before it authorises.
             Self::Runtime => max_levels - 1,
-        }
-    }
-}
-
-/// How a property descriptor states one of its two access levels before
-/// the profile is known.
-///
-/// An interface object that belongs to one profile can write the number
-/// straight into its descriptor, because its profile is fixed. An object
-/// that is *shared* between profiles — the Security Interface Object is
-/// the one we have — cannot: it has to say which audience it means and
-/// let the device resolve it (see [`AccessLevel`]).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AccessLevelSpec {
-    /// A named audience from 03/04/01 Table 1. Resolves per profile.
-    Audience(AccessLevel),
-    /// A number read off 06 Profiles Annex A whose audience has not been
-    /// determined.
-    ///
-    /// Levels 0, 1 and 2 mean the same thing in both authorisation
-    /// models, so a literal is exact for them. A literal `3` is only
-    /// correct on a 4-level profile — Annex A writes both
-    /// [`Controller`](AccessLevel::Controller) and
-    /// [`Runtime`](AccessLevel::Runtime) as `3` (§A.1.2.1
-    /// NOTE 2), and they part company at 16 levels. Reusing such an
-    /// object on a 16-level profile means going back to Annex A and
-    /// naming the audience.
-    Literal(u8),
-}
-
-impl AccessLevelSpec {
-    /// Resolve to the wire value for a profile with `max_levels`
-    /// authorisation levels.
-    pub const fn for_levels(self, max_levels: u8) -> u8 {
-        match self {
-            Self::Audience(level) => level.for_levels(max_levels),
-            Self::Literal(n) => n,
         }
     }
 }

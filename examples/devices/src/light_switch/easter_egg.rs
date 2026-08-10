@@ -65,7 +65,7 @@ pub struct EasterEggAugment {
         pdt = PDT_Function,
         access = RO,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = 3, wl = 0,
+        rl = Runtime, wl = SystemManufacturer,
         intercepts,
         function_command = |_this: &Self, _ctx, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
             // Responses must fit in MAX_FUNCTION_PROPERTY_RESPONSE (64 bytes).

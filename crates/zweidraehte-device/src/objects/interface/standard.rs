@@ -76,14 +76,26 @@ use zweidraehte_proto::access::AccessPolicy;
 // Access levels per Profiles spec Annex A.2.3, covering System B masks
 // 07B0h / 17B0h / 57B0h. Where the three masks disagree we take the union
 // (most permissive) so the same struct can back any System B device.
+//
+// Levels name their audience ([`AccessLevel`]) rather than the number
+// Annex A prints, because Annex A's tables are in the 4-level notation
+// whatever the mask's own model (§A.1.2.1 NOTE 2) and its `3` therefore
+// stands for two different audiences. Every `3` here is `Runtime` — the
+// level a connection holds before it authorises, so a read or write
+// granted at 3 is one granted to everybody, which is what these rows
+// mean and what stays true at 16 levels.
+//
 // Notable choices:
-//  - PID 14 PID_DEVICE_CONTROL: RW with `wl=3`. Spec lists `3/3` for
-//    07B0h/17B0h and `3/x` (RO) for 57B0h, but ETS writes the verify-mode
-//    bit during commissioning even on 57B0h, so the property must stay
-//    writable in practice.
-//  - PID 78 PID_HARDWARE_TYPE: RW with `wl=1` (matches 07B0h/17B0h
-//    `(3/1)`). 57B0h spec is `(3/3)`, but the stricter `wl=1` is a safe
-//    common denominator since any caller with wl=3 satisfies wl=1.
+//  - PID 14 PID_DEVICE_CONTROL: RW, written at `Runtime`. Spec lists
+//    `3/3` for 07B0h/17B0h and `3/x` (RO) for 57B0h, but ETS writes the
+//    verify-mode bit during commissioning even on 57B0h, so the property
+//    must stay writable in practice. Note System 7's own device object
+//    writes it at `ProductManufacturer`: that is 0705h's Annex A column
+//    listing a stricter *number*, not a different reading of this one.
+//  - PID 78 PID_HARDWARE_TYPE: RW at `ProductManufacturer` (matches
+//    07B0h/17B0h `(3/1)`). 57B0h spec is `(3/3)`, but the stricter
+//    level 1 is a safe common denominator since any caller who
+//    satisfies 3 satisfies 1.
 //  - PID 56 PID_MAX_APDU_LENGTH: see the per-field note for the OPEN
 //    policy override.
 //  - PID 71 PID_IO_LIST: not declared here; served by the System B
@@ -100,27 +112,27 @@ pub struct DeviceObject<'a, S: StackState> {
     pub state: &'a S,
 
     #[io(pid = pid::DEVICE_CONTROL, pdt = DeviceControl, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
     pub device_control: DeviceControl,
 
     #[io(pid = pid::ORDER_INFO, pdt = PDT_Generic10, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer)]
     pub order_info: PDT_Generic10,
 
     #[io(pid = pid::VERSION, pdt = PDT_Version, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer)]
     pub version: PDT_Version,
 
     #[io(pid = pid::device::HARDWARE_TYPE, pdt = PDT_Generic06, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 1)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = ProductManufacturer)]
     pub hardware_type: PDT_Generic06,
 
     #[io(pid = pid::device::DEVICE_DESCRIPTOR, pdt = PDT_UnsignedInt, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer)]
     pub device_descriptor: PDT_UnsignedInt,
 
     #[io(pid = pid::device::ROUTING_COUNT, pdt = RoutingCount, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
     pub routing_count: RoutingCount,
 
     // ----- Virtual properties (unit fields, erased; closures take `&Self`) -----
@@ -129,7 +141,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // layer (via property read/write) and the link layer (for discovery
     // responses) see the same value.
     #[io(pid = pid::device::PROGMODE, pdt = ProgrammingMode, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| [if this.state.is_programming_mode() { 0x01u8 } else { 0x00u8 }],
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              // ProgrammingMode is a 1-byte property; reject zero-length writes.
@@ -140,13 +152,13 @@ pub struct DeviceObject<'a, S: StackState> {
     progmode: (),
 
     #[io(pid = pid::SERIAL_NUMBER, pdt = PDT_Generic06, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| *this.state.serial_number())]
     serial_number: (),
 
     // Manufacturer ID is derived from serial number bytes 0-1.
     #[io(pid = pid::MANUFACTURER_ID, pdt = PDT_UnsignedInt, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| { let sn = this.state.serial_number(); [sn[0], sn[1]] })]
     manufacturer_id: (),
 
@@ -162,7 +174,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // PropertyAccess level, so the `1FF` write bit for unlisted
     // sec-off is not exploitable.
     #[io(pid = pid::device::MAX_APDU_LENGTH, pdt = PDT_UnsignedInt, access = RO,
-         policy = AccessPolicy::OPEN, rl = 3, wl = 0,
+         policy = AccessPolicy::OPEN, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| this.state.max_apdu_length().to_be_bytes())]
     max_apdu_length: (),
 
@@ -174,7 +186,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // workspace default `3FF/0CC` is that role-authenticated clients
     // are denied even read access in Security Mode.
     #[io(pid = pid::device::SUBNET_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
-         policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = 3, wl = 0,
+         policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| {
              let addr = this.state.individual_address();
              [(addr.area() << 4) | addr.line()]
@@ -185,7 +197,7 @@ pub struct DeviceObject<'a, S: StackState> {
     // AN193; together they form the device's individual address and
     // share the same security profile.
     #[io(pid = pid::device::DEVICE_ADDRESS, pdt = PDT_UnsignedChar, access = RO,
-         policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = 3, wl = 0,
+         policy = AccessPolicy::OPEN_OFF_TOOL_ON, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| [this.state.individual_address().device()])]
     device_address: (),
 }
@@ -278,6 +290,11 @@ impl<'a, S: StackState> DeviceObject<'a, S> {
 // Base objects have no explicit access policies in the Profiles spec —
 // READ_OPEN_WRITE_TOOL (3FF/0CC) is the implicit default. The RESTRICTED
 // policy only applies to the Security IO's LOAD_STATE_CONTROL (§9.1.2.6.4).
+//
+// Every level Annex A prints as `3` is written here as the `Runtime`
+// audience, for the reason given on the Device Object above. System 7's
+// twin object restricts the two state controls to `ProductManufacturer`
+// — that is 0705h's column, not a re-reading of 07B0h's.
 #[interface_object(object_type = InterfaceObjectType::ApplicationProgram)]
 pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     pub app: &'a RefCell<T>,
@@ -287,21 +304,21 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     pub notifier: &'a dyn DeviceModelNotifier,
 
     #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
     pub program_version: PDT_Generic05,
     // PEI_TYPE on the Application Program Object is the PEI type *required*
     // by the program (distinct from the device-wide PEI_TYPE on the Device
     // Object). Spec Annex A.2.6 lists it as `3/3` (mandatory RW) for all
     // System B masks — ETS writes it during programming.
     #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
     pub pei_type: PDT_UnsignedChar,
 
     // Load- and Run-state machines are accessed through the application
     // table behind a `RefCell`. Writes intercept LSM/RSM transitions, fan
     // out RunEvents, and echo back the new state byte (`WriteResponse::Data`).
     #[io(pid = pid::LOAD_STATE_CONTROL, pdt = PDT_Control, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| this.app.borrow().read_lsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let action = this.app.borrow_mut().write_lsm(data, Some(this.alloc_address));
@@ -318,7 +335,7 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     load_state_control: (),
 
     #[io(pid = pid::RUN_STATE_CONTROL, pdt = PDT_Control, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| this.app.borrow().read_rsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let run_action = this.app.borrow_mut().write_rsm(data);
@@ -330,15 +347,22 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     run_state_control: (),
 
     #[io(pid = pid::TABLE_REFERENCE, pdt = PDT_UnsignedLong, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| this.app.borrow().table_reference().to_be_bytes())]
     table_reference: (),
 
     // PID_MCB_TABLE — memory-control block (8 bytes, PDT_GENERIC_08).
     // `mcb_bytes()` returns `&[u8]`, so copy into a sized array for the
     // closure's `[u8; 8]` return slot. Trailing bytes are zero-padded.
+    //
+    // The write level is decorative: `PropertyAccess::ReadOnly` is the
+    // first term of `PropertyDescriptor::can_write`, so no write ever
+    // reaches the level. It keeps the `Runtime` that Annex A's `3`
+    // stands for, rather than the `SystemManufacturer` the other RO
+    // properties use, only so the reported descriptor keeps answering
+    // the number it answers today.
     #[io(pid = pid::MCB_TABLE, pdt = PDT_Generic08, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| -> [u8; 8] {
              let app = this.app.borrow();
              let src = app.mcb_bytes();
@@ -353,7 +377,7 @@ pub struct ApplicationProgramObject<'a, T: HasLoadStateMachine + HasRunStateMach
     // (20.011). Reads `0` (no fault) whenever the LSM is not in `Err`,
     // see `HasLoadStateMachine::last_error_code`.
     #[io(pid = pid::ERROR_CODE, pdt = PDT_UnsignedChar, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| [this.app.borrow().last_error_code()])]
     error_code: (),
 }
@@ -433,7 +457,8 @@ impl<'a, T: HasLoadStateMachine + HasRunStateMachine> ApplicationProgramObject<'
 // Access levels per Profiles spec Annex A.2.7. The Interface Program
 // Object is only listed for masks 07B0h and 17B0h; on 57B0h (System B
 // IP) it is absent from the spec entirely. The access levels here
-// match those two masks.
+// match those two masks, with Annex A's `3` written as the `Runtime`
+// audience for the reason given on the Device Object above.
 #[interface_object(object_type = InterfaceObjectType::InterfaceProgram)]
 pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     pub pei: &'a RefCell<T>,
@@ -450,21 +475,21 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     // programming, so the field has to accept writes even though the
     // PEI program itself has no runtime side effects.
     #[io(pid = pid::PROGRAM_VERSION, pdt = PDT_Generic05, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
     pub program_version: PDT_Generic05,
 
     // Spec Annex A.2.7 lists PEI_TYPE as `3/(3)` — mandatory, with the
     // write level optional. We follow the Application Program Object
     // and expose it as RW so ETS can stamp the required PEI type.
     #[io(pid = pid::PEI_TYPE, pdt = PDT_UnsignedChar, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3)]
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime)]
     pub pei_type: PDT_UnsignedChar,
 
     // PID_TABLE_REFERENCE — base address of the PEI table allocation,
     // updated by the LSM during RelativeData allocation and cleared on
     // unload. Spec Annex A.2.7 lists it as `3/x` (mandatory RO).
     #[io(pid = pid::TABLE_REFERENCE, pdt = PDT_UnsignedLong, access = RO,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 0,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = SystemManufacturer,
          read = |this: &Self| this.pei.borrow().table_reference().to_be_bytes())]
     table_reference: (),
 
@@ -472,7 +497,7 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     // program object; differs only in the `RunTarget::Pei` discriminator and
     // a different `RefCell` (`pei` instead of `app`).
     #[io(pid = pid::LOAD_STATE_CONTROL, pdt = PDT_Control, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| this.pei.borrow().read_lsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let action = this.pei.borrow_mut().write_lsm(data, Some(this.alloc_address));
@@ -489,7 +514,7 @@ pub struct PeiProgramObject<'a, T: HasLoadStateMachine + HasRunStateMachine> {
     load_state_control: (),
 
     #[io(pid = pid::RUN_STATE_CONTROL, pdt = PDT_Control, access = RW,
-         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = 3, wl = 3,
+         policy = AccessPolicy::READ_OPEN_WRITE_TOOL, rl = Runtime, wl = Runtime,
          read = |this: &Self| this.pei.borrow().read_rsm(),
          write = |this: &mut Self, data: &[u8]| -> Result<WriteResponse, PropertyError> {
              let run_action = this.pei.borrow_mut().write_rsm(data);
@@ -631,6 +656,16 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> TableInterfaceObject<'a, T,
     ///
     /// Access levels per Profiles spec Annex A.2.4 / A.2.5 / A.2.8,
     /// covering System B masks 07B0h / 17B0h / 57B0h.
+    ///
+    /// These are raw numbers rather than the audiences
+    /// ([`AccessLevel`](zweidraehte_proto::access::AccessLevel)) the
+    /// macro-declared objects name, and exactly so: this table is built
+    /// only by System B, which has one authorisation model, so there is
+    /// no profile left to resolve against. System 7 did not reuse it —
+    /// `bcus::system_7::objects::System7TableObject` is its own table at
+    /// 15/2, and the two differ by more than the audience (System B
+    /// hardens `LOAD_STATE_CONTROL` to write level 1 where System 7 uses
+    /// 2), which no shared declaration could express.
     ///
     /// Notable choices:
     ///  - PID 5 PID_LOAD_STATE_CONTROL: declared with `wl=1` rather

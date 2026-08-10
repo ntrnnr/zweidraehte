@@ -821,7 +821,7 @@ fn augment_function_state_arm(p: &PropertyAttrs) -> Option<TokenStream> {
 // Per-property descriptor entry
 // ---------------------------------------------------------------------------
 
-/// The two access levels of a property, as `AccessLevelSpec` expressions.
+/// The two access levels of a property, as `AccessLevel` expressions.
 ///
 /// Defaults follow the KNX convention for the access mode: a readable
 /// property is readable at runtime, a writable one is writable by a
@@ -833,23 +833,11 @@ fn augment_function_state_arm(p: &PropertyAttrs) -> Option<TokenStream> {
 fn level_specs(p: &PropertyAttrs) -> (TokenStream, TokenStream) {
     let audience = |name: &str| -> TokenStream {
         let ident = syn::Ident::new(name, Span::call_site());
-        quote! {
-            ::zweidraehte_proto::access::AccessLevelSpec::Audience(
-                ::zweidraehte_proto::access::AccessLevel::#ident
-            )
-        }
+        quote! { ::zweidraehte_proto::access::AccessLevel::#ident }
     };
     let render = |lvl: &LevelAttr| -> TokenStream {
-        match lvl {
-            LevelAttr::Audience(ident) => quote! {
-                ::zweidraehte_proto::access::AccessLevelSpec::Audience(
-                    ::zweidraehte_proto::access::AccessLevel::#ident
-                )
-            },
-            LevelAttr::Literal(e) => quote! {
-                ::zweidraehte_proto::access::AccessLevelSpec::Literal((#e) as u8)
-            },
-        }
+        let ident = &lvl.0;
+        quote! { ::zweidraehte_proto::access::AccessLevel::#ident }
     };
 
     let (default_rl, default_wl) = match p.access {

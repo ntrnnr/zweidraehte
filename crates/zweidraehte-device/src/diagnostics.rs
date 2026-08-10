@@ -405,7 +405,7 @@ pub struct DiagnosticsAugment<'a, GS = NoSecureGoSend> {
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::new(0x3FF, 0x00C),
-        rl = 3, wl = 3,
+        rl = Runtime, wl = Runtime,
         intercepts,
         target = InterfaceObjectType::ApplicationProgram,
         function_command = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
@@ -428,7 +428,7 @@ pub struct DiagnosticsAugment<'a, GS = NoSecureGoSend> {
         pdt = PDT_Function,
         access = RW,
         policy = AccessPolicy::READ_OPEN_WRITE_TOOL,
-        rl = 3, wl = 3,
+        rl = Runtime, wl = Runtime,
         intercepts,
         target = InterfaceObjectType::GroupObjectTable,
         function_command = |this: &Self, ctx: &ServiceCtx<'_, _>, req: &FunctionPropertyRequest<'_>| -> FunctionPropertyResult {
