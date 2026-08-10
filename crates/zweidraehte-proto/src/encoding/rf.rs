@@ -205,7 +205,7 @@ pub fn rf_to_knx_message(telegram: &[u8], out: &mut [u8]) -> Result<RfRxMeta, Rf
     // octet (CRCs excluded), so the contiguous telegram spans `length + 1`
     // octets. Anything shorter than that — or shorter than a full header — is
     // malformed.
-    if telegram.len() <= LEN_IDX {
+    if telegram.is_empty() {
         return Err(RfError::TooShort);
     }
     let useful_len = telegram[LEN_IDX] as usize + 1;
