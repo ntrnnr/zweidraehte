@@ -412,7 +412,7 @@ impl StackState for ConformanceSystem7State {
 // The pure-delegation trait bundle. Named for System B, but generic over
 // any state with the same fourteen-trait surface — which
 // `System7DeviceState` shares.
-zweidraehte_device::forward_system_b_state_traits!(impl ConformanceSystem7State => self.inner: InnerState);
+zweidraehte_device::forward_device_state_traits!(impl ConformanceSystem7State => self.inner: InnerState);
 
 impl DeviceModelNotifier for ConformanceSystem7State {
     fn notify(&self, event: DeviceModelEvent) {

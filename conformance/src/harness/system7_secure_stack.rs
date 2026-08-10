@@ -506,7 +506,7 @@ impl StackState for SecureSystem7State {
 }
 
 // The pure-delegation trait bundle (family-agnostic despite the name).
-zweidraehte_device::forward_system_b_state_traits!(impl SecureSystem7State => self.inner: InnerState);
+zweidraehte_device::forward_device_state_traits!(impl SecureSystem7State => self.inner: InnerState);
 
 impl DeviceModelNotifier for SecureSystem7State {
     fn notify(&self, event: DeviceModelEvent) {

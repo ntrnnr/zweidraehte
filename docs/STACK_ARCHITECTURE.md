@@ -921,11 +921,10 @@ which pieces those are:
   firmware targets.
 
 Everything else — the router, the layers, the property machinery, the
-storage vocabulary, `forward_system_b_state_traits!` (family-agnostic
-despite its name) — is shared. That was the point of adding a second
-family: the places where "generic" code had grown System B
-assumptions only became visible once something else had to compile
-against it.
+storage vocabulary, `forward_device_state_traits!` — is shared. That
+was the point of adding a second family: the places where "generic"
+code had grown System B assumptions only became visible once
+something else had to compile against it.
 
 **For a new device, prefer System B.** System 7 exists for devices
 that must match an existing System 7 installed base or toolchain; it

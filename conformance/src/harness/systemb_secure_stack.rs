@@ -188,7 +188,7 @@ impl StackState for SecureConformanceState {
 // `HasConnectionAuth`) come from the bundle macro. `StackState` (fixed
 // APDU length) and `DeviceModelNotifier` (dm_slot) are the two
 // genuinely customised traits and stay hand-written.
-zweidraehte_device::forward_system_b_state_traits!(impl SecureConformanceState => self.inner: SecureInnerState);
+zweidraehte_device::forward_device_state_traits!(impl SecureConformanceState => self.inner: SecureInnerState);
 
 // ============================================================================
 // Random byte source for KNX Data Secure (plugs into `StackDefinition::Rng`)

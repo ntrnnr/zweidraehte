@@ -1,10 +1,15 @@
-//! The trait-forwarding macro, shared by every layer that re-exposes an
+//! The trait-forwarding macros, shared by every layer that re-exposes an
 //! accessor trait by delegating to a field.
 //!
 //! Crate-internal and BCU-agnostic: both device-state families and the
-//! family-neutral wrapper extensions in [`crate::security`] use it, so it
-//! is declared `#[macro_use]` at the crate root rather than living inside
-//! one family's module.
+//! family-neutral wrapper extensions in [`crate::security`] use
+//! [`forward_to_field!`], so it is declared `#[macro_use]` at the crate
+//! root rather than living inside one family's module.
+//!
+//! [`forward_device_state_traits!`] generates the coarser, whole-trait-set
+//! forwarding a device-state wrapper newtype needs; it is `#[macro_export]`ed
+//! for use outside the crate (e.g. conformance fixtures) rather than relying
+//! on `#[macro_use]`.
 
 /// Forward a medium-accessor trait to a struct field by pure delegation.
 ///
@@ -144,5 +149,183 @@ macro_rules! forward_to_field {
             self.$field.$method($($arg),+);
         }
         forward_to_field!(@items [$dirty] $field, $($rest)*);
+    };
+}
+
+/// Generate the standard pure-delegation trait impls for a newtype that
+/// wraps a device state (e.g. [`SystemBDeviceState`](crate::bcus::system_b::SystemBDeviceState),
+/// [`System7DeviceState`](crate::bcus::system_7::System7DeviceState), or any
+/// state with the same trait surface) in a named field.
+///
+/// Family-agnostic: it forwards by pure delegation with every associated
+/// type projected from the inner type, so it fits any device-state wrapper
+/// regardless of which BCU family the inner state belongs to.
+///
+/// Emits forwarding impls for the fourteen state-surface traits a
+/// wrapper almost never customises: [`HasSecurityMode`](crate::HasSecurityMode),
+/// [`HasPersistence`](crate::HasPersistence),
+/// [`HasAuthorization`](crate::HasAuthorization),
+/// [`HasExtensionState`](crate::HasExtensionState),
+/// [`HasAddressTable`](crate::objects::tables::HasAddressTable),
+/// [`HasAssociationTable`](crate::objects::tables::HasAssociationTable),
+/// [`HasCommunicationObjectTable`](crate::objects::tables::HasCommunicationObjectTable),
+/// [`HasCommObjects`](crate::objects::comm::HasCommObjects),
+/// [`HasGoSecurityView`](crate::objects::comm::HasGoSecurityView),
+/// [`HasDiagnosticsContext`](crate::HasDiagnosticsContext),
+/// [`HasApplication`](crate::objects::tables::HasApplication),
+/// [`HasPeiApplication`](crate::objects::tables::HasPeiApplication),
+/// [`HasRoutingCount`](crate::objects::interface::HasRoutingCount), and
+/// `HasConnectionAuth` (from `zweidraehte_proto`).
+///
+/// `StackState` and `DeviceModelNotifier` are deliberately **not**
+/// generated: wrappers usually exist precisely to customise those (a
+/// fixed APDU length, a custom device-model notification slot, …) —
+/// hand-write them next to the macro call. For forwarding a single
+/// trait with hand-picked items, use `forward_to_field!` instead.
+///
+/// ```rust,ignore
+/// forward_device_state_traits!(impl ConformanceState => self.inner: InnerState);
+/// ```
+#[macro_export]
+macro_rules! forward_device_state_traits {
+    (impl $outer:ty => self.$field:ident: $inner:ty) => {
+        impl $crate::HasSecurityMode for $outer {
+            fn security_mode_enabled(&self) -> bool {
+                self.$field.security_mode_enabled()
+            }
+            fn log_access_denied(&self, source_addr: u16) {
+                self.$field.log_access_denied(source_addr);
+            }
+            fn has_group_key(&self, tsap: u16) -> bool {
+                self.$field.has_group_key(tsap)
+            }
+        }
+
+        impl $crate::HasPersistence for $outer {
+            fn mark_dirty(&self) {
+                self.$field.mark_dirty();
+            }
+            fn is_dirty(&self) -> bool {
+                self.$field.is_dirty()
+            }
+            fn clear_dirty(&self) {
+                self.$field.clear_dirty();
+            }
+            fn apply_erase_code(&self, code: $crate::restart::EraseCode) {
+                self.$field.apply_erase_code(code);
+            }
+        }
+
+        impl $crate::HasAuthorization for $outer {
+            const MAX_ACCESS_LEVELS: u8 = <$inner as $crate::HasAuthorization>::MAX_ACCESS_LEVELS;
+
+            fn default_access_level(&self) -> u8 {
+                self.$field.default_access_level()
+            }
+            fn authorize(&self, key: &[u8; 4]) -> u8 {
+                self.$field.authorize(key)
+            }
+            fn key_write(&self, level: u8, key: &[u8; 4], ctx: $crate::__macro_support::access::AccessContext) -> u8 {
+                self.$field.key_write(level, key, ctx)
+            }
+        }
+
+        impl $crate::HasExtensionState for $outer {
+            type ES = <$inner as $crate::HasExtensionState>::ES;
+            fn extension_state(&self) -> &Self::ES {
+                self.$field.extension_state()
+            }
+        }
+
+        impl $crate::objects::tables::HasAddressTable for $outer {
+            type ADT = <$inner as $crate::objects::tables::HasAddressTable>::ADT;
+            fn adt(&self) -> &core::cell::RefCell<Self::ADT> {
+                self.$field.adt()
+            }
+        }
+
+        impl $crate::objects::tables::HasAssociationTable for $outer {
+            type AST = <$inner as $crate::objects::tables::HasAssociationTable>::AST;
+            fn ast(&self) -> &core::cell::RefCell<Self::AST> {
+                self.$field.ast()
+            }
+        }
+
+        impl $crate::objects::tables::HasCommunicationObjectTable for $outer {
+            type COT = <$inner as $crate::objects::tables::HasCommunicationObjectTable>::COT;
+            fn cot(&self) -> &core::cell::RefCell<Self::COT> {
+                self.$field.cot()
+            }
+        }
+
+        impl $crate::objects::comm::HasCommObjects for $outer {
+            type CO = <$inner as $crate::objects::comm::HasCommObjects>::CO;
+            fn comm_objects(&self) -> &core::cell::RefCell<Self::CO> {
+                self.$field.comm_objects()
+            }
+        }
+
+        impl $crate::objects::comm::HasGoSecurityView for $outer {
+            fn required_security_for_asap(
+                &self,
+                asap: u16,
+            ) -> $crate::__macro_support::messages::knx::RequiredSecurity {
+                self.$field.required_security_for_asap(asap)
+            }
+            fn required_security_for_p2p(
+                &self,
+                peer_ia: u16,
+            ) -> $crate::__macro_support::messages::knx::RequiredSecurity {
+                self.$field.required_security_for_p2p(peer_ia)
+            }
+            fn required_security_for_broadcast(&self) -> $crate::__macro_support::messages::knx::RequiredSecurity {
+                self.$field.required_security_for_broadcast()
+            }
+            fn required_security_for_tool_access(&self) -> $crate::__macro_support::messages::knx::RequiredSecurity {
+                self.$field.required_security_for_tool_access()
+            }
+        }
+
+        impl $crate::HasDiagnosticsContext for $outer {
+            type Diagnostics = <$inner as $crate::HasDiagnosticsContext>::Diagnostics;
+            fn diagnostics(&self) -> &Self::Diagnostics {
+                self.$field.diagnostics()
+            }
+        }
+
+        impl $crate::objects::tables::HasApplication for $outer {
+            type APP = <$inner as $crate::objects::tables::HasApplication>::APP;
+            fn app(&self) -> &core::cell::RefCell<Self::APP> {
+                self.$field.app()
+            }
+        }
+
+        impl $crate::objects::tables::HasPeiApplication for $outer {
+            type PEI = <$inner as $crate::objects::tables::HasPeiApplication>::PEI;
+            fn pei(&self) -> &core::cell::RefCell<Self::PEI> {
+                self.$field.pei()
+            }
+        }
+
+        impl $crate::objects::interface::HasRoutingCount for $outer {
+            fn routing_count(&self) -> u8 {
+                self.$field.routing_count()
+            }
+            fn set_routing_count(&self, value: u8) {
+                self.$field.set_routing_count(value)
+            }
+        }
+
+        impl $crate::__macro_support::access::HasConnectionAuth for $outer {
+            fn connection_access(&self, slot: u8) -> $crate::__macro_support::access::AccessContext {
+                self.$field.connection_access(slot)
+            }
+            fn set_connection_access(&self, slot: u8, ctx: $crate::__macro_support::access::AccessContext) {
+                self.$field.set_connection_access(slot, ctx);
+            }
+            fn reset_connection_access(&self, slot: u8, default_level: u8) {
+                self.$field.reset_connection_access(slot, default_level);
+            }
+        }
     };
 }

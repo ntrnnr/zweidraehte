@@ -739,7 +739,7 @@ impl StackState for ConformanceState {
 // `HasRoutingCount`, `HasConnectionAuth`) come from the bundle macro.
 // `StackState` (fixed APDU length) and `DeviceModelNotifier` (dm_slot)
 // are the two genuinely customised traits and stay hand-written.
-zweidraehte_device::forward_system_b_state_traits!(impl ConformanceState => self.inner: InnerState);
+zweidraehte_device::forward_device_state_traits!(impl ConformanceState => self.inner: InnerState);
 
 // ============================================================================
 // DeviceModelNotifier Implementation

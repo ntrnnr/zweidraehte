@@ -493,6 +493,7 @@ Key modules:
 - `resources.rs` - `StackResources<D, BUF_SZ, NUM_BUFS>` pre-allocated static storage
 - `stack_core.rs` - `StackCore<D>` (pub(crate) owned interior: state, platform, memory map, &layer_context)
 - `state.rs` - `StackState`, `HasAuthorization`, `HasPersistence`, `HasExtensionState`, `HasSecurityMode`, `HasDiagnosticsContext`, `DiagnosticsView`, `ReadObjectError`/`UpdateObjectError`
+- `forward.rs` - Trait-forwarding macros, crate-internal and BCU-agnostic: `forward_to_field!` (forwards a trait to a named field — `extension_state` on device state, `inner` on wrapper extensions) and `forward_device_state_traits!` (emits the standard 14-trait pure-delegation set for device-state wrapper newtypes; `StackState`/`DeviceModelNotifier` stay hand-written)
 - `storage/` - `DeviceIdentity`, `SecureDeviceIdentity`, `SequenceNumberStorage`, `HasSeqStore`, `ConfigStoreBackend`, `HasConfigStore`, `HasDeviceConfig`, `StorageHooks`; the bounded store handles (`ConfigStorage`, `SecureStorage`, `SecureIpStorage`) and the region-anchored layout vocabulary (`StorageLayout`, `Placed<R, C, L>`, `StoreOf<P>`, `Stored<C>`) in `layout.rs`/`region.rs`; backends in `backends/`; the storage task in `task.rs`
 - `prelude.rs` - One-stop re-exports for device authors (derive macros, core traits, common types)
 - `memory.rs` - `MemoryMap` trait for `A_Memory_Read/Write` dispatch
@@ -526,7 +527,7 @@ Subdirectories:
   - `tables/` - Standard KNX tables (address table, app table, association table, CO table) with `Has*` accessor traits
 - `bcus/` - Bus Control Units (BCU) device implementations
   - `system_b/` - System B BCU implementation (mask versions 07B0 / 57B0)
-    - `mod.rs` - module wiring + the `forward_to_field!` macro (forwards a trait to a named field — `extension_state` on `SystemBDeviceState`, `inner` on wrapper extensions) + `forward_system_b_state_traits!` (emits the standard 14-trait pure-delegation set for state newtypes; `StackState`/`DeviceModelNotifier` stay hand-written)
+    - `mod.rs` - module wiring (`SystemBAlServices`/`SystemBSecureAlServices` discoverability aliases)
     - `device_state/` - `SystemBDeviceState`
     - `extensions/` - TP1, RF (+ retransmitter), IP, Security, OperationMode extensions and their augments; leaf extensions use `#[derive(ExtensionState)]`, each pairs a plain `*State` struct with a borrowing `*Augment<'a>`
     - `objects/` - `SystemBObjects` container
