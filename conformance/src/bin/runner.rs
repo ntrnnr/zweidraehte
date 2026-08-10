@@ -2,7 +2,7 @@
 //!
 //! Drives `conformance-dut-systemb` / `conformance-dut-systemb-secure` child processes
 //! over the new postcard IPC protocol (see
-//! [`zweidraehte_conformance::harness::protocol`]). Every inject/
+//! [`zweidraehte_conformance::ipc::protocol`]). Every inject/
 //! trigger/programming-mode step is synchronous:
 //! [`ChildLifecycle::step`](zweidraehte_conformance::harness::ChildLifecycle::step)
 //! sends the command and waits for `StepComplete` before returning.

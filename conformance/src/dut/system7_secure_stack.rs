@@ -70,7 +70,7 @@ use super::fixture_common::{
 // Communication objects — the System B secure fixture on RT8 tables
 // ============================================================================
 //
-// Field-for-field the System B secure DUT's set (see `harness::systemb_stack`
+// Field-for-field the System B secure DUT's set (see `dut::systemb_stack`
 // for the shadow-object rationale), at ets indices 1..17 so the wire
 // ASAPs are identical under `FIRST_ASAP = 0`.
 
@@ -274,7 +274,7 @@ impl ComObjectBusHook for System7SecureComObjects {
 //
 // Same 18 group addresses in the same sorted order as the System B
 // secure DUT, so the TSAP numbering — and with it the group-key table —
-// is congruent. See `harness::systemb_stack` for the TSAP → CO map.
+// is congruent. See `dut::systemb_stack` for the TSAP → CO map.
 
 pub mod conformance_config {
     use zweidraehte_device::config::{CE, RE, ROI, TE, UE, WE};
@@ -817,7 +817,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
 
     type P = TestParameters;
     type CO = System7SecureComObjects;
-    type LLB = super::ipc::IpcLinkLayerBuilder;
+    type LLB = super::link::IpcLinkLayerBuilder;
     type ES = SecureS7ExtensionState;
     type Storage = &'static super::fixture_common::DutSecureStorage<Self>;
     type Identity = StaticSecureIdentity;
@@ -991,7 +991,7 @@ pub fn state_init_from_snapshot(
     }
 }
 
-impl crate::dut_common::ConformanceStack for IpcSystem7SecureTestStack {
+impl crate::dut::common::ConformanceStack for IpcSystem7SecureTestStack {
     type DeviceConfig = System7SecureDutConfig;
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {

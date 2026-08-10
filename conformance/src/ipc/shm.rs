@@ -1,6 +1,7 @@
 //! Shared-memory handle used to persist device state across DUT
-//! respawns. Used by both the parent and child processes; IPC framing
-//! and the link layer live in [`super::framing`] + [`super::ipc_v2`].
+//! respawns. Used by both the parent and child processes; the socket
+//! framing that goes with it lives in [`super::framing`], and the DUT's
+//! link layer over that socket in `dut::link`.
 //!
 //! # Layout
 //!
@@ -13,9 +14,18 @@
 //! The postcard payload is a `SystemBDutConfig` or
 //! `SystemBSecureDutConfig` (see `systemb_stack.rs` /
 //! `fixture_common.rs`). The 256-byte tail region backs the secure
-//! DUT's per-peer sequence-number storage; `clear_seq_region()`
-//! zeroes it before the first secure suite to avoid stale-seq replay
-//! rejections.
+//! DUT's per-peer sequence-number storage.
+//!
+//! # Who writes what
+//!
+//! **The payload is opaque to the parent.** It creates the region
+//! zeroed and, for `TestStep::FullReset`, zeroes it again with
+//! [`SharedMemory::blank`]; the DUT recognises a missing magic as
+//! "blank flash" and seeds its own factory defaults
+//! (`dut::common::load_or_seed_snapshot`). That is why this module can
+//! be generic over `T: Serialize` and name no device type at all —
+//! and in turn why the parent half of the crate compiles without the
+//! device stack. Do not reintroduce a typed write on the parent side.
 
 use std::io;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
@@ -174,13 +184,20 @@ impl SharedMemory {
         unsafe { self.ptr.add(self.size - 256) }
     }
 
-    /// Zero the 256-byte sequence-number region at the tail. Called
-    /// from `full_reset` / cross-suite transitions so a respawned
-    /// secure DUT starts with fresh per-peer counters.
-    pub fn clear_seq_region(&mut self) {
-        let start = self.size - 256;
-        let region = &mut self.as_mut_slice()[start..];
-        region.fill(0);
+    /// Zero the whole region — payload, magic and seq tail alike.
+    ///
+    /// This is the parent's factory reset (`TestStep::FullReset`): the
+    /// magic goes away, so the next DUT to map the region reads it as
+    /// blank flash and writes its own defaults. Zeroing the tail in the
+    /// same stroke is what a secure DUT needs anyway — it starts with
+    /// fresh per-peer counters instead of replay-rejecting the
+    /// harness's first secure frame against a stale tool seq — so the
+    /// two operations that used to be separate are one.
+    ///
+    /// A freshly [`create`](Self::create)d region is already zeroed, so
+    /// this is only needed for reuse.
+    pub fn blank(&mut self) {
+        self.as_mut_slice().fill(0);
     }
 
     /// Clear the `FD_CLOEXEC` flag so the fd is inherited by the

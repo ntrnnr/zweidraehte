@@ -10,14 +10,15 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::dut_common::{self, CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
-use zweidraehte_conformance::harness::fixture_common::{DutSecureStorage, set_seq_shm_ptr};
-use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
-use zweidraehte_conformance::harness::shm::SharedMemory;
-use zweidraehte_conformance::harness::systemb_secure_stack::{
+use zweidraehte_conformance::dut::common as dut_common;
+use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
+use zweidraehte_conformance::dut::fixture_common::{DutSecureStorage, set_seq_shm_ptr};
+use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
+use zweidraehte_conformance::dut::systemb_secure_stack::{
     IpcSecureConformanceTestStack, SecureConformanceStateInit, SystemBSecureDutConfig,
 };
-use zweidraehte_conformance::harness::systemb_stack::{ConformanceMemoryMap, device_info};
+use zweidraehte_conformance::dut::systemb_stack::{ConformanceMemoryMap, device_info};
+use zweidraehte_conformance::ipc::shm::SharedMemory;
 
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
@@ -79,19 +80,18 @@ async fn main(spawner: Spawner) {
     dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
 
     // SAFETY: parent passed us a valid SHM fd.
-    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
+    let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    let snapshot: SystemBSecureDutConfig = shm
-        .read_state()
-        .expect("read shared memory")
-        .expect("shared memory uninitialized — parent should have written initial state");
+    // A blank region means the parent wants us factory-fresh; seeding
+    // it is our job, not the parent's.
+    let snapshot = dut_common::load_or_seed_snapshot(&mut shm, SystemBSecureDutConfig::default_snapshot);
 
     // Set up per-peer seqnr storage from the tail of the SHM region.
     // SAFETY: the region is owned by this process for the duration of
     // the program; `seq_region_ptr` stays valid until `shm` is dropped
     // (at `process::exit`).
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let secure_storage = zweidraehte_conformance::harness::fixture_common::init_secure_storage();
+    let secure_storage = zweidraehte_conformance::dut::fixture_common::init_secure_storage();
     let state_init = SecureConformanceStateInit::Loaded { config: snapshot };
 
     let shm = SHM.init(ShmCell::new(shm));
@@ -122,7 +122,7 @@ async fn main(spawner: Spawner) {
     // `StackResources` which is 'static — the pointer remains valid
     // for the process.
     unsafe {
-        zweidraehte_conformance::harness::systemb_stack::set_conformance_cot(stack.communication_object_table());
+        zweidraehte_conformance::dut::systemb_stack::set_conformance_cot(stack.communication_object_table());
     }
 
     // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its

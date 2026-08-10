@@ -36,7 +36,7 @@ use zweidraehte_proto::messages::knxip::{
 };
 use zweidraehte_proto::util::packets::ParseBuffer;
 
-use crate::harness::ip_secure_stack::{DUT_BACKBONE_KEY, IP_SECURE_SERIAL_NUMBER};
+use crate::ipc::ip_secure::{DUT_BACKBONE_KEY, IP_SECURE_SERIAL_NUMBER};
 
 use super::{DutMode, IpSecureHarness, IpSecureTest, TIME_DIVISOR, packet_bytes};
 

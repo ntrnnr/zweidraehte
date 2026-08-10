@@ -37,7 +37,7 @@ use zweidraehte_proto::encoding::cemi::{CemiMessageCode, cemi_to_knx_message, kn
 use zweidraehte_proto::encoding::tp1;
 
 use super::lifecycle::ChildLifecycle;
-use super::protocol::RunnerMessage;
+use crate::ipc::protocol::RunnerMessage;
 
 // ============================================================================
 // cEMI ⇄ internal ⇄ TP1 conversion

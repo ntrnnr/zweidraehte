@@ -10,10 +10,10 @@
 //!
 //! Unlike the legacy DUT code, this module does **not** sleep before
 //! exit. The new IPC protocol guarantees that when a
-//! [`RunnerMessage`](crate::harness::protocol::RunnerMessage) triggers
+//! [`RunnerMessage`](crate::ipc::protocol::RunnerMessage) triggers
 //! an `A_Restart` / `PowerCycle` / `MasterReset`, the runner has
 //! already received the corresponding
-//! [`StepComplete`](crate::harness::protocol::DutMessage) carrying
+//! [`StepComplete`](crate::ipc::protocol::DutMessage) carrying
 //! every outbox frame (restart-response included) before the command
 //! handler is scheduled. So by the time we reach
 //! [`apply_erase_code`] / [`flush_state`], there is nothing left to
@@ -32,9 +32,10 @@ use zweidraehte_device::bcus::system_b::{ExtensionState, SystemBDeviceState};
 use zweidraehte_device::storage::{HasConfigStore, StorageHooks};
 use zweidraehte_device::{Stack, StackDefinition, SyncOptions, restart::EraseCode};
 
-use crate::harness::framing;
-use crate::harness::ipc::IpcCommand;
-use crate::harness::protocol::{DutMessage, ExitReason};
+use crate::dut::link::IpcCommand;
+use crate::ipc::framing;
+use crate::ipc::protocol::{DutMessage, ExitReason};
+use crate::ipc::shm::SharedMemory;
 
 // ============================================================================
 // Command-line parsing
@@ -131,7 +132,7 @@ impl log::Log for IpcLogger {
 
 /// Initialize the IPC-forwarding logger. Call exactly once, after
 /// registering the primary socket fd with
-/// [`crate::harness::ipc::set_primary_socket_fd`].
+/// [`crate::dut::link::set_primary_socket_fd`].
 pub fn init_ipc_logger(socket_fd: RawFd, level: log::LevelFilter) {
     use std::os::unix::io::FromRawFd;
     // Dup the fd so the logger has its own handle that it can write
@@ -158,6 +159,37 @@ pub fn log_level_from_env() -> log::LevelFilter {
 }
 
 // ============================================================================
+// Boot snapshot
+// ============================================================================
+
+/// Read the DUT's persisted state out of shared memory, seeding the
+/// region with `factory` when the parent handed us a blank one.
+///
+/// The parent deliberately knows nothing about what a snapshot
+/// contains. It creates a zeroed region, and for `TestStep::FullReset`
+/// zeroes it again ([`SharedMemory::blank`]); deciding what "factory
+/// defaults" means is the device's business, exactly as it is for real
+/// firmware booting from erased flash. Keeping the knowledge on this
+/// side is what lets the parent half of the crate compile without the
+/// device stack at all — see the `dut` feature in `Cargo.toml`.
+///
+/// A seeded snapshot is written straight back rather than left for the
+/// storage task: the parent may inspect or reuse the region after we
+/// die, and a DUT that never reached a flush point would otherwise
+/// leave it blank.
+pub fn load_or_seed_snapshot<T>(shm: &mut SharedMemory, factory: fn() -> T) -> T
+where
+    T: Serialize + DeserializeOwned,
+{
+    if let Some(snapshot) = shm.read_state::<T>().expect("read shared memory") {
+        return snapshot;
+    }
+    let snapshot = factory();
+    shm.write_state(&snapshot).expect("seed shared memory with the factory snapshot");
+    snapshot
+}
+
+// ============================================================================
 // Shared memory handle wrapper
 // ============================================================================
 //
@@ -166,20 +198,20 @@ pub fn log_level_from_env() -> log::LevelFilter {
 // Safety: the embassy executor is single-threaded, so there is never
 // concurrent access.
 
-pub struct ShmCell(pub UnsafeCell<crate::harness::shm::SharedMemory>);
+pub struct ShmCell(pub UnsafeCell<SharedMemory>);
 
 // SAFETY: Single-threaded embassy executor — no cross-thread access.
 unsafe impl Sync for ShmCell {}
 
 impl ShmCell {
-    pub fn new(shm: crate::harness::shm::SharedMemory) -> Self {
+    pub fn new(shm: SharedMemory) -> Self {
         Self(UnsafeCell::new(shm))
     }
 
     /// SAFETY: single-threaded executor — caller must not hold a
     /// reference across an await that also reaches this code path.
     #[allow(clippy::mut_from_ref)]
-    pub unsafe fn get(&self) -> &mut crate::harness::shm::SharedMemory {
+    pub unsafe fn get(&self) -> &mut SharedMemory {
         unsafe { &mut *self.0.get() }
     }
 }
@@ -214,7 +246,7 @@ pub fn flush_state<T: serde::Serialize>(shm: &ShmCell, snapshot: &T) {
 ///
 /// Does not return.
 pub async fn exit_with_reason(reason: ExitReason) -> ! {
-    crate::harness::ipc::emit_exiting_and_shutdown(reason).await;
+    crate::dut::link::emit_exiting_and_shutdown(reason).await;
     std::process::exit(0);
 }
 
@@ -224,7 +256,7 @@ pub async fn exit_with_reason(reason: ExitReason) -> ! {
 //
 // The device stack publishes `LifecycleEvent::ReadOnInitComplete` on its
 // public pub/sub channel when the AL's read-on-init scan settles. The IPC
-// link layer waits on a local signal (`harness::ipc::ROI_DONE`) before
+// link layer waits on a local signal (`dut::link::ROI_DONE`) before
 // it sends `RoiComplete` to the runner. This task bridges the two — it
 // subscribes to the stack's lifecycle events and fires the IPC signal
 // when `ReadOnInitComplete` arrives.
@@ -249,7 +281,7 @@ pub async fn bridge_lifecycle_to_ipc(
     loop {
         match events.next_message().await {
             WaitResult::Message(LifecycleEvent::ReadOnInitComplete) => {
-                crate::harness::ipc::signal_roi_done();
+                crate::dut::link::signal_roi_done();
             }
             WaitResult::Message(_) => {
                 // Other variants are not consumed by the harness today.
@@ -334,7 +366,7 @@ pub fn apply_erase_code_to_system_b<
 /// sync-request, or lifecycle termination). For power-cycle / master-reset
 /// the function does not return — it falls through to `exit_with_reason`.
 pub async fn handle_ipc_command<S: ConformanceStack>(stack: Stack<'static, S>, shm: &'static ShmCell, cmd: IpcCommand) {
-    use crate::harness::protocol::RunnerMessage;
+    use crate::ipc::protocol::RunnerMessage;
     match cmd {
         RunnerMessage::Inject { seq, .. } => {
             // `Inject` is processed inline by the IPC link layer —
@@ -448,7 +480,7 @@ impl<S: ConformanceStack> StorageHooks for DutConfigStore<S> {
     /// vanishes. So the announcement has to happen here, at the top of the
     /// restart arm, which is precisely where the storage task calls this.
     async fn on_restart(&self, code: EraseCode) {
-        crate::harness::ipc::announce_exit(ExitReason::Restart { erase_code: u8::from(code) }).await;
+        crate::dut::link::announce_exit(ExitReason::Restart { erase_code: u8::from(code) }).await;
     }
 }
 
@@ -465,7 +497,7 @@ impl zweidraehte_platform::SystemControl for DutSystemControl {
     type Error = core::convert::Infallible;
 
     async fn restart(&mut self) -> Result<!, Self::Error> {
-        crate::harness::ipc::shutdown_ipc_socket();
+        crate::dut::link::shutdown_ipc_socket();
         std::process::exit(0)
     }
 }

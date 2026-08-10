@@ -6,7 +6,7 @@
 //!
 //! Usage: `conformance-dut-systemb --shm-fd <N> --socket-fd <M>`
 //!
-//! This binary is a thin shim over [`dut_common`]: every non-trivial
+//! This binary is a thin shim over [`dut::common`]: every non-trivial
 //! task body lives there and is specialised for `IpcConformanceTestStack`
 //! via the `ConformanceStack` trait.
 
@@ -14,12 +14,13 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::dut_common::{self, CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
-use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
-use zweidraehte_conformance::harness::shm::SharedMemory;
-use zweidraehte_conformance::harness::systemb_stack::{
+use zweidraehte_conformance::dut::common as dut_common;
+use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
+use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
+use zweidraehte_conformance::dut::systemb_stack::{
     ConformanceMemoryMap, ConformanceStateInit, IpcConformanceTestStack, SystemBDutConfig, device_info,
 };
+use zweidraehte_conformance::ipc::shm::SharedMemory;
 
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
@@ -53,7 +54,7 @@ zweidraehte_device::storage_task! {
 // ============================================================================
 //
 // Task bodies are monomorphic; the heavy lifting lives in the generic
-// helpers in `dut_common`. These stubs only bind concrete stack types.
+// helpers in `dut::common`. These stubs only bind concrete stack types.
 
 #[embassy_executor::task]
 async fn run_stack(runner: Runner<'static, IpcConformanceTestStack>) {
@@ -84,14 +85,12 @@ async fn main(spawner: Spawner) {
     dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
 
     // SAFETY: the parent passed us a valid fd for a SHM region.
-    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
+    let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    // Deserialize state from SHM. Parent always writes the initial
-    // snapshot before spawning us.
-    let snapshot: SystemBDutConfig = shm
-        .read_state()
-        .expect("read shared memory")
-        .expect("shared memory uninitialized — parent should have written initial state");
+    // Deserialize state from SHM. A blank region means the parent wants
+    // us factory-fresh, so we seed it ourselves — the parent never
+    // constructs a snapshot.
+    let snapshot = dut_common::load_or_seed_snapshot(&mut shm, SystemBDutConfig::default_snapshot);
 
     let state_init = ConformanceStateInit::Loaded(snapshot);
     let shm = SHM.init(ShmCell::new(shm));
@@ -123,7 +122,7 @@ async fn main(spawner: Spawner) {
     // which is 'static, so the pointer remains valid for the process.
     // SAFETY: the pointer outlives the stack (process-lifetime).
     unsafe {
-        zweidraehte_conformance::harness::systemb_stack::set_conformance_cot(stack.communication_object_table());
+        zweidraehte_conformance::dut::systemb_stack::set_conformance_cot(stack.communication_object_table());
     }
 
     // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its

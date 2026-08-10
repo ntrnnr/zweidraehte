@@ -417,7 +417,7 @@ fn test_3_8_13_8() -> TestCase {
     //      encrypted with TK1 → ACK.
     //
     // `SECURE_FDSK` is distinct from `TK1` in our harness
-    // (`harness::fixture_common::SECURE_FDSK`), so step 5's rejection
+    // (`dut::fixture_common::SECURE_FDSK`), so step 5's rejection
     // is observable on the wire.
 
     const CONNECTED_RESTART_FACTORY: &str = "3C 60 #EDI #BDUT_ADDR 03 43 81 02 00";

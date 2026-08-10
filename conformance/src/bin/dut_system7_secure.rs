@@ -11,14 +11,15 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::dut_common::{self, CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
-use zweidraehte_conformance::harness::fixture_common::{DutSecureStorage, set_seq_shm_ptr};
-use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
-use zweidraehte_conformance::harness::shm::SharedMemory;
-use zweidraehte_conformance::harness::system7_secure_stack::{
+use zweidraehte_conformance::dut::common as dut_common;
+use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
+use zweidraehte_conformance::dut::fixture_common::{DutSecureStorage, set_seq_shm_ptr};
+use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
+use zweidraehte_conformance::dut::system7_secure_stack::{
     IpcSystem7SecureTestStack, SecureSystem7MemoryMap, System7SecureDutConfig, device_info, set_system7_secure_cot,
     state_init_from_snapshot,
 };
+use zweidraehte_conformance::ipc::shm::SharedMemory;
 
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
@@ -80,18 +81,17 @@ async fn main(spawner: Spawner) {
     dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
 
     // SAFETY: parent passed us a valid SHM fd.
-    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
+    let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    let snapshot: System7SecureDutConfig = shm
-        .read_state()
-        .expect("read shared memory")
-        .expect("shared memory uninitialized — parent should have written initial state");
+    // A blank region means the parent wants us factory-fresh; seeding
+    // it is our job, not the parent's.
+    let snapshot = dut_common::load_or_seed_snapshot(&mut shm, System7SecureDutConfig::default_snapshot);
 
     // Per-peer seqnr storage lives in the tail of the SHM region, same
     // as the System B secure DUT. SAFETY: the region is owned by this
     // process for the duration of the program.
     set_seq_shm_ptr(shm.seq_region_ptr());
-    let secure_storage = zweidraehte_conformance::harness::fixture_common::init_secure_storage();
+    let secure_storage = zweidraehte_conformance::dut::fixture_common::init_secure_storage();
     let state_init = state_init_from_snapshot(snapshot);
 
     let shm = SHM.init(ShmCell::new(shm));

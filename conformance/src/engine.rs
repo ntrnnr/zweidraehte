@@ -19,8 +19,8 @@ use std::collections::BTreeMap;
 use async_io::Timer;
 use std::time::{Duration, Instant};
 
-use crate::harness::protocol::RunnerMessage;
 use crate::harness::{ChildLifecycle, DutMode};
+use crate::ipc::protocol::RunnerMessage;
 use crate::logger;
 use crate::tests::security::context::SecurityTestContext;
 use crate::tests::security::crypto;
@@ -1323,7 +1323,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         if suite.use_secure_dut && !prev_was_secure && opts.dut_mode == DutMode::SystemBSecure {
             println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
             harness.kill().await;
-            harness.reset_shared_memory().expect("reset shared memory before secure suite");
+            harness.reset_shared_memory();
             harness.spawn_and_wait_roi().await.expect("respawn DUT child");
             harness.discard_unsolicited();
             persistent_sec_ctx = None;

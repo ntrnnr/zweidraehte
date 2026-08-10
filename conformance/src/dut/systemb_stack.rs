@@ -186,7 +186,7 @@ use zweidraehte_device::objects::tables::CommunicationObjectTable;
 // `#[derive(EtsComObjects)]` macro — which requires every struct
 // field to be a ComObject with an index — we park the CoTab pointer
 // in a process-global static set once from each DUT binary's startup.
-// Same pattern as `harness::ipc::PRIMARY_SOCKET_FD`. This keeps all
+// Same pattern as `dut::link::PRIMARY_SOCKET_FD`. This keeps all
 // the unsafety localised to the conformance crate, off the library's
 // public traits.
 
@@ -1153,12 +1153,12 @@ impl StackDefinition for IpcConformanceTestStack {
     const FIRST_ASAP: u16 = 1;
     type P = TestParameters;
     type CO = ConformanceComObjects;
-    type LLB = super::ipc::IpcLinkLayerBuilder;
+    type LLB = super::link::IpcLinkLayerBuilder;
     type ES = Tp1ExtensionState;
     type State = ConformanceState;
     type StateInit = ConformanceStateInit;
     type Mem = ConformanceMemoryMap;
-    type Storage = &'static crate::dut_common::DutConfigStore<Self>;
+    type Storage = &'static crate::dut::common::DutConfigStore<Self>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         match init {
@@ -1221,10 +1221,10 @@ impl StackDefinition for IpcConformanceTestStack {
 // ============================================================================
 //
 // Wires the plain stack into the generic DUT helpers in
-// `crate::dut_common`, specifying how to snapshot state into the shared
+// `crate::dut::common`, specifying how to snapshot state into the shared
 // memory region and how to apply erase codes.
 
-impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
+impl crate::dut::common::ConformanceStack for IpcConformanceTestStack {
     type DeviceConfig = SystemBDutConfig;
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
@@ -1232,7 +1232,7 @@ impl crate::dut_common::ConformanceStack for IpcConformanceTestStack {
     }
 
     fn apply_erase_code(state: &Self::State, code: EraseCode) {
-        crate::dut_common::apply_erase_code_to_system_b(state.inner(), code);
+        crate::dut::common::apply_erase_code_to_system_b(state.inner(), code);
     }
 }
 

@@ -39,14 +39,15 @@ use zweidraehte_client::{
     ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, IndividualAddress, KnxBus,
     MachineRef, MaskVersion,
 };
+use zweidraehte_conformance::dut::{system_b_product, system7_product};
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
-use zweidraehte_conformance::harness::{ChildLifecycle, DutMode, system_b_product, system7_product};
+use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadState, LsmMachine, RelSegment};
 use zweidraehte_proto::pid;
 
 // ============================================================================
-// DUT constants (see conformance/src/harness/system7_stack.rs)
+// DUT constants (see conformance/src/dut/system7_stack.rs)
 // ============================================================================
 
 /// The DUT's snapshot identity (BDUT).
@@ -81,7 +82,7 @@ fn dut_resources(masks: &MaskDb) -> Result<MemoryResources, String> {
 /// The DUT's product layer, generated in-process from the same
 /// constants the DUT stack is built from and read straight back
 /// through the client's parser — see
-/// [`system7_product`](zweidraehte_conformance::harness::system7_product).
+/// [`system7_product`](zweidraehte_conformance::dut::system7_product).
 fn dut_product() -> Result<ProductData, String> {
     let mtxml = system7_product::generate_mtxml()?;
     ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))

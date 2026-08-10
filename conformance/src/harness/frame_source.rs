@@ -1,7 +1,7 @@
 //! Captured outbox frames seen by the conformance runner.
 //!
 //! The DUT child process serialises every outgoing link-layer frame into a
-//! `CapturedFrame` (see [`super::protocol`]) and sends it to the parent over
+//! `CapturedFrame` (see [`crate::ipc::protocol`]) and sends it to the parent over
 //! the postcard IPC socket. On the parent side the frame is re-wrapped into
 //! [`CapturedLinkLayerMessage`] — the type the runner's `Expect*` steps
 //! actually match against.

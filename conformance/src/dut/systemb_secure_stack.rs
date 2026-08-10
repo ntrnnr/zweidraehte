@@ -560,7 +560,7 @@ impl StackDefinition for IpcSecureConformanceTestStack {
 
     type P = TestParameters;
     type CO = super::systemb_stack::comm_objs::ConformanceComObjects;
-    type LLB = super::ipc::IpcLinkLayerBuilder;
+    type LLB = super::link::IpcLinkLayerBuilder;
     type ES =
         SecureTp1ExtensionState<{ table_sizes::ADT_ENTRIES }, { sec_table_sizes::P2P }, { table_sizes::COT_ENTRIES }>;
     // The stores struct (here: just the shared-memory SIAT store), wired onto
@@ -639,11 +639,11 @@ impl StackDefinition for IpcSecureConformanceTestStack {
 // ============================================================================
 //
 // Wires the secure stack into the generic DUT helpers in
-// `crate::dut_common`. Mirrors the plain-stack implementation in
+// `crate::dut::common`. Mirrors the plain-stack implementation in
 // `super::systemb_stack`, differing only in the inner state type the erase-code
 // dispatch targets.
 
-impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
+impl crate::dut::common::ConformanceStack for IpcSecureConformanceTestStack {
     type DeviceConfig = SystemBSecureDutConfig;
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {
@@ -651,7 +651,7 @@ impl crate::dut_common::ConformanceStack for IpcSecureConformanceTestStack {
     }
 
     fn apply_erase_code(state: &Self::State, code: EraseCode) {
-        crate::dut_common::apply_erase_code_to_system_b(state.inner(), code);
+        crate::dut::common::apply_erase_code_to_system_b(state.inner(), code);
     }
 }
 

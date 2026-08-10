@@ -1,7 +1,7 @@
 //! IPC link layer for multi-process conformance testing.
 //!
 //! Speaks the postcard-based [`RunnerMessage`] / [`DutMessage`]
-//! protocol defined in [`super::protocol`] over the child's end of
+//! protocol defined in [`crate::ipc::protocol`] over the child's end of
 //! the socketpair, and sits inside the DUT's stack as an
 //! `embassy`-async link layer.
 //!
@@ -42,8 +42,8 @@ use zweidraehte_proto::messages::buffers::{Buffer, MessageBuffer};
 use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessage, RequestMessage};
 use zweidraehte_proto::messages::knx::*;
 
-use super::framing::{read_msg_async, write_msg_async};
-use super::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
+use crate::ipc::framing::{read_msg_async, write_msg_async};
+use crate::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 
 /// Maximum number of outbox frames a single router tick can produce
 /// before we start logging warnings. All real conformance tests
@@ -82,7 +82,7 @@ const MAX_DRAIN_ITERS: usize = 128;
 //   it flips to `true`.
 //
 // The barrier state lives in process-global `embassy_sync::Signal`s
-// because the lifecycle handlers (dut_common) and the `IpcLinkLayer`
+// because the lifecycle handlers (dut::common) and the `IpcLinkLayer`
 // (this module) have no direct shared reference. The signals provide
 // proper "wait until" semantics without polling sleeps, at the cost
 // of a `CriticalSectionRawMutex` — cheap on the single-threaded
@@ -113,14 +113,14 @@ static BARRIER: BarrierState = BarrierState::new();
 // its public pub/sub channel (see `Stack::lifecycle_events`) when the AL's
 // read-on-init scan reaches `Done` — or settles in `Idle` on a startup
 // where preconditions can't be met (factory-reset state with no app
-// loaded). A small bridge task in `dut_common` subscribes to that channel
+// loaded). A small bridge task in `dut::common` subscribes to that channel
 // and fires this signal so `drain_roi_and_announce` below can wait on a
 // single primitive without pulling `LifecycleEvent` into the link layer.
 
 static ROI_DONE: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 
 /// Fire the "read-on-init settled" signal. Called from the DUT's
-/// lifecycle-event bridge task; see `crate::dut_common`.
+/// lifecycle-event bridge task; see `crate::dut::common`.
 pub fn signal_roi_done() {
     ROI_DONE.signal(());
 }
@@ -305,7 +305,7 @@ impl<'a> IpcLinkLayer<'a> {
     ///
     /// The AL publishes [`LifecycleEvent::ReadOnInitComplete`] exactly
     /// once per startup when its scan settles; a bridge task in
-    /// [`crate::dut_common::bridge_lifecycle_to_ipc`] forwards that
+    /// [`crate::dut::common::bridge_lifecycle_to_ipc`] forwards that
     /// publish into the local [`ROI_DONE`] signal. We `select!` on
     /// `req_rx` and that signal, falling through with a tight
     /// safety-net timer if the signal never arrives (broken stack).
@@ -543,7 +543,7 @@ impl<'a> IpcLinkLayer<'a> {
 
     /// Write `DutMessage::Exiting` for `PowerCycle` / `MasterReset`,
     /// which dispatch their work on `command_tx` and never produce a
-    /// `StepComplete`. The lifecycle handler task in `dut_common`
+    /// `StepComplete`. The lifecycle handler task in `dut::common`
     /// calls `emit_exiting_and_shutdown` → `mark_pending_exit(reason)`
     /// shortly after it picks the command up. Wait for that signal,
     /// write `Exiting` from this same async task (preserving the

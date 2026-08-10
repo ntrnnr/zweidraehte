@@ -1,7 +1,7 @@
 //! Parent-side DUT child-process lifecycle.
 //!
 //! [`ChildLifecycle`] speaks the postcard IPC protocol defined in
-//! [`super::protocol`] and exposes a strictly request/response step
+//! [`crate::ipc::protocol`] and exposes a strictly request/response step
 //! API.
 //!
 //! ```text
@@ -51,13 +51,9 @@ use futures_lite::future::or;
 use zweidraehte_proto::messages::knx::ServiceType;
 
 use super::frame_source::{CapturedLinkLayerMessage, FrameSource, TaggedFrame};
-use super::framing::{read_msg_async, write_msg_async};
-use super::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
-use super::shm::SharedMemory;
-use super::system7_secure_stack::System7SecureDutConfig;
-use super::system7_stack::System7DutConfig;
-use super::systemb_secure_stack::SystemBSecureDutConfig;
-use super::systemb_stack::SystemBDutConfig;
+use crate::ipc::framing::{read_msg_async, write_msg_async};
+use crate::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
+use crate::ipc::shm::SharedMemory;
 
 use crate::logger::{self, LogEntry};
 
@@ -170,17 +166,17 @@ pub struct ChildLifecycle {
 }
 
 impl ChildLifecycle {
-    /// Create a new lifecycle for `mode`, seeding the shared memory
-    /// with the default snapshot. Does NOT spawn the child — call
-    /// [`spawn_and_wait_roi`](Self::spawn_and_wait_roi) next.
+    /// Create a new lifecycle for `mode` over a blank shared-memory
+    /// region. Does NOT spawn the child — call
+    /// [`spawn_and_wait_roi`](Self::spawn_and_wait_roi) next, which is
+    /// where the DUT reads the blank region and seeds its own factory
+    /// defaults into it.
     pub fn new(mode: DutMode) -> io::Result<Self> {
-        let mut shm = SharedMemory::create()?;
-        match mode {
-            DutMode::SystemB => shm.write_state(&SystemBDutConfig::default_snapshot())?,
-            DutMode::SystemBSecure => shm.write_state(&SystemBSecureDutConfig::default_snapshot())?,
-            DutMode::System7 => shm.write_state(&System7DutConfig::default_snapshot())?,
-            DutMode::System7Secure => shm.write_state(&System7SecureDutConfig::default_snapshot())?,
-        }
+        // `SharedMemory::create` hands back a zeroed region, which is
+        // exactly the "blank flash" the DUT expects. Nothing here needs
+        // to know what a snapshot of `mode` looks like — see the
+        // module docs on why the parent stays out of that.
+        let shm = SharedMemory::create()?;
         Ok(Self { shm, state: LifecycleState::Dead, mode, next_seq: 0, unsolicited_frames: VecDeque::new() })
     }
 
@@ -229,52 +225,38 @@ impl ChildLifecycle {
         self.unsolicited_frames.clear();
     }
 
-    /// Re-initialize shared memory with the default snapshot for the
-    /// lifecycle's mode. Secure mode also wipes the seqnr tail region
-    /// so the respawned DUT starts with fresh per-peer counters.
+    /// Blank shared memory so the next DUT to map it boots factory-
+    /// fresh, seq tail included.
     ///
     /// Call after [`kill`](Self::kill) and before
     /// [`spawn_and_wait_roi`](Self::spawn_and_wait_roi) if you need a
     /// factory-fresh DUT (`TestStep::FullReset`).
-    pub fn reset_shared_memory(&mut self) -> io::Result<()> {
-        match self.mode {
-            DutMode::SystemB => self.shm.write_state(&SystemBDutConfig::default_snapshot())?,
-            DutMode::System7 => self.shm.write_state(&System7DutConfig::default_snapshot())?,
-            DutMode::SystemBSecure => {
-                self.shm.write_state(&SystemBSecureDutConfig::default_snapshot())?;
-                // Seq region is OUTSIDE the postcard payload (tail of
-                // SHM) — clear it so the respawned secure DUT doesn't
-                // replay-reject the harness's first secure frame
-                // against a stale tool seq.
-                self.shm.clear_seq_region();
-            }
-            DutMode::System7Secure => {
-                self.shm.write_state(&System7SecureDutConfig::default_snapshot())?;
-                // Same seq-tail contract as the System B secure DUT.
-                self.shm.clear_seq_region();
-            }
-        }
-        Ok(())
+    ///
+    /// This used to be four per-mode branches writing the matching
+    /// `*DutConfig::default_snapshot()`, plus a `clear_seq_region()` on
+    /// the two secure modes. Zeroing does both at once and — the point
+    /// — leaves the parent with no idea what any of those types are.
+    pub fn reset_shared_memory(&mut self) {
+        self.shm.blank();
     }
 
     /// Factory-reset the DUT as a single transactional unit: kill the
-    /// current child → reinitialise SHM with the default snapshot →
-    /// respawn and wait for ROI.
+    /// current child → blank SHM → respawn and wait for ROI, at which
+    /// point the fresh child has re-seeded the region from its own
+    /// factory defaults.
     ///
     /// Keeping the sequence in one method makes it all-or-nothing: on
     /// any intermediate failure the lifecycle ends in `Dead` (never
     /// wedged between sub-steps), and the caller's next command will
-    /// auto-respawn from the (possibly partially-reset) SHM. Buffered
-    /// unsolicited frames are discarded either way so the next suite
-    /// doesn't inherit leftover ROI.
+    /// auto-respawn. Buffered unsolicited frames are discarded either
+    /// way so the next suite doesn't inherit leftover ROI.
     pub async fn full_reset(&mut self) -> io::Result<()> {
         self.kill().await;
-        let reset_result = self.reset_shared_memory();
+        self.reset_shared_memory();
         // Always discard buffered unsolicited frames — even on partial
         // failure, what's buffered no longer reflects the DUT we're
         // about to run.
         self.discard_unsolicited();
-        reset_result?;
         self.spawn_and_wait_roi().await?;
         // Drop the fresh DUT's startup ROI scan — `full_reset` is
         // used as teardown, so the next suite shouldn't inherit ROI

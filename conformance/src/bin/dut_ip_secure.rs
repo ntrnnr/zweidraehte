@@ -20,16 +20,16 @@
 use embassy_executor::Spawner;
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::harness::ip_secure_stack::{
-    IP_SECURE_SERIAL_NUMBER, IpSecureDutStack, LoopbackIpPlatform, apply_secure_routing_config, default_dut_config,
-    dut_control_endpoint, dut_multicast_group, secure_routing_enabled,
+use zweidraehte_conformance::dut::ip_secure_stack::{
+    IpSecureDutStack, LoopbackIpPlatform, apply_secure_routing_config, default_dut_config, dut_control_endpoint,
+    dut_multicast_group, secure_routing_enabled,
 };
 use zweidraehte_device::bcus::system_b::{IpSecureResources, SystemBStackDefinition, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::{Runner, StackResources, prelude::*};
 
 // The FDSK doubles as the factory-default Device Authentication Code.
-use zweidraehte_conformance::harness::ip_secure_stack::DUT_DEVICE_AUTH_CODE;
+use zweidraehte_conformance::ipc::ip_secure::{DUT_DEVICE_AUTH_CODE, IP_SECURE_SERIAL_NUMBER};
 
 static STACK_RESOURCES: StaticCell<
     StackResources<

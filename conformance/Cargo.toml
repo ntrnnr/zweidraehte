@@ -5,42 +5,106 @@ edition = "2024"
 description = "KNX conformance testing framework"
 license = "AGPL-3.0-only"
 
+# ==============================================================================
+# Features
+# ==============================================================================
+#
+# The crate spans a process boundary: `src/harness/` drives the tests,
+# `src/dut/` *is* the device under test, and `src/ipc/` is the wire
+# between them. `dut` gates the second of those, which is the crate's
+# only user of the device stack and of embassy.
+#
+# The point is not build time — a plain `cargo build` needs everything
+# anyway, since the parent spawns the DUT binaries, and the device crate
+# stays in the graph regardless (zweidraehte-client → zweidraehte-knxprod
+# → zweidraehte-device, for the ETS descriptor types). The point is that
+#
+#     cargo check -p zweidraehte-conformance --no-default-features
+#
+# fails the moment the parent half reaches into the device stack to
+# answer a question it should have asked over the socket: without the
+# feature it is not a *direct* dependency, so it is not in the extern
+# prelude and `use zweidraehte_device::…` does not resolve. That has
+# been a convention documented in module headers; now it is a build
+# error.
+
+[features]
+default = ["dut"]
+dut = [
+    "dep:zweidraehte-device",
+    "dep:zweidraehte-knxprod",
+    "dep:zweidraehte-platform",
+    "dep:embassy-executor",
+    "dep:embassy-futures",
+    "dep:embassy-sync",
+    "dep:embassy-time",
+    "dep:const-default",
+    "dep:heapless",
+    "dep:serde_with",
+    "dep:static_cell",
+    "dep:zerocopy",
+]
+
+# ==============================================================================
+# Dependencies
+# ==============================================================================
+
 [dependencies]
-zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "ip-secure", "conformance"] }
+
+# --- Both halves ------------------------------------------------------------
 zweidraehte-proto = { path = "../crates/zweidraehte-proto", features = ["log", "knxip", "ip-secure", "std"] }
-# The configuration runner drives the real client library against the
-# DUT; tokio is its runtime (the harness's async-io/embassy-time bits
-# are executor-agnostic and run under it unchanged).
-zweidraehte-client = { path = "../crates/zweidraehte-client" }
-# The configuration runner generates each DUT's product file
-# in-process and reads it back through the client — a full
-# generator/parser round-trip; see harness::system7_product and
-# harness::system_b_product.
-zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-embassy-sync = { workspace = true }
-embassy-time = { workspace = true, features = ["std"] }
-embassy-futures = { workspace = true }
-embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"] }
-const-default = { workspace = true }
-zerocopy = { workspace = true }
-static_cell = { workspace = true }
-paste = { workspace = true }
-heapless = { workspace = true }
-log = { workspace = true, features = ["std"] }
-async-io = "2"
-futures-lite = { workspace = true }
-nix = { version = "0.29", features = ["mman", "fs"] }
-tempfile = "3"
 serde = { workspace = true, features = ["derive", "alloc", "std"] }
 postcard = { version = "1.1.3", features = ["alloc"] }
-serde_with = { workspace = true, features = ["macros"] }
-getrandom = "0.4.2"
+log = { workspace = true, features = ["std"] }
+nix = { version = "0.29", features = ["mman", "fs"] }
+# The socket half of `src/ipc/` is async on both sides, but the two sides
+# run under different executors — async-io's reactor is what lets one
+# module serve both.
+async-io = "2"
+
+# --- Parent only ------------------------------------------------------------
+# The configuration runner drives the real client library against the
+# DUT; tokio is its runtime (the parent side is executor-agnostic and
+# runs under it unchanged).
+zweidraehte-client = { path = "../crates/zweidraehte-client" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures-lite = { workspace = true }
+tempfile = "3"
 env_logger = { workspace = true }
-zweidraehte-platform = { path = "../crates/zweidraehte-platform", features = ["linux"] }
-socket2 = "0.6.4"
+# EITT template XML (src/eitt/schema.rs) and the profile/patch TOML.
 quick-xml = { workspace = true, features = ["serialize"] }
 toml = "1.1.3"
+# Both belong to the parent despite looking DUT-shaped: the IP Secure
+# test definitions in src/tests/ip_secure/ join the multicast group
+# themselves and generate their own nonces.
+socket2 = "0.6.4"
+getrandom = "0.4.2"
+
+# --- DUT only (feature `dut`) -----------------------------------------------
+zweidraehte-device = { path = "../crates/zweidraehte-device", features = ["log", "linux", "knxip", "ip-secure", "conformance"], optional = true }
+# Each DUT's product file is generated in-process from the same constants
+# that build its stack, then read back through the client — a full
+# generator/parser round-trip; see dut::system7_product and
+# dut::system_b_product.
+zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod", optional = true }
+zweidraehte-platform = { path = "../crates/zweidraehte-platform", features = ["linux"], optional = true }
+embassy-sync = { workspace = true, optional = true }
+embassy-time = { workspace = true, features = ["std"], optional = true }
+embassy-futures = { workspace = true, optional = true }
+embassy-executor = { workspace = true, features = ["arch-std", "executor-thread"], optional = true }
+const-default = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
+static_cell = { workspace = true, optional = true }
+heapless = { workspace = true, optional = true }
+serde_with = { workspace = true, features = ["macros"], optional = true }
+
+# ==============================================================================
+# Binaries
+# ==============================================================================
+#
+# The two scripted runners carry no `required-features`: they spawn the
+# DUT as a separate executable and never name a device type, so they are
+# the ones that prove the boundary holds.
 
 [[bin]]
 name = "conformance-runner"
@@ -53,26 +117,40 @@ path = "src/bin/eitt.rs"
 
 # Drives the real zweidraehte-client library (configuration download)
 # against the System 7 and System B DUTs; see src/bin/configuration.rs.
+#
+# The one runner that needs `dut`: it generates the DUT's product file to
+# download, and what a device's product data says is device knowledge. An
+# alternative would be to ask the running child for its MTXML over the
+# IPC socket, which would put this binary in the clean half too — at the
+# price of linking the whole knxprod generator into all four DUT
+# binaries. Not worth it while they share a crate; revisit if the DUT
+# half ever becomes a package of its own.
 [[bin]]
 name = "conformance-configuration"
 path = "src/bin/configuration.rs"
+required-features = ["dut"]
 
 [[bin]]
 name = "conformance-dut-systemb"
 path = "src/bin/dut_systemb.rs"
+required-features = ["dut"]
 
 [[bin]]
 name = "conformance-dut-systemb-secure"
 path = "src/bin/dut_systemb_secure.rs"
+required-features = ["dut"]
 
 [[bin]]
 name = "conformance-dut-ip-secure"
 path = "src/bin/dut_ip_secure.rs"
+required-features = ["dut"]
 
 [[bin]]
 name = "conformance-dut-system7"
 path = "src/bin/dut_system7.rs"
+required-features = ["dut"]
 
 [[bin]]
 name = "conformance-dut-system7-secure"
 path = "src/bin/dut_system7_secure.rs"
+required-features = ["dut"]

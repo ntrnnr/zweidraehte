@@ -597,7 +597,7 @@ use zweidraehte_device::storage::backends::{ByteIo, PackedSeqStore, region_len};
 use zweidraehte_device::storage::region::FramSiatRegion;
 use zweidraehte_device::storage::{HasConfigStore, HasSeqStore, SiatStore, seq};
 
-use crate::dut_common::{ConformanceStack, DutConfigStore};
+use crate::dut::common::{ConformanceStack, DutConfigStore};
 
 /// An [`ByteIo`] over the `mmap(MAP_SHARED)` seq region, addressed by a raw
 /// pointer.
@@ -649,10 +649,10 @@ type ShmSiatRegion = FramSiatRegion<256, 16>;
 
 /// Shared-memory sequence/SIAT store: [`PackedSeqStore`] over a [`ShmRegion`].
 ///
-/// The mmap region is zero-filled by the kernel (and re-zeroed by
-/// `clear_seq_region` between suites), which the layout relies on: no magic
-/// yet means the store boots to defaults, and the peer-count field reads 0
-/// on first boot before any write.
+/// The mmap region is zero-filled by the kernel (and re-zeroed by the
+/// parent's `SharedMemory::blank` between suites), which the layout relies
+/// on: no magic yet means the store boots to defaults, and the peer-count
+/// field reads 0 on first boot before any write.
 pub type ShmSeqStorage = PackedSeqStore<ShmRegion, ShmSiatRegion, 16>;
 
 // The bound region must cover the packed 16-slot layout within the shm tail.

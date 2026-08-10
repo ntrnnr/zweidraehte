@@ -58,7 +58,7 @@ use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO,
 // ============================================================================
 //
 // Same shadow-object arrangement the System B DUT uses for the 1.4.1
-// group-object cases (see `harness::systemb_stack` for the full rationale):
+// group-object cases (see `dut::systemb_stack` for the full rationale):
 //
 // - GO0 (ASAP 1): main 1-bit object
 // - GO1 (ASAP 2): GO0's communication flags
@@ -123,7 +123,7 @@ use zweidraehte_device::objects::tables::CommunicationObjectTable;
 // CoTab pointer for the ComObjectBusHook shadow objects
 // ============================================================================
 //
-// Same pattern as `harness::systemb_stack::set_conformance_cot`: the shadow
+// Same pattern as `dut::systemb_stack::set_conformance_cot`: the shadow
 // hook needs the live CoTab from `&mut self` alone, so the DUT binary
 // parks a pointer to it in a process-global static. The System 7 DUT is
 // its own process, so a second static per binary is fine.
@@ -446,7 +446,7 @@ impl DeviceModelNotifier for ConformanceSystem7State {
 /// The regions are adjacent for the same reason the System B map's are
 /// (partly-protected accesses run off one region's end into the next,
 /// starting with MemoryBit 2.10.2 overrunning the accessible window's
-/// last octet); see `ConformanceMemoryMap` in `harness::systemb_stack`.
+/// last octet); see `ConformanceMemoryMap` in `dut::systemb_stack`.
 ///
 /// Everything else — progmode byte, OptionReg, load control, the RAM
 /// window, the RT8 tables — falls through to [`System7MemoryMap`],
@@ -690,12 +690,12 @@ impl StackDefinition for IpcSystem7TestStack {
     const FIRST_ASAP: u16 = 0;
     type P = TestParameters;
     type CO = System7ComObjects;
-    type LLB = super::ipc::IpcLinkLayerBuilder;
+    type LLB = super::link::IpcLinkLayerBuilder;
     type ES = Tp1ExtensionState;
     type State = ConformanceSystem7State;
     type StateInit = System7StateInit<StaticIdentity, System7DutConfig>;
     type Mem = ConformanceSystem7MemoryMap;
-    type Storage = &'static crate::dut_common::DutConfigStore<Self>;
+    type Storage = &'static crate::dut::common::DutConfigStore<Self>;
 
     fn create_state(init: Self::StateInit) -> Self::State {
         match init.loaded_config {
@@ -856,7 +856,7 @@ pub fn state_init_from_snapshot(snapshot: System7DutConfig) -> System7StateInit<
     System7StateInit::new(StaticIdentity::new(device_info::SERIAL_NUMBER), Some(snapshot))
 }
 
-impl crate::dut_common::ConformanceStack for IpcSystem7TestStack {
+impl crate::dut::common::ConformanceStack for IpcSystem7TestStack {
     type DeviceConfig = System7DutConfig;
 
     fn to_device_config(state: &Self::State) -> Self::DeviceConfig {

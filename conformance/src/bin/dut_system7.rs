@@ -4,7 +4,7 @@
 //! the System 7 EITT profile. Same lifecycle as the plain DUT
 //! (`dut.rs`), specialised for `IpcSystem7TestStack`: the shadow-object
 //! hook and the EEPROM test regions live in the conformance wrapper
-//! types (`harness::system7_stack`), with the family memory map
+//! types (`dut::system7_stack`), with the family memory map
 //! underneath as the surface under test.
 //!
 //! Usage: `conformance-dut-system7 --shm-fd <N> --socket-fd <M>`
@@ -13,12 +13,13 @@ use embassy_executor::Spawner;
 use embassy_time::{Duration, Timer};
 use static_cell::StaticCell;
 
-use zweidraehte_conformance::dut_common::{self, CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
-use zweidraehte_conformance::harness::ipc::{IpcLinkLayerBuilder, set_primary_socket_fd};
-use zweidraehte_conformance::harness::shm::SharedMemory;
-use zweidraehte_conformance::harness::system7_stack::{
+use zweidraehte_conformance::dut::common as dut_common;
+use zweidraehte_conformance::dut::common::{CommandChannel, DutConfigStore, DutSystemControl, ShmCell};
+use zweidraehte_conformance::dut::link::{IpcLinkLayerBuilder, set_primary_socket_fd};
+use zweidraehte_conformance::dut::system7_stack::{
     ConformanceSystem7MemoryMap, IpcSystem7TestStack, System7DutConfig, device_info, state_init_from_snapshot,
 };
+use zweidraehte_conformance::ipc::shm::SharedMemory;
 
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::{Runner, Stack, StackResources};
@@ -80,14 +81,12 @@ async fn main(spawner: Spawner) {
     dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
 
     // SAFETY: the parent passed us a valid fd for a SHM region.
-    let shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
+    let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
 
-    // Deserialize state from SHM. Parent always writes the initial
-    // snapshot before spawning us.
-    let snapshot: System7DutConfig = shm
-        .read_state()
-        .expect("read shared memory")
-        .expect("shared memory uninitialized — parent should have written initial state");
+    // Deserialize state from SHM. A blank region means the parent wants
+    // us factory-fresh, so we seed it ourselves — the parent never
+    // constructs a snapshot.
+    let snapshot = dut_common::load_or_seed_snapshot(&mut shm, System7DutConfig::default_snapshot);
 
     let state_init = state_init_from_snapshot(snapshot);
     let shm = SHM.init(ShmCell::new(shm));
@@ -124,7 +123,7 @@ async fn main(spawner: Spawner) {
     // process.
     // SAFETY: the pointer outlives the stack (process-lifetime).
     unsafe {
-        zweidraehte_conformance::harness::system7_stack::set_system7_cot(stack.communication_object_table());
+        zweidraehte_conformance::dut::system7_stack::set_system7_cot(stack.communication_object_table());
     }
 
     // Spawn the lifecycle → IPC bridge BEFORE the stack runner so its

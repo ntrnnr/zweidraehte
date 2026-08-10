@@ -11,7 +11,7 @@
 //! runner's executor for the duration is harmless (the TP1 harness is
 //! idle while this suite runs).
 //!
-//! Key material matches the DUT seed (`harness::ip_secure_stack`):
+//! Key material matches the DUT seed (`ipc::ip_secure`):
 //! DAC = Appendix A "trustme" key, user 1 password hash = "secret".
 
 use std::io::{Read, Write};
@@ -27,9 +27,7 @@ use zweidraehte_proto::messages::knxip::{
 };
 use zweidraehte_proto::util::packets::{ParseBuffer, SerializablePacket, SerializeBuffer};
 
-use crate::harness::ip_secure_stack::{
-    DUT_DEVICE_AUTH_CODE, DUT_USER1_PASSWORD_HASH, MCAST_ENV, PORT_ENV, SECURE_ROUTING_ENV,
-};
+use crate::ipc::ip_secure::{DUT_DEVICE_AUTH_CODE, DUT_USER1_PASSWORD_HASH, MCAST_ENV, PORT_ENV, SECURE_ROUTING_ENV};
 
 pub mod multicast;
 

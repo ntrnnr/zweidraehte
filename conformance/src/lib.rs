@@ -3,23 +3,35 @@
 
 //! KNX Conformance Testing Framework
 //!
-//! This module provides a framework for running KNX conformance tests as defined
-//! by the KNX Association. Tests target the full stack using MockLinkLayer.
+//! A framework for running KNX conformance tests as defined by the KNX
+//! Association, against the real device stack rather than a mock.
 //!
 //! # Architecture
 //!
+//! The crate spans a process boundary, and the module tree says which
+//! side each part is on:
+//!
 //! ```text
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                       Test Runner (async)                       │
-//! ├─────────────────────────────────────────────────────────────────┤
-//! │                                                                 │
-//! │   ┌──────────────┐                       ┌──────────────────┐   │
-//! │   │ Test Harness │ ←─ inject/capture ──→ │  Full KNX Stack  │   │
-//! │   │              │                       │ (MockLinkLayer)  │   │
-//! │   └──────────────┘                       └──────────────────┘   │
-//! │                                                                 │
-//! └─────────────────────────────────────────────────────────────────┘
+//!   parent process                                child process
+//!   ──────────────                                ─────────────
+//!   engine · tests · eitt                         dut::{systemb,system7,…}_stack
+//!            ↓                                      ↑  the real device stack,
+//!   harness::ChildLifecycle                         │  built as a firmware
+//!            ↓                                      │  target would build it
+//!            └──── ipc::{protocol,framing,shm} ─────┘
+//!                  socketpair + mmap region
 //! ```
+//!
+//! The DUT is a separate executable, spawned per suite. A restart is a
+//! real process exit and respawn, so volatile state genuinely dies while
+//! persistent state survives in the shared-memory region — which is what
+//! the restart and load/run-state cases are actually testing.
+//!
+//! [`dut`] is behind the **`dut` cargo feature**; everything else builds
+//! without `zweidraehte-device` or embassy as direct dependencies, so
+//! the parent half cannot name a device type at all. See [`harness`] and
+//! [`dut`] for what may depend on what, and why it is worth keeping that
+//! way.
 //!
 //! # Test Definition
 //!
@@ -44,10 +56,16 @@
 
 use std::{borrow::Cow, collections::BTreeMap};
 
-pub mod dut_common;
+/// The device under test — the child process's half. Gated because it is
+/// the crate's only user of the device stack and embassy; see its module
+/// docs for what that gate buys.
+#[cfg(feature = "dut")]
+pub mod dut;
+
 pub mod eitt;
 pub mod engine;
 pub mod harness;
+pub mod ipc;
 pub mod logger;
 mod telegram;
 pub mod tests;

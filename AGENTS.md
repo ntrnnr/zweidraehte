@@ -583,10 +583,42 @@ executables, one per family and security level) are rebuilt with
 Three runners over the same DUTs + engine, differing only in where the
 test steps come from: `conformance-runner` (hand-written suites),
 `conformance-eitt` (vendor EITT XML), and `conformance-configuration`
-(the real `zweidraehte-client` library, driving actual downloads). The
-DUT children and the parent runners have a clean runtime split — the
-DUTs are embassy (they *are* the device stack), the parent side is
-runtime-agnostic and the bins are `#[tokio::main]`.
+(the real `zweidraehte-client` library, driving actual downloads).
+
+**The module tree is split by process, and the split is enforced.**
+`harness/` is the parent, `dut/` is the child, `ipc/` is the wire
+between them; everything else (`engine`, `tests/`, `eitt/`, `telegram`,
+`logger`) is parent-side. The DUT children and the parent runners also
+have a clean runtime split — the DUTs are embassy (they *are* the
+device stack), the parent side is runtime-agnostic and the bins are
+`#[tokio::main]`.
+
+`dut/` sits behind the **`dut` cargo feature**, on by default. It is
+the crate's only user of `zweidraehte-device`, `zweidraehte-knxprod`
+and embassy, so
+
+```bash
+cargo check -p zweidraehte-conformance --no-default-features
+```
+
+builds the parent half plus `conformance-runner` and
+`conformance-eitt` with none of those as *direct* dependencies — which
+makes a parent-side `use zweidraehte_device::…` fail to resolve. Run
+it after touching anything in `harness/`, `engine.rs`, `tests/` or
+`eitt/`. (The device crate is still in the build graph transitively,
+via `zweidraehte-client` → `zweidraehte-knxprod`; transitive deps are
+not in the extern prelude, so the boundary holds regardless.)
+
+`conformance-configuration` carries `required-features = ["dut"]`: it
+generates the DUT's product file to download, and what a device's
+product data says is device knowledge.
+
+**The parent never constructs device state.** It creates a zeroed
+shared-memory region and, for `TestStep::FullReset`, zeroes it again;
+the DUT reads a missing `"KNXS"` magic as blank flash and seeds its own
+`*DutConfig::default_snapshot()` (`dut::common::load_or_seed_snapshot`).
+That is what keeps the SHM payload opaque on the parent side — don't
+reintroduce a typed write there.
 
 Key modules:
 - `lib.rs` - `TestStep` / `TestCase` / `TestSuite` / `TestVariable`
@@ -602,8 +634,30 @@ Key modules:
   against the System 7 and System B DUTs (roadmap items 4 + 5)
 
 Subdirectories:
-- `harness/` - Test harness implementations
-  - `mock.rs` - Mock link layer for injection/capture
+- `ipc/` - the parent↔child wire; the only tree both halves compile,
+  so nothing here may name a device type or assume an executor
+  - `protocol.rs` - the message types (`RunnerMessage`, `DutMessage`),
+    pure serde
+  - `framing.rs` - length-prefixed postcard over the `UnixStream`
+  - `shm.rs` - the mmap region that survives a DUT respawn. Generic
+    over `T: Serialize`; the parent only ever creates or `blank()`s it
+  - `ip_secure.rs` - the IP Secure DUT has neither socketpair nor SHM,
+    so its contract is its Appendix A key material plus the env vars
+    the harness spawns it with. Both sides need them, so neither owns
+    them
+- `harness/` - the parent side: drives the child, never is it
+  - `lifecycle.rs` - `ChildLifecycle`: spawn / step / respawn /
+    `full_reset`, and the unsolicited-frame buffer
+  - `frame_source.rs` - captured frames and their provenance tags
+  - `client_bridge.rs` - a `KnxConnector` over the DUT IPC, so the
+    client library can drive a DUT (used by `configuration.rs`)
+- `dut/` - the child side (feature `dut`); the real device stack, built
+  as a firmware target would build it, over an IPC link layer
+  - `common.rs` - plumbing every TP1 DUT binary shares: argv, the
+    IPC-forwarding logger, `load_or_seed_snapshot`, erase-code
+    dispatch, the exit sequence
+  - `link.rs` - the DUT's KNX link layer over the IPC socket (a
+    `LinkLayerBuilder`, so the stack sits on it unmodified)
   - `systemb_stack.rs` / `systemb_secure_stack.rs` /
     `system7_stack.rs` / `system7_secure_stack.rs` - the DUT stack
     fixtures, one per family and security level; each exposes its
@@ -614,8 +668,6 @@ Subdirectories:
     `TestParameters`), the certification object, the shm sequence
     store and secure storage plumbing shared by all secure DUTs
   - `ip_secure_stack.rs` - the KNX IP Secure DUT fixture
-  - `client_bridge.rs` - a `KnxConnector` over the DUT IPC, so the
-    client library can drive a DUT (used by `configuration.rs`)
   - `system7_product.rs` / `system_b_product.rs` - generate each DUT's
     `.knxprod` product data in-process, for the download round-trip
 - `tests/` - Hand-written test suites
