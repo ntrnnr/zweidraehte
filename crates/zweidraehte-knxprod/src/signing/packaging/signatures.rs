@@ -4,6 +4,7 @@
 //! - RegistrationInfo elements
 //! - Directory signatures
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
@@ -187,12 +188,15 @@ pub fn verify_directory_signature(
         }
     };
 
-    // Build digest string using ICU collation
-    let digest = build_digest_string(files)?;
-    let digest_bytes = digest.as_bytes();
-
-    // Try converter key
-    if verify_sha1(digest_bytes, &signature, KeyType::Converter)? {
+    // Every real ETS-signed DB orders its digest with the Windows NLS word
+    // sort, which `build_digest_string` reproduces. (An ICU root-collation
+    // fallback used to be tried here as well, for names with non-ASCII letters
+    // the word-sort model cannot order — but no real DB ever needed it, and it
+    // dragged the whole icu crate tree into `packaging`. RSA verification
+    // fails loudly rather than false-accepting, so a DB our model cannot order
+    // shows up as a clean verification failure: the signal to revisit.)
+    let digest = build_digest_string(files);
+    if verify_sha1(digest.as_bytes(), &signature, KeyType::Converter)? {
         return Ok(DirectorySignatureResult {
             valid: true,
             key: Some("knxconv".to_string()),
@@ -209,38 +213,96 @@ pub fn verify_directory_signature(
     })
 }
 
-/// Build the digest string from file hashes using ICU collation.
-fn build_digest_string(files: &[(String, &[u8])]) -> Result<String, SigningError> {
-    use icu::collator::{Collator, CollatorOptions};
+/// The characters [`wordsort_cmp`] is *validated* to order exactly as the
+/// Windows NLS word sort does: the set observed across the real ETS-signed
+/// databases the model was reverse-engineered from (ASCII alphanumerics,
+/// space, underscore, hyphen, period, and the path separators — `/` because
+/// [`build_digest_string`] normalises it to `\`).
+///
+/// [`sign_directory_contents`] refuses any path outside this set, whitelist
+/// rather than blacklist: other ASCII punctuation (`+`, `(`, ...) has a
+/// plausible but unproven ordering, and non-ASCII letters are known to
+/// mis-sort (raw codepoint instead of linguistic weight). Growing this set
+/// requires validating the new character's ordering against a real
+/// ETS-signed database, or against `CompareStringEx(LOCALE_NAME_INVARIANT,
+/// 0, ...)` on Windows — which is the actual comparer ETS uses.
+fn wordsort_validated(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, ' ' | '_' | '-' | '.' | '\\' | '/')
+}
 
-    // Calculate SHA1 hash for each file
+/// Compare two path strings the way .NET/Windows NLS *word sort* does.
+///
+/// The rule below was reverse-engineered and validated to reproduce real MDT
+/// product signatures byte-for-byte: non-alphanumeric punctuation (space, `_`,
+/// `.`, `-`, ...) sorts *before* digits and letters; digits before letters; the
+/// path separator `\` sorts after letters; letters compare case-insensitively,
+/// with the raw string breaking exact ties.
+///
+/// This is an ASCII-oriented model — it orders non-ASCII letters by raw
+/// codepoint rather than true NLS weights, which is why signing only accepts
+/// the [`wordsort_validated`] character set.
+fn wordsort_cmp(a: &str, b: &str) -> Ordering {
+    // Primary weight of a character: the leading class (punctuation < digits <
+    // letters < path separator) plus a within-class ordinal. Letters fold to
+    // lowercase so case never changes primary order.
+    fn weight(ch: char) -> (u8, u32) {
+        if ch.is_ascii_digit() {
+            (1, ch as u32)
+        } else if ch.is_alphabetic() {
+            (2, ch.to_lowercase().next().map_or(ch as u32, |c| c as u32))
+        } else if ch == '\\' {
+            (3, 0)
+        } else {
+            (0, 0)
+        }
+    }
+
+    // Compare weight tuples lexicographically (this already decides unequal
+    // lengths, shorter-prefix first); only a full weight-tie falls through to
+    // the raw string, mirroring Python's `(tuple(weights), path)` sort key.
+    a.chars().map(weight).cmp(b.chars().map(weight)).then_with(|| a.cmp(b))
+}
+
+/// Build the `path:hash,...` digest string, ordered the way ETS orders it.
+///
+/// ETS signs directories on Windows/.NET Framework, placing the digest entries
+/// in a `SortedDictionary` whose comparer (`StringComparer.InvariantCulture`)
+/// is the Windows NLS *word sort*, reproduced here by [`wordsort_cmp`].
+fn build_digest_string(files: &[(String, &[u8])]) -> String {
+    // Calculate SHA1 hash for each file, normalising the path to Windows style.
     let mut file_hashes: Vec<(String, String)> = files
         .iter()
         .map(|(path, content)| {
             let mut hasher = Sha1::new();
             hasher.update(content);
             let hash = BASE64.encode(hasher.finalize());
-            // Convert path separators to Windows style
-            let win_path = path.replace('/', "\\");
-            (win_path, hash)
+            (path.replace('/', "\\"), hash)
         })
         .collect();
 
-    // Sort using ICU collation (root locale)
-    let collator = Collator::try_new(Default::default(), CollatorOptions::default())
-        .map_err(|e| SigningError::XmlWrite(format!("Failed to create collator: {:?}", e)))?;
+    file_hashes.sort_by(|a, b| wordsort_cmp(&a.0, &b.0));
 
-    file_hashes.sort_by(|a, b| collator.compare(&a.0, &b.0));
-
-    // Build digest string
-    let digest = file_hashes.iter().map(|(path, hash)| format!("{}:{}", path, hash)).collect::<Vec<_>>().join(",");
-
-    Ok(digest)
+    file_hashes.iter().map(|(path, hash)| format!("{}:{}", path, hash)).collect::<Vec<_>>().join(",")
 }
 
 /// Sign directory contents and return base64 signature.
 pub fn sign_directory_contents(files: &[(String, &[u8])]) -> Result<String, SigningError> {
-    let digest = build_digest_string(files)?;
+    // Signing must commit to ONE ordering, and it must be the one ETS-on-Windows
+    // recomputes at import. `wordsort_cmp` guarantees that only for the
+    // character set it was validated against, so anything outside it is refused
+    // loudly: a name the model mis-orders would produce a digest our own
+    // verification happily accepts (same wrong order on both sides) but ETS
+    // rejects — a silent break.
+    // TODO: grow `wordsort_validated` (or port the NLS linguistic sort weights)
+    // should a real DB with richer file names ever show up.
+    for (path, _) in files {
+        if let Some(ch) = path.chars().find(|&ch| !wordsort_validated(ch)) {
+            return Err(SigningError::UnsortableDigestPath { path: path.clone(), character: ch });
+        }
+    }
+
+    // Sign with the order ETS itself uses, so ETS on Windows accepts our output.
+    let digest = build_digest_string(files);
     let signature = sign_sha1(digest.as_bytes())?;
     Ok(BASE64.encode(&signature))
 }
@@ -498,5 +560,73 @@ mod tests {
         let result = verify_directory_signature(&files, &signature).expect("verify");
         assert!(result.valid);
         assert_eq!(result.key.as_deref(), Some("knxconv"));
+    }
+
+    // ==========================================================================
+    // Windows NLS word-sort ordering
+    // ==========================================================================
+    //
+    // ETS signs on Windows/.NET, whose default string comparer is the NLS *word
+    // sort*. That orders punctuation-bearing filenames differently than ICU (used
+    // by .NET off Windows), so ICU cannot reproduce ETS-signed directory digests
+    // whose filenames contain spaces/underscores (e.g. the MDT Glass Push Button
+    // DB). These assertions lock the ordering in; they are the same cases the
+    // upstream tooling validated against four real MDT product signatures.
+
+    fn wordsorted(names: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = names.iter().map(|s| s.to_string()).collect();
+        v.sort_by(|a, b| wordsort_cmp(a, b));
+        v
+    }
+
+    #[test]
+    fn wordsort_punctuation_sorts_before_alphanumerics() {
+        // The distinguishing rule vs ICU/ordinal: space/underscore/period sort
+        // *before* digits and letters. This is what flips Symbol1_/Symbol10/
+        // Symbol2 and "Jal Offen"/"JalX"-style names into ETS's order.
+        assert_eq!(wordsorted(&["a0", "a_b", "aa"]), ["a_b", "a0", "aa"]);
+        assert_eq!(wordsorted(&["Jal Offen", "JalMitte"]), ["Jal Offen", "JalMitte"]);
+        assert_eq!(wordsorted(&["Symbol10", "Symbol1_Balken", "Symbol2"]), ["Symbol1_Balken", "Symbol10", "Symbol2"],);
+    }
+
+    #[test]
+    fn wordsort_digits_before_letters_case_insensitive() {
+        assert_eq!(wordsorted(&["b", "A", "1"]), ["1", "A", "b"]);
+        // Case does not change primary order (raw string only breaks exact ties).
+        assert_eq!(wordsorted(&["Symbol", "symbol"]), ["Symbol", "symbol"]);
+    }
+
+    #[test]
+    fn wordsort_path_separator_sorts_after_letters() {
+        // "Baggages.xml" precedes the "Baggages\\..." subtree because '.' (punct)
+        // sorts before '\\' (separator).
+        assert_eq!(wordsorted(&["Baggages\\x.png", "Baggages.xml"]), ["Baggages.xml", "Baggages\\x.png"],);
+    }
+
+    #[test]
+    fn wordsort_nonascii_letters_sort_by_codepoint_not_nls() {
+        // Documents the model's known gap, it does not bless it: real NLS
+        // places `Ä` (U+00C4) next to `A`, i.e. before `B`; the model uses the
+        // raw codepoint and puts it after. This is exactly why
+        // `sign_directory_contents` only accepts the validated character set.
+        assert_eq!(wordsorted(&["Ärger.png", "Beta.png"]), ["Beta.png", "Ärger.png"]);
+    }
+
+    #[test]
+    fn signing_rejects_paths_outside_the_validated_charset() {
+        // Both guard rejections fire before any key material is touched, so
+        // this test does not need converter_key.xml.
+
+        // Non-ASCII letters are known to mis-sort (see the codepoint test).
+        let files = vec![("Bäggage.png".to_string(), b"content".as_slice())];
+        let err = sign_directory_contents(&files).expect_err("non-ASCII letters must not be signable");
+        assert!(matches!(err, SigningError::UnsortableDigestPath { character: 'ä', .. }), "got: {err}");
+
+        // ASCII outside the validated set is refused too — whitelist, not
+        // blacklist: parentheses plausibly sort like other punctuation, but no
+        // real signature has proven it.
+        let files = vec![("Symbol (1).png".to_string(), b"content".as_slice())];
+        let err = sign_directory_contents(&files).expect_err("unvalidated punctuation must not be signable");
+        assert!(matches!(err, SigningError::UnsortableDigestPath { character: '(', .. }), "got: {err}");
     }
 }

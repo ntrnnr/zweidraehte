@@ -10,8 +10,8 @@
 //!   quick-xml and thiserror are the only dependencies.
 //! - **[`mod@packaging`]**: everything that actually signs and zips —
 //!   SHA1/RSA hashing, the `.knxprod`/`.knxproj` writers, and the
-//!   master-data download cache. That pulls in rsa, sha1, zip, reqwest
-//!   and icu, so the whole subtree sits behind the `packaging` feature
+//!   master-data download cache. That pulls in rsa, sha1, zip and
+//!   reqwest, so the whole subtree sits behind the `packaging` feature
 //!   (on by default).
 //!
 //! Consumers that only parse XML — the client library's
@@ -105,6 +105,15 @@ pub enum SigningError {
 
     #[error("Missing required element: {0}")]
     MissingElement(String),
+
+    #[error(
+        "cannot faithfully sign the file name {path:?}: it contains {character:?}, \
+         which the word-sort collation model is not validated to order the way \
+         Windows NLS (and therefore ETS) does, and a mis-ordered digest would \
+         make ETS reject the package; rename the file, or extend the model after \
+         validating the character against a real ETS-signed database"
+    )]
+    UnsortableDigestPath { path: String, character: char },
 
     #[error("Invalid signature")]
     InvalidSignature,

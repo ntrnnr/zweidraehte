@@ -26,7 +26,6 @@ rsa = { version = "0.9", features = ["hazmat"], optional = true }
 rand = { version = "0.8", optional = true }
 num-bigint-dig = { version = "0.8", optional = true }
 zip = { version = "2.2", default-features = false, features = ["deflate"], optional = true }
-icu = { version = "1.5", optional = true }
 # Master-data resolution (feature `master-data`)
 reqwest = { version = "0.12", features = ["blocking"], optional = true }
 directories = { version = "5.0", optional = true }
@@ -60,5 +59,4 @@ packaging = [
     "dep:rsa",
     "dep:rand",
     "dep:num-bigint-dig",
-    "dep:icu",
 ]
