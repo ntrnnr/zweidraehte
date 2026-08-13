@@ -4,6 +4,7 @@
 //! MTXML files.
 
 mod app;
+mod download;
 mod ui;
 
 use std::fs::File;
@@ -34,11 +35,26 @@ struct Args {
     file: PathBuf,
 
     /// Path to knx_master.xml for mask version info (enables proper table generation)
-    #[arg(short, long)]
+    #[arg(short = 'M', long)]
     master_data: Option<PathBuf>,
 
-    /// Print summary only (no TUI)
+    /// A mods TOML to apply after loading (parameter values and group
+    /// links, same format knx-dump emits); `e` exports back to it
     #[arg(short, long)]
+    mods: Option<PathBuf>,
+
+    /// Start with this display language (e.g. de-DE); `l`/`L` cycle
+    /// through the available languages at runtime
+    #[arg(short, long)]
+    language: Option<String>,
+
+    /// Bus access for programming the device with `p` (KNX/IP
+    /// tunneling or USB)
+    #[command(flatten)]
+    target: zweidraehte_client::cli::OptionalTargetArgs,
+
+    /// Print summary only (no TUI)
+    #[arg(long)]
     summary: bool,
 }
 
@@ -115,8 +131,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
     };
 
+    // The document's translations live at the manufacturer level;
+    // collect them before the program is moved out.
+    let translations = zweidraehte_knxprod::runtime::Translations::from_knx(&knx);
+
     // Get the application program
-    let program = knx
+    let mut program = knx
         .manufacturer_data
         .manufacturer
         .application_programs
@@ -124,6 +144,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_iter()
         .next()
         .ok_or("No application program found")?;
+
+    // The pristine copy every language switch starts from.
+    let pristine_program = program.clone();
+    if let Some(language) = &args.language {
+        translations.apply(&mut program, language).ok_or_else(|| {
+            format!("the product has no language {language:?}; available: {:?}", translations.languages())
+        })?;
+        eprintln!("Display language: {language}");
+    }
 
     // Load baggage index from the same directory as the MTXML file
     let baggage_index = args.file.parent().and_then(|dir| match BaggageIndex::from_directory(dir) {
@@ -135,10 +164,39 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // Create unified Device
-    let device = Device::new(program, master_data.as_ref(), baggage_index);
+    let mut device = Device::new(program, master_data.as_ref(), baggage_index.clone());
+
+    // Apply a mods file over the defaults, so the TUI opens showing
+    // the configuration it describes. Hard errors, like the loader:
+    // an entry the product rejects is a mistake to fix, not to skim
+    // past silently.
+    let loaded_mods = match &args.mods {
+        Some(path) => {
+            let text =
+                std::fs::read_to_string(path).map_err(|e| format!("reading mods file {}: {e}", path.display()))?;
+            let mods: zweidraehte_knxprod::runtime::mods::DeviceMods =
+                toml::from_str(&text).map_err(|e| format!("parsing mods file {}: {e}", path.display()))?;
+            zweidraehte_knxprod::runtime::mods::apply_mods(&mut device, &mods)
+                .map_err(|e| format!("applying mods file {}: {e}", path.display()))?;
+            eprintln!("Applied {} parameter(s), {} link(s) from {:?}", mods.params.len(), mods.links.len(), path);
+            Some(mods)
+        }
+        None => None,
+    };
 
     // Create app with master data
-    let app = App::with_master_data(device, master_data);
+    let mut app = App::with_master_data(device, master_data);
+    if let (Some(path), Some(mods)) = (args.mods, loaded_mods) {
+        app.set_mods_context(path, mods.device);
+    }
+    app.download_context =
+        Some(app::DownloadContext { target: args.target.to_target(), master_data: args.master_data.clone() });
+    if !translations.is_empty() {
+        app.set_language_context(
+            app::LanguageContext { translations, pristine: pristine_program, baggage: baggage_index },
+            args.language,
+        );
+    }
 
     // Run TUI
     run_tui(app)?;
@@ -167,10 +225,29 @@ fn run_tui(mut app: App) -> io::Result<()> {
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
     loop {
+        app.poll_download();
         terminal.draw(|frame| ui::render(frame, app))?;
 
+        // Poll so the download popup animates while telegrams fly;
+        // idle cost is one wakeup per interval.
+        if !event::poll(std::time::Duration::from_millis(80))? {
+            if app.should_quit {
+                return Ok(());
+            }
+            continue;
+        }
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
+                continue;
+            }
+
+            // The download popup owns the keyboard while it is up:
+            // nothing to interact with while running, Enter/Esc/q
+            // dismiss once finished.
+            if let Some(download) = &app.download {
+                if download.result.is_some() && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+                    app.dismiss_download();
+                }
                 continue;
             }
 
@@ -180,6 +257,15 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             match key.code {
                 KeyCode::Char('q') if !in_edit_mode => {
                     app.should_quit = true;
+                }
+                KeyCode::Char('e') if !in_edit_mode => {
+                    app.export_mods();
+                }
+                KeyCode::Char('l') | KeyCode::Char('L') if !in_edit_mode => {
+                    app.open_language_select();
+                }
+                KeyCode::Char('p') if !in_edit_mode => {
+                    app.start_download();
                 }
                 KeyCode::Esc if in_edit_mode => {
                     app.cancel_edit();

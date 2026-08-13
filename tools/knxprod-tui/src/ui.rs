@@ -2,10 +2,10 @@
 
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Row, Table},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Row, Table},
 };
 
 #[cfg(feature = "images")]
@@ -36,7 +36,16 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     // Render edit popup if in edit mode
     if let EditMode::EnumDropdown { options, selected_idx, scroll_offset, .. } = &app.edit_mode {
-        render_dropdown_popup(frame, options, *selected_idx, *scroll_offset);
+        render_dropdown_popup(frame, options, *selected_idx, *scroll_offset, "Select Value");
+    }
+    if let EditMode::LanguageSelect { options, selected_idx, scroll_offset } = &app.edit_mode {
+        let labels: Vec<(i64, String)> = options.iter().enumerate().map(|(i, (_, l))| (i as i64, l.clone())).collect();
+        render_dropdown_popup(frame, &labels, *selected_idx, *scroll_offset, "Select Language");
+    }
+
+    // The download popup outranks everything.
+    if app.download.is_some() {
+        render_download_popup(frame, app);
     }
 }
 
@@ -134,6 +143,9 @@ fn render_sidebar(frame: &mut Frame, area: Rect, app: &App) {
 
             let style = if is_selected {
                 Style::default().bg(Color::DarkGray).fg(Color::White)
+            } else if node.is_group() {
+                // Main groups are headers, not pages — ETS-style.
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
             } else if node.depth == 0 {
                 Style::default().fg(Color::Yellow)
             } else {
@@ -237,7 +249,7 @@ fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, wid
                 EditMode::NumberInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::TextInput { param_id: edit_id, .. } => edit_id == param_id,
                 EditMode::EnumDropdown { param_id: edit_id, .. } => edit_id == param_id,
-                EditMode::GroupAddressInput { .. } | EditMode::None => false,
+                EditMode::GroupAddressInput { .. } | EditMode::LanguageSelect { .. } | EditMode::None => false,
             };
 
             // Use 40% of width for label, leave rest for value
@@ -418,13 +430,13 @@ fn render_widget<'a>(widget: &WidgetType, editing: bool, app: &App, suffix: &str
             if editing {
                 vec![
                     Span::styled("[", Style::default().fg(Color::Yellow)),
-                    Span::styled(display, Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                    Span::styled(display, Style::default().fg(Color::LightMagenta).add_modifier(Modifier::BOLD)),
                     Span::styled("]", Style::default().fg(Color::Yellow)),
                 ]
             } else {
                 vec![
                     Span::styled("[", Style::default().fg(Color::DarkGray)),
-                    Span::styled(display, Style::default().fg(Color::Magenta)),
+                    Span::styled(display, Style::default().fg(Color::LightMagenta)),
                     Span::styled("]", Style::default().fg(Color::DarkGray)),
                 ]
             }
@@ -763,7 +775,13 @@ fn render_hex_view(frame: &mut Frame, area: Rect, app: &App) {
 /// Maximum visible items in dropdown (must match App::DROPDOWN_VISIBLE_ITEMS)
 const DROPDOWN_VISIBLE_ITEMS: usize = 12;
 
-fn render_dropdown_popup(frame: &mut Frame, options: &[(i64, String)], selected_idx: usize, scroll_offset: usize) {
+fn render_dropdown_popup(
+    frame: &mut Frame,
+    options: &[(i64, String)],
+    selected_idx: usize,
+    scroll_offset: usize,
+    title: &str,
+) {
     let max_width = options.iter().map(|(_, t)| t.len()).max().unwrap_or(10) + 8;
     let visible_count = options.len().min(DROPDOWN_VISIBLE_ITEMS);
     let height = (visible_count + 2) as u16;
@@ -780,10 +798,10 @@ fn render_dropdown_popup(frame: &mut Frame, options: &[(i64, String)], selected_
     let has_more_above = scroll_offset > 0;
     let has_more_below = scroll_offset + visible_count < options.len();
     let title = match (has_more_above, has_more_below) {
-        (true, true) => " ▲ Select Value ▼ ",
-        (true, false) => " ▲ Select Value ",
-        (false, true) => " Select Value ▼ ",
-        (false, false) => " Select Value ",
+        (true, true) => format!(" ▲ {title} ▼ "),
+        (true, false) => format!(" ▲ {title} "),
+        (false, true) => format!(" {title} ▼ "),
+        (false, false) => format!(" {title} "),
     };
 
     let block = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Yellow)).title(title);
@@ -815,18 +833,31 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     let visible_params = app.device.visible_param_refs().count();
     let visible_objs = app.device.visible_com_object_refs().count();
 
+    // Feedback (export result, input error) displaces the key hints
+    // until the next message replaces it.
+    if let Some(message) = &app.status_message {
+        let status = Paragraph::new(format!(" {message}")).style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        frame.render_widget(status, area);
+        return;
+    }
+
     let help = match (&app.edit_mode, app.current_tab, app.focus) {
         (EditMode::EnumDropdown { .. }, _, _) => "↑/↓: Select | Enter: Confirm | Esc: Cancel",
         (EditMode::NumberInput { .. }, _, _) => "Type number | Enter: Confirm | Esc: Cancel",
         (EditMode::TextInput { .. }, _, _) => "Type text | Enter: Confirm | Esc: Cancel",
-        (EditMode::GroupAddressInput { .. }, _, _) => "Type group address (e.g., 1/2/3) | Enter: Confirm | Esc: Cancel",
-        (EditMode::None, _, Focus::Tabs) => "←/→: Switch tab | Tab/Enter: Focus content | q: Quit",
+        (EditMode::LanguageSelect { .. }, _, _) => "↑/↓: Select language | Enter: Apply | Esc: Cancel",
+        (EditMode::GroupAddressInput { .. }, _, _) => {
+            "Type group address(es), comma-separated, first one sends | Enter: Confirm | Esc: Cancel"
+        }
+        (EditMode::None, _, Focus::Tabs) => {
+            "←/→: Switch tab | Tab/Enter: Focus content | e: Export | l: Language | p: Program | q: Quit"
+        }
         (EditMode::None, MainTab::Parameters, Focus::Sidebar) => {
             "↑/↓: Navigate | Enter: Expand | Tab: Content | q: Quit"
         }
         (EditMode::None, MainTab::Parameters, Focus::Content) => "↑/↓: Navigate | Enter: Edit | Tab: Tabs | q: Quit",
         (EditMode::None, MainTab::CommObjects, Focus::Content) => {
-            "↑/↓: Navigate | Enter: Set Group Address | Tab: Tabs | q: Quit"
+            "↑/↓: Navigate | Enter: Set Group Address | e: Export mods | Tab: Tabs | q: Quit"
         }
         (EditMode::None, MainTab::CommObjects, Focus::Sidebar) => {
             // Shouldn't happen
@@ -853,4 +884,103 @@ fn render_status(frame: &mut Frame, area: Rect, app: &App) {
     ]));
 
     frame.render_widget(status, area);
+}
+
+/// The programming popup: the tasks already done, the one in flight,
+/// and a progress gauge over the whole procedure.
+fn render_download_popup(frame: &mut Frame, app: &App) {
+    let Some(download) = &app.download else { return };
+
+    let area = frame.area();
+    let width = area.width.saturating_sub(6).clamp(50, 80);
+    let height = 18u16.min(area.height.saturating_sub(2));
+    let popup =
+        Rect { x: area.width.saturating_sub(width) / 2, y: area.height.saturating_sub(height) / 2, width, height };
+
+    frame.render_widget(Block::default().style(Style::default().bg(Color::Black)), popup);
+
+    let (border, title) = match &download.result {
+        None => (Color::Cyan, " ⚡ Programming device ".to_string()),
+        Some(Ok(_)) => (Color::Green, " ✔ Programming complete ".to_string()),
+        Some(Err(_)) => (Color::Red, " ✘ Programming failed ".to_string()),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border).add_modifier(Modifier::BOLD))
+        .title(title);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(4),    // task history + current
+            Constraint::Length(1), // spacer
+            Constraint::Length(2), // gauge
+            Constraint::Length(1), // footer
+        ])
+        .split(inner);
+
+    // Task list: as many finished tasks as fit above the current one.
+    let task_rows = chunks[0].height as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    let history = task_rows.saturating_sub(1);
+    for label in download.past.iter().rev().take(history).rev() {
+        lines.push(Line::from(vec![
+            Span::styled("  ✔ ", Style::default().fg(Color::Green)),
+            Span::styled(label.clone(), Style::default().fg(Color::Gray)),
+        ]));
+    }
+    const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    match (&download.current, &download.result) {
+        (Some(label), _) => {
+            let frame_glyph = SPINNER[download.spinner % SPINNER.len()];
+            let mut spans = vec![
+                Span::styled(format!("  {frame_glyph} "), Style::default().fg(Color::Cyan)),
+                Span::styled(label.clone(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            ];
+            if let Some((done, total)) = download.data {
+                spans.push(Span::styled(format!("  {done}/{total} B"), Style::default().fg(Color::Cyan)));
+            }
+            lines.push(Line::from(spans));
+        }
+        (None, Some(Ok(summary))) => {
+            lines.push(Line::from(Span::styled(
+                format!("  {summary}"),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
+            )));
+        }
+        (None, Some(Err(error))) => {
+            lines.push(Line::from(Span::styled(
+                format!("  {error}"),
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            )));
+        }
+        (None, None) => {}
+    }
+    frame.render_widget(Paragraph::new(lines), chunks[0]);
+
+    // The gauge: overall procedure progress, byte-blended.
+    let (index, total) = download.step;
+    let label = if download.result.is_some() {
+        "done".to_string()
+    } else if total == 0 {
+        "preparing…".to_string()
+    } else {
+        format!("step {}/{}", index + 1, total)
+    };
+    let gauge = Gauge::default()
+        .gauge_style(Style::default().fg(border).bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .percent(app.download_ratio())
+        .label(label);
+    frame.render_widget(gauge, chunks[2]);
+
+    let footer = match &download.result {
+        None => "programming — hands off the keyboard",
+        Some(_) => "Enter / Esc: close",
+    };
+    frame.render_widget(
+        Paragraph::new(footer).alignment(Alignment::Center).style(Style::default().fg(Color::Gray)),
+        chunks[3],
+    );
 }

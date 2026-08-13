@@ -121,6 +121,15 @@ pub struct TreeNode {
     pub node_type: NodeType,
 }
 
+impl TreeNode {
+    /// Group headers — the ETS-style main groups (channels, the
+    /// device-settings block): never selectable, never a page of
+    /// their own; only the sub-pages below them carry settings.
+    pub fn is_group(&self) -> bool {
+        matches!(self.node_type, NodeType::DeviceSettings | NodeType::Channel(_))
+    }
+}
+
 /// Type of sidebar tree node.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Fields reserved for future use
@@ -220,6 +229,7 @@ impl<'a> TreeBuilderVisitor<'a> {
     fn block_has_visible_items(&self, block: &ParameterBlock) -> bool {
         for item in &block.items {
             match item {
+                ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id) {
                         return true;
@@ -309,7 +319,13 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         }
 
         let block_name = block.name.clone().unwrap_or_else(|| block.id.clone());
-        let raw_text = block.text.clone().unwrap_or_else(|| block_name.clone());
+        // An active ParameterBlockRename replaces the block's title.
+        let raw_text = self
+            .device
+            .active_block_rename(&block.id)
+            .map(str::to_string)
+            .or_else(|| block.text.clone())
+            .unwrap_or_else(|| block_name.clone());
 
         let id = if let Some(ch_idx) = self.current_channel_idx {
             format!("channel_{}_block_{}", ch_idx, block_name)
@@ -400,6 +416,13 @@ pub enum EditMode {
     NumberInput { param_id: String, buffer: String },
     /// Editing a text parameter
     TextInput { param_id: String, buffer: String, cursor: usize },
+    /// Selecting the display language from a popup list.
+    LanguageSelect {
+        /// `(language, label)` per row; `None` is the default language.
+        options: Vec<(Option<String>, String)>,
+        selected_idx: usize,
+        scroll_offset: usize,
+    },
     /// Editing a group address for a communication object
     GroupAddressInput {
         /// The communication object number (ASAP)
@@ -467,6 +490,42 @@ pub struct ComObjectRow {
     pub flag_u: bool,
 }
 
+/// Everything a language switch needs to rebuild the device.
+pub struct LanguageContext {
+    /// The document's `<Languages>` translations.
+    pub translations: zweidraehte_knxprod::runtime::Translations,
+    /// The program as parsed, in its `DefaultLanguage` — every switch
+    /// starts from this copy, because applying a translation rewrites
+    /// texts in place.
+    pub pristine: zweidraehte_knxprod::schema::ApplicationProgram,
+    /// The baggage the device was originally built with.
+    pub baggage: Option<zweidraehte_knxprod::runtime::BaggageIndex>,
+}
+
+/// The live download popup's state, fed by the worker thread.
+pub struct DownloadUi {
+    /// Finished task labels, oldest first.
+    pub past: Vec<String>,
+    /// The task currently running.
+    pub current: Option<String>,
+    /// `(index, total)` of the current procedure step; total 0 while
+    /// still in the preparation stages.
+    pub step: (usize, usize),
+    /// Byte progress within the current step, when it has one.
+    pub data: Option<(usize, usize)>,
+    /// The outcome, once the worker is done.
+    pub result: Option<Result<String, String>>,
+    /// Spinner phase, advanced every UI tick.
+    pub spinner: usize,
+    receiver: std::sync::mpsc::Receiver<crate::download::DownloadMsg>,
+}
+
+/// What the App needs to start a download; provided from the CLI.
+pub struct DownloadContext {
+    pub target: Option<zweidraehte_client::cli::BusTarget>,
+    pub master_data: Option<std::path::PathBuf>,
+}
+
 /// Application state.
 #[allow(dead_code)] // Some fields reserved for future use
 pub struct App {
@@ -514,6 +573,26 @@ pub struct App {
     pub expanded_nodes: std::collections::HashSet<String>,
     /// Whether the app should quit
     pub should_quit: bool,
+    /// One-line feedback shown in the status bar (export results,
+    /// input errors); replaced by the next message.
+    pub status_message: Option<String>,
+    /// Where `e` exports the mods to: the file loaded via `--mods`,
+    /// or a name derived from the program id.
+    pub mods_export_path: Option<std::path::PathBuf>,
+    /// Everything a language switch needs to rebuild the device from
+    /// scratch: the document's translations, the untranslated program,
+    /// and the baggage the device was built with.
+    pub language_context: Option<LanguageContext>,
+    /// The currently applied language; `None` shows the program's
+    /// `DefaultLanguage` base texts.
+    pub current_language: Option<String>,
+    /// Bus access for programming the device, from the CLI.
+    pub download_context: Option<DownloadContext>,
+    /// The download popup, while one is running or awaiting dismissal.
+    pub download: Option<DownloadUi>,
+    /// The loaded mods file's `[device]` section, carried through the
+    /// export so the individual address survives a TUI round trip.
+    pub mods_device_section: Option<zweidraehte_knxprod::runtime::mods::DeviceSection>,
 }
 
 #[allow(dead_code)] // Convenience constructors for library use
@@ -552,6 +631,13 @@ impl App {
             edit_mode: EditMode::None,
             expanded_nodes: std::collections::HashSet::new(),
             should_quit: false,
+            status_message: None,
+            mods_export_path: None,
+            mods_device_section: None,
+            language_context: None,
+            current_language: None,
+            download_context: None,
+            download: None,
         };
 
         // Build initial data
@@ -633,6 +719,24 @@ impl App {
             // Flatten the visible tree to TreeNode list based on expansion state
             self.flatten_visible_tree(&visible_tree, &dynamic);
         }
+
+        // The cursor must rest on a page, never a group header.
+        self.snap_selection_to_page();
+    }
+
+    /// Move `selected_tree_idx` onto the nearest selectable page —
+    /// forward first, then backward; a tree of nothing but headers
+    /// leaves it at 0 with no content.
+    fn snap_selection_to_page(&mut self) {
+        if self.tree_nodes.get(self.selected_tree_idx).is_some_and(|n| !n.is_group()) {
+            return;
+        }
+        let forward = self.tree_nodes.iter().skip(self.selected_tree_idx).position(|n| !n.is_group());
+        let index = match forward {
+            Some(offset) => Some(self.selected_tree_idx + offset),
+            None => self.tree_nodes.iter().rposition(|n| !n.is_group()),
+        };
+        self.selected_tree_idx = index.unwrap_or(0);
     }
 
     /// Flatten a VisibleTreeNode tree to the flat TreeNode list.
@@ -686,19 +790,19 @@ impl App {
                 }
             };
 
+            // Main groups are permanent headers: always expanded (a
+            // header you cannot select cannot be re-opened), their
+            // sub-pages always listed — the way ETS presents them.
+            let _ = is_expanded;
             self.tree_nodes.push(TreeNode {
                 id: node.id.clone(),
                 name,
                 depth: 0, // Root nodes
-                expanded: is_expanded,
+                expanded: true,
                 has_children: !node.children.is_empty(),
                 node_type,
             });
-
-            // If expanded, add children at depth 1
-            if is_expanded {
-                self.flatten_children(&node.children, 1, dynamic);
-            }
+            self.flatten_children(&node.children, 1, dynamic);
         }
     }
 
@@ -834,6 +938,7 @@ impl App {
     fn collect_visible_channel_blocks<'a>(&self, channel: &'a Channel, blocks: &mut Vec<&'a ParameterBlock>) {
         for item in &channel.items {
             match item {
+                ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::ParameterBlock(pb) => {
                     if self.block_has_visible_items(&pb.items) {
                         blocks.push(pb);
@@ -853,6 +958,7 @@ impl App {
     fn collect_visible_channel_modules<'a>(&self, channel: &'a Channel, modules: &mut Vec<&'a Module>) {
         for item in &channel.items {
             match item {
+                ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::Module(module) => {
                     if self.device.is_module_visible(&module.id) {
                         modules.push(module);
@@ -984,52 +1090,12 @@ impl App {
         }
     }
 
-    /// Check if a selector value matches a condition test string.
+    /// Check if a selector value matches a condition test string —
+    /// the library's condition grammar, adapted for the optional
+    /// selector value the tree-building paths carry.
     fn matches_condition(&self, value: Option<i64>, test: &str) -> bool {
-        let value = match value {
-            Some(v) => v,
-            None => return false,
-        };
-
-        let test = test.trim();
-
-        // Handle comparison operators
-        if let Some(rest) = test.strip_prefix("!=") {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value != test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix(">=") {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value >= test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix("<=") {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value <= test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix('>') {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value > test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix('<') {
-            if let Ok(test_val) = rest.trim().parse::<i64>() {
-                return value < test_val;
-            }
-        } else if let Some(rest) = test.strip_prefix('=')
-            && let Ok(test_val) = rest.trim().parse::<i64>()
-        {
-            return value == test_val;
-        }
-
-        // Handle space-separated list of values (OR)
-        for part in test.split_whitespace() {
-            if let Ok(test_val) = part.parse::<i64>()
-                && value == test_val
-            {
-                return true;
-            }
-        }
-
-        false
+        use zweidraehte_knxprod::runtime::model::Condition;
+        value.is_some_and(|v| Condition::parse(test).is_some_and(|c| c.matches(v)))
     }
 
     fn add_cib_blocks_to_tree(&mut self, cib: &ChannelIndependentBlock, depth: usize) {
@@ -1039,7 +1105,12 @@ impl App {
         for pb in blocks {
             let block_name = pb.name.clone().unwrap_or_else(|| pb.id.clone());
             let block_id = format!("device_block_{}", block_name);
-            let raw_text = pb.text.clone().unwrap_or_else(|| block_name.clone());
+            let raw_text = self
+                .device
+                .active_block_rename(&pb.id)
+                .map(str::to_string)
+                .or_else(|| pb.text.clone())
+                .unwrap_or_else(|| block_name.clone());
             let text = self.device.interpolate_text(&raw_text);
 
             self.tree_nodes.push(TreeNode {
@@ -1057,6 +1128,7 @@ impl App {
     fn collect_visible_cib_blocks<'a>(&self, cib: &'a ChannelIndependentBlock, blocks: &mut Vec<&'a ParameterBlock>) {
         for item in &cib.items {
             match item {
+                ChannelIndependentItem::ParameterBlockRename(_) => {}
                 ChannelIndependentItem::ParameterBlock(pb) => {
                     if self.block_has_visible_items(&pb.items) {
                         blocks.push(pb);
@@ -1077,7 +1149,12 @@ impl App {
         for pb in blocks {
             let block_name = pb.name.clone().unwrap_or_else(|| pb.id.clone());
             let block_id = format!("channel_{}_block_{}", channel_idx, block_name);
-            let raw_text = pb.text.clone().unwrap_or_else(|| block_name.clone());
+            let raw_text = self
+                .device
+                .active_block_rename(&pb.id)
+                .map(str::to_string)
+                .or_else(|| pb.text.clone())
+                .unwrap_or_else(|| block_name.clone());
             let text = self.device.interpolate_text(&raw_text);
 
             self.tree_nodes.push(TreeNode {
@@ -1177,6 +1254,7 @@ impl App {
     fn block_has_visible_items(&self, items: &[ParameterBlockItem]) -> bool {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id) {
                         return true;
@@ -1223,12 +1301,11 @@ impl App {
 
         if let Some(node_type) = node_type {
             match &node_type {
-                NodeType::DeviceSettings => {
-                    self.build_device_settings_content();
-                }
-                NodeType::Channel(idx) => {
-                    self.build_channel_content(*idx);
-                }
+                // Group headers are not pages: no settings of their
+                // own, ETS-style. (Unreachable through navigation —
+                // the cursor snaps to pages — but a tree of nothing
+                // but headers still lands here.)
+                NodeType::DeviceSettings | NodeType::Channel(_) => {}
                 NodeType::ParameterBlock { parent, block_name } => {
                     self.build_block_content(*parent, block_name);
                 }
@@ -1245,6 +1322,7 @@ impl App {
         if let Some(cib) = cib {
             for item in &cib.items {
                 match item {
+                    ChannelIndependentItem::ParameterBlockRename(_) => {}
                     ChannelIndependentItem::ParameterBlock(pb) => {
                         self.add_block_items(&pb.items);
                     }
@@ -1263,6 +1341,7 @@ impl App {
         if let Some(channel) = channel {
             for item in &channel.items {
                 match item {
+                    ChannelItem::ParameterBlockRename(_) => {}
                     ChannelItem::ParameterBlock(pb) => {
                         self.add_block_items(&pb.items);
                     }
@@ -1352,6 +1431,7 @@ impl App {
     ) {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     self.add_module_param_ref(&prr.ref_id, expanded);
                 }
@@ -1454,6 +1534,7 @@ impl App {
     ) {
         for item in items {
             match item {
+                WhenItem::ParameterBlockRename(_) => {}
                 WhenItem::ParameterRefRef(prr) => {
                     self.add_module_param_ref(&prr.ref_id, expanded);
                 }
@@ -1770,6 +1851,7 @@ impl App {
     fn find_block_in_cib<'a>(&self, cib: &'a ChannelIndependentBlock, block_name: &str) -> Option<&'a ParameterBlock> {
         for item in &cib.items {
             match item {
+                ChannelIndependentItem::ParameterBlockRename(_) => {}
                 ChannelIndependentItem::ParameterBlock(pb) => {
                     if pb.name.as_deref() == Some(block_name) {
                         return Some(pb);
@@ -1789,6 +1871,7 @@ impl App {
     fn find_block_in_channel<'a>(&self, channel: &'a Channel, block_name: &str) -> Option<&'a ParameterBlock> {
         for item in &channel.items {
             match item {
+                ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::ParameterBlock(pb) => {
                     if pb.name.as_deref() == Some(block_name) {
                         return Some(pb);
@@ -1861,6 +1944,7 @@ impl App {
     fn add_block_items(&mut self, items: &[ParameterBlockItem]) {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id)
                         && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id)
@@ -1964,6 +2048,7 @@ impl App {
     fn add_when_items(&mut self, items: &[WhenItem]) {
         for item in items {
             match item {
+                WhenItem::ParameterBlockRename(_) => {}
                 WhenItem::ParameterRefRef(prr) => {
                     if self.device.is_param_ref_visible(&prr.ref_id)
                         && let Some(pref) = self.device.get_parameter_ref(&prr.ref_id)
@@ -3508,7 +3593,10 @@ impl App {
     /// Move selection up.
     pub fn move_up(&mut self) {
         match &mut self.edit_mode {
-            EditMode::EnumDropdown { selected_idx, scroll_offset, .. } if *selected_idx > 0 => {
+            EditMode::EnumDropdown { selected_idx, scroll_offset, .. }
+            | EditMode::LanguageSelect { selected_idx, scroll_offset, .. }
+                if *selected_idx > 0 =>
+            {
                 *selected_idx -= 1;
                 // Adjust scroll if selection went above visible area
                 if *selected_idx < *scroll_offset {
@@ -3519,11 +3607,14 @@ impl App {
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
-                (MainTab::Parameters, Focus::Sidebar) if self.selected_tree_idx > 0 => {
-                    self.selected_tree_idx -= 1;
-                    self.rebuild_content();
-                    self.selected_content_idx = 0;
-                    self.content_scroll_offset = 0;
+                (MainTab::Parameters, Focus::Sidebar) => {
+                    // Hop over group headers — they are not pages.
+                    if let Some(index) = self.tree_nodes[..self.selected_tree_idx].iter().rposition(|n| !n.is_group()) {
+                        self.selected_tree_idx = index;
+                        self.rebuild_content();
+                        self.selected_content_idx = 0;
+                        self.content_scroll_offset = 0;
+                    }
                 }
                 (MainTab::Parameters, Focus::Content) if self.selected_content_idx > 0 => {
                     self.selected_content_idx -= 1;
@@ -3564,17 +3655,29 @@ impl App {
                     *scroll_offset = selected_idx.saturating_sub(visible_items - 1);
                 }
             }
+            EditMode::LanguageSelect { selected_idx, options, scroll_offset }
+                if *selected_idx < options.len().saturating_sub(1) =>
+            {
+                *selected_idx += 1;
+                let visible_items = Self::DROPDOWN_VISIBLE_ITEMS;
+                if *selected_idx >= *scroll_offset + visible_items {
+                    *scroll_offset = selected_idx.saturating_sub(visible_items - 1);
+                }
+            }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {
                     // No vertical movement in tabs
                 }
-                (MainTab::Parameters, Focus::Sidebar)
-                    if self.selected_tree_idx < self.tree_nodes.len().saturating_sub(1) =>
-                {
-                    self.selected_tree_idx += 1;
-                    self.rebuild_content();
-                    self.selected_content_idx = 0;
-                    self.content_scroll_offset = 0;
+                (MainTab::Parameters, Focus::Sidebar) => {
+                    // Hop over group headers — they are not pages.
+                    if let Some(offset) =
+                        self.tree_nodes.iter().skip(self.selected_tree_idx + 1).position(|n| !n.is_group())
+                    {
+                        self.selected_tree_idx += 1 + offset;
+                        self.rebuild_content();
+                        self.selected_content_idx = 0;
+                        self.content_scroll_offset = 0;
+                    }
                 }
                 (MainTab::Parameters, Focus::Content)
                     if self.selected_content_idx < self.content_items.len().saturating_sub(1) =>
@@ -3733,6 +3836,11 @@ impl App {
     /// Toggle expand/collapse on sidebar or enter edit mode on content.
     pub fn activate(&mut self) {
         match &self.edit_mode {
+            EditMode::LanguageSelect { options, selected_idx, .. } => {
+                let next = options[*selected_idx].0.clone();
+                self.edit_mode = EditMode::None;
+                self.switch_language(next);
+            }
             EditMode::EnumDropdown { param_id, options, selected_idx, .. } => {
                 // Commit the selection
                 let param_id = param_id.clone();
@@ -3769,19 +3877,21 @@ impl App {
                 self.rebuild_memory_segments();
             }
             EditMode::GroupAddressInput { object_number, buffer } => {
-                // Parse and assign the group address
+                // Parse and assign the group addresses: several may be
+                // given, separated by commas or spaces; the first one
+                // becomes the sending address, the rest listen.
                 let object_number = *object_number;
                 let buffer = buffer.clone();
 
                 // Clear existing addresses for this object first
                 self.device.clear_group_addresses(object_number);
 
-                // If buffer is non-empty, parse and assign the new address
-                if !buffer.is_empty()
-                    && let Some(addr) = zweidraehte_knxprod::runtime::model::GroupAddress::parse(&buffer)
-                {
-                    // First assigned address becomes the sending address
-                    self.device.assign_group_address(object_number, addr);
+                for part in buffer.split([',', ' ']).filter(|p| !p.is_empty()) {
+                    if let Some(addr) = zweidraehte_knxprod::runtime::model::GroupAddress::parse(part) {
+                        self.device.assign_group_address(object_number, addr);
+                    } else {
+                        self.status_message = Some(format!("'{part}' is not a group address (main/middle/sub)"));
+                    }
                 }
 
                 self.edit_mode = EditMode::None;
@@ -3823,6 +3933,241 @@ impl App {
     /// Cancel editing.
     pub fn cancel_edit(&mut self) {
         self.edit_mode = EditMode::None;
+    }
+
+    /// Provide the language-switching context (see
+    /// [`LanguageContext`]); `initial` names the language the program
+    /// was already rewritten into before construction.
+    pub fn set_language_context(&mut self, context: LanguageContext, initial: Option<String>) {
+        self.language_context = Some(context);
+        self.current_language = initial;
+    }
+
+    /// Open the language-selection popup: the program's default
+    /// language first, then every translation the document carries,
+    /// with the active one preselected.
+    pub fn open_language_select(&mut self) {
+        let Some(context) = &self.language_context else {
+            self.status_message = Some("This product carries no translations".to_string());
+            return;
+        };
+        let mut options: Vec<(Option<String>, String)> =
+            vec![(None, format!("default ({})", self.device.program().default_language))];
+        options.extend(
+            context.translations.languages().iter().map(|language| (Some(language.to_string()), language.to_string())),
+        );
+        if options.len() == 1 {
+            self.status_message = Some("This product carries no translations".to_string());
+            return;
+        }
+
+        let selected_idx = self
+            .current_language
+            .as_ref()
+            .and_then(|current| options.iter().position(|(value, _)| value.as_ref() == Some(current)))
+            .unwrap_or(0);
+        let visible = Self::DROPDOWN_VISIBLE_ITEMS;
+        let scroll_offset =
+            if options.len() <= visible || selected_idx < visible { 0 } else { selected_idx + 1 - visible };
+        self.edit_mode = EditMode::LanguageSelect { options, selected_idx, scroll_offset };
+    }
+
+    /// Switch the display language.
+    ///
+    /// A switch rebuilds the device from the pristine program with the
+    /// new language applied, then restores the session's edits through
+    /// the mods machinery — parameter values, group links and the
+    /// touched-tracking all survive.
+    pub fn switch_language(&mut self, next: Option<String>) {
+        let Some(context) = &self.language_context else {
+            return;
+        };
+        if next == self.current_language {
+            return;
+        }
+
+        // Snapshot the session's edits, rebuild in the new language,
+        // and replay them.
+        let edits = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
+        let mut program = context.pristine.clone();
+        if let Some(language) = &next {
+            context.translations.apply(&mut program, language);
+        }
+        let mut device = Device::new(program, self.master_data.as_ref(), context.baggage.clone());
+        if let Err(e) = zweidraehte_knxprod::runtime::mods::apply_mods(&mut device, &edits) {
+            // Values that applied to the old device apply to the new
+            // one — same program, different texts. Failing here would
+            // be a bug worth seeing, not hiding.
+            self.status_message = Some(format!("Language switch failed replaying edits: {e}"));
+            return;
+        }
+        self.device = device;
+        self.current_language = next;
+
+        self.rebuild_tree();
+        self.rebuild_content();
+        self.rebuild_com_objects();
+        self.rebuild_memory_segments();
+        self.selected_tree_idx = self.selected_tree_idx.min(self.tree_nodes.len().saturating_sub(1));
+        self.selected_content_idx = self.selected_content_idx.min(self.content_items.len().saturating_sub(1));
+        self.selected_obj_idx = self.selected_obj_idx.min(self.com_object_rows.len().saturating_sub(1));
+
+        self.status_message = Some(match &self.current_language {
+            Some(language) => format!("Language: {language}"),
+            None => format!("Language: default ({})", self.device.program().default_language),
+        });
+    }
+
+    /// Remember the mods file the session started from: `e` exports
+    /// back to it, and its `[device]` section (the individual
+    /// address) survives the round trip.
+    pub fn set_mods_context(
+        &mut self,
+        path: std::path::PathBuf,
+        device_section: zweidraehte_knxprod::runtime::mods::DeviceSection,
+    ) {
+        self.mods_export_path = Some(path);
+        self.mods_device_section = Some(device_section);
+    }
+
+    /// Start programming the device: snapshot the session's
+    /// configuration, spawn the worker, open the popup.
+    pub fn start_download(&mut self) {
+        if self.download.as_ref().is_some_and(|d| d.result.is_none()) {
+            return; // already running
+        }
+        let Some(target) = self.download_context.as_ref().and_then(|c| c.target.clone()) else {
+            self.status_message = Some("Start the TUI with --server or --usb to program the device".to_string());
+            return;
+        };
+        let Some(section) = self.mods_device_section.clone() else {
+            self.status_message =
+                Some("Load a mods file (--mods) carrying the device's individual_address first".to_string());
+            return;
+        };
+        let ia = match zweidraehte_client::cli::parse_ia(&section.individual_address) {
+            Ok(ia) => ia,
+            Err(e) => {
+                self.status_message = Some(format!("The mods file's individual_address is unusable: {e}"));
+                return;
+            }
+        };
+
+        // The session's configuration, exactly as `e` would export it.
+        let mut mods = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
+        mods.device = section;
+        // The worker rebuilds its own device; texts are irrelevant, so
+        // the pristine program (when a language is active) serves.
+        let program = self
+            .language_context
+            .as_ref()
+            .map(|ctx| ctx.pristine.clone())
+            .unwrap_or_else(|| self.device.program().clone());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        crate::download::spawn(
+            crate::download::DownloadJob {
+                target,
+                ia,
+                mods,
+                program,
+                master_data: self.download_context.as_ref().and_then(|c| c.master_data.clone()),
+            },
+            tx,
+        );
+        self.download = Some(DownloadUi {
+            past: Vec::new(),
+            current: None,
+            step: (0, 0),
+            data: None,
+            result: None,
+            spinner: 0,
+            receiver: rx,
+        });
+    }
+
+    /// Drain the worker's progress; called every UI tick.
+    pub fn poll_download(&mut self) {
+        let Some(download) = &mut self.download else { return };
+        download.spinner = download.spinner.wrapping_add(1);
+        while let Ok(message) = download.receiver.try_recv() {
+            match message {
+                crate::download::DownloadMsg::Task(label, index, total) => {
+                    if let Some(previous) = download.current.take() {
+                        download.past.push(previous);
+                    }
+                    download.current = Some(label);
+                    download.step = (index, total);
+                    download.data = None;
+                }
+                crate::download::DownloadMsg::Data(done, total) => {
+                    download.data = Some((done, total));
+                }
+                crate::download::DownloadMsg::Done(result) => {
+                    if let Some(previous) = download.current.take() {
+                        download.past.push(previous);
+                    }
+                    download.result = Some(result);
+                }
+            }
+        }
+    }
+
+    /// Close the popup once the worker finished.
+    pub fn dismiss_download(&mut self) {
+        if self.download.as_ref().is_some_and(|d| d.result.is_some()) {
+            self.download = None;
+        }
+    }
+
+    /// Overall progress of the running download, 0..=100.
+    pub fn download_ratio(&self) -> u16 {
+        let Some(download) = &self.download else { return 0 };
+        if download.result.is_some() {
+            return 100;
+        }
+        let (index, total) = download.step;
+        if total == 0 {
+            return 0;
+        }
+        let intra = download.data.map_or(0.0, |(done, all)| if all == 0 { 0.0 } else { done as f64 / all as f64 });
+        (((index as f64 + intra) / total as f64) * 100.0).clamp(0.0, 100.0) as u16
+    }
+
+    /// Export the diff-from-defaults as a mods file — back to the
+    /// `--mods` file this session loaded, else to
+    /// `<program id>-mods.toml`; the same format `knx-dump` emits and
+    /// `knx-loader` consumes.
+    pub fn export_mods(&mut self) {
+        let mut mods = zweidraehte_knxprod::runtime::mods::mods_from_device(&self.device);
+        mods.device = self.mods_device_section.clone().unwrap_or_else(|| {
+            // The product knows nothing about the installation's
+            // addressing; leave a placeholder to edit before loading.
+            zweidraehte_knxprod::runtime::mods::DeviceSection {
+                individual_address: "1.1.1".to_string(),
+                max_apdu: None,
+            }
+        });
+
+        let path = self
+            .mods_export_path
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from(format!("{}-mods.toml", self.device.program().id)));
+        let result = toml::to_string_pretty(&mods)
+            .map_err(|e| e.to_string())
+            .and_then(|text| std::fs::write(&path, text).map_err(|e| e.to_string()));
+        // Only a placeholder address needs the reminder; a section
+        // carried in from --mods is already the installation's.
+        let hint = if self.mods_device_section.is_some() { "" } else { " — set individual_address before loading" };
+        self.status_message = Some(match result {
+            Ok(()) => format!(
+                "Exported {} parameter(s), {} link(s) to {}{hint}",
+                mods.params.len(),
+                mods.links.len(),
+                path.display()
+            ),
+            Err(e) => format!("Export failed: {e}"),
+        });
     }
 
     fn enter_edit_mode(&mut self) {
@@ -3882,8 +4227,9 @@ impl App {
                 *cursor += 1;
             }
             EditMode::GroupAddressInput { buffer, .. }
-                // Allow digits and slashes for group address format (e.g., "1/2/3")
-                if (c.is_ascii_digit() || c == '/') => {
+                // Digits and slashes for the addresses themselves,
+                // commas/spaces to separate several of them
+                if (c.is_ascii_digit() || c == '/' || c == ',' || c == ' ') => {
                     buffer.push(c);
                 }
             _ => {}
