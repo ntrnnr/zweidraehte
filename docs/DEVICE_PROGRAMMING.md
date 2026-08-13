@@ -71,43 +71,24 @@ List devices currently in programming mode:
 cargo run -p zweidraehte-client --example device_scan -- --usb
 ```
 
-## Assigning an individual address
-
-A factory-fresh device (default `15.15.255`) needs its project address
-first. Two ways:
-
-**Programming button** — the loader does it inline during a download:
-
-```bash
-cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --program-ia
-```
-
-`--program-ia` prompts you to press the device's programming button,
-writes the mods file's address via `NM_IndividualAddress_Write`,
-verifies it with a programming-mode scan, and continues into the
-download. Make sure exactly one device is in programming mode — the
-write is a broadcast that every listening device accepts.
-
-**By serial number, without touching the device** — switch programming
-mode remotely and let the same flow run:
-
-```bash
-# serial from line_scan/device_scan
-cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB on
-cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --program-ia
-cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB off
-```
-
-`prog_mode` resolves the serial to the device's current address,
-reads its descriptor, and flips programming mode the way that
-generation expects: bit 0 of memory `0060h` for System 7 / BCU-era
-masks, `PID_PROGMODE` for System B.
-
-The TUI does not assign addresses (its `p` download expects the
-device to already answer at the mods file's address); use the loader
-for the first-time addressing, then work from the TUI freely.
-
 ## The mods file
+
+The mods file is one device's configuration, as a diff from the
+product's defaults — the role an ETS project plays for a single
+device, in a hand-editable TOML. It answers the three questions a
+download needs from *you* rather than from the product file: which
+parameter values differ from the defaults, which group addresses each
+communication object talks on, and which individual address the
+device carries. Anything you don't mention stays at the product
+default.
+
+Every tool speaks it: `knx-dump` generates one, the TUI loads and
+exports one, and `knx-loader` (or the TUI's `p`) applies it to a
+fresh device model, compiles the result into the memory image and
+tables, and downloads that. Because the file references parameters by
+their stable MTXML ids, it survives product-file updates and language
+switches, and one file can be replayed onto several devices with
+`--ia`.
 
 ```toml
 [device]
@@ -141,13 +122,74 @@ names, texts, and choices:
 
 ```bash
 cargo run --bin knx-dump -- --product <product> -o mods.toml
-# edit mods.toml, then regenerate the skeleton around your edits —
-# a changed selection can reveal new parameters:
-cargo run --bin knx-dump -- --product <product> --mods mods.toml
 # translated skeletons: --language de-DE
 ```
 
-**Or export from the TUI** (below) — both emit the same format.
+Editing a skeleton is usually **iterative**, and the reason is the
+product's dynamic pages: a KNX program shows and hides parameters
+based on other parameters' values, and the skeleton can only list
+what is visible under the *current* configuration. Pick a different
+enum value — set a button function to "Dimming" instead of
+"Switching", or an LED brightness to "dynamic" — and a whole set of
+parameters (dimming times, brightness thresholds) exists that the
+first dump never showed, because ETS would not have shown them
+either. So after editing, feed the file back to `knx-dump`:
+
+```bash
+# apply your edits, then re-dump the skeleton *under that configuration*
+cargo run --bin knx-dump -- --product <product> --mods mods.toml -o mods.toml
+```
+
+The regenerated skeleton keeps your entries as active (un-commented)
+`[[param]]`/`[[link]]` blocks and lists the newly revealed parameters
+as fresh commented blocks with their choices — repeat until the
+selections stop revealing anything new. (Skipping the loop and
+writing entries blind fails safe: an entry for a parameter your
+selections keep hidden is rejected on load, not silently ignored.)
+
+**Or export from the TUI** with `e` — see [Programming from the
+TUI](#programming-from-the-tui); both emit the same format, and the
+TUI shows revealed parameters immediately, which makes it the more
+comfortable way to explore deeply nested option trees.
+
+## Assigning an individual address
+
+A factory-fresh device (default `15.15.255`) needs its project address
+first. The address comes from the mods file's `[device]` section, and
+`--ia` overrides it on the command line — so one mods file can serve
+several devices, or a first-time assignment can name the address
+without editing the file.
+
+**Programming button** — the loader does it inline during a download:
+
+```bash
+cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --ia 1.1.2 --program-ia
+```
+
+`--program-ia` prompts you to press the device's programming button,
+writes the target address via `NM_IndividualAddress_Write`, verifies
+it with a programming-mode scan, and continues into the download. Make
+sure exactly one device is in programming mode — the write is a
+broadcast that every listening device accepts.
+
+**By serial number, without touching the device** — switch programming
+mode remotely and let the same flow run:
+
+```bash
+# serial from line_scan/device_scan
+cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB on
+cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --ia 1.1.2 --program-ia
+cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AABB off
+```
+
+`prog_mode` resolves the serial to the device's current address,
+reads its descriptor, and flips programming mode the way that
+generation expects: bit 0 of memory `0060h` for System 7 / BCU-era
+masks, `PID_PROGMODE` for System B.
+
+The TUI does not assign addresses (its `p` download expects the
+device to already answer at the mods file's address); use the loader
+for the first-time addressing, then work from the TUI freely.
 
 ## Programming from the TUI
 
