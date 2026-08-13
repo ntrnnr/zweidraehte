@@ -929,11 +929,10 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
         self.security.p2p_key_for_index(ia_index)
     }
 
-    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) -> bool {
+    fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
         self.security.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
         let prev = self.security.security_report();
         self.security.set_security_report(prev | 0x01);
-        (prev & 0x01) == 0
     }
 
     fn security_report(&self) -> u8 {

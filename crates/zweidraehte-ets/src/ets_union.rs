@@ -43,20 +43,6 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
     // `repr`, so a `#[repr(u16)]` ETS enum used to contribute nothing to the
     // alignment and this landed on 1 where the payload really starts at 2.
     let data_offset_tokens = data_offset_expr(enum_name);
-    let mut max_align: usize = 1;
-    for variant in variants.iter() {
-        if let syn::Fields::Named(fields) = &variant.fields {
-            for field in &fields.named {
-                if let Ok(type_info) = get_type_info(&field.ty)
-                    && type_info.align > max_align
-                {
-                    max_align = type_info.align;
-                }
-            }
-        }
-    }
-    // Data offset is the discriminant (1 byte) aligned up to max_align
-    let data_offset: usize = (1 + max_align - 1) & !(max_align - 1);
 
     // Second pass: calculate variant sizes and generate params
     let mut max_variant_size: usize = 0;

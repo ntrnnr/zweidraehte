@@ -449,11 +449,6 @@ fn test_3_8_15_7() -> TestCase {
     const CO_READ_OK_RESET_ADDR: &str =
         "30 60 #BDUT_ADDR_RESET #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 ?? ?? ?? ?? ?? ??";
 
-    // Destructive-reset read-back: SeqNb re-initialised to a non-zero
-    // value below the threshold; spec says the DUT must NOT re-init to
-    // zero. The reference XML accepts any `00 00 00 00 ?? ??`.
-    const CO_READ_OK_REINIT: &str = "30 60 #BDUT_ADDR #EDI 0F 41 CD 00 11 00 10 3B 01 00 01 00 00 00 00 ?? ??";
-
     // 07h at the threshold: preserved, not re-initialised. The
     // master-reset table (03/03/07 §5.3.1) puts "Reset to default
     // without IA" in the "not influenced" row of *both* columns; only

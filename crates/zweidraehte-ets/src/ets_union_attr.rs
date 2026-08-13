@@ -219,7 +219,11 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         for (j, field) in originals.iter().enumerate() {
             let off_ident = field_offset_ident(enum_name, &vname, j);
             let prev_end = format_ident!("__ETS_UNION_{}_{}_END{}", enum_name, vname, j);
-            let pad_name = format_ident!("_pad_before_{}", field.ident.as_ref().expect("named"));
+            // Trim the field's own leading underscores so a `_anchor` field
+            // yields `_pad_before_anchor`, not the double-underscore
+            // spelling the non_snake_case lint rejects.
+            let field_ident = field.ident.as_ref().expect("named");
+            let pad_name = format_ident!("_pad_before_{}", field_ident.to_string().trim_start_matches('_'));
             // Zero-length in the common case; a ZST field costs nothing and
             // keeps the emitted shape uniform.
             padded.push(parse_quote! {
