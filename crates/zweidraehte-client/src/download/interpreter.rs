@@ -46,6 +46,12 @@ pub trait DownloadTarget {
     async fn memory_read(&mut self, address: u16, count: u8) -> Result<Vec<u8>>;
     async fn memory_write(&mut self, address: u16, data: &[u8]) -> Result<()>;
     async fn restart(&mut self) -> Result<()>;
+    /// `A_Authorize` (03/05/01 §3.5.5), returning the granted level.
+    /// Defaulted so scripted test targets model an unprotected device
+    /// without a bus exchange.
+    async fn authorize(&mut self, _key: &[u8; 4]) -> Result<u8> {
+        Ok(0)
+    }
 }
 
 impl DownloadTarget for DeviceConnection {
@@ -72,16 +78,45 @@ impl DownloadTarget for DeviceConnection {
         DeviceConnection::memory_write(self, address, data).await
     }
 
+    async fn authorize(&mut self, key: &[u8; 4]) -> Result<u8> {
+        DeviceConnection::authorize(self, key).await
+    }
+
     async fn restart(&mut self) -> Result<()> {
         DeviceConnection::restart(self).await
     }
 }
 
 /// How often, and how patiently, a load-state read-back is retried.
+///
 /// Our own devices transition synchronously with the memory write's
-/// T_ACK; real silicon may take a beat to commit EEPROM.
-const STATE_POLL_ATTEMPTS: u32 = 5;
-const STATE_POLL_INTERVAL: Duration = Duration::from_millis(20);
+/// T_ACK, so the first read already answers and the budget below is
+/// never spent. Real silicon is another matter: an Unload erases the
+/// machine's EEPROM tables before the state byte flips, and on the
+/// bench an MDT push button held its address-table state at Loaded
+/// for well past the 100 ms this poll used to allow. ETS-class tools
+/// wait seconds here ("until loadstate is correct", 03/05/02
+/// §3.31.2), so we do too: 25 × 200 ms ≈ 5 s before giving up. An
+/// explicit Error state still aborts immediately — waiting does not
+/// heal that.
+const STATE_POLL_ATTEMPTS: u32 = 25;
+const STATE_POLL_INTERVAL: Duration = Duration::from_millis(200);
+
+/// Progress a running download reports through
+/// [`Downloader::with_progress`] — enough for a UI to show what is
+/// happening and how far along it is, without the UI knowing the IR.
+#[derive(Debug, Clone)]
+pub enum DownloadEvent {
+    /// About to execute step `index` (0-based) of `total`.
+    Step { index: usize, total: usize, description: String },
+    /// Byte progress inside the current step's data phase (chunked
+    /// memory writes).
+    Data { done: usize, total: usize },
+}
+
+/// Where progress events go. Boxed and `Send` so a UI thread can hand
+/// in one end of a channel.
+pub type ProgressSink = Box<dyn FnMut(DownloadEvent) + Send>;
 
 /// How a mask drives its load state machines.
 ///
@@ -108,6 +143,12 @@ pub struct Downloader<'a, T> {
     /// the two address octets share the APDU with the data, and the
     /// count field itself is 6 bits.
     chunk: usize,
+    /// The `A_Authorize` key sent at the procedure's Connect step. ETS
+    /// authorizes every configuration connection; the default is the
+    /// free-access key.
+    key: [u8; 4],
+    /// Progress reporting, when a UI wants it.
+    progress: Option<ProgressSink>,
     /// Base addresses the device reported for relative segments, by
     /// interface object index. Filled by `RelSegment` allocation and
     /// by `LoadImageProperty` on `PID_TABLE_REFERENCE`; consumed by
@@ -134,7 +175,34 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// A downloader on an explicit load-control path.
     pub fn with_path(target: &'a mut T, path: LoadControlPath, max_apdu: u16) -> Self {
         let chunk = usize::from(max_apdu.saturating_sub(3)).clamp(1, 63);
-        Self { target, path, chunk, bases: BTreeMap::new(), tolerated_errors: BTreeSet::new() }
+        Self {
+            target,
+            path,
+            chunk,
+            key: [0xFF; 4],
+            progress: None,
+            bases: BTreeMap::new(),
+            tolerated_errors: BTreeSet::new(),
+        }
+    }
+
+    /// Report progress to `sink` while running.
+    pub fn with_progress(mut self, sink: ProgressSink) -> Self {
+        self.progress = Some(sink);
+        self
+    }
+
+    fn emit(&mut self, event: DownloadEvent) {
+        if let Some(sink) = &mut self.progress {
+            sink(event);
+        }
+    }
+
+    /// Use a device-specific authorization key instead of the
+    /// free-access `FF FF FF FF`.
+    pub fn with_key(mut self, key: [u8; 4]) -> Self {
+        self.key = key;
+        self
     }
 
     /// Run a procedure. Fails on the first instruction that cannot be
@@ -147,13 +215,22 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// mask templates use it for (a step that legitimately fails on
     /// devices lacking an optional machine).
     pub async fn run(&mut self, instructions: &[Instruction], image: &DeviceImage) -> Result<()> {
-        for instruction in instructions {
+        let total = instructions.len();
+        for (index, instruction) in instructions.iter().enumerate() {
+            log::debug!("download step: {instruction:?}");
+            self.emit(DownloadEvent::Step { index, total, description: instruction.describe() });
             match self.execute(instruction, image).await {
                 Ok(()) => {}
                 Err(e) if !self.tolerated_errors.is_empty() && !matches!(instruction, Instruction::MapError { .. }) => {
                     log::warn!("tolerating {instruction:?} failure inside a MapError window: {e}");
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Which step failed is the whole diagnosis on real
+                    // hardware — a device that disconnects does so in
+                    // reaction to a specific record.
+                    log::error!("download failed at step: {instruction:?}: {e}");
+                    return Err(e);
+                }
             }
         }
         Ok(())
@@ -161,9 +238,21 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
 
     async fn execute(&mut self, instruction: &Instruction, image: &DeviceImage) -> Result<()> {
         match instruction {
-            // The engine runs inside an open transport connection;
-            // the markers exist for congruence with the XML sources.
-            Instruction::Connect | Instruction::Disconnect => Ok(()),
+            // The engine runs inside an open transport connection, so
+            // the transport half of Connect is a marker — but ETS's
+            // DMP_Connect_RCo pairs it with an A_Authorize, and real
+            // silicon gates system-memory writes (the load-control
+            // window included) behind the access level that grants:
+            // an unauthorized write is T_ACKed and silently ignored,
+            // leaving the machine's state unchanged. Our own devices
+            // grant free access at the default level, which is why
+            // the software DUTs never needed this.
+            Instruction::Connect => {
+                let level = self.target.authorize(&self.key).await?;
+                log::debug!("authorized at access level {level}");
+                Ok(())
+            }
+            Instruction::Disconnect => Ok(()),
 
             Instruction::CompareProperty { obj_idx, prop_id, expected } => {
                 let value = self.target.property_read(*obj_idx, *prop_id, 1, 1).await?;
@@ -218,24 +307,16 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 Ok(())
             }
 
-            Instruction::TaskSegment { lsm, address } => {
-                // Encoded as an absolute-segment record of type
-                // AbsoluteTask; System 7 devices accept the record
-                // without acting on it (03/05/02 §3.31.3 task records
-                // exist for the legacy BCU entry points).
-                // TODO: verify the exact task-segment record bytes ETS
-                // sends against a live download trace.
-                let segment = zweidraehte_proto::messages::apdu::load_control::AbsSegment {
-                    segment_type: zweidraehte_proto::messages::apdu::load_control::LoadSegment::AbsoluteTask,
-                    start_address: *address,
-                    length: 0,
-                    access_attributes: 0xFF,
-                    memory_type: 3,
-                    memory_attributes: 0,
-                };
-                let property = LoadControlRecord::abs_segment(&segment);
-                self.write_load_control_with(*lsm, &property, |m, _e| MemLoadControlRecord::abs_segment(m, &segment))
-                    .await?;
+            Instruction::TaskSegment { lsm, address, pei_type, application_id } => {
+                // The AbsoluteTask record announces the application's
+                // identity at its entry address; System 7 devices
+                // accept it without acting on it. Byte layout pinned
+                // by a Falcon download trace (2026-08-13).
+                let property = LoadControlRecord::task_segment(*address, *pei_type, *application_id);
+                self.write_load_control_with(*lsm, &property, |m, _e| {
+                    MemLoadControlRecord::task_segment(m, *address, *pei_type, *application_id)
+                })
+                .await?;
                 self.expect_load_state(*lsm, LoadState::Loading).await
             }
 
@@ -316,7 +397,18 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 Ok(())
             }
 
-            Instruction::Restart => self.target.restart().await,
+            Instruction::Restart => match self.target.restart().await {
+                // A restarting device kills the transport connection
+                // before any acknowledgement can leave it — real
+                // silicon answers A_Restart with silence and a
+                // T_Disconnect (`TransportClosed`). ETS treats that as
+                // the restart happening (Falcon: "Disconnect while
+                // waiting for response to Restart_req", then
+                // proceeds), and so do we; only our own software
+                // devices are polite enough to T_ACK first.
+                Ok(()) | Err(Error::TransportClosed) => Ok(()),
+                Err(e) => Err(e),
+            },
 
             Instruction::MapError { original, mapped } => {
                 if mapped == original {
@@ -352,7 +444,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         &mut self,
         lsm: LsmIndex,
         property_record: &[u8],
-        memory_record: impl Fn(LsmMachine, LoadEvent) -> [u8; 1],
+        memory_record: impl Fn(LsmMachine, LoadEvent) -> [u8; MemLoadControlRecord::RECORD_LEN],
     ) -> Result<()> {
         let event = LoadEvent::from(property_record[0]);
         self.write_load_control_with(lsm, property_record, |m, _| memory_record(m, event)).await
@@ -399,6 +491,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         for start in (0..data.len()).step_by(self.chunk) {
             let end = (start + self.chunk).min(data.len());
             self.target.memory_write(address + start as u16, &data[start..end]).await?;
+            self.emit(DownloadEvent::Data { done: end, total: data.len() });
         }
         Ok(())
     }
@@ -416,6 +509,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             if read_back != chunk {
                 return Err(Error::VerifyMismatch { address: chunk_addr });
             }
+            self.emit(DownloadEvent::Data { done: end, total: data.len() });
         }
         Ok(())
     }

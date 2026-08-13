@@ -51,7 +51,9 @@ pub struct ParameterValue {
     /// The parameter's MTXML id, matching
     /// [`ParameterLocation::id`](super::product::ParameterLocation::id).
     pub id: String,
-    /// Raw little-endian bytes, as stored in device memory.
+    /// Raw bytes in device-memory order: ETS stores multi-byte
+    /// parameters big-endian. A bit-packed parameter travels as the
+    /// big-endian encoding of its (at most 64-bit) value.
     pub value: Vec<u8>,
 }
 
@@ -128,37 +130,60 @@ impl CompiledDownload {
 /// *and* property-driven machines, which the interpreter already
 /// supports (absolute-segment records have a property-path form).
 pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConfig) -> Result<CompiledDownload> {
-    let model = mask.lsm_model();
-    let path = match model.realization() {
-        Some(LsmRealization::Property) => LoadControlPath::Property,
-        Some(LsmRealization::Memory) => {
-            let resources = mask.memory_resources().ok_or(Error::DownloadConfig(
-                "this mask drives its machines through memory but does not locate all of \
-                 ProgrammingMode / load control / load status / address table there",
-            ))?;
-            LoadControlPath::Memory(resources)
-        }
-        None if model.is_empty() => {
-            return Err(Error::DownloadConfig(
-                "this mask declares no load state machines; its downloads are not implemented",
-            ));
-        }
-        None => {
-            return Err(Error::DownloadConfig(
-                "this mask mixes memory-mapped and property-driven machines; no published mask does",
-            ));
-        }
-    };
+    let path = load_control_path(mask)?;
 
     let layout = ImageLayout::for_management_model(mask.management_model())
         .ok_or(Error::DownloadConfig("downloads for this management model are not implemented"))?;
     let mut image = DeviceImage::new();
-    build_image(&mut image, layout, &model, product, project)?;
+    build_image(&mut image, layout, &mask.lsm_model(), product, project)?;
 
     let assembled = assemble(mask, product, ProcedureKind::LoadAll)?;
     let instructions = insert_image_writes(resolve_relative_steps(assembled, &image), &image);
 
     Ok(CompiledDownload { image, instructions, path })
+}
+
+/// The load-control path a mask drives its machines through — read
+/// from the mask's own LSM declarations, never inferred from the
+/// family (MV-2705 is BimM112-managed yet property-driven).
+///
+/// Public because procedures other than a full download need it too:
+/// running the mask's Unload template, or ad-hoc instruction streams,
+/// construct their [`Downloader`] with the same path `compile` would
+/// have chosen.
+pub fn load_control_path(mask: &MaskData<'_>) -> Result<LoadControlPath> {
+    // BIM M112 first: the master data still declares the legacy
+    // memory-mapped window at 0104h for these masks, but that is not
+    // what ETS does — a Falcon trace of a real MDT 0705 device
+    // (ETS.log, 2026-08-13) unloads through PropertyValue_Write on
+    // interface objects 1..4, PID_LOAD_STATE_CONTROL, and the device
+    // never reacted to spec-shaped window writes at all. 03/05/02
+    // §3.31.2 marks the memory procedure "shall not be used for
+    // further developments", the certification templates only ever
+    // exercise the property realization, and the machine index *is*
+    // the object index — so the property path is what real System 7
+    // silicon actually speaks.
+    if mask.management_model() == "BimM112" {
+        return Ok(LoadControlPath::Property);
+    }
+
+    let model = mask.lsm_model();
+    match model.realization() {
+        Some(LsmRealization::Property) => Ok(LoadControlPath::Property),
+        Some(LsmRealization::Memory) => {
+            let resources = mask.memory_resources().ok_or(Error::DownloadConfig(
+                "this mask drives its machines through memory but does not locate all of \
+                 ProgrammingMode / load control / load status / address table there",
+            ))?;
+            Ok(LoadControlPath::Memory(resources))
+        }
+        None if model.is_empty() => {
+            Err(Error::DownloadConfig("this mask declares no load state machines; its downloads are not implemented"))
+        }
+        None => Err(Error::DownloadConfig(
+            "this mask mixes memory-mapped and property-driven machines; no published mask does",
+        )),
+    }
 }
 
 /// Fit the relative steps to the content this download actually has.
@@ -257,7 +282,7 @@ fn build_image(
             place_relative(image, model, product, project, [address_table, association_table, group_object_table])
         }
         Placement::AbsoluteSegments => {
-            place_absolute(image, product, project, [address_table, association_table, group_object_table])
+            place_absolute(image, layout, product, project, [address_table, association_table, group_object_table])
         }
     }
 }
@@ -356,6 +381,7 @@ fn place_relative(
 /// 254-entry segment costs a handful of writes rather than hundreds.
 fn place_absolute(
     image: &mut DeviceImage,
+    layout: &ImageLayout,
     product: &ProductData,
     project: &ProjectConfig,
     [address_table, association_table, group_object_table]: [Vec<u8>; 3],
@@ -374,8 +400,20 @@ fn place_absolute(
         let Some(address) = segment.address else { continue };
 
         // A generated table replaces the segment's content wholesale;
-        // otherwise the content is the product's default data.
+        // otherwise the content is the product's default data. One
+        // exception: a group object table the *product* ships as
+        // default data (vendor M112 programs) is overlaid per object
+        // instead — its count and pointers are firmware facts a
+        // synthesized table would zero.
         let content = match generated.iter().find(|(id, _, _)| *id == Some(segment.id.as_str())) {
+            Some((_, _, "group object table"))
+                if !segment.data.is_empty() && layout.overlay_group_object_table.is_some() =>
+            {
+                let overlay = layout.overlay_group_object_table.expect("guard checked it is Some");
+                let mut bytes = segment.data.clone();
+                overlay(&mut bytes, &product.com_objects)?;
+                bytes
+            }
             Some((_, blob, what)) => {
                 if blob.len() > segment.size as usize {
                     return Err(Error::DownloadConfig(match *what {
@@ -425,7 +463,7 @@ fn place_absolute(
         let (_, bytes) = buffers
             .entry(location.code_segment.clone())
             .or_insert_with(|| (segment.address.unwrap_or_default(), Vec::new()));
-        let end = location.offset as usize + value.value.len();
+        let end = location.offset as usize + patch_span(location, value)?;
         if end > bytes.len() {
             if end > segment.size as usize {
                 return Err(Error::DownloadConfig("a parameter value runs past the end of its segment"));
@@ -464,7 +502,7 @@ fn patch_parameters(
         if location.code_segment != segment_id {
             continue;
         }
-        if location.offset as usize + value.value.len() > capacity {
+        if location.offset as usize + patch_span(location, value)? > capacity {
             return Err(Error::DownloadConfig("a parameter value runs past the end of its segment"));
         }
         patch_one_parameter(bytes, location, value)?;
@@ -472,18 +510,62 @@ fn patch_parameters(
     Ok(())
 }
 
+/// How many bytes a patch touches from its location's offset on.
+///
+/// Byte-aligned parameters are written verbatim, so the value's own
+/// length is the span (a type-declared width only bounds it). A
+/// bit-packed parameter's span covers every byte its bits reach —
+/// including the partial first and last bytes it shares with its
+/// neighbours.
+fn patch_span(location: &ParameterLocation, value: &ParameterValue) -> Result<usize> {
+    if location.bit_offset == 0 && location.size_bits % 8 == 0 {
+        if location.size_bits != 0 && value.value.len() > (location.size_bits / 8) as usize {
+            return Err(Error::DownloadConfig("a parameter value is wider than its declared type"));
+        }
+        Ok(value.value.len())
+    } else {
+        // Bit-packed values travel as a big-endian integer, so the
+        // read-modify-write below can hold them in a u64.
+        if value.value.len() > 8 {
+            return Err(Error::DownloadConfig("a bit-packed parameter value is wider than 64 bits"));
+        }
+        Ok((usize::from(location.bit_offset) + usize::from(location.size_bits)).div_ceil(8))
+    }
+}
+
 /// The one write every parameter patch ends in.
+///
+/// Both offsets follow ETS's memory conventions, which the TUI's
+/// memory view already renders and compare-programs verifies against
+/// vendor images: multi-byte values are big-endian, and `bit_offset`
+/// counts from the MSB of the byte at `offset`.
 fn patch_one_parameter(bytes: &mut [u8], location: &ParameterLocation, value: &ParameterValue) -> Result<()> {
     let start = location.offset as usize;
-    let end = start + value.value.len();
-    if end > bytes.len() {
+    if start + patch_span(location, value)? > bytes.len() {
         return Err(Error::DownloadConfig("a parameter value runs past the end of its segment"));
     }
-    // TODO: bit-level placement. `bit_offset` matters for parameters
-    // narrower than a byte that share an octet with their neighbours;
-    // whole-byte parameters (every one our own devices declare) are
-    // unaffected.
-    bytes[start..end].copy_from_slice(&value.value);
+
+    if location.bit_offset == 0 && location.size_bits % 8 == 0 {
+        bytes[start..start + value.value.len()].copy_from_slice(&value.value);
+        return Ok(());
+    }
+
+    // Sub-byte or unaligned: read-modify-write only the bits that
+    // belong to this parameter, preserving its neighbours in the
+    // shared octets.
+    let raw = value.value.iter().fold(0u64, |acc, &b| (acc << 8) | u64::from(b));
+    for bit in 0..location.size_bits {
+        let global = start * 8 + usize::from(location.bit_offset) + usize::from(bit);
+        let mask = 1u8 << (7 - global % 8);
+        // The value's bits go out MSB-first, mirroring how they sit in
+        // memory.
+        let set = (raw >> (location.size_bits - 1 - bit)) & 1 == 1;
+        if set {
+            bytes[global / 8] |= mask;
+        } else {
+            bytes[global / 8] &= !mask;
+        }
+    }
     Ok(())
 }
 
@@ -602,6 +684,68 @@ mod tests {
         assert_eq!(c.image.slice(0x4300, 4).expect("param segment"), [1, 2, 0xEE, 4]);
     }
 
+    /// A location shorthand for the bit-patching tests.
+    fn at(offset: u32, bit_offset: u8, size_bits: u16) -> ParameterLocation {
+        ParameterLocation {
+            id: "p".to_string(),
+            code_segment: "s".to_string(),
+            offset,
+            bit_offset,
+            size_bits,
+            legacy_patch_always: false,
+        }
+    }
+
+    fn value(bytes: &[u8]) -> ParameterValue {
+        ParameterValue { id: "p".to_string(), value: bytes.to_vec() }
+    }
+
+    #[test]
+    fn a_sub_byte_patch_preserves_its_neighbours() {
+        // One bit at MSB-first position 6 of byte 1: mask 0b0000_0010.
+        let mut bytes = [0u8; 4];
+        patch_one_parameter(&mut bytes, &at(1, 6, 1), &value(&[1])).expect("patches");
+        assert_eq!(bytes, [0x00, 0x02, 0x00, 0x00]);
+
+        // Clearing the same bit leaves everything else set.
+        let mut bytes = [0xFFu8; 4];
+        patch_one_parameter(&mut bytes, &at(1, 6, 1), &value(&[0])).expect("patches");
+        assert_eq!(bytes, [0xFF, 0xFD, 0xFF, 0xFF]);
+    }
+
+    #[test]
+    fn a_nibble_lands_msb_first() {
+        // ETS packs from the MSB down: a 4-bit value at BitOffset 0 is
+        // the byte's high nibble.
+        let mut bytes = [0x0Fu8];
+        patch_one_parameter(&mut bytes, &at(0, 0, 4), &value(&[0x05])).expect("patches");
+        assert_eq!(bytes, [0x5F]);
+    }
+
+    #[test]
+    fn a_bit_field_may_straddle_a_byte_boundary() {
+        // 4 bits from bit 6 of byte 0: the low two bits of byte 0 and
+        // the high two of byte 1.
+        let mut bytes = [0u8; 2];
+        patch_one_parameter(&mut bytes, &at(0, 6, 4), &value(&[0x0F])).expect("patches");
+        assert_eq!(bytes, [0x03, 0xC0]);
+    }
+
+    #[test]
+    fn a_value_wider_than_its_type_is_rejected() {
+        let mut bytes = [0u8; 4];
+        let result = patch_one_parameter(&mut bytes, &at(0, 0, 8), &value(&[0, 1]));
+        assert!(matches!(result, Err(Error::DownloadConfig(_))));
+    }
+
+    #[test]
+    fn a_straddling_patch_grows_its_buffer_to_the_last_touched_byte() {
+        // Through the compile path: a 4-bit parameter at bit 6 of
+        // offset 2 touches bytes 2 and 3, so the span math must claim
+        // both — a value.len()-based bound would only claim one.
+        assert_eq!(patch_span(&at(2, 6, 4), &value(&[0x0F])).expect("spans"), 2);
+    }
+
     #[test]
     fn an_unknown_parameter_is_rejected() {
         let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
@@ -682,6 +826,44 @@ mod tests {
         project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 2), com_object: 1 }];
         let c = compile(&mask, &product, &project).expect("compiles");
         assert!(c.image.slice(0x4200, 1).is_none(), "no COT content in the image");
+    }
+
+    #[test]
+    fn a_vendor_supplied_cot_is_overlaid_not_replaced() {
+        // Vendor M112 products ship their group object table as the
+        // COT segment's default data, whose count and pointers are
+        // firmware facts. Only the per-object flags/type octets may
+        // change; a synthesized table would zero the pointers.
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
+        let mut product = product();
+        let cot = product.segments.iter_mut().find(|s| s.id.ends_with("AS-4200")).expect("COT segment");
+        // count 3, ram_flags_ptr 0700h, three rows with live pointers.
+        cot.data = vec![
+            3, 0x07, 0x00, // header
+            0x07, 0x5A, 0xDF, 0x03, // object 0
+            0x07, 0x6E, 0xDF, 0x03, // object 1 (the product defines it)
+            0x07, 0x82, 0xDF, 0x00, // object 2
+        ];
+
+        let c = compile(&mask, &product, &project()).expect("compiles");
+        let table = c.image.slice(0x4200, 15).expect("COT in image");
+        assert_eq!(&table[..3], &[3, 0x07, 0x00], "count and RAM flags pointer survive");
+        assert_eq!(&table[3..7], &[0x07, 0x5A, 0xDF, 0x03], "object 0 keeps its vendor row");
+        assert_eq!(&table[7..9], &[0x07, 0x6E], "object 1 keeps its data pointer");
+        assert_eq!(table[9], 0b1001_0100 | 0b11, "object 1 gets the configured flags");
+        assert_eq!(table[10], 0x00, "object 1 gets the configured type (1 Bit = 00h, as ETS writes it)");
+        assert_eq!(&table[11..], &[0x07, 0x82, 0xDF, 0x00], "object 2 keeps its vendor row");
+    }
+
+    #[test]
+    fn an_object_outside_the_vendor_cot_is_an_error() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
+        let mut product = product();
+        let cot = product.segments.iter_mut().find(|s| s.id.ends_with("AS-4200")).expect("COT segment");
+        cot.data = vec![1, 0, 0, 0, 0, 0, 0]; // one row; the product's object is number 1
+        assert!(matches!(compile(&mask, &product, &project()), Err(Error::ProductData(_))));
     }
 
     #[test]

@@ -54,7 +54,7 @@ pub enum Error {
     #[error("memory verify mismatch at address {address:#06x}")]
     VerifyMismatch { address: u16 },
 
-    #[error("{machine} load state is {state} (expected {expected})")]
+    #[error("{machine} load state still reads {state} after the procedure step (expected it to reach {expected})")]
     LoadState { machine: MachineRef, state: LoadState, expected: LoadState },
 
     #[error("device identity mismatch on object {obj_idx} property {prop_id}")]

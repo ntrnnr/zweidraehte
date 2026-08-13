@@ -712,7 +712,7 @@ mod tests {
         // The Unload-all template must agree instruction for instruction.
         let real_unload = real_mask.procedure("Unload", "all").expect("real Unload all");
         let fixture_unload = fixture_mask.procedure("Unload", "all").expect("fixture Unload all");
-        let convert = |p: &Procedure| crate::download::ir::controls_to_instructions(&p.controls);
+        let convert = |p: &Procedure| crate::download::ir::controls_to_instructions(&p.controls, Default::default());
         assert_eq!(convert(real_unload).expect("real converts"), convert(fixture_unload).expect("fixture converts"));
 
         // The LSM models the real file yields, pinned per family —

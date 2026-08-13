@@ -48,7 +48,7 @@ impl ProcedureKind {
 /// Build the instruction stream for `kind` from the two upper layers.
 pub fn assemble(mask: &MaskData<'_>, product: &ProductData, kind: ProcedureKind) -> Result<Vec<Instruction>> {
     let controls = assemble_controls(mask, product, kind)?;
-    controls_to_instructions(&controls)
+    controls_to_instructions(&controls, product.task_identity)
 }
 
 /// The same, stopping at the resolved control stream — useful for

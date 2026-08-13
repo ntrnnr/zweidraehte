@@ -35,15 +35,21 @@ mod image_layout;
 mod interpreter;
 pub mod ir;
 pub mod mask;
+pub mod mods;
 pub mod product;
 pub mod project;
 mod table_coding;
 
 pub use assemble::{ProcedureKind, assemble, assemble_controls};
 pub use image::DeviceImage;
-pub use interpreter::{DownloadTarget, Downloader, LoadControlPath};
-pub use ir::{Instruction, controls_to_instructions};
+pub use interpreter::{DownloadEvent, DownloadTarget, Downloader, LoadControlPath, ProgressSink};
+pub use ir::{Instruction, TaskIdentity, controls_to_instructions};
+// The IR embeds proto's load-control vocabulary; re-exported so
+// consumers can match on `Instruction` fields without a direct proto
+// dependency.
 pub use mask::{MASTER_DATA_ENV, MaskData, MaskDb, MemoryResources};
+pub use mods::{ResolvedProject, resolve_mods};
 pub use product::{ComObjectDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
-pub use project::{CompiledDownload, GroupLink, ParameterValue, ProjectConfig, compile};
+pub use project::{CompiledDownload, GroupLink, ParameterValue, ProjectConfig, compile, load_control_path};
 pub use table_coding::{Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, CotM112, CountWidth, TableCoding};
+pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState};

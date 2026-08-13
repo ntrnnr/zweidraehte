@@ -72,7 +72,17 @@ pub struct ParameterLocation {
     /// Segment id the offset is relative to.
     pub code_segment: String,
     pub offset: u32,
+    /// Bit position within the byte at `offset`, counted from the MSB —
+    /// the convention ETS uses when packing sub-byte parameters.
     pub bit_offset: u8,
+    /// Storage width in bits, from the parameter's type. 0 means the
+    /// type declares no width (`TypeFloat`, or no `ParameterTypes`
+    /// section at all); patching then falls back to a whole-byte copy
+    /// sized by the value.
+    pub size_bits: u16,
+    /// ETS writes this parameter on every download even when its value
+    /// equals the product default; a diff-based project must include it.
+    pub legacy_patch_always: bool,
 }
 
 /// How a product's load procedures compose with the mask.
@@ -114,6 +124,10 @@ pub struct ProductData {
     /// Whether the product supplies a whole procedure (System 7) or
     /// fragments the mask template merges (System B).
     pub load_procedure_style: LoadProcedureStyle,
+    /// The application identity task-segment records announce, from
+    /// the program element's own attributes (the load-procedure XML
+    /// does not repeat them).
+    pub task_identity: super::ir::TaskIdentity,
     pub segments: Vec<Segment>,
     /// The product's load procedures: one complete `ProductProcedure`
     /// for System 7, or `MergeId`-tagged fragments for System B.
@@ -174,6 +188,7 @@ impl ProductData {
             id: program.id.clone(),
             mask_version: parse_mask_version(&program.mask_version),
             load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style),
+            task_identity: extract_task_identity(program),
             segments,
             load_procedures: program
                 .static_section
@@ -215,6 +230,27 @@ impl ProductData {
 // ============================================================================
 // Extraction
 // ============================================================================
+
+/// The application identity ETS stamps into task-segment records:
+/// `[manufacturer:2][application number:2][version:1]`, manufacturer
+/// from the program id's `M-XXXX` prefix, the rest from the program's
+/// own attributes. A malformed id yields manufacturer 0 — the task
+/// record is informational to the devices we drive, and failing the
+/// whole product extraction over it would be out of proportion.
+fn extract_task_identity(program: &ApplicationProgram) -> super::ir::TaskIdentity {
+    let manufacturer = program
+        .id
+        .strip_prefix("M-")
+        .and_then(|rest| rest.get(..4))
+        .and_then(|hex| u16::from_str_radix(hex, 16).ok())
+        .unwrap_or(0);
+    let [mfr_hi, mfr_lo] = manufacturer.to_be_bytes();
+    let [app_hi, app_lo] = program.application_number.to_be_bytes();
+    super::ir::TaskIdentity {
+        application_id: [mfr_hi, mfr_lo, app_hi, app_lo, program.application_version],
+        pei_type: program.pei_type,
+    }
+}
 
 /// `MV-0705` → `MaskVersion::System7Tp1`.
 fn parse_mask_version(raw: &str) -> Option<MaskVersion> {
@@ -325,21 +361,49 @@ fn extract_parameters(program: &ApplicationProgram) -> Vec<ParameterLocation> {
         return Vec::new();
     };
 
-    parameters
-        .items
-        .iter()
-        .filter_map(|item| match item {
+    // Width lookup through the parameter-type table. A product without
+    // one (our own generated test fixtures) degrades every width to 0,
+    // which keeps the whole-byte patching path.
+    let types = program.static_section.parameter_types.as_ref().map(|pt| pt.types.as_slice()).unwrap_or_default();
+    let size_of =
+        |type_id: &str| -> u16 { types.iter().find(|t| t.id == type_id).map_or(0, |t| t.type_def.size_bits()) };
+
+    let mut locations = Vec::new();
+    for item in &parameters.items {
+        match item {
             // Only stored parameters have a location; the memoryless
             // ones exist purely to drive the ETS UI.
-            ParameterItem::Parameter(p) => p.memory.as_ref().map(|m| ParameterLocation {
-                id: p.id.clone(),
-                code_segment: m.code_segment.clone(),
-                offset: m.offset,
-                bit_offset: m.bit_offset,
-            }),
-            ParameterItem::Union(_) => None,
-        })
-        .collect()
+            ParameterItem::Parameter(p) => {
+                if let Some(m) = &p.memory {
+                    locations.push(ParameterLocation {
+                        id: p.id.clone(),
+                        code_segment: m.code_segment.clone(),
+                        offset: m.offset,
+                        bit_offset: m.bit_offset,
+                        size_bits: size_of(&p.parameter_type),
+                        legacy_patch_always: p.legacy_patch_always,
+                    });
+                }
+            }
+            // A union's members each carry a byte+bit offset relative
+            // to the union's own location; normalize the bit sum so a
+            // location's bit offset always stays inside its byte.
+            ParameterItem::Union(u) => {
+                for sub in &u.parameters {
+                    let total_bits = u32::from(u.memory.bit_offset) + u32::from(sub.bit_offset);
+                    locations.push(ParameterLocation {
+                        id: sub.id.clone(),
+                        code_segment: u.memory.code_segment.clone(),
+                        offset: u.memory.offset + u32::from(sub.offset) + total_bits / 8,
+                        bit_offset: (total_bits % 8) as u8,
+                        size_bits: size_of(&sub.parameter_type),
+                        legacy_patch_always: false,
+                    });
+                }
+            }
+        }
+    }
+    locations
 }
 
 // A `.knxprod` supplying both layers is read through the two
@@ -486,6 +550,63 @@ pub(crate) mod tests {
         assert_eq!(param.code_segment, "M-00FA_A-0306-02-0000_AS-4300");
         assert_eq!(param.offset, 2);
         assert_eq!(param.bit_offset, 0);
+        // The fixture declares no ParameterTypes section, so the width
+        // is unknown and patching falls back to whole-byte copies.
+        assert_eq!(param.size_bits, 0);
+        assert!(!param.legacy_patch_always);
+    }
+
+    /// The fixture's `<Parameters>` block swapped for one with a type
+    /// table, a `LegacyPatchAlways` parameter, and a union — the
+    /// shapes a vendor program (the MDT Push Button Lite) uses.
+    fn vendor_shaped_product() -> ProductData {
+        let old = concat!(
+            r#"<Parameters>
+          <Parameter Id="M-00FA_A-0306-02-0000_P-1" Name="Mode" ParameterType="M-00FA_A-0306-02-0000_PT-1" Text="Mode" Value="0">
+            <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="2" BitOffset="0" />
+          </Parameter>
+        </Parameters>"#
+        );
+        let new = r#"<ParameterTypes>
+          <ParameterType Id="M-00FA_A-0306-02-0000_PT-1" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+          <ParameterType Id="M-00FA_A-0306-02-0000_PT-2" Name="E4"><TypeRestriction Base="Value" SizeInBit="4"><Enumeration Text="Off" Value="0" Id="M-00FA_A-0306-02-0000_PT-2_EN-0" /></TypeRestriction></ParameterType>
+        </ParameterTypes>
+        <Parameters>
+          <Parameter Id="M-00FA_A-0306-02-0000_P-1" Name="Mode" ParameterType="M-00FA_A-0306-02-0000_PT-1" Text="Mode" Value="0" LegacyPatchAlways="true">
+            <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="2" BitOffset="0" />
+          </Parameter>
+          <Union SizeInBit="16">
+            <Memory CodeSegment="M-00FA_A-0306-02-0000_AS-4300" Offset="0" BitOffset="4" />
+            <Parameter Id="M-00FA_A-0306-02-0000_P-2" Name="UnionA" ParameterType="M-00FA_A-0306-02-0000_PT-2" Text="A" Value="0" Offset="0" BitOffset="0" />
+            <Parameter Id="M-00FA_A-0306-02-0000_P-3" Name="UnionB" ParameterType="M-00FA_A-0306-02-0000_PT-2" Text="B" Value="0" Offset="1" BitOffset="6" />
+          </Union>
+        </Parameters>"#;
+        let xml = SYSTEM7_MTXML.replace(old, new);
+        assert_ne!(xml, SYSTEM7_MTXML, "the Parameters block must have matched");
+        ProductData::from_mtxml_str(&xml).expect("the vendor-shaped fixture parses")
+    }
+
+    #[test]
+    fn resolves_type_widths_and_legacy_patch_always() {
+        let p = vendor_shaped_product();
+        let mode = p.parameters.iter().find(|l| l.id.ends_with("_P-1")).expect("P-1");
+        assert_eq!(mode.size_bits, 8);
+        assert!(mode.legacy_patch_always, "the attribute must survive extraction");
+    }
+
+    #[test]
+    fn extracts_union_members_with_normalized_offsets() {
+        let p = vendor_shaped_product();
+
+        // Union base: offset 0, bit 4. Member A adds nothing on top:
+        // it stays in byte 0 at bit 4.
+        let a = p.parameters.iter().find(|l| l.id.ends_with("_P-2")).expect("P-2");
+        assert_eq!((a.offset, a.bit_offset, a.size_bits), (0, 4, 4));
+
+        // Member B adds byte 1 and bit 6: 4 + 6 = 10 bits carries one
+        // byte, so it lands in byte 2 at bit 2.
+        let b = p.parameters.iter().find(|l| l.id.ends_with("_P-3")).expect("P-3");
+        assert_eq!((b.offset, b.bit_offset, b.size_bits), (2, 2, 4));
     }
 
     #[test]

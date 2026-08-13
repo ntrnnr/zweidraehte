@@ -54,6 +54,12 @@ pub(crate) struct ImageLayout {
     /// The group object table, from gapless descriptor rows where
     /// row `i` is ASAP `first_asap + i`.
     pub group_object_table: fn(&[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>>,
+    /// Overlay per-object octets onto a *product-supplied* group
+    /// object table (the segment's default data), for models whose
+    /// table carries firmware pointers only the product database
+    /// knows — synthesizing would zero them. `None` for models whose
+    /// tables are fully synthesizable.
+    pub overlay_group_object_table: Option<fn(&mut [u8], &[super::product::ComObjectDef]) -> Result<()>>,
 }
 
 impl ImageLayout {
@@ -78,6 +84,7 @@ const BIM_M112: ImageLayout = ImageLayout {
     address_table: m112_address_table,
     association_table: m112_association_table,
     group_object_table: m112_group_object_table,
+    overlay_group_object_table: Some(m112_overlay_group_object_table),
 };
 
 /// RT8: the device's own address rides in the table, ahead of the
@@ -96,6 +103,15 @@ fn m112_association_table(associations: &[(u16, u16)]) -> Result<Vec<u8>> {
     let narrowed: Vec<(u8, u8)> =
         associations.iter().map(|&(tsap, asap)| Ok((narrow(tsap)?, narrow(asap)?))).collect::<Result<_>>()?;
     Asso8.blob(&narrowed)
+}
+
+/// Overlay flags/type onto a vendor-supplied M112 table (see
+/// [`CotM112::overlay`] for why replacing it wholesale corrupts real
+/// silicon).
+fn m112_overlay_group_object_table(defaults: &mut [u8], objects: &[super::product::ComObjectDef]) -> Result<()> {
+    let rows: Vec<(u16, ComObjectFlags, ComObjectType)> =
+        objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
+    CotM112::overlay(defaults, &rows)
 }
 
 /// The BIM M112 group object table. A product with no group objects
@@ -128,6 +144,10 @@ const SYSTEM_B: ImageLayout = ImageLayout {
     address_table: system_b_address_table,
     association_table: system_b_association_table,
     group_object_table: system_b_group_object_table,
+    // RT7 descriptors are flags + type only; nothing product-secret to
+    // preserve, so a default-data table would be a plain synthesis
+    // target anyway.
+    overlay_group_object_table: None,
 };
 
 /// RT7 keeps the device's address elsewhere; the table is group

@@ -264,6 +264,47 @@ pub struct CotM112 {
     pub ram_flags_ptr: u16,
 }
 
+impl CotM112 {
+    /// Overlay per-object `config`/`type` octets onto a
+    /// product-supplied default table.
+    ///
+    /// A vendor product ships its M112 table as segment data whose
+    /// count, `ram_flags_ptr` and per-row `data_ptr`s point into the
+    /// real firmware's RAM layout — values nothing but the product
+    /// database knows, so the table cannot be synthesized the way our
+    /// own devices' can. What *is* the installation's to decide are
+    /// each object's config flags and value type, and those two
+    /// octets are what this touches — a Falcon download trace
+    /// (2026-08-13, `$4400`) shows ETS writing per-row config *and*
+    /// type (`43 00`, `DB 03`, …) over the preserved pointers, the
+    /// type in the standard coding (`00h` = 1 bit). Rows for objects
+    /// not in `objects` keep their product defaults.
+    pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
+        if defaults.len() < 3 {
+            return Err(Error::ProductData(
+                "the product's group object table data is shorter than its own header".to_string(),
+            ));
+        }
+        let count = u16::from(defaults[0]);
+        for (number, flags, object_type) in objects {
+            if *number >= count {
+                return Err(Error::ProductData(format!(
+                    "object {number} lies outside the product's default group object table ({count} rows)"
+                )));
+            }
+            let row = 3 + 4 * usize::from(*number);
+            if row + 3 >= defaults.len() {
+                return Err(Error::ProductData(format!(
+                    "the product's group object table data is truncated before object {number}"
+                )));
+            }
+            defaults[row + 2] = flags.to_byte();
+            defaults[row + 3] = (*object_type).into();
+        }
+        Ok(())
+    }
+}
+
 impl TableCoding for CotM112 {
     type Entry = ComObjectEntry;
     const ENTRY_LEN: usize = 4;

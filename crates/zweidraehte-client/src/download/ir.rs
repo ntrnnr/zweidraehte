@@ -23,6 +23,16 @@ use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, Rel
 /// memory-mapped record.
 pub type LsmIndex = u8;
 
+/// The application identity a task-segment record announces:
+/// `[manufacturer:2][application number:2][version:1]` plus the PEI
+/// type — resolved from the product, because the load-procedure XML
+/// carries only the address and ETS synthesizes the rest.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskIdentity {
+    pub application_id: [u8; 5],
+    pub pei_type: u8,
+}
+
 /// One step of a download procedure.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Instruction {
@@ -48,10 +58,14 @@ pub enum Instruction {
     /// client asks for a size, the device picks the address and reports
     /// it through `PID_TABLE_REFERENCE`.
     RelSegment { lsm: LsmIndex, segment: RelSegment },
-    /// Announce the task segment address (`LdCtrlTaskSegment`).
+    /// Announce the task segment (`LdCtrlTaskSegment`). The record
+    /// carries the application's identity — the XML holds only the
+    /// address, and ETS stamps in PEI type and ApplicationID from the
+    /// program element (Falcon trace 2026-08-13:
+    /// `03 02 4000 00 0083009515`), so the IR carries them resolved.
     /// System 7 devices accept the record without acting on it; ETS
     /// sends it, so faithful procedures include it.
-    TaskSegment { lsm: LsmIndex, address: u16 },
+    TaskSegment { lsm: LsmIndex, address: u16, pei_type: u8, application_id: [u8; 5] },
     /// Write `length` bytes from the assembled device image at
     /// `address` (the explicit form of ETS's implicit data phase).
     WriteImage { address: u16, length: u16 },
@@ -89,6 +103,46 @@ pub enum Instruction {
     MapError { original: u32, mapped: u32 },
 }
 
+impl Instruction {
+    /// A short human label for progress displays — what a UI shows
+    /// while the step runs, phrased for someone watching a download,
+    /// not for someone debugging the IR.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Connect => "Connect and authorize".to_string(),
+            Self::Disconnect => "Disconnect".to_string(),
+            Self::CompareProperty { prop_id, .. } => format!("Check device identity (PID {prop_id})"),
+            Self::LsmEvent { lsm, event } => {
+                let verb = match event {
+                    LoadEvent::StartLoading => "Start loading",
+                    LoadEvent::LoadCompleted => "Finish loading",
+                    LoadEvent::Unload => "Unload",
+                    _ => "Signal",
+                };
+                format!("{verb} machine {lsm}")
+            }
+            Self::AbsSegment { lsm, segment } => {
+                format!("Allocate {} bytes at {:#06X} (machine {lsm})", segment.length, segment.start_address)
+            }
+            Self::RelSegment { lsm, segment } => {
+                format!("Request {} bytes on object {lsm}", segment.requested_memory_size)
+            }
+            Self::TaskSegment { lsm, address, .. } => format!("Announce task at {address:#06X} (machine {lsm})"),
+            Self::WriteImage { address, length } => format!("Write {length} bytes at {address:#06X}"),
+            Self::WriteMemory { address, data, .. } => format!("Write {} bytes at {address:#06X}", data.len()),
+            Self::CompareMemory { address, .. } => format!("Verify memory at {address:#06X}"),
+            Self::WriteRelImage { obj_idx, .. } => format!("Write object {obj_idx}'s table"),
+            Self::LoadImageProperty { obj_idx, prop_id } => {
+                format!("Read back object {obj_idx}'s property {prop_id}")
+            }
+            Self::WriteProperty { obj_idx, prop_id, .. } => format!("Write object {obj_idx}'s property {prop_id}"),
+            Self::Restart => "Restart the device".to_string(),
+            Self::Delay { milliseconds } => format!("Wait {milliseconds} ms"),
+            Self::MapError { .. } => "Adjust error tolerance".to_string(),
+        }
+    }
+}
+
 // ============================================================================
 // Master-data conversion (feature `master-data`)
 // ============================================================================
@@ -96,6 +150,7 @@ pub enum Instruction {
 mod convert {
     use super::Instruction;
     use super::LsmIndex;
+    use super::TaskIdentity;
     use crate::error::{Error, Result};
     use zweidraehte_knxprod::schema as ld;
     use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, RelSegment};
@@ -113,8 +168,8 @@ mod convert {
     /// [`Error::UnsupportedInstruction`] — `Merge` in particular must
     /// be resolved by [`assemble`](crate::download::assemble) before
     /// execution, never reached at run time.
-    pub fn controls_to_instructions(controls: &[ld::LoadControl]) -> Result<Vec<Instruction>> {
-        controls.iter().map(convert_control).collect()
+    pub fn controls_to_instructions(controls: &[ld::LoadControl], task: TaskIdentity) -> Result<Vec<Instruction>> {
+        controls.iter().map(|control| convert_control(control, task)).collect()
     }
 
     /// A load state machine must be named by index; the
@@ -137,7 +192,7 @@ mod convert {
             .collect())
     }
 
-    fn convert_control(control: &ld::LoadControl) -> Result<Instruction> {
+    fn convert_control(control: &ld::LoadControl, task: TaskIdentity) -> Result<Instruction> {
         use ld::LoadControl as C;
         Ok(match control {
             C::LdCtrlConnect(_) => Instruction::Connect,
@@ -160,7 +215,12 @@ mod convert {
                     memory_attributes: s.seg_flags,
                 },
             },
-            C::LdCtrlTaskSegment(t) => Instruction::TaskSegment { lsm: t.lsm_idx, address: t.address },
+            C::LdCtrlTaskSegment(t) => Instruction::TaskSegment {
+                lsm: t.lsm_idx,
+                address: t.address,
+                pei_type: task.pei_type,
+                application_id: task.application_id,
+            },
             C::LdCtrlCompareProp(p) => {
                 let obj_idx = p.obj_idx.ok_or(Error::UnsupportedInstruction("CompareProp by ObjType not supported"))?;
                 let expected = match (&p.inline_data, &p.range) {
@@ -255,7 +315,8 @@ mod convert {
             let mv = master.get_mask_version("MV-0705").expect("fixture defines MV-0705");
             let procedure = mv.find_procedure("Unload", "all").expect("fixture defines Unload all");
 
-            let instructions = controls_to_instructions(&procedure.controls).expect("every element is convertible");
+            let instructions = controls_to_instructions(&procedure.controls, Default::default())
+                .expect("every element is convertible");
             assert_eq!(instructions, vec![
                 Instruction::Connect,
                 Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload },
@@ -283,7 +344,7 @@ mod convert {
                 fill: 0,
                 ..Default::default()
             });
-            assert_eq!(convert_control(&rel).expect("converts"), Instruction::RelSegment {
+            assert_eq!(convert_control(&rel, Default::default()).expect("converts"), Instruction::RelSegment {
                 lsm: 3,
                 segment: RelSegment { requested_memory_size: 8192, mode: 0, fill: 0 },
             });
@@ -297,7 +358,7 @@ mod convert {
                 verify: true,
                 ..Default::default()
             });
-            assert_eq!(convert_control(&write).expect("converts"), Instruction::WriteRelImage {
+            assert_eq!(convert_control(&write, Default::default()).expect("converts"), Instruction::WriteRelImage {
                 obj_idx: 3,
                 offset: 0,
                 verify: true,
@@ -308,10 +369,10 @@ mod convert {
                 prop_id: 7,
                 ..Default::default()
             });
-            assert_eq!(convert_control(&image).expect("converts"), Instruction::LoadImageProperty {
-                obj_idx: 4,
-                prop_id: 7,
-            });
+            assert_eq!(
+                convert_control(&image, Default::default()).expect("converts"),
+                Instruction::LoadImageProperty { obj_idx: 4, prop_id: 7 }
+            );
         }
 
         /// A machine named by object type rather than index still has
@@ -323,7 +384,7 @@ mod convert {
                 obj_type: Some(6),
                 occurrence: Some(1),
             });
-            assert!(matches!(convert_control(&control), Err(Error::UnsupportedInstruction(_))));
+            assert!(matches!(convert_control(&control, Default::default()), Err(Error::UnsupportedInstruction(_))));
         }
 
         /// Merge points must be resolved at assembly time; reaching the
@@ -331,7 +392,7 @@ mod convert {
         #[test]
         fn merge_points_never_reach_the_converter() {
             let control = ld::LoadControl::LdCtrlMerge(ld::LdCtrlMerge { merge_id: 1 });
-            assert!(matches!(convert_control(&control), Err(Error::UnsupportedInstruction(_))));
+            assert!(matches!(convert_control(&control, Default::default()), Err(Error::UnsupportedInstruction(_))));
         }
     }
 }
