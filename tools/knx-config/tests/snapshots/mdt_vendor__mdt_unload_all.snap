@@ -1,0 +1,10 @@
+---
+source: tools/knx-config/tests/mdt_vendor.rs
+expression: unload_report
+---
+Connect
+LsmEvent { lsm: 1, event: Unload }
+LsmEvent { lsm: 2, event: Unload }
+LsmEvent { lsm: 3, event: Unload }
+LsmEvent { lsm: 4, event: Unload }
+Disconnect

@@ -18,6 +18,7 @@ members = [
     "tools/compare-programs",
     "tools/bus-tools",
     "tools/knx-provision",
+    "tools/knx-config",
 ]
 
 [workspace.package]
