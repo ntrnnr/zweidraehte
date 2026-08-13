@@ -153,6 +153,43 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Switch a device's programming mode off, the way its mask realizes
+/// it: masks with memory-mapped management resources keep the mode as
+/// bit 0 of the master data's `ProgrammingMode` address (a
+/// read-modify-write preserves the byte's other bits); everything
+/// else exposes `PID_PROGMODE` on the device object.
+async fn disable_programming_mode(
+    bus: &KnxBus,
+    mask: &zweidraehte_client::download::MaskData<'_>,
+    ia: IndividualAddress,
+) -> Result<()> {
+    let mut connection = bus.connect_device(ia).await.context("while attempting to connect")?;
+    let result = async {
+        if let Some(resources) = mask.memory_resources() {
+            let address = resources.programming_mode_addr;
+            let byte = connection
+                .memory_read(address, 1)
+                .await
+                .context("while attempting to read the programming-mode byte")?[0];
+            if byte & 0x01 != 0 {
+                connection
+                    .memory_write_verify(address, &[byte & !0x01])
+                    .await
+                    .context("while attempting to clear the programming-mode bit")?;
+            }
+        } else {
+            connection
+                .property_write(0, zweidraehte_client::pid::device::PROGMODE, 1, 1, &[0])
+                .await
+                .context("while attempting to write PID_PROGMODE")?;
+        }
+        Ok(())
+    }
+    .await;
+    let _ = connection.close().await;
+    result
+}
+
 /// ETS's NegotiateMaxApduLength: the device's `PID_MAX_APDULENGTH`
 /// (object 0, PID 56) bounded by the interface's own capacity. A
 /// device that does not answer the read gets the TP1 standard-frame
@@ -277,19 +314,42 @@ async fn run_load(
     let bus = connect(target).await?;
 
     if program_ia {
-        println!("\nPut the device into programming mode (press its button), then press Enter…");
-        std::io::stdin().read_line(&mut String::new()).context("while attempting to read the confirmation")?;
+        // Poll for the programming button instead of asking for Enter:
+        // scan until exactly one device answers, assign, verify, and
+        // switch programming mode back off ourselves — no keyboard
+        // round trips.
+        println!("\nPress the programming button on the target device… (Ctrl+C to abort)");
         let nm = bus.network_management();
+        let mut warned_about_crowd = 0usize;
+        let present = loop {
+            let found = nm
+                .read_individual_addresses(Duration::from_secs(1))
+                .await
+                .context("while attempting to scan for programming mode")?;
+            match found.len() {
+                0 => {}
+                1 => break found[0],
+                n if n != warned_about_crowd => {
+                    println!("{n} devices are in programming mode — release all but one");
+                    warned_about_crowd = n;
+                }
+                _ => {}
+            }
+        };
+        println!("Device {present} is in programming mode; assigning {ia}…");
         nm.write_individual_address(ia).await.context("while attempting to write the individual address")?;
         let found = nm
-            .read_individual_addresses(Duration::from_secs(3))
+            .read_individual_addresses(Duration::from_secs(2))
             .await
             .context("while attempting to verify the address")?;
-        if found.contains(&ia) {
-            println!("Address {ia} written — take the device out of programming mode, then press Enter…");
-            std::io::stdin().read_line(&mut String::new()).context("while attempting to read the confirmation")?;
-        } else {
-            bail!("no device in programming mode answered with {ia} — is the button pressed?");
+        if !found.contains(&ia) {
+            bail!("the device did not take address {ia}");
+        }
+        // Best-effort: a device that cannot be switched remotely just
+        // needs its button released, which must not fail the download.
+        match disable_programming_mode(&bus, &mask, ia).await {
+            Ok(()) => println!("Address {ia} assigned; programming mode switched off."),
+            Err(e) => println!("Address {ia} assigned — switch programming mode off manually ({e})."),
         }
     }
 

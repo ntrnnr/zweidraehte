@@ -166,11 +166,18 @@ without editing the file.
 cargo run --bin knx-loader -- -p <product> --usb load --mods mods.toml --ia 1.1.2 --program-ia
 ```
 
-`--program-ia` prompts you to press the device's programming button,
-writes the target address via `NM_IndividualAddress_Write`, verifies
-it with a programming-mode scan, and continues into the download. Make
-sure exactly one device is in programming mode — the write is a
-broadcast that every listening device accepts.
+`--program-ia` waits for you to press the device's programming button
+— it polls the bus with programming-mode scans until exactly one
+device answers (and tells you if several are pressed at once, since
+the address write is a broadcast every listening device would
+accept). It then writes the target address, verifies it with another
+scan, and **switches programming mode back off itself**, mask-aware:
+bit 0 of the master data's `ProgrammingMode` memory address on masks
+with memory-mapped management (System 7 / BCU lineage), or
+`PID_PROGMODE` on the device object elsewhere. A device that refuses
+the remote switch-off just gets a note to release the button — the
+download continues either way. No keyboard interaction is needed
+beyond the physical button press.
 
 **By serial number, without touching the device** — switch programming
 mode remotely and let the same flow run:
@@ -185,7 +192,8 @@ cargo run -p zweidraehte-client --example prog_mode -- --usb --serial 00C50011AA
 `prog_mode` resolves the serial to the device's current address,
 reads its descriptor, and flips programming mode the way that
 generation expects: bit 0 of memory `0060h` for System 7 / BCU-era
-masks, `PID_PROGMODE` for System B.
+masks, `PID_PROGMODE` for System B. (The trailing `off` is optional —
+the loader already switches programming mode off after assigning.)
 
 The TUI does not assign addresses (its `p` download expects the
 device to already answer at the mods file's address); use the loader

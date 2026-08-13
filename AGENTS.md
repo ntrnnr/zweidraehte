@@ -1204,6 +1204,6 @@ cargo run --bin knx-loader -- --product <file> [--server ip:port | --usb[=VID:PI
 # e.g. after an ETS download, to cross-check our blob generation:
 ... read (--ia a.l.d | --mods mods.toml) --out DIR
 ```
-`load --program-ia` first writes the individual address via programming mode (press the device's button when prompted) and reads the load states back after the download, failing unless all report Loaded. Master data resolves from `--master-data`, a `.knxprod`'s bundled copy, `KNX_MASTER_DATA`, or the on-disk cache/download.
+`load --program-ia` polls for the programming button (scan until exactly one device answers), writes the individual address, verifies it, and switches programming mode off itself — mask-aware: the master data's `ProgrammingMode` memory address where the mask is memory-managed, `PID_PROGMODE` otherwise. After the download the loader reads the load states back, failing unless every machine the procedure completed reports Loaded. Master data resolves from `--master-data`, a `.knxprod`'s bundled copy, `KNX_MASTER_DATA`, or the on-disk cache/download.
 
 Note: vendor-bundled ETS5-era `knx_master.xml` files (e.g. in `manuf_tool_data/` device dirs) do not parse; let the loader resolve current master data instead.
