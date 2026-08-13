@@ -74,7 +74,16 @@ breakdown of what works, what needs testing, and what is missing.
   group traffic, connected/connectionless device management, KNX Data
   Secure, and ETS-style **configuration download** for System 7 and
   System B devices, driven the way ETS is — from `knx_master.xml` and
-  a product's `.knxprod`/MTXML (experimental)
+  a product's `.knxprod`/MTXML. Verified against real hardware (an
+  MDT System 7 push button, over USB and tunneling)
+- **Device configuration tooling** on top of the client: declarative
+  per-device **mods files** (TOML), `knx-dump` to generate their
+  skeletons from a vendor product file, `knx-loader` to
+  load/unload/read real devices, and the TUI as an interactive
+  configurator — parameter editing with live ETS-style visibility,
+  translations, group-address linking, and one-key device
+  programming with progress display. See
+  [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md)
 
 **Reference firmware** (in `firmware/`, a separate workspace)
 
@@ -135,12 +144,15 @@ breakdown of what works, what needs testing, and what is missing.
   tables and parameters → load → restart) runs end to end against both
   the System 7 and System B conformance DUTs — the client generates
   each DUT's product file, reads it back, downloads, and verifies the
-  device rewired — exercising both load-control paths (memory-mapped
-  for System 7, `PID_LOAD_STATE_CONTROL` for System B). Not yet
-  hardware-verified against a third-party product; no automatic
-  reconnection, sequential command channel, no layered NL/TL/AL
-  separation yet. Partial-download subtypes (`grp`/`par`/`cfg`/`ap1`)
-  and secure commissioning are not wired.
+  device rewired — exercising both load-control paths. On real
+  hardware, exactly **one third-party device** has been configured
+  start to finish so far (an MDT BE-TAL5502.01 push button, System 7,
+  from its official vendor product file, over both USB and
+  tunneling); the wire details are pinned against the spec and ETS
+  traces of that device, so expect other products to surface
+  surprises. No automatic reconnection, sequential command channel,
+  no layered NL/TL/AL separation yet. Partial-download subtypes
+  (`grp`/`par`/`cfg`/`ap1`) and secure commissioning are not wired.
 - **ip_interface link layer**: the composite KNX/IP↔TP1 bridge behind
   the IP-interface firmware — implemented, but untested so far.
 
@@ -202,7 +214,10 @@ examples/
 conformance/                 KNX conformance test framework + runner
 
 tools/
-  knxprod-tui/               TUI viewer for MTXML files
+  knxprod-tui/               TUI viewer/configurator for MTXML files (edits,
+                             languages, mods export, device programming)
+  knx-config/                knx-dump (mods skeletons) + knx-loader
+                             (load/unload/read real devices)
   compare-programs/          Semantic MTXML comparison
   bus-tools/                 busmon, tpuart, usb_test hardware utilities
   knx-provision/             Factory provisioning via probe-rs
@@ -240,6 +255,11 @@ cargo run --bin gen_ip_interface_mtxml -- --knxprod   # the KNX/IP<->TP1 interfa
 
 # Inspect a generated ApplicationProgram in the TUI
 cargo run -p knxprod-tui -- out/DerGeraet/M-00FA/ApplicationProgram1.mtxml
+
+# Configure a real device from its vendor product file
+# (see docs/DEVICE_PROGRAMMING.md for the full workflow)
+cargo run --bin knx-dump -- --product vendor.knxprod -o mods.toml
+cargo run --bin knx-loader -- -p vendor.knxprod --usb load --mods mods.toml --ia 1.1.2
 ```
 
 Do **not** run `cargo build --workspace` from the repo root and expect
@@ -319,6 +339,10 @@ comparison.
   define a concrete device and wire it into `main`.
 - [`docs/DSL_REFERENCE.md`](docs/DSL_REFERENCE.md) — the ETS DSL
   macros and the KNXPROD generation pipeline.
+- [`docs/DEVICE_PROGRAMMING.md`](docs/DEVICE_PROGRAMMING.md) —
+  configuring real devices with the client tooling: mods files,
+  addressing, the TUI workflow, loader, unload, and how the download
+  works on the wire.
 
 ## FAQ
 
