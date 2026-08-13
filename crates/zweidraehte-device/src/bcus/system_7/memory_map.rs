@@ -279,10 +279,24 @@ impl System7MemoryMap {
         let machine = data[0] >> 4;
         let event = data[0] & 0x0F;
 
+        // Re-frame the memory record into the property spelling the
+        // shared `write_lsm` parsers speak. The memory record differs
+        // in one place: an `AdditionalLoadControls` allocation carries
+        // a segment ID octet between the segment type and the start
+        // address (03/05/02 §3.31.2) that the property record does
+        // not, so it is dropped here — this procedure supports one
+        // segment per machine, and the ID is 00h.
         let mut record = [0u8; Self::LOAD_CONTROL_LEN];
         record[0] = event;
-        record[1..data.len()].copy_from_slice(&data[1..]);
-        let record = &record[..data.len()];
+        let len = if event == 0x03 && data.len() >= 3 {
+            record[1] = data[1]; // segment type
+            record[2..data.len() - 1].copy_from_slice(&data[3..]);
+            data.len() - 1
+        } else {
+            record[1..data.len()].copy_from_slice(&data[1..]);
+            data.len()
+        };
+        let record = &record[..len];
 
         match machine {
             1 => {

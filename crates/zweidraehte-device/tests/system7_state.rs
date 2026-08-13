@@ -341,10 +341,12 @@ mod memory_map {
         let state = fresh_state();
         assert_eq!(read1(&state, 0xB6EA), u8::from(LoadState::Unloaded));
 
-        // Machine 1 (ADT): StartLoading, then AllocAbsDataSeg at 4000h.
+        // Machine 1 (ADT): StartLoading, then AllocAbsDataSeg at 4000h
+        // — the memory spelling with its segment ID octet
+        // (03/05/02 §3.31.2: [L3][type][ID][start:2][length:2]…).
         MAP.write(&state, 0x0104, &[0x11], CTX).expect("start loading");
         assert_eq!(read1(&state, 0xB6EA), u8::from(LoadState::Loading));
-        MAP.write(&state, 0x0104, &[0x13, 0x00, 0x40, 0x00, 0x00, 0x09, 0xFF, 0x03, 0x80, 0x00], CTX)
+        MAP.write(&state, 0x0104, &[0x13, 0x00, 0x00, 0x40, 0x00, 0x00, 0x09, 0xFF, 0x03, 0x80, 0x00], CTX)
             .expect("alloc record");
         assert_eq!(state.adt.borrow().table_reference(), 0x4000);
 
@@ -379,9 +381,10 @@ mod memory_map {
         let mut buf = [0u8; 1];
         assert_eq!(MAP.read(&state, 0x4100, &mut buf, CTX), Err(MemoryError::NotAccessible));
 
-        // Machine 2 (AST): StartLoading + AllocAbsDataSeg at 4100h.
+        // Machine 2 (AST): StartLoading + AllocAbsDataSeg at 4100h,
+        // in the memory spelling (segment ID octet after the type).
         MAP.write(&state, 0x0104, &[0x21], CTX).expect("ast start");
-        MAP.write(&state, 0x0104, &[0x23, 0x00, 0x41, 0x00, 0x00, 0x07, 0xFF, 0x03, 0x80, 0x00], CTX)
+        MAP.write(&state, 0x0104, &[0x23, 0x00, 0x00, 0x41, 0x00, 0x00, 0x07, 0xFF, 0x03, 0x80, 0x00], CTX)
             .expect("ast alloc");
 
         // [count=1][TSAP 1 -> ASAP 1]

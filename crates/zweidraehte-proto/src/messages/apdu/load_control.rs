@@ -278,8 +278,17 @@ pub struct LoadControlRecord;
 
 impl LoadControlRecord {
     /// A bare event (`StartLoading`, `LoadCompleted`, `Unload`, …).
-    pub fn event(event: LoadEvent) -> [u8; 1] {
-        [event.into()]
+    ///
+    /// Always the full 10-octet record — the event octet padded with
+    /// zeros to the segment-record length. That is how the vendor
+    /// conformance templates spell every bare event (`04 00×9` for an
+    /// Unload), and real silicon latches the load-control value as a
+    /// complete record; a lone event octet is what a lenient software
+    /// implementation accepts, not what certified hardware expects.
+    pub fn event(event: LoadEvent) -> [u8; 1 + AbsSegment::RECORD_LEN] {
+        let mut record = [0u8; 1 + AbsSegment::RECORD_LEN];
+        record[0] = event.into();
+        record
     }
 
     /// An `AdditionalLoadControls` event carrying an absolute-segment
@@ -289,6 +298,29 @@ impl LoadControlRecord {
         record[0] = LoadEvent::AdditionalLoadControls.into();
         record[1..].copy_from_slice(&segment.write());
         record
+    }
+
+    /// An `AdditionalLoadControls` event carrying an absolute-task
+    /// allocation record: `[03][02][start:2][PEI type]
+    /// [application id:5]` — the spelling pinned by a Falcon download
+    /// trace (2026-08-13: `03 02 4000 00 0083009515`). Unlike the
+    /// data-segment record it announces the application's identity,
+    /// not a memory range.
+    pub fn task_segment(start_address: u16, pei_type: u8, application_id: [u8; 5]) -> [u8; 10] {
+        let [start_hi, start_lo] = start_address.to_be_bytes();
+        let [m0, m1, a0, a1, version] = application_id;
+        [
+            LoadEvent::AdditionalLoadControls.into(),
+            LoadSegment::AbsoluteTask.into(),
+            start_hi,
+            start_lo,
+            pei_type,
+            m0,
+            m1,
+            a0,
+            a1,
+            version,
+        ]
     }
 
     /// An `AdditionalLoadControls` event carrying a relative-data
@@ -313,17 +345,55 @@ impl MemLoadControlRecord {
         ((machine as u8) << 4) | (u8::from(event) & 0x0F)
     }
 
-    /// A bare event for the given machine.
-    pub fn event(machine: LsmMachine, event: LoadEvent) -> [u8; 1] {
-        [Self::tag(machine, event)]
+    /// The memory-mapped record is always 0Bh octets — 03/05/02
+    /// §3.31.2 writes `A_Memory_Write (addr = 0104h, length = 0Bh)`
+    /// for every event, and real BIM M112 silicon latches the window
+    /// only as that complete record (our own stack is lenient, which
+    /// is how shorter spellings survived every software tier).
+    pub const RECORD_LEN: usize = 11;
+
+    /// A bare event for the given machine: the tagged octet, then ten
+    /// reserved zero octets (03/05/02 §3.31.2, "LoadEvent: Unload").
+    pub fn event(machine: LsmMachine, event: LoadEvent) -> [u8; Self::RECORD_LEN] {
+        let mut record = [0u8; Self::RECORD_LEN];
+        record[0] = Self::tag(machine, event);
+        record
     }
 
     /// An `AdditionalLoadControls` event carrying an absolute-segment
     /// allocation record for the given machine.
-    pub fn abs_segment(machine: LsmMachine, segment: &AbsSegment) -> [u8; 1 + AbsSegment::RECORD_LEN] {
-        let mut record = [0u8; 1 + AbsSegment::RECORD_LEN];
+    ///
+    /// Unlike the property-path record, the memory-mapped spelling
+    /// carries a **segment ID** octet between the segment type and
+    /// the start address (03/05/02 §3.31.2, "LoadEvent:
+    /// AllocAbsDataSeg": `[L3][type][ID][start:2][length:2][access]
+    /// [memory type][memory attributes][reserved]`). The ID is 00h
+    /// for the single segment per machine this procedure supports.
+    pub fn abs_segment(machine: LsmMachine, segment: &AbsSegment) -> [u8; Self::RECORD_LEN] {
+        let property_form = segment.write();
+        let mut record = [0u8; Self::RECORD_LEN];
         record[0] = Self::tag(machine, LoadEvent::AdditionalLoadControls);
-        record[1..].copy_from_slice(&segment.write());
+        record[1] = property_form[0]; // segment type
+        record[2] = 0x00; // segment ID
+        record[3..].copy_from_slice(&property_form[1..]);
+        record
+    }
+
+    /// The task-segment allocation for the memory window: the tagged
+    /// octet, then the property record's payload with the segment ID
+    /// octet inserted, mirroring [`Self::abs_segment`].
+    pub fn task_segment(
+        machine: LsmMachine,
+        start_address: u16,
+        pei_type: u8,
+        application_id: [u8; 5],
+    ) -> [u8; Self::RECORD_LEN] {
+        let property_form = LoadControlRecord::task_segment(start_address, pei_type, application_id);
+        let mut record = [0u8; Self::RECORD_LEN];
+        record[0] = Self::tag(machine, LoadEvent::AdditionalLoadControls);
+        record[1] = property_form[1]; // segment type
+        record[2] = 0x00; // segment ID
+        record[3..].copy_from_slice(&property_form[2..]);
         record
     }
 }
@@ -340,11 +410,14 @@ mod tests {
         assert_eq!(seg.write(), [0x00, 0x40, 0x00, 0x00, 0x0C, 0xFF, 0x03, 0x80, 0x00]);
     }
 
+    /// Bare events are the event octet zero-padded to the 10-octet
+    /// record — the exact spelling the vendor conformance templates
+    /// use (`04 00×9` for an Unload written to PID_LOAD_STATE_CONTROL).
     #[test]
     fn property_path_records() {
-        assert_eq!(LoadControlRecord::event(LoadEvent::StartLoading), [0x01]);
-        assert_eq!(LoadControlRecord::event(LoadEvent::LoadCompleted), [0x02]);
-        assert_eq!(LoadControlRecord::event(LoadEvent::Unload), [0x04]);
+        assert_eq!(LoadControlRecord::event(LoadEvent::StartLoading), [1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(LoadControlRecord::event(LoadEvent::LoadCompleted), [2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(LoadControlRecord::event(LoadEvent::Unload), [4, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
 
         let record = LoadControlRecord::abs_segment(&AbsSegment::eeprom(0xB000, 0x0100));
         assert_eq!(record, [0x03, 0x00, 0xB0, 0x00, 0x01, 0x00, 0xFF, 0x03, 0x80, 0x00]);
@@ -372,15 +445,26 @@ mod tests {
         // [machine:4][event:4] — the System 7 memory map splits these
         // nibbles back apart and feeds `[event][payload]` to the
         // target machine's write_lsm.
-        assert_eq!(MemLoadControlRecord::event(LsmMachine::AddressTable, LoadEvent::StartLoading), [0x11]);
-        assert_eq!(MemLoadControlRecord::event(LsmMachine::AssociationTable, LoadEvent::LoadCompleted), [0x22]);
-        assert_eq!(MemLoadControlRecord::event(LsmMachine::ApplicationProgram, LoadEvent::Unload), [0x34]);
-        assert_eq!(MemLoadControlRecord::event(LsmMachine::PeiProgram, LoadEvent::Unload), [0x44]);
+        // Bare events are the 0Bh-octet record §3.31.2 spells out:
+        // the tag, then ten reserved zeros.
+        assert_eq!(MemLoadControlRecord::event(LsmMachine::AddressTable, LoadEvent::StartLoading), [
+            0x11, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]);
+        assert_eq!(MemLoadControlRecord::event(LsmMachine::AssociationTable, LoadEvent::LoadCompleted), [
+            0x22, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]);
+        assert_eq!(MemLoadControlRecord::event(LsmMachine::ApplicationProgram, LoadEvent::Unload), [
+            0x34, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]);
+        assert_eq!(MemLoadControlRecord::event(LsmMachine::PeiProgram, LoadEvent::Unload), [
+            0x44, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+        ]);
 
+        // The allocation record carries the segment ID octet the
+        // property spelling does not: §3.31.2 AllocAbsDataSeg is
+        // [L3][type][ID][start:2][length:2][AA][TT][MM][00].
         let record = MemLoadControlRecord::abs_segment(LsmMachine::AssociationTable, &AbsSegment::eeprom(0x5000, 34));
-        assert_eq!(record[0], 0x23);
-        assert_eq!(&record[1..], &AbsSegment::eeprom(0x5000, 34).write());
-        // Fits the 12-octet load-control window with room to spare.
-        assert!(record.len() <= 12);
+        assert_eq!(record, [0x23, 0x00, 0x00, 0x50, 0x00, 0x00, 0x22, 0xFF, 0x03, 0x80, 0x00]);
+        assert_eq!(record.len(), MemLoadControlRecord::RECORD_LEN, "the window write is always 0Bh octets");
     }
 }
