@@ -343,6 +343,7 @@ impl VisibilityMap {
     ) {
         for item in &block.items {
             match item {
+                ChannelIndependentItem::ParameterBlockRename(_) => {}
                 ChannelIndependentItem::ParameterBlock(pb) => {
                     self.process_parameter_block(pb, parent_constraint.clone());
                 }
@@ -356,6 +357,7 @@ impl VisibilityMap {
     fn process_channel(&mut self, channel: &Channel, parent_constraint: VisibilityConstraint) {
         for item in &channel.items {
             match item {
+                ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::ParameterBlock(pb) => {
                     self.process_parameter_block(pb, parent_constraint.clone());
                 }
@@ -387,6 +389,7 @@ impl VisibilityMap {
     fn process_parameter_block(&mut self, block: &ParameterBlock, parent_constraint: VisibilityConstraint) {
         for item in &block.items {
             match item {
+                ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     self.add_param_ref(&prr.ref_id, parent_constraint.clone());
                 }
@@ -443,6 +446,7 @@ impl VisibilityMap {
 
     fn process_when_item(&mut self, item: &WhenItem, constraint: VisibilityConstraint) {
         match item {
+            WhenItem::ParameterBlockRename(_) => {}
             WhenItem::ParameterRefRef(prr) => {
                 self.add_param_ref(&prr.ref_id, constraint);
             }

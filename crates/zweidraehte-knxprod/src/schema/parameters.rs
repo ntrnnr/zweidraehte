@@ -41,6 +41,22 @@ pub enum ParameterTypeDef {
     TypeIpAddress(TypeIpAddress),
 }
 
+impl ParameterTypeDef {
+    /// The storage width in bits, or 0 when the type does not declare
+    /// one (`TypeFloat` carries a DPT encoding instead of a width;
+    /// `TypeNone`/`TypePicture`/`TypeIPAddress` occupy no parameter
+    /// memory a download patches). Callers treat 0 as "byte-aligned,
+    /// size known only from the value itself".
+    pub fn size_bits(&self) -> u16 {
+        match self {
+            Self::TypeNumber(n) => u16::from(n.size_in_bit),
+            Self::TypeRestriction(r) => r.size_in_bit as u16,
+            Self::TypeText(t) => t.size_in_bit as u16,
+            Self::TypeFloat(_) | Self::TypeNone(_) | Self::TypePicture(_) | Self::TypeIpAddress(_) => 0,
+        }
+    }
+}
+
 /// Numeric parameter type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TypeNumber {
@@ -160,6 +176,12 @@ pub struct Parameter {
     pub base_value: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
+    /// ETS writes this parameter on every download, even when its value
+    /// equals the product default. Vendor programs use it for values the
+    /// firmware treats as tool-written rather than image defaults, so a
+    /// diff-from-defaults download must not skip them.
+    #[serde(rename = "@LegacyPatchAlways", default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy_patch_always: bool,
 
     #[serde(rename = "Memory", skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryLocation>,

@@ -60,6 +60,7 @@ pub(crate) fn when_com_obj_ref(ref_id: String) -> WhenItem {
 fn block_item_to_when_item(item: ParameterBlockItem) -> Option<WhenItem> {
     match item {
         ParameterBlockItem::ParameterRefRef(r) => Some(WhenItem::ParameterRefRef(r)),
+        ParameterBlockItem::ParameterBlockRename(r) => Some(WhenItem::ParameterBlockRename(r)),
         ParameterBlockItem::ComObjectRefRef(r) => Some(WhenItem::ComObjectRefRef(r)),
         ParameterBlockItem::ParameterSeparator(s) => Some(WhenItem::ParameterSeparator(s)),
         ParameterBlockItem::Choose(c) => Some(WhenItem::Choose(c)),

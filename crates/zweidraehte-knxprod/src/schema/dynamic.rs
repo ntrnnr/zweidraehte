@@ -31,6 +31,8 @@ pub enum ChannelIndependentItem {
     ParameterBlock(ParameterBlock),
     #[serde(rename = "choose")]
     Choose(Choose),
+    #[serde(rename = "ParameterBlockRename")]
+    ParameterBlockRename(ParameterBlockRename),
 }
 
 /// A channel in the Dynamic section
@@ -63,6 +65,8 @@ pub enum ChannelItem {
     /// A module instance directly in a channel.
     #[serde(rename = "Module")]
     Module(Module),
+    #[serde(rename = "ParameterBlockRename")]
+    ParameterBlockRename(ParameterBlockRename),
 }
 
 /// A parameter block in a channel
@@ -113,6 +117,8 @@ pub enum ParameterBlockItem {
     /// Columns for table layout in parameter blocks
     #[serde(rename = "Columns")]
     Columns(TableColumns),
+    #[serde(rename = "ParameterBlockRename")]
+    ParameterBlockRename(ParameterBlockRename),
 }
 
 /// Container for table rows
@@ -228,6 +234,24 @@ pub enum WhenItem {
     /// A module instance within a when clause.
     #[serde(rename = "Module")]
     Module(Module),
+    #[serde(rename = "ParameterBlockRename")]
+    ParameterBlockRename(ParameterBlockRename),
+}
+
+/// Renames a referenced [`ParameterBlock`]'s display text while the
+/// containing branch is active (newer ETS schema versions; the MDT
+/// V14+/V15 programs carry it). Pure UI — it affects neither
+/// visibility nor memory, so the runtime walkers skip it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ParameterBlockRename {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
+    #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
+    pub internal_description: Option<String>,
 }
 
 /// Assignment element that copies one parameter value to another (or assigns a constant)

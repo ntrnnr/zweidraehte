@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::schema::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicSection, Module, ModuleDef,
-    ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, WhenItem,
+    ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterBlockRename, WhenItem,
 };
 
 /// Represents a KNX choose/when condition test.
@@ -253,6 +253,11 @@ pub trait DynamicVisitor {
     /// Called when visiting a communication object ref reference.
     fn visit_com_object_ref(&mut self, _ref_id: &str, _module_ctx: Option<&VisitorModuleContext>) {}
 
+    /// Called when visiting a block rename. The walker only reaches
+    /// it inside an *active* branch, so a visited rename is in force:
+    /// the referenced `ParameterBlock` displays the rename's text.
+    fn visit_block_rename(&mut self, _rename: &ParameterBlockRename, _module_ctx: Option<&VisitorModuleContext>) {}
+
     /// Called when visiting a module instance (before entering its content).
     fn visit_module(&mut self, _module: &Module) {}
 
@@ -370,6 +375,9 @@ fn walk_channel_independent_block<V, E>(
 {
     for item in &cib.items {
         match item {
+            ChannelIndependentItem::ParameterBlockRename(rename) => {
+                visitor.visit_block_rename(rename, module_ctx);
+            }
             ChannelIndependentItem::ParameterBlock(pb) => {
                 walk_parameter_block(pb, visitor, evaluator, module_defs, module_ctx);
             }
@@ -387,6 +395,9 @@ where
 {
     for item in &channel.items {
         match item {
+            ChannelItem::ParameterBlockRename(rename) => {
+                visitor.visit_block_rename(rename, None);
+            }
             ChannelItem::ParameterBlock(pb) => {
                 walk_parameter_block(pb, visitor, evaluator, module_defs, None);
             }
@@ -414,6 +425,9 @@ fn walk_parameter_block<V, E>(
 
     for item in &block.items {
         match item {
+            ParameterBlockItem::ParameterBlockRename(rename) => {
+                visitor.visit_block_rename(rename, module_ctx);
+            }
             ParameterBlockItem::ParameterRefRef(prr) => {
                 visitor.visit_param_ref(&prr.ref_id, module_ctx);
             }
@@ -491,6 +505,9 @@ fn walk_when_items<V, E>(
 {
     for item in items {
         match item {
+            WhenItem::ParameterBlockRename(rename) => {
+                visitor.visit_block_rename(rename, module_ctx);
+            }
             WhenItem::ParameterRefRef(prr) => {
                 visitor.visit_param_ref(&prr.ref_id, module_ctx);
             }

@@ -1032,6 +1032,7 @@ impl MtxmlGenerator {
                 base_value: base_value_arg_id.map(|s| s.to_string()),
                 memory,
                 internal_description: None,
+                legacy_patch_always: false,
             }));
 
             // Generate parameter reference
@@ -1072,6 +1073,7 @@ impl MtxmlGenerator {
                 base_value: None,
                 memory: None, // Pictures are virtual - no device memory
                 internal_description: None,
+                legacy_patch_always: false,
             }));
 
             // Generate parameter reference for the picture
@@ -1903,6 +1905,7 @@ impl MtxmlGenerator {
                 base_value: None,
                 internal_description: None,
                 memory,
+                legacy_patch_always: false,
             }));
 
             param_counter += 1;
@@ -1926,6 +1929,7 @@ impl MtxmlGenerator {
                 base_value: None,
                 internal_description: None,
                 memory: None, // Pictures are virtual - no device memory
+                legacy_patch_always: false,
             }));
 
             param_counter += 1;
@@ -4252,6 +4256,7 @@ impl MtxmlGenerator {
             let when_items: Vec<WhenItem> = items
                 .into_iter()
                 .filter_map(|item| match item {
+                    ParameterBlockItem::ParameterBlockRename(r) => Some(WhenItem::ParameterBlockRename(r)),
                     ParameterBlockItem::ParameterRefRef(prr) => Some(WhenItem::ParameterRefRef(prr)),
                     ParameterBlockItem::ComObjectRefRef(corr) => Some(WhenItem::ComObjectRefRef(corr)),
                     ParameterBlockItem::ParameterSeparator(ps) => Some(WhenItem::ParameterSeparator(ps)),
@@ -4365,6 +4370,7 @@ impl MtxmlGenerator {
                 ChannelIndependentItem::ParameterBlock(pb) => {
                     Self::validate_parameter_block_items(&pb.items, param_ref_ids, com_obj_ref_ids)?;
                 }
+                ChannelIndependentItem::ParameterBlockRename(_) => {}
                 ChannelIndependentItem::Choose(choose) => {
                     Self::validate_choose(choose, param_ref_ids, com_obj_ref_ids)?;
                 }
@@ -4383,6 +4389,7 @@ impl MtxmlGenerator {
                 ChannelItem::ParameterBlock(pb) => {
                     Self::validate_parameter_block_items(&pb.items, param_ref_ids, com_obj_ref_ids)?;
                 }
+                ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::Choose(choose) => {
                     Self::validate_choose(choose, param_ref_ids, com_obj_ref_ids)?;
                 }
@@ -4401,6 +4408,7 @@ impl MtxmlGenerator {
     ) -> Result<(), GeneratorError> {
         for item in items {
             match item {
+                ParameterBlockItem::ParameterBlockRename(_) => {}
                 ParameterBlockItem::ParameterRefRef(prr) => {
                     if !param_ref_ids.contains(prr.ref_id.as_str()) {
                         return Err(GeneratorError::MissingReference {
@@ -4466,6 +4474,7 @@ impl MtxmlGenerator {
     ) -> Result<(), GeneratorError> {
         for item in items {
             match item {
+                WhenItem::ParameterBlockRename(_) => {}
                 WhenItem::ParameterRefRef(prr) => {
                     if !param_ref_ids.contains(prr.ref_id.as_str()) {
                         return Err(GeneratorError::MissingReference {
@@ -4549,6 +4558,7 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
                 ChannelIndependentItem::ParameterBlock(block) => {
                     collect_from_block(block, &mut map);
                 }
+                ChannelIndependentItem::ParameterBlockRename(_) => {}
                 ChannelIndependentItem::Choose(choose) => {
                     for when in &choose.whens {
                         collect_from_when_items(&when.items, &mut map);
@@ -4565,6 +4575,7 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
                 ChannelItem::ParameterBlock(block) => {
                     collect_from_block(block, &mut map);
                 }
+                ChannelItem::ParameterBlockRename(_) => {}
                 ChannelItem::Choose(choose) => {
                     for when in &choose.whens {
                         collect_from_when_items(&when.items, &mut map);

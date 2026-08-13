@@ -71,6 +71,14 @@ pub struct Device {
     /// Group address bindings indexed by communication object number
     group_address_bindings: HashMap<u16, Vec<GroupAddressBinding>>,
 
+    /// Parameters whose value was explicitly set after construction.
+    ///
+    /// Distinguishes "the user chose this value" from "still at its
+    /// construction-time default" — needed because a visible
+    /// `ParameterRef` may carry a `Value` override, making the
+    /// *effective* default differ from the stored initial value.
+    touched_params: HashSet<String>,
+
     // === Computed State ===
     /// Set of visible parameter ref IDs
     visible_param_refs: HashSet<String>,
@@ -80,6 +88,11 @@ pub struct Device {
 
     /// Set of visible module instance IDs
     visible_modules: HashSet<String>,
+
+    /// Active `ParameterBlockRename`s under the current configuration:
+    /// renamed block id -> display text. A rename inside an active
+    /// choose branch replaces the referenced block's title.
+    active_block_renames: HashMap<String, String>,
 
     /// Expanded module instances indexed by instance ID
     expanded_modules: HashMap<String, ExpandedModule>,
@@ -93,6 +106,11 @@ pub struct Device {
 
     /// Parameter refs indexed by ID
     param_refs: HashMap<String, ParameterRef>,
+
+    /// Parameter ref ids indexed by their numeric tail — inline text
+    /// templates name refs that way (`{{48:…}}` means `…_P-23_R-48`),
+    /// full ids appear only in attributes.
+    param_ref_tails: HashMap<String, String>,
 
     /// Communication objects indexed by ID
     com_objects: HashMap<String, ComObject>,
@@ -130,8 +148,9 @@ impl Device {
 
         // Build lookup caches
         let param_types = build_param_type_lookup(&program.static_section);
-        let (parameters, param_values) = build_parameter_lookup(&program.static_section);
+        let (parameters, param_values) = build_parameter_lookup(&program.static_section, &param_types);
         let param_refs = build_param_ref_lookup(&program.static_section);
+        let param_ref_tails = build_param_ref_tail_lookup(&param_refs);
         let com_objects = build_com_object_lookup(&program.static_section);
         let com_object_refs = build_com_object_ref_lookup(&program.static_section);
         let module_defs = build_module_def_lookup(&program);
@@ -149,13 +168,16 @@ impl Device {
             param_values,
             module_param_values,
             group_address_bindings: HashMap::new(),
+            touched_params: HashSet::new(),
             visible_param_refs: HashSet::new(),
             visible_com_object_refs: HashSet::new(),
             visible_modules: HashSet::new(),
+            active_block_renames: HashMap::new(),
             expanded_modules,
             param_types,
             parameters,
             param_refs,
+            param_ref_tails,
             com_objects,
             com_object_refs,
             module_defs,
@@ -188,7 +210,23 @@ impl Device {
     /// Set a parameter value and recompute visibility.
     pub fn set_parameter_value(&mut self, param_id: &str, value: ParameterValue) {
         self.param_values.insert(param_id.to_string(), value);
+        self.touched_params.insert(param_id.to_string());
         self.recompute_visibility();
+    }
+
+    /// Whether a parameter's value was explicitly set since
+    /// construction (as opposed to still holding its initial default).
+    pub fn is_parameter_touched(&self, param_id: &str) -> bool {
+        self.touched_params.contains(param_id)
+    }
+
+    /// The display text an active `ParameterBlockRename` gives a
+    /// block under the current configuration, if any. Renders (and
+    /// re-renders on every visibility recomputation) what ETS shows:
+    /// a rename in an active choose branch replaces the referenced
+    /// block's title.
+    pub fn active_block_rename(&self, block_id: &str) -> Option<&str> {
+        self.active_block_renames.get(block_id).map(String::as_str)
     }
 
     /// Get parameter info by ID.
@@ -328,6 +366,11 @@ impl Device {
     /// Get all group address bindings for a communication object.
     pub fn get_bindings(&self, obj_number: u16) -> Option<&[GroupAddressBinding]> {
         self.group_address_bindings.get(&obj_number).map(|v| v.as_slice())
+    }
+
+    /// All group address bindings, per communication object number.
+    pub fn all_bindings(&self) -> impl Iterator<Item = (u16, &[GroupAddressBinding])> {
+        self.group_address_bindings.iter().map(|(number, bindings)| (*number, bindings.as_slice()))
     }
 
     /// Build association table entries for all bindings.
@@ -530,8 +573,11 @@ impl Device {
     }
 
     /// Resolve a parameter ref value to a string.
+    ///
+    /// `ref_id` is either a full ref id (from an attribute) or the
+    /// bare numeric tail an inline `{{N[:default]}}` template uses.
     fn resolve_param_ref_value(&self, ref_id: &str) -> Option<String> {
-        let param_ref = self.param_refs.get(ref_id)?;
+        let param_ref = self.lookup_param_ref(ref_id)?;
         let value = self.param_values.get(&param_ref.ref_id)?;
 
         Some(match value {
@@ -542,13 +588,36 @@ impl Device {
         })
     }
 
+    /// Parse a raw attribute value with the parameter's declared type
+    /// — the same rules construction uses, so effective defaults and
+    /// initial values can never disagree about a text parameter.
+    pub(crate) fn parse_value_typed(&self, param_id: &str, raw: &str) -> ParameterValue {
+        let type_def =
+            self.parameters.get(param_id).and_then(|info| self.param_types.get(&info.type_id)).map(|t| &t.type_def);
+        match type_def {
+            Some(crate::schema::ParameterTypeDef::TypeText(_)) => ParameterValue::Text(raw.to_string()),
+            Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(raw.parse().unwrap_or(0.0)),
+            Some(
+                crate::schema::ParameterTypeDef::TypeNumber(_) | crate::schema::ParameterTypeDef::TypeRestriction(_),
+            ) => ParameterValue::Integer(raw.parse().unwrap_or(0)),
+            _ => parse_default_value(raw),
+        }
+    }
+
+    /// A ref by full id first, by numeric tail second.
+    fn lookup_param_ref(&self, ref_id: &str) -> Option<&ParameterRef> {
+        self.param_refs
+            .get(ref_id)
+            .or_else(|| self.param_ref_tails.get(ref_id).and_then(|full| self.param_refs.get(full)))
+    }
+
     /// Resolve a text parameter ref (used for {{0}} substitution).
     ///
     /// Only returns text values - integers are not converted to strings here
     /// because {{0}} substitution is meant for actual text content (like channel names),
     /// not numeric values.
     fn resolve_text_param_ref(&self, ref_id: &str) -> Option<String> {
-        let param_ref = self.param_refs.get(ref_id)?;
+        let param_ref = self.lookup_param_ref(ref_id)?;
         let value = self.param_values.get(&param_ref.ref_id)?;
 
         match value {
@@ -566,10 +635,19 @@ impl Device {
         self.visible_param_refs.clear();
         self.visible_com_object_refs.clear();
         self.visible_modules.clear();
+        self.active_block_renames.clear();
 
         // Build the read-only lookup context from self's maps, then call the
         // free traversal function so the borrow checker sees distinct borrows:
         // `self.program.dynamic` (read) vs. `self.visible_*` (write).
+        //
+        // Iterated to a fixpoint because choose gating is
+        // self-referential: a choose counts only when its selector's
+        // ref is visible, and that ref may itself sit inside another
+        // choose. Visibility only ever grows across iterations
+        // (opening a choose can hide nothing), so the loop converges;
+        // the bound is the deepest selector chain, with a hard cap as
+        // a backstop against product-data cycles.
         if let Some(dynamic) = &self.program.dynamic {
             let ctx = VisibilityReadCtx {
                 param_refs: &self.param_refs,
@@ -577,13 +655,31 @@ impl Device {
                 module_param_values: &self.module_param_values,
                 module_defs: &self.module_defs,
             };
-            traverse_dynamic_section(
-                dynamic,
-                &ctx,
-                &mut self.visible_param_refs,
-                &mut self.visible_com_object_refs,
-                &mut self.visible_modules,
-            );
+            let mut previous: HashSet<String> = HashSet::new();
+            for _ in 0..8 {
+                let mut params = HashSet::new();
+                let mut objects = HashSet::new();
+                let mut modules = HashSet::new();
+                let mut renames = HashMap::new();
+                traverse_dynamic_section(
+                    dynamic,
+                    &ctx,
+                    &mut params,
+                    &mut objects,
+                    &mut modules,
+                    &mut renames,
+                    &previous,
+                );
+                let stable = params == previous;
+                previous = params.clone();
+                self.visible_param_refs = params;
+                self.visible_com_object_refs = objects;
+                self.visible_modules = modules;
+                self.active_block_renames = renames;
+                if stable {
+                    break;
+                }
+            }
         }
     }
 
@@ -680,15 +776,38 @@ fn traverse_dynamic_section(
     visible_params: &mut HashSet<String>,
     visible_objects: &mut HashSet<String>,
     visible_modules: &mut HashSet<String>,
+    renames: &mut HashMap<String, String>,
+    previously_visible: &HashSet<String>,
 ) {
     if let Some(cib) = &dynamic.channel_independent_block {
         for item in &cib.items {
             match item {
                 ChannelIndependentItem::ParameterBlock(pb) => {
-                    traverse_parameter_block(pb, None, ctx, visible_params, visible_objects, visible_modules);
+                    traverse_parameter_block(
+                        pb,
+                        None,
+                        ctx,
+                        visible_params,
+                        visible_objects,
+                        visible_modules,
+                        renames,
+                        previously_visible,
+                    );
                 }
                 ChannelIndependentItem::Choose(choose) => {
-                    traverse_choose(choose, None, ctx, visible_params, visible_objects, visible_modules);
+                    traverse_choose(
+                        choose,
+                        None,
+                        ctx,
+                        visible_params,
+                        visible_objects,
+                        visible_modules,
+                        renames,
+                        previously_visible,
+                    );
+                }
+                ChannelIndependentItem::ParameterBlockRename(rename) => {
+                    renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
                 }
             }
         }
@@ -698,13 +817,42 @@ fn traverse_dynamic_section(
         for item in &channel.items {
             match item {
                 ChannelItem::ParameterBlock(pb) => {
-                    traverse_parameter_block(pb, None, ctx, visible_params, visible_objects, visible_modules);
+                    traverse_parameter_block(
+                        pb,
+                        None,
+                        ctx,
+                        visible_params,
+                        visible_objects,
+                        visible_modules,
+                        renames,
+                        previously_visible,
+                    );
                 }
                 ChannelItem::Choose(choose) => {
-                    traverse_choose(choose, None, ctx, visible_params, visible_objects, visible_modules);
+                    traverse_choose(
+                        choose,
+                        None,
+                        ctx,
+                        visible_params,
+                        visible_objects,
+                        visible_modules,
+                        renames,
+                        previously_visible,
+                    );
                 }
                 ChannelItem::Module(module) => {
-                    traverse_module(module, ctx, visible_params, visible_objects, visible_modules);
+                    traverse_module(
+                        module,
+                        ctx,
+                        visible_params,
+                        visible_objects,
+                        visible_modules,
+                        renames,
+                        previously_visible,
+                    );
+                }
+                ChannelItem::ParameterBlockRename(rename) => {
+                    renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
                 }
             }
         }
@@ -718,6 +866,8 @@ fn traverse_parameter_block(
     visible_params: &mut HashSet<String>,
     visible_objects: &mut HashSet<String>,
     visible_modules: &mut HashSet<String>,
+    renames: &mut HashMap<String, String>,
+    previously_visible: &HashSet<String>,
 ) {
     for item in &pb.items {
         match item {
@@ -728,10 +878,30 @@ fn traverse_parameter_block(
                 visible_objects.insert(corr.ref_id.clone());
             }
             ParameterBlockItem::Choose(choose) => {
-                traverse_choose(choose, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+                traverse_choose(
+                    choose,
+                    module_ctx,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
             }
             ParameterBlockItem::Module(module) => {
-                traverse_module(module, ctx, visible_params, visible_objects, visible_modules);
+                traverse_module(
+                    module,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
+            }
+            ParameterBlockItem::ParameterBlockRename(rename) => {
+                renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
             }
             ParameterBlockItem::ParameterSeparator(_)
             | ParameterBlockItem::Button(_)
@@ -748,7 +918,20 @@ fn traverse_choose(
     visible_params: &mut HashSet<String>,
     visible_objects: &mut HashSet<String>,
     visible_modules: &mut HashSet<String>,
+    renames: &mut HashMap<String, String>,
+    previously_visible: &HashSet<String>,
 ) {
+    // ETS scopes a choose to its selector's *visible* ref: a choose
+    // whose ParamRefId is not part of the current tree contributes
+    // nothing, whatever the parameter's value. The MDT LED pages rely
+    // on this — the dynamic-brightness thresholds hang off a choose
+    // on "Datapoint type", whose own ref only appears when day or
+    // night brightness selects "dynamic". Evaluated against the
+    // previous fixpoint iteration's set.
+    if !previously_visible.contains(&choose.param_ref_id) {
+        return;
+    }
+
     let selector_value = ctx.selector_value(&choose.param_ref_id, module_ctx);
 
     let mut any_matched = false;
@@ -765,14 +948,32 @@ fn traverse_choose(
                 (Some(v), Some(cond)) if cond.matches(v)
             )
         {
-            traverse_when_items(&when.items, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+            traverse_when_items(
+                &when.items,
+                module_ctx,
+                ctx,
+                visible_params,
+                visible_objects,
+                visible_modules,
+                renames,
+                previously_visible,
+            );
             any_matched = true;
         }
     }
 
     if !any_matched {
         if let Some(items) = default_items {
-            traverse_when_items(items, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+            traverse_when_items(
+                items,
+                module_ctx,
+                ctx,
+                visible_params,
+                visible_objects,
+                visible_modules,
+                renames,
+                previously_visible,
+            );
         }
     }
 }
@@ -784,6 +985,8 @@ fn traverse_when_items(
     visible_params: &mut HashSet<String>,
     visible_objects: &mut HashSet<String>,
     visible_modules: &mut HashSet<String>,
+    renames: &mut HashMap<String, String>,
+    previously_visible: &HashSet<String>,
 ) {
     for item in items {
         match item {
@@ -794,13 +997,42 @@ fn traverse_when_items(
                 visible_objects.insert(corr.ref_id.clone());
             }
             WhenItem::ParameterBlock(pb) => {
-                traverse_parameter_block(pb, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+                traverse_parameter_block(
+                    pb,
+                    module_ctx,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
             }
             WhenItem::Choose(nested_choose) => {
-                traverse_choose(nested_choose, module_ctx, ctx, visible_params, visible_objects, visible_modules);
+                traverse_choose(
+                    nested_choose,
+                    module_ctx,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
             }
             WhenItem::Module(module) => {
-                traverse_module(module, ctx, visible_params, visible_objects, visible_modules);
+                traverse_module(
+                    module,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
+            }
+            WhenItem::ParameterBlockRename(rename) => {
+                renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
             }
             WhenItem::ParameterSeparator(_) | WhenItem::Assign(_) => {}
         }
@@ -813,6 +1045,8 @@ fn traverse_module(
     visible_params: &mut HashSet<String>,
     visible_objects: &mut HashSet<String>,
     visible_modules: &mut HashSet<String>,
+    renames: &mut HashMap<String, String>,
+    previously_visible: &HashSet<String>,
 ) {
     visible_modules.insert(module.id.clone());
 
@@ -831,10 +1065,21 @@ fn traverse_module(
                         visible_params,
                         visible_objects,
                         visible_modules,
+                        renames,
+                        previously_visible,
                     );
                 }
                 ModuleDefDynamicItem::Choose(choose) => {
-                    traverse_choose(choose, Some(&module_ctx), ctx, visible_params, visible_objects, visible_modules);
+                    traverse_choose(
+                        choose,
+                        Some(&module_ctx),
+                        ctx,
+                        visible_params,
+                        visible_objects,
+                        visible_modules,
+                        renames,
+                        previously_visible,
+                    );
                 }
             }
         }
@@ -912,9 +1157,25 @@ fn build_param_type_lookup(static_section: &StaticSection) -> HashMap<String, Pa
 
 fn build_parameter_lookup(
     static_section: &StaticSection,
+    param_types: &HashMap<String, ParameterType>,
 ) -> (HashMap<String, ParameterInfo>, HashMap<String, ParameterValue>) {
     let mut parameters = HashMap::new();
     let mut param_values = HashMap::new();
+
+    // Type-aware default parsing: a text parameter's `Value=""` (or
+    // "12"!) must become `Text`, never the numeric-first guess —
+    // guessing turned every empty description into `Integer(0)`,
+    // which then rendered as a literal "0" in interpolated labels.
+    let parse = |type_id: &str, value: &str| -> ParameterValue {
+        match param_types.get(type_id).map(|t| &t.type_def) {
+            Some(crate::schema::ParameterTypeDef::TypeText(_)) => ParameterValue::Text(value.to_string()),
+            Some(crate::schema::ParameterTypeDef::TypeFloat(_)) => ParameterValue::Float(value.parse().unwrap_or(0.0)),
+            Some(
+                crate::schema::ParameterTypeDef::TypeNumber(_) | crate::schema::ParameterTypeDef::TypeRestriction(_),
+            ) => ParameterValue::Integer(value.parse().unwrap_or(0)),
+            _ => parse_default_value(value),
+        }
+    };
 
     if let Some(params) = &static_section.parameters {
         for item in &params.items {
@@ -929,7 +1190,7 @@ fn build_parameter_lookup(
                         suffix: p.suffix_text.clone(),
                         hidden: p.access.as_deref() == Some("None"),
                     };
-                    let default = parse_default_value(&info.default_value);
+                    let default = parse(&p.parameter_type, &info.default_value);
                     param_values.insert(p.id.clone(), default);
                     parameters.insert(p.id.clone(), info);
                 }
@@ -944,7 +1205,7 @@ fn build_parameter_lookup(
                             suffix: p.suffix_text.clone(),
                             hidden: false, // UnionParameter doesn't have access field
                         };
-                        let default = parse_default_value(&info.default_value);
+                        let default = parse(&p.parameter_type, &info.default_value);
                         param_values.insert(p.id.clone(), default);
                         parameters.insert(p.id.clone(), info);
                     }
@@ -956,7 +1217,10 @@ fn build_parameter_lookup(
     (parameters, param_values)
 }
 
-fn parse_default_value(value: &str) -> ParameterValue {
+/// Parse an MTXML `Value` attribute the way the device model does at
+/// construction: integer first, then float, then verbatim text. Also
+/// used by the mods layer to interpret `ParameterRef` value overrides.
+pub(crate) fn parse_default_value(value: &str) -> ParameterValue {
     if value.is_empty() {
         return ParameterValue::Integer(0);
     }
@@ -974,6 +1238,12 @@ fn parse_default_value(value: &str) -> ParameterValue {
 
 fn build_param_ref_lookup(static_section: &StaticSection) -> HashMap<String, ParameterRef> {
     build_lookup(static_section.parameter_refs.as_ref().map(|pr| pr.refs.iter()), |r| r.id.clone(), |r| (*r).clone())
+}
+
+/// Inline text templates address refs by the digits after `_R-`
+/// (`{{48:Push button 1}}` → `…_P-23_R-48`); index those tails once.
+fn build_param_ref_tail_lookup(param_refs: &HashMap<String, ParameterRef>) -> HashMap<String, String> {
+    param_refs.keys().filter_map(|id| id.rsplit_once("_R-").map(|(_, tail)| (tail.to_string(), id.clone()))).collect()
 }
 
 fn build_com_object_lookup(static_section: &StaticSection) -> HashMap<String, ComObject> {
@@ -1059,6 +1329,8 @@ fn collect_modules_from_cib(
             ChannelIndependentItem::Choose(choose) => {
                 collect_modules_from_choose(choose, module_defs, expanded);
             }
+            // Renames carry no module instances.
+            ChannelIndependentItem::ParameterBlockRename(_) => {}
         }
     }
 }
@@ -1076,6 +1348,7 @@ fn collect_modules_from_channel(
             ChannelItem::Choose(choose) => {
                 collect_modules_from_choose(choose, module_defs, expanded);
             }
+            ChannelItem::ParameterBlockRename(_) => {}
             ChannelItem::Module(module) => {
                 if let Some(exp) = expand_module(module, module_defs) {
                     expanded.insert(exp.instance_id.clone(), exp);
