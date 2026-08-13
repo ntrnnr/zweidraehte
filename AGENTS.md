@@ -425,7 +425,9 @@ conformance/               KNX conformance test framework + two runners
                            (hand-written suites, and vendor EITT XML)
 
 tools/
-  knxprod-tui/             TUI viewer for MTXML files
+  knxprod-tui/             TUI viewer for MTXML files (edits values/links, exports mods)
+  knx-config/              knx-dump (mods-file skeleton from a product file)
+                           + knx-loader (mods → compiled download → real device)
   knx-provision/           Device provisioning via probe-rs
   compare-programs/        Semantic MTXML comparison (generated vs. reference)
   bus-tools/               Hardware utilities: busmon, tpuart, usb_test
@@ -1170,6 +1172,38 @@ Tests USB HID interface support.
 
 **Run KNXPROD TUI Viewer**
 ```bash
-cargo run -p knxprod-tui -- <mtxml-file>
+cargo run -p knxprod-tui -- <mtxml-file> [--mods mods.toml] [-M knx_master.xml] [--language de-DE]
 ```
-Interactive TUI for viewing and exploring KNX ApplicationProgram MTXML files. Navigate parameters, view communication objects, and explore device configurations.
+Interactive TUI for viewing and exploring KNX ApplicationProgram MTXML files. Navigate parameters, view communication objects, and explore device configurations. `Enter` on a communication object assigns group addresses (comma-separated, first one sends); `e` exports the diff-from-defaults as a mods TOML for `knx-loader`. `--mods` applies an existing mods file after loading (hard error on invalid entries, same validation as the loader) and makes `e` export back to that file with its `[device]` section preserved — the full edit round trip. Without `--mods`, `e` writes `<program id>-mods.toml` with a placeholder address. (Master data moved to `-M`; `-m` is the mods file, matching knx-dump/knx-loader.) `--language` starts in one of the product's `<Languages>` translations, and `l` opens a selection popup (default + all translations; Enter applies, Esc cancels) — edits survive the switch. `knx-dump` takes the same `--language` for translated skeletons. With `--server`/`--usb[=VID:PID]` given, `p` programs the opened device straight from the TUI: the session's configuration goes through the same mods → resolve → compile → download pipeline as `knx-loader load` (APDU negotiation and load-state verification included), with a progress popup showing past/current procedure steps and a byte-accurate gauge. The mods file must carry the device's `individual_address`.
+
+### Device configuration (mods files)
+
+A **mods file** is one device's declarative configuration diff: parameter overrides, group links (+ flag overrides), and the individual address. The model lives in `zweidraehte-knxprod`'s `runtime::mods` (`apply_mods` validates against visibility/types, `mods_from_device` exports); `zweidraehte-client`'s `download::resolve_mods` turns a configured `Device` into the compile pipeline's inputs.
+
+**Dump a mods skeleton from a product file**
+```bash
+cargo run --bin knx-dump -- --product <mtxml-or-.knxprod> [--mods existing.toml] [-o mods.toml]
+```
+Emits every parameter/com object visible under the current configuration as commented TOML with names, texts, choices and defaults. Pass `--mods` to regenerate the skeleton around existing edits (a changed selection can reveal new parameters).
+
+**Drive a real device (download / clean slate / dump)**
+```bash
+# The product and bus-target flags are global and precede the subcommand.
+cargo run --bin knx-loader -- --product <file> [--server ip:port | --usb[=VID:PID]] <subcommand>
+
+# download a mods file (--dry-run prints patches/regions/instructions
+# offline; --dump-blobs writes the compiled region bytes):
+... load --mods mods.toml [--program-ia] [--dry-run] [--dump-blobs DIR]
+
+# clean slate: run the mask's Unload-all (tables invalidated,
+# application unloaded, IA kept):
+... unload (--ia a.l.d | --mods mods.toml)
+
+# dump what the device actually holds — every addressed segment read
+# back over the bus into <DIR>/region_XXXX.bin (System 7 layout only);
+# e.g. after an ETS download, to cross-check our blob generation:
+... read (--ia a.l.d | --mods mods.toml) --out DIR
+```
+`load --program-ia` first writes the individual address via programming mode (press the device's button when prompted) and reads the load states back after the download, failing unless all report Loaded. Master data resolves from `--master-data`, a `.knxprod`'s bundled copy, `KNX_MASTER_DATA`, or the on-disk cache/download.
+
+Note: vendor-bundled ETS5-era `knx_master.xml` files (e.g. in `manuf_tool_data/` device dirs) do not parse; let the loader resolve current master data instead.

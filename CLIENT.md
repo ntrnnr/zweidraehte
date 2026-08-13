@@ -274,6 +274,16 @@ Each chunk ends compilable and tested.
 - **H. Examples + docs** *(done)* — `function_property.rs` and
   `mdt_bootloader.rs` ported; `group_monitor.rs` and `device_scan.rs`
   added; env-var-gated live tests in `tests/live_tunnel.rs`.
+  Later additions: `line_scan.rs` sweeps one line for present devices
+  (per-address connectionless descriptor-read probe via
+  `NetworkManagement::is_device_present`, window-bounded so a full
+  line takes ~80 s rather than the 3 s-timeout worst case; a negative
+  L2 confirmation counts as "absent", not an error). Both scanners
+  also read each found device's serial (PID 11, connectionless), and
+  `prog_mode.rs` switches programming mode by serial — resolving the
+  IA via `NM_IndividualAddress_SerialNumber_Read`, then flipping bit 0
+  of 0060h (System 7 / BCU lineage) or writing PID_PROGMODE (System
+  B), chosen by the device's descriptor.
   Outstanding beyond the milestone: hardware smoke tests (tunnel + USB)
   and the loopback fixture (see below).
 
