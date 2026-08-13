@@ -117,6 +117,40 @@ impl<'bus> NetworkManagement<'bus> {
     // Connectionless (RCl) device management
     // ========================================================================
 
+    /// Probe whether a device answers at `addr`: a connectionless
+    /// `A_DeviceDescriptor_Read` with a caller-chosen wait window
+    /// instead of the standard 3 s response timeout.
+    ///
+    /// This is the line-scan primitive — sweeping 256 addresses at the
+    /// full timeout costs minutes, and every KNX device must answer a
+    /// connectionless descriptor read (it is how a management tool
+    /// checks reachability before anything else). A window of a few
+    /// hundred milliseconds comfortably covers a TP1 round trip.
+    pub async fn is_device_present(&self, addr: IndividualAddress, window: Duration) -> Result<bool> {
+        let frame = frames::build_individual_frame(
+            self.source,
+            addr,
+            Tpci::DataIndividual,
+            ApciCode::DeviceDescriptorRead,
+            DeviceDescriptorRead::MIN_MSG_LEN,
+            |buf| DeviceDescriptorRead::write(buf, 0),
+        );
+        let matcher = ResponseMatcher {
+            source: Some(addr),
+            apci: management::expected_response_apci(ApciCode::DeviceDescriptorRead),
+        };
+        match self.scan(frame, matcher, window).await {
+            Ok(responses) => Ok(!responses.is_empty()),
+            // An individually addressed TP1 frame to an absent device
+            // draws no link-layer ACK, which the interface reports as
+            // a negative confirmation. For a presence probe that *is*
+            // the answer — and it arrives without waiting the window
+            // out, so sweeping empty addresses is fast.
+            Err(Error::NegativeConfirmation) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Read a device descriptor without opening a transport connection.
     pub async fn device_descriptor_read(&self, addr: IndividualAddress, descriptor_type: u8) -> Result<Vec<u8>> {
         let buf = self

@@ -40,8 +40,16 @@ base64 = "0.22"
 sha2 = { workspace = true }
 quick-xml = { workspace = true }
 
+# `cli` feature: the shared --server/--usb argument block for binaries
+# built on this client (our examples, tools/knx-config).
+clap = { workspace = true, optional = true }
+
 [features]
 default = []
+
+# The shared bus-target CLI vocabulary (`cli::TargetArgs`), so every
+# binary speaks the same --server/--usb flags without copying them.
+cli = ["dep:clap"]
 
 # Let `MaskDb::resolve()` fetch knx_master.xml from update.knx.org and
 # cache it on disk, the way ETS does. Off by default: a library that
@@ -53,5 +61,8 @@ master-data-download = ["zweidraehte-knxprod/master-data"]
 [dev-dependencies]
 clap = { workspace = true }
 env_logger = { workspace = true }
+# Self dev-dependency: turns the `cli` feature on for the examples, so
+# a plain `cargo run --example …` works without feature flags.
+zweidraehte-client = { path = ".", features = ["cli"] }
 # start_paused test runtime for the secure-handshake timeout tests.
 tokio = { version = "1", features = ["test-util"] }

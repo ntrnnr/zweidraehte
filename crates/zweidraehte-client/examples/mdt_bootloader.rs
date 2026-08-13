@@ -8,7 +8,7 @@
 //!     cargo run -p zweidraehte-client --example mdt_bootloader -- \
 //!         --server 192.168.1.100:3671 --device 1.0.101 <command>
 //!
-//! `--usb [vid:pid]` connects through a KNX USB interface instead of
+//! `--usb[=vid:pid]` connects through a KNX USB interface instead of
 //! `--server`; see `--help` for the command list.
 
 mod common;

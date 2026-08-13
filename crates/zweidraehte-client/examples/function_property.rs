@@ -11,7 +11,7 @@
 //!         --property 52 \
 //!         --data 01020304
 //!
-//! `--usb [vid:pid]` connects through a KNX USB interface instead of
+//! `--usb[=vid:pid]` connects through a KNX USB interface instead of
 //! `--server`. The `--data` argument is hex-encoded service data
 //! (optional, defaults to empty).
 

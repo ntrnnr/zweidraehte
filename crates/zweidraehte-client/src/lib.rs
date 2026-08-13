@@ -48,6 +48,8 @@
 #![allow(async_fn_in_trait)]
 
 mod api;
+#[cfg(feature = "cli")]
+pub mod cli;
 pub mod connector;
 pub mod core;
 pub mod download;
@@ -67,3 +69,4 @@ pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 pub use zweidraehte_proto::device::{MaskFamily, MaskVersion};
 pub use zweidraehte_proto::messages::apdu::group_value::GroupValueEncoding;
 pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};
+pub use zweidraehte_proto::pid;

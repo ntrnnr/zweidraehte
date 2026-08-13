@@ -10,7 +10,8 @@ mod common;
 use std::time::Duration;
 
 use clap::Parser;
-use common::TargetArgs;
+use common::{TargetArgs, format_serial};
+use zweidraehte_client::pid;
 
 /// Scan for KNX devices in programming mode.
 #[derive(Parser)]
@@ -33,7 +34,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("No device answered. Press the programming button on a device and retry.");
     } else {
         for addr in &found {
-            println!("  {}", addr);
+            // The serial identifies the physical unit — exactly what
+            // a later `prog_mode --serial …` invocation needs.
+            match bus.network_management().property_read(*addr, 0, pid::SERIAL_NUMBER, 1, 1).await {
+                Ok(serial) => println!("  {addr}  serial {}", format_serial(&serial)),
+                Err(_) => println!("  {addr}  (serial not readable)"),
+            }
         }
         if found.len() > 1 {
             println!(
