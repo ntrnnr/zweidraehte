@@ -655,7 +655,11 @@ impl Device {
                 module_param_values: &self.module_param_values,
                 module_defs: &self.module_defs,
             };
-            let mut previous: HashSet<String> = HashSet::new();
+            // `self.visible_param_refs` (cleared above) doubles as the
+            // previous iteration's set: it is read during the traversal
+            // and replaced afterwards, so no extra copy is needed — on
+            // large products the set holds ~100k ids and cloning it per
+            // iteration costs more than the traversal itself.
             for _ in 0..8 {
                 let mut params = HashSet::new();
                 let mut objects = HashSet::new();
@@ -668,10 +672,9 @@ impl Device {
                     &mut objects,
                     &mut modules,
                     &mut renames,
-                    &previous,
+                    &self.visible_param_refs,
                 );
-                let stable = params == previous;
-                previous = params.clone();
+                let stable = params == self.visible_param_refs;
                 self.visible_param_refs = params;
                 self.visible_com_object_refs = objects;
                 self.visible_modules = modules;

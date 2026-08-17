@@ -86,6 +86,12 @@ pub struct MemorySegment {
     pub data: Vec<u8>,
     /// Parameter annotations: regions occupied by parameters
     pub annotations: Vec<MemoryAnnotation>,
+    /// Byte offset → index into `annotations` (`u32::MAX` = none), one
+    /// entry per byte of `data`. The hex view queries an annotation for
+    /// every visible cell every frame; with tens of thousands of
+    /// annotations in one segment a linear scan per cell dominates the
+    /// frame time, so the lookup is precomputed here at rebuild time.
+    pub annotation_index: Vec<u32>,
 }
 
 /// Annotation for a memory region occupied by a parameter.
@@ -575,6 +581,26 @@ pub struct App {
     pub selected_content_idx: usize,
     /// Scroll offset for content items
     pub content_scroll_offset: usize,
+    /// Visible parameter-ref count shown in the status bar. Cached
+    /// because counting means hashing every visible ref id (~100k on
+    /// large products), far too much to redo every frame; refreshed by
+    /// `rebuild_com_objects`, which runs on every visibility change.
+    pub visible_param_count: usize,
+    /// Visible com-object-ref count for the status bar; same caching.
+    pub visible_obj_count: usize,
+    /// `content_items` no longer matches the selected tree node.
+    /// Sidebar navigation only marks this and lets the rebuild happen
+    /// once per rendered frame — holding an arrow key down repeats
+    /// faster than large pages rebuild, and paying per keypress starves
+    /// the draw loop.
+    pub content_dirty: bool,
+    /// `com_object_rows` no longer matches the device (an edit changed
+    /// visibility or group links); rebuilt lazily by `ensure_tab_data`
+    /// when the Communication Objects tab is next rendered, so edits on
+    /// the Parameters tab don't pay for a table they aren't looking at.
+    pub com_objects_dirty: bool,
+    /// Same deferral for `memory_segments`.
+    pub memory_dirty: bool,
     /// Communication objects table rows
     pub com_object_rows: Vec<ComObjectRow>,
     /// Selected comm object row index
@@ -644,6 +670,11 @@ impl App {
             content_items: Vec::new(),
             selected_content_idx: 0,
             content_scroll_offset: 0,
+            visible_param_count: 0,
+            visible_obj_count: 0,
+            content_dirty: false,
+            com_objects_dirty: false,
+            memory_dirty: false,
             com_object_rows: Vec::new(),
             selected_obj_idx: 0,
             comm_obj_scroll_offset: 0,
@@ -1349,8 +1380,18 @@ impl App {
         }
     }
 
+    /// Rebuild `content_items` if sidebar navigation left it stale.
+    /// A no-op otherwise, so it is safe to call from any place about to
+    /// read `content_items`.
+    pub fn ensure_content(&mut self) {
+        if self.content_dirty {
+            self.rebuild_content();
+        }
+    }
+
     /// Rebuild parameter content based on selected tree node.
     pub fn rebuild_content(&mut self) {
+        self.content_dirty = false;
         self.content_items.clear();
 
         // Clone node_type to avoid borrow conflict
@@ -2285,8 +2326,46 @@ impl App {
     }
 
     /// Rebuild the communication objects table.
+    /// Mark the derived views (com-object table, memory segments) as
+    /// stale after a device edit. The views are rebuilt lazily when
+    /// their tab is next rendered; only the cheap status-bar counts are
+    /// refreshed eagerly, since they show on every tab.
+    fn mark_derived_views_dirty(&mut self) {
+        self.visible_param_count = self.device.visible_param_refs().count();
+        self.visible_obj_count = self.device.visible_com_object_refs().count();
+        self.com_objects_dirty = true;
+        self.memory_dirty = true;
+    }
+
+    /// Rebuild whatever stale view the current tab is about to render.
+    /// Called at the top of every frame; selections are re-clamped
+    /// because a rebuild can shrink the data they point into.
+    pub fn ensure_tab_data(&mut self) {
+        match self.current_tab {
+            MainTab::Parameters => {
+                self.ensure_content();
+            }
+            MainTab::CommObjects if self.com_objects_dirty => {
+                self.rebuild_com_objects();
+                self.selected_obj_idx = self.selected_obj_idx.min(self.com_object_rows.len().saturating_sub(1));
+                self.adjust_comm_obj_scroll();
+            }
+            MainTab::Memory if self.memory_dirty => {
+                self.rebuild_memory_segments();
+                self.selected_segment_idx = self.selected_segment_idx.min(self.memory_segments.len().saturating_sub(1));
+                let data_len = self.memory_segments.get(self.selected_segment_idx).map_or(0, |s| s.data.len());
+                self.selected_byte_offset = self.selected_byte_offset.min(data_len.saturating_sub(1));
+                self.adjust_memory_scroll();
+            }
+            _ => {}
+        }
+    }
+
     pub fn rebuild_com_objects(&mut self) {
+        self.com_objects_dirty = false;
         self.com_object_rows.clear();
+        self.visible_param_count = self.device.visible_param_refs().count();
+        self.visible_obj_count = self.device.visible_com_object_refs().count();
 
         // Add comm objects from main device
         let visible_refs: Vec<_> = self.device.visible_com_object_refs().cloned().collect();
@@ -2518,6 +2597,7 @@ impl App {
     /// Rebuild memory segments from the Code section in the ApplicationProgram.
     pub fn rebuild_memory_segments(&mut self) {
         use base64::Engine;
+        self.memory_dirty = false;
         self.memory_segments.clear();
 
         // Get Code section from static section
@@ -2551,6 +2631,7 @@ impl App {
                 load_state_machine: None,
                 data,
                 annotations,
+                annotation_index: Vec::new(),
             });
         }
 
@@ -2576,6 +2657,7 @@ impl App {
                 load_state_machine: Some(seg.load_state_machine),
                 data,
                 annotations,
+                annotation_index: Vec::new(),
             });
         }
 
@@ -2586,6 +2668,24 @@ impl App {
 
         // Sort by address
         self.memory_segments.sort_by_key(|s| s.address);
+
+        // Build the per-byte annotation lookup last: the synthetic table
+        // generators above may still extend a code segment's annotation
+        // list after the segment was pushed. First annotation in list
+        // order wins, matching the scan this index replaces (bit fields
+        // sharing a byte resolve to the lowest (offset, bit_offset)).
+        for seg in &mut self.memory_segments {
+            seg.annotation_index = vec![u32::MAX; seg.data.len()];
+            for (ann_idx, ann) in seg.annotations.iter().enumerate() {
+                let start = ann.offset as usize;
+                let end = (start + (ann.size_bits as usize).div_ceil(8)).min(seg.data.len());
+                for slot in seg.annotation_index.get_mut(start..end).unwrap_or_default() {
+                    if *slot == u32::MAX {
+                        *slot = ann_idx as u32;
+                    }
+                }
+            }
+        }
     }
 
     /// Generate the Address Table (ADT) as a synthetic memory segment.
@@ -2662,6 +2762,7 @@ impl App {
             load_state_machine: Some(1), // LSM 1 is typically for ADT
             data,
             annotations,
+            annotation_index: Vec::new(),
         });
     }
 
@@ -2773,6 +2874,7 @@ impl App {
             load_state_machine: Some(2), // LSM 2 is typically for AST
             data,
             annotations,
+            annotation_index: Vec::new(),
         });
     }
 
@@ -2885,6 +2987,7 @@ impl App {
             load_state_machine: Some(3), // LSM 3 is typically for COT
             data,
             annotations,
+            annotation_index: Vec::new(),
         });
     }
 
@@ -3555,15 +3658,8 @@ impl App {
     /// Get the annotation at a specific byte offset within the currently selected segment.
     pub fn get_annotation_at_offset(&self, byte_offset: usize) -> Option<&MemoryAnnotation> {
         let segment = self.memory_segments.get(self.selected_segment_idx)?;
-
-        for ann in &segment.annotations {
-            let start_byte = ann.offset as usize;
-            let end_byte = start_byte + (ann.size_bits as usize).div_ceil(8);
-            if byte_offset >= start_byte && byte_offset < end_byte {
-                return Some(ann);
-            }
-        }
-        None
+        let ann_idx = *segment.annotation_index.get(byte_offset)?;
+        segment.annotations.get(ann_idx as usize)
     }
 
     /// Navigate memory view up (by 16 bytes).
@@ -3685,6 +3781,14 @@ impl App {
             return;
         }
 
+        // Entering the content pane must see the page the sidebar
+        // selection points at, even mid-batch before the next frame's
+        // `ensure_tab_data` runs — the very next key may navigate or
+        // edit `content_items`.
+        if self.current_tab == MainTab::Parameters && self.focus == Focus::Sidebar {
+            self.ensure_content();
+        }
+
         self.focus = match (self.current_tab, self.focus) {
             (MainTab::Parameters, Focus::Tabs) => Focus::Sidebar,
             (MainTab::Parameters, Focus::Sidebar) => Focus::Content,
@@ -3720,7 +3824,7 @@ impl App {
                     // Hop over group headers — they are not pages.
                     if let Some(index) = self.tree_nodes[..self.selected_tree_idx].iter().rposition(|n| !n.is_group()) {
                         self.selected_tree_idx = index;
-                        self.rebuild_content();
+                        self.content_dirty = true;
                         self.selected_content_idx = 0;
                         self.content_scroll_offset = 0;
                     }
@@ -3783,7 +3887,7 @@ impl App {
                         self.tree_nodes.iter().skip(self.selected_tree_idx + 1).position(|n| !n.is_group())
                     {
                         self.selected_tree_idx += 1 + offset;
-                        self.rebuild_content();
+                        self.content_dirty = true;
                         self.selected_content_idx = 0;
                         self.content_scroll_offset = 0;
                     }
@@ -3824,7 +3928,7 @@ impl App {
             }
             (MainTab::Parameters, Focus::Sidebar) if self.selected_tree_idx > 0 => {
                 self.selected_tree_idx = self.selected_tree_idx.saturating_sub(Self::PAGE_SIZE);
-                self.rebuild_content();
+                self.content_dirty = true;
                 self.selected_content_idx = 0;
                 self.content_scroll_offset = 0;
             }
@@ -3860,7 +3964,7 @@ impl App {
                 let max_idx = self.tree_nodes.len().saturating_sub(1);
                 if self.selected_tree_idx < max_idx {
                     self.selected_tree_idx = (self.selected_tree_idx + Self::PAGE_SIZE).min(max_idx);
-                    self.rebuild_content();
+                    self.content_dirty = true;
                     self.selected_content_idx = 0;
                     self.content_scroll_offset = 0;
                 }
@@ -3956,11 +4060,11 @@ impl App {
                 let new_value = options[*selected_idx].0;
                 self.set_any_parameter_value(&param_id, ParameterValue::Integer(new_value));
                 self.edit_mode = EditMode::None;
-                // Rebuild everything since visibility may have changed
+                // Visibility may have changed: rebuild what this tab
+                // shows now, defer the other tabs' views.
                 self.rebuild_tree();
                 self.rebuild_content();
-                self.rebuild_com_objects();
-                self.rebuild_memory_segments();
+                self.mark_derived_views_dirty();
             }
             EditMode::NumberInput { param_id, buffer, min, max } => {
                 // Commit the number, clamped to the type's bounds the way
@@ -3981,8 +4085,7 @@ impl App {
                 self.edit_mode = EditMode::None;
                 self.rebuild_tree();
                 self.rebuild_content();
-                self.rebuild_com_objects();
-                self.rebuild_memory_segments();
+                self.mark_derived_views_dirty();
             }
             EditMode::TextInput { param_id, buffer, .. } => {
                 // Commit the text
@@ -3992,8 +4095,7 @@ impl App {
                 self.edit_mode = EditMode::None;
                 self.rebuild_tree();
                 self.rebuild_content();
-                self.rebuild_com_objects();
-                self.rebuild_memory_segments();
+                self.mark_derived_views_dirty();
             }
             EditMode::GroupAddressInput { object_number, buffer } => {
                 // Parse and assign the group addresses: several may be
@@ -4014,8 +4116,11 @@ impl App {
                 }
 
                 self.edit_mode = EditMode::None;
-                self.rebuild_com_objects();
-                self.rebuild_memory_segments();
+                // Group links only touch the com-object table's address
+                // column and the synthetic ADT/AST segments; both are
+                // rebuilt by `ensure_tab_data` before the next frame of
+                // whichever tab shows them.
+                self.mark_derived_views_dirty();
             }
             EditMode::None => match (self.current_tab, self.focus) {
                 (_, Focus::Tabs) => {

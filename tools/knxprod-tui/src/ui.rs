@@ -15,6 +15,10 @@ use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, Widget
 
 /// Render the application UI.
 pub fn render(frame: &mut Frame, app: &mut App) {
+    // Rebuild any view an earlier edit left stale, but only for the tab
+    // about to be drawn.
+    app.ensure_tab_data();
+
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -192,12 +196,17 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
     // Each item gets 1 row, except Picture items which get multiple rows for the image
     let label_width = (inner.width as usize * 40 / 100).clamp(20, 45);
 
-    // First pass: collect what we need to render to avoid borrow issues
+    // First pass: collect what we need to render to avoid borrow issues.
+    // Every item occupies at least one row, so `inner.height` items are
+    // enough to fill the viewport — without the bound this builds lines
+    // for everything below the scroll offset on every frame, which large
+    // pages cannot afford.
     let items_to_render: Vec<_> = app
         .content_items
         .iter()
         .enumerate()
         .skip(app.content_scroll_offset)
+        .take(inner.height as usize)
         .map(|(i, item)| {
             let is_selected = i == app.selected_content_idx && focused;
             match item {
@@ -996,8 +1005,10 @@ fn render_dropdown_popup(
 }
 
 fn render_status(frame: &mut Frame, area: Rect, app: &App) {
-    let visible_params = app.device.visible_param_refs().count();
-    let visible_objs = app.device.visible_com_object_refs().count();
+    // Cached on App: counting means hashing every visible ref id,
+    // far too expensive per frame on large products.
+    let visible_params = app.visible_param_count;
+    let visible_objs = app.visible_obj_count;
 
     // Feedback (export result, input error) displaces the key hints
     // until the next message replaces it.

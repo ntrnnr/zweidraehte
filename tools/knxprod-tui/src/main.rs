@@ -224,9 +224,18 @@ fn run_tui(mut app: App) -> io::Result<()> {
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> io::Result<()> {
+    // Building a frame is expensive on large products, so two rules keep
+    // the UI responsive: only draw when something changed (a handled
+    // event, a resize, or a running download animating), and drain the
+    // whole input backlog before drawing so key autorepeat coalesces
+    // into one redraw instead of queueing a frame per keypress.
+    let mut needs_redraw = true;
     loop {
         app.poll_download();
-        terminal.draw(|frame| ui::render(frame, app))?;
+        if needs_redraw || app.download.is_some() {
+            terminal.draw(|frame| ui::render(frame, app))?;
+            needs_redraw = false;
+        }
 
         // Poll so the download popup animates while telegrams fly;
         // idle cost is one wakeup per interval.
@@ -236,76 +245,95 @@ fn run_app(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App)
             }
             continue;
         }
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
-            }
-
-            // The download popup owns the keyboard while it is up:
-            // nothing to interact with while running, Enter/Esc/q
-            // dismiss once finished.
-            if let Some(download) = &app.download {
-                if download.result.is_some() && matches!(key.code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
-                    app.dismiss_download();
+        // Cap the drain: under key autorepeat the queue refills as fast
+        // as it drains, and waiting for it to empty would starve the
+        // draw for as long as the key is held. After the cap a frame is
+        // forced and draining resumes next iteration.
+        let drain_start = std::time::Instant::now();
+        loop {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    handle_key(app, key.code);
+                    needs_redraw = true;
                 }
-                continue;
-            }
-
-            // Check if we're in edit mode
-            let in_edit_mode = !matches!(app.edit_mode, EditMode::None);
-
-            match key.code {
-                KeyCode::Char('q') if !in_edit_mode => {
-                    app.should_quit = true;
-                }
-                KeyCode::Char('e') if !in_edit_mode => {
-                    app.export_mods();
-                }
-                KeyCode::Char('l') | KeyCode::Char('L') if !in_edit_mode => {
-                    app.open_language_select();
-                }
-                KeyCode::Char('p') if !in_edit_mode => {
-                    app.start_download();
-                }
-                KeyCode::Esc if in_edit_mode => {
-                    app.cancel_edit();
-                }
-                KeyCode::Tab if !in_edit_mode => {
-                    app.toggle_focus();
-                }
-                KeyCode::Left if !in_edit_mode => {
-                    app.move_left();
-                }
-                KeyCode::Right if !in_edit_mode => {
-                    app.move_right();
-                }
-                KeyCode::Up => {
-                    app.move_up();
-                }
-                KeyCode::Down => {
-                    app.move_down();
-                }
-                KeyCode::PageUp if !in_edit_mode => {
-                    app.page_up();
-                }
-                KeyCode::PageDown if !in_edit_mode => {
-                    app.page_down();
-                }
-                KeyCode::Enter => {
-                    app.activate();
-                }
-                KeyCode::Backspace if in_edit_mode => {
-                    app.handle_backspace();
-                }
-                KeyCode::Char(c) if in_edit_mode => {
-                    app.handle_char(c);
+                Event::Resize(_, _) => {
+                    needs_redraw = true;
                 }
                 _ => {}
+            }
+            if drain_start.elapsed() >= std::time::Duration::from_millis(100)
+                || !event::poll(std::time::Duration::ZERO)?
+            {
+                break;
             }
         }
 
         if app.should_quit {
             return Ok(());
         }
+    }
+}
+
+fn handle_key(app: &mut App, code: KeyCode) {
+    // The download popup owns the keyboard while it is up:
+    // nothing to interact with while running, Enter/Esc/q
+    // dismiss once finished.
+    if let Some(download) = &app.download {
+        if download.result.is_some() && matches!(code, KeyCode::Enter | KeyCode::Esc | KeyCode::Char('q')) {
+            app.dismiss_download();
+        }
+        return;
+    }
+
+    // Check if we're in edit mode
+    let in_edit_mode = !matches!(app.edit_mode, EditMode::None);
+
+    match code {
+        KeyCode::Char('q') if !in_edit_mode => {
+            app.should_quit = true;
+        }
+        KeyCode::Char('e') if !in_edit_mode => {
+            app.export_mods();
+        }
+        KeyCode::Char('l') | KeyCode::Char('L') if !in_edit_mode => {
+            app.open_language_select();
+        }
+        KeyCode::Char('p') if !in_edit_mode => {
+            app.start_download();
+        }
+        KeyCode::Esc if in_edit_mode => {
+            app.cancel_edit();
+        }
+        KeyCode::Tab if !in_edit_mode => {
+            app.toggle_focus();
+        }
+        KeyCode::Left if !in_edit_mode => {
+            app.move_left();
+        }
+        KeyCode::Right if !in_edit_mode => {
+            app.move_right();
+        }
+        KeyCode::Up => {
+            app.move_up();
+        }
+        KeyCode::Down => {
+            app.move_down();
+        }
+        KeyCode::PageUp if !in_edit_mode => {
+            app.page_up();
+        }
+        KeyCode::PageDown if !in_edit_mode => {
+            app.page_down();
+        }
+        KeyCode::Enter => {
+            app.activate();
+        }
+        KeyCode::Backspace if in_edit_mode => {
+            app.handle_backspace();
+        }
+        KeyCode::Char(c) if in_edit_mode => {
+            app.handle_char(c);
+        }
+        _ => {}
     }
 }
