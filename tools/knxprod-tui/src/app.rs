@@ -413,7 +413,7 @@ pub enum EditMode {
         scroll_offset: usize,
     },
     /// Editing a number parameter
-    NumberInput { param_id: String, buffer: String },
+    NumberInput { param_id: String, buffer: String, min: Option<i64>, max: Option<i64> },
     /// Editing a text parameter
     TextInput { param_id: String, buffer: String, cursor: usize },
     /// Selecting the display language from a popup list.
@@ -445,19 +445,41 @@ pub enum WidgetType {
     ReadOnly { value: String },
 }
 
+impl WidgetType {
+    /// Collapse an editable widget into its read-only display form
+    /// (Access = "Read": the value is shown but not user-editable).
+    fn into_read_only(self) -> WidgetType {
+        match self {
+            WidgetType::Dropdown { options, current_idx } => WidgetType::ReadOnly {
+                value: options.get(current_idx).map(|(_, text)| text.clone()).unwrap_or_default(),
+            },
+            WidgetType::Number { value, .. } => WidgetType::ReadOnly { value: value.to_string() },
+            WidgetType::Text { value } => WidgetType::ReadOnly { value },
+            read_only @ WidgetType::ReadOnly { .. } => read_only,
+        }
+    }
+}
+
 /// Item in the parameter content area.
 #[derive(Debug, Clone)]
 pub enum ContentItem {
     /// A parameter with its widget
     Parameter { param_id: String, text: String, suffix: Option<String>, widget: WidgetType },
-    /// A separator
-    Separator { text: Option<String> },
+    /// A separator: a ruler, an information note, or — with no `ui_hint` —
+    /// a heading (single-line text), paragraph (multi-line text), or spacer
+    /// (empty text)
+    Separator { text: Option<String>, ui_hint: Option<String> },
     /// A communication object (displayed inline in module content)
     CommObject { name: String, function: String, dpt: String },
-    /// A picture/image reference
+    /// A picture/image reference. ETS shows the picture parameter's
+    /// `Text` in the label column, the image in the value column.
     Picture {
         /// Baggage reference ID
         ref_id: String,
+        /// Interpolated label text shown left of the image
+        text: Option<String>,
+        /// The `TypePicture` `HorizontalAlignment` value (XSD default Left)
+        alignment: Option<String>,
     },
 }
 
@@ -536,9 +558,11 @@ pub struct App {
     /// Image picker for terminal protocol detection
     #[cfg(feature = "images")]
     pub image_picker: Option<Picker>,
-    /// Cache of loaded images by baggage RefId
+    /// Cache of loaded images by baggage RefId, with their pixel
+    /// dimensions (the protocol consumes the decoded image, so the size
+    /// must be recorded at load time)
     #[cfg(feature = "images")]
-    pub image_cache: HashMap<String, StatefulProtocol>,
+    pub image_cache: HashMap<String, (StatefulProtocol, (u32, u32))>,
     /// Current main tab
     pub current_tab: MainTab,
     /// Sidebar tree nodes (for Parameters tab)
@@ -655,6 +679,11 @@ impl App {
     /// was loaded successfully.
     #[cfg(feature = "images")]
     pub fn load_image(&mut self, ref_id: &str) -> Option<&mut StatefulProtocol> {
+        self.load_image_entry(ref_id).map(|(protocol, _)| protocol)
+    }
+
+    #[cfg(feature = "images")]
+    fn load_image_entry(&mut self, ref_id: &str) -> Option<&mut (StatefulProtocol, (u32, u32))> {
         // Check if already cached
         if self.image_cache.contains_key(ref_id) {
             return self.image_cache.get_mut(ref_id);
@@ -671,13 +700,41 @@ impl App {
 
         // Load the image
         let dyn_img = image::open(baggage.file_path()).ok()?;
+        let dims = (dyn_img.width(), dyn_img.height());
 
         // Create the protocol for rendering
         let protocol = picker.new_resize_protocol(dyn_img);
 
         // Cache it
-        self.image_cache.insert(ref_id.to_string(), protocol);
+        self.image_cache.insert(ref_id.to_string(), (protocol, dims));
         self.image_cache.get_mut(ref_id)
+    }
+
+    /// The image's display extent in terminal cells, downscaled to fit
+    /// `max_cols` columns (aspect preserved).
+    ///
+    /// The extent is computed against a fixed logical cell of 8×16 px —
+    /// the classic 96-dpi terminal cell — rather than the terminal's
+    /// actual font size. ETS sizes pictures in logical pixels, so their
+    /// size tracks the text around them; using device pixels instead
+    /// made images shrink to half on a HiDPI terminal. The renderer
+    /// pairs this with `Resize::Scale`, which fills the resulting area
+    /// on any backend.
+    #[cfg(feature = "images")]
+    pub fn picture_cell_size(&mut self, ref_id: &str, max_cols: u16) -> Option<(u16, u16)> {
+        const CELL_W: f64 = 8.0;
+        const CELL_H: f64 = 16.0;
+
+        let (_, (img_w, img_h)) = *self.load_image_entry(ref_id)?;
+        if img_w == 0 || img_h == 0 || max_cols == 0 {
+            return None;
+        }
+
+        let max_px = f64::from(max_cols) * CELL_W;
+        let scale = (max_px / f64::from(img_w)).min(1.0);
+        let cols = (f64::from(img_w) * scale / CELL_W).ceil().max(1.0) as u16;
+        let rows = (f64::from(img_h) * scale / CELL_H).ceil().max(1.0) as u16;
+        Some((cols, rows))
     }
 
     /// Switch to next main tab.
@@ -1419,6 +1476,7 @@ impl App {
             // For now, just show a placeholder message
             self.content_items.push(ContentItem::Separator {
                 text: Some(format!("Module: {}", expanded.name.as_deref().unwrap_or(&expanded.instance_id))),
+                ui_hint: None,
             });
         }
     }
@@ -1444,7 +1502,7 @@ impl App {
                 ParameterBlockItem::ParameterSeparator(sep) => {
                     let raw_text = sep.text.clone();
                     let text = raw_text.map(|t| self.device.interpolate_module_text(&t, expanded));
-                    self.content_items.push(ContentItem::Separator { text });
+                    self.content_items.push(ContentItem::Separator { text, ui_hint: sep.ui_hint.clone() });
                 }
                 ParameterBlockItem::Module(_) => {
                     // Nested modules not supported yet
@@ -1550,7 +1608,7 @@ impl App {
                 WhenItem::ParameterSeparator(sep) => {
                     let raw_text = sep.text.clone();
                     let text = raw_text.map(|t| self.device.interpolate_module_text(&t, expanded));
-                    self.content_items.push(ContentItem::Separator { text });
+                    self.content_items.push(ContentItem::Separator { text, ui_hint: sep.ui_hint.clone() });
                 }
                 WhenItem::Assign(_) => {}
                 WhenItem::Module(_) => {}
@@ -1607,55 +1665,54 @@ impl App {
         });
 
         // Extract common fields based on parameter type
-        let (param_id_str, param_text, param_suffix, param_type, is_hidden) = match &found_param {
-            Some(FoundParameter::Regular(p)) => (
-                p.id.clone(),
-                p.text.clone(),
-                p.suffix_text.clone(),
-                p.parameter_type.clone(),
-                p.access.as_deref() == Some("None"),
-            ),
+        let (param_id_str, param_text, param_suffix, param_type, param_access) = match &found_param {
+            Some(FoundParameter::Regular(p)) => {
+                (p.id.clone(), p.text.clone(), p.suffix_text.clone(), p.parameter_type.clone(), p.access.clone())
+            }
             Some(FoundParameter::Union(up)) => {
-                (
-                    up.id.clone(),
-                    up.text.clone(),
-                    up.suffix_text.clone(),
-                    up.parameter_type.clone(),
-                    false, // Union parameters don't have access field
-                )
+                (up.id.clone(), up.text.clone(), up.suffix_text.clone(), up.parameter_type.clone(), up.access.clone())
             }
             None => {
                 return;
             }
         };
 
+        // Effective access: the ParameterRef's override, else the base
+        // Parameter's.
+        let effective_access = param_ref.access.clone().or(param_access);
+
         // Skip hidden parameters
-        if is_hidden {
+        if effective_access.as_deref() == Some("None") {
             return;
         }
 
         // Build display text with interpolation
         let raw_text = param_ref.text.clone().unwrap_or(param_text);
-
-        if raw_text.is_empty() {
-            return;
-        }
-
         let text = self.device.interpolate_module_text(&raw_text, expanded);
 
         // Use a unique ID that includes the module instance
         let param_id = format!("{}::{}", expanded.instance_id, param_id_str);
 
-        // Check if this is a picture type (only for regular parameters)
+        // Check if this is a picture type (only for regular parameters).
+        // A picture renders even without a label text, so this comes
+        // before the empty-text skip.
         if let Some(FoundParameter::Regular(ref p)) = found_param
-            && let Some(ref_id) = self.get_module_picture_ref_id(p)
+            && let Some((ref_id, alignment)) = self.get_module_picture_ref_id(p)
         {
-            self.content_items.push(ContentItem::Picture { ref_id });
+            let text = (!text.is_empty()).then_some(text);
+            self.content_items.push(ContentItem::Picture { ref_id, text, alignment });
+            return;
+        }
+
+        if text.is_empty() {
             return;
         }
 
         // Build widget based on parameter type
-        let widget = self.build_widget_for_module_param_by_type(&param_type, &param_id);
+        let mut widget = self.build_widget_for_module_param_by_type(&param_type, &param_id);
+        if effective_access.as_deref() == Some("Read") {
+            widget = widget.into_read_only();
+        }
 
         self.content_items.push(ContentItem::Parameter { param_id, text, suffix: param_suffix, widget });
     }
@@ -1956,9 +2013,18 @@ impl App {
 
                         let param_id = pref.ref_id.clone();
 
-                        // Check if this is a picture type first - pictures don't need text
-                        if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
-                            self.content_items.push(ContentItem::Picture { ref_id });
+                        // Check if this is a picture type first — a picture
+                        // renders even without a label text, but takes the
+                        // usual label chain when one is present.
+                        if let Some((ref_id, alignment)) = self.get_picture_ref_id(&param_id) {
+                            let raw_text = prr
+                                .text
+                                .clone()
+                                .or_else(|| pref.text.clone())
+                                .or_else(|| self.device.get_parameter_info(&param_id).map(|p| p.text.clone()))
+                                .unwrap_or_default();
+                            let text = (!raw_text.is_empty()).then(|| self.device.interpolate_text(&raw_text));
+                            self.content_items.push(ContentItem::Picture { ref_id, text, alignment });
                             continue;
                         }
 
@@ -1985,14 +2051,14 @@ impl App {
 
                         let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
 
-                        let widget = self.build_widget_for_param(&param_id);
+                        let widget = self.build_widget_for_param(&param_id, pref.access.as_deref());
 
                         self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
                     }
                 }
                 ParameterBlockItem::ParameterSeparator(sep) => {
                     let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
-                    self.content_items.push(ContentItem::Separator { text });
+                    self.content_items.push(ContentItem::Separator { text, ui_hint: sep.ui_hint.clone() });
                 }
                 ParameterBlockItem::Choose(choose) => {
                     // Process nested choose blocks within parameter blocks
@@ -2060,9 +2126,18 @@ impl App {
 
                         let param_id = pref.ref_id.clone();
 
-                        // Check if this is a picture type first - pictures don't need text
-                        if let Some(ref_id) = self.get_picture_ref_id(&param_id) {
-                            self.content_items.push(ContentItem::Picture { ref_id });
+                        // Check if this is a picture type first — a picture
+                        // renders even without a label text, but takes the
+                        // usual label chain when one is present.
+                        if let Some((ref_id, alignment)) = self.get_picture_ref_id(&param_id) {
+                            let raw_text = prr
+                                .text
+                                .clone()
+                                .or_else(|| pref.text.clone())
+                                .or_else(|| self.device.get_parameter_info(&param_id).map(|p| p.text.clone()))
+                                .unwrap_or_default();
+                            let text = (!raw_text.is_empty()).then(|| self.device.interpolate_text(&raw_text));
+                            self.content_items.push(ContentItem::Picture { ref_id, text, alignment });
                             continue;
                         }
 
@@ -2089,14 +2164,14 @@ impl App {
 
                         let suffix = self.device.get_parameter_info(&param_id).and_then(|p| p.suffix.clone());
 
-                        let widget = self.build_widget_for_param(&param_id);
+                        let widget = self.build_widget_for_param(&param_id, pref.access.as_deref());
 
                         self.content_items.push(ContentItem::Parameter { param_id, text, suffix, widget });
                     }
                 }
                 WhenItem::ParameterSeparator(sep) => {
                     let text = sep.text.as_ref().map(|t| self.device.interpolate_text(t));
-                    self.content_items.push(ContentItem::Separator { text });
+                    self.content_items.push(ContentItem::Separator { text, ui_hint: sep.ui_hint.clone() });
                 }
                 WhenItem::ParameterBlock(pb) => {
                     self.add_block_items(&pb.items);
@@ -2111,10 +2186,18 @@ impl App {
         }
     }
 
-    fn build_widget_for_param(&self, param_id: &str) -> WidgetType {
+    fn build_widget_for_param(&self, param_id: &str, ref_access: Option<&str>) -> WidgetType {
         let info = match self.device.get_parameter_info(param_id) {
             Some(i) => i,
             None => return WidgetType::ReadOnly { value: "?".to_string() },
+        };
+
+        // Effective access: the ParameterRef's override, else the base
+        // Parameter's. "Read" placements display the current value but
+        // are not editable (ETS greys them out).
+        let read_only = match ref_access {
+            Some(access) => access == "Read",
+            None => info.read_only,
         };
 
         let ptype = self.device.get_parameter_type(&info.type_id);
@@ -2126,6 +2209,18 @@ impl App {
                     Some(ParameterValue::Integer(v)) => *v,
                     _ => 0,
                 };
+
+                if read_only {
+                    // Show the current value's enum text as static display.
+                    let text = tr
+                        .enumerations
+                        .iter()
+                        .find(|e| e.value as i64 == current_val)
+                        .map(|e| e.text.clone())
+                        .unwrap_or_else(|| current_val.to_string());
+                    return WidgetType::ReadOnly { value: text };
+                }
+
                 let options: Vec<(i64, String)> =
                     tr.enumerations.iter().map(|e| (e.value as i64, e.text.clone())).collect();
                 let current_idx = options.iter().position(|(v, _)| *v == current_val).unwrap_or(0);
@@ -2137,7 +2232,11 @@ impl App {
                     Some(ParameterValue::Integer(v)) => *v,
                     _ => 0,
                 };
-                WidgetType::Number { value: val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
+                if read_only {
+                    WidgetType::ReadOnly { value: val.to_string() }
+                } else {
+                    WidgetType::Number { value: val, min: Some(tn.min_inclusive), max: Some(tn.max_inclusive) }
+                }
             }
             Some(ParameterTypeDef::TypeFloat(_)) => {
                 let val = match value {
@@ -2152,7 +2251,7 @@ impl App {
                     Some(ParameterValue::Text(s)) => s.clone(),
                     _ => String::new(),
                 };
-                WidgetType::Text { value: val }
+                if read_only { WidgetType::ReadOnly { value: val } } else { WidgetType::Text { value: val } }
             }
             Some(ParameterTypeDef::TypeNone(_)) | Some(ParameterTypeDef::TypeIpAddress(_)) | None => {
                 WidgetType::ReadOnly { value: "—".to_string() }
@@ -2162,17 +2261,27 @@ impl App {
         }
     }
 
-    /// Check if a parameter is a TypePicture and return its ref_id if so.
-    fn get_picture_ref_id(&self, param_id: &str) -> Option<String> {
+    /// Check if a parameter is a TypePicture and return its ref_id and
+    /// horizontal alignment if so.
+    fn get_picture_ref_id(&self, param_id: &str) -> Option<(String, Option<String>)> {
         let info = self.device.get_parameter_info(param_id)?;
         let ptype = self.device.get_parameter_type(&info.type_id)?;
-        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def { Some(tp.ref_id.clone()) } else { None }
+        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
+            Some((tp.ref_id.clone(), tp.horizontal_alignment.clone()))
+        } else {
+            None
+        }
     }
 
-    /// Check if a module parameter is a TypePicture and return its ref_id if so.
-    fn get_module_picture_ref_id(&self, parameter: &Parameter) -> Option<String> {
+    /// Check if a module parameter is a TypePicture and return its ref_id
+    /// and horizontal alignment if so.
+    fn get_module_picture_ref_id(&self, parameter: &Parameter) -> Option<(String, Option<String>)> {
         let ptype = self.device.get_parameter_type(&parameter.parameter_type)?;
-        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def { Some(tp.ref_id.clone()) } else { None }
+        if let ParameterTypeDef::TypePicture(tp) = &ptype.type_def {
+            Some((tp.ref_id.clone(), tp.horizontal_alignment.clone()))
+        } else {
+            None
+        }
     }
 
     /// Rebuild the communication objects table.
@@ -3853,10 +3962,20 @@ impl App {
                 self.rebuild_com_objects();
                 self.rebuild_memory_segments();
             }
-            EditMode::NumberInput { param_id, buffer } => {
-                // Commit the number
+            EditMode::NumberInput { param_id, buffer, min, max } => {
+                // Commit the number, clamped to the type's bounds the way
+                // ETS does it (entering 0 on a 1..5 field commits 1,
+                // entering 6 commits 5). An unparseable buffer keeps the
+                // old value.
                 let param_id = param_id.clone();
-                if let Ok(v) = buffer.parse::<i64>() {
+                let (min, max) = (*min, *max);
+                if let Ok(mut v) = buffer.parse::<i64>() {
+                    if let Some(min) = min {
+                        v = v.max(min);
+                    }
+                    if let Some(max) = max {
+                        v = v.min(max);
+                    }
                     self.set_any_parameter_value(&param_id, ParameterValue::Integer(v));
                 }
                 self.edit_mode = EditMode::None;
@@ -4192,8 +4311,9 @@ impl App {
                         scroll_offset,
                     };
                 }
-                WidgetType::Number { value, .. } => {
-                    self.edit_mode = EditMode::NumberInput { param_id, buffer: value.to_string() };
+                WidgetType::Number { value, min, max } => {
+                    self.edit_mode =
+                        EditMode::NumberInput { param_id, buffer: value.to_string(), min: *min, max: *max };
                 }
                 WidgetType::Text { value } => {
                     let len = value.len();

@@ -1189,6 +1189,7 @@ fn build_parameter_lookup(
                         default_value: p.value.clone(),
                         suffix: p.suffix_text.clone(),
                         hidden: p.access.as_deref() == Some("None"),
+                        read_only: p.access.as_deref() == Some("Read"),
                     };
                     let default = parse(&p.parameter_type, &info.default_value);
                     param_values.insert(p.id.clone(), default);
@@ -1203,7 +1204,8 @@ fn build_parameter_lookup(
                             type_id: p.parameter_type.clone(),
                             default_value: p.value.clone(),
                             suffix: p.suffix_text.clone(),
-                            hidden: false, // UnionParameter doesn't have access field
+                            hidden: p.access.as_deref() == Some("None"),
+                            read_only: p.access.as_deref() == Some("Read"),
                         };
                         let default = parse(&p.parameter_type, &info.default_value);
                         param_values.insert(p.id.clone(), default);

@@ -46,7 +46,16 @@ pub fn dump_skeleton(device: &Device, mods: &DeviceMods) -> String {
     for param_ref in visible_refs_sorted(device) {
         let id = &param_ref.ref_id;
         let Some(info) = device.get_parameter_info(id) else { continue };
-        if info.hidden || param_ref.access.as_deref() == Some("None") {
+        // Hidden and display-only placements are not configuration: the
+        // ref's access overrides the base parameter's.
+        let effective_access = param_ref.access.as_deref().or(if info.hidden {
+            Some("None")
+        } else if info.read_only {
+            Some("Read")
+        } else {
+            None
+        });
+        if matches!(effective_access, Some("None" | "Read")) {
             continue;
         }
         let type_def = device.get_parameter_type(&info.type_id).map(|t| &t.type_def);

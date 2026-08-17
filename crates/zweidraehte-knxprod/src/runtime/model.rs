@@ -199,6 +199,9 @@ pub struct ParameterInfo {
     pub suffix: Option<String>,
     /// Whether hidden from user (Access = "None")
     pub hidden: bool,
+    /// Whether visible but not user-writable (Access = "Read"). A
+    /// `ParameterRef` may override this per placement in either direction.
+    pub read_only: bool,
 }
 
 /// A module argument value (numeric or text).

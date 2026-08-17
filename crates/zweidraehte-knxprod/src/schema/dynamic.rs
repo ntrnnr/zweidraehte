@@ -181,6 +181,12 @@ pub struct ParameterSeparator {
     pub id: String,
     #[serde(rename = "@Text", skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// Presentation hint: "HorizontalRuler" draws a divider line,
+    /// "Information" marks the text as an informational note. Absent means a
+    /// plain separator — ETS shows its text as a heading/paragraph, or just
+    /// vertical spacing when the text is empty.
+    #[serde(rename = "@UIHint", skip_serializing_if = "Option::is_none")]
+    pub ui_hint: Option<String>,
 }
 
 /// A choose element for conditional parameter visibility based on a selector value

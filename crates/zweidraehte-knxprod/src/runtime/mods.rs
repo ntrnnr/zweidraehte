@@ -136,7 +136,7 @@ pub struct FlagOverrides {
 pub enum ModsError {
     #[error("the product defines no parameter `{0}`")]
     UnknownParameter(String),
-    #[error("parameter `{0}` is not user-configurable (its access is None)")]
+    #[error("parameter `{0}` is not user-configurable (its access is None or Read)")]
     NotConfigurable(String),
     #[error(
         "parameter `{0}` is not visible under the configured values — \
@@ -173,21 +173,39 @@ pub enum ModsError {
 pub fn apply_mods(device: &mut Device, mods: &DeviceMods) -> Result<(), ModsError> {
     for param in &mods.params {
         let info = device.get_parameter_info(&param.id).ok_or_else(|| ModsError::UnknownParameter(param.id.clone()))?;
-        if info.hidden {
+        if info.hidden || info.read_only {
             return Err(ModsError::NotConfigurable(param.id.clone()));
         }
         validate_value(device, &param.id, &param.value)?;
         device.set_parameter_value(&param.id, ParameterValue::from(&param.value));
     }
 
-    // Visibility under the final configuration. A parameter is visible
-    // when some visible ref targets it and that ref is not
-    // access-hidden itself.
+    // Visibility and writability under the final configuration. A
+    // parameter is user-configurable when some visible ref targets it
+    // whose effective access — the ref's override, else the base
+    // parameter's (already known to be ReadWrite from the check above)
+    // — is neither None (hidden) nor Read (display-only). The
+    // visibility half is what protects union members: writing a value
+    // for a member whose alternative is active would corrupt the
+    // shared bytes.
     for param in &mods.params {
-        let visibly_referenced =
-            device.visible_param_refs().any(|r| r.ref_id == param.id && r.access.as_deref() != Some("None"));
+        let mut visibly_referenced = false;
+        let mut writable = false;
+        for r in device.visible_param_refs().filter(|r| r.ref_id == param.id) {
+            match r.access.as_deref() {
+                Some("None") => {}
+                Some("Read") => visibly_referenced = true,
+                _ => {
+                    visibly_referenced = true;
+                    writable = true;
+                }
+            }
+        }
         if !visibly_referenced {
             return Err(ModsError::NotVisible(param.id.clone()));
+        }
+        if !writable {
+            return Err(ModsError::NotConfigurable(param.id.clone()));
         }
     }
 
@@ -422,7 +440,9 @@ mod tests {
     /// plain com-object ref; mode 1 shows the other member, a level
     /// parameter whose *ref* overrides the default, and a com-object
     /// ref that overrides flags), plus an always-visible hidden
-    /// parameter.
+    /// parameter and two read-only shapes: a union member whose base
+    /// access is "Read", and a parameter whose only visible ref
+    /// overrides access to "Read".
     const FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
   <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
     <ApplicationProgram Id="M-00FA_A-1" ApplicationNumber="1" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0705" Name="Fixture" LoadProcedureStyle="ProductProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="false" Linkable="false">
@@ -438,10 +458,12 @@ mod tests {
           <Parameter Id="M-00FA_A-1_P-2" Name="Level" ParameterType="M-00FA_A-1_PT-N8" Text="Level" Value="50"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="1" BitOffset="0" /></Parameter>
           <Parameter Id="M-00FA_A-1_P-3" Name="Internal" ParameterType="M-00FA_A-1_PT-N8" Text="" Access="None" Value="7"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="2" BitOffset="0" /></Parameter>
           <Parameter Id="M-00FA_A-1_P-6" Name="Description" ParameterType="M-00FA_A-1_PT-TXT" Text="Description" Value="" />
+          <Parameter Id="M-00FA_A-1_P-8" Name="RefLocked" ParameterType="M-00FA_A-1_PT-N8" Text="Ref locked" Value="4"><Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="4" BitOffset="0" /></Parameter>
           <Union SizeInBit="8">
             <Memory CodeSegment="M-00FA_A-1_AS-4300" Offset="3" BitOffset="0" />
             <Parameter Id="M-00FA_A-1_P-4" Name="OffChoice" ParameterType="M-00FA_A-1_PT-N8" Text="Off choice" Value="1" Offset="0" BitOffset="0" />
             <Parameter Id="M-00FA_A-1_P-5" Name="OnChoice" ParameterType="M-00FA_A-1_PT-N8" Text="On choice" Value="2" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+            <Parameter Id="M-00FA_A-1_P-7" Name="ShownChoice" ParameterType="M-00FA_A-1_PT-N8" Text="Shown choice" Access="Read" Value="3" Offset="0" BitOffset="0" />
           </Union>
         </Parameters>
         <ParameterRefs>
@@ -451,6 +473,8 @@ mod tests {
           <ParameterRef Id="M-00FA_A-1_P-4_R-4" RefId="M-00FA_A-1_P-4" />
           <ParameterRef Id="M-00FA_A-1_P-5_R-5" RefId="M-00FA_A-1_P-5" />
           <ParameterRef Id="M-00FA_A-1_P-6_R-6" RefId="M-00FA_A-1_P-6" />
+          <ParameterRef Id="M-00FA_A-1_P-7_R-7" RefId="M-00FA_A-1_P-7" Access="Read" />
+          <ParameterRef Id="M-00FA_A-1_P-8_R-8" RefId="M-00FA_A-1_P-8" Access="Read" />
         </ParameterRefs>
         <ComObjectTable>
           <ComObject Id="M-00FA_A-1_O-1" Name="Switch" Text="Switch" Number="1" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
@@ -466,6 +490,8 @@ mod tests {
             <ParameterRefRef RefId="M-00FA_A-1_P-1_R-1" />
             <ParameterRefRef RefId="M-00FA_A-1_P-3_R-3" />
             <ParameterRefRef RefId="M-00FA_A-1_P-6_R-6" />
+            <ParameterRefRef RefId="M-00FA_A-1_P-7_R-7" />
+            <ParameterRefRef RefId="M-00FA_A-1_P-8_R-8" />
             <choose ParamRefId="M-00FA_A-1_P-1_R-1">
               <when test="0">
                 <ParameterRefRef RefId="M-00FA_A-1_P-4_R-4" />
@@ -571,6 +597,27 @@ mod tests {
             ..Default::default()
         };
         assert!(matches!(apply_mods(&mut dev, &unknown_object), Err(ModsError::UnknownComObject(42))));
+    }
+
+    #[test]
+    fn rejects_read_only_parameters() {
+        // P-7 is a union member with Access="Read" at the base — the
+        // Weinzierl "Slave for this page" shape.
+        let mut dev = device();
+        let base_read_only = DeviceMods {
+            params: vec![ParamOverride { id: param_id("7"), value: ModsValue::Int(1) }],
+            ..Default::default()
+        };
+        assert!(matches!(apply_mods(&mut dev, &base_read_only), Err(ModsError::NotConfigurable(_))));
+
+        // P-8 is writable at the base, but its only visible ref
+        // overrides access to "Read".
+        let mut dev = device();
+        let ref_read_only = DeviceMods {
+            params: vec![ParamOverride { id: param_id("8"), value: ModsValue::Int(1) }],
+            ..Default::default()
+        };
+        assert!(matches!(apply_mods(&mut dev, &ref_read_only), Err(ModsError::NotConfigurable(_))));
     }
 
     #[test]

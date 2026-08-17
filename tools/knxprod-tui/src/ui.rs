@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 #[cfg(feature = "images")]
-use ratatui_image::{Resize, StatefulImage, protocol::StatefulProtocol};
+use ratatui_image::{FilterType, Resize, StatefulImage, protocol::StatefulProtocol};
 
 use crate::app::{App, ContentItem, EditMode, Focus, MainTab, SegmentType, WidgetType};
 
@@ -201,45 +201,71 @@ fn render_param_content(frame: &mut Frame, area: Rect, app: &mut App) {
         .map(|(i, item)| {
             let is_selected = i == app.selected_content_idx && focused;
             match item {
-                ContentItem::Picture { ref_id } => (i, is_selected, Some(ref_id.clone()), None),
+                ContentItem::Picture { ref_id, text, alignment } => {
+                    (i, is_selected, Some((ref_id.clone(), text.clone(), alignment.clone())), None)
+                }
                 _ => {
-                    let line = create_content_line(item, is_selected, app, inner.width as usize);
-                    (i, is_selected, None, Some(line))
+                    let lines = create_content_lines(item, is_selected, app, inner.width as usize);
+                    (i, is_selected, None, Some(lines))
                 }
             }
         })
         .collect();
 
-    // Second pass: render
+    // Second pass: render. Items may span several rows (pictures, wrapped
+    // separator paragraphs).
     let mut y_offset = 0u16;
-    for (_i, is_selected, picture_ref, line) in items_to_render {
+    for (_i, is_selected, picture_ref, lines) in items_to_render {
         if y_offset >= inner.height {
             break;
         }
 
-        if let Some(ref_id) = picture_ref {
-            // Render picture - use 5 rows (1 padding + 3 image + 1 padding)
+        if let Some((ref_id, text, alignment)) = picture_ref {
+            // Give the picture its natural height in cells (plus the
+            // 1-row padding top and bottom) when the image size is
+            // known; the legacy 5 rows otherwise.
+            #[cfg(feature = "images")]
+            let desired_rows = app
+                .picture_cell_size(&ref_id, inner.width.saturating_sub(label_width as u16))
+                .map(|(_, rows)| rows + 2)
+                .unwrap_or(5);
+            #[cfg(not(feature = "images"))]
+            let desired_rows = 5;
+
             let item_area = Rect {
                 x: inner.x,
                 y: inner.y + y_offset,
                 width: inner.width,
-                height: (inner.height - y_offset).min(5),
+                height: (inner.height - y_offset).min(desired_rows),
             };
 
-            render_picture_item(frame, item_area, app, &ref_id, is_selected, label_width);
+            render_picture_item(
+                frame,
+                item_area,
+                app,
+                &ref_id,
+                text.as_deref(),
+                alignment.as_deref(),
+                is_selected,
+                label_width,
+            );
             y_offset += item_area.height;
-        } else if let Some(line) = line {
-            // Render regular item as single line
-            let item_area = Rect { x: inner.x, y: inner.y + y_offset, width: inner.width, height: 1 };
-
-            frame.render_widget(Paragraph::new(line), item_area);
-            y_offset += 1;
+        } else if let Some(lines) = lines {
+            for line in lines {
+                if y_offset >= inner.height {
+                    break;
+                }
+                let item_area = Rect { x: inner.x, y: inner.y + y_offset, width: inner.width, height: 1 };
+                frame.render_widget(Paragraph::new(line), item_area);
+                y_offset += 1;
+            }
         }
     }
 }
 
-/// Create a Line for a content item (used for manual rendering).
-fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, width: usize) -> Line<'a> {
+/// Create the display lines for a content item (used for manual rendering).
+/// Most items are a single line; separator paragraphs may wrap to several.
+fn create_content_lines<'a>(item: &ContentItem, is_selected: bool, app: &App, width: usize) -> Vec<Line<'a>> {
     let bg = if is_selected { Color::DarkGray } else { Color::Reset };
 
     match item {
@@ -270,21 +296,9 @@ fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, wid
                     .map(|s| if bg != Color::Reset { Span::styled(s.content, s.style.bg(bg)) } else { s }),
             );
 
-            Line::from(spans)
+            vec![Line::from(spans)]
         }
-        ContentItem::Separator { text } => {
-            let sep_text = text.as_deref().unwrap_or("");
-            // Create a separator that spans the full width
-            let separator_line = if sep_text.is_empty() || sep_text.trim().is_empty() {
-                "─".repeat(width)
-            } else {
-                // Format: "── text ────────────" spanning full width
-                let prefix = format!("── {} ", sep_text.trim());
-                let remaining = width.saturating_sub(prefix.chars().count());
-                format!("{}{}", prefix, "─".repeat(remaining))
-            };
-            Line::from(vec![Span::styled(separator_line, Style::default().fg(Color::DarkGray).bg(bg))])
-        }
+        ContentItem::Separator { text, ui_hint } => separator_lines(text.as_deref(), ui_hint.as_deref(), width, bg),
         ContentItem::CommObject { name, function, dpt } => {
             // Display comm object with distinctive styling
             let label_width = (width * 40 / 100).clamp(20, 45);
@@ -297,24 +311,116 @@ fn create_content_line<'a>(item: &ContentItem, is_selected: bool, app: &App, wid
             // Show function and DPT in value area
             let info = if dpt.is_empty() { function.clone() } else { format!("{} [{}]", function, dpt) };
 
-            Line::from(vec![
+            vec![Line::from(vec![
                 Span::styled(label, Style::default().fg(Color::Cyan).bg(bg)),
                 Span::styled(info, Style::default().fg(Color::DarkGray).bg(bg)),
-            ])
+            ])]
         }
         ContentItem::Picture { .. } => {
             // Pictures are handled separately by render_picture_item
-            Line::from(vec![])
+            vec![Line::from(vec![])]
         }
     }
 }
 
+/// Render a `ParameterSeparator` the way ETS distinguishes them: an explicit
+/// `HorizontalRuler` is a divider, `Information` is a note, and a plain
+/// separator is its text alone — heading or paragraph — or vertical
+/// spacing when the text is empty. Only a `HorizontalRuler` draws dashes.
+fn separator_lines<'a>(text: Option<&str>, ui_hint: Option<&str>, width: usize, bg: Color) -> Vec<Line<'a>> {
+    let ruler_style = Style::default().fg(Color::DarkGray).bg(bg);
+    // Vendor texts embed CRLF and LF line breaks (`&#xD;&#xA;` / `&#xA;`).
+    let text = text.unwrap_or("").replace("\r\n", "\n");
+    let trimmed = text.trim();
+
+    match ui_hint {
+        Some("HorizontalRuler") => vec![Line::from(Span::styled("─".repeat(width), ruler_style))],
+        Some("Information") => {
+            // Informational note: distinct color, ℹ marker on the first line.
+            let style = Style::default().fg(Color::Cyan).bg(bg);
+            wrapped_paragraph(trimmed, width.saturating_sub(2), style, "ℹ ", "  ")
+        }
+        _ => {
+            if trimmed.is_empty() {
+                // Plain empty separator: vertical spacing, not a ruler. The
+                // full-width blank keeps the selection highlight visible.
+                vec![Line::from(Span::styled(" ".repeat(width), ruler_style))]
+            } else {
+                // Text, kept as the author's line breaks, wrapped to width.
+                // Leading whitespace stays: vendors indent separator text
+                // with literal spaces ("    Slave 1") and ETS renders
+                // them verbatim.
+                let style = Style::default().fg(Color::Gray).bg(bg);
+                wrapped_paragraph(text.trim_end(), width, style, "", "")
+            }
+        }
+    }
+}
+
+/// Word-wrap `text` to `width` columns, preserving its own line breaks.
+/// `first_prefix` starts the first line, `cont_prefix` every following one.
+fn wrapped_paragraph<'a>(
+    text: &str,
+    width: usize,
+    style: Style,
+    first_prefix: &str,
+    cont_prefix: &str,
+) -> Vec<Line<'a>> {
+    let width = width.max(8);
+    let mut lines = Vec::new();
+    let mut first = true;
+
+    for source_line in text.lines() {
+        // An empty source line is a paragraph break the author wrote.
+        if source_line.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        // Each source line keeps its own leading whitespace — on wrapped
+        // continuation rows too — since ETS renders it verbatim.
+        let indent: String = source_line.chars().take_while(|c| c.is_whitespace()).collect();
+        let wrap_width = width.saturating_sub(indent.chars().count()).max(8);
+
+        let mut current = String::new();
+        for word in source_line.split_whitespace() {
+            let candidate_len = if current.is_empty() {
+                word.chars().count()
+            } else {
+                current.chars().count() + 1 + word.chars().count()
+            };
+            if candidate_len > wrap_width && !current.is_empty() {
+                lines.push(format!("{indent}{}", std::mem::take(&mut current)));
+            }
+            if !current.is_empty() {
+                current.push(' ');
+            }
+            current.push_str(word);
+        }
+        if !current.is_empty() {
+            lines.push(format!("{indent}{current}"));
+        }
+    }
+
+    lines
+        .into_iter()
+        .map(|l| {
+            let prefix = if first { first_prefix } else { cont_prefix };
+            first = false;
+            Line::from(Span::styled(format!("{prefix}{l}"), style))
+        })
+        .collect()
+}
+
 /// Render a picture item with inline image in the value column.
+#[allow(clippy::too_many_arguments)]
 fn render_picture_item(
     frame: &mut Frame,
     area: Rect,
     app: &mut App,
     ref_id: &str,
+    text: Option<&str>,
+    alignment: Option<&str>,
     is_selected: bool,
     label_width: usize,
 ) {
@@ -330,16 +436,75 @@ fn render_picture_item(
         height: area.height.saturating_sub(padding * 2),
     };
 
+    // The picture parameter's Text goes in the label column, the way a
+    // parameter label sits left of its value widget in ETS, vertically
+    // centered on the image as ETS does ("Anschluss-Schema:" sits at the
+    // wiring diagram's mid-height). The text may carry its own line
+    // breaks (the Weinzierl logo caption does).
+    if let Some(text) = text {
+        let label_height = area.height.saturating_sub(padding * 2);
+        let label_cols = (label_width as u16).min(area.width);
+        let max_len = label_cols as usize;
+        let lines: Vec<Line> = text
+            .replace("\r\n", "\n")
+            .lines()
+            .take(label_height as usize)
+            .map(|l| {
+                let display = if l.chars().count() > max_len {
+                    format!("{}…", l.chars().take(max_len.saturating_sub(1)).collect::<String>())
+                } else {
+                    l.to_string()
+                };
+                Line::from(Span::styled(display, Style::default().fg(Color::White).bg(bg)))
+            })
+            .collect();
+        let v_offset = label_height.saturating_sub(lines.len() as u16) / 2;
+        let label_area = Rect {
+            x: area.x,
+            y: area.y + padding + v_offset,
+            width: label_cols,
+            height: label_height.saturating_sub(v_offset),
+        };
+        frame.render_widget(Paragraph::new(lines), label_area);
+    }
+
+    // ETS places the picture inside the value column per the type's
+    // HorizontalAlignment (Left is the schema default).
+    let text_alignment = match alignment {
+        Some("Right") => ratatui::layout::Alignment::Right,
+        Some("Middle") => ratatui::layout::Alignment::Center,
+        _ => ratatui::layout::Alignment::Left,
+    };
+
     // Render image in the value column
     #[cfg(feature = "images")]
     {
+        // Give the image an exactly-sized area at its logical-pixel cell
+        // extent, placed per HorizontalAlignment. Resize::Scale below
+        // fills it exactly, up- or downscaling as the terminal's device
+        // pixel density demands.
+        let image_area = match app.picture_cell_size(ref_id, value_area.width) {
+            Some((cols, rows)) => {
+                let width = cols.min(value_area.width);
+                let x = match alignment {
+                    Some("Right") => value_area.x + value_area.width - width,
+                    Some("Middle") => value_area.x + (value_area.width - width) / 2,
+                    _ => value_area.x,
+                };
+                Rect { x, y: value_area.y, width, height: rows.min(value_area.height) }
+            }
+            None => value_area,
+        };
+
         if let Some(protocol) = app.load_image(ref_id) {
-            let image: StatefulImage<StatefulProtocol> = StatefulImage::default().resize(Resize::Fit(None));
-            frame.render_stateful_widget(image, value_area, protocol);
+            let image: StatefulImage<StatefulProtocol> =
+                StatefulImage::default().resize(Resize::Scale(Some(FilterType::Lanczos3)));
+            frame.render_stateful_widget(image, image_area, protocol);
         } else {
             // Show placeholder if image not found
-            let placeholder =
-                Paragraph::new(format!("[{}]", ref_id)).style(Style::default().fg(Color::DarkGray).bg(bg));
+            let placeholder = Paragraph::new(format!("[{}]", ref_id))
+                .alignment(text_alignment)
+                .style(Style::default().fg(Color::DarkGray).bg(bg));
             frame.render_widget(placeholder, value_area);
         }
     }
@@ -347,8 +512,9 @@ fn render_picture_item(
     {
         // Without images feature, just show the ref_id as text
         let _ = app; // suppress unused warning
-        let placeholder =
-            Paragraph::new(format!("[Image: {}]", ref_id)).style(Style::default().fg(Color::Yellow).bg(bg));
+        let placeholder = Paragraph::new(format!("[Image: {}]", ref_id))
+            .alignment(text_alignment)
+            .style(Style::default().fg(Color::Yellow).bg(bg));
         frame.render_widget(placeholder, value_area);
     }
 }

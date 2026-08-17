@@ -1303,6 +1303,7 @@ impl MtxmlGenerator {
                     result.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", module_id, sep_counter),
                         text: text.map(|s| s.to_string()),
+                        ui_hint: None,
                     }));
                 }
                 ModuleLayoutItem::When(when_item) => {
@@ -1367,6 +1368,7 @@ impl MtxmlGenerator {
                     result.push(WhenItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", module_id, sep_counter),
                         text: text.map(|s| s.to_string()),
+                        ui_hint: None,
                     }));
                 }
                 ModuleLayoutItem::When(when_item) => {
@@ -1667,7 +1669,10 @@ impl MtxmlGenerator {
                     id: type_id,
                     name: type_name,
                     internal_description: None,
-                    type_def: ParameterTypeDef::TypePicture(TypePicture { ref_id: baggage_id }),
+                    type_def: ParameterTypeDef::TypePicture(TypePicture {
+                        ref_id: baggage_id,
+                        horizontal_alignment: None,
+                    }),
                 });
             }
         }
@@ -1979,6 +1984,7 @@ impl MtxmlGenerator {
             parameter_type: selector_type,
             text: field.display_name.to_string(),
             suffix_text: None,
+            access: None,
             value: selector_value,
             offset: 0,
             bit_offset: 0,
@@ -2011,6 +2017,7 @@ impl MtxmlGenerator {
                 parameter_type: type_id,
                 text: param.param.display_name.to_string(),
                 suffix_text: param.param.suffix.map(|s| s.to_string()),
+                access: None,
                 value: default_value,
                 offset: union_info.data_offset + param.param.offset, // data_offset accounts for discriminant + alignment padding
                 bit_offset: param.param.bit_offset,
@@ -3395,9 +3402,12 @@ impl MtxmlGenerator {
                 PageItem::Separator(text) => {
                     let sep_id = *sep_counter;
                     *sep_counter += 1;
+                    // TODO: the ETS DSL has no separator-hint concept yet, so
+                    // generated separators are always the plain kind.
                     items.push(ParameterBlockItem::ParameterSeparator(ParameterSeparator {
                         id: format!("{}_PS-{}", app_id, sep_id),
                         text: text.map(|t| t.to_string()),
+                        ui_hint: None,
                     }));
                 }
                 PageItem::When(cond_item) => {

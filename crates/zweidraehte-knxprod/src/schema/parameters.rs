@@ -123,6 +123,11 @@ pub struct TypeNone {}
 pub struct TypePicture {
     #[serde(rename = "@RefId")]
     pub ref_id: String,
+    /// How ETS places the picture inside the value column:
+    /// "Left" (the schema default) | "Middle" | "Right" | "Stretch" |
+    /// "Repeat"
+    #[serde(rename = "@HorizontalAlignment", skip_serializing_if = "Option::is_none")]
+    pub horizontal_alignment: Option<String>,
 }
 
 /// IP address parameter type
@@ -244,6 +249,10 @@ pub struct UnionParameter {
     pub text: String,
     #[serde(rename = "@SuffixText", skip_serializing_if = "Option::is_none")]
     pub suffix_text: Option<String>,
+    /// Access mode, same semantics as on [`Parameter`]: "None" means hidden
+    /// from user, "Read" means visible but not user-writable
+    #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
     #[serde(rename = "@Value")]
     pub value: String,
     #[serde(rename = "@Offset")]
