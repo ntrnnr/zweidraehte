@@ -94,6 +94,18 @@ pub struct MemorySegment {
     pub annotation_index: Vec<u32>,
 }
 
+/// One communication object's Communication Object Table entry:
+/// its wire bytes plus what the annotation needs to describe it.
+/// The object number doubles as the entry's position in the table.
+struct CotEntry {
+    number: u16,
+    type_byte: u8,
+    flags: u8,
+    name: String,
+    size_str: String,
+    ref_id: String,
+}
+
 /// Annotation for a memory region occupied by a parameter.
 #[derive(Debug, Clone)]
 #[allow(dead_code)] // Fields reserved for future use (click-to-navigate)
@@ -2916,14 +2928,26 @@ impl App {
         annotations
     }
 
+    /// Does this device use the BIM M112 (System 7) group object table
+    /// format rather than Realisation Type 7 (System B)?
+    ///
+    /// M112: `[count:1][ram_flags_ptr:2BE][(data_ptr:2BE, flags, type) × count]`,
+    /// objects numbered from 0, entry for object n at `3 + n*4`.
+    /// RT7 (03/05/01 §4.18.6.2.4, Table 87): `[count:2BE][(flags, type) × count]`,
+    /// objects numbered from 1 (the table cannot express ASAP 0), entry
+    /// for object n at `2 + (n-1)*2`.
+    fn cot_is_m112(&self) -> bool {
+        let mask_version = self.device.mask_version().to_string();
+        mask_version.starts_with("MV-07") && !mask_version.ends_with("B0")
+    }
+
     /// Generate the Communication Object Table (COT) as a synthetic memory segment.
     ///
-    /// The COT stores type and flags for each communication object.
-    /// Format: 2-byte count + N x 2-byte entries (type/size byte + flags byte)
-    ///
-    /// The COT is indexed by object number - object N is at position N+1 in the table
-    /// (since COT uses 1-based indexing). This means if we have objects 0,1,2 and 9,10,11,
-    /// we need a table with count=12, with entries at positions 1-3 and 10-12.
+    /// The COT stores type and flags for each communication object, at
+    /// the position its *object number* names (see [`Self::cot_is_m112`]
+    /// for the two formats) — sparse numbering leaves zeroed gap
+    /// entries, matching what our download engine compiles and both
+    /// device stacks serve.
     ///
     /// For System 7.x devices, the table is placed within an AbsoluteSegment.
     /// For System B devices, it's loaded via a separate Load State Machine.
@@ -2937,9 +2961,7 @@ impl App {
             return; // No communication objects to display
         }
 
-        // Find the highest object number to determine table size
-        let max_obj_num = cot_entries.iter().map(|(num, _, _)| *num).max().unwrap_or(0);
-        let entry_count = max_obj_num + 1; // Object numbers are 0-indexed
+        let max_obj_num = cot_entries.iter().map(|e| e.number).max().unwrap_or(0);
 
         // Get ComObjectTable config if present (may be None for some devices)
         let cot_config = &static_section.com_object_table;
@@ -2952,37 +2974,57 @@ impl App {
             && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
         {
             // Add annotations to existing segment
-            let annotations = self.build_com_object_table_annotations(offset);
+            let annotations = self.build_com_object_table_annotations(offset, &cot_entries);
             self.memory_segments[seg_idx].annotations.extend(annotations);
             return;
         }
 
-        // Create a standalone synthetic segment
-        // Build table data: 2-byte count + entry_count x 2-byte entries
-        let table_size = 2 + (entry_count as usize) * 2;
-        let mut data = vec![0u8; table_size];
-
-        // Count field (2 bytes, big-endian)
-        data[0] = (entry_count >> 8) as u8;
-        data[1] = (entry_count & 0xFF) as u8;
-
-        // Place each entry at its correct position
-        // Object number N goes at offset 2 + N*2 (since count is at offset 0-1)
-        for (obj_num, type_byte, flags) in &cot_entries {
-            let entry_offset = 2 + (*obj_num as usize) * 2;
-            if entry_offset + 1 < data.len() {
-                data[entry_offset] = *type_byte;
-                data[entry_offset + 1] = *flags;
+        // Create a standalone synthetic segment in the device's format.
+        // Pointers only the firmware knows (M112 RAM-flags pointer and
+        // per-entry data pointers) stay zero.
+        let (data, declared_size) = if self.cot_is_m112() {
+            let entry_count = (max_obj_num as usize + 1).min(255);
+            let mut data = vec![0u8; 3 + entry_count * 4];
+            data[0] = entry_count as u8;
+            for entry in &cot_entries {
+                let entry_offset = 3 + (entry.number as usize) * 4;
+                if let Some(bytes) = data.get_mut(entry_offset + 2..entry_offset + 4) {
+                    bytes[0] = entry.flags;
+                    bytes[1] = entry.type_byte;
+                }
             }
-        }
+            (data, 3 + (max_entries as u32) * 4)
+        } else {
+            // RT7 counts entries from ASAP 1: entry n sits at
+            // 2 + (n-1)*2 and the count is the highest number, not
+            // highest + 1. An object number 0 cannot exist in this
+            // table (the download engine rejects such product data);
+            // skip rather than wrap around.
+            let entry_count = max_obj_num as usize;
+            let mut data = vec![0u8; 2 + entry_count * 2];
+            data[0..2].copy_from_slice(&(entry_count as u16).to_be_bytes());
+            for entry in &cot_entries {
+                if entry.number == 0 {
+                    continue;
+                }
+                let entry_offset = 2 + (entry.number as usize - 1) * 2;
+                if let Some(bytes) = data.get_mut(entry_offset..entry_offset + 2) {
+                    // Table 87 is a big-endian descriptor: flags high,
+                    // type low.
+                    bytes[0] = entry.flags;
+                    bytes[1] = entry.type_byte;
+                }
+            }
+            (data, 2 + (max_entries as u32) * 2)
+        };
 
-        let annotations = self.build_com_object_table_annotations(0);
+        let annotations = self.build_com_object_table_annotations(0, &cot_entries);
 
         self.memory_segments.push(MemorySegment {
             id: "COT".to_string(),
             segment_type: SegmentType::Relative,
             address: offset,
-            size: 2 + (max_entries as u32) * 2,
+            size: declared_size,
             memory_type: Some("ComObject Table".to_string()),
             load_state_machine: Some(3), // LSM 3 is typically for COT
             data,
@@ -2992,8 +3034,8 @@ impl App {
     }
 
     /// Collect all visible comm objects with their actual numbers and COT entry data.
-    /// Returns Vec of (object_number, type_byte, flags_byte).
-    fn collect_all_cot_entries(&self) -> Vec<(u16, u8, u8)> {
+    /// Sorted by object number, which is also the entry's position in the table.
+    fn collect_all_cot_entries(&self) -> Vec<CotEntry> {
         let mut entries = Vec::new();
         let static_section = &self.device.static_section();
 
@@ -3013,10 +3055,21 @@ impl App {
                 .or_else(|| base_obj.map(|o| o.object_size.clone()))
                 .unwrap_or_else(|| "1 Byte".to_string());
 
-            let type_byte = self.object_size_to_type_byte(&size_str);
-            let flags = self.build_com_object_flags(com_obj_ref, base_obj);
+            let name = com_obj_ref
+                .text
+                .clone()
+                .or_else(|| base_obj.map(|o| o.text.clone()))
+                .or_else(|| com_obj_ref.name.clone())
+                .unwrap_or_default();
 
-            entries.push((obj_num, type_byte, flags));
+            entries.push(CotEntry {
+                number: obj_num,
+                type_byte: self.object_size_to_type_byte(&size_str),
+                flags: self.build_com_object_flags(com_obj_ref, base_obj),
+                name,
+                size_str,
+                ref_id: com_obj_ref.id.clone(),
+            });
         }
 
         // Add module comm objects
@@ -3049,13 +3102,21 @@ impl App {
 
                 let size_str = oref.object_size.clone().unwrap_or_else(|| obj.object_size.clone());
 
-                let type_byte = self.object_size_to_type_byte(&size_str);
-                let flags = self.build_module_com_object_flags(oref, obj);
-
-                entries.push((actual_number, type_byte, flags));
+                entries.push(CotEntry {
+                    number: actual_number,
+                    type_byte: self.object_size_to_type_byte(&size_str),
+                    flags: self.build_module_com_object_flags(oref, obj),
+                    name: oref.text.clone().unwrap_or_else(|| obj.text.clone()),
+                    size_str,
+                    ref_id: oref.id.clone(),
+                });
             }
         }
 
+        // Table position == object number, and the sort also makes the
+        // annotation order deterministic (the visible-ref set iterates
+        // in hash order).
+        entries.sort_by_key(|e| e.number);
         entries
     }
 
@@ -3096,50 +3157,24 @@ impl App {
         flags
     }
 
-    /// Build annotations for ComObject Table entries.
-    ///
-    /// The COT format depends on the mask version:
-    /// - System 7.x (MV-0705, etc.): 4 bytes per entry (no count header)
-    ///   Format: [RAM_ptr_lo, RAM_ptr_hi, flags, type]
-    /// - System B (MV-07B0): 2-byte count + 2 bytes per entry
-    ///   Format: [count_lo, count_hi] + N × [type, flags]
-    fn build_com_object_table_annotations(&self, base_offset: u32) -> Vec<MemoryAnnotation> {
+    /// Build annotations for ComObject Table entries, at the position
+    /// each entry's *object number* names — sparse numbering leaves
+    /// unannotated gap entries in the table, exactly as the data
+    /// builder writes them. See [`Self::cot_is_m112`] for the two
+    /// formats and their numbering bases.
+    fn build_com_object_table_annotations(&self, base_offset: u32, entries: &[CotEntry]) -> Vec<MemoryAnnotation> {
         let mut annotations = Vec::new();
 
-        // Determine format based on mask version
-        let mask_version = &self.device.mask_version().to_string();
-        let is_system_7x = mask_version.starts_with("MV-07") && !mask_version.ends_with("B0");
-
-        if is_system_7x {
-            // System 7.x: 4 bytes per entry, no count header
-            // Format: [RAM_ptr_lo, RAM_ptr_hi, flags, type] per entry
-            // The RAM pointer indicates where the object's value is stored at runtime
-            for (idx, com_obj_ref) in (0_u32..).zip(self.device.visible_com_object_refs()) {
-                let name = com_obj_ref.text.clone().unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
-
-                // Include assigned group address in annotation if present
-                let ga_info = self.format_group_address(idx as u16);
-
-                // Get object size for display
-                let size_str = com_obj_ref.object_size.as_deref().unwrap_or("?");
-
-                let full_name = if ga_info.is_empty() {
-                    format!("CO[{}] {} ({})", idx, name, size_str)
-                } else {
-                    format!("CO[{}] {} ({}) GA:{}", idx, name, size_str, ga_info)
-                };
-
-                annotations.push(MemoryAnnotation {
-                    offset: base_offset + (idx * 4),
-                    bit_offset: 0,
-                    name: full_name,
-                    size_bits: 32, // 4 bytes: RAM_ptr(2) + flags(1) + type(1)
-                    param_id: com_obj_ref.id.clone(),
-                });
-            }
+        let (entry_size, entries_base, first_number) = if self.cot_is_m112() {
+            annotations.push(MemoryAnnotation {
+                offset: base_offset,
+                bit_offset: 0,
+                name: "COT: Entry Count + RAM-flags pointer".to_string(),
+                size_bits: 24,
+                param_id: String::new(),
+            });
+            (4u32, base_offset + 3, 0u16)
         } else {
-            // System B: 2-byte count header + 2 bytes per entry
-            // Format: [count_lo, count_hi] + N × [type, flags]
             annotations.push(MemoryAnnotation {
                 offset: base_offset,
                 bit_offset: 0,
@@ -3147,30 +3182,31 @@ impl App {
                 size_bits: 16,
                 param_id: String::new(),
             });
+            (2u32, base_offset + 2, 1u16)
+        };
 
-            for (idx, com_obj_ref) in (0_u32..).zip(self.device.visible_com_object_refs()) {
-                let name = com_obj_ref.text.clone().unwrap_or_else(|| com_obj_ref.name.clone().unwrap_or_default());
-
-                // Include assigned group address in annotation if present
-                let ga_info = self.format_group_address(idx as u16);
-
-                // Get object size for display
-                let size_str = com_obj_ref.object_size.as_deref().unwrap_or("?");
-
-                let full_name = if ga_info.is_empty() {
-                    format!("CO[{}] {} ({})", idx, name, size_str)
-                } else {
-                    format!("CO[{}] {} ({}) GA:{}", idx, name, size_str, ga_info)
-                };
-
-                annotations.push(MemoryAnnotation {
-                    offset: base_offset + 2 + (idx * 2),
-                    bit_offset: 0,
-                    name: full_name,
-                    size_bits: 16, // 2 bytes: type(1) + flags(1)
-                    param_id: com_obj_ref.id.clone(),
-                });
+        for entry in entries {
+            // RT7 cannot hold ASAP 0 — the data builder skipped it too.
+            if entry.number < first_number {
+                continue;
             }
+
+            // Include assigned group address in annotation if present
+            let ga_info = self.format_group_address(entry.number);
+
+            let full_name = if ga_info.is_empty() {
+                format!("CO[{}] {} ({})", entry.number, entry.name, entry.size_str)
+            } else {
+                format!("CO[{}] {} ({}) GA:{}", entry.number, entry.name, entry.size_str, ga_info)
+            };
+
+            annotations.push(MemoryAnnotation {
+                offset: entries_base + (entry.number - first_number) as u32 * entry_size,
+                bit_offset: 0,
+                name: full_name,
+                size_bits: (entry_size * 8) as u16,
+                param_id: entry.ref_id.clone(),
+            });
         }
 
         annotations
