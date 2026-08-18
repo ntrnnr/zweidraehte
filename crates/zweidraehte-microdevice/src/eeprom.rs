@@ -17,6 +17,7 @@ use core::marker::PhantomData;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 use crate::family::MicroDeviceFamily;
+use crate::management::ManagementState;
 
 /// One group object table entry, widened to family-independent types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,14 +31,20 @@ pub struct CoEntry {
 }
 
 /// Borrowing view over the EEPROM image's tables.
+///
+/// Carries the management state alongside the image because a family
+/// may locate a table through it (System 7 finds the association
+/// table via the machine's `table_ref`) rather than through pointer
+/// bytes inside the image.
 pub struct Tables<'a, F: MicroDeviceFamily> {
     eeprom: &'a [u8],
+    mgmt: &'a ManagementState,
     _family: PhantomData<F>,
 }
 
 impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
-    pub fn new(eeprom: &'a [u8]) -> Self {
-        Self { eeprom, _family: PhantomData }
+    pub fn new(eeprom: &'a [u8], mgmt: &'a ManagementState) -> Self {
+        Self { eeprom, mgmt, _family: PhantomData }
     }
 
     fn byte(&self, offset: usize) -> u8 {
@@ -93,7 +100,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
     // ── Association table ───────────────────────────────────────────
 
     fn assoc_offset(&self) -> usize {
-        usize::from(self.byte(F::ASSOC_TAB_PTR_OFFSET))
+        F::assoc_table_offset(self.eeprom, self.mgmt)
     }
 
     pub fn assoc_count(&self) -> u8 {
@@ -134,7 +141,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
     // ── Group object table ──────────────────────────────────────────
 
     fn cot_offset(&self) -> usize {
-        usize::from(self.byte(F::COMMS_TAB_PTR_OFFSET))
+        F::cot_table_offset(self.eeprom, self.mgmt)
     }
 
     pub fn co_count(&self) -> u8 {
@@ -214,7 +221,8 @@ mod tests {
     #[test]
     fn walks_the_tables_in_place() {
         let image = image();
-        let t = Tables::<Bcu2Family>::new(&image);
+        let mgmt = ManagementState::new();
+        let t = Tables::<Bcu2Family>::new(&image, &mgmt);
         assert_eq!(t.individual_address(), IndividualAddress::new(1, 1, 10));
         assert_eq!(t.ga_count(), 2);
         assert!(!t.muted());
@@ -241,7 +249,8 @@ mod tests {
         image[0x22] = 0;
         image[0x23] = 0xFE; // slot 1 = (FE, 1): ASAP 1 has no group address
         image[0x24] = 1;
-        let t = Tables::<Bcu2Family>::new(&image);
+        let mgmt = ManagementState::new();
+        let t = Tables::<Bcu2Family>::new(&image, &mgmt);
         assert_eq!(t.sending_tsap(0), Some(1));
         assert_eq!(t.sending_tsap(1), None, "the placeholder is not a sending association");
     }
@@ -257,7 +266,8 @@ mod tests {
         image[0x22] = 1;
         image[0x23] = 2; // slot 1 = (2, 0): names ASAP 0, not 1
         image[0x24] = 0;
-        let t = Tables::<Bcu2Family>::new(&image);
+        let mgmt = ManagementState::new();
+        let t = Tables::<Bcu2Family>::new(&image, &mgmt);
         assert_eq!(t.sending_tsap(0), None, "slot 0 names another ASAP");
         assert_eq!(t.sending_tsap(1), None, "ASAP 1's entry sits outside its slot");
         assert_eq!(t.sending_tsap(2), None, "beyond the table");
@@ -267,7 +277,8 @@ mod tests {
     fn mute_length_silences_group_lookups() {
         let mut image = image();
         image[0x16] = 1; // RT2 mute: IA slot only
-        let t = Tables::<Bcu2Family>::new(&image);
+        let mgmt = ManagementState::new();
+        let t = Tables::<Bcu2Family>::new(&image, &mgmt);
         assert!(t.muted());
         assert_eq!(t.tsap_of(GroupAddress::from_three_level(1, 0, 1)), None);
         // The IA slot is untouched by muting.

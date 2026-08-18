@@ -17,12 +17,10 @@
 use core::marker::PhantomData;
 
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::apdu::load_control::LoadState;
 use zweidraehte_proto::transport::TlEvent;
 
 use crate::co_flags;
 use crate::eeprom::Tables;
-use crate::families::bcu2::offsets as bcu2_offsets;
 use crate::family::MicroDeviceFamily;
 use crate::frame::{self, FrameBuf, FrameView, Tpci};
 use crate::management::{ManagementState, ServiceResult};
@@ -109,7 +107,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     }
 
     pub(crate) fn tables(&self) -> Tables<'_, F> {
-        Tables::new(self.eeprom.as_ref())
+        Tables::new(self.eeprom.as_ref(), &self.mgmt)
     }
 
     pub fn individual_address(&self) -> IndividualAddress {
@@ -136,12 +134,10 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         self.ram[0x60] = value;
     }
 
-    /// The application program runs when it is loaded and the RunError
-    /// byte carries no active (low) error bits. ETS halts the device by
-    /// writing 00h there and clears it back to FFh after the download.
+    /// Whether the application program runs — the family's judgment
+    /// (BCU2: RunError byte + load state; System 7: load state alone).
     pub fn is_running(&self) -> bool {
-        self.eeprom.as_ref()[F::RUN_ERROR_OFFSET] == 0xFF
-            && self.mgmt.lsm[app_machine::<F>()].state == LoadState::Loaded
+        F::is_app_running(self.eeprom.as_ref(), &self.mgmt)
     }
 
     // ── The runloop ─────────────────────────────────────────────────
@@ -299,7 +295,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             frame::apci::INDIVIDUAL_ADDRESS_WRITE => {
                 let payload = view.payload();
                 if self.is_programming_mode() && payload.len() == 2 {
-                    let base = bcu2_offsets::INDIVIDUAL_ADDRESS;
+                    let base = F::ia_eeprom_offset();
                     self.eeprom.as_mut()[base..base + 2].copy_from_slice(payload);
                 }
             }
@@ -378,10 +374,4 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     pub fn eeprom_image(&self) -> &[u8] {
         self.eeprom.as_ref()
     }
-}
-
-/// Index of the application-program load state machine in
-/// `ManagementState::lsm` (machine 3 on BCU2, 0-based slot 2).
-pub(crate) fn app_machine<F: MicroDeviceFamily>() -> usize {
-    F::LSM_COUNT - 1
 }

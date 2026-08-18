@@ -16,8 +16,7 @@ use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, Lo
 use zweidraehte_proto::pid;
 
 use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, RAM2_BASE, RAM2_SIZE};
-use crate::families::bcu2::offsets as bcu2_offsets;
-use crate::family::{LsmPath, MicroDeviceFamily};
+use crate::family::MicroDeviceFamily;
 use crate::frame::apci;
 
 /// A_Key_Response is the one escaped APCI the frame module's shared
@@ -33,7 +32,7 @@ pub struct Reply {
 }
 
 impl Reply {
-    fn new(apci10: u16, small6: u8, payload: &[u8]) -> Self {
+    pub(crate) fn new(apci10: u16, small6: u8, payload: &[u8]) -> Self {
         let mut p = Vec::new();
         // Payloads are built in this module and never exceed the
         // 15-octet APDU (1 APCI octet + 14 payload octets).
@@ -128,14 +127,13 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             apci::PROPERTY_VALUE_READ => self.property_value_read(payload),
             apci::PROPERTY_VALUE_WRITE => self.property_value_write(payload),
             apci::PROPERTY_DESCRIPTION_READ => self.property_description_read(payload),
-            apci::ADC_READ => self.adc_read(small6, payload),
             apci::RESTART => {
-                // Only the basic restart exists on a BCU2; the
+                // Only the basic restart exists on these masks; the
                 // master-reset variant (escape bit in the low octet)
-                // postdates the mask.
+                // postdates them.
                 if small6 == 0 { ServiceResult::Restart } else { ServiceResult::None }
             }
-            _ => ServiceResult::None,
+            _ => F::extra_service(base, small6, payload).unwrap_or(ServiceResult::None),
         }
     }
 
@@ -148,12 +146,14 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// the same experience real silicon gives it (whatever the data
     /// bus floats to), just deterministic.
     fn mem_read_byte(&self, addr: u16) -> u8 {
+        if let Some(value) = F::special_byte_read(addr, self.eeprom.as_ref(), &self.mgmt) {
+            return value;
+        }
         let a = usize::from(addr);
         if a < RAM_SIZE {
             self.ram[a]
         } else if let Some(off) = self.eeprom_offset(addr) {
-            let raw = self.eeprom.as_ref()[off];
-            if F::OPTION_REG_INVERTED && off == F::OPTION_REG_OFFSET { !raw } else { raw }
+            self.eeprom.as_ref()[off]
         } else if let Some(off) = ram2_offset(addr) {
             self.ram2[off]
         } else {
@@ -162,6 +162,9 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     }
 
     fn mem_write_byte(&mut self, addr: u16, value: u8) {
+        if F::special_byte_write(addr, value, self.eeprom.as_mut(), &mut self.mgmt) {
+            return;
+        }
         let a = usize::from(addr);
         if a < RAM_SIZE {
             // The system status byte guards itself with even parity
@@ -173,8 +176,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             }
             self.ram[a] = value;
         } else if let Some(off) = self.eeprom_offset(addr) {
-            self.eeprom.as_mut()[off] =
-                if F::OPTION_REG_INVERTED && off == F::OPTION_REG_OFFSET { !value } else { value };
+            self.eeprom.as_mut()[off] = value;
         } else if let Some(off) = ram2_offset(addr) {
             self.ram2[off] = value;
         }
@@ -209,8 +211,10 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         if data.len() != usize::from(count) {
             return ServiceResult::None;
         }
-        for (i, &byte) in data.iter().enumerate() {
-            self.mem_write_byte(addr.wrapping_add(i as u16), byte);
+        if !F::memory_write_intercept(addr, data, self.eeprom.as_mut(), &mut self.mgmt) {
+            for (i, &byte) in data.iter().enumerate() {
+                self.mem_write_byte(addr.wrapping_add(i as u16), byte);
+            }
         }
         // Verify mode: answer with the bytes as the memory now holds
         // them, so the client sees exactly what stuck.
@@ -224,12 +228,16 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
     fn device_descriptor_read(&self, descriptor_type: u8) -> ServiceResult {
         if descriptor_type == 0 {
-            ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 0, &F::DD0.to_be_bytes()))
-        } else {
-            // 03/03/07 §3.4.2: an unsupported descriptor type is
-            // answered with type 3Fh and no data.
-            ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 0x3F, &[]))
+            return ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 0, &F::DD0.to_be_bytes()));
         }
+        if descriptor_type == 2
+            && let Some(dd2) = F::device_descriptor2(self.eeprom.as_ref(), &self.identity, &self.mgmt)
+        {
+            return ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 2, &dd2));
+        }
+        // 03/03/07 §3.4.2: an unsupported descriptor type is answered
+        // with type 3Fh and no data.
+        ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 0x3F, &[]))
     }
 
     // ── Authorization ───────────────────────────────────────────────
@@ -252,24 +260,13 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             return ServiceResult::None;
         }
         let level = payload[0];
-        if usize::from(level) >= F::AUTH_LEVELS || self.mgmt.auth_level > level {
+        if !F::key_write_level_valid(level) || self.mgmt.auth_level > level {
             // Not privileged enough to set this level's key: answer
             // with FFh, the "not modified" convention.
             return ServiceResult::Reply(Reply::new(APCI_KEY_RESPONSE, 0, &[0xFF]));
         }
         self.mgmt.auth_keys[usize::from(level)] = payload[1..5].try_into().expect("length checked above");
         ServiceResult::Reply(Reply::new(APCI_KEY_RESPONSE, 0, &[level]))
-    }
-
-    // ── ADC ─────────────────────────────────────────────────────────
-
-    /// A BCU2 exposes its analog channels through A_ADC_Read; this
-    /// stack has no analog hardware behind them, so every channel
-    /// converts to zero. The reply shape is what matters: clients use
-    /// the service as a liveness probe on the connection.
-    fn adc_read(&self, channel: u8, payload: &[u8]) -> ServiceResult {
-        let read_count = payload.first().copied().unwrap_or(1);
-        ServiceResult::Reply(Reply::new(apci::ADC_RESPONSE, channel, &[read_count, 0x00, 0x00]))
     }
 
     // ── Property services ───────────────────────────────────────────
@@ -315,8 +312,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         ServiceResult::Reply(Reply::new(apci::PROPERTY_VALUE_RESPONSE, 0, &reply))
     }
 
-    /// Read `count` elements from `start` of a property. BCU2
-    /// properties are all single-element, so anything beyond
+    /// Read `count` elements from `start` of a property. Properties on
+    /// these masks are all single-element, so anything beyond
     /// `start <= 1, count <= 1` is out of range. Reading element 0
     /// returns the element count (1) as a 16-bit value, per 03/03/07.
     fn property_read(&self, obj: u8, prop_id: u8, count: u8, start: u16) -> Option<Vec<u8, 10>> {
@@ -331,7 +328,6 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             return None;
         }
         let mut v: Vec<u8, 10> = Vec::new();
-        let e = self.eeprom.as_ref();
         match (obj, u16::from(prop_id)) {
             (_, pid::OBJECT_TYPE) if obj < F::OBJECT_COUNT => {
                 let _ = v.extend_from_slice(&F::object_type(obj).to_be_bytes());
@@ -349,23 +345,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             (0, pid::SERIAL_NUMBER) => {
                 let _ = v.extend_from_slice(&self.identity.serial_number);
             }
-            (0, pid::MANUFACTURER_ID) => {
-                let _ = v.extend_from_slice(&e[bcu2_offsets::MAN_DATA..bcu2_offsets::MAN_DATA + 2]);
-            }
             (0, pid::ORDER_INFO) => {
                 let _ = v.extend_from_slice(&self.identity.order_info);
-            }
-            (0, pid::PEI_TYPE) => {
-                let _ = v.push(e[bcu2_offsets::PEI_TYPE]);
-            }
-            (0, pid::PORT_CONFIGURATION) => {
-                let _ = v.push(e[bcu2_offsets::PORT_ADDR]);
-            }
-            (0, pid::POLL_GROUP_SETTINGS) => {
-                let _ = v.extend_from_slice(&[0x00, 0x00, 0x00]);
-            }
-            (0, pid::MANUFACTURER_DATA) => {
-                let _ = v.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
             }
             // Table / application objects.
             (_, pid::LOAD_STATE_CONTROL) => {
@@ -376,15 +357,19 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 let machine = self.lsm_index(obj)?;
                 let _ = v.extend_from_slice(&u32::from(self.mgmt.lsm[machine].table_ref).to_be_bytes());
             }
-            (3, pid::RUN_STATE_CONTROL) => {
-                let state: u8 = if self.is_running() { 0x01 } else { 0x00 };
+            (_, pid::RUN_STATE_CONTROL) => {
+                let state = F::run_state_read(obj, self.eeprom.as_ref(), &self.mgmt)?;
                 let _ = v.push(state);
             }
-            (3, pid::PROGRAM_VERSION) => {
-                let base = bcu2_offsets::APPLICATION_ID;
-                let _ = v.extend_from_slice(&e[base..base + 5]);
+            _ => {
+                return F::property_read_hook(
+                    obj,
+                    u16::from(prop_id),
+                    self.eeprom.as_ref(),
+                    &self.identity,
+                    &self.mgmt,
+                );
             }
-            _ => return None,
         }
         Some(v)
     }
@@ -407,103 +392,25 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             }
             (_, pid::LOAD_STATE_CONTROL) => {
                 let Some(machine) = self.lsm_index(obj) else { return false };
-                self.lsm_write(machine, data);
+                dispatch_lsm_event::<F>(machine, data, self.eeprom.as_mut(), &mut self.mgmt);
                 true
             }
-            (3, pid::RUN_STATE_CONTROL) if data.len() == 1 => {
-                // Run control: 1 restarts, 2 stops. The BCU2 run state
-                // is a consequence of RunError + load state, so the
-                // controls only touch RunError.
-                match data[0] {
-                    0x01 => self.eeprom.as_mut()[F::RUN_ERROR_OFFSET] = 0xFF,
-                    0x02 => self.eeprom.as_mut()[F::RUN_ERROR_OFFSET] = 0x00,
-                    _ => {}
-                }
-                true
+            (_, pid::RUN_STATE_CONTROL) if data.len() == 1 => {
+                F::run_state_write(obj, data[0], self.eeprom.as_mut(), &mut self.mgmt)
             }
-            _ => false,
+            _ => F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
+                .unwrap_or(false),
         }
     }
 
-    /// Which load state machine an interface object index drives.
+    /// Which load state machine an interface object index drives. The
+    /// property path works on every family — even where the primary
+    /// load-control path is a memory window, `PID_LOAD_STATE_CONTROL`
+    /// on the table/application objects stays live (and is what ETS
+    /// actually drives on real System 7 silicon).
     fn lsm_index(&self, obj: u8) -> Option<usize> {
-        let LsmPath::Property { obj_base } = F::LSM_PATH else { return None };
-        let idx = usize::from(obj.checked_sub(obj_base)?);
+        let idx = usize::from(obj.checked_sub(F::LSM_OBJ_BASE)?);
         (idx < F::LSM_COUNT).then_some(idx)
-    }
-
-    /// Consume one load-control record (03/05/02 §3.31): the event
-    /// octet, then for `AdditionalLoadControls` the segment record.
-    /// This parses exactly what `LoadControlRecord` in the proto crate
-    /// builds — the two sides share the vocabulary so they cannot
-    /// drift apart.
-    fn lsm_write(&mut self, machine: usize, record: &[u8]) {
-        let lsm = &mut self.mgmt.lsm[machine];
-        let Some(&event) = record.first() else { return };
-        match LoadEvent::from(event) {
-            LoadEvent::NoOp => {}
-            LoadEvent::StartLoading => {
-                lsm.state = LoadState::Loading;
-            }
-            LoadEvent::LoadCompleted => {
-                lsm.state = if lsm.state == LoadState::Loading { LoadState::Loaded } else { LoadState::Err };
-            }
-            LoadEvent::Unload => {
-                lsm.state = LoadState::Unloaded;
-                lsm.table_ref = 0;
-                // Unloading has the mask-defined side effect on the
-                // resource itself: the address table collapses to the
-                // mute length (the IA slot survives — an unloaded
-                // device keeps its commissioning), the association
-                // table empties, and unloading the application clears
-                // the ApplicationID's DevType+Version, which is what
-                // un-marks the program as present.
-                match machine {
-                    0 => self.eeprom.as_mut()[F::ADDR_TABLE_OFFSET] = F::MUTE_LENGTH,
-                    1 => {
-                        let assoc = usize::from(self.eeprom.as_ref()[F::ASSOC_TAB_PTR_OFFSET]);
-                        if assoc < F::EEPROM_SIZE {
-                            self.eeprom.as_mut()[assoc] = 0;
-                        }
-                    }
-                    2 => {
-                        let dev_type = bcu2_offsets::APPLICATION_ID + 2;
-                        self.eeprom.as_mut()[dev_type..dev_type + 3].fill(0);
-                    }
-                    _ => {}
-                }
-            }
-            LoadEvent::AdditionalLoadControls => {
-                if lsm.state != LoadState::Loading {
-                    lsm.state = LoadState::Err;
-                    return;
-                }
-                let Some(&segment_type) = record.get(1) else { return };
-                match LoadSegment::from(segment_type) {
-                    LoadSegment::AbsoluteData => {
-                        // AllocAbsDataSeg: [type][start:2BE][length:2BE]
-                        // [access][memtype][memattr][reserved]. The
-                        // segment lives at a fixed address on this
-                        // family, so allocation is just remembering the
-                        // address for PID_TABLE_REFERENCE.
-                        if record.len() >= 4 {
-                            lsm.table_ref = u16::from_be_bytes([record[2], record[3]]);
-                        }
-                    }
-                    // Task records (stack/task/pointer/control blobs)
-                    // announce the application's identity and entry
-                    // points. This stack runs no 68HC05 code, so they
-                    // are accepted as informational.
-                    LoadSegment::AbsoluteStack
-                    | LoadSegment::AbsoluteTask
-                    | LoadSegment::AbsolutePointer
-                    | LoadSegment::TaskCtrl1
-                    | LoadSegment::TaskCtrl2 => {}
-                    _ => lsm.state = LoadState::Err,
-                }
-            }
-            _ => lsm.state = LoadState::Err,
-        }
     }
 
     // ── Property descriptions ───────────────────────────────────────
@@ -536,12 +443,79 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         match u16::from(prop_id) {
             pid::OBJECT_TYPE if obj < F::OBJECT_COUNT => describe(PDT_UNSIGNED_INT, false, 1, 0x30),
             pid::LOAD_STATE_CONTROL if self.lsm_index(obj).is_some() => describe(PDT_CONTROL, true, 1, 0x31),
-            pid::RUN_STATE_CONTROL if obj == 3 => describe(PDT_CONTROL, true, 1, 0x31),
+            pid::RUN_STATE_CONTROL if F::run_state_read(obj, self.eeprom.as_ref(), &self.mgmt).is_some() => {
+                describe(PDT_CONTROL, true, 1, 0x31)
+            }
             pid::TABLE_REFERENCE if self.lsm_index(obj).is_some() => describe(PDT_UNSIGNED_LONG, false, 1, 0x30),
             // Unknown property: type 0, max 0 — the spec's "does not
             // exist" answer.
             _ => describe(0, false, 0, 0x00),
         }
+    }
+}
+
+/// Consume one load-control record (03/05/02 §3.31): the event octet,
+/// then for `AdditionalLoadControls` the segment record. This parses
+/// exactly what `LoadControlRecord` in the proto crate builds — the
+/// two sides share the vocabulary so they cannot drift apart.
+///
+/// A free function rather than a method so a family's memory-window
+/// intercept (System 7's load-control window at 0104h) can drive the
+/// same state machine the property path drives.
+pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
+    machine: usize,
+    record: &[u8],
+    eeprom: &mut [u8],
+    mgmt: &mut ManagementState,
+) {
+    if machine >= F::LSM_COUNT {
+        return;
+    }
+    let Some(&event) = record.first() else { return };
+    let lsm = &mut mgmt.lsm[machine];
+    match LoadEvent::from(event) {
+        LoadEvent::NoOp => {}
+        LoadEvent::StartLoading => {
+            lsm.state = LoadState::Loading;
+        }
+        LoadEvent::LoadCompleted => {
+            lsm.state = if lsm.state == LoadState::Loading { LoadState::Loaded } else { LoadState::Err };
+        }
+        LoadEvent::Unload => {
+            lsm.state = LoadState::Unloaded;
+            lsm.table_ref = 0;
+            F::unload_side_effect(machine, eeprom, mgmt);
+        }
+        LoadEvent::AdditionalLoadControls => {
+            if lsm.state != LoadState::Loading {
+                lsm.state = LoadState::Err;
+                return;
+            }
+            let Some(&segment_type) = record.get(1) else { return };
+            match LoadSegment::from(segment_type) {
+                LoadSegment::AbsoluteData => {
+                    // AllocAbsDataSeg: [type][start:2BE][length:2BE]
+                    // [access][memtype][memattr][reserved]. The
+                    // segment lives at a fixed or product-defined
+                    // address on these families, so allocation is just
+                    // remembering the address for PID_TABLE_REFERENCE.
+                    if record.len() >= 4 {
+                        lsm.table_ref = u16::from_be_bytes([record[2], record[3]]);
+                    }
+                }
+                // Task records (stack/task/pointer/control blobs)
+                // announce the application's identity and entry
+                // points. This stack runs no legacy machine code, so
+                // they are accepted as informational.
+                LoadSegment::AbsoluteStack
+                | LoadSegment::AbsoluteTask
+                | LoadSegment::AbsolutePointer
+                | LoadSegment::TaskCtrl1
+                | LoadSegment::TaskCtrl2 => {}
+                _ => lsm.state = LoadState::Err,
+            }
+        }
+        _ => lsm.state = LoadState::Err,
     }
 }
 
