@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Container for parameter type definitions
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParameterTypes {
-    #[serde(rename = "ParameterType", default)]
+    #[serde(rename = "ParameterType", alias = "PT", default)]
     pub types: Vec<ParameterType>,
 }
 
@@ -31,8 +31,10 @@ pub struct ParameterType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum ParameterTypeDef {
+    #[serde(alias = "TNr")]
     TypeNumber(TypeNumber),
     TypeFloat(TypeFloat),
+    #[serde(alias = "TR")]
     TypeRestriction(TypeRestriction),
     TypeText(TypeText),
     TypeNone(TypeNone),
@@ -152,7 +154,9 @@ pub struct Parameters {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum ParameterItem {
+    #[serde(alias = "P")]
     Parameter(Parameter),
+    #[serde(alias = "U")]
     Union(Union),
 }
 
@@ -188,7 +192,7 @@ pub struct Parameter {
     #[serde(rename = "@LegacyPatchAlways", default, skip_serializing_if = "std::ops::Not::not")]
     pub legacy_patch_always: bool,
 
-    #[serde(rename = "Memory", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Memory", alias = "M", skip_serializing_if = "Option::is_none")]
     pub memory: Option<MemoryLocation>,
 }
 
@@ -215,9 +219,9 @@ pub struct Union {
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
 
-    #[serde(rename = "Memory")]
+    #[serde(rename = "Memory", alias = "M")]
     pub memory: UnionMemory,
-    #[serde(rename = "Parameter", default)]
+    #[serde(rename = "Parameter", alias = "P", default)]
     pub parameters: Vec<UnionParameter>,
 }
 

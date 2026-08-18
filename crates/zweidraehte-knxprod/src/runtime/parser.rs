@@ -225,6 +225,103 @@ mod tests {
         assert_eq!(program.mask_version, "MV-07B0");
     }
 
+    /// The ETS product store spells a CvNext-converted legacy product
+    /// (`.vd3`/`.vd4` import) with compact element names — `APS`,
+    /// `AP`, `St`, `AS`, … — full attribute names, and no `xmlns` on
+    /// the root; the `Dynamic` section keeps full names. This fixture
+    /// is a miniature of a real Merten BCU1 store grab and pins the
+    /// serde aliases that accept the compact spelling.
+    #[test]
+    fn parses_the_product_stores_compact_spelling() {
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xsd="http://www.w3.org/2001/XMLSchema" xsi="http://www.w3.org/2001/XMLSchema-instance" CreatedBy="CvNext" ToolVersion="6.4.8718.0">
+  <ManufacturerData>
+    <Manufacturer RefId="M-000C">
+      <APS>
+        <AP Id="M-000C_A-1512-01-D638" ApplicationNumber="5394" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0012" Name="Compact" LoadProcedureStyle="DefaultProcedure" PeiType="19" DefaultLanguage="en-US" DynamicTableManagement="true" Linkable="true" PreEts4Style="true" ConvertedFromPreEts4Data="true">
+          <St>
+            <Code>
+              <AS Id="M-000C_A-1512-01-D638_AS-0100" Address="256" Size="256">
+                <Data>AAECAw==</Data>
+                <Mask>/////w==</Mask>
+              </AS>
+            </Code>
+            <PTS>
+              <PT Id="M-000C_A-1512-01-D638_PT-1" Name="Choice">
+                <TR Base="Value" SizeInBit="16">
+                  <Enumeration Text="one" Value="1" Id="M-000C_A-1512-01-D638_PT-1_EN-1" DisplayOrder="0" />
+                </TR>
+              </PT>
+              <PT Id="M-000C_A-1512-01-D638_PT-2" Name="Byte">
+                <TNr SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" />
+              </PT>
+            </PTS>
+            <PS>
+              <P Id="M-000C_A-1512-01-D638_P-1" Name="Plain" ParameterType="M-000C_A-1512-01-D638_PT-2" Text="Plain" Value="0">
+                <M CodeSegment="M-000C_A-1512-01-D638_AS-0100" Offset="61" BitOffset="0" />
+              </P>
+              <U SizeInBit="16">
+                <M CodeSegment="M-000C_A-1512-01-D638_AS-0100" Offset="63" BitOffset="0" />
+                <P Id="M-000C_A-1512-01-D638_UP-1" Name="InUnion" ParameterType="M-000C_A-1512-01-D638_PT-1" Text="In union" Value="1" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+              </U>
+            </PS>
+            <PRS>
+              <PR Id="M-000C_A-1512-01-D638_P-1_R-1" RefId="M-000C_A-1512-01-D638_P-1" Tag="1" DisplayOrder="10000" />
+            </PRS>
+            <COT CodeSegment="M-000C_A-1512-01-D638_AS-0100" Offset="80">
+              <CO Id="M-000C_A-1512-01-D638_O-0" Name="Switch" Text="Switch" Number="0" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+            </COT>
+            <CORS>
+              <COR Id="M-000C_A-1512-01-D638_O-0_R-1" RefId="M-000C_A-1512-01-D638_O-0" Tag="1" ObjectSize="1 Bit" />
+            </CORS>
+            <ADRT CodeSegment="M-000C_A-1512-01-D638_AS-0100" Offset="22" MaxEntries="6" />
+            <ASSOT CodeSegment="M-000C_A-1512-01-D638_AS-0100" Offset="37" MaxEntries="6" />
+            <FL>
+              <F FunctionRef="MV-0012_ME-U.5FGetTMx" CodeSegment="M-000C_A-1512-01-D638_AS-0100">
+                <Off>239</Off>
+              </F>
+            </FL>
+          </St>
+        </AP>
+      </APS>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>"#;
+
+        let knx = parse_application_program(xml).expect("the compact spelling parses");
+        let program = &knx.manufacturer_data.manufacturer.application_programs.programs[0];
+        assert_eq!(program.mask_version, "MV-0012");
+
+        let static_section = &program.static_section;
+        let code = static_section.code.as_ref().expect("Code");
+        assert_eq!(code.absolute_segments.len(), 1);
+        assert_eq!(code.absolute_segments[0].address, 256);
+
+        let types = &static_section.parameter_types.as_ref().expect("PTS").types;
+        assert_eq!(types.len(), 2);
+        assert_eq!(types[0].type_def.size_bits(), 16, "TR is a TypeRestriction");
+        assert_eq!(types[1].type_def.size_bits(), 8, "TNr is a TypeNumber");
+
+        let items = &static_section.parameters.as_ref().expect("PS").items;
+        assert!(matches!(items[0], crate::schema::ParameterItem::Parameter(_)), "P");
+        assert!(matches!(items[1], crate::schema::ParameterItem::Union(_)), "U");
+        let crate::schema::ParameterItem::Parameter(p) = &items[0] else { unreachable!() };
+        assert_eq!(p.memory.as_ref().expect("M").offset, 61);
+
+        assert_eq!(static_section.parameter_refs.as_ref().expect("PRS").refs.len(), 1);
+        let cot = static_section.com_object_table.as_ref().expect("COT");
+        assert_eq!(cot.offset, Some(80));
+        assert_eq!(cot.objects.len(), 1);
+        assert_eq!(static_section.com_object_refs.as_ref().expect("CORS").refs.len(), 1);
+        assert_eq!(static_section.address_table.as_ref().expect("ADRT").offset, Some(22));
+        assert_eq!(static_section.association_table.as_ref().expect("ASSOT").offset, Some(37));
+
+        let fixups = &static_section.fixup_list.as_ref().expect("FL").fixups;
+        assert_eq!(fixups.len(), 1);
+        assert_eq!(fixups[0].function_ref, "MV-0012_ME-U.5FGetTMx");
+        assert_eq!(fixups[0].offsets, vec![239]);
+    }
+
     #[test]
     fn test_parse_module_definition() {
         // XML with a ModuleDef containing arguments, parameters with BaseOffset, and ComObjects with BaseNumber

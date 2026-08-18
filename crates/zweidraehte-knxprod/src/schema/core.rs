@@ -98,15 +98,19 @@ pub enum DataSegmentType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename = "KNX")]
 pub struct Knx {
-    #[serde(rename = "@xmlns:xsi")]
+    // The namespace attributes are defaulted (and aliased to the
+    // `xsi=`/`xsd=` spelling) because ETS product-store grabs of
+    // CvNext-converted legacy products carry no `xmlns` at all — see
+    // the compact-spelling note on [`Manufacturer`].
+    #[serde(rename = "@xmlns:xsi", alias = "@xsi", default)]
     pub xmlns_xsi: String,
-    #[serde(rename = "@xmlns:xsd")]
+    #[serde(rename = "@xmlns:xsd", alias = "@xsd", default)]
     pub xmlns_xsd: String,
     #[serde(rename = "@CreatedBy")]
     pub created_by: String,
     #[serde(rename = "@ToolVersion")]
     pub tool_version: String,
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default)]
     pub xmlns: String,
 
     #[serde(rename = "ManufacturerData")]
@@ -145,7 +149,18 @@ pub struct Manufacturer {
     #[serde(rename = "@RefId")]
     pub ref_id: String,
 
-    #[serde(rename = "ApplicationPrograms")]
+    // The `alias` attributes on this and the other element fields
+    // accept ETS's *compact* element spelling, which is what lands in
+    // the ETS product store when CvNext imports a legacy .vd3/.vd4
+    // (`CreatedBy="CvNext"`, `PreEts4Style="true"`): element names are
+    // shortened (`APS`, `AP`, `St`, `AS`, …), attribute names stay
+    // full, and — oddly — the `Dynamic` section keeps full names. The
+    // BCU-era installed base only exists as such conversions, so store
+    // grabs are the only product-file source for those devices. The
+    // aliases cover the spellings observed in real converted files; an
+    // unknown-element error on another store grab means the list needs
+    // that tag added. Serialization always emits the full names.
+    #[serde(rename = "ApplicationPrograms", alias = "APS")]
     pub application_programs: ApplicationPrograms,
 
     /// Language translations for multi-language support.
@@ -157,7 +172,7 @@ pub struct Manufacturer {
 /// Container for ApplicationProgram elements
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ApplicationPrograms {
-    #[serde(rename = "ApplicationProgram")]
+    #[serde(rename = "ApplicationProgram", alias = "AP")]
     pub programs: Vec<ApplicationProgram>,
 }
 
@@ -224,7 +239,7 @@ pub struct ApplicationProgram {
     #[serde(rename = "@MaxSecurityP2PKeyTableEntries", skip_serializing_if = "Option::is_none")]
     pub max_security_p2p_key_table_entries: Option<u16>,
 
-    #[serde(rename = "Static")]
+    #[serde(rename = "Static", alias = "St")]
     pub static_section: StaticSection,
     /// Module definitions - reusable templates for parameters and communication objects.
     /// Note: This is placed at ApplicationProgram level, between Static and Dynamic.

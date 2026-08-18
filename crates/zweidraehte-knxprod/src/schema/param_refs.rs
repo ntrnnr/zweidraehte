@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Container for parameter references
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParameterRefs {
-    #[serde(rename = "ParameterRef", default)]
+    #[serde(rename = "ParameterRef", alias = "PR", default)]
     pub refs: Vec<ParameterRef>,
 }
 

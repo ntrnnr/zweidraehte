@@ -16,7 +16,7 @@ pub struct ComObjectTable {
     #[serde(rename = "@MaxEntries", skip_serializing_if = "Option::is_none")]
     pub max_entries: Option<u16>,
 
-    #[serde(rename = "ComObject", default)]
+    #[serde(rename = "ComObject", alias = "CO", default)]
     pub objects: Vec<ComObject>,
 }
 
@@ -88,7 +88,7 @@ pub enum ComObjectPriority {
 /// Container for communication object references
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ComObjectRefs {
-    #[serde(rename = "ComObjectRef", default)]
+    #[serde(rename = "ComObjectRef", alias = "COR", default)]
     pub refs: Vec<ComObjectRef>,
 }
 

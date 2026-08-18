@@ -791,6 +791,9 @@ impl MtxmlGenerator {
                 com_object_refs,
                 address_table,
                 association_table,
+                // Fixups are a BCU-era concept (native code calling
+                // mask-ROM routines); our generated programs have none.
+                fixup_list: None,
                 load_procedures: {
                     let procs = Self::build_load_procedures(config, param_size, mask_family);
                     if procs.procedures.is_empty() { None } else { Some(procs) }

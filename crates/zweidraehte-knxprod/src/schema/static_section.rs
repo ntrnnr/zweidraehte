@@ -16,20 +16,22 @@ use super::parameters::{ParameterTypes, Parameters};
 pub struct StaticSection {
     #[serde(rename = "Code", skip_serializing_if = "Option::is_none")]
     pub code: Option<Code>,
-    #[serde(rename = "ParameterTypes", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ParameterTypes", alias = "PTS", skip_serializing_if = "Option::is_none")]
     pub parameter_types: Option<ParameterTypes>,
-    #[serde(rename = "Parameters", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Parameters", alias = "PS", skip_serializing_if = "Option::is_none")]
     pub parameters: Option<Parameters>,
-    #[serde(rename = "ParameterRefs", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ParameterRefs", alias = "PRS", skip_serializing_if = "Option::is_none")]
     pub parameter_refs: Option<ParameterRefs>,
-    #[serde(rename = "ComObjectTable", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ComObjectTable", alias = "COT", skip_serializing_if = "Option::is_none")]
     pub com_object_table: Option<ComObjectTable>,
-    #[serde(rename = "ComObjectRefs", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "ComObjectRefs", alias = "CORS", skip_serializing_if = "Option::is_none")]
     pub com_object_refs: Option<ComObjectRefs>,
-    #[serde(rename = "AddressTable", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "AddressTable", alias = "ADRT", skip_serializing_if = "Option::is_none")]
     pub address_table: Option<AddressTable>,
-    #[serde(rename = "AssociationTable", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "AssociationTable", alias = "ASSOT", skip_serializing_if = "Option::is_none")]
     pub association_table: Option<AssociationTable>,
+    #[serde(rename = "FixupList", alias = "FL", skip_serializing_if = "Option::is_none")]
+    pub fixup_list: Option<FixupList>,
     #[serde(rename = "LoadProcedures", skip_serializing_if = "Option::is_none")]
     pub load_procedures: Option<LoadProcedures>,
     #[serde(rename = "Extension", skip_serializing_if = "Option::is_none")]
@@ -38,8 +40,38 @@ pub struct StaticSection {
     pub messages: Option<Messages>,
     #[serde(rename = "BusInterfaces", skip_serializing_if = "Option::is_none")]
     pub bus_interfaces: Option<BusInterfaces>,
-    #[serde(rename = "Options", skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "Options", alias = "Opt", skip_serializing_if = "Option::is_none")]
     pub options: Option<Options>,
+}
+
+/// The program's fixups: places in the code segments where the tool
+/// patches in the address of a mask-ROM routine (the BCU-era
+/// application code calls the BCU's operating system, and each mask
+/// puts those entry points elsewhere — the master data's
+/// `MaskEntries`). ETS applies them on every download; getting this
+/// wrong ships code that calls the *product* mask's addresses on
+/// whatever device carries it, which crashes a downward-compatible
+/// host (a real BCU2 wedged until its programming button over
+/// exactly this).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FixupList {
+    #[serde(rename = "Fixup", alias = "F", default)]
+    pub fixups: Vec<Fixup>,
+}
+
+/// One fixup: a mask-ROM routine reference and the offsets inside a
+/// code segment where its (16-bit, big-endian) address lands.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Fixup {
+    /// The mask entry, e.g. `MV-0012_ME-U.5Fdeb30` — the part after
+    /// `_ME-` names the routine, the mask prefix is the *product's*
+    /// mask (resolution happens against the device's).
+    #[serde(rename = "@FunctionRef")]
+    pub function_ref: String,
+    #[serde(rename = "@CodeSegment")]
+    pub code_segment: String,
+    #[serde(rename = "Offset", alias = "Off", default)]
+    pub offsets: Vec<u32>,
 }
 
 /// Extension element - contains baggages and other optional extension data
@@ -188,7 +220,7 @@ pub struct BusInterface {
 /// Code section containing memory segments
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Code {
-    #[serde(rename = "AbsoluteSegment", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(rename = "AbsoluteSegment", alias = "AS", default, skip_serializing_if = "Vec::is_empty")]
     pub absolute_segments: Vec<AbsoluteSegment>,
     #[serde(rename = "RelativeSegment", default, skip_serializing_if = "Vec::is_empty")]
     pub relative_segments: Vec<RelativeSegment>,
