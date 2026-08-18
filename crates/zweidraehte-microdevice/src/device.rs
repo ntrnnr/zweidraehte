@@ -28,10 +28,9 @@ use crate::frame::{self, FrameBuf, FrameView, Tpci};
 use crate::management::{ManagementState, ServiceResult};
 use crate::transport::{TlOutput, TlState};
 
-/// Sizing ceilings shared by all families this crate will carry. The
-/// BCU2 numbers happen to hit them exactly; a micro-System-7 family
-/// will need these revisited (larger EEPROM window, 4 machines).
-pub const EEPROM_SIZE: usize = crate::families::bcu2::BCU2_EEPROM_SIZE;
+/// Sizing ceilings shared by all families this crate will carry (the
+/// EEPROM image itself is family-sized through
+/// [`MicroDeviceFamily::EepromStore`]).
 pub const RAM_SIZE: usize = 0x100;
 pub const RAM2_SIZE: usize = 0xE0;
 /// KNX address of the first RAM2 byte.
@@ -77,7 +76,7 @@ impl PollOutput {
 /// The device stack. Generic over the management-model family only.
 pub struct Microdevice<F: MicroDeviceFamily> {
     /// The EEPROM image at `F::EEPROM_BASE`. The tables live in here.
-    pub(crate) eeprom: [u8; EEPROM_SIZE],
+    pub(crate) eeprom: F::EepromStore,
     /// Page-0 RAM at 0000h (system status, user RAM, RAM flags,
     /// group object values).
     pub(crate) ram: [u8; RAM_SIZE],
@@ -97,7 +96,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     ///
     /// `time_divisor` compresses the TL timeouts for the conformance
     /// harness's fast mode; firmware passes 1.
-    pub fn new(eeprom: [u8; EEPROM_SIZE], identity: DeviceIdentity, time_divisor: u32) -> Self {
+    pub fn new(eeprom: F::EepromStore, identity: DeviceIdentity, time_divisor: u32) -> Self {
         Self {
             eeprom,
             ram: [0; RAM_SIZE],
@@ -110,7 +109,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     }
 
     pub(crate) fn tables(&self) -> Tables<'_, F> {
-        Tables::new(&self.eeprom)
+        Tables::new(self.eeprom.as_ref())
     }
 
     pub fn individual_address(&self) -> IndividualAddress {
@@ -141,7 +140,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// byte carries no active (low) error bits. ETS halts the device by
     /// writing 00h there and clears it back to FFh after the download.
     pub fn is_running(&self) -> bool {
-        self.eeprom[F::RUN_ERROR_OFFSET] == 0xFF && self.mgmt.lsm[app_machine::<F>()].state == LoadState::Loaded
+        self.eeprom.as_ref()[F::RUN_ERROR_OFFSET] == 0xFF
+            && self.mgmt.lsm[app_machine::<F>()].state == LoadState::Loaded
     }
 
     // ── The runloop ─────────────────────────────────────────────────
@@ -300,8 +300,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 let payload = view.payload();
                 if self.is_programming_mode() && payload.len() == 2 {
                     let base = bcu2_offsets::INDIVIDUAL_ADDRESS;
-                    self.eeprom[base] = payload[0];
-                    self.eeprom[base + 1] = payload[1];
+                    self.eeprom.as_mut()[base..base + 2].copy_from_slice(payload);
                 }
             }
             frame::apci::INDIVIDUAL_ADDRESS_READ if self.is_programming_mode() => {
@@ -376,8 +375,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     }
 
     /// Export the EEPROM image (snapshot persistence).
-    pub fn eeprom_image(&self) -> &[u8; EEPROM_SIZE] {
-        &self.eeprom
+    pub fn eeprom_image(&self) -> &[u8] {
+        self.eeprom.as_ref()
     }
 }
 

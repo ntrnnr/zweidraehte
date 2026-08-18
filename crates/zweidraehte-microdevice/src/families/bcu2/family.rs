@@ -16,6 +16,11 @@ pub struct Bcu2Family;
 pub const BCU2_EEPROM_SIZE: usize = 0x03E0;
 
 impl MicroDeviceFamily for Bcu2Family {
+    type EepromStore = [u8; BCU2_EEPROM_SIZE];
+    fn blank_eeprom() -> Self::EepromStore {
+        [0; BCU2_EEPROM_SIZE]
+    }
+
     const DD0: u16 = 0x0020;
     const TL_STYLE: TlStyle = TlStyle::Style1;
     const AUTH_LEVELS: usize = 4;

@@ -15,7 +15,7 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, LoadState};
 use zweidraehte_proto::pid;
 
-use crate::device::{EEPROM_SIZE, MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, RAM2_BASE, RAM2_SIZE};
+use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, RAM2_BASE, RAM2_SIZE};
 use crate::families::bcu2::offsets as bcu2_offsets;
 use crate::family::{LsmPath, MicroDeviceFamily};
 use crate::frame::apci;
@@ -152,7 +152,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         if a < RAM_SIZE {
             self.ram[a]
         } else if let Some(off) = self.eeprom_offset(addr) {
-            let raw = self.eeprom[off];
+            let raw = self.eeprom.as_ref()[off];
             if F::OPTION_REG_INVERTED && off == F::OPTION_REG_OFFSET { !raw } else { raw }
         } else if let Some(off) = ram2_offset(addr) {
             self.ram2[off]
@@ -173,7 +173,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             }
             self.ram[a] = value;
         } else if let Some(off) = self.eeprom_offset(addr) {
-            self.eeprom[off] = if F::OPTION_REG_INVERTED && off == F::OPTION_REG_OFFSET { !value } else { value };
+            self.eeprom.as_mut()[off] =
+                if F::OPTION_REG_INVERTED && off == F::OPTION_REG_OFFSET { !value } else { value };
         } else if let Some(off) = ram2_offset(addr) {
             self.ram2[off] = value;
         }
@@ -181,7 +182,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
     fn eeprom_offset(&self, addr: u16) -> Option<usize> {
         let off = usize::from(addr.checked_sub(F::EEPROM_BASE)?);
-        (off < EEPROM_SIZE).then_some(off)
+        (off < F::EEPROM_SIZE).then_some(off)
     }
 
     fn memory_read(&mut self, count: u8, payload: &[u8]) -> ServiceResult {
@@ -330,7 +331,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             return None;
         }
         let mut v: Vec<u8, 10> = Vec::new();
-        let e = &self.eeprom;
+        let e = self.eeprom.as_ref();
         match (obj, u16::from(prop_id)) {
             (_, pid::OBJECT_TYPE) if obj < F::OBJECT_COUNT => {
                 let _ = v.extend_from_slice(&F::object_type(obj).to_be_bytes());
@@ -414,8 +415,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 // is a consequence of RunError + load state, so the
                 // controls only touch RunError.
                 match data[0] {
-                    0x01 => self.eeprom[F::RUN_ERROR_OFFSET] = 0xFF,
-                    0x02 => self.eeprom[F::RUN_ERROR_OFFSET] = 0x00,
+                    0x01 => self.eeprom.as_mut()[F::RUN_ERROR_OFFSET] = 0xFF,
+                    0x02 => self.eeprom.as_mut()[F::RUN_ERROR_OFFSET] = 0x00,
                     _ => {}
                 }
                 true
@@ -458,16 +459,16 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 // the ApplicationID's DevType+Version, which is what
                 // un-marks the program as present.
                 match machine {
-                    0 => self.eeprom[F::ADDR_TABLE_OFFSET] = F::MUTE_LENGTH,
+                    0 => self.eeprom.as_mut()[F::ADDR_TABLE_OFFSET] = F::MUTE_LENGTH,
                     1 => {
-                        let assoc = usize::from(self.eeprom[F::ASSOC_TAB_PTR_OFFSET]);
-                        if assoc < EEPROM_SIZE {
-                            self.eeprom[assoc] = 0;
+                        let assoc = usize::from(self.eeprom.as_ref()[F::ASSOC_TAB_PTR_OFFSET]);
+                        if assoc < F::EEPROM_SIZE {
+                            self.eeprom.as_mut()[assoc] = 0;
                         }
                     }
                     2 => {
                         let dev_type = bcu2_offsets::APPLICATION_ID + 2;
-                        self.eeprom[dev_type..dev_type + 3].fill(0);
+                        self.eeprom.as_mut()[dev_type..dev_type + 3].fill(0);
                     }
                     _ => {}
                 }

@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 
-use crate::device::{DeviceIdentity, EEPROM_SIZE, MAX_AUTH_LEVELS, MAX_LSM, Microdevice};
+use crate::device::{DeviceIdentity, MAX_AUTH_LEVELS, MAX_LSM, Microdevice};
 use crate::family::MicroDeviceFamily;
 use crate::management::Lsm;
 
@@ -26,7 +26,7 @@ pub struct MicroSnapshot {
 impl MicroSnapshot {
     pub fn capture<F: MicroDeviceFamily>(device: &Microdevice<F>) -> Self {
         Self {
-            eeprom: device.eeprom.to_vec(),
+            eeprom: device.eeprom.as_ref().to_vec(),
             auth_keys: device.mgmt.auth_keys.to_vec(),
             lsm_states: device.mgmt.lsm.map(|l| l.state.into()),
             table_refs: device.mgmt.lsm.map(|l| l.table_ref),
@@ -39,9 +39,9 @@ impl MicroSnapshot {
     /// rather than failing — the DUT would rather run blank than not
     /// at all, and the harness's full-reset path re-seeds it anyway.
     pub fn restore<F: MicroDeviceFamily>(&self, identity: DeviceIdentity, time_divisor: u32) -> Microdevice<F> {
-        let mut eeprom = [0u8; EEPROM_SIZE];
-        let n = self.eeprom.len().min(EEPROM_SIZE);
-        eeprom[..n].copy_from_slice(&self.eeprom[..n]);
+        let mut eeprom = F::blank_eeprom();
+        let n = self.eeprom.len().min(eeprom.as_ref().len());
+        eeprom.as_mut()[..n].copy_from_slice(&self.eeprom[..n]);
         let mut device = Microdevice::new(eeprom, identity, time_divisor);
         for (slot, key) in device.mgmt.auth_keys.iter_mut().zip(self.auth_keys.iter()) {
             *slot = *key;

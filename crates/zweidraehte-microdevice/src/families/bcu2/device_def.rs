@@ -15,7 +15,7 @@
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
-use crate::device::EEPROM_SIZE;
+use crate::families::bcu2::family::BCU2_EEPROM_SIZE;
 use crate::families::bcu2::offsets as bcu2_offsets;
 
 /// One group object as the RT2 table stores it.
@@ -72,8 +72,8 @@ impl Bcu2DeviceDefinition {
     }
 
     /// Build the boot EEPROM image.
-    pub fn build_eeprom(&self) -> [u8; EEPROM_SIZE] {
-        let mut e = [0u8; EEPROM_SIZE];
+    pub fn build_eeprom(&self) -> [u8; BCU2_EEPROM_SIZE] {
+        let mut e = [0u8; BCU2_EEPROM_SIZE];
 
         // ── Fixed header ────────────────────────────────────────────
         // OptionReg stays 00h raw: the inverted read presents FFh,

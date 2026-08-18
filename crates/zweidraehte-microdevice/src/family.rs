@@ -29,6 +29,15 @@ pub enum LsmPath {
 /// the core monomorphizes over the family, so the family costs no RAM
 /// and no dispatch.
 pub trait MicroDeviceFamily: 'static {
+    // ── Storage ──────────────────────────────────────────────────────
+
+    /// The backing array for this family's EEPROM image, always
+    /// `[u8; Self::EEPROM_SIZE]`. An associated type so each family
+    /// sizes its own storage without `generic_const_exprs`.
+    type EepromStore: AsRef<[u8]> + AsMut<[u8]>;
+    /// A factory-blank (all-zero) EEPROM image.
+    fn blank_eeprom() -> Self::EepromStore;
+
     // ── Identity ─────────────────────────────────────────────────────
 
     /// Device Descriptor Type 0 (mask version).
