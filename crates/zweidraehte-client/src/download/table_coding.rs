@@ -14,14 +14,16 @@
 //! `TableCoding` impl here emits, and both document the same layout.
 //! The formats:
 //!
-//! | | System 7 (RT8) | System B |
-//! |---|---|---|
-//! | address table | `[count:1][IA:2][GA:2×n]` ([`Addr8`]) | `[count:2BE][GA:2×n]` ([`Addr7`]) |
-//! | association table | `[count:1][(tsap:1,asap:1)×n]` ([`Asso8`]) | `[count:2BE][(tsap:2BE,asap:2BE)×n]` ([`Asso6`]) |
-//! | group object table | `[count:1][ram-ptr:2][(ptr:2,cfg:1,type:1)×n]` ([`CotM112`]) | `[count:2BE][(flags:1,type:1)×n]` ([`Co7`]) |
+//! | | BCU2 (RT2) | System 7 (RT8) | System B |
+//! |---|---|---|---|
+//! | address table | `[len:1][IA:2][GA:2×n]` ([`Addr2`]) | `[count:1][IA:2][GA:2×n]` ([`Addr8`]) | `[count:2BE][GA:2×n]` ([`Addr7`]) |
+//! | association table | as RT8 ([`Asso8`]) | `[count:1][(tsap:1,asap:1)×n]` ([`Asso8`]) | `[count:2BE][(tsap:2BE,asap:2BE)×n]` ([`Asso6`]) |
+//! | group object table | `[count:1][ram-ptr:1][(ptr:1,cfg:1,type:1)×n]` ([`Cot2`]) | `[count:1][ram-ptr:2][(ptr:2,cfg:1,type:1)×n]` ([`CotM112`]) | `[count:2BE][(flags:1,type:1)×n]` ([`Co7`]) |
 //!
-//! System 7 stores the device's own individual address inside its
-//! address table; System B does not.
+//! BCU2 and System 7 store the device's own individual address inside
+//! the address table; System B does not. The two families' address
+//! tables differ only in what the leading octet counts: RT2's length
+//! includes the IA slot, RT8's does not.
 //!
 //! The framework covers count-prefixed entry-list tables only. A
 //! format that is not one — the line couplers' filter table is a flat
@@ -90,6 +92,12 @@ pub trait TableCoding {
     /// Octets of fixed header between count and entries —
     /// preallocation only.
     const HEADER_LEN: usize = 0;
+
+    /// The named fields making up that header, `(label, octets)` in
+    /// wire order, summing to [`HEADER_LEN`](Self::HEADER_LEN). For
+    /// viewers that annotate a table in place — the download path
+    /// never reads it.
+    const HEADER_FIELDS: &'static [(&'static str, usize)] = &[];
 
     /// Width of the leading count field, which also caps the table.
     const COUNT: CountWidth;
@@ -189,6 +197,7 @@ impl TableCoding for Addr8 {
     type Entry = GroupAddress;
     const ENTRY_LEN: usize = 2;
     const HEADER_LEN: usize = 2;
+    const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("individual address", 2)];
     const COUNT: CountWidth = CountWidth::U8;
     const OVERFLOW_MSG: &'static str = "RT8 address table holds at most 255 group addresses";
 
@@ -309,6 +318,7 @@ impl TableCoding for CotM112 {
     type Entry = ComObjectEntry;
     const ENTRY_LEN: usize = 4;
     const HEADER_LEN: usize = 2;
+    const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("RAM-flags pointer", 2)];
     const COUNT: CountWidth = CountWidth::U8;
     const OVERFLOW_MSG: &'static str = "BIM M112 group object table holds at most 255 objects";
 
@@ -318,6 +328,134 @@ impl TableCoding for CotM112 {
 
     fn write_entry(entry: &ComObjectEntry, out: &mut Vec<u8>) {
         out.extend_from_slice(&entry.data_ptr.to_be_bytes());
+        out.push(entry.config);
+        out.push(entry.object_type);
+    }
+}
+
+// ============================================================================
+// BCU2 (System 2, RT2) codings
+// ============================================================================
+
+/// The BCU2 group address table (03/05/01 §4.16.3.1; realisation
+/// types 1 and 2 share the coding, RT2 merely fixes the location at
+/// 0116h, §4.16.4.2):
+///
+/// ```text
+/// [length:1][individual_address:2][group_address:2 × n]
+/// ```
+///
+/// Same wire layout as RT8's [`Addr8`], except the leading length
+/// octet counts the IA slot too (length = 1 + n) where RT8 counts
+/// group addresses only — which is what the [`count`](Self::count)
+/// hook exists for. A factory image pins this down: the L&J MV-0021
+/// product ships 86 default links under length 57h.
+pub struct Addr2 {
+    /// The device's own address, stored ahead of the group addresses
+    /// (its slot is the one the length octet counts extra).
+    pub individual_address: IndividualAddress,
+}
+
+impl TableCoding for Addr2 {
+    type Entry = GroupAddress;
+    const ENTRY_LEN: usize = 2;
+    const HEADER_LEN: usize = 2;
+    const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("individual address", 2)];
+    const COUNT: CountWidth = CountWidth::U8;
+    const OVERFLOW_MSG: &'static str = "the BCU2 address table length octet holds at most 254 group addresses";
+
+    fn count(&self, entries: &[GroupAddress]) -> usize {
+        entries.len() + 1
+    }
+
+    fn write_header(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(self.individual_address.as_bytes());
+    }
+
+    fn normalize(entries: &[GroupAddress]) -> Cow<'_, [GroupAddress]> {
+        expect_sorted(entries)
+    }
+
+    fn write_entry(ga: &GroupAddress, out: &mut Vec<u8>) {
+        out.extend_from_slice(ga.as_bytes());
+    }
+}
+
+// The BCU2 association table needs no type of its own: RT2's coding is
+// RT8's — one-octet count, (tsap:1, asap:1) entries (03/05/01
+// §4.17.3.1) — so [`Asso8`] serves both families.
+
+/// One row of the BCU2 group object table — [`ComObjectEntry`] with
+/// the pointer narrowed to the one octet the HC05's address space
+/// affords (the value lives in page-0 RAM or the $100-based EEPROM
+/// segment, selected by the config octet's SegmentSelector bit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ComObjectEntry2 {
+    pub data_ptr: u8,
+    pub config: u8,
+    pub object_type: u8,
+}
+
+/// The BCU2 group object table (03/05/01 §4.18.4):
+///
+/// ```text
+/// [count:1][ram_flags_ptr:1][(data_ptr:1, config:1, type:1) × count]
+/// ```
+///
+/// The M112 table's shape with every pointer one octet instead of
+/// two. Positionally indexed from ASAP 0, hence no normalization.
+/// One RT2 coding difference worth knowing when reading `config`
+/// back: bit 7 is UpdateEnable, where RT1 fixes it at 1.
+pub struct Cot2 {
+    pub ram_flags_ptr: u8,
+}
+
+impl Cot2 {
+    /// Overlay per-object `config`/`type` octets onto a
+    /// product-supplied default table — same contract as
+    /// [`CotM112::overlay`]: the count, RAM-flags pointer and per-row
+    /// data pointers are the firmware's and survive untouched; only
+    /// the two installation-owned octets per row change.
+    pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
+        if defaults.len() < 2 {
+            return Err(Error::ProductData(
+                "the product's group object table data is shorter than its own header".to_string(),
+            ));
+        }
+        let count = u16::from(defaults[0]);
+        for (number, flags, object_type) in objects {
+            if *number >= count {
+                return Err(Error::ProductData(format!(
+                    "object {number} lies outside the product's default group object table ({count} rows)"
+                )));
+            }
+            let row = 2 + 3 * usize::from(*number);
+            if row + 2 >= defaults.len() {
+                return Err(Error::ProductData(format!(
+                    "the product's group object table data is truncated before object {number}"
+                )));
+            }
+            defaults[row + 1] = flags.to_byte();
+            defaults[row + 2] = (*object_type).into();
+        }
+        Ok(())
+    }
+}
+
+impl TableCoding for Cot2 {
+    type Entry = ComObjectEntry2;
+    const ENTRY_LEN: usize = 3;
+    const HEADER_LEN: usize = 1;
+    const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("RAM-flags pointer", 1)];
+    const COUNT: CountWidth = CountWidth::U8;
+    const OVERFLOW_MSG: &'static str = "the BCU2 group object table holds at most 255 objects";
+
+    fn write_header(&self, out: &mut Vec<u8>) {
+        out.push(self.ram_flags_ptr);
+    }
+
+    fn write_entry(entry: &ComObjectEntry2, out: &mut Vec<u8>) {
+        out.push(entry.data_ptr);
         out.push(entry.config);
         out.push(entry.object_type);
     }
@@ -456,6 +594,38 @@ mod tests {
             0x00, 0x00, 0xD3, 0x00, //
             0x00, 0x00, 0x00, 0x00, //
         ]);
+    }
+
+    #[test]
+    fn addr2_length_counts_the_ia_slot() {
+        // Same fixture as addr8_blob_matches_device_layout, but the
+        // BCU2 length octet is 4 (IA slot + 3 group addresses) where
+        // RT8 writes 3 — the sole difference between the two codings.
+        let blob = Addr2 { individual_address: IndividualAddress::new(1, 0, 1) }
+            .blob(&[ga(0, 0, 1), ga(0, 0, 2), ga(0, 0, 4)])
+            .expect("3 entries fit");
+        assert_eq!(blob, [4, 0x10, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x04]);
+    }
+
+    #[test]
+    fn cot2_blob_and_overlay_use_one_octet_pointers() {
+        let entries = [ComObjectEntry2 { data_ptr: 0xC6, config: 0x47, object_type: 0x00 }, ComObjectEntry2 {
+            data_ptr: 0xC7,
+            config: 0xD7,
+            object_type: 0x03,
+        }];
+        let blob = Cot2 { ram_flags_ptr: 0xCE }.blob(&entries).expect("fits");
+        assert_eq!(blob, [0x02, 0xCE, 0xC6, 0x47, 0x00, 0xC7, 0xD7, 0x03]);
+
+        // Overlay patches config/type in place, preserving the
+        // firmware's RAM-flags and data pointers.
+        let mut defaults = blob.clone();
+        Cot2::overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
+            .expect("row 1 exists");
+        assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x47, 0x00, 0xC7, 0x43, 0x00]);
+
+        // A row beyond the product's table is refused, as in M112.
+        assert!(Cot2::overlay(&mut defaults, &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)]).is_err());
     }
 
     #[test]

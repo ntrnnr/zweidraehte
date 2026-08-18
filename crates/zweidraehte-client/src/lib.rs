@@ -66,6 +66,7 @@ pub use security::{DeviceSecurityMode, JsonSeqStore, SecurityEntry, SecurityStor
 
 /// Re-export commonly used proto types for convenience.
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+pub use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 pub use zweidraehte_proto::device::{MaskFamily, MaskVersion};
 pub use zweidraehte_proto::messages::apdu::group_value::GroupValueEncoding;
 pub use zweidraehte_proto::messages::apdu::restart::{EraseCode, RestartError};

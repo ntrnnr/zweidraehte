@@ -51,5 +51,7 @@ pub use mask::{MASTER_DATA_ENV, MaskData, MaskDb, MemoryResources};
 pub use mods::{ResolvedProject, resolve_mods};
 pub use product::{ComObjectDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
 pub use project::{CompiledDownload, GroupLink, ParameterValue, ProjectConfig, compile, load_control_path};
-pub use table_coding::{Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, CotM112, CountWidth, TableCoding};
+pub use table_coding::{
+    Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot2, CotM112, CountWidth, TableCoding,
+};
 pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState};
