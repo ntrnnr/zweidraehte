@@ -110,9 +110,25 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         })
     }
 
-    /// The sending association of an ASAP: its first table entry.
+    /// The sending association of an ASAP — an *index*, not a scan:
+    /// RT2 (03/05/01 §4.17.4.3.1) defines it as "the Association with
+    /// association number equal to the value of the ASAP", and the
+    /// entry must name that same ASAP or the transmission request is
+    /// confirmed negatively. TSAP FEh is the unused-association
+    /// sentinel (§4.17.3.4.1) a dynamic-table-management download
+    /// writes into the slot of an object with no group address; it is
+    /// no sending association either. Both cases resolve to `None`,
+    /// which the transmit scan reports as idle-with-error.
     pub fn sending_tsap(&self, asap: u8) -> Option<u8> {
-        self.associations().find(|&(_, a)| a == asap).map(|(t, _)| t)
+        if asap >= self.assoc_count() {
+            return None;
+        }
+        let off = self.assoc_offset() + 1 + usize::from(asap) * 2;
+        if off + 1 >= self.eeprom.len() {
+            return None;
+        }
+        let (tsap, slot_asap) = (self.eeprom[off], self.eeprom[off + 1]);
+        (slot_asap == asap && tsap != 0xFE).then_some(tsap)
     }
 
     // ── Group object table ──────────────────────────────────────────
@@ -212,6 +228,39 @@ mod tests {
         assert_eq!(e.data_ptr, 0x00C6);
         assert_eq!(e.config, 0x9F);
         assert!(t.co_entry(2).is_none());
+    }
+
+    #[test]
+    fn placeholder_associations_carry_no_sending_tsap() {
+        // A dynamic-table-management download writes a TSAP FEh entry
+        // into the slot of every unlinked object: relaid table with
+        // ASAP 0 linked and ASAP 1 carrying only the placeholder.
+        let mut image = image();
+        image[0x20] = 2;
+        image[0x21] = 1; // slot 0 = (1, 0): ASAP 0 sends through TSAP 1
+        image[0x22] = 0;
+        image[0x23] = 0xFE; // slot 1 = (FE, 1): ASAP 1 has no group address
+        image[0x24] = 1;
+        let t = Tables::<Bcu2Family>::new(&image);
+        assert_eq!(t.sending_tsap(0), Some(1));
+        assert_eq!(t.sending_tsap(1), None, "the placeholder is not a sending association");
+    }
+
+    #[test]
+    fn sending_association_is_indexed_not_scanned() {
+        // RT2 resolves a transmission request through the slot whose
+        // number equals the ASAP; an entry for the right ASAP in the
+        // wrong slot is a negative confirmation, not a fallback.
+        let mut image = image();
+        image[0x20] = 2;
+        image[0x21] = 1; // slot 0 = (1, 1): names ASAP 1, not 0
+        image[0x22] = 1;
+        image[0x23] = 2; // slot 1 = (2, 0): names ASAP 0, not 1
+        image[0x24] = 0;
+        let t = Tables::<Bcu2Family>::new(&image);
+        assert_eq!(t.sending_tsap(0), None, "slot 0 names another ASAP");
+        assert_eq!(t.sending_tsap(1), None, "ASAP 1's entry sits outside its slot");
+        assert_eq!(t.sending_tsap(2), None, "beyond the table");
     }
 
     #[test]

@@ -6,8 +6,10 @@
 //! address table, fan out over the association table, and for each
 //! associated object check its config flags, move the value, and raise
 //! the RAM flags. The transmit path is the inverse: a flag scan finds
-//! transmit requests, the object's *first* association names the
-//! sending TSAP, and the address table turns that back into a GA.
+//! transmit requests, the object's sending association — the table
+//! slot whose number equals the ASAP (RT2, 03/05/01 §4.17.4.3.1) —
+//! names the sending TSAP, and the address table turns that back into
+//! a GA.
 //!
 //! Group communication only happens while the application runs — a
 //! halted or unloaded device neither updates objects nor answers

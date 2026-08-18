@@ -21,7 +21,7 @@
 //!    procedure's own segment declarations, not from a hand-written
 //!    layout.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
@@ -390,7 +390,7 @@ fn build_image(
         Some(_) => {}
     }
 
-    let mut associations: Vec<(u16, u16)> = project
+    let associations: Vec<(u16, u16)> = project
         .links
         .iter()
         .map(|link| {
@@ -402,30 +402,11 @@ fn build_image(
         })
         .collect();
 
-    if dtm.is_some() {
-        // ETS's BCU-era formatter emits one association slot per
-        // *declared* group object — visibility does not shrink the
-        // roster, which is why `com_object_numbers` and not the
-        // (possibly configuration-substituted) `com_objects` drives
-        // this. Unlinked objects carry the TSAP FEh placeholder the
-        // BCU firmware skips when resolving (BCU1.log: a device with
-        // one visible, unlinked object still gets
-        // `03 FE 00 FE 01 FE 02` for its three declared objects). The
-        // narrow-table coder's (TSAP, ASAP) sort puts the placeholders
-        // after the real entries, which matches both bench traces;
-        // ETS's order for a *partially* linked device is unpinned, but
-        // the firmware scans the table linearly, so only byte-diff
-        // fidelity rides on it.
-        let linked: BTreeSet<u16> = associations.iter().map(|&(_, asap)| asap).collect();
-        for &number in &product.com_object_numbers {
-            if !linked.contains(&number) {
-                associations.push((0xFE, number));
-            }
-        }
-    }
-
     let address_table = (layout.address_table)(project.individual_address, &group_addresses)?;
-    let association_table = (layout.association_table)(&associations)?;
+    let association_table = match dtm {
+        Some(_) => dtm_association_table(&associations, &product.com_object_numbers)?,
+        None => (layout.association_table)(&associations)?,
+    };
     let group_object_table = (layout.group_object_table)(&co_rows(product, layout.first_asap)?)?;
 
     match layout.placement {
@@ -436,6 +417,62 @@ fn build_image(
             place_absolute(image, layout, product, project, [address_table, association_table, group_object_table], dtm)
         }
     }
+}
+
+/// The association table a dynamic-table-management download writes,
+/// built to the RT1/RT2 rules of 03/05/01 §4.17.3.4.1 rather than
+/// through the narrow coder's (TSAP, ASAP) sort:
+///
+/// - slot `i` (the association whose number equals the ASAP) carries
+///   ASAP `i`'s **sending** TSAP — RT2 devices (§4.17.4.3.1) *index*
+///   this slot on a transmission request instead of scanning, so slot
+///   position is load-bearing, not cosmetic;
+/// - a slot whose ASAP has no group address carries the TSAP FEh
+///   unused-association sentinel ("Unused associations shall be
+///   indicated by a TSAP = FEh") — which is also what ETS's formatter
+///   emits (BCU1.log: `03 FE 00 FE 01 FE 02` for three unlinked
+///   objects);
+/// - an ASAP's further links become non-sending associations after the
+///   slot range, where §4.17.3.4.1 puts them.
+///
+/// The slot range spans ASAP 0 up to the *declared* roster's maximum —
+/// visibility does not shrink a BCU-era table, which is why
+/// `com_object_numbers` and not the configuration-substituted
+/// `com_objects` sizes it. `associations` must be in link order: the
+/// first link of an object is its sending association.
+fn dtm_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result<Vec<u8>> {
+    let slot_count = roster
+        .iter()
+        .chain(associations.iter().map(|(_, asap)| asap))
+        .max()
+        .map(|&max| usize::from(max) + 1)
+        .unwrap_or(0);
+
+    let mut slots: Vec<Option<u8>> = vec![None; slot_count];
+    let mut extras: Vec<(u8, u8)> = Vec::new();
+    for &(tsap, asap) in associations {
+        let tsap = u8::try_from(tsap).expect("TSAPs stay below FEh; checked before the table is built");
+        let asap = u8::try_from(asap)
+            .map_err(|_| Error::DownloadConfig("a BCU-era association table holds only one-octet object numbers"))?;
+        match &mut slots[usize::from(asap)] {
+            slot @ None => *slot = Some(tsap),
+            Some(_) => extras.push((tsap, asap)),
+        }
+    }
+
+    let count = u8::try_from(slot_count + extras.len())
+        .map_err(|_| Error::DownloadConfig("a BCU-era association table holds at most 255 associations"))?;
+    let mut blob = Vec::with_capacity(1 + 2 * usize::from(count));
+    blob.push(count);
+    for (asap, slot) in slots.iter().enumerate() {
+        blob.push(slot.unwrap_or(0xFE));
+        blob.push(asap as u8);
+    }
+    for (tsap, asap) in extras {
+        blob.push(tsap);
+        blob.push(asap);
+    }
+    Ok(blob)
 }
 
 /// The gapless group-object descriptor rows: row `i` describes ASAP
@@ -1354,6 +1391,38 @@ mod tests {
         assert_eq!(&bytes[22..27], &[2, 0x11, 0x2A, 0x00, 0x01]);
         assert_eq!(&bytes[27..32], &[2, 1, 0, 0xFE, 1]);
         assert_eq!(bytes[17], 0x1B);
+    }
+
+    /// The slot rule of 03/05/01 §4.17.3.4.1: association `i` carries
+    /// ASAP `i`'s sending TSAP — RT2 devices index that slot on a
+    /// transmission request, so the table must NOT be re-sorted by
+    /// TSAP. Objects linked "in reverse" (object 0 on the higher
+    /// group address) and an object with a second, non-sending link
+    /// pin both halves of the rule.
+    #[test]
+    fn dtm_association_slots_follow_the_asap_not_the_tsap_order() {
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        project.links = vec![
+            // Object 0's first link is its sending association — the
+            // higher GA, so its TSAP (2) sorts *after* object 1's.
+            GroupLink { group_address: GroupAddress::from_three_level(0, 0, 2), com_object: 0 },
+            GroupLink { group_address: GroupAddress::from_three_level(0, 0, 1), com_object: 1 },
+            // A second link on object 0: a non-sending association,
+            // placed after the slot range.
+            GroupLink { group_address: GroupAddress::from_three_level(0, 0, 1), com_object: 0 },
+        ];
+        let c = compile_dtm(&project);
+
+        let (_, bytes) = c.image.regions().next().expect("the EEPROM segment");
+        // ADT: two GAs. AST packed behind it at 0119h + 4 = offset 29.
+        assert_eq!(&bytes[22..29], &[3, 0x11, 0x2A, 0x00, 0x01, 0x00, 0x02]);
+        assert_eq!(&bytes[29..36], &[
+            3, // slots for ASAP 0..=1, one extra
+            2, 0, // slot 0: ASAP 0 sends through TSAP 2 (GA 0/0/2)
+            1, 1, // slot 1: ASAP 1 sends through TSAP 1 (GA 0/0/1)
+            1, 0, // non-sending: ASAP 0 also listens on TSAP 1
+        ]);
+        assert_eq!(bytes[17], 0x1D, "AssocTabPtr follows the three-entry ADT");
     }
 
     /// A native-BCU2-shaped converted program: dedicated, contiguous

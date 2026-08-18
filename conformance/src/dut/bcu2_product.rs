@@ -13,6 +13,12 @@
 //! the whole procedure — LSM cycling over the property path, task
 //! records, and the explicit verify-mode memory phase.
 //!
+//! `DynamicTableManagement="true"` so the download loop exercises the
+//! client's table relocation (association table packed behind the
+//! actual-size address table, AssocTabPtr repointed, TSAP FEh
+//! placeholders) against a DUT that resolves the tables through the
+//! pointer bytes, the way real BCU silicon does.
+//!
 //! TODO: a shipping BCU2 product wants a proper `Bcu2MemoryLayout` in
 //! `zweidraehte-knxprod`'s builder; this hand-rolled XML is fixture
 //! grade (tracked in SESSION.md).
@@ -42,7 +48,7 @@ pub fn generate_mtxml() -> Result<String, String> {
     Ok(format!(
         r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte-conformance" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
   <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
-    <ApplicationProgram Id="M-00FA_A-0B20-01-0000" ApplicationNumber="2848" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0020" Name="BCU2 Conformance DUT" LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="false" Linkable="false">
+    <ApplicationProgram Id="M-00FA_A-0B20-01-0000" ApplicationNumber="2848" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0020" Name="BCU2 Conformance DUT" LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="true" Linkable="false">
       <Static>
         <Code>
           <AbsoluteSegment Id="{seg_id}" Address="{address}" Size="{size}" MemoryType="EEPROM"><Data>{data}</Data></AbsoluteSegment>
