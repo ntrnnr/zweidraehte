@@ -44,7 +44,11 @@ fn definition() -> System7DeviceDefinition {
 
 fn device() -> Microdevice<Fam> {
     let def = definition();
-    let identity = DeviceIdentity { serial_number: [0, 0x83, 0x07, 0x05, 0, 1], order_info: [0; 10] };
+    let identity = DeviceIdentity {
+        serial_number: [0, 0x83, 0x07, 0x05, 0, 1],
+        order_info: [0; 10],
+        hardware_type: [0, 0x83, 0, 0, 0x07, 0x05],
+    };
     let mut dev = Microdevice::new(Fam::build_eeprom(&def), identity, 1);
     // Factory image with the tables and application marked loaded,
     // like a programmed device fresh off the line. App2 stays empty.
@@ -272,7 +276,7 @@ fn snapshot_round_trip_preserves_option_reg() {
     let snap = MicroSnapshot::capture(&dev);
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");
-    let identity = DeviceIdentity { serial_number: [0; 6], order_info: [0; 10] };
+    let identity = DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] };
     let restored: Microdevice<Fam> = back.restore(identity, 1);
     assert_eq!(restored.mgmt.option_reg, 0x5A);
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);

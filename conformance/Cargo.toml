@@ -165,6 +165,13 @@ name = "conformance-dut-bcu2"
 path = "src/bin/dut_bcu2.rs"
 required-features = ["dut"]
 
+# The micro-System-7 DUT: the same micro stack instantiated for mask
+# 0705h (TL Style 3, RT8/M112 tables, both load-control paths).
+[[bin]]
+name = "conformance-dut-micro-system7"
+path = "src/bin/dut_micro_system7.rs"
+required-features = ["dut"]
+
 [[bin]]
 name = "conformance-dut-system7-secure"
 path = "src/bin/dut_system7_secure.rs"

@@ -182,7 +182,11 @@ fn main() -> ! {
 
     init_hardware();
 
-    let identity = DeviceIdentity { serial_number: [0x00, 0xFA, 0x00, 0x00, 0x0B, 0x21], order_info: [0; 10] };
+    let identity = DeviceIdentity {
+        serial_number: [0x00, 0xFA, 0x00, 0x00, 0x0B, 0x21],
+        order_info: [0; 10],
+        hardware_type: [0; 6],
+    };
     let mut stack: Microdevice<Bcu2Family> = Microdevice::new(definition().build_eeprom(), identity, 1);
 
     // The TPUART acks frames for our IA and for group addresses the

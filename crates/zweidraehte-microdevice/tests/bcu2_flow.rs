@@ -39,7 +39,7 @@ fn definition() -> Bcu2DeviceDefinition {
 
 fn device() -> Microdevice<Bcu2Family> {
     let def = definition();
-    let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10] };
+    let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
     let mut dev = Microdevice::new(def.build_eeprom(), identity, 1);
     // Factory image with the application marked loaded, like a
     // programmed device fresh off the line.
@@ -272,7 +272,7 @@ fn snapshot_round_trip_preserves_persistent_state() {
     let snap = MicroSnapshot::capture(&dev);
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");
-    let identity = DeviceIdentity { serial_number: [0; 6], order_info: [0; 10] };
+    let identity = DeviceIdentity { serial_number: [0; 6], order_info: [0; 10], hardware_type: [0; 6] };
     let restored: Microdevice<Bcu2Family> = back.restore(identity, 1);
     assert_eq!(restored.eeprom_image()[0x1B], 0x42);
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);

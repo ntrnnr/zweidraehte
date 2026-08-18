@@ -1295,6 +1295,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         DutMode::System7 => "System 7 (conformance-dut-system7)",
         DutMode::System7Secure => "System 7 secure (conformance-dut-system7-secure)",
         DutMode::Bcu2 => "BCU2 (conformance-dut-bcu2)",
+        DutMode::MicroSystem7 => "micro System 7 (conformance-dut-micro-system7)",
     });
 
     harness.spawn_and_wait_roi().await.expect("spawn DUT child");

@@ -268,6 +268,10 @@ pub enum Dut {
     /// Secure. Spelled `system7-secure` in profile TOML.
     #[serde(rename = "system7-secure")]
     System7Secure,
+    /// `conformance-dut-micro-system7` — System 7 family on the
+    /// no-async micro stack. Spelled `micro-system7` in profile TOML.
+    #[serde(rename = "micro-system7")]
+    MicroSystem7,
 }
 
 impl From<Dut> for DutMode {
@@ -277,6 +281,7 @@ impl From<Dut> for DutMode {
             Dut::SystemBSecure => DutMode::SystemBSecure,
             Dut::System7 => DutMode::System7,
             Dut::System7Secure => DutMode::System7Secure,
+            Dut::MicroSystem7 => DutMode::MicroSystem7,
         }
     }
 }

@@ -1,9 +1,12 @@
 //! The System 7 instance of the family seam.
 
+use heapless::Vec;
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunState};
+use zweidraehte_proto::pid;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
+use crate::device::DeviceIdentity;
 use crate::family::{LsmPath, MicroDeviceFamily};
 use crate::management::{ManagementState, dispatch_lsm_event};
 
@@ -178,6 +181,30 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
     /// 15 owns no key, and `A_Key_Write` targeting it answers FFh.
     fn key_write_level_valid(level: u8) -> bool {
         usize::from(level) < Self::AUTH_LEVELS - 1
+    }
+
+    /// The properties a System 7 download actually reads beyond the
+    /// generic set: the identity guard and the APDU negotiation.
+    /// TODO: PID_PROGMODE (54), PID_MCB_TABLE (27) and PID_IO_LIST
+    /// (71) when a test or tool is seen relying on them.
+    fn property_read_hook(
+        obj: u8,
+        prop_id: u16,
+        _eeprom: &[u8],
+        identity: &DeviceIdentity,
+        _mgmt: &ManagementState,
+    ) -> Option<Vec<u8, 10>> {
+        let mut v: Vec<u8, 10> = Vec::new();
+        match (obj, prop_id) {
+            (0, pid::device::HARDWARE_TYPE) => {
+                let _ = v.extend_from_slice(&identity.hardware_type);
+            }
+            (0, pid::device::MAX_APDU_LENGTH) => {
+                let _ = v.extend_from_slice(&(Self::MAX_APDU as u16).to_be_bytes());
+            }
+            _ => return None,
+        }
+        Some(v)
     }
 
     /// The option register (not inverted, kept outside the EEPROM

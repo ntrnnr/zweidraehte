@@ -65,7 +65,7 @@ pub fn definition() -> Bcu2DeviceDefinition {
 }
 
 pub fn identity() -> DeviceIdentity {
-    DeviceIdentity { serial_number: SERIAL_NUMBER, order_info: [0; 10] }
+    DeviceIdentity { serial_number: SERIAL_NUMBER, order_info: [0; 10], hardware_type: [0; 6] }
 }
 
 /// The factory boot image: tables populated, application loaded and

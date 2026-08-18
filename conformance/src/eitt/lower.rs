@@ -315,7 +315,7 @@ pub fn lower(
             use crate::eitt::profile::Dut;
             let lowered = match profile.dut {
                 Dut::SystemBSecure | Dut::System7Secure => lowered.secure(),
-                Dut::SystemB | Dut::System7 => lowered,
+                Dut::SystemB | Dut::System7 | Dut::MicroSystem7 => lowered,
             };
             suites.push(lowered);
         }

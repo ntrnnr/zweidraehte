@@ -40,6 +40,10 @@ pub const MAX_LSM: usize = 4;
 pub struct DeviceIdentity {
     pub serial_number: [u8; 6],
     pub order_info: [u8; 10],
+    /// `PID_HARDWARE_TYPE` — the identity a System 7 download
+    /// procedure guards on (`LdCtrlCompareProp` against the product's
+    /// serial). BCU2 predates the property; its family ignores this.
+    pub hardware_type: [u8; 6],
 }
 
 /// One input to [`Microdevice::poll`].

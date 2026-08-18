@@ -45,6 +45,8 @@ pub mod common;
 pub mod fixture_common;
 pub mod ip_secure_stack;
 pub mod link;
+pub mod micro_system7_product;
+pub mod micro_system7_stack;
 pub mod system7_product;
 pub mod system7_secure_stack;
 pub mod system7_stack;
