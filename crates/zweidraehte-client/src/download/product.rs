@@ -133,6 +133,15 @@ pub struct ProductData {
     /// for System 7, or `MergeId`-tagged fragments for System B.
     pub load_procedures: Vec<LoadProcedure>,
     pub com_objects: Vec<ComObjectDef>,
+    /// Every object number the program declares, visible or not. The
+    /// loader substitutes `com_objects` with the *configuration's*
+    /// effective (visible) objects before compiling, but the BCU-era
+    /// group object table keeps a row per declared object regardless —
+    /// dynamic table management sizes its association slots off this
+    /// roster (ETS emits TSAP FEh placeholders for objects the
+    /// configuration hides: BCU1.log writes three slots with one
+    /// object visible).
+    pub com_object_numbers: Vec<u16>,
     pub parameters: Vec<ParameterLocation>,
     /// Segment id holding the group address table, if the product
     /// says (`Static/AddressTable/@CodeSegment`).
@@ -154,6 +163,15 @@ pub struct ProductData {
     /// addresses to patch into the code segments, resolved against
     /// the mask the download is compiled for.
     pub fixups: Vec<FixupDef>,
+    /// Whether ETS lays the tables out dynamically for this program
+    /// (`@DynamicTableManagement`, true on converted pre-ETS4 BCU-era
+    /// programs). ETS's CommunicationTableFormatter then packs the
+    /// association table immediately after the actual-size address
+    /// table, repoints AssocTabPtr, and pads the association table
+    /// with a TSAP FEh placeholder per unlinked group object — instead
+    /// of honoring the vendor's static table offsets (bench traces
+    /// BCU1.log and BCU2_partial.log at the repo root).
+    pub dynamic_table_management: bool,
 }
 
 /// One fixup, extraction-side: which routine, which segment, where.
@@ -207,6 +225,11 @@ impl ProductData {
         let (segments, address_table_segment, association_table_segment, com_object_table_segment) =
             extract_segments(program);
 
+        let com_objects = extract_com_objects(program)?;
+        let mut com_object_numbers: Vec<u16> = com_objects.iter().map(|o| o.number).collect();
+        com_object_numbers.sort_unstable();
+        com_object_numbers.dedup();
+
         Ok(Self {
             id: program.id.clone(),
             mask_version: parse_mask_version(&program.mask_version),
@@ -219,7 +242,8 @@ impl ProductData {
                 .as_ref()
                 .map(|lp| lp.procedures.clone())
                 .unwrap_or_default(),
-            com_objects: extract_com_objects(program)?,
+            com_objects,
+            com_object_numbers,
             parameters: extract_parameters(program),
             address_table_segment,
             address_table_offset: program.static_section.address_table.as_ref().and_then(|t| t.offset).unwrap_or(0),
@@ -240,6 +264,7 @@ impl ProductData {
                 .and_then(|t| t.offset)
                 .unwrap_or(0),
             fixups: extract_fixups(program),
+            dynamic_table_management: program.dynamic_table_management,
         })
     }
 
@@ -573,6 +598,15 @@ pub(crate) mod tests {
             code_segment: segment.to_string(),
             offsets: vec![239],
         }]);
+    }
+
+    #[test]
+    fn extracts_dynamic_table_management() {
+        assert!(!ProductData::from_mtxml_str(BCU1_MTXML).expect("the BCU1 fixture parses").dynamic_table_management);
+
+        let converted = BCU1_MTXML.replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
+        let p = ProductData::from_mtxml_str(&converted).expect("the converted fixture parses");
+        assert!(p.dynamic_table_management);
     }
 
     #[test]

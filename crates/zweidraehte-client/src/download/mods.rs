@@ -34,6 +34,9 @@ pub struct ResolvedProject {
     /// [`ProductData::com_objects`] before compiling, so the group
     /// object table reflects the *configuration*, not just the
     /// product's base declarations.
+    /// ([`ProductData::com_object_numbers`] deliberately keeps the
+    /// full declared roster through this substitution — dynamic table
+    /// management sizes association slots off it.)
     pub com_objects: Vec<ComObjectDef>,
 }
 

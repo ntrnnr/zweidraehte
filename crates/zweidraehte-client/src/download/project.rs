@@ -21,7 +21,7 @@
 //!    procedure's own segment declarations, not from a hand-written
 //!    layout.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
@@ -157,8 +157,22 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     // 0012 device and as 53/13 (plain RT2 flags) to a 0020 carrying
     // it, matching 03/05/01 §4.18.3 vs §4.18.4. The remaining BCU-era
     // codings are octet-identical between the families.
+    // Dynamic table management (converted pre-ETS4 programs on BCU1
+    // or BCU2 silicon): ETS relocates the association table to sit
+    // right behind the actual-size address table and repoints the
+    // mask's one-byte association-table pointer. `Some(ptr)` carries
+    // the pointer's address so the placement code needs no mask
+    // access; `None` keeps the vendor's static offsets.
+    let dtm: Option<u16> = if product.dynamic_table_management && matches!(model.management_model, "Bcu1" | "Bcu2") {
+        Some(mask.standard_memory_address("GroupAssociationTablePtr").ok_or(Error::DownloadConfig(
+            "this program needs dynamic table management, but the mask locates no GroupAssociationTablePtr",
+        ))?)
+    } else {
+        None
+    };
+
     let mut image = DeviceImage::new();
-    build_image(&mut image, &model.layout, &mask.lsm_model(), product, project)?;
+    build_image(&mut image, &model.layout, &mask.lsm_model(), product, project, dtm)?;
     apply_fixups(&mut image, mask, product)?;
 
     let controls = assemble_controls(mask, product, ProcedureKind::LoadAll)?;
@@ -340,6 +354,7 @@ fn build_image(
     model: &LsmModel,
     product: &ProductData,
     project: &ProjectConfig,
+    dtm: Option<u16>,
 ) -> Result<()> {
     // The distinct group addresses, ascending — the address-table
     // formats binary-search this order, and each link's TSAP is
@@ -353,13 +368,29 @@ fn build_image(
     {
         return Err(Error::DownloadConfig("more group addresses than the product's address table holds"));
     }
-    if let Some(max) = product.association_table_max_entries
-        && project.links.len() > max as usize
-    {
-        return Err(Error::DownloadConfig("more associations than the product's association table holds"));
+    // Under dynamic table management the association table is packed
+    // behind the actual-size address table, so the vendor gap the
+    // `MaxEntries` attribute encodes no longer bounds it — the packed
+    // fit before the group object table (checked in `place_absolute`)
+    // is the real constraint. TSAP FEh is the unlinked-object
+    // placeholder there, so a real index must never reach it.
+    match dtm {
+        Some(_) if group_addresses.len() >= 0xFE => {
+            return Err(Error::DownloadConfig(
+                "dynamic table management reserves TSAP FEh; fewer group addresses needed",
+            ));
+        }
+        None => {
+            if let Some(max) = product.association_table_max_entries
+                && project.links.len() > max as usize
+            {
+                return Err(Error::DownloadConfig("more associations than the product's association table holds"));
+            }
+        }
+        Some(_) => {}
     }
 
-    let associations: Vec<(u16, u16)> = project
+    let mut associations: Vec<(u16, u16)> = project
         .links
         .iter()
         .map(|link| {
@@ -371,6 +402,28 @@ fn build_image(
         })
         .collect();
 
+    if dtm.is_some() {
+        // ETS's BCU-era formatter emits one association slot per
+        // *declared* group object — visibility does not shrink the
+        // roster, which is why `com_object_numbers` and not the
+        // (possibly configuration-substituted) `com_objects` drives
+        // this. Unlinked objects carry the TSAP FEh placeholder the
+        // BCU firmware skips when resolving (BCU1.log: a device with
+        // one visible, unlinked object still gets
+        // `03 FE 00 FE 01 FE 02` for its three declared objects). The
+        // narrow-table coder's (TSAP, ASAP) sort puts the placeholders
+        // after the real entries, which matches both bench traces;
+        // ETS's order for a *partially* linked device is unpinned, but
+        // the firmware scans the table linearly, so only byte-diff
+        // fidelity rides on it.
+        let linked: BTreeSet<u16> = associations.iter().map(|&(_, asap)| asap).collect();
+        for &number in &product.com_object_numbers {
+            if !linked.contains(&number) {
+                associations.push((0xFE, number));
+            }
+        }
+    }
+
     let address_table = (layout.address_table)(project.individual_address, &group_addresses)?;
     let association_table = (layout.association_table)(&associations)?;
     let group_object_table = (layout.group_object_table)(&co_rows(product, layout.first_asap)?)?;
@@ -380,7 +433,7 @@ fn build_image(
             place_relative(image, model, product, project, [address_table, association_table, group_object_table])
         }
         Placement::AbsoluteSegments => {
-            place_absolute(image, layout, product, project, [address_table, association_table, group_object_table])
+            place_absolute(image, layout, product, project, [address_table, association_table, group_object_table], dtm)
         }
     }
 }
@@ -494,7 +547,20 @@ fn place_absolute(
     product: &ProductData,
     project: &ProjectConfig,
     [address_table, association_table, group_object_table]: [Vec<u8>; 3],
+    dtm: Option<u16>,
 ) -> Result<()> {
+    // Dynamic table management (converted BCU-era programs): the
+    // association table does not sit at its vendor offset but is
+    // packed right behind the actual-size address table, so it is
+    // withheld from the per-segment splicing (an empty blob
+    // contributes nothing) and written by absolute address after the
+    // buffers exist — the packed table may straddle declared segment
+    // boundaries (a native BCU2 program declares contiguous dedicated
+    // ADT and AST segments; a converted BCU1 one shares one EEPROM
+    // segment). The vendor bytes at the old offset stay in place,
+    // unread — ETS leaves them too.
+    let spliced_ast: &[u8] = if dtm.is_some() { &[] } else { &association_table };
+
     // Each generated table names the segment (and offset) that holds
     // it. A table whose blob is empty (no group objects, say) or
     // whose product declares no segment simply contributes nothing.
@@ -503,7 +569,7 @@ fn place_absolute(
         (
             product.association_table_segment.as_deref(),
             product.association_table_offset,
-            &association_table,
+            spliced_ast,
             "association table",
         ),
         (
@@ -560,6 +626,53 @@ fn place_absolute(
         }
     }
 
+    // Dynamic table management: place the packed association table
+    // and repoint the mask's one-byte association-table pointer at it.
+    if let Some(ptr_addr) = dtm {
+        let segment_base = |id: &Option<String>| {
+            id.as_deref().and_then(|id| product.segments.iter().find(|s| s.id == id)).and_then(|s| s.address)
+        };
+        let adt_base = segment_base(&product.address_table_segment)
+            .ok_or(Error::DownloadConfig("dynamic table management needs the address table in an addressed segment"))?;
+        let assoc_abs = u32::from(adt_base) + product.address_table_offset + address_table.len() as u32;
+
+        // The packed pair must stop short of the group object table —
+        // the constraint that replaces the vendor MaxEntries gap. On
+        // the shared-segment layout the COT follows in the same
+        // segment; on dedicated segments the COT segment starts right
+        // after the AST area. Either way its absolute start is the
+        // ceiling.
+        if let Some(cot_base) = segment_base(&product.com_object_table_segment) {
+            let cot_abs = u32::from(cot_base) + product.com_object_table_offset;
+            if assoc_abs + association_table.len() as u32 > cot_abs {
+                return Err(Error::DownloadConfig(
+                    "packed address and association tables run into the group object table",
+                ));
+            }
+        }
+
+        // The pointer's `Ptr_StandardMemory100` flavour stores the
+        // address minus 0100h, so the value must be one byte once this
+        // range check passes. ETS writes the byte as its own telegram
+        // (BCU2_partial.log: `$0111 ← 1F`); with `diff_writes` on the
+        // BCU-era models, patching it into the image produces exactly
+        // that single-byte write.
+        if !(0x0100..=0x01FF).contains(&assoc_abs) {
+            return Err(Error::DownloadConfig(
+                "the packed association table falls outside the one-byte pointer's 0100h page",
+            ));
+        }
+
+        write_absolute(&mut buffers, product, assoc_abs, &association_table, "the packed association table")?;
+        write_absolute(
+            &mut buffers,
+            product,
+            u32::from(ptr_addr),
+            &[(assoc_abs - 0x0100) as u8],
+            "the association table pointer",
+        )?;
+    }
+
     // A generated table must land in a segment the product defined.
     for (id, _, blob, what) in generated {
         if let Some(id) = id
@@ -603,6 +716,52 @@ fn place_absolute(
 
     for (address, bytes) in buffers.values() {
         image.insert(*address, bytes.clone())?;
+    }
+    Ok(())
+}
+
+/// Write bytes at an absolute device address into the per-segment
+/// content buffers, growing them (zero-filled) where the vendor's
+/// default data stops short of the target.
+///
+/// Dynamic table management needs this because the packed association
+/// table's home is an *address*, not a segment offset: a native BCU2
+/// program declares contiguous dedicated ADT and AST segments, and the
+/// packed table starts inside the first and may run into the second.
+/// Every byte must land inside some addressed segment's declared
+/// capacity — a byte falling into a gap means the product's layout
+/// cannot hold the packed tables, which is worth stopping on.
+fn write_absolute(
+    buffers: &mut BTreeMap<String, (u16, Vec<u8>)>,
+    product: &ProductData,
+    address: u32,
+    bytes: &[u8],
+    what: &'static str,
+) -> Result<()> {
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        let position = address + cursor as u32;
+        let segment = product
+            .segments
+            .iter()
+            .find(|s| s.address.is_some_and(|base| (u32::from(base)..u32::from(base) + s.size).contains(&position)))
+            .ok_or(Error::DownloadConfig(match () {
+                _ if what.contains("pointer") => "the association table pointer lies outside the product's segments",
+                _ => "the packed association table runs outside the product's segments",
+            }))?;
+
+        let base = segment.address.expect("the segment was selected for having an address");
+        let offset = (position - u32::from(base)) as usize;
+        let take = bytes.len() - cursor;
+        let capacity_left = segment.size as usize - offset;
+        let run = take.min(capacity_left);
+
+        let (_, content) = buffers.entry(segment.id.clone()).or_insert_with(|| (base, Vec::new()));
+        if content.len() < offset + run {
+            content.resize(offset + run, 0);
+        }
+        content[offset..offset + run].copy_from_slice(&bytes[cursor..cursor + run]);
+        cursor += run;
     }
     Ok(())
 }
@@ -1141,6 +1300,135 @@ mod tests {
         // 0D6Ch into nowhere otherwise (the crash the ETS trace's
         // ApplyFixupsTask exists to prevent).
         assert_eq!(&bytes[239..241], &[0x50, 0x63]);
+    }
+
+    /// The BCU1 fixture with `DynamicTableManagement="true"` — the
+    /// converted-program shape ETS lays tables out dynamically for.
+    fn dtm_product() -> ProductData {
+        let xml = crate::download::product::tests::BCU1_MTXML
+            .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"");
+        ProductData::from_mtxml_str(&xml).expect("the converted fixture parses")
+    }
+
+    fn compile_dtm(project: &ProjectConfig) -> CompiledDownload {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0012).expect("fixture");
+        let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
+        compile(&mask, &dtm_product(), project).expect("compiles")
+    }
+
+    /// Dynamic table management, nothing linked: the association table
+    /// is packed right behind the one-entry ADT and carries a TSAP FEh
+    /// placeholder per group object — the exact bytes ETS wrote to the
+    /// bench device (BCU1.log: ADT `01 00 00` at 0116h, AST
+    /// `03 FE 00 FE 01 FE 02` at 0119h, `$0111 ← 19`; our fixture has
+    /// two objects instead of three).
+    #[test]
+    fn dtm_packs_placeholder_associations_behind_the_adt() {
+        let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        let c = compile_dtm(&project);
+
+        let (address, bytes) = c.image.regions().next().expect("the EEPROM segment");
+        assert_eq!(address, 0x0100);
+
+        // ADT at offset 22: just the IA slot.
+        assert_eq!(&bytes[22..25], &[1, 0x11, 0x2A]);
+        // AST packed at 25 (0119h): both objects unlinked.
+        assert_eq!(&bytes[25..30], &[2, 0xFE, 0, 0xFE, 1]);
+        // AssocTabPtr at 0111h repointed (Ptr_StandardMemory100).
+        assert_eq!(bytes[17], 0x19);
+        // The vendor AST offset keeps its ramp bytes, unread through
+        // the repointed table.
+        assert_eq!(&bytes[60..65], &[60, 61, 62, 63, 64]);
+    }
+
+    /// Dynamic table management with a link: the ADT grows, the packed
+    /// AST moves with it, and the pointer follows — the linked object
+    /// keeps its real TSAP while the other still gets the placeholder.
+    #[test]
+    fn dtm_relocation_follows_the_grown_adt() {
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 1), com_object: 0 }];
+        let c = compile_dtm(&project);
+
+        let (_, bytes) = c.image.regions().next().expect("the EEPROM segment");
+        assert_eq!(&bytes[22..27], &[2, 0x11, 0x2A, 0x00, 0x01]);
+        assert_eq!(&bytes[27..32], &[2, 1, 0, 0xFE, 1]);
+        assert_eq!(bytes[17], 0x1B);
+    }
+
+    /// A native-BCU2-shaped converted program: dedicated, contiguous
+    /// table segments (the L&J MV-0021 reference declares ADT 0116h,
+    /// AST 01C6h, COT 0274h back to back). The packed association
+    /// table starts inside the ADT segment and, when long enough, runs
+    /// across the declared boundary into the AST segment — the
+    /// relocation arithmetic is absolute addresses, not segment
+    /// offsets.
+    #[test]
+    fn dtm_packed_ast_straddles_dedicated_segments() {
+        let xml = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+    <ApplicationProgram Id="M-00FA_A-0311-01-0000" ApplicationNumber="785" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0020" Name="BCU2 Switch" LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="true" Linkable="false">
+      <Static>
+        <Code>
+          <AbsoluteSegment Id="M-00FA_A-0311-01-0000_AS-0100" Address="256" Size="22" MemoryType="EEPROM" />
+          <AbsoluteSegment Id="M-00FA_A-0311-01-0000_AS-ADT" Address="278" Size="9" MemoryType="EEPROM" />
+          <AbsoluteSegment Id="M-00FA_A-0311-01-0000_AS-AST" Address="287" Size="7" MemoryType="EEPROM" />
+          <AbsoluteSegment Id="M-00FA_A-0311-01-0000_AS-COT" Address="294" Size="8" MemoryType="EEPROM" />
+        </Code>
+        <ComObjectTable CodeSegment="M-00FA_A-0311-01-0000_AS-COT" Offset="0">
+          <ComObject Id="M-00FA_A-0311-01-0000_O-0" Name="Switch" Text="Switch" Number="0" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+          <ComObject Id="M-00FA_A-0311-01-0000_O-1" Name="Status" Text="Status" Number="1" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+        </ComObjectTable>
+        <AddressTable CodeSegment="M-00FA_A-0311-01-0000_AS-ADT" Offset="0" MaxEntries="3" />
+        <AssociationTable CodeSegment="M-00FA_A-0311-01-0000_AS-AST" Offset="0" MaxEntries="3" />
+        <LoadProcedures />
+      </Static>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+        let product = ProductData::from_mtxml_str(xml).expect("the fixture parses");
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
+
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(0, 0, 1), com_object: 0 }];
+        let c = compile(&mask, &product, &project).expect("compiles");
+
+        // ADT fills 5 of its segment's 9 bytes; the packed AST needs
+        // another 5, so its last byte crosses into the AST segment.
+        assert_eq!(c.image.slice(0x0116, 9).expect("the ADT segment region"), [
+            2, 0x11, 0x2A, 0x00, 0x01, // ADT: len 2, IA, GA 0/0/1
+            2, 1, 0, 0xFE, // AST head: count 2, (1, 0), placeholder…
+        ]);
+        assert_eq!(
+            c.image.slice(0x011F, 1).expect("the AST segment region"),
+            [1],
+            "…(FE, 1) completes across the boundary"
+        );
+        // AssocTabPtr repointed at the packed table's start.
+        assert_eq!(c.image.slice(0x0111, 1).expect("the pointer block region"), [0x1B]);
+    }
+
+    /// The packed pair must stop short of the group object table: a
+    /// converted program whose COT leaves no room fails to compile
+    /// rather than silently overlapping.
+    #[test]
+    fn dtm_rejects_tables_running_into_the_group_object_table() {
+        let xml = crate::download::product::tests::BCU1_MTXML
+            .replace("DynamicTableManagement=\"false\"", "DynamicTableManagement=\"true\"")
+            .replace(
+                "<ComObjectTable CodeSegment=\"M-00FA_A-0310-01-0000_AS-0100\" Offset=\"80\">",
+                "<ComObjectTable CodeSegment=\"M-00FA_A-0310-01-0000_AS-0100\" Offset=\"27\">",
+            );
+        let product = ProductData::from_mtxml_str(&xml).expect("the fixture parses");
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0012).expect("fixture");
+        let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
+
+        let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        // ADT ends at 25, the packed AST needs 25..30, the COT starts
+        // at 27.
+        let err = compile(&mask, &product, &project).expect_err("the packed tables overlap the COT");
+        assert!(matches!(err, Error::DownloadConfig(_)));
     }
 
     /// device-assigned base instead.

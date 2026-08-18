@@ -164,12 +164,16 @@ impl<'a> MaskData<'a> {
     /// plain device memory (`AddressSpace="StandardMemory"`) — e.g.
     /// `"RunError"` (010Dh on the BCU-era masks) or
     /// `"ProgrammingMode"`.
+    ///
+    /// Searched over the resource list rather than through
+    /// `resource_map`: a mask may realize the same name in several
+    /// address spaces (MV-0021 carries `GroupAssociationTablePtr` both
+    /// as StandardMemory 0111h, `MgmtStyle="simple"`, and as a system
+    /// property, `MgmtStyle="lsm"`), and the by-name map keeps only
+    /// one of them.
     pub fn standard_memory_address(&self, name: &str) -> Option<u16> {
-        let resources = self.inner.resource_map();
-        let resource = resources.get(name).copied()?;
-        if !resource.is_standard_memory() {
-            return None;
-        }
+        let resources = &self.inner.hawk_config()?.resources.as_ref()?.resources;
+        let resource = resources.iter().find(|r| r.name == name && r.is_standard_memory())?;
         u16::try_from(resource.start_address()?).ok()
     }
 
@@ -510,6 +514,10 @@ pub(crate) mod fixtures {
               <Location AddressSpace="StandardMemory" StartAddress="278" />
               <ResourceType Length="1" Flavour="AddressTable_Bcu1" />
             </Resource>
+            <Resource Name="GroupAssociationTablePtr" Access="remote local1">
+              <Location AddressSpace="StandardMemory" StartAddress="273" />
+              <ResourceType Length="1" Flavour="Ptr_StandardMemory100" />
+            </Resource>
           </Resources>
           <Procedures>
             <Procedure ProcedureType="Load" ProcedureSubType="all">
@@ -578,6 +586,10 @@ pub(crate) mod fixtures {
             <Resource Name="RunError" Access="remote local1">
               <Location AddressSpace="StandardMemory" StartAddress="269" />
               <ResourceType Length="1" Flavour="Runerror_Bcu1" />
+            </Resource>
+            <Resource Name="GroupAssociationTablePtr" Access="remote local1">
+              <Location AddressSpace="StandardMemory" StartAddress="273" />
+              <ResourceType Length="1" Flavour="Ptr_StandardMemory100" />
             </Resource>
             <Resource Name="GroupAddressTableLoadControl" Access="remote local2">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="5" StartAddress="0" />
