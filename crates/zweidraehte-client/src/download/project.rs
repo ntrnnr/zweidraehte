@@ -27,12 +27,14 @@ use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
 
-use super::assemble::{ProcedureKind, assemble};
+use zweidraehte_knxprod::schema::LoadControl;
+
+use super::assemble::{ProcedureKind, assemble_controls};
 use super::image::DeviceImage;
 use super::interpreter::{DownloadTarget, Downloader, LoadControlPath};
-use super::ir::Instruction;
+use super::ir::{Instruction, controls_to_instructions};
 use super::mask::{LsmModel, MachineRole, MaskData};
-use super::model::{DownloadModel, ImageLayout, Placement};
+use super::model::{DownloadModel, ImageLayout, Placement, family_management_model};
 use super::product::{ParameterLocation, ProductData};
 use crate::error::{Error, Result};
 
@@ -140,11 +142,40 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     let model = download_model(mask)?;
     let path = (model.load_control)(mask)?;
 
-    let mut image = DeviceImage::new();
-    build_image(&mut image, &model.layout, &mask.lsm_model(), product, project)?;
+    // The image half follows the *product's* mask when it differs
+    // from the (device-selected) mask compiled for: a BCU1 program
+    // downloaded into a downward-compatible BCU2 keeps its RT1 table
+    // realization — the application reads the tables, and it was
+    // built for RT1 — while the procedure above is the device's. For
+    // the ordinary same-mask download this resolves to `model.layout`.
+    let layout = product
+        .mask_version
+        .map(|mv| family_management_model(mv.family()))
+        .and_then(DownloadModel::for_management_model)
+        .map(|product_model| &product_model.layout)
+        .unwrap_or(&model.layout);
 
-    let assembled = assemble(mask, product, ProcedureKind::LoadAll)?;
-    let instructions = insert_image_writes(resolve_relative_steps(assembled, &image), &image);
+    let mut image = DeviceImage::new();
+    build_image(&mut image, layout, &mask.lsm_model(), product, project)?;
+    apply_fixups(&mut image, mask, product)?;
+
+    let controls = assemble_controls(mask, product, ProcedureKind::LoadAll)?;
+    // `SetControlVariable EnableSegmentWrite=false` switches off
+    // ETS's implicit segment-content writes: the BCU2 templates
+    // (MV-0020/0021 Load/all) open with it and carry their own
+    // explicit `WriteMem` data phase after `LoadCompleted` instead. A
+    // Hawk log of a real 0020 download confirms nothing is written
+    // during the Loading window. Honoring the flag here — rather than
+    // as an instruction — keeps the IR free of tool-state: the
+    // procedures that disable it never rely on insertion, and the
+    // ones that rely on insertion never carry the variable.
+    let implicit_writes = !controls.iter().any(|control| {
+        matches!(control, LoadControl::LdCtrlSetControlVariable(v)
+            if v.name == "EnableSegmentWrite" && v.value == "false")
+    });
+    let assembled = controls_to_instructions(&controls, product.task_identity)?;
+    let instructions = resolve_relative_steps(assembled, &image);
+    let instructions = if implicit_writes { insert_image_writes(instructions, &image) } else { instructions };
 
     Ok(CompiledDownload { image, instructions, path, authorize: model.authorize_on_connect })
 }
@@ -165,6 +196,50 @@ fn download_model(mask: &MaskData<'_>) -> Result<&'static DownloadModel> {
 /// have chosen.
 pub fn load_control_path(mask: &MaskData<'_>) -> Result<LoadControlPath> {
     (download_model(mask)?.load_control)(mask)
+}
+
+/// Patch the program's fixups into the image: BCU-era native code
+/// calls mask-ROM routines, and each mask puts those entry points
+/// elsewhere — `U_GetTMx` is 0D6Ch on MV-0012 and 5063h on MV-0020.
+/// The vendor `Data` ships with the *product* mask's addresses baked
+/// in, so on the product's own mask this rewrites bytes with their
+/// existing values; on a downward-compatible host it is what keeps
+/// the code from calling into nowhere (a real BCU2 running a BCU1
+/// program crashed on boot over exactly this, until its programming
+/// button — the ETS trace patches these four spots and nothing else
+/// in the code).
+///
+/// An unresolvable routine is a hard error: shipping the code anyway
+/// guarantees that crash on the device.
+fn apply_fixups(image: &mut DeviceImage, mask: &MaskData<'_>, product: &ProductData) -> Result<()> {
+    for fixup in &product.fixups {
+        let address = mask.mask_entry_address(&fixup.function).ok_or_else(|| {
+            Error::ProductData(format!(
+                "the program's fixup {} has no MaskEntry on mask {:?}",
+                fixup.function,
+                mask.version()
+            ))
+        })?;
+        let address = u16::try_from(address)
+            .map_err(|_| Error::MasterData(format!("MaskEntry {} lies beyond the 16-bit space", fixup.function)))?;
+
+        let segment = product.segment(&fixup.code_segment).ok_or_else(|| {
+            Error::ProductData(format!(
+                "fixup {} names segment {}, which the product does not define",
+                fixup.function, fixup.code_segment
+            ))
+        })?;
+        let base = segment
+            .address
+            .ok_or(Error::DownloadConfig("a fixup points into a relative segment; fixups are BCU-era absolute"))?;
+
+        for &offset in &fixup.offsets {
+            let target = u16::try_from(u32::from(base) + offset)
+                .map_err(|_| Error::ProductData(format!("fixup {} offset {offset} overflows", fixup.function)))?;
+            image.patch(target, &address.to_be_bytes())?;
+        }
+    }
+    Ok(())
 }
 
 /// Fit the relative steps to the content this download actually has.
@@ -948,11 +1023,68 @@ mod tests {
         // The parameter patch landed over the ramp.
         assert_eq!(bytes[200], 0xEE);
 
+        // The fixup resolved U_GetTMx against MV-0012: 3436 = 0D6Ch,
+        // big-endian at offset 239 — on the program's own mask this
+        // rewrites the vendor bytes with the same routine's address.
+        assert_eq!(&bytes[239..241], &[0x0D, 0x6C]);
+
         // The procedure is the mask template: no LSM instructions,
         // the GA-len snapshot present, image writes with verify.
         assert!(!c.instructions.iter().any(|i| matches!(i, Instruction::LsmEvent { .. })));
         assert!(c.instructions.contains(&Instruction::ReadIntoImage { address: 0x0116, length: 1 }));
         assert!(c.instructions.contains(&Instruction::WriteImage { address: 0x0119, length: 230, verify: true }));
+    }
+
+    /// A BCU1 program compiled for a BCU2 device (the DD0-selected
+    /// mask): the *procedure* is MV-0020's — property path, LSM
+    /// cycling, task records, and **no** implicit segment writes
+    /// (`EnableSegmentWrite=false`: the template carries its own data
+    /// phase after LoadCompleted, and the ETS trace of this download
+    /// writes nothing during Loading) — while the *tables* keep the
+    /// product's RT1 realization (config bit 7 forced).
+    #[test]
+    fn bcu1_program_compiles_for_a_bcu2_device() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
+        let product = ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 3), com_object: 1 }];
+
+        let c = compile(&mask, &product, &project).expect("compiles");
+        assert_eq!(c.path(), LoadControlPath::Property);
+
+        // The MV-0020 template's machinery is all there…
+        assert!(c.instructions.iter().any(|i| matches!(i, Instruction::LsmEvent { .. })));
+        assert!(c.instructions.iter().any(|i| matches!(i, Instruction::TaskPointers { lsm: 3, .. })));
+        assert!(c.instructions.iter().any(|i| matches!(i, Instruction::TaskControl2 { callback: 20609, .. })));
+
+        // …and no implicit write landed inside the Loading window: the
+        // first WriteImage comes after machine 3's LoadCompleted.
+        let completed = c
+            .instructions
+            .iter()
+            .position(|i| matches!(i, Instruction::LsmEvent { lsm: 3, event: LoadEvent::LoadCompleted }))
+            .expect("LoadCompleted 3");
+        let first_write = c
+            .instructions
+            .iter()
+            .position(|i| matches!(i, Instruction::WriteImage { .. }))
+            .expect("the template's data phase");
+        assert!(first_write > completed, "EnableSegmentWrite=false suppresses the implicit data phase");
+
+        // The tables stay RT1: the product's group object table is
+        // overlaid with config bit 7 forced, exactly as when a real
+        // BCU1 carries it.
+        let (address, bytes) = c.image.regions().next().expect("the EEPROM segment");
+        assert_eq!(address, 0x0100);
+        assert_eq!(bytes[83], 0x17 | 0x80, "object 0 config keeps RT1's forced bit 7");
+
+        // The fixup resolved U_GetTMx against the *device's* mask:
+        // MV-0020's 20579 = 5063h — the code would call MV-0012's
+        // 0D6Ch into nowhere otherwise (the crash the ETS trace's
+        // ApplyFixupsTask exists to prevent).
+        assert_eq!(&bytes[239..241], &[0x50, 0x63]);
     }
 
     /// device-assigned base instead.

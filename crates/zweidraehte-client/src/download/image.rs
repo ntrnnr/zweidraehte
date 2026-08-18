@@ -144,6 +144,26 @@ impl DeviceImage {
         }
     }
 
+    /// Overwrite bytes the image already holds (fixups patching
+    /// mask-ROM addresses into code). Unlike [`Self::fill_holes`],
+    /// existing content is exactly what a patch is *for* — but a
+    /// patch reaching outside it means the fixup points outside its
+    /// segment's content, which is a product-data error worth
+    /// stopping on.
+    pub fn patch(&mut self, address: u16, bytes: &[u8]) -> Result<()> {
+        let (&start, region) = self
+            .regions
+            .range_mut(..=address)
+            .next_back()
+            .ok_or(Error::DownloadConfig("a patch lands outside the image's content"))?;
+        let offset = usize::from(address - start);
+        if offset + bytes.len() > region.len() {
+            return Err(Error::DownloadConfig("a patch lands outside the image's content"));
+        }
+        region[offset..offset + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+
     /// Set the content of an interface object's relative segment.
     pub fn insert_relative(&mut self, obj_idx: u8, bytes: Vec<u8>) {
         if bytes.is_empty() {

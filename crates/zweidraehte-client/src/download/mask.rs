@@ -103,6 +103,32 @@ impl MaskDb {
     }
 }
 
+/// The mask a download must be compiled for — ETS's rule, watched in
+/// a Hawk log (`VerifyCompatibleMaskVersionTask`): the **device's own
+/// DD0** decides, and a product written for an older mask is accepted
+/// when the device's mask lists it as downward compatible (a BCU2
+/// runs BCU1 programs). The device is then programmed per *its own*
+/// management model — there is no "compat mode" to switch, the log
+/// shows ETS reading ManagementStyle (0115h) once and never writing
+/// it — while the product supplies the content.
+///
+/// Callers read DD0 (`DeviceDescriptor_Read Type=0`) after
+/// connecting and hand it in; a mismatched, incompatible device fails
+/// here before anything is written to it.
+pub fn select_download_mask(db: &MaskDb, product_mask: MaskVersion, device_mask: MaskVersion) -> Result<MaskData<'_>> {
+    let device = db.mask(device_mask).ok_or_else(|| {
+        Error::MasterData(format!("the master data does not describe the device's mask {device_mask:?}"))
+    })?;
+
+    if device_mask == product_mask || device.is_downward_compatible_with(product_mask) {
+        return Ok(device);
+    }
+    Err(Error::MasterData(format!(
+        "the device is {device_mask:?}, which does not run {product_mask:?} programs \
+         (not listed in its DownwardCompatibleMasks)"
+    )))
+}
+
 /// One mask version's download-relevant facts.
 pub struct MaskData<'a> {
     version: MaskVersion,
@@ -118,6 +144,20 @@ impl<'a> MaskData<'a> {
     /// the master data spells it.
     pub fn management_model(&self) -> &str {
         &self.inner.management_model
+    }
+
+    /// Whether this mask runs programs written for `mask` — itself,
+    /// or one of its `DownwardCompatibleMasks` (MV-0020 lists
+    /// MV-0010/0011/0012: a BCU2 executes BCU1 applications).
+    pub fn is_downward_compatible_with(&self, mask: MaskVersion) -> bool {
+        self.inner.is_downward_compatible_with(mask.as_u16())
+    }
+
+    /// The address of a mask OS entry point, by the `_ME-…` id suffix
+    /// a program's fixups reference — see
+    /// [`MaskVersion::mask_entry_address`](zweidraehte_knxprod::runtime::master_data::MaskVersion::mask_entry_address).
+    pub fn mask_entry_address(&self, me_suffix: &str) -> Option<u32> {
+        self.inner.mask_entry_address(me_suffix)
     }
 
     /// A procedure template by type and subtype, e.g.
@@ -485,6 +525,119 @@ pub(crate) mod fixtures {
             </Procedure>
           </Procedures>
         </HawkConfigurationData>
+        <MaskEntries>
+          <MaskEntry Id="MV-0012_ME-U.5Fdeb30" Name="U_deb30" Address="3183" />
+          <MaskEntry Id="MV-0012_ME-U.5FGetTMx" Name="U_GetTMx" Address="3436" />
+          <MaskEntry Id="MV-0012_ME-U.5FioAST" Name="U_ioAST" Address="3535" />
+          <MaskEntry Id="MV-0012_ME-U.5FtransRequest" Name="U_transRequest" Address="3513" />
+        </MaskEntries>
+      </MaskVersion>
+    </MaskVersions>
+  </MasterData>
+</KNX>"#;
+
+    /// MV-0020's download-relevant content, in the real file's shape:
+    /// property-mapped machines 1–3, the `DownwardCompatibleMasks`
+    /// naming the BCU1 masks whose programs a BCU2 runs, and the
+    /// remote `Load/all` + `Unload/all` templates copied verbatim —
+    /// LSM cycling with the task records, `EnableSegmentWrite=false`
+    /// (the template carries its own explicit data phase), and the
+    /// BCU1-style memory phase.
+    pub const MV_0020: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278">
+    <MaskVersions>
+      <MaskVersion Id="MV-0020" MaskVersion="32" Name="2.0" ManagementModel="Bcu2">
+        <DownwardCompatibleMasks>
+          <DownwardCompatibleMask RefId="MV-0010" />
+          <DownwardCompatibleMask RefId="MV-0011" />
+          <DownwardCompatibleMask RefId="MV-0012" />
+        </DownwardCompatibleMasks>
+        <HawkConfigurationData>
+          <Features>
+            <Feature Name="FirstAppObjectIdx" Value="4" />
+            <Feature Name="AuthorizeLevels" Value="4" />
+          </Features>
+          <Resources>
+            <Resource Name="ProgrammingMode" Access="remote local1">
+              <Location AddressSpace="StandardMemory" StartAddress="96" />
+              <ResourceType Length="1" Flavour="ProgrammingMode_Bcu1" />
+            </Resource>
+            <Resource Name="GroupAddressTableLoadControl" Access="remote local2">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
+            </Resource>
+            <Resource Name="GroupAddressTableLoadStatus" Access="remote local2">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+            </Resource>
+            <Resource Name="GroupAssociationTableLoadControl" Access="remote local2">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="2" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
+            </Resource>
+            <Resource Name="GroupAssociationTableLoadStatus" Access="remote local2">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="2" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+            </Resource>
+            <Resource Name="ApplicationLoadControl" Access="remote local2">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="10" Flavour="LoadControl_Bcu2" />
+            </Resource>
+            <Resource Name="ApplicationLoadStatus" Access="remote local2">
+              <Location AddressSpace="SystemProperty" InterfaceObjectRef="3" PropertyID="5" StartAddress="0" />
+              <ResourceType Length="1" Flavour="LoadControl_Bcu2" />
+            </Resource>
+          </Resources>
+          <Procedures>
+            <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote local2">
+              <LdCtrlConnect />
+              <LdCtrlSetControlVariable Name="EnableSegmentWrite" Value="false" />
+              <LdCtrlUnload LsmIdx="1" />
+              <LdCtrlUnload LsmIdx="2" />
+              <LdCtrlUnload LsmIdx="3" />
+              <LdCtrlLoad LsmIdx="3" />
+              <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="200" Size="24" Access="51" MemType="1" SegFlags="0" />
+              <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="2418" Size="74" Access="51" MemType="2" SegFlags="0" />
+              <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="282" Size="2" Access="51" MemType="3" SegFlags="0" />
+              <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="256" Size="22" Access="51" MemType="3" SegFlags="0" />
+              <LdCtrlAbsSegment LsmIdx="3" SegType="0" Address="284" Size="852" Access="51" MemType="3" SegFlags="128" />
+              <LdCtrlTaskSegment LsmIdx="3" Address="286" />
+              <LdCtrlTaskPtr LsmIdx="3" InitPtr="284" SavePtr="285" SerialPtr="0" />
+              <LdCtrlTaskCtrl1 LsmIdx="3" Address="0" Count="0" />
+              <LdCtrlTaskCtrl2 LsmIdx="3" Callback="20609" Address="282" Seg0="208" Seg1="208" />
+              <LdCtrlLoadCompleted LsmIdx="3" />
+              <LdCtrlSetControlVariable Name="EnableSegmentWrite" Value="true" />
+              <LdCtrlSetControlVariable Name="EnableVerifyOnWriteDirect" Value="true" />
+              <LdCtrlWriteMem Address="269" Size="1" Verify="true" InlineData="00" />
+              <LdCtrlDelay MilliSeconds="1000" />
+              <LdCtrlLoadImageMem Address="278" Size="1" />
+              <LdCtrlWriteMem Address="278" Size="1" Verify="true" InlineData="01" />
+              <LdCtrlWriteMem Address="256" Size="1" Verify="true" />
+              <LdCtrlWriteMem Address="259" Size="10" Verify="true" />
+              <LdCtrlWriteMem Address="270" Size="8" Verify="true" />
+              <LdCtrlWriteMem Address="281" Size="230" Verify="true" />
+              <LdCtrlWriteMem Address="512" Size="624" Verify="true" />
+              <LdCtrlWriteMem Address="278" Size="1" Verify="true" />
+              <LdCtrlSetControlVariable Name="EnableVerifyOnWriteDirect" Value="false" />
+              <LdCtrlWriteMem Address="269" Size="1" Verify="false" InlineData="FF" />
+              <LdCtrlCompareMem Address="269" Size="1" InlineData="FF" />
+              <LdCtrlRestart />
+            </Procedure>
+            <Procedure ProcedureType="Unload" ProcedureSubType="all" Access="remote local2">
+              <LdCtrlConnect />
+              <LdCtrlUnload LsmIdx="1" />
+              <LdCtrlUnload LsmIdx="2" />
+              <LdCtrlUnload LsmIdx="3" />
+              <LdCtrlDelay MilliSeconds="1000" />
+              <LdCtrlDisconnect />
+            </Procedure>
+          </Procedures>
+        </HawkConfigurationData>
+        <MaskEntries>
+          <MaskEntry Id="MV-0020_ME-U.5Fdeb30" Name="U_deb30" Address="20558" />
+          <MaskEntry Id="MV-0020_ME-U.5FGetTMx" Name="U_GetTMx" Address="20579" />
+          <MaskEntry Id="MV-0020_ME-U.5FioAST" Name="U_ioAST" Address="20582" />
+          <MaskEntry Id="MV-0020_ME-U.5FtransRequest" Name="U_transRequest" Address="20606" />
+        </MaskEntries>
       </MaskVersion>
     </MaskVersions>
   </MasterData>
@@ -722,6 +875,29 @@ mod tests {
         assert_eq!(model.object_of(MachineRole::GroupFilterTable), Some(6));
     }
 
+    /// Mask selection is the device's DD0, gated by
+    /// `DownwardCompatibleMasks` — ETS's `VerifyCompatibleMaskVersionTask`.
+    #[test]
+    fn download_mask_selection_follows_the_device() {
+        let db = MaskDb::from_str(fixtures::MV_0020).expect("fixture parses");
+        let bcu2 = MaskVersion::Other(0x0020);
+
+        // Identical masks: the ordinary download.
+        assert_eq!(select_download_mask(&db, bcu2, bcu2).expect("identity").version(), bcu2);
+
+        // A BCU1 product on a BCU2 device: compatible, and the
+        // *device's* mask wins.
+        let selected = select_download_mask(&db, MaskVersion::Bcu1Tp1, bcu2).expect("downward compatible");
+        assert_eq!(selected.version(), bcu2);
+        assert_eq!(selected.management_model(), "Bcu2");
+
+        // A System 7 product on a BCU2: not in its compatibility list.
+        assert!(select_download_mask(&db, MaskVersion::System7Tp1, bcu2).is_err());
+
+        // A device whose mask the master data does not describe.
+        assert!(select_download_mask(&db, MaskVersion::Bcu1Tp1, MaskVersion::SystemBTp1).is_err());
+    }
+
     #[test]
     fn a_mask_without_machines_yields_an_empty_model() {
         // BCU1 masks declare no LoadControl resources: downloads there
@@ -815,6 +991,41 @@ mod tests {
                     convert(fixture_proc).expect("fixture converts"),
                     "MV-0012 {kind}/{sub}"
                 );
+            }
+        }
+        {
+            let real_bcu2 = real.mask(MaskVersion::Other(0x0020)).expect("MV-0020 present");
+            let fixture = MaskDb::from_str(fixtures::MV_0020).expect("fixture parses");
+            let fixture_bcu2 = fixture.mask(MaskVersion::Other(0x0020)).expect("MV-0020");
+            for (kind, sub) in [("Load", "all"), ("Unload", "all")] {
+                let real_proc = real_bcu2.procedure(kind, sub).expect("real procedure");
+                let fixture_proc = fixture_bcu2.procedure(kind, sub).expect("fixture procedure");
+                assert_eq!(
+                    convert(real_proc).expect("real converts"),
+                    convert(fixture_proc).expect("fixture converts"),
+                    "MV-0020 {kind}/{sub}"
+                );
+            }
+            for mask in [0x0010, 0x0011, 0x0012] {
+                assert!(
+                    real_bcu2.is_downward_compatible_with(MaskVersion::from(mask)),
+                    "MV-0020 runs {mask:04X} programs"
+                );
+            }
+            assert!(!real_bcu2.is_downward_compatible_with(MaskVersion::System7Tp1));
+
+            // The fixture's MaskEntries carry the real addresses (the
+            // Merten fixup set, confirmed on the wire by the ETS
+            // trace of a 0020 download).
+            let real_bcu1 = real.mask(MaskVersion::Bcu1Tp1).expect("MV-0012 present");
+            for (entry, on_0012, on_0020) in [
+                ("U.5Fdeb30", 3183, 20558),
+                ("U.5FGetTMx", 3436, 20579),
+                ("U.5FioAST", 3535, 20582),
+                ("U.5FtransRequest", 3513, 20606),
+            ] {
+                assert_eq!(real_bcu1.mask_entry_address(entry), Some(on_0012), "{entry} on MV-0012");
+                assert_eq!(real_bcu2.mask_entry_address(entry), Some(on_0020), "{entry} on MV-0020");
             }
         }
 

@@ -150,6 +150,21 @@ pub struct ProductData {
     /// Segment id holding the group object table.
     pub com_object_table_segment: Option<String>,
     pub com_object_table_offset: u32,
+    /// The program's fixups (BCU-era native code): mask-ROM routine
+    /// addresses to patch into the code segments, resolved against
+    /// the mask the download is compiled for.
+    pub fixups: Vec<FixupDef>,
+}
+
+/// One fixup, extraction-side: which routine, which segment, where.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixupDef {
+    /// The `_ME-…` id suffix naming the routine
+    /// (`Fixup/@FunctionRef` minus its product-mask prefix).
+    pub function: String,
+    /// The code segment the offsets index into.
+    pub code_segment: String,
+    pub offsets: Vec<u32>,
 }
 
 impl ProductData {
@@ -224,6 +239,7 @@ impl ProductData {
                 .as_ref()
                 .and_then(|t| t.offset)
                 .unwrap_or(0),
+            fixups: extract_fixups(program),
         })
     }
 
@@ -279,6 +295,29 @@ fn parse_mask_version(raw: &str) -> Option<MaskVersion> {
     // Some ids carry a suffix after the mask itself (MV-0300-0100...).
     let hex = hex.split('-').next()?;
     u16::from_str_radix(hex, 16).ok().map(MaskVersion::from)
+}
+
+/// The program's fixups, with each `FunctionRef` reduced to its
+/// `_ME-…` suffix — the routine's identity across masks (the prefix
+/// is the product's mask, and resolution happens against the mask the
+/// download compiles for). A reference without the `_ME-` marker is
+/// kept whole; the resolution will fail loudly on it.
+fn extract_fixups(program: &ApplicationProgram) -> Vec<FixupDef> {
+    program
+        .static_section
+        .fixup_list
+        .iter()
+        .flat_map(|list| &list.fixups)
+        .map(|fixup| FixupDef {
+            function: fixup
+                .function_ref
+                .rsplit_once("_ME-")
+                .map(|(_, suffix)| suffix.to_string())
+                .unwrap_or_else(|| fixup.function_ref.clone()),
+            code_segment: fixup.code_segment.clone(),
+            offsets: fixup.offsets.clone(),
+        })
+        .collect()
 }
 
 /// Segments plus the ids the table elements point at.
@@ -500,6 +539,11 @@ pub(crate) mod tests {
         </ComObjectTable>
         <AddressTable CodeSegment="M-00FA_A-0310-01-0000_AS-0100" Offset="22" MaxEntries="5" />
         <AssociationTable CodeSegment="M-00FA_A-0310-01-0000_AS-0100" Offset="60" MaxEntries="5" />
+        <FixupList>
+          <Fixup FunctionRef="MV-0012_ME-U.5FGetTMx" CodeSegment="M-00FA_A-0310-01-0000_AS-0100">
+            <Offset>239</Offset>
+          </Fixup>
+        </FixupList>
         <LoadProcedures />
       </Static>
     </ApplicationProgram>
@@ -522,6 +566,13 @@ pub(crate) mod tests {
         let segment = p.address_table_segment.as_deref().expect("ADT segment named");
         assert_eq!(p.association_table_segment.as_deref(), Some(segment));
         assert_eq!(p.com_object_table_segment.as_deref(), Some(segment));
+
+        // The fixup, reduced to its cross-mask routine identity.
+        assert_eq!(p.fixups, vec![FixupDef {
+            function: "U.5FGetTMx".to_string(),
+            code_segment: segment.to_string(),
+            offsets: vec![239],
+        }]);
     }
 
     #[test]

@@ -71,6 +71,28 @@ impl DownloadModel {
     }
 }
 
+/// The management-model spelling whose [`ImageLayout`] a product of
+/// the given mask family lays its tables out in.
+///
+/// Needed for downward-compatible downloads (a BCU1 program carried
+/// by a BCU2): the *procedure* follows the device's mask, but the
+/// tables stay in the program's own realization — a BCU1 application
+/// reads its group object table RT1-style (config bit 7 fixed)
+/// whatever silicon executes it.
+pub(crate) fn family_management_model(family: zweidraehte_proto::device::MaskFamily) -> &'static str {
+    use zweidraehte_proto::device::MaskFamily;
+    match family {
+        MaskFamily::Bcu1 => "Bcu1",
+        MaskFamily::Bcu2 => "Bcu2",
+        MaskFamily::System7 => "BimM112",
+        MaskFamily::SystemB => "SystemB",
+        // No layout rows exist for the coupler families; callers fall
+        // back to the device mask's own layout.
+        MaskFamily::Bim => "Bim",
+        MaskFamily::BimM => "BimM",
+    }
+}
+
 const MODELS: [DownloadModel; 4] = [
     DownloadModel {
         management_model: "Bcu1",

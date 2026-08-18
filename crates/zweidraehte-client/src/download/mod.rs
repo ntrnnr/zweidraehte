@@ -47,10 +47,10 @@ pub use ir::{Instruction, TaskIdentity, controls_to_instructions};
 // The IR embeds proto's load-control vocabulary; re-exported so
 // consumers can match on `Instruction` fields without a direct proto
 // dependency.
-pub use mask::{MASTER_DATA_ENV, MaskData, MaskDb, MemoryResources};
+pub use mask::{MASTER_DATA_ENV, MaskData, MaskDb, MemoryResources, select_download_mask};
 pub use model::DownloadModel;
 pub use mods::{ResolvedProject, resolve_mods};
-pub use product::{ComObjectDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
+pub use product::{ComObjectDef, FixupDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
 pub use project::{CompiledDownload, GroupLink, ParameterValue, ProjectConfig, compile, load_control_path};
 pub use table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CotM112,

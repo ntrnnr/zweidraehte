@@ -144,15 +144,94 @@ pub struct MaskVersion {
     #[serde(rename = "HawkConfigurationData", default)]
     pub hawk_configs: Vec<HawkConfigurationData>,
 
-    // Other elements we ignore
+    /// The older masks whose application programs this mask runs
+    /// (MV-0020 lists MV-0010/0011/0012: a BCU2 executes BCU1
+    /// programs in its compat mode). ETS accepts a product for any
+    /// mask listed here and then programs the device per *its own*
+    /// mask — see `VerifyCompatibleMaskVersionTask` ("Match
+    /// compatible") in a Hawk log.
     #[serde(rename = "DownwardCompatibleMasks", default)]
-    _downward_compatible_masks: IgnoredElement,
+    downward_compatible_masks: Option<DownwardCompatibleMasks>,
 
+    /// The mask's OS entry points — the routine addresses a program's
+    /// `FixupList` patches into its code segments. Per mask: the same
+    /// routine lives at 0D6Ch on MV-0012 and 5063h on MV-0020, which
+    /// is the whole reason fixups exist.
     #[serde(rename = "MaskEntries", default)]
-    _mask_entries: IgnoredElement,
+    mask_entries: Option<MaskEntries>,
+}
+
+/// Container for the mask's OS entry points.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MaskEntries {
+    #[serde(rename = "MaskEntry", default)]
+    pub entries: Vec<MaskEntry>,
+}
+
+/// One `<MaskEntry Id="MV-0012_ME-U.5Fdeb30" Name="U_deb30"
+/// Address="3183" />`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MaskEntry {
+    #[serde(rename = "@Id")]
+    pub id: String,
+    #[serde(rename = "@Name")]
+    pub name: String,
+    #[serde(rename = "@Address")]
+    pub address: u32,
+}
+
+/// Container for the downward-compatible mask references.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DownwardCompatibleMasks {
+    #[serde(rename = "DownwardCompatibleMask", default)]
+    pub masks: Vec<DownwardCompatibleMask>,
+}
+
+/// One `<DownwardCompatibleMask RefId="MV-0012" />` reference.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DownwardCompatibleMask {
+    #[serde(rename = "@RefId")]
+    pub ref_id: String,
 }
 
 impl MaskVersion {
+    /// The mask codes this mask is downward compatible with — whose
+    /// application programs it runs (empty for most masks).
+    ///
+    /// The ref ids are `MV-xxxx` with the code in hex; a ref this
+    /// cannot be read out of is skipped rather than failing the whole
+    /// mask.
+    pub fn downward_compatible_masks(&self) -> impl Iterator<Item = u16> + '_ {
+        self.downward_compatible_masks
+            .iter()
+            .flat_map(|dcm| &dcm.masks)
+            .filter_map(|mask| mask.ref_id.strip_prefix("MV-"))
+            .filter_map(|hex| u16::from_str_radix(hex, 16).ok())
+    }
+
+    /// Whether a program written for mask `code` runs on this mask —
+    /// the identical mask, or one this mask lists as downward
+    /// compatible.
+    pub fn is_downward_compatible_with(&self, code: u16) -> bool {
+        self.mask_version_code == code || self.downward_compatible_masks().any(|mask| mask == code)
+    }
+
+    /// The address of a mask OS entry point, looked up by the
+    /// `_ME-…` id suffix a program's `Fixup/@FunctionRef` carries.
+    ///
+    /// Matched by suffix, never by the full id: the reference embeds
+    /// the *product's* mask (`MV-0012_ME-U.5Fdeb30`) while every
+    /// mask's own entry carries its own prefix — and the point of the
+    /// lookup is resolving a BCU1 program's routine names against the
+    /// BCU2 that actually executes them.
+    pub fn mask_entry_address(&self, me_suffix: &str) -> Option<u32> {
+        self.mask_entries
+            .iter()
+            .flat_map(|me| &me.entries)
+            .find(|entry| entry.id.rsplit_once("_ME-").map(|(_, suffix)| suffix) == Some(me_suffix))
+            .map(|entry| entry.address)
+    }
+
     /// Check if this is a System B mask version.
     pub fn is_system_b(&self) -> bool {
         self.management_model == "SystemB"
@@ -663,6 +742,59 @@ impl TableFlavour {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `DownwardCompatibleMasks` names the older masks whose programs
+    /// a mask runs — the shape MV-0020 has in the real file.
+    #[test]
+    fn downward_compatible_masks_parse() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-0020" MaskVersion="32" Name="2.0" ManagementModel="Bcu2">
+      <DownwardCompatibleMasks>
+        <DownwardCompatibleMask RefId="MV-0010" />
+        <DownwardCompatibleMask RefId="MV-0011" />
+        <DownwardCompatibleMask RefId="MV-0012" />
+      </DownwardCompatibleMasks>
+      <HawkConfigurationData />
+    </MaskVersion>
+    <MaskVersion Id="MV-0012" MaskVersion="18" Name="1.2" ManagementModel="Bcu1">
+      <HawkConfigurationData />
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("parses");
+
+        let bcu2 = master.get_mask_version("MV-0020").expect("MV-0020");
+        assert_eq!(bcu2.downward_compatible_masks().collect::<Vec<_>>(), vec![0x0010, 0x0011, 0x0012]);
+        assert!(bcu2.is_downward_compatible_with(0x0012));
+        assert!(bcu2.is_downward_compatible_with(0x0020), "a mask runs its own programs");
+        assert!(!bcu2.is_downward_compatible_with(0x0705));
+
+        let bcu1 = master.get_mask_version("MV-0012").expect("MV-0012");
+        assert_eq!(bcu1.downward_compatible_masks().count(), 0, "absent element means none");
+        assert!(bcu1.is_downward_compatible_with(0x0012));
+    }
+
+    /// `MaskEntries` resolve by their `_ME-` id suffix — a fixup's
+    /// `FunctionRef` carries the *product's* mask prefix, and the
+    /// lookup happens against the device's mask.
+    #[test]
+    fn mask_entries_resolve_by_suffix() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278"><MaskVersions>
+    <MaskVersion Id="MV-0020" MaskVersion="32" Name="2.0" ManagementModel="Bcu2">
+      <HawkConfigurationData />
+      <MaskEntries>
+        <MaskEntry Id="MV-0020_ME-U.5FGetTMx" Name="U_GetTMx" Address="20579" />
+      </MaskEntries>
+    </MaskVersion>
+  </MaskVersions></MasterData>
+</KNX>"#;
+        let master: MasterData = xml.parse().expect("parses");
+        let bcu2 = master.get_mask_version("MV-0020").expect("MV-0020");
+        assert_eq!(bcu2.mask_entry_address("U.5FGetTMx"), Some(20579));
+        assert_eq!(bcu2.mask_entry_address("U.5Fdeb30"), None);
+    }
 
     #[test]
     #[ignore] // Run with: cargo test -p knxprod parse_master_data_file -- --ignored

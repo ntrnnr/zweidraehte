@@ -29,10 +29,10 @@ use clap::{Parser, Subcommand};
 use knx_config::load;
 use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, parse_ia};
 use zweidraehte_client::download::{
-    DeviceImage, DownloadModel, Downloader, LoadControlPath, ProcedureKind, ProductData, assemble, compile,
-    load_control_path, resolve_mods,
+    DeviceImage, DownloadModel, Downloader, LoadControlPath, MaskData, MaskDb, ProcedureKind, ProductData, assemble,
+    compile, load_control_path, resolve_mods, select_download_mask,
 };
-use zweidraehte_client::{IndividualAddress, KnxBus};
+use zweidraehte_client::{IndividualAddress, KnxBus, MaskVersion};
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
 
@@ -79,6 +79,12 @@ enum Command {
         /// Also write each compiled memory region to <DIR>/region_XXXX.bin
         #[arg(long, value_name = "DIR")]
         dump_blobs: Option<PathBuf>,
+
+        /// Compile as if the device answered this DD0 (hex mask code,
+        /// e.g. 0020) — for previewing a downward-compatible download
+        /// offline. Live runs read the real DD0 instead.
+        #[arg(long, value_name = "MASK")]
+        device_mask: Option<String>,
     },
 
     /// Run the mask's Unload-all procedure — a clean slate: tables
@@ -129,28 +135,60 @@ async fn main() -> Result<()> {
     let args = Args::parse();
 
     // Every action starts from the same offline facts: the product
-    // and the mask it runs on.
+    // and the master data. Which *mask* the download is compiled for
+    // is decided against the live device (its DD0), the way ETS does
+    // — a BCU2 answering 0020 runs a BCU1 (0012) product through the
+    // BCU2 procedure. The offline paths use the product's mask.
     let (program, _translations, archive) = load::load_program(&args.product)?;
     let product = ProductData::from_program(&program).context("while attempting to extract the product data")?;
     let mask_db = load::load_mask_db(args.master_data.as_deref(), archive.as_ref())?;
-    let mask_version = product.mask_version.context("the product names no mask version")?;
-    let mask = mask_db
-        .mask(mask_version)
-        .with_context(|| format!("the master data does not describe mask {mask_version:?}"))?;
 
     match args.command {
-        Command::Load { mods, ia, program_ia, dry_run, dump_blobs } => {
-            run_load(&args.target, program, product, &mask, &mods, ia, program_ia, dry_run, dump_blobs.as_deref()).await
+        Command::Load { mods, ia, program_ia, dry_run, dump_blobs, device_mask } => {
+            let device_mask = device_mask
+                .as_deref()
+                .map(|hex| {
+                    u16::from_str_radix(hex.trim_start_matches("0x"), 16)
+                        .map(MaskVersion::from)
+                        .map_err(|_| anyhow::anyhow!("--device-mask wants a hex mask code such as 0020"))
+                })
+                .transpose()?;
+            run_load(
+                &args.target,
+                program,
+                product,
+                &mask_db,
+                &mods,
+                ia,
+                program_ia,
+                dry_run,
+                dump_blobs.as_deref(),
+                device_mask,
+            )
+            .await
         }
         Command::Unload { ia, mods, max_apdu } => {
             let ia = resolve_ia(ia, mods.as_deref())?;
-            run_unload(&args.target, &product, &mask, ia, max_apdu).await
+            run_unload(&args.target, &product, &mask_db, ia, max_apdu).await
         }
         Command::Read { ia, mods, out, max_apdu } => {
             let ia = resolve_ia(ia, mods.as_deref())?;
             run_read(&args.target, &product, ia, max_apdu, &out).await
         }
     }
+}
+
+/// The device's DD0 (mask version), read over a short configuration
+/// connection — what everything mask-shaped is selected by.
+async fn read_device_mask(bus: &KnxBus, ia: IndividualAddress) -> Result<MaskVersion> {
+    let mut connection = bus.connect_device(ia).await.context("while attempting to connect for the DD0 read")?;
+    let descriptor = connection.device_descriptor_read(0).await;
+    let _ = connection.close().await;
+    let descriptor = descriptor.context("while attempting to read the device descriptor")?;
+    let [hi, lo] = descriptor[..] else {
+        bail!("DD0 answered {} octets, expected 2", descriptor.len());
+    };
+    Ok(MaskVersion::from(u16::from_be_bytes([hi, lo])))
 }
 
 /// Switch a device's programming mode off, the way its mask realizes
@@ -253,6 +291,52 @@ async fn connect(target: &OptionalTargetArgs) -> Result<KnxBus> {
     target.connect().await.context("while attempting to connect to the bus")
 }
 
+/// Match the product to a mask (the device's DD0, or the product's
+/// own for offline compiles), with the loader's error framing.
+fn select_mask<'a>(db: &'a MaskDb, product_mask: MaskVersion, device_mask: MaskVersion) -> Result<MaskData<'a>> {
+    select_download_mask(db, product_mask, device_mask)
+        .context("while attempting to match the product to the device's mask")
+}
+
+/// The compiled-download summary both the dry-run and the live path
+/// print.
+fn print_compiled(
+    mask: &MaskData<'_>,
+    product: &ProductData,
+    resolved: &zweidraehte_client::download::ResolvedProject,
+    ia: IndividualAddress,
+    compiled: &zweidraehte_client::download::CompiledDownload,
+) {
+    println!("Product:     {}", product.id);
+    println!("Mask:        {:?} ({} path)", mask.version(), match compiled.path() {
+        LoadControlPath::Memory(_) => "memory",
+        LoadControlPath::Property => "property",
+        LoadControlPath::Direct => "direct",
+    });
+    println!("Address:     {ia}");
+    println!("Parameters:  {} values patched", resolved.project.parameters.len());
+    println!("Links:       {} associations", resolved.project.links.len());
+    println!("Objects:     {} in the group object table", product.com_objects.len());
+    for (address, bytes) in compiled.image.regions() {
+        println!("Region:      {address:#06X}, {} bytes", bytes.len());
+    }
+    println!("Procedure:   {} instructions", compiled.instructions.len());
+}
+
+fn dump_blob_files(
+    dir: Option<&std::path::Path>,
+    compiled: &zweidraehte_client::download::CompiledDownload,
+) -> Result<()> {
+    let Some(dir) = dir else { return Ok(()) };
+    std::fs::create_dir_all(dir).with_context(|| format!("while attempting to create {}", dir.display()))?;
+    for (address, bytes) in compiled.image.regions() {
+        let path = dir.join(format!("region_{address:04X}.bin"));
+        std::fs::write(&path, bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
+        println!("Wrote {}", path.display());
+    }
+    Ok(())
+}
+
 // ============================================================================
 // load
 // ============================================================================
@@ -262,12 +346,13 @@ async fn run_load(
     target: &OptionalTargetArgs,
     program: zweidraehte_knxprod::schema::ApplicationProgram,
     mut product: ProductData,
-    mask: &zweidraehte_client::download::MaskData<'_>,
+    mask_db: &zweidraehte_client::download::MaskDb,
     mods_path: &std::path::Path,
     ia_override: Option<IndividualAddress>,
     program_ia: bool,
     dry_run: bool,
     dump_blobs: Option<&std::path::Path>,
+    device_mask: Option<MaskVersion>,
 ) -> Result<()> {
     let mods_text = std::fs::read_to_string(mods_path)
         .with_context(|| format!("while attempting to read {}", mods_path.display()))?;
@@ -287,34 +372,18 @@ async fn run_load(
     // and mods overrides included), not the product's base roster.
     product.com_objects = resolved.com_objects.clone();
 
-    let compiled = compile(mask, &product, &resolved.project).context("while attempting to compile the download")?;
-
+    let product_mask = product.mask_version.context("the product names no mask version")?;
     let ia = parse_ia(&mods.device.individual_address).map_err(anyhow::Error::msg)?;
-    println!("Product:     {}", product.id);
-    println!("Mask:        {:?} ({} path)", mask.version(), match compiled.path() {
-        LoadControlPath::Memory(_) => "memory",
-        LoadControlPath::Property => "property",
-        LoadControlPath::Direct => "direct",
-    });
-    println!("Address:     {ia}");
-    println!("Parameters:  {} values patched", resolved.project.parameters.len());
-    println!("Links:       {} associations", resolved.project.links.len());
-    println!("Objects:     {} in the group object table", product.com_objects.len());
-    for (address, bytes) in compiled.image.regions() {
-        println!("Region:      {address:#06X}, {} bytes", bytes.len());
-    }
-    println!("Procedure:   {} instructions", compiled.instructions.len());
 
-    if let Some(dir) = dump_blobs {
-        std::fs::create_dir_all(dir).with_context(|| format!("while attempting to create {}", dir.display()))?;
-        for (address, bytes) in compiled.image.regions() {
-            let path = dir.join(format!("region_{address:04X}.bin"));
-            std::fs::write(&path, bytes).with_context(|| format!("while attempting to write {}", path.display()))?;
-            println!("Wrote {}", path.display());
-        }
-    }
-
+    // Offline: compile for the product's own mask, or for the DD0 the
+    // user claims with --device-mask.
     if dry_run {
+        let mask = select_mask(mask_db, product_mask, device_mask.unwrap_or(product_mask))?;
+        let compiled =
+            compile(&mask, &product, &resolved.project).context("while attempting to compile the download")?;
+        print_compiled(&mask, &product, &resolved, ia, &compiled);
+        dump_blob_files(dump_blobs, &compiled)?;
+
         println!("\nDry run — parameter patches:");
         for value in &resolved.project.parameters {
             let location = product.parameters.iter().find(|l| l.id == value.id);
@@ -368,13 +437,30 @@ async fn run_load(
         if !found.contains(&ia) {
             bail!("the device did not take address {ia}");
         }
+        println!("Address {ia} assigned.");
+    }
+
+    // The mask everything below is keyed on comes from the *device*
+    // (its DD0), the way ETS decides it — a BCU2 answering 0020 runs
+    // a downward-compatible BCU1 product through the BCU2 procedure.
+    let dd0 = read_device_mask(&bus, ia).await?;
+    let mask = select_mask(mask_db, product_mask, dd0)?;
+    if mask.version() != product_mask {
+        println!("Device:      {dd0:?} — running the {product_mask:?} product through its own procedure");
+    }
+
+    if program_ia {
         // Best-effort: a device that cannot be switched remotely just
         // needs its button released, which must not fail the download.
         match disable_programming_mode(&bus, &mask, ia).await {
-            Ok(()) => println!("Address {ia} assigned; programming mode switched off."),
-            Err(e) => println!("Address {ia} assigned — switch programming mode off manually ({e})."),
+            Ok(()) => println!("Programming mode switched off."),
+            Err(e) => println!("Switch programming mode off manually ({e})."),
         }
     }
+
+    let compiled = compile(&mask, &product, &resolved.project).context("while attempting to compile the download")?;
+    print_compiled(&mask, &product, &resolved, ia, &compiled);
+    dump_blob_files(dump_blobs, &compiled)?;
 
     // ETS negotiates the write chunk before the procedure; so do we,
     // unless the mods file pins max_apdu explicitly. 52-byte chunks
@@ -386,7 +472,7 @@ async fn run_load(
     }
 
     println!("Downloading…");
-    bus.configure_device(mask, &product, &resolved.project)
+    bus.configure_device(&mask, &product, &resolved.project)
         .await
         .context("while attempting to download the configuration")?;
     println!("Download complete; the device is restarting…");
@@ -436,21 +522,32 @@ async fn run_load(
 async fn run_unload(
     target: &OptionalTargetArgs,
     product: &ProductData,
-    mask: &zweidraehte_client::download::MaskData<'_>,
+    mask_db: &MaskDb,
     ia: IndividualAddress,
     max_apdu: Option<u16>,
 ) -> Result<()> {
+    let product_mask = product.mask_version.context("the product names no mask version")?;
+    let bus = connect(target).await?;
+
+    // An unload is entirely the mask's business, and the mask is the
+    // *device's*: a BCU2 carrying a BCU1 product still tears down
+    // through the BCU2 Unload template.
+    let dd0 = read_device_mask(&bus, ia).await?;
+    let mask = select_mask(mask_db, product_mask, dd0)?;
+    if mask.version() != product_mask {
+        println!("Device:      {dd0:?} — unloading through its own procedure");
+    }
+
     // The Unload template comes from the mask; the product only
     // contributes merge fragments where the family has them (System
     // B), so the real product is the right second argument even for a
     // teardown.
     let instructions =
-        assemble(mask, product, ProcedureKind::UnloadAll).context("while attempting to assemble Unload-all")?;
-    let path = load_control_path(mask)?;
+        assemble(&mask, product, ProcedureKind::UnloadAll).context("while attempting to assemble Unload-all")?;
+    let path = load_control_path(&mask)?;
 
     let model = DownloadModel::for_management_model(mask.management_model());
     println!("Unloading {ia} ({} instructions)…", instructions.len());
-    let bus = connect(target).await?;
     let max_apdu = match max_apdu {
         Some(fixed) => fixed,
         None => negotiate_max_apdu(&bus, ia, model).await,

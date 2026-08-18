@@ -16,7 +16,7 @@ use zweidraehte_client::IndividualAddress;
 use zweidraehte_client::cli::BusTarget;
 use zweidraehte_client::download::{
     DownloadEvent, DownloadModel, Downloader, Instruction, LoadControlPath, LoadEvent, MaskDb, ProductData, compile,
-    resolve_mods,
+    resolve_mods, select_download_mask,
 };
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
@@ -61,26 +61,44 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         let _ = tx.send(DownloadMsg::Task(text.to_string(), 0, 0));
     };
 
-    // ---- Offline: masks, product, configuration, compile.
+    // ---- Offline: masks, product, configuration.
     stage("Resolving master data");
     let mask_db = match &job.master_data {
         Some(path) => MaskDb::from_file(path).map_err(|e| format!("master data: {e}"))?,
         None => MaskDb::resolve().map_err(|e| format!("master data: {e} (set KNX_MASTER_DATA)"))?,
     };
     let mut product = ProductData::from_program(&job.program).map_err(|e| format!("product data: {e}"))?;
-    let mask_version = product.mask_version.ok_or("the product names no mask version")?;
-    let mask = mask_db.mask(mask_version).ok_or_else(|| format!("no mask {mask_version:?} in the master data"))?;
+    let product_mask = product.mask_version.ok_or("the product names no mask version")?;
 
-    stage("Compiling the download");
+    stage("Resolving the configuration");
     let mut device = Device::new(job.program, None, None);
     apply_mods(&mut device, &job.mods).map_err(|e| format!("applying the configuration: {e}"))?;
     let resolved = resolve_mods(&device, &job.mods, &product).map_err(|e| format!("resolving: {e}"))?;
     product.com_objects = resolved.com_objects.clone();
-    let compiled = compile(&mask, &product, &resolved.project).map_err(|e| format!("compiling: {e}"))?;
 
     // ---- Online.
     stage("Connecting to the bus");
     let bus = job.target.connect().await.map_err(|e| format!("connecting: {e}"))?;
+
+    // The mask the download is compiled for is the *device's* (its
+    // DD0), the way ETS decides it — a BCU2 answering 0020 runs a
+    // downward-compatible BCU1 product through the BCU2 procedure.
+    stage("Reading the device descriptor");
+    let dd0 = {
+        let mut connection = bus.connect_device(job.ia).await.map_err(|e| format!("connecting to device: {e}"))?;
+        let descriptor = connection.device_descriptor_read(0).await;
+        let _ = connection.close().await;
+        let descriptor = descriptor.map_err(|e| format!("reading the device descriptor: {e}"))?;
+        match descriptor[..] {
+            [hi, lo] => zweidraehte_client::MaskVersion::from(u16::from_be_bytes([hi, lo])),
+            _ => return Err(format!("DD0 answered {} octets, expected 2", descriptor.len())),
+        }
+    };
+    let mask = select_download_mask(&mask_db, product_mask, dd0)
+        .map_err(|e| format!("matching the product to the device: {e}"))?;
+
+    stage("Compiling the download");
+    let compiled = compile(&mask, &product, &resolved.project).map_err(|e| format!("compiling: {e}"))?;
 
     // ETS's NegotiateMaxApduLength, unless the mods pinned a value —
     // or the model knows the device has no properties to ask (BCU1).

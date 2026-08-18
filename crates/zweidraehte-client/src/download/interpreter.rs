@@ -423,12 +423,17 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 // cover it with several regions (BCU1's mask template
                 // writes fixed EEPROM windows across whatever the
                 // product declares), so each covered part is written
-                // on its own. An untouched window means the procedure
-                // and the compiled image disagree — a compile bug.
+                // on its own. A window the image covers not at all is
+                // legitimate and writes nothing: the BCU2 template
+                // names the 0200h..046Fh user EEPROM, which a
+                // downward-compatible BCU1 program (0100h..01FFh) has
+                // no content for, and the ETS trace of exactly that
+                // download skips the span too.
                 let parts: Vec<(u16, Vec<u8>)> =
                     image.covered(*address, *length).map(|(addr, bytes)| (addr, bytes.to_vec())).collect();
                 if parts.is_empty() {
-                    return Err(Error::DownloadConfig("procedure writes an address the image does not cover"));
+                    log::debug!("nothing to write in {length} bytes at {address:#06X}: the image has no content there");
+                    return Ok(());
                 }
                 for (part_address, bytes) in parts {
                     if *verify {
@@ -999,6 +1004,10 @@ mod bcu1_tests {
         // The vendor ramp went out where nothing overrode it.
         assert_eq!(device.memory[&0x0100], 0x00);
         assert_eq!(device.memory[&0x01FE], 0xFE);
+        // The fixup's routine address (U_GetTMx on MV-0012, 0D6Ch)
+        // reached the device inside the 0119h window.
+        assert_eq!(device.memory[&0x01EF], 0x0D);
+        assert_eq!(device.memory[&0x01F0], 0x6C);
     }
 
     /// `ReadIntoImage` snapshots device bytes into the image's gaps —
