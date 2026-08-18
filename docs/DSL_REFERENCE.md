@@ -681,7 +681,37 @@ impl EtsPageLayout for MyDevice {
 |---------|---------|--------|
 | `device { }` | Device-wide settings block | `device { <elements> }` |
 | `channel "id" => "Name" (N) { }` | Channel tab | `channel "ch1" => "Channel 1" (0) { <elements> }` |
+| `when @param { }` (channels level) | Channel tabs gated on a parameter | `when @show_diag { [1] => { channel ... } }` |
 | `block "id" => "Name" { }` | Collapsible parameter section | `block "general" => "General" { <items> }` |
+
+##### Gated channels
+
+A `when` between channel definitions gates whole tabs on a parameter —
+the tab only exists while the selector matches a case. It uses the same
+case syntax as element-level `when` (including the `when union_field`
+selector variant and `_ => { }` defaults), and cases may nest further
+`when`s or several channels. This lowers to a `<choose>` directly under
+`<Dynamic>` with the `<Channel>` inside the matching `<when>` — the way
+ETS6 products enable channels (e.g. the L&J E032 button channels). The
+gate parameter must itself be placed somewhere (typically a `device`
+block), or the choose never opens:
+
+```rust
+device {
+    block "general" => "General" {
+        param show_diagnostics
+    }
+}
+when @show_diagnostics {
+    [1] => {
+        channel "diagnostics" => "Diagnostics" (2) {
+            block "diag" => "Supervision" {
+                param heartbeat_interval
+            }
+        }
+    }
+}
+```
 
 #### Parameter Keywords
 

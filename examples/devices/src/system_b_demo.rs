@@ -470,6 +470,16 @@ pub struct DemoParams {
     /// Lock behavior with enum variants
     #[ets(display = "Lock Behavior", enum_variants("No Action" => 0, "Lock Off" => 1, "Lock On" => 2, "Lock Toggle" => 3))]
     pub lock_behavior: u8,
+
+    /// Gate for the Diagnostics channel tab: the whole tab only exists
+    /// while this is "Shown" (a choose directly under Dynamic — the
+    /// ETS6 idiom for channels enabled by a parameter).
+    #[ets(display = "Diagnostics page", enum_variants("Hidden" => 0, "Shown" => 1))]
+    pub show_diagnostics: u8,
+
+    /// Heartbeat supervision interval, shown on the gated Diagnostics tab
+    #[ets(display = "Heartbeat Interval", enum_variants("30s" => 0, "60s" => 1, "300s" => 2))]
+    pub heartbeat_interval: u8,
 }
 
 // ============================================================================
@@ -494,6 +504,8 @@ impl EtsPageLayout for SystemBDemoDevice {
                     sep "Lock"
                     param lock_behavior
                     obj lock_in
+                    sep "Pages"
+                    param show_diagnostics
                 }
 
                 // Scene-specific settings appear conditionally
@@ -606,6 +618,19 @@ impl EtsPageLayout for SystemBDemoDevice {
                             param channel_b_config::Pwm.duty_cycle
                             obj channel_b_in
                             obj channel_b_out
+                        }
+                    }
+                }
+            }
+
+            // A whole channel tab gated on a parameter: lowered to a
+            // choose directly under Dynamic with the Channel inside
+            // the when branch, the way ETS6 products enable channels.
+            when @show_diagnostics {
+                [1] => {
+                    channel "diagnostics" => "Diagnostics" (2) {
+                        block "diag" => "Supervision" {
+                            param heartbeat_interval
                         }
                     }
                 }

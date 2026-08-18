@@ -73,8 +73,9 @@ pub(crate) fn walk_page_structure<V: PageLayoutVisitor>(layout: &PageStructure, 
         walk_page_element(elem, visitor);
     }
 
-    // Walk channels
-    for channel in &layout.channels {
+    // Walk channels — every definition, choose gating included, so
+    // collectors see the full roster.
+    for channel in layout.channel_defs() {
         for elem in &channel.elements {
             walk_page_element(elem, visitor);
         }

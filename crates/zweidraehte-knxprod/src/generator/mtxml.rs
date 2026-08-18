@@ -19,7 +19,8 @@ use zweidraehte_device::ets::{
 use super::baggage::{baggages_to_refs, make_baggage_id};
 use crate::definition::module::{ModuleArgRole, ModuleArgType, StoredModuleDef};
 use crate::definition::page_layout::{
-    ConditionalElement, ConditionalItem, PageBlock, PageElement, PageItem, PageStructure,
+    ChannelDef, ChannelEntry, Condition, ConditionalElement, ConditionalItem, PageBlock, PageElement, PageItem,
+    PageStructure,
 };
 use crate::schema::*;
 

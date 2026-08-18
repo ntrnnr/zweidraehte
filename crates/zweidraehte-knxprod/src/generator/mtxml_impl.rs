@@ -2885,44 +2885,136 @@ impl MtxmlGenerator {
             Some(ChannelIndependentBlock { items })
         };
 
-        // Build Channel elements
-        let channels: Vec<Channel> = layout
-            .channels
-            .iter()
-            .enumerate()
-            .map(|(i, ch_def)| {
-                let items = Self::build_channel_items(
-                    &ch_def.elements,
-                    config,
-                    app_id,
-                    mask_family,
-                    &param_ref_map,
-                    &comm_obj_ref_map,
-                    &mut block_counter,
-                    &mut sep_counter,
-                )?;
-                // Use channel number in ID if specified, otherwise use sequential index
-                let ch_num = ch_def.number.unwrap_or(i as u32 + 1);
-                Ok(Channel {
-                    id: format!("{}_CH-{}", app_id, ch_num),
-                    // Use display text for Name attribute (matches MDT convention)
-                    name: ch_def.text.to_string(),
-                    text: Some(ch_def.text.to_string()),
-                    // XSD requires Number attribute (use index + 1 as default)
-                    number: Some(ch_num.to_string()),
-                    internal_description: None,
-                    text_parameter_ref_id: None,
-                    items,
-                })
-            })
-            .collect::<Result<Vec<_>, GeneratorError>>()?;
-
+        // Build the channel entries. Auto-numbering is a running
+        // counter over channels *encountered* (entries can nest inside
+        // chooses, so an entry index would drift).
+        let mut next_number = 1u32;
+        let mut items: Vec<DynamicItem> = Vec::new();
+        items.extend(channel_independent_block.map(DynamicItem::ChannelIndependentBlock));
         // Document order is serialization order: the CIB precedes the
         // channels, as ETS expects.
-        let mut items: Vec<DynamicItem> = Vec::with_capacity(channels.len() + 1);
-        items.extend(channel_independent_block.map(DynamicItem::ChannelIndependentBlock));
-        items.extend(channels.into_iter().map(DynamicItem::Channel));
+        for entry in &layout.channels {
+            items.push(Self::build_channel_entry(
+                entry,
+                config,
+                app_id,
+                mask_family,
+                &param_ref_map,
+                &comm_obj_ref_map,
+                &mut block_counter,
+                &mut sep_counter,
+                &mut next_number,
+            )?);
+        }
         Ok(DynamicSection { items })
+    }
+
+    /// Lower one channels-level entry: a plain channel becomes a
+    /// `Channel`, a `when` becomes a `choose` gating whole channels —
+    /// the shape that sits directly under `Dynamic` (top level) or
+    /// inside an enclosing `when` branch (nested).
+    #[allow(clippy::too_many_arguments)]
+    fn build_channel_entry(
+        entry: &ChannelEntry,
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &ParamRefMap,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        block_counter: &mut u32,
+        sep_counter: &mut u32,
+        next_number: &mut u32,
+    ) -> Result<DynamicItem, GeneratorError> {
+        match entry {
+            ChannelEntry::Channel(ch_def) => Ok(DynamicItem::Channel(Self::build_channel(
+                ch_def,
+                config,
+                app_id,
+                mask_family,
+                param_ref_map,
+                comm_obj_ref_map,
+                block_counter,
+                sep_counter,
+                next_number,
+            )?)),
+            ChannelEntry::When(cond) => {
+                let selector_ref_id = param_ref_map
+                    .get(cond.selector)
+                    .cloned()
+                    .unwrap_or_else(|| Self::find_param_ref_id(config, app_id, cond.selector));
+
+                let mut whens = Vec::new();
+                for case in &cond.cases {
+                    let mut when_items = Vec::new();
+                    for nested in &case.channels {
+                        when_items.push(match Self::build_channel_entry(
+                            nested,
+                            config,
+                            app_id,
+                            mask_family,
+                            param_ref_map,
+                            comm_obj_ref_map,
+                            block_counter,
+                            sep_counter,
+                            next_number,
+                        )? {
+                            DynamicItem::Channel(channel) => WhenItem::Channel(channel),
+                            DynamicItem::Choose(choose) => WhenItem::Choose(choose),
+                            // build_channel_entry never produces one.
+                            DynamicItem::ChannelIndependentBlock(_) => unreachable!(),
+                        });
+                    }
+                    whens.push(When {
+                        test: case.condition.to_test_string(),
+                        default: matches!(case.condition, Condition::Default).then_some(true),
+                        internal_description: None,
+                        items: when_items,
+                    });
+                }
+
+                Ok(DynamicItem::Choose(Choose { param_ref_id: selector_ref_id, whens }))
+            }
+        }
+    }
+
+    /// Build one channel tab from its layout definition.
+    #[allow(clippy::too_many_arguments)]
+    fn build_channel(
+        ch_def: &ChannelDef,
+        config: &ApplicationProgramConfig,
+        app_id: &str,
+        mask_family: MaskFamily,
+        param_ref_map: &ParamRefMap,
+        comm_obj_ref_map: &HashMap<String, Vec<(String, Option<String>, Option<i64>)>>,
+        block_counter: &mut u32,
+        sep_counter: &mut u32,
+        next_number: &mut u32,
+    ) -> Result<Channel, GeneratorError> {
+        let items = Self::build_channel_items(
+            &ch_def.elements,
+            config,
+            app_id,
+            mask_family,
+            param_ref_map,
+            comm_obj_ref_map,
+            block_counter,
+            sep_counter,
+        )?;
+        // Use channel number in ID if specified, otherwise the running
+        // document-order counter.
+        let ch_num = ch_def.number.unwrap_or(*next_number);
+        *next_number = ch_num.max(*next_number) + 1;
+        Ok(Channel {
+            id: format!("{}_CH-{}", app_id, ch_num),
+            // Use display text for Name attribute (matches MDT convention)
+            name: ch_def.text.to_string(),
+            text: Some(ch_def.text.to_string()),
+            // XSD requires Number attribute
+            number: Some(ch_num.to_string()),
+            internal_description: None,
+            text_parameter_ref_id: None,
+            items,
+        })
     }
     /// Build a parameter ref map for use in dynamic section generation.
     ///

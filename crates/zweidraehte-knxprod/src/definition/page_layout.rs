@@ -78,8 +78,35 @@ pub trait EtsPageLayout {
 pub struct PageStructure {
     /// Content for ChannelIndependentBlock (device-wide settings, always visible)
     pub device_settings: Vec<PageElement>,
-    /// Channel tabs for organizing parameters into functional groups
-    pub channels: Vec<ChannelDef>,
+    /// Channel tabs for organizing parameters into functional groups,
+    /// in document order. An entry is either an unconditional channel
+    /// or a `when` gating whole channels on a parameter (lowered to a
+    /// `choose` directly under `Dynamic` — the ETS6 idiom).
+    pub channels: Vec<ChannelEntry>,
+}
+
+impl PageStructure {
+    /// Every channel definition in document order, regardless of
+    /// `when` gating — the layout analogue of the schema's
+    /// `DynamicSection::all_channels`.
+    pub fn channel_defs(&self) -> Vec<&ChannelDef> {
+        fn collect<'a>(entries: &'a [ChannelEntry], out: &mut Vec<&'a ChannelDef>) {
+            for entry in entries {
+                match entry {
+                    ChannelEntry::Channel(def) => out.push(def),
+                    ChannelEntry::When(cond) => {
+                        for case in &cond.cases {
+                            collect(&case.channels, out);
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut defs = Vec::new();
+        collect(&self.channels, &mut defs);
+        defs
+    }
 }
 
 // ============================================================================
@@ -192,6 +219,37 @@ pub struct ChannelDef {
     pub number: Option<u32>,
     /// Elements within this channel
     pub elements: Vec<PageElement>,
+}
+
+/// One entry at the channels level of a [`PageStructure`].
+#[derive(Debug, Clone)]
+pub enum ChannelEntry {
+    /// An unconditional channel tab.
+    Channel(ChannelDef),
+    /// Channels gated on a parameter: the whole tab only exists while
+    /// the selector matches a case.
+    When(ConditionalChannels),
+}
+
+/// Conditional visibility wrapping whole channels — the channels-level
+/// counterpart of [`ConditionalElement`].
+#[derive(Debug, Clone)]
+pub struct ConditionalChannels {
+    /// Parameter name that controls visibility
+    pub selector: &'static str,
+    /// Cases for different selector values
+    pub cases: Vec<ChannelCase>,
+}
+
+/// A case within a channels-level conditional.
+#[derive(Debug, Clone)]
+pub struct ChannelCase {
+    /// Condition that must match
+    pub condition: Condition,
+    /// Channel entries shown when the condition matches; nesting
+    /// another `when` here is allowed (vendor programs chain several
+    /// selectors in front of one channel).
+    pub channels: Vec<ChannelEntry>,
 }
 
 /// Top-level elements that can appear in device settings or a channel.
@@ -603,6 +661,17 @@ macro_rules! ets_pages {
         }
     };
 
+    // Entry point: gated channels only (no device block) — the first
+    // top-level token is a `when` wrapping channels.
+    (
+        when $($rest:tt)+
+    ) => {
+        $crate::definition::page_layout::PageStructure {
+            device_settings: vec![],
+            channels: $crate::ets_pages!(@channels when $($rest)+),
+        }
+    };
+
     // Entry point: empty
     () => {
         $crate::definition::page_layout::PageStructure {
@@ -617,25 +686,105 @@ macro_rules! ets_pages {
     };
 
     (@channels channel $ch_name:literal => $ch_text:literal ( $ch_num:expr ) { $($ch_content:tt)* } $($rest:tt)*) => {{
-        let mut chans = vec![$crate::definition::page_layout::ChannelDef {
-            name: $ch_name,
-            text: $ch_text,
-            number: Some($ch_num),
-            elements: $crate::ets_pages!(@elements $($ch_content)*),
-        }];
+        let mut chans = vec![$crate::definition::page_layout::ChannelEntry::Channel(
+            $crate::definition::page_layout::ChannelDef {
+                name: $ch_name,
+                text: $ch_text,
+                number: Some($ch_num),
+                elements: $crate::ets_pages!(@elements $($ch_content)*),
+            }
+        )];
         chans.extend($crate::ets_pages!(@channels $($rest)*));
         chans
     }};
 
     (@channels channel $ch_name:literal => $ch_text:literal { $($ch_content:tt)* } $($rest:tt)*) => {{
-        let mut chans = vec![$crate::definition::page_layout::ChannelDef {
-            name: $ch_name,
-            text: $ch_text,
-            number: None,
-            elements: $crate::ets_pages!(@elements $($ch_content)*),
-        }];
+        let mut chans = vec![$crate::definition::page_layout::ChannelEntry::Channel(
+            $crate::definition::page_layout::ChannelDef {
+                name: $ch_name,
+                text: $ch_text,
+                number: None,
+                elements: $crate::ets_pages!(@elements $($ch_content)*),
+            }
+        )];
         chans.extend($crate::ets_pages!(@channels $($rest)*));
         chans
+    }};
+
+    // Gate whole channels on a regular parameter (@ prefix, no
+    // _selector suffix) — lowered to a choose directly under Dynamic.
+    // Example: when @input_a_usage { [3] => { channel ... } }
+    (@channels when @ $param:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut chans = vec![$crate::definition::page_layout::ChannelEntry::When(
+            $crate::definition::page_layout::ConditionalChannels {
+                selector: stringify!($param),
+                cases: $crate::ets_pages!(@channel_cases $($cases)*),
+            }
+        )];
+        chans.extend($crate::ets_pages!(@channels $($rest)*));
+        chans
+    }};
+
+    // Gate whole channels on a union selector (appends _selector).
+    // Example: when output_config { [Dimmer] => { channel ... } }
+    (@channels when $selector:ident { $($cases:tt)* } $($rest:tt)*) => {{
+        let mut chans = vec![$crate::definition::page_layout::ChannelEntry::When(
+            $crate::definition::page_layout::ConditionalChannels {
+                selector: concat!(stringify!($selector), "_selector"),
+                cases: $crate::ets_pages!(@channel_cases $($cases)*),
+            }
+        )];
+        chans.extend($crate::ets_pages!(@channels $($rest)*));
+        chans
+    }};
+
+    // Parse channel cases (for when at channels level) - base case
+    (@channel_cases) => {
+        vec![]
+    };
+
+    // Channel case with enum path expressions (e.g., EnumType::Variant)
+    (@channel_cases [$($enum_type:ident :: $variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::definition::page_layout::ChannelCase {
+            condition: $crate::definition::page_layout::Condition::values(&[
+                $($enum_type::$variant as i64),+
+            ]),
+            channels: $crate::ets_pages!(@channels $($content)*),
+        }];
+        cases.extend($crate::ets_pages!(@channel_cases $($rest)*));
+        cases
+    }};
+
+    // Channel case with simple enum variants
+    (@channel_cases [$($variant:ident),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::definition::page_layout::ChannelCase {
+            condition: $crate::definition::page_layout::Condition::values(&[
+                $($variant as i64),+
+            ]),
+            channels: $crate::ets_pages!(@channels $($content)*),
+        }];
+        cases.extend($crate::ets_pages!(@channel_cases $($rest)*));
+        cases
+    }};
+
+    // Channel case with integer literals
+    (@channel_cases [$($val:literal),+ $(,)?] => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::definition::page_layout::ChannelCase {
+            condition: $crate::definition::page_layout::Condition::values(&[$($val as i64),+]),
+            channels: $crate::ets_pages!(@channels $($content)*),
+        }];
+        cases.extend($crate::ets_pages!(@channel_cases $($rest)*));
+        cases
+    }};
+
+    // Channel case with default (_)
+    (@channel_cases _ => { $($content:tt)* } $($rest:tt)*) => {{
+        let mut cases = vec![$crate::definition::page_layout::ChannelCase {
+            condition: $crate::definition::page_layout::Condition::Default,
+            channels: $crate::ets_pages!(@channels $($content)*),
+        }];
+        cases.extend($crate::ets_pages!(@channel_cases $($rest)*));
+        cases
     }};
 
     // Parse elements (blocks and when clauses) - base case (empty)
@@ -1466,11 +1615,98 @@ mod tests {
         assert_eq!(structure.device_settings.len(), 1);
         assert_eq!(structure.channels.len(), 1);
 
-        let ch = &structure.channels[0];
+        let ChannelEntry::Channel(ch) = &structure.channels[0] else {
+            panic!("Expected an unconditional channel");
+        };
         assert_eq!(ch.name, "ch1");
         assert_eq!(ch.text, "Channel 1");
         assert_eq!(ch.number, Some(1));
         assert_eq!(ch.elements.len(), 1);
+    }
+
+    /// A `when` at the channels level gates whole channel tabs — the
+    /// layout shape that lowers to a choose directly under `Dynamic`.
+    #[test]
+    fn test_gated_channels() {
+        let structure = ets_pages! {
+            device {
+                block "setup" => "Setup" {
+                    param usage
+                }
+            }
+            when @usage {
+                [3] => {
+                    channel "cha" => "Input A" (1) {
+                        block "a" => "Button" {
+                            param action
+                        }
+                    }
+                    when @conn {
+                        [0] => {
+                            channel "chb" => "Input B" (2) {
+                                block "b" => "Button" {
+                                    param action_b
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            channel "general" => "General" (9) {
+                block "g" => "General" {
+                    param g_param
+                }
+            }
+        };
+
+        assert_eq!(structure.channels.len(), 2);
+
+        let ChannelEntry::When(cond) = &structure.channels[0] else {
+            panic!("Expected a gated entry first");
+        };
+        assert_eq!(cond.selector, "usage");
+        assert_eq!(cond.cases.len(), 2);
+        assert!(matches!(&cond.cases[0].condition, Condition::Values(v) if *v == [3]));
+        assert!(matches!(cond.cases[1].condition, Condition::Default));
+        assert!(cond.cases[1].channels.is_empty());
+
+        // First case: one channel, then a nested gate.
+        let ChannelEntry::Channel(cha) = &cond.cases[0].channels[0] else {
+            panic!("Expected channel cha");
+        };
+        assert_eq!(cha.name, "cha");
+        let ChannelEntry::When(nested) = &cond.cases[0].channels[1] else {
+            panic!("Expected the nested gate");
+        };
+        assert_eq!(nested.selector, "conn");
+
+        // The flattening roster sees all three channels in document order.
+        let names: Vec<&str> = structure.channel_defs().iter().map(|c| c.name).collect();
+        assert_eq!(names, ["cha", "chb", "general"]);
+    }
+
+    /// The union-selector variant appends `_selector`, as the
+    /// element-level `when` does.
+    #[test]
+    fn test_gated_channels_union_selector() {
+        let structure = ets_pages! {
+            when mode {
+                [1] => {
+                    channel "x" => "X" (1) {
+                        block "b" => "B" {
+                            param p
+                        }
+                    }
+                }
+            }
+        };
+
+        let ChannelEntry::When(cond) = &structure.channels[0] else {
+            panic!("Expected a gated entry");
+        };
+        assert_eq!(cond.selector, "mode_selector");
+        assert!(structure.device_settings.is_empty());
     }
 
     #[test]
