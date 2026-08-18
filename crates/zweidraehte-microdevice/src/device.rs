@@ -28,11 +28,10 @@ use crate::transport::{TlOutput, TlState};
 
 /// Sizing ceilings shared by all families this crate will carry (the
 /// EEPROM image itself is family-sized through
-/// [`MicroDeviceFamily::EepromStore`]).
+/// [`MicroDeviceFamily::EepromStore`]; the second RAM window's address
+/// and live size are the family's `RAM2_BASE`/`RAM2_SIZE`).
 pub const RAM_SIZE: usize = 0x100;
-pub const RAM2_SIZE: usize = 0xE0;
-/// KNX address of the first RAM2 byte.
-pub const RAM2_BASE: u16 = 0x0900;
+pub const RAM2_CEILING: usize = 0x100;
 pub const MAX_AUTH_LEVELS: usize = 16;
 pub const MAX_LSM: usize = 4;
 
@@ -78,8 +77,9 @@ pub struct Microdevice<F: MicroDeviceFamily> {
     /// Page-0 RAM at 0000h (system status, user RAM, RAM flags,
     /// group object values).
     pub(crate) ram: [u8; RAM_SIZE],
-    /// The second RAM area at 0900h.
-    pub(crate) ram2: [u8; RAM2_SIZE],
+    /// The second RAM area at `F::RAM2_BASE` (ceiling-sized; the
+    /// family's `RAM2_SIZE` bounds what is addressable).
+    pub(crate) ram2: [u8; RAM2_CEILING],
     pub(crate) identity: DeviceIdentity,
     pub(crate) tl: TlState,
     /// Public so fixtures (tests, the conformance DUT) can seed load
@@ -95,10 +95,13 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// `time_divisor` compresses the TL timeouts for the conformance
     /// harness's fast mode; firmware passes 1.
     pub fn new(eeprom: F::EepromStore, identity: DeviceIdentity, time_divisor: u32) -> Self {
+        const {
+            assert!(F::RAM2_SIZE <= RAM2_CEILING, "family RAM2 window exceeds the shared ceiling");
+        }
         Self {
             eeprom,
             ram: [0; RAM_SIZE],
-            ram2: [0; RAM2_SIZE],
+            ram2: [0; RAM2_CEILING],
             identity,
             tl: TlState::new(F::TL_STYLE, time_divisor),
             mgmt: ManagementState::new(),

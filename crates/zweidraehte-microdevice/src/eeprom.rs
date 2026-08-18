@@ -273,6 +273,80 @@ mod tests {
         assert_eq!(t.sending_tsap(2), None, "beyond the table");
     }
 
+    /// A hand-laid System 7 image (window 4000h..4400h): RT8 address
+    /// table at offset 0, association table at offset 0x100 (found
+    /// through machine 1's `table_ref`), M112 group object table at
+    /// the product address 4200h.
+    #[test]
+    fn walks_rt8_and_m112_tables_in_place() {
+        type S7 = crate::families::system7::System7Family<0x400, 0x4200>;
+        let mut e = [0u8; 0x400];
+        // ADT: 2 GAs (count excludes the IA), IA 1.1.10 at bytes 1-2.
+        e[0] = 2;
+        e[1] = 0x11;
+        e[2] = 0x0A;
+        e[3] = 0x08; // 1/0/1
+        e[4] = 0x01;
+        e[5] = 0x10; // 2/0/2
+        e[6] = 0x02;
+        // AST at 0x100: 2 entries.
+        e[0x100] = 2;
+        e[0x101] = 1;
+        e[0x102] = 0;
+        e[0x103] = 2;
+        e[0x104] = 1;
+        // COT at 0x200: 2 objects, RAM flags at 00D0h, 2-byte data
+        // pointers.
+        e[0x200] = 2;
+        e[0x201] = 0x00;
+        e[0x202] = 0xD0;
+        e[0x203] = 0x00; // ASAP 0: value at 00C6h
+        e[0x204] = 0xC6;
+        e[0x205] = 0x9F;
+        e[0x206] = 0x00;
+        e[0x207] = 0x00; // ASAP 1: value at 00C7h
+        e[0x208] = 0xC7;
+        e[0x209] = 0x4C;
+        e[0x20A] = 0x00;
+
+        let mut mgmt = ManagementState::new();
+        mgmt.lsm[1].table_ref = 0x4100;
+        let t = Tables::<S7>::new(&e, &mgmt);
+        assert_eq!(t.individual_address(), IndividualAddress::new(1, 1, 10));
+        assert_eq!(t.ga_count(), 2);
+        assert!(!t.muted());
+        assert_eq!(t.tsap_of(GroupAddress::from_three_level(1, 0, 1)), Some(1));
+        assert_eq!(t.tsap_of(GroupAddress::from_three_level(2, 0, 2)), Some(2));
+        assert_eq!(t.sending_tsap(0), Some(1));
+        assert_eq!(t.sending_tsap(1), Some(2));
+        assert_eq!(t.ram_flags_ptr(), 0x00D0);
+        let entry = t.co_entry(0).expect("ASAP 0 exists");
+        assert_eq!(entry.data_ptr, 0x00C6);
+        assert_eq!(entry.config, 0x9F);
+        assert!(t.co_entry(2).is_none());
+
+        // Before any allocation the association table does not exist.
+        let blank_mgmt = ManagementState::new();
+        let t = Tables::<S7>::new(&e, &blank_mgmt);
+        assert_eq!(t.assoc_count(), 0);
+        assert_eq!(t.sending_tsap(0), None);
+    }
+
+    /// RT8 mutes at count 0, and the IA survives because it lives at
+    /// bytes 1-2 rather than in a counted slot.
+    #[test]
+    fn rt8_mute_is_count_zero() {
+        type S7 = crate::families::system7::System7Family<0x400, 0x4200>;
+        let mut e = [0u8; 0x400];
+        e[0] = 0;
+        e[1] = 0x11;
+        e[2] = 0x0A;
+        let mgmt = ManagementState::new();
+        let t = Tables::<S7>::new(&e, &mgmt);
+        assert!(t.muted());
+        assert_eq!(t.individual_address(), IndividualAddress::new(1, 1, 10));
+    }
+
     #[test]
     fn mute_length_silences_group_lookups() {
         let mut image = image();

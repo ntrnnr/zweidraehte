@@ -15,7 +15,7 @@ use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, LoadState};
 use zweidraehte_proto::pid;
 
-use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, RAM2_BASE, RAM2_SIZE};
+use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE};
 use crate::family::MicroDeviceFamily;
 use crate::frame::apci;
 
@@ -76,6 +76,10 @@ pub struct ManagementState {
     pub auth_level: u8,
     pub auth_keys: [[u8; 4]; MAX_AUTH_LEVELS],
     pub lsm: [Lsm; MAX_LSM],
+    /// Per-machine "explicitly stopped" run-state flag (System 7's
+    /// RUNCONTROL_STOP → Terminated). Volatile on purpose: a re-powered
+    /// device starts a loaded application running again.
+    pub run_stopped: [bool; MAX_LSM],
 }
 
 impl ManagementState {
@@ -91,6 +95,7 @@ impl ManagementState {
             // an A_Authorize with the FF key is granted level 0.
             auth_keys: [[0xFF; 4]; MAX_AUTH_LEVELS],
             lsm: [Lsm::new(); MAX_LSM],
+            run_stopped: [false; MAX_LSM],
         }
     }
 
@@ -154,7 +159,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             self.ram[a]
         } else if let Some(off) = self.eeprom_offset(addr) {
             self.eeprom.as_ref()[off]
-        } else if let Some(off) = ram2_offset(addr) {
+        } else if let Some(off) = ram2_offset::<F>(addr) {
             self.ram2[off]
         } else {
             0
@@ -177,7 +182,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             self.ram[a] = value;
         } else if let Some(off) = self.eeprom_offset(addr) {
             self.eeprom.as_mut()[off] = value;
-        } else if let Some(off) = ram2_offset(addr) {
+        } else if let Some(off) = ram2_offset::<F>(addr) {
             self.ram2[off] = value;
         }
     }
@@ -479,12 +484,20 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
             lsm.state = LoadState::Loading;
         }
         LoadEvent::LoadCompleted => {
-            lsm.state = if lsm.state == LoadState::Loading { LoadState::Loaded } else { LoadState::Err };
+            if lsm.state == LoadState::Loading {
+                lsm.state = LoadState::Loaded;
+                F::load_completed_side_effect(machine, eeprom, mgmt);
+            } else {
+                lsm.state = LoadState::Err;
+            }
         }
         LoadEvent::Unload => {
             lsm.state = LoadState::Unloaded;
-            lsm.table_ref = 0;
+            // Side effect first: a family that locates the resource
+            // through `table_ref` (System 7's association table) still
+            // needs the reference to reach the blob it is emptying.
             F::unload_side_effect(machine, eeprom, mgmt);
+            mgmt.lsm[machine].table_ref = 0;
         }
         LoadEvent::AdditionalLoadControls => {
             if lsm.state != LoadState::Loading {
@@ -519,9 +532,9 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
     }
 }
 
-fn ram2_offset(addr: u16) -> Option<usize> {
-    let off = usize::from(addr.checked_sub(RAM2_BASE)?);
-    (off < RAM2_SIZE).then_some(off)
+fn ram2_offset<F: MicroDeviceFamily>(addr: u16) -> Option<usize> {
+    let off = usize::from(addr.checked_sub(F::RAM2_BASE)?);
+    (off < F::RAM2_SIZE).then_some(off)
 }
 
 /// `[obj][pid][count:4|start:12]` — the header every property value

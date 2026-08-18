@@ -6,3 +6,4 @@
 //! the boot image.
 
 pub mod bcu2;
+pub mod system7;

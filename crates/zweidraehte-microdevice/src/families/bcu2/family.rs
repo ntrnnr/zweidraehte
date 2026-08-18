@@ -35,6 +35,8 @@ impl MicroDeviceFamily for Bcu2Family {
 
     const EEPROM_BASE: u16 = 0x0100;
     const EEPROM_SIZE: usize = BCU2_EEPROM_SIZE;
+    const RAM2_BASE: u16 = 0x0900;
+    const RAM2_SIZE: usize = 0xE0;
 
     const ADDR_TABLE_OFFSET: usize = 0x16;
     fn ia_eeprom_offset() -> usize {

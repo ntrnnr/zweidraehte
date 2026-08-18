@@ -61,6 +61,11 @@ pub trait MicroDeviceFamily: 'static {
     const EEPROM_BASE: u16;
     /// Number of EEPROM bytes the device owns.
     const EEPROM_SIZE: usize;
+    /// The second RAM window (BCU2: E0h bytes at 0900h; System 7: the
+    /// 100h-byte resource window at 0700h). Must fit
+    /// [`crate::device::RAM2_CEILING`].
+    const RAM2_BASE: u16;
+    const RAM2_SIZE: usize;
 
     // ── Fixed EEPROM offsets (from `EEPROM_BASE`) ───────────────────
 
@@ -148,6 +153,11 @@ pub trait MicroDeviceFamily: 'static {
     /// the mute length, association table empties, the application
     /// un-marks itself as present).
     fn unload_side_effect(machine: usize, eeprom: &mut [u8], mgmt: &mut ManagementState);
+    /// Side effect when machine `machine` reaches Loaded — the LSM's
+    /// Loaded event cascades into the run state machine on families
+    /// whose application objects carry one (System 7: a freshly loaded
+    /// application runs, clearing any earlier Stop).
+    fn load_completed_side_effect(_machine: usize, _eeprom: &mut [u8], _mgmt: &mut ManagementState) {}
 
     // ── Memory-map intercepts ────────────────────────────────────────
     //
