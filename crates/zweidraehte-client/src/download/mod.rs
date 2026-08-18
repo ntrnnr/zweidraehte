@@ -31,10 +31,10 @@
 
 pub mod assemble;
 mod image;
-mod image_layout;
 mod interpreter;
 pub mod ir;
 pub mod mask;
+mod model;
 pub mod mods;
 pub mod product;
 pub mod project;
@@ -48,6 +48,7 @@ pub use ir::{Instruction, TaskIdentity, controls_to_instructions};
 // consumers can match on `Instruction` fields without a direct proto
 // dependency.
 pub use mask::{MASTER_DATA_ENV, MaskData, MaskDb, MemoryResources};
+pub use model::DownloadModel;
 pub use mods::{ResolvedProject, resolve_mods};
 pub use product::{ComObjectDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
 pub use project::{CompiledDownload, GroupLink, ParameterValue, ProjectConfig, compile, load_control_path};

@@ -15,6 +15,18 @@
 /// for MTXML/knxprod generation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaskFamily {
+    /// BCU1 / System 1 masks (0010–0013, 1012, 1013)
+    /// - Fully memory-mapped management: no interface objects, no
+    ///   properties, no load state machines
+    /// - DefaultProcedure load style (the mask's own template applies)
+    /// - ComObject indices start at 0
+    Bcu1,
+    /// BCU2 / System 2 masks (0020, 0021, 0025)
+    /// - Absolute memory segments, property-mapped load state
+    ///   machines 1–3 (address / association / application)
+    /// - ProductProcedure load style
+    /// - ComObject indices start at 0
+    Bcu2,
     /// System 7 masks (0701, 0705, 2705, 5705)
     /// - Absolute memory segments
     /// - ProductProcedure load style
@@ -42,6 +54,8 @@ impl MaskFamily {
     /// Determine mask family from a raw mask version value.
     pub fn from_mask_version(mask: u16) -> Self {
         match mask {
+            0x0010..=0x0013 | 0x1012 | 0x1013 => MaskFamily::Bcu1,
+            0x0020 | 0x0021 | 0x0025 => MaskFamily::Bcu2,
             0x0701 | 0x0705 | 0x2705 | 0x5705 | 0x0700 => MaskFamily::System7,
             0x07B0 | 0x17B0 | 0x27B0 | 0x57B0 => MaskFamily::SystemB,
             0x0912 | 0x091A => MaskFamily::Bim,
@@ -63,6 +77,8 @@ create_protocol_enum!(
     ///
     /// # Variants
     ///
+    /// - `Bcu1Tp1` (0x0012) — BCU1 TP1
+    /// - `Bcu2Tp1` (0x0021) — BCU2 TP1
     /// - `System7Tp1` (0x0705) — System 7 TP1
     /// - `SystemBTp1` (0x07B0) — System B TP1
     /// - `SystemBRf` (0x27B0) — System B KNX-RF
@@ -70,6 +86,8 @@ create_protocol_enum!(
     /// - `Other(u16)` — Unknown / unsupported mask version
     #[derive(Copy, Clone, Eq, PartialEq, Hash)]
     pub enum MaskVersion: u16 {
+        Bcu1Tp1,            0x0012, "BCU1 TP1 (0012)";
+        Bcu2Tp1,            0x0021, "BCU2 TP1 (0021)";
         System7Tp1,         0x0705, "System 7 TP1 (0705)";
         SystemBTp1,         0x07B0, "System B TP1 (07B0)";
         SystemBRf,          0x27B0, "System B RF (27B0)";
@@ -84,9 +102,9 @@ impl MaskVersion {
         matches!(self, MaskVersion::SystemBKnxIp)
     }
 
-    /// Check if this is a TP1 device (0705 or 07B0).
+    /// Check if this is a TP1 device (0012, 0021, 0705 or 07B0).
     pub fn is_tp1(&self) -> bool {
-        matches!(self, MaskVersion::System7Tp1 | MaskVersion::SystemBTp1)
+        matches!(self, MaskVersion::Bcu1Tp1 | MaskVersion::Bcu2Tp1 | MaskVersion::System7Tp1 | MaskVersion::SystemBTp1)
     }
 
     /// Check if this is a KNX-RF device (mask version 27B0).
@@ -97,6 +115,8 @@ impl MaskVersion {
     /// Get the raw u16 value.
     pub const fn as_u16(&self) -> u16 {
         match self {
+            MaskVersion::Bcu1Tp1 => 0x0012,
+            MaskVersion::Bcu2Tp1 => 0x0021,
             MaskVersion::System7Tp1 => 0x0705,
             MaskVersion::SystemBTp1 => 0x07B0,
             MaskVersion::SystemBRf => 0x27B0,
@@ -298,5 +318,37 @@ impl DeviceDescriptor {
     /// Format: 2-byte count + 2 bytes per entry.
     pub const fn comm_object_table_size(&self) -> usize {
         2 + (self.max_com_objects as usize) * 2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mask_versions_map_to_their_families() {
+        // BCU1: the TP1 quartet plus the PL110 pair.
+        for mask in [0x0010, 0x0011, 0x0012, 0x0013, 0x1012, 0x1013] {
+            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::Bcu1, "{mask:04X}");
+        }
+        for mask in [0x0020, 0x0021, 0x0025] {
+            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::Bcu2, "{mask:04X}");
+        }
+        for mask in [0x0700, 0x0701, 0x0705, 0x2705, 0x5705] {
+            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::System7, "{mask:04X}");
+        }
+        for mask in [0x07B0, 0x17B0, 0x27B0, 0x57B0] {
+            assert_eq!(MaskFamily::from_mask_version(mask), MaskFamily::SystemB, "{mask:04X}");
+        }
+    }
+
+    #[test]
+    fn bcu_mask_version_aliases_round_trip() {
+        assert_eq!(MaskVersion::from(0x0012), MaskVersion::Bcu1Tp1);
+        assert_eq!(MaskVersion::from(0x0021), MaskVersion::Bcu2Tp1);
+        assert_eq!(MaskVersion::Bcu1Tp1.as_u16(), 0x0012);
+        assert_eq!(MaskVersion::Bcu2Tp1.as_u16(), 0x0021);
+        assert_eq!(MaskVersion::Bcu1Tp1.family(), MaskFamily::Bcu1);
+        assert_eq!(MaskVersion::Bcu2Tp1.family(), MaskFamily::Bcu2);
     }
 }

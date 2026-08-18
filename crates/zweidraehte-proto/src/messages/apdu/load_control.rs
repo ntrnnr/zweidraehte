@@ -331,6 +331,69 @@ impl LoadControlRecord {
         record[1..].copy_from_slice(&segment.write());
         record
     }
+
+    /// A TaskPtr record (segment type 3, 03/05/02 §3.31.2): the BCU2
+    /// application's entry points — init, save, and the PEI handler
+    /// (the MTXML attribute calls it `SerialPtr`):
+    /// `[03][03][initAddr:2][saveAddr:2][PEIhandler:2][reserved:2]`.
+    pub fn task_ptr(init_ptr: u16, save_ptr: u16, serial_ptr: u16) -> [u8; 10] {
+        let [init_hi, init_lo] = init_ptr.to_be_bytes();
+        let [save_hi, save_lo] = save_ptr.to_be_bytes();
+        let [serial_hi, serial_lo] = serial_ptr.to_be_bytes();
+        [
+            LoadEvent::AdditionalLoadControls.into(),
+            LoadSegment::AbsolutePointer.into(),
+            init_hi,
+            init_lo,
+            save_hi,
+            save_lo,
+            serial_hi,
+            serial_lo,
+            0x00,
+            0x00,
+        ]
+    }
+
+    /// A TaskCtrl1 record (segment type 4, 03/05/02 §3.31.2): where the
+    /// BCU2 application's interface-object list lives —
+    /// `[03][04][interface object address:2][count:1][reserved:5]`.
+    pub fn task_ctrl1(address: u16, count: u8) -> [u8; 10] {
+        let [addr_hi, addr_lo] = address.to_be_bytes();
+        [
+            LoadEvent::AdditionalLoadControls.into(),
+            LoadSegment::TaskCtrl1.into(),
+            addr_hi,
+            addr_lo,
+            count,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+        ]
+    }
+
+    /// A TaskCtrl2 record (segment type 5, 03/05/02 §3.31.2): the BCU2
+    /// group-object callback and table pointers —
+    /// `[03][05][callbackAddr:2][CommObjPtr:2][CommObjSegPtr1:2][CommObjSegPtr2:2]`.
+    pub fn task_ctrl2(callback: u16, address: u16, seg0: u16, seg1: u16) -> [u8; 10] {
+        let [cb_hi, cb_lo] = callback.to_be_bytes();
+        let [addr_hi, addr_lo] = address.to_be_bytes();
+        let [s0_hi, s0_lo] = seg0.to_be_bytes();
+        let [s1_hi, s1_lo] = seg1.to_be_bytes();
+        [
+            LoadEvent::AdditionalLoadControls.into(),
+            LoadSegment::TaskCtrl2.into(),
+            cb_hi,
+            cb_lo,
+            addr_hi,
+            addr_lo,
+            s0_hi,
+            s0_lo,
+            s1_hi,
+            s1_lo,
+        ]
+    }
 }
 
 /// Builders for the records written to the System 7 memory-mapped
@@ -379,22 +442,53 @@ impl MemLoadControlRecord {
         record
     }
 
-    /// The task-segment allocation for the memory window: the tagged
-    /// octet, then the property record's payload with the segment ID
-    /// octet inserted, mirroring [`Self::abs_segment`].
-    pub fn task_segment(
-        machine: LsmMachine,
-        start_address: u16,
-        pei_type: u8,
-        application_id: [u8; 5],
-    ) -> [u8; Self::RECORD_LEN] {
-        let property_form = LoadControlRecord::task_segment(start_address, pei_type, application_id);
+    /// The tagged 11-octet spelling of a 10-octet property-path
+    /// `AdditionalLoadControls` record: the machine/event tag, then the
+    /// property record's payload with the segment ID octet inserted
+    /// after the segment type (§3.31.2 spells every additional-control
+    /// record `[machine/event][type][ID][payload]`).
+    fn additional_control(machine: LsmMachine, property_form: [u8; 10]) -> [u8; Self::RECORD_LEN] {
         let mut record = [0u8; Self::RECORD_LEN];
         record[0] = Self::tag(machine, LoadEvent::AdditionalLoadControls);
         record[1] = property_form[1]; // segment type
         record[2] = 0x00; // segment ID
         record[3..].copy_from_slice(&property_form[2..]);
         record
+    }
+
+    /// The task-segment allocation for the memory window, mirroring
+    /// [`Self::abs_segment`].
+    pub fn task_segment(
+        machine: LsmMachine,
+        start_address: u16,
+        pei_type: u8,
+        application_id: [u8; 5],
+    ) -> [u8; Self::RECORD_LEN] {
+        Self::additional_control(machine, LoadControlRecord::task_segment(start_address, pei_type, application_id))
+    }
+
+    /// The TaskPtr record for the memory window (see
+    /// [`LoadControlRecord::task_ptr`]).
+    pub fn task_ptr(machine: LsmMachine, init_ptr: u16, save_ptr: u16, serial_ptr: u16) -> [u8; Self::RECORD_LEN] {
+        Self::additional_control(machine, LoadControlRecord::task_ptr(init_ptr, save_ptr, serial_ptr))
+    }
+
+    /// The TaskCtrl1 record for the memory window (see
+    /// [`LoadControlRecord::task_ctrl1`]).
+    pub fn task_ctrl1(machine: LsmMachine, address: u16, count: u8) -> [u8; Self::RECORD_LEN] {
+        Self::additional_control(machine, LoadControlRecord::task_ctrl1(address, count))
+    }
+
+    /// The TaskCtrl2 record for the memory window (see
+    /// [`LoadControlRecord::task_ctrl2`]).
+    pub fn task_ctrl2(
+        machine: LsmMachine,
+        callback: u16,
+        address: u16,
+        seg0: u16,
+        seg1: u16,
+    ) -> [u8; Self::RECORD_LEN] {
+        Self::additional_control(machine, LoadControlRecord::task_ctrl2(callback, address, seg0, seg1))
     }
 }
 
@@ -408,6 +502,27 @@ mod tests {
         // download: EEPROM at 4000h, 12 octets.
         let seg = AbsSegment::eeprom(0x4000, 12);
         assert_eq!(seg.write(), [0x00, 0x40, 0x00, 0x00, 0x0C, 0xFF, 0x03, 0x80, 0x00]);
+    }
+
+    /// The BCU2 task records, against the §3.31.2 tables (the values
+    /// are the MV-0021 master template's / the L&J product's).
+    #[test]
+    fn bcu2_task_records() {
+        // TaskPtr: InitPtr=284, SavePtr=285, SerialPtr=0.
+        assert_eq!(LoadControlRecord::task_ptr(284, 285, 0), [
+            0x03, 0x03, 0x01, 0x1C, 0x01, 0x1D, 0x00, 0x00, 0x00, 0x00
+        ]);
+        // TaskCtrl1: Address=0, Count=0.
+        assert_eq!(LoadControlRecord::task_ctrl1(0, 0), [0x03, 0x04, 0, 0, 0, 0, 0, 0, 0, 0]);
+        // TaskCtrl2: Callback=20609 (5081h), Address=282, Seg0=Seg1=208.
+        assert_eq!(LoadControlRecord::task_ctrl2(20609, 282, 208, 208), [
+            0x03, 0x05, 0x50, 0x81, 0x01, 0x1A, 0x00, 0xD0, 0x00, 0xD0
+        ]);
+        // The memory-window spelling tags the machine and inserts the
+        // segment-ID octet.
+        assert_eq!(MemLoadControlRecord::task_ptr(LsmMachine::ApplicationProgram, 284, 285, 0), [
+            0x33, 0x03, 0x00, 0x01, 0x1C, 0x01, 0x1D, 0x00, 0x00, 0x00, 0x00
+        ]);
     }
 
     /// Bare events are the event octet zero-padded to the 10-octet

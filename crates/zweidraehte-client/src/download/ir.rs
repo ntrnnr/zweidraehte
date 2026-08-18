@@ -67,8 +67,17 @@ pub enum Instruction {
     /// sends it, so faithful procedures include it.
     TaskSegment { lsm: LsmIndex, address: u16, pei_type: u8, application_id: [u8; 5] },
     /// Write `length` bytes from the assembled device image at
-    /// `address` (the explicit form of ETS's implicit data phase).
-    WriteImage { address: u16, length: u16 },
+    /// `address` — the explicit form of ETS's implicit data phase, and
+    /// the lowering of a mask template's `LdCtrlWriteMem` without
+    /// inline data. The window is a span of *device* memory; only the
+    /// parts the image covers are written.
+    WriteImage { address: u16, length: u16, verify: bool },
+    /// Read device memory into the image's gaps (`LdCtrlLoadImageMem`,
+    /// the BCU-era masks): bytes the compile step produced stay, bytes
+    /// it did not are taken from the device — so a later
+    /// [`Self::WriteImage`] over the same span writes them back
+    /// unchanged.
+    ReadIntoImage { address: u16, length: u16 },
     /// Write literal bytes (`LdCtrlWriteMem` with inline data).
     WriteMemory { address: u16, data: Vec<u8>, verify: bool },
     /// Read memory and require an exact value (`LdCtrlCompareMem`).
@@ -84,6 +93,18 @@ pub enum Instruction {
     LoadImageProperty { obj_idx: u8, prop_id: u16 },
     /// Write a property value (`LdCtrlWriteProp` with inline data).
     WriteProperty { obj_idx: u8, prop_id: u16, data: Vec<u8>, verify: bool },
+    /// The BCU2 application's entry points (`LdCtrlTaskPtr` → the
+    /// §3.31.2 TaskPtr record, segment type 3). Like
+    /// [`Self::TaskSegment`], an informational record: it does not
+    /// transition the machine, so the engine sends it without a state
+    /// poll.
+    TaskPointers { lsm: LsmIndex, init_ptr: u16, save_ptr: u16, serial_ptr: u16 },
+    /// The BCU2 application's interface-object list (`LdCtrlTaskCtrl1`
+    /// → TaskCtrl1 record, segment type 4).
+    TaskControl1 { lsm: LsmIndex, address: u16, count: u8 },
+    /// The BCU2 group-object callback and table pointers
+    /// (`LdCtrlTaskCtrl2` → TaskCtrl2 record, segment type 5).
+    TaskControl2 { lsm: LsmIndex, callback: u16, address: u16, seg0: u16, seg1: u16 },
     /// Basic restart (`LdCtrlRestart`); the device reboots and the
     /// transport connection dies with it.
     Restart,
@@ -128,7 +149,10 @@ impl Instruction {
                 format!("Request {} bytes on object {lsm}", segment.requested_memory_size)
             }
             Self::TaskSegment { lsm, address, .. } => format!("Announce task at {address:#06X} (machine {lsm})"),
-            Self::WriteImage { address, length } => format!("Write {length} bytes at {address:#06X}"),
+            Self::WriteImage { address, length, .. } => format!("Write {length} bytes at {address:#06X}"),
+            Self::ReadIntoImage { address, length } => {
+                format!("Read {length} bytes at {address:#06X} from the device")
+            }
             Self::WriteMemory { address, data, .. } => format!("Write {} bytes at {address:#06X}", data.len()),
             Self::CompareMemory { address, .. } => format!("Verify memory at {address:#06X}"),
             Self::WriteRelImage { obj_idx, .. } => format!("Write object {obj_idx}'s table"),
@@ -136,6 +160,9 @@ impl Instruction {
                 format!("Read back object {obj_idx}'s property {prop_id}")
             }
             Self::WriteProperty { obj_idx, prop_id, .. } => format!("Write object {obj_idx}'s property {prop_id}"),
+            Self::TaskPointers { lsm, .. } => format!("Announce task pointers (machine {lsm})"),
+            Self::TaskControl1 { lsm, .. } => format!("Announce task control block 1 (machine {lsm})"),
+            Self::TaskControl2 { lsm, .. } => format!("Announce task control block 2 (machine {lsm})"),
             Self::Restart => "Restart the device".to_string(),
             Self::Delay { milliseconds } => format!("Wait {milliseconds} ms"),
             Self::MapError { .. } => "Adjust error tolerance".to_string(),
@@ -163,13 +190,15 @@ mod convert {
     /// serves both.
     ///
     /// Only the instruction subset a remote download can perform is
-    /// executable; the tool-side scaffolding (`Merge`,
-    /// `SetControlVariable`, BCU2 task plumbing) returns
+    /// executable; unresolvable tool-side scaffolding (`Merge`,
+    /// coupler filter tables) returns
     /// [`Error::UnsupportedInstruction`] — `Merge` in particular must
     /// be resolved by [`assemble`](crate::download::assemble) before
-    /// execution, never reached at run time.
+    /// execution, never reached at run time. A control that needs no
+    /// runtime counterpart at all (`SetControlVariable`) converts to
+    /// nothing.
     pub fn controls_to_instructions(controls: &[ld::LoadControl], task: TaskIdentity) -> Result<Vec<Instruction>> {
-        controls.iter().map(|control| convert_control(control, task)).collect()
+        controls.iter().filter_map(|control| convert_control(control, task).transpose()).collect()
     }
 
     /// A load state machine must be named by index; the
@@ -192,9 +221,9 @@ mod convert {
             .collect())
     }
 
-    fn convert_control(control: &ld::LoadControl, task: TaskIdentity) -> Result<Instruction> {
+    fn convert_control(control: &ld::LoadControl, task: TaskIdentity) -> Result<Option<Instruction>> {
         use ld::LoadControl as C;
-        Ok(match control {
+        Ok(Some(match control {
             C::LdCtrlConnect(_) => Instruction::Connect,
             C::LdCtrlDisconnect(_) => Instruction::Disconnect,
             C::LdCtrlRestart(_) => Instruction::Restart,
@@ -244,7 +273,11 @@ mod convert {
                     // Without inline data the bytes come from the
                     // assembled image; the size in the template is a
                     // clamp-to-blob upper bound.
-                    None => Instruction::WriteImage { address, length: u16::try_from(w.size).unwrap_or(u16::MAX) },
+                    None => Instruction::WriteImage {
+                        address,
+                        length: u16::try_from(w.size).unwrap_or(u16::MAX),
+                        verify: w.verify,
+                    },
                 }
             }
             C::LdCtrlCompareMem(cm) => Instruction::CompareMemory {
@@ -279,26 +312,49 @@ mod convert {
                     p.obj_idx.ok_or(Error::UnsupportedInstruction("LoadImageProp by ObjType not supported"))?;
                 Instruction::LoadImageProperty { obj_idx, prop_id: p.prop_id as u16 }
             }
-            C::LdCtrlLoadImageMem(_) => {
-                return Err(Error::UnsupportedInstruction("LoadImageMem (BCU1 image preload) not implemented"));
-            }
+            C::LdCtrlLoadImageMem(m) => Instruction::ReadIntoImage {
+                address: u16::try_from(m.address).map_err(|_| Error::Parse("LoadImageMem address beyond 16 bits"))?,
+                length: u16::try_from(m.size).map_err(|_| Error::Parse("LoadImageMem size beyond 16 bits"))?,
+            },
             C::LdCtrlMerge(_) => {
                 return Err(Error::UnsupportedInstruction("Merge splice points must be resolved before execution"));
             }
             C::LdCtrlMapError(m) => Instruction::MapError { original: m.original_error, mapped: m.mapped_error },
-            C::LdCtrlSetControlVariable(_) => {
-                return Err(Error::UnsupportedInstruction("SetControlVariable not yet implemented"));
-            }
+            // Tool-side variables with no runtime counterpart in this
+            // IR. `EnableVerifyOnWriteDirect` is redundant with the
+            // per-write `Verify` attributes — every published template
+            // that toggles it also spells the matching flag on each
+            // `LdCtrlWriteMem` (MV-0012 and MV-0021 both) — and
+            // `EnableSegmentWrite` gates ETS's implicit segment writes,
+            // which our compile step already makes explicit
+            // `WriteImage` instructions where (and only where) they
+            // belong.
+            C::LdCtrlSetControlVariable(_) => return Ok(None),
             C::LdCtrlMasterReset(_) => {
                 return Err(Error::UnsupportedInstruction("MasterReset inside procedures not yet implemented"));
             }
             C::LdCtrlClearLCFilterTable(_) => {
                 return Err(Error::UnsupportedInstruction("line-coupler filter tables not supported"));
             }
-            C::LdCtrlTaskPtr(_) | C::LdCtrlTaskCtrl1(_) | C::LdCtrlTaskCtrl2(_) => {
-                return Err(Error::UnsupportedInstruction("BCU2 task records not supported"));
-            }
-        })
+            C::LdCtrlTaskPtr(t) => Instruction::TaskPointers {
+                lsm: t.lsm_idx,
+                init_ptr: t.init_ptr,
+                save_ptr: t.save_ptr,
+                serial_ptr: t.serial_ptr,
+            },
+            C::LdCtrlTaskCtrl1(t) => Instruction::TaskControl1 {
+                lsm: t.lsm_idx,
+                address: t.address,
+                count: u8::try_from(t.count).map_err(|_| Error::Parse("TaskCtrl1 count beyond one octet"))?,
+            },
+            C::LdCtrlTaskCtrl2(t) => Instruction::TaskControl2 {
+                lsm: t.lsm_idx,
+                callback: t.callback,
+                address: t.address,
+                seg0: t.seg0,
+                seg1: t.seg1,
+            },
+        }))
     }
 
     #[cfg(test)]
@@ -334,6 +390,72 @@ mod convert {
             assert!(hex_bytes("zz").is_err(), "not hex");
         }
 
+        /// The MV-0012 Load-all template converts as-is: no LSM
+        /// instructions at all, the `SetControlVariable` dropped (its
+        /// verify intent is already on every write), the
+        /// `LoadImageMem` snapshot as `ReadIntoImage`, and the
+        /// image-sourced writes as verifying `WriteImage` windows.
+        #[test]
+        fn converts_bcu1_load_all() {
+            let master: zweidraehte_knxprod::MasterData =
+                crate::download::mask::fixtures::MV_0012.parse().expect("fixture is valid master data");
+            let mv = master.get_mask_version("MV-0012").expect("fixture defines MV-0012");
+            let procedure = mv.find_procedure("Load", "all").expect("fixture defines Load all");
+
+            let instructions = controls_to_instructions(&procedure.controls, Default::default())
+                .expect("every element is convertible");
+            assert_eq!(instructions, vec![
+                Instruction::Connect,
+                // RunError (010Dh) ← 00: halt the application.
+                Instruction::WriteMemory { address: 0x010D, data: vec![0x00], verify: true },
+                // Snapshot the GA-table length (0116h) for the case
+                // where the image does not cover it.
+                Instruction::ReadIntoImage { address: 0x0116, length: 1 },
+                // GA-table length ← 01: mute group communication.
+                Instruction::WriteMemory { address: 0x0116, data: vec![0x01], verify: true },
+                Instruction::WriteImage { address: 0x0100, length: 1, verify: true },
+                Instruction::WriteImage { address: 0x0104, length: 9, verify: true },
+                Instruction::WriteImage { address: 0x010E, length: 8, verify: true },
+                Instruction::WriteImage { address: 0x0119, length: 230, verify: true },
+                // Zero the RAM-flags areas (00CEh / 00D7h).
+                Instruction::WriteMemory { address: 0x00CE, data: vec![0; 9], verify: true },
+                Instruction::WriteMemory { address: 0x00D7, data: vec![0; 9], verify: true },
+                // GA-table length ← the compiled value: unmute.
+                Instruction::WriteImage { address: 0x0116, length: 1, verify: true },
+                // RunError ← FF: all error flags clear (active low).
+                Instruction::WriteMemory { address: 0x010D, data: vec![0xFF], verify: true },
+                Instruction::Restart,
+            ]);
+        }
+
+        /// The BCU2 task records convert to their dedicated
+        /// instructions (previously a hard rejection).
+        #[test]
+        fn converts_bcu2_task_records() {
+            let controls = vec![
+                ld::LoadControl::LdCtrlTaskPtr(ld::LdCtrlTaskPtr {
+                    lsm_idx: 3,
+                    init_ptr: 284,
+                    save_ptr: 285,
+                    serial_ptr: 0,
+                }),
+                ld::LoadControl::LdCtrlTaskCtrl1(ld::LdCtrlTaskCtrl1 { lsm_idx: 3, address: 0, count: 0 }),
+                ld::LoadControl::LdCtrlTaskCtrl2(ld::LdCtrlTaskCtrl2 {
+                    lsm_idx: 3,
+                    callback: 20609,
+                    address: 282,
+                    seg0: 208,
+                    seg1: 208,
+                }),
+            ];
+            let instructions = controls_to_instructions(&controls, Default::default()).expect("task records convert");
+            assert_eq!(instructions, vec![
+                Instruction::TaskPointers { lsm: 3, init_ptr: 284, save_ptr: 285, serial_ptr: 0 },
+                Instruction::TaskControl1 { lsm: 3, address: 0, count: 0 },
+                Instruction::TaskControl2 { lsm: 3, callback: 20609, address: 282, seg0: 208, seg1: 208 },
+            ]);
+        }
+
         /// System B's relative-allocation controls now convert.
         #[test]
         fn system_b_controls_convert() {
@@ -344,10 +466,13 @@ mod convert {
                 fill: 0,
                 ..Default::default()
             });
-            assert_eq!(convert_control(&rel, Default::default()).expect("converts"), Instruction::RelSegment {
-                lsm: 3,
-                segment: RelSegment { requested_memory_size: 8192, mode: 0, fill: 0 },
-            });
+            assert_eq!(
+                convert_control(&rel, Default::default()).expect("converts"),
+                Some(Instruction::RelSegment {
+                    lsm: 3,
+                    segment: RelSegment { requested_memory_size: 8192, mode: 0, fill: 0 },
+                })
+            );
 
             let write = ld::LoadControl::LdCtrlWriteRelMem(ld::LdCtrlWriteRelMem {
                 obj_idx: Some(3),
@@ -358,11 +483,10 @@ mod convert {
                 verify: true,
                 ..Default::default()
             });
-            assert_eq!(convert_control(&write, Default::default()).expect("converts"), Instruction::WriteRelImage {
-                obj_idx: 3,
-                offset: 0,
-                verify: true,
-            });
+            assert_eq!(
+                convert_control(&write, Default::default()).expect("converts"),
+                Some(Instruction::WriteRelImage { obj_idx: 3, offset: 0, verify: true })
+            );
 
             let image = ld::LoadControl::LdCtrlLoadImageProp(ld::LdCtrlLoadImageProp {
                 obj_idx: Some(4),
@@ -371,7 +495,7 @@ mod convert {
             });
             assert_eq!(
                 convert_control(&image, Default::default()).expect("converts"),
-                Instruction::LoadImageProperty { obj_idx: 4, prop_id: 7 }
+                Some(Instruction::LoadImageProperty { obj_idx: 4, prop_id: 7 })
             );
         }
 

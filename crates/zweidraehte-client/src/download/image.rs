@@ -96,6 +96,54 @@ impl DeviceImage {
         self.regions.iter().map(|(&addr, bytes)| (addr, bytes.as_slice()))
     }
 
+    /// The sub-slices of `[address, address + length)` the image
+    /// covers, in address order.
+    ///
+    /// A mask template's `WriteMem` window is a fixed span of device
+    /// memory (BCU1's Load-all writes "230 bytes at 0119h" no matter
+    /// the product); the image may cover it with several regions, or
+    /// only partially. The download writes exactly the covered parts —
+    /// which is also what ETS does, since its image is seeded from the
+    /// same product data.
+    pub fn covered(&self, address: u16, length: u16) -> impl Iterator<Item = (u16, &[u8])> + '_ {
+        let start = usize::from(address);
+        let end = start + usize::from(length);
+        self.regions.iter().filter_map(move |(&region_start, bytes)| {
+            let region_start = usize::from(region_start);
+            let overlap_start = region_start.max(start);
+            let overlap_end = (region_start + bytes.len()).min(end);
+            (overlap_start < overlap_end)
+                .then(|| (overlap_start as u16, &bytes[overlap_start - region_start..overlap_end - region_start]))
+        })
+    }
+
+    /// Fill positions of `[start, start + bytes.len())` that no region
+    /// covers with the given bytes, leaving covered positions alone
+    /// (`LdCtrlLoadImageMem`: bytes read back from the device fill the
+    /// image's gaps, but compiled content — the ETS-owned bytes —
+    /// always wins over whatever the device currently holds).
+    pub fn fill_holes(&mut self, start: u16, bytes: &[u8]) {
+        let mut run_start = 0usize;
+        let mut run: Vec<u8> = Vec::new();
+        for (i, &byte) in bytes.iter().enumerate() {
+            let Some(address) = u16::try_from(usize::from(start) + i).ok() else { break };
+            if self.slice(address, 1).is_some() {
+                if !run.is_empty() {
+                    let filled = std::mem::take(&mut run);
+                    self.insert(run_start as u16, filled).expect("holes cannot overlap existing regions");
+                }
+            } else {
+                if run.is_empty() {
+                    run_start = usize::from(address);
+                }
+                run.push(byte);
+            }
+        }
+        if !run.is_empty() {
+            self.insert(run_start as u16, run).expect("holes cannot overlap existing regions");
+        }
+    }
+
     /// Set the content of an interface object's relative segment.
     pub fn insert_relative(&mut self, obj_idx: u8, bytes: Vec<u8>) {
         if bytes.is_empty() {
@@ -145,5 +193,32 @@ mod tests {
         // Clamp-to-blob: a template's huge size takes what's there.
         assert_eq!(image.slice(0x4004, 1000), Some(&[5, 6][..]));
         assert_eq!(image.slice(0x5000, 1), None);
+    }
+
+    #[test]
+    fn covered_yields_the_intersections_with_a_window() {
+        let mut image = DeviceImage::new();
+        image.insert(0x0100, vec![1, 2]).expect("inserts");
+        image.insert(0x0110, vec![3, 4, 5, 6]).expect("inserts");
+
+        // A window spanning both regions and the gap between them.
+        let parts: Vec<(u16, Vec<u8>)> =
+            image.covered(0x0101, 0x11).map(|(addr, bytes)| (addr, bytes.to_vec())).collect();
+        assert_eq!(parts, vec![(0x0101, vec![2]), (0x0110, vec![3, 4])]);
+
+        // A window touching nothing yields nothing.
+        assert_eq!(image.covered(0x0200, 16).count(), 0);
+    }
+
+    #[test]
+    fn fill_holes_keeps_compiled_bytes_and_fills_the_rest() {
+        let mut image = DeviceImage::new();
+        image.insert(0x0102, vec![0x11]).expect("inserts");
+
+        image.fill_holes(0x0100, &[0xA0, 0xA1, 0xA2, 0xA3]);
+
+        assert_eq!(image.slice(0x0100, 2), Some(&[0xA0, 0xA1][..]), "the gap before the region filled");
+        assert_eq!(image.slice(0x0102, 1), Some(&[0x11][..]), "the compiled byte survives");
+        assert_eq!(image.slice(0x0103, 1), Some(&[0xA3][..]), "the gap after the region filled");
     }
 }

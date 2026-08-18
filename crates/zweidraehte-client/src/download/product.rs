@@ -137,11 +137,19 @@ pub struct ProductData {
     /// Segment id holding the group address table, if the product
     /// says (`Static/AddressTable/@CodeSegment`).
     pub address_table_segment: Option<String>,
+    /// Offset of the table inside its segment
+    /// (`Static/AddressTable/@Offset`). Zero on the families with
+    /// dedicated table segments (System 7, BCU2); non-zero on BCU1,
+    /// whose tables live inside the one EEPROM segment (the MDT
+    /// MV-0012 reference points all three tables into it).
+    pub address_table_offset: u32,
     pub address_table_max_entries: Option<u16>,
     pub association_table_segment: Option<String>,
+    pub association_table_offset: u32,
     pub association_table_max_entries: Option<u16>,
     /// Segment id holding the group object table.
     pub com_object_table_segment: Option<String>,
+    pub com_object_table_offset: u32,
 }
 
 impl ProductData {
@@ -199,10 +207,23 @@ impl ProductData {
             com_objects: extract_com_objects(program)?,
             parameters: extract_parameters(program),
             address_table_segment,
+            address_table_offset: program.static_section.address_table.as_ref().and_then(|t| t.offset).unwrap_or(0),
             address_table_max_entries: program.static_section.address_table.as_ref().map(|t| t.max_entries),
             association_table_segment,
+            association_table_offset: program
+                .static_section
+                .association_table
+                .as_ref()
+                .and_then(|t| t.offset)
+                .unwrap_or(0),
             association_table_max_entries: program.static_section.association_table.as_ref().map(|t| t.max_entries),
             com_object_table_segment,
+            com_object_table_offset: program
+                .static_section
+                .com_object_table
+                .as_ref()
+                .and_then(|t| t.offset)
+                .unwrap_or(0),
         })
     }
 
@@ -455,8 +476,52 @@ pub(crate) mod tests {
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
+    /// A BCU1 product in the vendor shape (the MDT MV-0012 reference):
+    /// one 256-byte EEPROM segment covering the whole ETS-visible
+    /// window at 0100h, all three tables pointing *into* it at
+    /// offsets, `DefaultProcedure` (the mask template is the whole
+    /// procedure). The segment's default data is the 00..FF ramp so
+    /// splice tests can see what survived.
+    pub(crate) const BCU1_MTXML: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+    <ApplicationProgram Id="M-00FA_A-0310-01-0000" ApplicationNumber="784" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0012" Name="BCU1 Switch" LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="de-DE" DynamicTableManagement="false" Linkable="false">
+      <Static>
+        <Code>
+          <AbsoluteSegment Id="M-00FA_A-0310-01-0000_AS-0100" Address="256" Size="256" MemoryType="EEPROM"><Data>AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==</Data></AbsoluteSegment>
+        </Code>
+        <Parameters>
+          <Parameter Id="M-00FA_A-0310-01-0000_P-1" Name="Mode" ParameterType="M-00FA_A-0310-01-0000_PT-1" Text="Mode" Value="0">
+            <Memory CodeSegment="M-00FA_A-0310-01-0000_AS-0100" Offset="200" BitOffset="0" />
+          </Parameter>
+        </Parameters>
+        <ComObjectTable CodeSegment="M-00FA_A-0310-01-0000_AS-0100" Offset="80">
+          <ComObject Id="M-00FA_A-0310-01-0000_O-0" Name="Switch" Text="Switch" Number="0" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+          <ComObject Id="M-00FA_A-0310-01-0000_O-1" Name="Status" Text="Status" Number="1" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Enabled" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+        </ComObjectTable>
+        <AddressTable CodeSegment="M-00FA_A-0310-01-0000_AS-0100" Offset="22" MaxEntries="5" />
+        <AssociationTable CodeSegment="M-00FA_A-0310-01-0000_AS-0100" Offset="60" MaxEntries="5" />
+        <LoadProcedures />
+      </Static>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
     fn product() -> ProductData {
         ProductData::from_mtxml_str(SYSTEM7_MTXML).expect("the fixture parses")
+    }
+
+    #[test]
+    fn extracts_bcu1_table_offsets() {
+        let p = ProductData::from_mtxml_str(BCU1_MTXML).expect("the BCU1 fixture parses");
+        assert_eq!(p.mask_version, Some(MaskVersion::Bcu1Tp1));
+        assert_eq!(p.load_procedure_style, LoadProcedureStyle::Other);
+        assert_eq!(p.address_table_offset, 22);
+        assert_eq!(p.association_table_offset, 60);
+        assert_eq!(p.com_object_table_offset, 80);
+        // All three point into the one EEPROM segment.
+        let segment = p.address_table_segment.as_deref().expect("ADT segment named");
+        assert_eq!(p.association_table_segment.as_deref(), Some(segment));
+        assert_eq!(p.com_object_table_segment.as_deref(), Some(segment));
     }
 
     #[test]

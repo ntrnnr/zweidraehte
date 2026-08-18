@@ -37,6 +37,9 @@ pub trait MaskFamilyExt {
 impl MaskFamilyExt for MaskFamily {
     fn load_procedure_style(&self) -> &'static str {
         match self {
+            // BCU1 downloads follow the mask's own master-data template.
+            MaskFamily::Bcu1 => "DefaultProcedure",
+            MaskFamily::Bcu2 => "ProductProcedure",
             MaskFamily::System7 => "ProductProcedure",
             MaskFamily::SystemB => "MergedProcedure",
             MaskFamily::Bim => "DefaultProcedure",
@@ -46,7 +49,9 @@ impl MaskFamilyExt for MaskFamily {
 
     fn data_segment_type(&self) -> DataSegmentType {
         match self {
-            MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => DataSegmentType::Absolute,
+            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => {
+                DataSegmentType::Absolute
+            }
             MaskFamily::SystemB => DataSegmentType::Relative,
         }
     }
@@ -60,19 +65,19 @@ impl MaskFamilyExt for MaskFamily {
         // do the BCU-era families.
         match self {
             MaskFamily::SystemB => 1,
-            MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => 0,
+            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::System7 | MaskFamily::Bim | MaskFamily::BimM => 0,
         }
     }
 
     fn has_com_object_table(&self) -> bool {
         match self {
-            MaskFamily::System7 | MaskFamily::SystemB => true,
+            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::System7 | MaskFamily::SystemB => true,
             MaskFamily::Bim | MaskFamily::BimM => false,
         }
     }
 
     fn generates_address_tables(&self) -> bool {
-        matches!(self, MaskFamily::SystemB | MaskFamily::System7)
+        matches!(self, MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::SystemB | MaskFamily::System7)
     }
 }
 

@@ -1,27 +1,163 @@
-//! Per-management-model image layout definitions.
+//! Per-management-model download definitions.
 //!
 //! The compile pipeline in [`super::project`] is generic; what varies
-//! between management models is declared here, one [`ImageLayout`]
-//! per model. This is deliberately the residue the master data
-//! *cannot* express — table byte formats and numbering conventions —
-//! kept as small definition tables next to each other, the same move
-//! [`super::table_coding`] makes one level down. Everything the
-//! master data *does* express (which machines exist, how they are
-//! driven, at which objects) comes from
+//! between management models is declared here, one [`DownloadModel`]
+//! row per BCU kind. Each row is deliberately the residue the master
+//! data *cannot* express — table byte formats, numbering conventions,
+//! the load-control path policy, whether the family speaks
+//! `A_Authorize` — kept as small definition tables next to each
+//! other, the same move [`super::table_coding`] makes one level down.
+//! Everything the master data *does* express (which machines exist,
+//! how they are driven, at which objects) comes from
 //! [`LsmModel`](super::mask::LsmModel) instead and must not be
 //! duplicated here.
 //!
 //! Adding a management model means adding its table codings in
-//! `table_coding.rs`, one `ImageLayout` const here, and nothing in
+//! `table_coding.rs`, one `DownloadModel` row here, and nothing in
 //! the pipeline.
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 
+use super::interpreter::LoadControlPath;
+use super::mask::{LsmRealization, MaskData};
 use super::table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CotM112, TableCoding,
 };
 use crate::error::{Error, Result};
+
+/// How one management model is programmed: everything about a BCU
+/// kind that neither the master data nor the product file expresses.
+///
+/// The image half lives in the embedded [`ImageLayout`]; the rest is
+/// download behavior. One row per BCU kind — System 7 and System B
+/// today's working paths, BCU1 and BCU2 the legacy families, couplers
+/// a future row.
+pub struct DownloadModel {
+    /// The master data's `ManagementModel` spelling this row serves.
+    pub management_model: &'static str,
+    /// Table byte formats and placement — the image half.
+    pub(crate) layout: ImageLayout,
+    /// The load-control path policy. Mostly derived from the mask's
+    /// own LSM resource declarations ([`declared_path`]), but a row
+    /// may overrule them where real silicon does (BIM M112) or where
+    /// there is nothing to declare (BCU1).
+    pub load_control: fn(&MaskData<'_>) -> Result<LoadControlPath>,
+    /// Whether the `Connect` step issues `A_Authorize`. BCU1 has no
+    /// access levels — the service itself is a BCU2 addition — so
+    /// sending it there is undefined; every other family gates
+    /// configuration writes behind the granted level.
+    pub authorize_on_connect: bool,
+    /// Whether the management surface has interface objects and
+    /// properties at all. False only for BCU1, whose management is
+    /// entirely memory-mapped — a property read there is not a
+    /// fallback-worthy attempt but a service the device does not
+    /// speak. Callers use this to skip the `PID_MAX_APDULENGTH`
+    /// negotiation (and similar property probes) outright.
+    pub has_properties: bool,
+    /// The APDU capacity to assume when `PID_MAX_APDULENGTH` cannot be
+    /// read. 15 — the TP1 standard frame, 12-byte memory chunks — is
+    /// the 03/05/01 §4.3.7.2.1 fallback for every family; BCU1 devices
+    /// have no properties at all, so for them it is not a fallback but
+    /// the answer.
+    pub default_max_apdu: u16,
+}
+
+impl DownloadModel {
+    /// The model for a mask's declared management model, or `None` for
+    /// models whose downloads are not implemented (plain couplers, …).
+    pub fn for_management_model(model: &str) -> Option<&'static DownloadModel> {
+        MODELS.iter().find(|m| m.management_model == model)
+    }
+}
+
+const MODELS: [DownloadModel; 4] = [
+    DownloadModel {
+        management_model: "Bcu1",
+        layout: BCU1_LAYOUT,
+        // Mask 001xh has no load state machines at all — the whole
+        // download is a direct memory-write sequence.
+        load_control: direct_path,
+        authorize_on_connect: false,
+        has_properties: false,
+        default_max_apdu: 15,
+    },
+    DownloadModel {
+        management_model: "Bcu2",
+        layout: BCU2_LAYOUT,
+        // Property-mapped machines 1–3 (addr/assoc/app), declared in
+        // the mask's resources.
+        load_control: declared_path,
+        authorize_on_connect: true,
+        has_properties: true,
+        default_max_apdu: 15,
+    },
+    DownloadModel {
+        management_model: "BimM112",
+        layout: BIM_M112_LAYOUT,
+        load_control: forced_property_path,
+        authorize_on_connect: true,
+        has_properties: true,
+        default_max_apdu: 15,
+    },
+    DownloadModel {
+        management_model: "SystemB",
+        layout: SYSTEM_B_LAYOUT,
+        load_control: declared_path,
+        authorize_on_connect: true,
+        has_properties: true,
+        default_max_apdu: 15,
+    },
+];
+
+// ============================================================================
+// Load-control path policies
+// ============================================================================
+
+/// BCU1: no machines, no records, no polling — the procedure is plain
+/// memory writes.
+fn direct_path(_mask: &MaskData<'_>) -> Result<LoadControlPath> {
+    Ok(LoadControlPath::Direct)
+}
+
+/// BIM M112: always the property path, regardless of what the
+/// resources declare. The master data still describes the legacy
+/// memory-mapped window at 0104h for these masks, but that is not
+/// what ETS does — a Falcon trace of a real MDT 0705 device (ETS.log,
+/// 2026-08-13) unloads through PropertyValue_Write on interface
+/// objects 1..4, PID_LOAD_STATE_CONTROL, and the device never reacted
+/// to spec-shaped window writes at all. 03/05/02 §3.31.2 marks the
+/// memory procedure "shall not be used for further developments", the
+/// certification templates only ever exercise the property
+/// realization, and the machine index *is* the object index — so the
+/// property path is what real System 7 silicon actually speaks.
+fn forced_property_path(_mask: &MaskData<'_>) -> Result<LoadControlPath> {
+    Ok(LoadControlPath::Property)
+}
+
+/// The path the mask's own LSM resource declarations describe —
+/// per-mask data, not family lore (MV-2705 is BimM112-managed yet
+/// property-driven, which is why the BimM112 row overrules rather
+/// than trusts this).
+fn declared_path(mask: &MaskData<'_>) -> Result<LoadControlPath> {
+    let model = mask.lsm_model();
+    match model.realization() {
+        Some(LsmRealization::Property) => Ok(LoadControlPath::Property),
+        Some(LsmRealization::Memory) => {
+            let resources = mask.memory_resources().ok_or(Error::DownloadConfig(
+                "this mask drives its machines through memory but does not locate all of \
+                 ProgrammingMode / load control / load status / address table there",
+            ))?;
+            Ok(LoadControlPath::Memory(resources))
+        }
+        None if model.is_empty() => Err(Error::DownloadConfig(
+            "this mask declares no load state machines, but its management model expects them",
+        )),
+        None => Err(Error::DownloadConfig(
+            "this mask mixes memory-mapped and property-driven machines; no published mask does",
+        )),
+    }
+}
 
 /// Where a model's generated content lands in the image.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,8 +177,6 @@ pub(crate) enum Placement {
 /// [`TableCoding`](super::table_coding::TableCoding) of the model's
 /// realization types.
 pub(crate) struct ImageLayout {
-    /// The master data's `ManagementModel` spelling this layout serves.
-    pub management_model: &'static str,
     pub placement: Placement,
     /// First ASAP the model's group object table can express —
     /// M112 numbers objects from 0, RT7 from 1 (its table cannot hold
@@ -64,23 +198,11 @@ pub(crate) struct ImageLayout {
     pub overlay_group_object_table: Option<fn(&mut [u8], &[super::product::ComObjectDef]) -> Result<()>>,
 }
 
-impl ImageLayout {
-    /// The layout for a mask's declared management model, or `None`
-    /// for models whose downloads are not implemented (plain
-    /// couplers, …).
-    pub fn for_management_model(model: &str) -> Option<&'static ImageLayout> {
-        LAYOUTS.iter().find(|layout| layout.management_model == model)
-    }
-}
-
-pub(crate) const LAYOUTS: [ImageLayout; 4] = [BCU1, BCU2, BIM_M112, SYSTEM_B];
-
 // ============================================================================
 // BCU1 (System 1)
 // ============================================================================
 
-const BCU1: ImageLayout = ImageLayout {
-    management_model: "Bcu1",
+const BCU1_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::AbsoluteSegments,
     first_asap: 0,
     address_table: bcu1_address_table,
@@ -125,8 +247,7 @@ fn bcu1_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<V
 // BCU2 (System 2)
 // ============================================================================
 
-const BCU2: ImageLayout = ImageLayout {
-    management_model: "Bcu2",
+const BCU2_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::AbsoluteSegments,
     first_asap: 0,
     address_table: bcu2_address_table,
@@ -171,8 +292,7 @@ fn bcu2_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<V
 // BIM M112 (System 7)
 // ============================================================================
 
-const BIM_M112: ImageLayout = ImageLayout {
-    management_model: "BimM112",
+const BIM_M112_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::AbsoluteSegments,
     first_asap: 0,
     address_table: m112_address_table,
@@ -231,8 +351,7 @@ fn m112_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<V
 // System B
 // ============================================================================
 
-const SYSTEM_B: ImageLayout = ImageLayout {
-    management_model: "SystemB",
+const SYSTEM_B_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::RelativeObjects,
     first_asap: 1,
     address_table: system_b_address_table,
@@ -266,12 +385,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn layouts_resolve_by_management_model() {
-        assert_eq!(ImageLayout::for_management_model("Bcu1").map(|l| l.first_asap), Some(0));
-        assert_eq!(ImageLayout::for_management_model("Bcu2").map(|l| l.first_asap), Some(0));
-        assert_eq!(ImageLayout::for_management_model("BimM112").map(|l| l.first_asap), Some(0));
-        assert_eq!(ImageLayout::for_management_model("SystemB").map(|l| l.first_asap), Some(1));
-        assert!(ImageLayout::for_management_model("").is_none());
+    fn models_resolve_by_management_model() {
+        assert_eq!(DownloadModel::for_management_model("Bcu1").map(|m| m.layout.first_asap), Some(0));
+        assert_eq!(DownloadModel::for_management_model("Bcu2").map(|m| m.layout.first_asap), Some(0));
+        assert_eq!(DownloadModel::for_management_model("BimM112").map(|m| m.layout.first_asap), Some(0));
+        assert_eq!(DownloadModel::for_management_model("SystemB").map(|m| m.layout.first_asap), Some(1));
+        assert!(DownloadModel::for_management_model("").is_none());
+    }
+
+    #[test]
+    fn only_bcu1_skips_authorization() {
+        for model in &MODELS {
+            assert_eq!(model.authorize_on_connect, model.management_model != "Bcu1", "{}", model.management_model);
+        }
     }
 
     #[test]

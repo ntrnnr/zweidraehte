@@ -15,7 +15,8 @@ use std::time::Duration;
 use zweidraehte_client::IndividualAddress;
 use zweidraehte_client::cli::BusTarget;
 use zweidraehte_client::download::{
-    DownloadEvent, Downloader, Instruction, LoadControlPath, LoadEvent, MaskDb, ProductData, compile, resolve_mods,
+    DownloadEvent, DownloadModel, Downloader, Instruction, LoadControlPath, LoadEvent, MaskDb, ProductData, compile,
+    resolve_mods,
 };
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
@@ -81,10 +82,13 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     stage("Connecting to the bus");
     let bus = job.target.connect().await.map_err(|e| format!("connecting: {e}"))?;
 
-    // ETS's NegotiateMaxApduLength, unless the mods pinned a value.
-    let max_apdu = match job.mods.device.max_apdu {
-        Some(fixed) => fixed,
-        None => match bus
+    // ETS's NegotiateMaxApduLength, unless the mods pinned a value —
+    // or the model knows the device has no properties to ask (BCU1).
+    let model = DownloadModel::for_management_model(mask.management_model());
+    let max_apdu = match (job.mods.device.max_apdu, model) {
+        (Some(fixed), _) => fixed,
+        (None, Some(model)) if !model.has_properties => model.default_max_apdu,
+        (None, _) => match bus
             .network_management()
             .property_read(job.ia, 0, zweidraehte_client::pid::device::MAX_APDU_LENGTH, 1, 1)
             .await
@@ -101,7 +105,13 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     let result = async {
         let mut connection = bus.connect_device(job.ia).await.map_err(|e| format!("connecting to device: {e}"))?;
         let sink_tx = tx.clone();
-        let outcome = Downloader::with_path(&mut connection, compiled.path(), max_apdu)
+        let mut downloader = Downloader::with_path(&mut connection, compiled.path(), max_apdu);
+        if let Some(model) = model
+            && !model.authorize_on_connect
+        {
+            downloader = downloader.without_authorize();
+        }
+        let outcome = downloader
             .with_progress(Box::new(move |event| {
                 let _ = match event {
                     DownloadEvent::Step { index, total, description } => {
@@ -145,6 +155,12 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
                 .memory_read(resources.load_status_addr + u16::from(machine - 1), 1)
                 .await
                 .map(|bytes| bytes.first().copied().unwrap_or(0xFF)),
+            // A direct-path procedure contains no LoadCompleted
+            // events, so `completed` is empty and this loop body
+            // never runs.
+            LoadControlPath::Direct => {
+                Err(zweidraehte_client::Error::UnsupportedInstruction("no load states on the direct path"))
+            }
         }
         .map_err(|e| format!("reading machine {machine}'s state: {e}"))?;
         states.push((*machine, state));

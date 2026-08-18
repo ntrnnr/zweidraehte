@@ -29,8 +29,8 @@ use clap::{Parser, Subcommand};
 use knx_config::load;
 use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, parse_ia};
 use zweidraehte_client::download::{
-    DeviceImage, Downloader, LoadControlPath, ProcedureKind, ProductData, assemble, compile, load_control_path,
-    resolve_mods,
+    DeviceImage, DownloadModel, Downloader, LoadControlPath, ProcedureKind, ProductData, assemble, compile,
+    load_control_path, resolve_mods,
 };
 use zweidraehte_client::{IndividualAddress, KnxBus};
 use zweidraehte_knxprod::runtime::Device;
@@ -154,19 +154,30 @@ async fn main() -> Result<()> {
 }
 
 /// Switch a device's programming mode off, the way its mask realizes
-/// it: masks with memory-mapped management resources keep the mode as
-/// bit 0 of the master data's `ProgrammingMode` address (a
-/// read-modify-write preserves the byte's other bits); everything
+/// it: masks that locate the master data's `ProgrammingMode` resource
+/// in memory keep the mode as bit 0 of that address (a
+/// read-modify-write preserves the byte's other bits — on BCU1 the
+/// same byte carries the run-control and parity bits); everything
 /// else exposes `PID_PROGMODE` on the device object.
 async fn disable_programming_mode(
     bus: &KnxBus,
     mask: &zweidraehte_client::download::MaskData<'_>,
     ia: IndividualAddress,
 ) -> Result<()> {
+    // Deliberately the `ProgrammingMode` resource alone, not
+    // `memory_resources()`: that bundle also demands the load-control
+    // window, which BCU1 masks (memory-mapped programming mode, no
+    // load state machines at all) do not declare.
+    let memory_prog_mode = mask
+        .resources()
+        .get("ProgrammingMode")
+        .filter(|r| r.is_standard_memory())
+        .and_then(|r| r.start_address())
+        .and_then(|a| u16::try_from(a).ok());
+
     let mut connection = bus.connect_device(ia).await.context("while attempting to connect")?;
     let result = async {
-        if let Some(resources) = mask.memory_resources() {
-            let address = resources.programming_mode_addr;
+        if let Some(address) = memory_prog_mode {
             let byte = connection
                 .memory_read(address, 1)
                 .await
@@ -193,8 +204,19 @@ async fn disable_programming_mode(
 /// ETS's NegotiateMaxApduLength: the device's `PID_MAX_APDULENGTH`
 /// (object 0, PID 56) bounded by the interface's own capacity. A
 /// device that does not answer the read gets the TP1 standard-frame
-/// 15 — correct for anything old enough to lack the property.
-async fn negotiate_max_apdu(bus: &KnxBus, ia: IndividualAddress) -> u16 {
+/// 15 — correct for anything old enough to lack the property. A mask
+/// whose model has no properties at all (BCU1) skips the probe: the
+/// timeout would buy nothing the model does not already know.
+async fn negotiate_max_apdu(bus: &KnxBus, ia: IndividualAddress, model: Option<&DownloadModel>) -> u16 {
+    if let Some(model) = model
+        && !model.has_properties
+    {
+        println!(
+            "Max APDU:    this mask has no PID_MAX_APDULENGTH; using the standard frame's {}",
+            model.default_max_apdu
+        );
+        return model.default_max_apdu;
+    }
     match bus.network_management().property_read(ia, 0, zweidraehte_client::pid::device::MAX_APDU_LENGTH, 1, 1).await {
         Ok(bytes) => {
             let device = bytes.iter().fold(0u16, |acc, &b| (acc << 8) | u16::from(b));
@@ -272,6 +294,7 @@ async fn run_load(
     println!("Mask:        {:?} ({} path)", mask.version(), match compiled.path() {
         LoadControlPath::Memory(_) => "memory",
         LoadControlPath::Property => "property",
+        LoadControlPath::Direct => "direct",
     });
     println!("Address:     {ia}");
     println!("Parameters:  {} values patched", resolved.project.parameters.len());
@@ -358,7 +381,8 @@ async fn run_load(
     // instead of the standard frame's 12 cut the image phase ~4x.
     let mut resolved = resolved;
     if mods.device.max_apdu.is_none() {
-        resolved.project.max_apdu = negotiate_max_apdu(&bus, ia).await;
+        resolved.project.max_apdu =
+            negotiate_max_apdu(&bus, ia, DownloadModel::for_management_model(mask.management_model())).await;
     }
 
     println!("Downloading…");
@@ -386,13 +410,17 @@ async fn run_load(
             _ => None,
         })
         .collect();
-    let states = read_load_states(&bus, ia, compiled.path(), mask.lsm_model().machines.len()).await?;
-    let rendered: Vec<String> = states.iter().map(|s| format!("{s:02X}")).collect();
-    println!("Load states: [{}] (01 = Loaded)", rendered.join(" "));
-    for (index, state) in states.iter().enumerate() {
-        let machine = index as u8 + 1;
-        if completed.contains(&machine) && *state != 0x01 {
-            bail!("load state machine {machine} reports {state:#04X}, expected Loaded (01)");
+    if compiled.path() == LoadControlPath::Direct {
+        println!("Load states: none — this mask has no load state machines");
+    } else {
+        let states = read_load_states(&bus, ia, compiled.path(), mask.lsm_model().machines.len()).await?;
+        let rendered: Vec<String> = states.iter().map(|s| format!("{s:02X}")).collect();
+        println!("Load states: [{}] (01 = Loaded)", rendered.join(" "));
+        for (index, state) in states.iter().enumerate() {
+            let machine = index as u8 + 1;
+            if completed.contains(&machine) && *state != 0x01 {
+                bail!("load state machine {machine} reports {state:#04X}, expected Loaded (01)");
+            }
         }
     }
 
@@ -420,24 +448,35 @@ async fn run_unload(
         assemble(mask, product, ProcedureKind::UnloadAll).context("while attempting to assemble Unload-all")?;
     let path = load_control_path(mask)?;
 
+    let model = DownloadModel::for_management_model(mask.management_model());
     println!("Unloading {ia} ({} instructions)…", instructions.len());
     let bus = connect(target).await?;
     let max_apdu = match max_apdu {
         Some(fixed) => fixed,
-        None => negotiate_max_apdu(&bus, ia).await,
+        None => negotiate_max_apdu(&bus, ia, model).await,
     };
     let mut connection = bus.connect_device(ia).await.context("while attempting to connect to the device")?;
     let result = async {
-        Downloader::with_path(&mut connection, path, max_apdu)
+        let mut downloader = Downloader::with_path(&mut connection, path, max_apdu);
+        if let Some(model) = model
+            && !model.authorize_on_connect
+        {
+            downloader = downloader.without_authorize();
+        }
+        downloader
             .run(&instructions, &DeviceImage::new())
             .await
             .context("while attempting to run the unload procedure")?;
 
         // Show the clean slate — Unloaded (00h) on every machine.
-        let machines = mask.lsm_model().machines.len().max(1);
-        let states = read_states_on(&mut connection, path, machines).await?;
-        let rendered: Vec<String> = states.iter().map(|s| format!("{s:02X}")).collect();
-        println!("Load states: [{}] (00 = Unloaded)", rendered.join(" "));
+        if path == LoadControlPath::Direct {
+            println!("Load states: none — this mask has no load state machines");
+        } else {
+            let machines = mask.lsm_model().machines.len().max(1);
+            let states = read_states_on(&mut connection, path, machines).await?;
+            let rendered: Vec<String> = states.iter().map(|s| format!("{s:02X}")).collect();
+            println!("Load states: [{}] (00 = Unloaded)", rendered.join(" "));
+        }
         Ok(())
     }
     .await;
@@ -470,7 +509,9 @@ async fn run_read(
     let bus = connect(target).await?;
     let max_apdu = match max_apdu {
         Some(fixed) => fixed,
-        None => negotiate_max_apdu(&bus, ia).await,
+        // No mask at hand here — the probe's read-failure fallback
+        // covers property-less devices, at the cost of one timeout.
+        None => negotiate_max_apdu(&bus, ia, None).await,
     };
     // The same chunk bound the downloader writes with: what fits one
     // A_Memory_Read response, capped at the coding's 63 bytes.
@@ -526,6 +567,7 @@ async fn read_states_on(
 ) -> Result<Vec<u8>> {
     let machines = machines.max(1);
     match path {
+        LoadControlPath::Direct => Ok(Vec::new()),
         LoadControlPath::Memory(resources) => connection
             .memory_read(resources.load_status_addr, machines as u8)
             .await

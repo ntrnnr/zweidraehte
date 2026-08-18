@@ -133,6 +133,11 @@ pub enum LoadControlPath {
     /// same property reads the state back
     /// (`DM_LoadStateMachineWrite_RCo_IO`).
     Property,
+    /// BCU1: there are no load state machines at all — the download
+    /// is a direct memory-write sequence, so there are no records to
+    /// write and no states to poll. Any LSM instruction reaching a
+    /// direct-path run is a compile bug and fails loudly.
+    Direct,
 }
 
 /// Executes download procedures against one device.
@@ -147,6 +152,10 @@ pub struct Downloader<'a, T> {
     /// authorizes every configuration connection; the default is the
     /// free-access key.
     key: [u8; 4],
+    /// Whether `Connect` authorizes at all. True everywhere except
+    /// BCU1, which predates `A_Authorize` — see
+    /// [`DownloadModel::authorize_on_connect`](super::model::DownloadModel::authorize_on_connect).
+    authorize: bool,
     /// Progress reporting, when a UI wants it.
     progress: Option<ProgressSink>,
     /// Base addresses the device reported for relative segments, by
@@ -180,10 +189,18 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             path,
             chunk,
             key: [0xFF; 4],
+            authorize: true,
             progress: None,
             bases: BTreeMap::new(),
             tolerated_errors: BTreeSet::new(),
         }
+    }
+
+    /// Skip the `A_Authorize` at `Connect` — for targets that do not
+    /// speak the service (BCU1 masks).
+    pub fn without_authorize(mut self) -> Self {
+        self.authorize = false;
+        self
     }
 
     /// Report progress to `sink` while running.
@@ -215,11 +232,17 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// mask templates use it for (a step that legitimately fails on
     /// devices lacking an optional machine).
     pub async fn run(&mut self, instructions: &[Instruction], image: &DeviceImage) -> Result<()> {
+        // The engine works on its own copy: `ReadIntoImage` fills the
+        // image's gaps with device-read bytes mid-run, and that
+        // working state must not leak into the caller's compiled
+        // download (which may be executed again, against another
+        // device).
+        let mut image = image.clone();
         let total = instructions.len();
         for (index, instruction) in instructions.iter().enumerate() {
             log::debug!("download step: {instruction:?}");
             self.emit(DownloadEvent::Step { index, total, description: instruction.describe() });
-            match self.execute(instruction, image).await {
+            match self.execute(instruction, &mut image).await {
                 Ok(()) => {}
                 Err(e) if !self.tolerated_errors.is_empty() && !matches!(instruction, Instruction::MapError { .. }) => {
                     log::warn!("tolerating {instruction:?} failure inside a MapError window: {e}");
@@ -236,7 +259,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         Ok(())
     }
 
-    async fn execute(&mut self, instruction: &Instruction, image: &DeviceImage) -> Result<()> {
+    async fn execute(&mut self, instruction: &Instruction, image: &mut DeviceImage) -> Result<()> {
         match instruction {
             // The engine runs inside an open transport connection, so
             // the transport half of Connect is a marker — but ETS's
@@ -246,8 +269,13 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             // an unauthorized write is T_ACKed and silently ignored,
             // leaving the machine's state unchanged. Our own devices
             // grant free access at the default level, which is why
-            // the software DUTs never needed this.
+            // the software DUTs never needed this. BCU1 predates the
+            // service entirely, so its model skips the exchange.
             Instruction::Connect => {
+                if !self.authorize {
+                    log::debug!("connect without A_Authorize (this mask has no access levels)");
+                    return Ok(());
+                }
                 let level = self.target.authorize(&self.key).await?;
                 log::debug!("authorized at access level {level}");
                 Ok(())
@@ -311,13 +339,44 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 // The AbsoluteTask record announces the application's
                 // identity at its entry address; System 7 devices
                 // accept it without acting on it. Byte layout pinned
-                // by a Falcon download trace (2026-08-13).
+                // by a Falcon download trace (2026-08-13). No state
+                // poll: the record is informational and transitions
+                // nothing — and BCU2 products send one for the PEI
+                // machine without ever having started it (the L&J
+                // procedure's trailing `LdCtrlTaskSegment LsmIdx="5"`),
+                // so expecting Loading here would fail a correct
+                // procedure.
                 let property = LoadControlRecord::task_segment(*address, *pei_type, *application_id);
                 self.write_load_control_with(*lsm, &property, |m, _e| {
                     MemLoadControlRecord::task_segment(m, *address, *pei_type, *application_id)
                 })
-                .await?;
-                self.expect_load_state(*lsm, LoadState::Loading).await
+                .await
+            }
+
+            Instruction::TaskPointers { lsm, init_ptr, save_ptr, serial_ptr } => {
+                // Informational like TaskSegment: the BCU2 stores the
+                // pointers, the machine's state does not move.
+                let property = LoadControlRecord::task_ptr(*init_ptr, *save_ptr, *serial_ptr);
+                self.write_load_control_with(*lsm, &property, |m, _e| {
+                    MemLoadControlRecord::task_ptr(m, *init_ptr, *save_ptr, *serial_ptr)
+                })
+                .await
+            }
+
+            Instruction::TaskControl1 { lsm, address, count } => {
+                let property = LoadControlRecord::task_ctrl1(*address, *count);
+                self.write_load_control_with(*lsm, &property, |m, _e| {
+                    MemLoadControlRecord::task_ctrl1(m, *address, *count)
+                })
+                .await
+            }
+
+            Instruction::TaskControl2 { lsm, callback, address, seg0, seg1 } => {
+                let property = LoadControlRecord::task_ctrl2(*callback, *address, *seg0, *seg1);
+                self.write_load_control_with(*lsm, &property, |m, _e| {
+                    MemLoadControlRecord::task_ctrl2(m, *callback, *address, *seg0, *seg1)
+                })
+                .await
             }
 
             Instruction::WriteRelImage { obj_idx, offset, verify } => {
@@ -359,11 +418,40 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 Ok(())
             }
 
-            Instruction::WriteImage { address, length } => {
-                let bytes = image
-                    .slice(*address, *length)
-                    .ok_or(Error::DownloadConfig("procedure writes an address the image does not cover"))?;
-                self.write_verified(*address, bytes).await
+            Instruction::WriteImage { address, length, verify } => {
+                // The window is a span of device memory; the image may
+                // cover it with several regions (BCU1's mask template
+                // writes fixed EEPROM windows across whatever the
+                // product declares), so each covered part is written
+                // on its own. An untouched window means the procedure
+                // and the compiled image disagree — a compile bug.
+                let parts: Vec<(u16, Vec<u8>)> =
+                    image.covered(*address, *length).map(|(addr, bytes)| (addr, bytes.to_vec())).collect();
+                if parts.is_empty() {
+                    return Err(Error::DownloadConfig("procedure writes an address the image does not cover"));
+                }
+                for (part_address, bytes) in parts {
+                    if *verify {
+                        self.write_verified(part_address, &bytes).await?;
+                    } else {
+                        self.write_chunked(part_address, &bytes).await?;
+                    }
+                }
+                Ok(())
+            }
+
+            Instruction::ReadIntoImage { address, length } => {
+                // `LdCtrlLoadImageMem`: snapshot device bytes into the
+                // image's gaps. Compiled content stays — the ETS-owned
+                // bytes must win — so a span the compile step fully
+                // covered reads back into nothing, on purpose.
+                let mut read = Vec::with_capacity(usize::from(*length));
+                for chunk_start in (0..usize::from(*length)).step_by(self.chunk) {
+                    let len = self.chunk.min(usize::from(*length) - chunk_start);
+                    read.extend(self.target.memory_read(*address + chunk_start as u16, len as u8).await?);
+                }
+                image.fill_holes(*address, &read);
+                Ok(())
             }
 
             Instruction::WriteMemory { address, data, verify } => {
@@ -469,6 +557,12 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 let record = memory_record(machine, event);
                 self.target.memory_write(resources.load_control_addr, &record).await
             }
+            // BCU1 procedures contain no LSM instructions; one showing
+            // up means the compile step paired a procedure with the
+            // wrong path.
+            LoadControlPath::Direct => {
+                Err(Error::UnsupportedInstruction("load-control records cannot be sent on the direct (no-LSM) path"))
+            }
         }
     }
 
@@ -523,6 +617,9 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
         let machine = match self.path {
             LoadControlPath::Memory(_) => MachineRef::Machine(memory_machine(lsm)?),
             LoadControlPath::Property => MachineRef::Object(lsm),
+            LoadControlPath::Direct => {
+                return Err(Error::UnsupportedInstruction("load states cannot be read on the direct (no-LSM) path"));
+            }
         };
 
         let mut state = LoadState::Err;
@@ -797,6 +894,152 @@ mod tests {
         for (i, byte) in data.iter().enumerate() {
             assert_eq!(device.memory.get(&(0x7000 + i as u16)), Some(byte));
         }
+    }
+}
+
+// ============================================================================
+// Tests: the direct path against a scripted BCU1 memory surface
+// ============================================================================
+
+#[cfg(test)]
+mod bcu1_tests {
+    use super::*;
+    use crate::download::mask::MaskDb;
+    use crate::download::{GroupLink, ParameterValue, ProductData, ProjectConfig, compile};
+    use std::collections::HashMap;
+    use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+    use zweidraehte_proto::device::MaskVersion;
+
+    /// A scripted BCU1: nothing but bytes. No properties, no load
+    /// state machines — and `A_Authorize` is a hard failure, the way
+    /// real silicon that predates the service would at best ignore it.
+    struct ScriptedBcu1 {
+        memory: HashMap<u16, u8>,
+        restarted: bool,
+    }
+
+    impl ScriptedBcu1 {
+        fn new() -> Self {
+            Self { memory: HashMap::new(), restarted: false }
+        }
+    }
+
+    impl DownloadTarget for ScriptedBcu1 {
+        async fn property_read(&mut self, _o: u8, _p: u16, _s: u16, _c: u16) -> Result<Vec<u8>> {
+            panic!("a BCU1 has no properties to read");
+        }
+        async fn property_write(&mut self, _o: u8, _p: u16, _s: u16, _c: u16, _d: &[u8]) -> Result<()> {
+            panic!("a BCU1 has no properties to write");
+        }
+        async fn memory_read(&mut self, address: u16, count: u8) -> Result<Vec<u8>> {
+            Ok((0..count).map(|i| *self.memory.get(&(address + u16::from(i))).unwrap_or(&0)).collect())
+        }
+        async fn memory_write(&mut self, address: u16, data: &[u8]) -> Result<()> {
+            for (i, byte) in data.iter().enumerate() {
+                self.memory.insert(address + i as u16, *byte);
+            }
+            Ok(())
+        }
+        async fn restart(&mut self) -> Result<()> {
+            self.restarted = true;
+            Ok(())
+        }
+        async fn authorize(&mut self, _key: &[u8; 4]) -> Result<u8> {
+            panic!("a BCU1 does not speak A_Authorize");
+        }
+    }
+
+    fn compiled() -> crate::download::CompiledDownload {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0012).expect("mask fixture");
+        let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
+        let product =
+            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("product fixture");
+
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        project.links =
+            vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 3), com_object: 1 }, GroupLink {
+                group_address: GroupAddress::from_three_level(0, 0, 1),
+                com_object: 0,
+            }];
+        project.parameters = vec![ParameterValue { id: "M-00FA_A-0310-01-0000_P-1".to_string(), value: vec![0xEE] }];
+        compile(&mask, &product, &project).expect("compiles")
+    }
+
+    /// The full MV-0012 DefaultProcedure against a plain memory
+    /// surface: memory writes only, no `A_Authorize` (the scripted
+    /// device panics on it), and the finished EEPROM window carries
+    /// the compiled bytes.
+    #[tokio::test(start_paused = true)]
+    async fn full_bcu1_download_is_memory_writes_only() {
+        let c = compiled();
+        let mut device = ScriptedBcu1::new();
+        c.execute(&mut device, 15).await.expect("the scripted download succeeds");
+        assert!(device.restarted);
+
+        // RunError (010Dh): halted at the start, cleared at the end.
+        assert_eq!(device.memory[&0x010D], 0xFF);
+        // The GA table: muted mid-procedure (0116h ← 01), then the
+        // compiled length 3 (IA slot + 2 GAs). The template's write
+        // windows deliberately skip 0117h–0118h — the device's own IA
+        // is `A_PhysicalAddress_Write` business, never the download's
+        // — and the 230-byte window at 0119h starts exactly at the
+        // first group address.
+        assert_eq!(device.memory[&0x0116], 3);
+        assert!(!device.memory.contains_key(&0x0117), "the IA slot is never written by the download");
+        assert!(!device.memory.contains_key(&0x0118), "the IA slot is never written by the download");
+        for (offset, expected) in [0x00u8, 0x01, 0x10, 0x03].into_iter().enumerate() {
+            assert_eq!(device.memory[&(0x0119 + offset as u16)], expected, "GA byte {offset}");
+        }
+        // The RAM-flags areas were zeroed.
+        for address in (0x00CE..0x00CE + 9).chain(0x00D7..0x00D7 + 9) {
+            assert_eq!(device.memory[&address], 0x00, "RAM flags at {address:#06X}");
+        }
+        // The parameter patch reached its EEPROM address.
+        assert_eq!(device.memory[&(0x0100 + 200)], 0xEE);
+        // The vendor ramp went out where nothing overrode it.
+        assert_eq!(device.memory[&0x0100], 0x00);
+        assert_eq!(device.memory[&0x01FE], 0xFE);
+    }
+
+    /// `ReadIntoImage` snapshots device bytes into the image's gaps —
+    /// and only the gaps: compiled content wins, and the caller's
+    /// image is untouched (the engine works on a copy).
+    #[tokio::test(start_paused = true)]
+    async fn read_into_image_fills_only_the_gaps() {
+        let mut device = ScriptedBcu1::new();
+        device.memory.insert(0x0200, 0xAB);
+        device.memory.insert(0x0201, 0xCD);
+
+        let mut image = DeviceImage::new();
+        image.insert(0x0201, vec![0x11]).expect("inserts");
+
+        let mut downloader = Downloader::with_path(&mut device, LoadControlPath::Direct, 15);
+        downloader
+            .run(
+                &[Instruction::ReadIntoImage { address: 0x0200, length: 2 }, Instruction::WriteImage {
+                    address: 0x0200,
+                    length: 2,
+                    verify: true,
+                }],
+                &image,
+            )
+            .await
+            .expect("runs");
+
+        assert_eq!(device.memory[&0x0200], 0xAB, "the device byte round-tripped through the image");
+        assert_eq!(device.memory[&0x0201], 0x11, "the compiled byte won over the device's");
+        assert!(image.slice(0x0200, 1).is_none(), "the caller's image is untouched");
+    }
+
+    /// LSM instructions on the direct path are a compile bug, not a
+    /// silent no-op.
+    #[tokio::test(start_paused = true)]
+    async fn lsm_instructions_are_rejected_on_the_direct_path() {
+        let mut device = ScriptedBcu1::new();
+        let mut downloader = Downloader::with_path(&mut device, LoadControlPath::Direct, 15);
+        let result =
+            downloader.run(&[Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload }], &DeviceImage::new()).await;
+        assert!(matches!(result, Err(Error::UnsupportedInstruction(_))));
     }
 }
 
@@ -1157,6 +1400,61 @@ mod system_b_tests {
             }];
         let result = crate::download::compile(&mask, &product, &project);
         assert!(matches!(result, Err(Error::DownloadConfig(_))));
+    }
+
+    /// Task records (TaskSegment and the BCU2 TaskPtr/TaskCtrl
+    /// family) are informational: they are written and *not* followed
+    /// by a state poll. The recorder errors on every property read, so
+    /// any poll would abort the run — and the L&J BCU2 procedure even
+    /// sends a TaskSegment for machine 5 without ever starting it.
+    #[tokio::test(start_paused = true)]
+    async fn task_records_are_sent_without_state_polls() {
+        struct Recorder {
+            writes: Vec<(u8, Vec<u8>)>,
+        }
+        impl DownloadTarget for Recorder {
+            async fn property_read(&mut self, _o: u8, _p: u16, _s: u16, _c: u16) -> Result<Vec<u8>> {
+                Err(Error::DeviceError(0))
+            }
+            async fn property_write(&mut self, obj_idx: u8, _p: u16, _s: u16, _c: u16, data: &[u8]) -> Result<()> {
+                self.writes.push((obj_idx, data.to_vec()));
+                Ok(())
+            }
+            async fn memory_read(&mut self, _a: u16, _c: u8) -> Result<Vec<u8>> {
+                Err(Error::DeviceError(0))
+            }
+            async fn memory_write(&mut self, _a: u16, _d: &[u8]) -> Result<()> {
+                Err(Error::DeviceError(0))
+            }
+            async fn restart(&mut self) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut device = Recorder { writes: Vec::new() };
+        let mut downloader = Downloader::with_path(&mut device, LoadControlPath::Property, 254);
+        downloader
+            .run(
+                &[
+                    Instruction::TaskSegment {
+                        lsm: 5,
+                        address: 0x011E,
+                        pei_type: 17,
+                        application_id: [0x00, 0xE1, 0xE0, 0x24, 0x30],
+                    },
+                    Instruction::TaskPointers { lsm: 3, init_ptr: 284, save_ptr: 285, serial_ptr: 0 },
+                    Instruction::TaskControl1 { lsm: 3, address: 0, count: 0 },
+                    Instruction::TaskControl2 { lsm: 3, callback: 20609, address: 282, seg0: 208, seg1: 208 },
+                ],
+                &DeviceImage::new(),
+            )
+            .await
+            .expect("informational records need no state to be right");
+
+        // Each record went to its machine's object, tagged with its
+        // §3.31.2 segment type.
+        let types: Vec<(u8, u8)> = device.writes.iter().map(|(obj, data)| (*obj, data[1])).collect();
+        assert_eq!(types, vec![(5, 0x02), (3, 0x03), (3, 0x04), (3, 0x05)]);
     }
 
     #[tokio::test(start_paused = true)]

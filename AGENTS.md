@@ -800,12 +800,15 @@ Structure (sans-io core + thin tokio driver):
   `.knxprod`/MTXML), `project.rs` (`ProjectConfig` + `compile`),
   `assemble.rs` (mask template + product `LdCtrlMerge` fragments →
   procedure), `ir.rs` (executable `Instruction` IR), `interpreter.rs`
-  (`Downloader` over both the memory-mapped and property load-control
-  paths), `image.rs` (the assembled `DeviceImage`), `table_coding.rs`
-  (the `TableCoding` trait + one declarative impl per table wire
-  format — RT8/M112 and RT7), `image_layout.rs` (per-management-model
-  definition tables: placement, ASAP base, which codings — consumed
-  by the generic compile pipeline). The end-to-end
+  (`Downloader` over the memory-mapped, property, and direct — no-LSM
+  BCU1 — load-control paths), `image.rs` (the assembled
+  `DeviceImage`), `table_coding.rs` (the `TableCoding` trait + one
+  declarative impl per table wire format — RT8/M112, RT7, RT2/RT1),
+  `model.rs` (`DownloadModel`: one static definition row per
+  management model — the embedded `ImageLayout` with placement, ASAP
+  base and codings, plus the load-control path policy,
+  authorize-on-connect, property surface, APDU default; supported
+  rows: Bcu1, Bcu2, BimM112, SystemB). The end-to-end
   test tier is `conformance-configuration` (see the conformance crate).
 
 #### 7. Device Definitions Crate (`examples/devices`, package `zweidraehte-devices`)

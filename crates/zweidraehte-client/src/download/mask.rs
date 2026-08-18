@@ -437,6 +437,59 @@ pub(crate) mod fixtures {
   </MasterData>
 </KNX>"#;
 
+    /// MV-0012's download-relevant content, in the real file's shape:
+    /// no load-control resources at all (BCU1 has no load state
+    /// machines), a memory-mapped `ProgrammingMode`, and the Load/all
+    /// + Unload/all procedures copied verbatim from the published
+    /// master data — direct memory writes bracketed by the RunError
+    /// halt (010Dh ← 00) and the GA-table mute (0116h ← 01).
+    pub const MV_0012: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <MasterData Id="MD-1" Version="278">
+    <MaskVersions>
+      <MaskVersion Id="MV-0012" MaskVersion="18" Name="1.2" ManagementModel="Bcu1">
+        <HawkConfigurationData>
+          <Resources>
+            <Resource Name="ProgrammingMode" Access="remote local1">
+              <Location AddressSpace="StandardMemory" StartAddress="96" />
+              <ResourceType Length="1" Flavour="ProgrammingMode_Bcu1" />
+            </Resource>
+            <Resource Name="GroupAddressTable" Access="remote local1">
+              <Location AddressSpace="StandardMemory" StartAddress="278" />
+              <ResourceType Length="1" Flavour="AddressTable_Bcu1" />
+            </Resource>
+          </Resources>
+          <Procedures>
+            <Procedure ProcedureType="Load" ProcedureSubType="all">
+              <LdCtrlConnect />
+              <LdCtrlSetControlVariable Name="EnableVerifyOnWriteDirect" Value="true" />
+              <LdCtrlWriteMem Address="269" Size="1" Verify="true" InlineData="00" />
+              <LdCtrlLoadImageMem Address="278" Size="1" />
+              <LdCtrlWriteMem Address="278" Size="1" Verify="true" InlineData="01" />
+              <LdCtrlWriteMem Address="256" Size="1" Verify="true" />
+              <LdCtrlWriteMem Address="260" Size="9" Verify="true" />
+              <LdCtrlWriteMem Address="270" Size="8" Verify="true" />
+              <LdCtrlWriteMem Address="281" Size="230" Verify="true" />
+              <LdCtrlWriteMem Address="206" Size="9" Verify="true" InlineData="000000000000000000" />
+              <LdCtrlWriteMem Address="215" Size="9" Verify="true" InlineData="000000000000000000" />
+              <LdCtrlWriteMem Address="278" Size="1" Verify="true" />
+              <LdCtrlWriteMem Address="269" Size="1" Verify="true" InlineData="FF" />
+              <LdCtrlRestart />
+            </Procedure>
+            <Procedure ProcedureType="Unload" ProcedureSubType="all">
+              <LdCtrlConnect />
+              <LdCtrlSetControlVariable Name="EnableVerifyOnWriteDirect" Value="true" />
+              <LdCtrlWriteMem Address="269" Size="1" Verify="true" InlineData="00" />
+              <LdCtrlWriteMem Address="278" Size="1" Verify="true" InlineData="01" />
+              <LdCtrlWriteMem Address="261" Size="3" Verify="true" InlineData="000000" />
+              <LdCtrlDisconnect />
+            </Procedure>
+          </Procedures>
+        </HawkConfigurationData>
+      </MaskVersion>
+    </MaskVersions>
+  </MasterData>
+</KNX>"#;
+
     /// MV-07B0's resource declarations, in the real file's shape:
     /// every machine is `SystemProperty` at its interface object's
     /// `PID_LOAD_STATE_CONTROL`. No procedures — this fixture is for
@@ -750,6 +803,20 @@ mod tests {
         assert_eq!(m0020.machines.len(), 3);
 
         assert!(model(0x0012).is_empty(), "BCU1 declares no load state machines");
+        {
+            let real_bcu1 = real.mask(MaskVersion::Bcu1Tp1).expect("MV-0012 present");
+            let fixture = MaskDb::from_str(fixtures::MV_0012).expect("fixture parses");
+            let fixture_bcu1 = fixture.mask(MaskVersion::Bcu1Tp1).expect("MV-0012");
+            for (kind, sub) in [("Load", "all"), ("Unload", "all")] {
+                let real_proc = real_bcu1.procedure(kind, sub).expect("real procedure");
+                let fixture_proc = fixture_bcu1.procedure(kind, sub).expect("fixture procedure");
+                assert_eq!(
+                    convert(real_proc).expect("real converts"),
+                    convert(fixture_proc).expect("fixture converts"),
+                    "MV-0012 {kind}/{sub}"
+                );
+            }
+        }
 
         // And the real file must describe far more masks than we would
         // ever hand-curate — which is the whole argument for reading it.

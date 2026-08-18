@@ -29,10 +29,10 @@ use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
 
 use super::assemble::{ProcedureKind, assemble};
 use super::image::DeviceImage;
-use super::image_layout::{ImageLayout, Placement};
 use super::interpreter::{DownloadTarget, Downloader, LoadControlPath};
 use super::ir::Instruction;
-use super::mask::{LsmModel, LsmRealization, MachineRole, MaskData};
+use super::mask::{LsmModel, MachineRole, MaskData};
+use super::model::{DownloadModel, ImageLayout, Placement};
 use super::product::{ParameterLocation, ProductData};
 use crate::error::{Error, Result};
 
@@ -94,6 +94,9 @@ pub struct CompiledDownload {
     pub image: DeviceImage,
     pub instructions: Vec<Instruction>,
     path: LoadControlPath,
+    /// From the model row: whether `Connect` authorizes (everything
+    /// but BCU1).
+    authorize: bool,
 }
 
 impl CompiledDownload {
@@ -108,7 +111,11 @@ impl CompiledDownload {
     /// the chunk size. The procedure ends in a restart, so the caller
     /// reconnects afterwards.
     pub async fn execute<T: DownloadTarget>(&self, target: &mut T, max_apdu: u16) -> Result<()> {
-        Downloader::with_path(target, self.path, max_apdu).run(&self.instructions, &self.image).await
+        let mut downloader = Downloader::with_path(target, self.path, max_apdu);
+        if !self.authorize {
+            downloader = downloader.without_authorize();
+        }
+        downloader.run(&self.instructions, &self.image).await
     }
 }
 
@@ -130,60 +137,34 @@ impl CompiledDownload {
 /// *and* property-driven machines, which the interpreter already
 /// supports (absolute-segment records have a property-path form).
 pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConfig) -> Result<CompiledDownload> {
-    let path = load_control_path(mask)?;
+    let model = download_model(mask)?;
+    let path = (model.load_control)(mask)?;
 
-    let layout = ImageLayout::for_management_model(mask.management_model())
-        .ok_or(Error::DownloadConfig("downloads for this management model are not implemented"))?;
     let mut image = DeviceImage::new();
-    build_image(&mut image, layout, &mask.lsm_model(), product, project)?;
+    build_image(&mut image, &model.layout, &mask.lsm_model(), product, project)?;
 
     let assembled = assemble(mask, product, ProcedureKind::LoadAll)?;
     let instructions = insert_image_writes(resolve_relative_steps(assembled, &image), &image);
 
-    Ok(CompiledDownload { image, instructions, path })
+    Ok(CompiledDownload { image, instructions, path, authorize: model.authorize_on_connect })
 }
 
-/// The load-control path a mask drives its machines through — read
-/// from the mask's own LSM declarations, never inferred from the
-/// family (MV-2705 is BimM112-managed yet property-driven).
+/// The [`DownloadModel`] row for a mask, or the error every
+/// unimplemented management model gets.
+fn download_model(mask: &MaskData<'_>) -> Result<&'static DownloadModel> {
+    DownloadModel::for_management_model(mask.management_model())
+        .ok_or(Error::DownloadConfig("downloads for this management model are not implemented"))
+}
+
+/// The load-control path a mask drives its machines through — the
+/// mask's [`DownloadModel`] row applied to its own LSM declarations.
 ///
 /// Public because procedures other than a full download need it too:
 /// running the mask's Unload template, or ad-hoc instruction streams,
 /// construct their [`Downloader`] with the same path `compile` would
 /// have chosen.
 pub fn load_control_path(mask: &MaskData<'_>) -> Result<LoadControlPath> {
-    // BIM M112 first: the master data still declares the legacy
-    // memory-mapped window at 0104h for these masks, but that is not
-    // what ETS does — a Falcon trace of a real MDT 0705 device
-    // (ETS.log, 2026-08-13) unloads through PropertyValue_Write on
-    // interface objects 1..4, PID_LOAD_STATE_CONTROL, and the device
-    // never reacted to spec-shaped window writes at all. 03/05/02
-    // §3.31.2 marks the memory procedure "shall not be used for
-    // further developments", the certification templates only ever
-    // exercise the property realization, and the machine index *is*
-    // the object index — so the property path is what real System 7
-    // silicon actually speaks.
-    if mask.management_model() == "BimM112" {
-        return Ok(LoadControlPath::Property);
-    }
-
-    let model = mask.lsm_model();
-    match model.realization() {
-        Some(LsmRealization::Property) => Ok(LoadControlPath::Property),
-        Some(LsmRealization::Memory) => {
-            let resources = mask.memory_resources().ok_or(Error::DownloadConfig(
-                "this mask drives its machines through memory but does not locate all of \
-                 ProgrammingMode / load control / load status / address table there",
-            ))?;
-            Ok(LoadControlPath::Memory(resources))
-        }
-        None if model.is_empty() => {
-            Err(Error::DownloadConfig("this mask declares no load state machines; its downloads are not implemented"))
-        }
-        None => Err(Error::DownloadConfig(
-            "this mask mixes memory-mapped and property-driven machines; no published mask does",
-        )),
-    }
+    (download_model(mask)?.load_control)(mask)
 }
 
 /// Fit the relative steps to the content this download actually has.
@@ -369,9 +350,9 @@ fn place_relative(
     Ok(())
 }
 
-/// Place content for an absolute-address model (BIM M112): every
-/// addressed segment's content, with the generated tables replacing
-/// the content of the segments the product names for them.
+/// Place content for an absolute-address model (BIM M112, BCU2,
+/// BCU1): every addressed segment's content, with the generated
+/// tables landing in the segments the product names for them.
 ///
 /// The bytes are each segment's *content*, not its capacity: a table
 /// segment holds exactly its generated blob, a data segment its
@@ -379,6 +360,17 @@ fn place_relative(
 /// allocated size is the device's business — the download writes only
 /// the meaningful bytes, as ETS does, so a two-entry table on a
 /// 254-entry segment costs a handful of writes rather than hundreds.
+///
+/// Where a table lands depends on its declared offset:
+///
+/// - **Offset 0** — a dedicated table segment (System 7, BCU2): the
+///   generated blob *is* the content, replacing the default data
+///   wholesale. An empty blob keeps the segment out of the image.
+/// - **Offset > 0** — the table lives inside a shared segment (BCU1:
+///   all three tables point into the one 256-byte EEPROM segment):
+///   the blob is spliced over the default data at its offset, and the
+///   rest of the segment's content survives. An empty blob leaves the
+///   default bytes alone.
 fn place_absolute(
     image: &mut DeviceImage,
     layout: &ImageLayout,
@@ -386,46 +378,65 @@ fn place_absolute(
     project: &ProjectConfig,
     [address_table, association_table, group_object_table]: [Vec<u8>; 3],
 ) -> Result<()> {
-    // Each generated table names the segment that holds it. A table
-    // whose blob is empty (no group objects, say) or whose product
-    // declares no segment simply contributes nothing.
-    let generated: [(Option<&str>, &[u8], &'static str); 3] = [
-        (product.address_table_segment.as_deref(), &address_table, "group address table"),
-        (product.association_table_segment.as_deref(), &association_table, "association table"),
-        (product.com_object_table_segment.as_deref(), &group_object_table, "group object table"),
+    // Each generated table names the segment (and offset) that holds
+    // it. A table whose blob is empty (no group objects, say) or
+    // whose product declares no segment simply contributes nothing.
+    let generated: [(Option<&str>, u32, &[u8], &'static str); 3] = [
+        (product.address_table_segment.as_deref(), product.address_table_offset, &address_table, "group address table"),
+        (
+            product.association_table_segment.as_deref(),
+            product.association_table_offset,
+            &association_table,
+            "association table",
+        ),
+        (
+            product.com_object_table_segment.as_deref(),
+            product.com_object_table_offset,
+            &group_object_table,
+            "group object table",
+        ),
     ];
 
     let mut buffers: BTreeMap<String, (u16, Vec<u8>)> = BTreeMap::new();
     for segment in &product.segments {
         let Some(address) = segment.address else { continue };
+        let mut content = segment.data.clone();
 
-        // A generated table replaces the segment's content wholesale;
-        // otherwise the content is the product's default data. One
-        // exception: a group object table the *product* ships as
-        // default data (vendor M112 programs) is overlaid per object
-        // instead — its count and pointers are firmware facts a
-        // synthesized table would zero.
-        let content = match generated.iter().find(|(id, _, _)| *id == Some(segment.id.as_str())) {
-            Some((_, _, "group object table"))
-                if !segment.data.is_empty() && layout.overlay_group_object_table.is_some() =>
+        for (id, offset, blob, what) in &generated {
+            if *id != Some(segment.id.as_str()) {
+                continue;
+            }
+            let offset = *offset as usize;
+
+            // A group object table the *product* ships as default data
+            // (vendor M112 programs) is overlaid per object instead of
+            // replaced — its count and pointers are firmware facts a
+            // synthesized table would zero.
+            if *what == "group object table"
+                && content.len() > offset
+                && let Some(overlay) = layout.overlay_group_object_table
             {
-                let overlay = layout.overlay_group_object_table.expect("guard checked it is Some");
-                let mut bytes = segment.data.clone();
-                overlay(&mut bytes, &product.com_objects)?;
-                bytes
+                overlay(&mut content[offset..], &product.com_objects)?;
+                continue;
             }
-            Some((_, blob, what)) => {
-                if blob.len() > segment.size as usize {
-                    return Err(Error::DownloadConfig(match *what {
-                        "group address table" => "group address table exceeds its segment",
-                        "association table" => "association table exceeds its segment",
-                        _ => "group object table exceeds its segment",
-                    }));
+
+            if offset + blob.len() > segment.size as usize {
+                return Err(Error::DownloadConfig(match *what {
+                    "group address table" => "group address table exceeds its segment",
+                    "association table" => "association table exceeds its segment",
+                    _ => "group object table exceeds its segment",
+                }));
+            }
+
+            if offset == 0 {
+                content = blob.to_vec();
+            } else if !blob.is_empty() {
+                if content.len() < offset + blob.len() {
+                    content.resize(offset + blob.len(), 0);
                 }
-                blob.to_vec()
+                content[offset..offset + blob.len()].copy_from_slice(blob);
             }
-            None => segment.data.clone(),
-        };
+        }
 
         if !content.is_empty() {
             buffers.insert(segment.id.clone(), (address, content));
@@ -433,7 +444,7 @@ fn place_absolute(
     }
 
     // A generated table must land in a segment the product defined.
-    for (id, blob, what) in generated {
+    for (id, _, blob, what) in generated {
         if let Some(id) = id
             && !blob.is_empty()
             && !buffers.contains_key(id)
@@ -602,7 +613,11 @@ fn insert_image_writes(instructions: Vec<Instruction>, image: &DeviceImage) -> V
                     if seg_lsm == lsm
                         && let Some(content) = image.slice(*address, *capacity)
                     {
-                        out.push(Instruction::WriteImage { address: *address, length: content.len() as u16 });
+                        out.push(Instruction::WriteImage {
+                            address: *address,
+                            length: content.len() as u16,
+                            verify: true,
+                        });
                     }
                 }
                 pending.retain(|(seg_lsm, _, _)| seg_lsm != lsm);
@@ -790,7 +805,7 @@ mod tests {
             .instructions
             .iter()
             .find_map(|i| match i {
-                Instruction::WriteImage { address: 0x4000, length } => Some(*length),
+                Instruction::WriteImage { address: 0x4000, length, .. } => Some(*length),
                 _ => None,
             })
             .expect("an ADT write");
@@ -882,6 +897,62 @@ mod tests {
             .collect();
         let result = compile(&mask, &product, &project());
         assert!(matches!(result, Err(Error::DownloadConfig(_))));
+    }
+
+    /// A BCU1 compile end to end: direct path, the mask's
+    /// DefaultProcedure template, and the tables spliced into the one
+    /// EEPROM segment at their declared offsets — everything around
+    /// them (the vendor's 00..FF ramp) survives.
+    #[test]
+    fn bcu1_compiles_direct_with_spliced_tables() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0012).expect("fixture");
+        let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
+        let product = ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        project.links =
+            vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 3), com_object: 1 }, GroupLink {
+                group_address: GroupAddress::from_three_level(0, 0, 1),
+                com_object: 0,
+            }];
+        project.parameters = vec![ParameterValue { id: "M-00FA_A-0310-01-0000_P-1".to_string(), value: vec![0xEE] }];
+
+        let c = compile(&mask, &product, &project).expect("compiles");
+        assert_eq!(c.path(), LoadControlPath::Direct);
+
+        // One region: the whole 256-byte EEPROM window at 0100h.
+        let (address, bytes) = c.image.regions().next().expect("the EEPROM segment");
+        assert_eq!((address, bytes.len()), (0x0100, 256));
+
+        // ADT spliced at offset 22 (0116h): length counts the IA slot,
+        // then the IA, then the sorted group addresses — and the ramp
+        // survives on both sides of the splice.
+        assert_eq!(&bytes[22..29], &[3, 0x11, 0x2A, 0x00, 0x01, 0x10, 0x03]);
+        assert_eq!(bytes[21], 21, "the byte before the ADT keeps its vendor value");
+        assert_eq!(bytes[29], 29, "the byte after the ADT keeps its vendor value");
+
+        // AST spliced at offset 60: TSAPs follow the sorted address
+        // order, ASAPs are the object numbers.
+        assert_eq!(&bytes[60..65], &[2, 1, 0, 2, 1]);
+
+        // COT at offset 80: the vendor data there is a table the
+        // firmware owns, so it is overlaid, not replaced — count and
+        // data pointers keep their vendor bytes, each object's config
+        // (with RT1's forced bit 7) and type are ours.
+        assert_eq!(bytes[80], 80, "vendor count byte survives");
+        assert_eq!(bytes[82], 82, "object 0 keeps its vendor data pointer");
+        assert_eq!(bytes[83], 0x17 | 0x80, "object 0 config, bit 7 forced");
+        assert_eq!(bytes[84], 0x00, "object 0 type (1 Bit)");
+        assert_eq!(bytes[86], 0x4F | 0x80, "object 1 config, bit 7 forced");
+
+        // The parameter patch landed over the ramp.
+        assert_eq!(bytes[200], 0xEE);
+
+        // The procedure is the mask template: no LSM instructions,
+        // the GA-len snapshot present, image writes with verify.
+        assert!(!c.instructions.iter().any(|i| matches!(i, Instruction::LsmEvent { .. })));
+        assert!(c.instructions.contains(&Instruction::ReadIntoImage { address: 0x0116, length: 1 }));
+        assert!(c.instructions.contains(&Instruction::WriteImage { address: 0x0119, length: 230, verify: true }));
     }
 
     /// device-assigned base instead.

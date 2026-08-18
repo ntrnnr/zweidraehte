@@ -2365,7 +2365,14 @@ impl MtxmlGenerator {
         match mask_family {
             MaskFamily::SystemB => Self::build_system_b_load_procedures(param_size),
             MaskFamily::System7 => Self::build_system_7_load_procedures(config),
-            MaskFamily::Bim | MaskFamily::BimM => Self::build_bim_load_procedures(),
+            // We only *parse* vendor BCU1/BCU2 products; generating our own
+            // is not supported. BCU1 is DefaultProcedure (the mask template
+            // is the whole procedure, so an empty product contribution is
+            // even correct); a BCU2 ProductProcedure would need the task
+            // records of a real BCU2 firmware, which we do not produce.
+            MaskFamily::Bcu1 | MaskFamily::Bcu2 | MaskFamily::Bim | MaskFamily::BimM => {
+                Self::build_bim_load_procedures()
+            }
         }
     }
 
