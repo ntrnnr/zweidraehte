@@ -52,6 +52,7 @@ pub use mods::{ResolvedProject, resolve_mods};
 pub use product::{ComObjectDef, LoadProcedureStyle, ParameterLocation, ProductData, Segment};
 pub use project::{CompiledDownload, GroupLink, ParameterValue, ProjectConfig, compile, load_control_path};
 pub use table_coding::{
-    Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot2, CotM112, CountWidth, TableCoding,
+    Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CotM112,
+    CountWidth, TableCoding,
 };
 pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState};

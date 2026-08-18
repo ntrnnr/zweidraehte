@@ -25,6 +25,12 @@
 //! tables differ only in what the leading octet counts: RT2's length
 //! includes the IA slot, RT8's does not.
 //!
+//! BCU1 (RT1) shares the RT2 column outright for the address and
+//! association tables (the [`Addr1`] and [`Asso1`] aliases; 03/05/01
+//! §4.16.3, §4.17.3); its group object table is [`Cot1`], the RT2
+//! layout with the config octet's bit 7 fixed at 1 instead of
+//! carrying UpdateEnable (03/05/01 §4.18.3).
+//!
 //! The framework covers count-prefixed entry-list tables only. A
 //! format that is not one — the line couplers' filter table is a flat
 //! group-address bitmap — gets its own builder when its family
@@ -381,9 +387,11 @@ impl TableCoding for Addr2 {
     }
 }
 
-// The BCU2 association table needs no type of its own: RT2's coding is
-// RT8's — one-octet count, (tsap:1, asap:1) entries (03/05/01
-// §4.17.3.1) — so [`Asso8`] serves both families.
+/// The BCU2 association table (Realisation Type 2, 03/05/01 §4.17.4):
+/// RT2's coding is RT8's — one-octet count, (tsap:1, asap:1) entries —
+/// so this is an alias, kept so a BCU2 call site names the realisation
+/// type it implements.
+pub type Asso2 = Asso8;
 
 /// One row of the BCU2 group object table — [`ComObjectEntry`] with
 /// the pointer narrowed to the one octet the HC05's address space
@@ -457,6 +465,64 @@ impl TableCoding for Cot2 {
     fn write_entry(entry: &ComObjectEntry2, out: &mut Vec<u8>) {
         out.push(entry.data_ptr);
         out.push(entry.config);
+        out.push(entry.object_type);
+    }
+}
+
+// ============================================================================
+// BCU1 (System 1, RT1) codings
+// ============================================================================
+
+/// The BCU1 group address table (Realisation Type 1, 03/05/01
+/// §4.16.3): RT2's coding octet for octet — RT1 merely lacks RT2's
+/// property-based alternative for locating the table, which is a
+/// download-procedure concern, not a wire format.
+pub type Addr1 = Addr2;
+
+/// The BCU1 association table (Realisation Type 1, 03/05/01 §4.17.3):
+/// the same one-octet-identifier coding RT2 and RT8 use.
+pub type Asso1 = Asso8;
+
+/// The BCU1 group object table (Realisation Type 1, 03/05/01
+/// §4.18.3): [`Cot2`]'s layout with one semantic delta — the config
+/// octet's bit 7 is a fixed 1, where RT2 reads it as UpdateEnable.
+/// Assembly and overlay both force the bit, so a configuration
+/// expressed in Table-87 flags cannot clear what the device expects
+/// set.
+pub struct Cot1 {
+    pub ram_flags_ptr: u8,
+}
+
+impl Cot1 {
+    /// Overlay per-object `config`/`type` octets onto a
+    /// product-supplied default table — [`Cot2::overlay`]'s contract,
+    /// with the config octet's bit 7 forced to 1 on the way in.
+    pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
+        let forced: Vec<_> = objects
+            .iter()
+            .map(|&(number, flags, object_type)| {
+                (number, ComObjectFlags::from_byte(flags.to_byte() | ComObjectFlags::UE_FLAG_MASK), object_type)
+            })
+            .collect();
+        Cot2::overlay(defaults, &forced)
+    }
+}
+
+impl TableCoding for Cot1 {
+    type Entry = ComObjectEntry2;
+    const ENTRY_LEN: usize = 3;
+    const HEADER_LEN: usize = 1;
+    const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("RAM-flags pointer", 1)];
+    const COUNT: CountWidth = CountWidth::U8;
+    const OVERFLOW_MSG: &'static str = "the BCU1 group object table holds at most 255 objects";
+
+    fn write_header(&self, out: &mut Vec<u8>) {
+        out.push(self.ram_flags_ptr);
+    }
+
+    fn write_entry(entry: &ComObjectEntry2, out: &mut Vec<u8>) {
+        out.push(entry.data_ptr);
+        out.push(entry.config | ComObjectFlags::UE_FLAG_MASK);
         out.push(entry.object_type);
     }
 }
@@ -626,6 +692,25 @@ mod tests {
 
         // A row beyond the product's table is refused, as in M112.
         assert!(Cot2::overlay(&mut defaults, &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)]).is_err());
+    }
+
+    #[test]
+    fn cot1_forces_config_bit_7() {
+        // Same fixture as the Cot2 test, but the RT1 coding must set
+        // bit 7 of every config octet regardless of what the flags
+        // carry (03/05/01 §4.18.3 fixes it at 1).
+        let entries = [ComObjectEntry2 { data_ptr: 0xC6, config: 0x47, object_type: 0x00 }, ComObjectEntry2 {
+            data_ptr: 0xC7,
+            config: 0xD7,
+            object_type: 0x03,
+        }];
+        let blob = Cot1 { ram_flags_ptr: 0xCE }.blob(&entries).expect("fits");
+        assert_eq!(blob, [0x02, 0xCE, 0xC6, 0xC7, 0x00, 0xC7, 0xD7, 0x03]);
+
+        let mut defaults = blob.clone();
+        Cot1::overlay(&mut defaults, &[(1, ComObjectFlags::from_byte(0x43), ComObjectType::Uint1)])
+            .expect("row 1 exists");
+        assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0xC7, 0x00, 0xC7, 0xC3, 0x00]);
     }
 
     #[test]

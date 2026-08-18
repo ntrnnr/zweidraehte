@@ -19,7 +19,7 @@ use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 
 use super::table_coding::{
-    Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot2, CotM112, TableCoding,
+    Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CotM112, TableCoding,
 };
 use crate::error::{Error, Result};
 
@@ -66,14 +66,60 @@ pub(crate) struct ImageLayout {
 
 impl ImageLayout {
     /// The layout for a mask's declared management model, or `None`
-    /// for models whose downloads are not implemented (BCU1, plain
+    /// for models whose downloads are not implemented (plain
     /// couplers, …).
     pub fn for_management_model(model: &str) -> Option<&'static ImageLayout> {
         LAYOUTS.iter().find(|layout| layout.management_model == model)
     }
 }
 
-pub(crate) const LAYOUTS: [ImageLayout; 3] = [BCU2, BIM_M112, SYSTEM_B];
+pub(crate) const LAYOUTS: [ImageLayout; 4] = [BCU1, BCU2, BIM_M112, SYSTEM_B];
+
+// ============================================================================
+// BCU1 (System 1)
+// ============================================================================
+
+const BCU1: ImageLayout = ImageLayout {
+    management_model: "Bcu1",
+    placement: Placement::AbsoluteSegments,
+    first_asap: 0,
+    address_table: bcu1_address_table,
+    association_table: narrow_association_table,
+    group_object_table: bcu1_group_object_table,
+    overlay_group_object_table: Some(bcu1_overlay_group_object_table),
+};
+
+/// RT1: RT2's coding (the [`Addr1`] alias) — device address in the
+/// table, length octet counting its slot.
+fn bcu1_address_table(ia: IndividualAddress, group_addresses: &[GroupAddress]) -> Result<Vec<u8>> {
+    Addr1 { individual_address: ia }.blob(group_addresses)
+}
+
+/// Overlay flags/type onto the vendor-supplied table; [`Cot1`]
+/// forces config bit 7 on the way in.
+fn bcu1_overlay_group_object_table(defaults: &mut [u8], objects: &[super::product::ComObjectDef]) -> Result<()> {
+    let rows: Vec<(u16, ComObjectFlags, ComObjectType)> =
+        objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
+    Cot1::overlay(defaults, &rows)
+}
+
+/// The BCU1 group object table — BCU2's, through the bit-7-forcing
+/// RT1 coding. As on the other absolute families, no objects means no
+/// blob.
+fn bcu1_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries: Vec<ComObjectEntry2> = rows
+        .iter()
+        .map(|&(flags, object_type)| ComObjectEntry2 {
+            data_ptr: 0,
+            config: flags.to_byte(),
+            object_type: object_type.into(),
+        })
+        .collect();
+    Cot1 { ram_flags_ptr: 0 }.blob(&entries)
+}
 
 // ============================================================================
 // BCU2 (System 2)
@@ -221,10 +267,10 @@ mod tests {
 
     #[test]
     fn layouts_resolve_by_management_model() {
+        assert_eq!(ImageLayout::for_management_model("Bcu1").map(|l| l.first_asap), Some(0));
         assert_eq!(ImageLayout::for_management_model("Bcu2").map(|l| l.first_asap), Some(0));
         assert_eq!(ImageLayout::for_management_model("BimM112").map(|l| l.first_asap), Some(0));
         assert_eq!(ImageLayout::for_management_model("SystemB").map(|l| l.first_asap), Some(1));
-        assert!(ImageLayout::for_management_model("Bcu1").is_none(), "BCU1 downloads are not implemented");
         assert!(ImageLayout::for_management_model("").is_none());
     }
 
