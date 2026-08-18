@@ -144,6 +144,10 @@ pub struct ParameterBlock {
     pub param_ref_id: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
+    /// `None` access hides the whole block from the ETS parameter
+    /// dialog; its parameters stay part of the configuration.
+    #[serde(rename = "@Access", skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
     #[serde(rename = "@Inline", skip_serializing_if = "Option::is_none")]
     pub inline: Option<bool>,
     #[serde(rename = "@ShowInComObjectTree", skip_serializing_if = "Option::is_none")]

@@ -362,6 +362,13 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
             return;
         }
 
+        // ETS hides an `Access="None"` block outright (vendors name
+        // these "invisible"); its parameters stay part of the
+        // configuration, they just get no page.
+        if block.access.as_deref() == Some("None") {
+            return;
+        }
+
         // Only track visible blocks
         self.in_visible_block = self.block_has_visible_items(block);
         if !self.in_visible_block {
