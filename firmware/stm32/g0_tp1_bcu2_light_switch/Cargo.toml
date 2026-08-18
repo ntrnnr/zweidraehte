@@ -1,0 +1,25 @@
+# The BCU2 light switch: the no-async `zweidraehte-microdevice` stack
+# on bare metal. Deliberately NO embassy anywhere — no executor, no
+# HAL, no time driver. The PAC, cortex-m-rt, and a polled main loop
+# are the entire runtime, which is the point of the exercise: the
+# micro stack runs the way 1990s BCU firmware ran.
+[package]
+edition = "2024"
+license.workspace = true
+name = "stm32g0_tp1_bcu2_light_switch"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = { workspace = true, features = ["critical-section-single-core"] }
+cortex-m-rt = { workspace = true }
+# Raw register access. Same metapac major the embassy targets resolve,
+# so the two coexist in one lockfile.
+stm32-metapac = { version = "19", features = ["stm32g0b0re", "rt"] }
+
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+heapless = { workspace = true }
+
+zweidraehte-microdevice = { path = "../../../crates/zweidraehte-microdevice", default-features = false, features = ["defmt"] }
+zweidraehte-proto = { path = "../../../crates/zweidraehte-proto", default-features = false, features = ["defmt"] }

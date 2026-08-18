@@ -75,6 +75,52 @@ pub fn write_frame_blocking(stream: &mut UnixStream, payload: &[u8]) -> io::Resu
     stream.write_all(&buf)
 }
 
+/// Read one length-prefixed frame from a blocking stream and decode it
+/// as `M`. The BCU2 DUT's main loop polls with a short `SO_RCVTIMEO`;
+/// a timeout before the first header byte surfaces as
+/// `WouldBlock`/`TimedOut` for the caller to treat as "no message
+/// yet". Returns `Ok(None)` on clean EOF.
+///
+/// Once the first byte of a frame has arrived, the rest is read
+/// through timeouts: protocol writes are single sub-PIPE_BUF kernel
+/// writes, so the remainder is already buffered or imminently will be.
+pub fn read_msg_blocking<M: DeserializeOwned>(stream: &mut UnixStream) -> io::Result<Option<M>> {
+    let mut header = [0u8; HEADER_SIZE];
+    if !read_exact_blocking(stream, &mut header, true)? {
+        return Ok(None);
+    }
+    let len = u16::from_le_bytes(header) as usize;
+    let mut payload = vec![0u8; len];
+    if len > 0 && !read_exact_blocking(stream, &mut payload, false)? {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "partial frame"));
+    }
+    decode(&payload).map(Some)
+}
+
+/// Fill `buf` from a blocking stream. `bail_on_timeout` propagates the
+/// first read's timeout to the caller (the polling case); after any
+/// byte has been consumed, timeouts keep retrying so a frame is never
+/// half-read and lost. Returns `Ok(false)` on EOF before the first
+/// byte.
+fn read_exact_blocking(stream: &mut UnixStream, buf: &mut [u8], bail_on_timeout: bool) -> io::Result<bool> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match stream.read(&mut buf[filled..]) {
+            Ok(0) if filled == 0 => return Ok(false),
+            Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "partial frame")),
+            Ok(n) => filled += n,
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut) => {
+                if bail_on_timeout && filled == 0 {
+                    return Err(e);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(true)
+}
+
 // ============================================================================
 // Async helpers (used everywhere in the parent harness and the child's
 // IpcLinkLayer main loop).

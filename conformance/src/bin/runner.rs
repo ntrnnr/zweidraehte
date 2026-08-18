@@ -163,6 +163,7 @@ async fn main() {
         tests::security::section_3_2::create_section_3_2_suite(),
         tests::system7_smoke::create_system7_smoke_suite(),
         tests::system7_secure_smoke::create_system7_secure_smoke_suite(),
+        tests::bcu2_smoke::create_bcu2_smoke_suite(),
     ];
 
     // The socket-level KNX IP Secure tests live outside the TP1 suite
@@ -205,9 +206,21 @@ async fn main() {
     // then-pure System 7 selection runs the plain System 7 DUT.
     // Anything mixed beyond that falls back to the System B DUTs with
     // the System 7 suites dropped.
-    let dut_mode = if !suites.is_empty() && suites.iter().all(|s| s.use_system7_secure_dut) {
+    let dut_mode = if !suites.is_empty() && suites.iter().all(|s| s.use_bcu2_dut) {
+        DutMode::Bcu2
+    } else if !suites.is_empty() && suites.iter().all(|s| s.use_system7_secure_dut) {
         DutMode::System7Secure
     } else {
+        let before = suites.len();
+        suites.retain(|s| !s.use_bcu2_dut);
+        let skipped_bcu2 = before - suites.len();
+        if skipped_bcu2 > 0 {
+            if filters.is_empty() {
+                println!("ℹ️  {} BCU2 suite(s) run separately: conformance-runner \"BCU2\"", skipped_bcu2);
+            } else {
+                println!("⚠️  Skipped {} BCU2 suite(s) — mixed-DUT runs are not supported", skipped_bcu2);
+            }
+        }
         let before = suites.len();
         suites.retain(|s| !s.use_system7_secure_dut);
         let skipped_secure = before - suites.len();

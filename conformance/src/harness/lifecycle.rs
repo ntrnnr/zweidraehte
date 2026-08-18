@@ -95,6 +95,9 @@ pub enum DutMode {
     /// `conformance-dut-system7-secure` — System 7 family with Data
     /// Secure.
     System7Secure,
+    /// `conformance-dut-bcu2` — BCU2 family (mask 0020h), the
+    /// no-async `zweidraehte-microdevice` stack.
+    Bcu2,
 }
 
 impl DutMode {
@@ -104,6 +107,7 @@ impl DutMode {
             Self::SystemBSecure => "conformance-dut-systemb-secure",
             Self::System7 => "conformance-dut-system7",
             Self::System7Secure => "conformance-dut-system7-secure",
+            Self::Bcu2 => "conformance-dut-bcu2",
         }
     }
 }

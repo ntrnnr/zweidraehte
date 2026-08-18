@@ -1,0 +1,25 @@
+[package]
+name = "zweidraehte-microdevice"
+version = "0.1.0"
+edition = "2024"
+description = "Ultra-lightweight, no-async KNX device stack for BCU-era masks"
+
+[dependencies]
+zweidraehte-proto = { path = "../zweidraehte-proto" }
+
+heapless = { workspace = true }
+serde = { workspace = true, optional = true }
+postcard = { workspace = true, optional = true }
+log = { workspace = true, optional = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+default = []
+# Host-side extras: the blocking Unix-socket link driver and the
+# postcard snapshot type the conformance DUT persists to shared memory.
+std = ["dep:serde", "dep:postcard", "dep:log", "postcard/use-std"]
+defmt = ["dep:defmt"]
+log = ["dep:log"]
+
+[dev-dependencies]
+postcard = { workspace = true, features = ["use-std"] }

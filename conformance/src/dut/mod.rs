@@ -39,6 +39,8 @@
 //!   device, which is why that one runner binary also carries
 //!   `required-features = ["dut"]`.
 
+pub mod bcu2_product;
+pub mod bcu2_stack;
 pub mod common;
 pub mod fixture_common;
 pub mod ip_secure_stack;

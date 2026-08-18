@@ -406,6 +406,7 @@ framework. `firmware/` holds the embedded targets in a separate workspace.
 crates/
   zweidraehte-proto/         Shared KNX protocol types (messages, encoding, addresses, DPTs)
   zweidraehte-device/        KNX device stack (layers, objects, BCUs)
+  zweidraehte-microdevice/   Ultra-lightweight no-async BCU-era stack (BCU2, mask 0020h)
   zweidraehte-device-macros/ Proc-macros for interface objects, service registries, extension state
   zweidraehte-platform/      Platform abstraction (serial, sockets, network)
   zweidraehte-ets/           Procedural macros for ETS parameter definitions
@@ -559,6 +560,55 @@ Subdirectories:
     **New devices should use System B** — System 7 is for matching an
     existing System 7 installed base, and buys nothing otherwise.
 
+#### 2b. Microdevice Crate (`crates/zweidraehte-microdevice`)
+**Purpose**: Ultra-lightweight, **no-async** device stack for the BCU-era
+management models — currently BCU2 (mask 0020h). A deliberate sibling to
+`zweidraehte-device`, not a layer on it: no embassy, no channels, no buffer
+pool, no interface-object tower. One owner struct
+(`Microdevice<F: MicroDeviceFamily>`) with a cooperative
+`poll(PollInput, now_ms) -> PollOutput` runloop the main loop drives —
+frames in, frames out, timer ticks in between; interrupts stop at a byte
+ring outside the stack. ~19 KiB flash / ~1 KiB RAM on an STM32G0, vs
+~126 KiB / ~9 KiB for the System B embassy stack on the same chip.
+
+Key design points:
+- **The EEPROM bytes ARE the tables**: one flat image at 0100h; the RT2
+  address/association/group-object tables are parsed in place through the
+  pointer bytes on every lookup (`eeprom.rs`), so an `A_Memory_Write` is
+  live immediately — no shadow state, no sync-back, exactly like the mask
+  firmware on real silicon.
+- **Family seam** (`family.rs`, `MicroDeviceFamily`): DD0, TL style, auth
+  levels, memory windows, table codings (count semantics, COT widths), and
+  the LSM path (`Property` vs `MemoryMapped`) are family constants; the
+  core (runloop, group comm, TL/NL, management dispatch) is generic over
+  them. `Bcu2Family` is the first instance; a micro-System-7
+  (0705h/2705h/5705h incl. RF/IP link drivers) is the planned second.
+- Reuses `zweidraehte-proto`'s sync parts only: the TP1 standard-frame
+  layout (`frame.rs` works on raw wire bytes — no `KnxMessageBuffer`),
+  the APDU / `LoadControlRecord` vocabulary, and the pure Style-1
+  transport SM (`transport.rs` adds u32-millisecond deadlines). Depends
+  on proto as-is — embassy stays in the dep graph but never in a code
+  path (SESSION.md tracks feature-gating it).
+- App API is the classic BCU flag model (`co_flags.rs`): update /
+  transmit-request bits in a RAM-flags array, values in page-0 RAM where
+  the CO table's data pointers say.
+- `device_def.rs` bakes a `Bcu2DeviceDefinition` into the boot EEPROM
+  image; the conformance product generator (`dut/bcu2_product.rs`) emits
+  the matching MV-0020 product file from the same definition.
+- `link/tpuart.rs`: sync TPUART host-protocol driver (byte→frame
+  assembly, immediate-ack decision, `U_L_Data*` transmission with echo /
+  confirm tracking) for polling firmware; the conformance DUT feeds
+  frames directly.
+- Feature `std` adds the postcard `MicroSnapshot` (conformance SHM
+  persistence). Validated three ways: `conformance-dut-bcu2` (a blocking
+  std main loop — no embassy anywhere in the process) under the
+  `bcu2_smoke` suite (`cargo run --bin conformance-runner BCU2`), the
+  `conformance-configuration` BCU2 scenarios (full MV-0020 client
+  download + unload), and the crate's own unit/integration tests.
+- Firmware target: `firmware/stm32/g0_tp1_bcu2_light_switch` — bare-metal
+  `cortex-m-rt` + `stm32-metapac`, polled UART, SysTick millis, no
+  embassy. Same board pinout as `g0_tp1_light_switch`.
+
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
 
@@ -665,6 +715,14 @@ Subdirectories:
     fixtures, one per family and security level; each exposes its
     persisted config type (`SystemBDutConfig`, `System7DutConfig`, ...)
     with a `default_snapshot()` factory boot image
+  - `bcu2_stack.rs` / `bcu2_product.rs` - the BCU2 (mask 0020h) DUT
+    fixture: the `zweidraehte-microdevice` device definition, factory
+    `MicroSnapshot`, and the MV-0020 product generator. Its binary
+    (`bin/dut_bcu2.rs`) is a *blocking* main loop — no embassy in the
+    process — which is the point: it proves the micro stack runs
+    without an executor. Driven by the `bcu2_smoke` suite
+    (`conformance-runner BCU2`) and the `conformance-configuration`
+    BCU2 scenarios
   - `fixture_common.rs` - family-neutral fixture vocabulary: the
     conformance application's constants (`CONFORMANCE_DD2`,
     `TestParameters`), the certification object, the shm sequence
@@ -879,7 +937,10 @@ drop the chip prefix (`stm32/g0_blink`, `rp2040/eth_light_switch`), package name
 named between medium and role: `stm32/g0_tp1_system7_light_switch` is the
 mask-0705h sibling of `stm32/g0_tp1_light_switch`, same hardware and
 device definition, System 7 management model; its Data Secure crossing is
-`stm32/g0_tp1_system7_secure_light_switch`. `linux/` holds host-target
+`stm32/g0_tp1_system7_secure_light_switch`. `stm32/g0_tp1_bcu2_light_switch`
+is the mask-0020h sibling on the `zweidraehte-microdevice` stack — bare
+metal `cortex-m-rt` + `stm32-metapac`, polled main loop, deliberately no
+embassy anywhere. `linux/` holds host-target
 device shells following the same `<medium>[_secure]_<role>` naming
 (package prefix `linux_`); these build with a plain `cargo build` in the
 project directory — no target override.

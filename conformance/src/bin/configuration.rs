@@ -39,7 +39,7 @@ use zweidraehte_client::{
     ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, IndividualAddress, KnxBus,
     MachineRef, MaskVersion,
 };
-use zweidraehte_conformance::dut::{system_b_product, system7_product};
+use zweidraehte_conformance::dut::{bcu2_product, system_b_product, system7_product};
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
@@ -130,6 +130,12 @@ async fn main() -> ExitCode {
             ("full download rewires the device", scenario_system7_full_download),
             ("unload-all declares the tables invalid", scenario_system7_unload_all),
             ("oversized segment allocation fails typed", scenario_system7_oversized_segment),
+        ]),
+        ("BCU2 (mask 0020)", DutMode::Bcu2, &[
+            ("BCU2 descriptor smoke read", scenario_bcu2_descriptor),
+            ("BCU2 programming-mode individual addressing", scenario_bcu2_programming_mode_addressing),
+            ("BCU2 download over the property path", scenario_bcu2_full_download),
+            ("BCU2 unload-all invalidates the tables", scenario_bcu2_unload_all),
         ]),
         ("System B (mask 07B0)", DutMode::SystemB, &[
             ("system B descriptor smoke read", scenario_system_b_descriptor),
@@ -391,6 +397,201 @@ fn scenario_system7_oversized_segment<'a>(
                 .run(&[Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload }], &DeviceImage::new())
                 .await
                 .map_err(|e| format!("recovery unload: {e}"))?;
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
+}
+
+// ============================================================================
+// BCU2 scenarios
+// ============================================================================
+//
+// The BCU2 DUT is the no-async `zweidraehte-microdevice` stack behind
+// `conformance-dut-bcu2`. Its download is the MV-0020 mask template
+// end-to-end: authorize on connect, the halt-before-LSM RunError
+// write, machine 3 cycled over PID_LOAD_STATE_CONTROL with the task
+// records, then the verify-mode memory phase over 0100h–046Fh with
+// diffed writes, and a restart. This is the software closure of
+// BCU2_PLAN.md's "end-to-end hardware test pending".
+
+/// The BCU2 DUT's product layer, generated from the same definition
+/// the DUT boots (see `dut::bcu2_product`).
+fn bcu2_dut_product() -> Result<ProductData, String> {
+    let mtxml = bcu2_product::generate_mtxml()?;
+    ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))
+}
+
+fn bcu2_mask(masks: &MaskDb) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
+    masks.mask(MaskVersion::Other(0x0020)).ok_or_else(|| "the master data does not describe MV-0020".to_string())
+}
+
+fn scenario_bcu2_descriptor<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let result = async {
+            let descriptor = conn.device_descriptor_read(0).await.map_err(|e| format!("descriptor read: {e}"))?;
+            if descriptor != [0x00, 0x20] {
+                return Err(format!("descriptor {descriptor:02X?}, expected mask 0020"));
+            }
+            // The BCU2 signature reads: ManagementStyle 48h at 0115h,
+            // and the factory level-0 key granting authorization.
+            let style = conn.memory_read(0x0115, 1).await.map_err(|e| format!("ManagementStyle: {e}"))?;
+            if style != [0x48] {
+                return Err(format!("ManagementStyle {style:02X?}, expected 48h"));
+            }
+            let level = conn.authorize(&[0xFF; 4]).await.map_err(|e| format!("authorize: {e}"))?;
+            if level != 0 {
+                return Err(format!("authorize granted level {level}, expected 0"));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
+}
+
+fn scenario_bcu2_programming_mode_addressing<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let new_ia = IndividualAddress::new(1, 0, 77);
+
+        control.set_programming_mode(true).await.map_err(|e| format!("prog mode on: {e}"))?;
+        let nm = bus.network_management();
+        nm.write_individual_address(new_ia).await.map_err(|e| format!("IA write: {e}"))?;
+        control.set_programming_mode(false).await.map_err(|e| format!("prog mode off: {e}"))?;
+
+        // On a BCU2 the IA lives inside the address table at 0117h —
+        // connected management at the new address proves the write,
+        // a memory read shows where it landed.
+        let mut conn = bus.connect_device(new_ia).await.map_err(|e| format!("connect at new IA: {e}"))?;
+        let result = async {
+            let slot = conn.memory_read(0x0117, 2).await.map_err(|e| format!("IA slot read: {e}"))?;
+            if slot != new_ia.as_bytes() {
+                return Err(format!("IA slot {slot:02X?}, expected {:02X?}", new_ia.as_bytes()));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
+}
+
+fn scenario_bcu2_full_download<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
+
+        let masks = mask_db()?;
+        let mask = bcu2_mask(&masks)?;
+        let product = bcu2_dut_product()?;
+
+        let mut project = ProjectConfig::new(dut_ia());
+        // GO3 is the transmit-capable status object of the fixture.
+        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
+        project.max_apdu = 15; // no MaxApduLength resource on this mask
+
+        // Sanity: this compiles to the property path with the halt
+        // preceding the LSM cycle (the wedge the model row exists for).
+        let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
+        if compiled.path() != LoadControlPath::Property {
+            return Err("a BCU2 must compile to the property load-control path".to_string());
+        }
+        if !matches!(compiled.instructions.get(1), Some(Instruction::WriteMemory { address: 0x010D, .. })) {
+            return Err("the RunError halt must directly follow Connect".to_string());
+        }
+
+        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+
+        // The procedure ended in a restart; everything must have
+        // survived the respawn.
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
+        let checks = async {
+            let state = conn
+                .property_read(3, pid::LOAD_STATE_CONTROL, 1, 1)
+                .await
+                .map_err(|e| format!("application load state: {e}"))?;
+            if state.first() != Some(&u8::from(LoadState::Loaded)) {
+                return Err(format!("application load state {state:02X?}, expected Loaded"));
+            }
+            // The RT2 address table at 0116h: length counts the IA
+            // slot, then the IA, then the single rewired GA.
+            let adt = conn.memory_read(0x0116, 5).await.map_err(|e| format!("ADT read: {e}"))?;
+            if adt != [0x02, 0x10, 0x01, 0x19, 0x01] {
+                return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
+            }
+            // RunError cleared back to FFh — the application runs.
+            let run_error = conn.memory_read(0x010D, 1).await.map_err(|e| format!("RunError: {e}"))?;
+            if run_error != [0xFF] {
+                return Err(format!("RunError {run_error:02X?}, expected FFh"));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        checks?;
+
+        // The wiring is live: GO3 transmitting must hit the rewired GA.
+        let mut events = bus.group_events();
+        control.trigger_group_write(3).await.map_err(|e| format!("trigger: {e}"))?;
+        let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .map_err(|_| "no group telegram after trigger".to_string())?
+            .map_err(|e| format!("group events: {e}"))?;
+        if telegram.group != rewired_ga || telegram.service != GroupService::Write {
+            return Err(format!("unexpected telegram {:?} on {}", telegram.service, telegram.group));
+        }
+        Ok(())
+    })
+}
+
+fn scenario_bcu2_unload_all<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let masks = mask_db()?;
+        let mask = bcu2_mask(&masks)?;
+
+        let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
+            .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let result = async {
+            let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 15);
+            downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
+
+            for obj in [1u8, 2, 3] {
+                let state = conn
+                    .property_read(obj, pid::LOAD_STATE_CONTROL, 1, 1)
+                    .await
+                    .map_err(|e| format!("load state of object {obj}: {e}"))?;
+                if state.first() != Some(&u8::from(LoadState::Unloaded)) {
+                    return Err(format!("object {obj} load state {state:02X?}, expected Unloaded"));
+                }
+            }
+            // The address table collapsed to the mute length with the
+            // IA intact, and the ApplicationID's DevType is zeroed —
+            // the device is unconfigured but still commissioned.
+            let adt = conn.memory_read(0x0116, 3).await.map_err(|e| format!("ADT read: {e}"))?;
+            if adt != [0x01, 0x10, 0x01] {
+                return Err(format!("ADT head {adt:02X?}, expected mute length with IA intact"));
+            }
+            let dev_type = conn.memory_read(0x0105, 3).await.map_err(|e| format!("DevType read: {e}"))?;
+            if dev_type != [0x00, 0x00, 0x00] {
+                return Err(format!("ApplicationID tail {dev_type:02X?}, expected zeroed"));
+            }
             Ok(())
         }
         .await;

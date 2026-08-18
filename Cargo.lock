@@ -6420,6 +6420,7 @@ name = "zweidraehte-conformance"
 version = "0.1.0"
 dependencies = [
  "async-io",
+ "base64",
  "const-default",
  "embassy-executor",
  "embassy-futures",
@@ -6444,6 +6445,7 @@ dependencies = [
  "zweidraehte-client",
  "zweidraehte-device",
  "zweidraehte-knxprod",
+ "zweidraehte-microdevice",
  "zweidraehte-platform",
  "zweidraehte-proto",
 ]
@@ -6556,6 +6558,18 @@ dependencies = [
  "zerocopy",
  "zip",
  "zweidraehte-device",
+ "zweidraehte-proto",
+]
+
+[[package]]
+name = "zweidraehte-microdevice"
+version = "0.1.0"
+dependencies = [
+ "defmt",
+ "heapless 0.9.2",
+ "log",
+ "postcard",
+ "serde",
  "zweidraehte-proto",
 ]
 

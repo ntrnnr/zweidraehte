@@ -2815,6 +2815,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32g0_tp1_bcu2_light_switch"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "heapless 0.9.2",
+ "panic-probe",
+ "stm32-metapac",
+ "zweidraehte-microdevice",
+ "zweidraehte-proto",
+]
+
+[[package]]
 name = "stm32g0_tp1_light_switch"
 version = "0.1.0"
 dependencies = [
@@ -3475,6 +3490,15 @@ version = "0.1.0"
 dependencies = [
  "qrcode",
  "zweidraehte-device",
+]
+
+[[package]]
+name = "zweidraehte-microdevice"
+version = "0.1.0"
+dependencies = [
+ "defmt 1.0.1",
+ "heapless 0.9.2",
+ "zweidraehte-proto",
 ]
 
 [[package]]

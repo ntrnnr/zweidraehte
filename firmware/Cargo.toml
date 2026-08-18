@@ -9,6 +9,7 @@ members = [
     "linux/eth_secure_light_switch",
     "stm32/common",
     "stm32/g0_blink",
+    "stm32/g0_tp1_bcu2_light_switch",
     "stm32/g0_tp1_light_switch",
     "stm32/g0_tp1_secure_light_switch",
     "stm32/g0_tp1_system7_light_switch",
