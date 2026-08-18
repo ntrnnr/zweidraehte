@@ -124,10 +124,13 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
         let mut connection = bus.connect_device(job.ia).await.map_err(|e| format!("connecting to device: {e}"))?;
         let sink_tx = tx.clone();
         let mut downloader = Downloader::with_path(&mut connection, compiled.path(), max_apdu);
-        if let Some(model) = model
-            && !model.authorize_on_connect
-        {
-            downloader = downloader.without_authorize();
+        if let Some(model) = model {
+            if !model.authorize_on_connect {
+                downloader = downloader.without_authorize();
+            }
+            if model.diff_writes {
+                downloader = downloader.with_diffed_writes();
+            }
         }
         let outcome = downloader
             .with_progress(Box::new(move |event| {

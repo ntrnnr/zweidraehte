@@ -55,6 +55,27 @@ pub struct DownloadModel {
     /// speak. Callers use this to skip the `PID_MAX_APDULENGTH`
     /// negotiation (and similar property probes) outright.
     pub has_properties: bool,
+    /// Whether memory writes are diffed against the device: read the
+    /// span first, write only the runs that differ. ETS does this for
+    /// the BCU-era EEPROM (BCU1.log: 38 reads, 8 writes for a
+    /// re-download that changed a handful of bytes) — those parts are
+    /// slow to write and wear-limited, and a re-download typically
+    /// changes a few parameter bytes in a 256-byte window. System 7 /
+    /// System B are written wholesale, as ETS does (its 0705 trace
+    /// contains not a single memory read).
+    pub diff_writes: bool,
+    /// Whether the application must be halted (`RunError` ← 00)
+    /// right after Connect, before the LSM cycle. The BCU2 Load/all
+    /// template only halts in its memory phase, *after*
+    /// `LoadCompleted` — an order that assumes a not-running app.
+    /// `LoadCompleted` on the application machine (re)starts the user
+    /// code, and doing that to a device that was already running its
+    /// application mid-download wedged a real BCU2 until its
+    /// programming button (which force-halts user code — the same
+    /// cure from the other side). ETS's BCU1 re-download trace halts
+    /// first, as its third telegram; the BCU1 mask template also
+    /// leads with the halt, which is why that row does not need this.
+    pub halt_app_first: bool,
     /// The APDU capacity to assume when `PID_MAX_APDULENGTH` cannot be
     /// read. 15 — the TP1 standard frame, 12-byte memory chunks — is
     /// the 03/05/01 §4.3.7.2.1 fallback for every family; BCU1 devices
@@ -71,28 +92,6 @@ impl DownloadModel {
     }
 }
 
-/// The management-model spelling whose [`ImageLayout`] a product of
-/// the given mask family lays its tables out in.
-///
-/// Needed for downward-compatible downloads (a BCU1 program carried
-/// by a BCU2): the *procedure* follows the device's mask, but the
-/// tables stay in the program's own realization — a BCU1 application
-/// reads its group object table RT1-style (config bit 7 fixed)
-/// whatever silicon executes it.
-pub(crate) fn family_management_model(family: zweidraehte_proto::device::MaskFamily) -> &'static str {
-    use zweidraehte_proto::device::MaskFamily;
-    match family {
-        MaskFamily::Bcu1 => "Bcu1",
-        MaskFamily::Bcu2 => "Bcu2",
-        MaskFamily::System7 => "BimM112",
-        MaskFamily::SystemB => "SystemB",
-        // No layout rows exist for the coupler families; callers fall
-        // back to the device mask's own layout.
-        MaskFamily::Bim => "Bim",
-        MaskFamily::BimM => "BimM",
-    }
-}
-
 const MODELS: [DownloadModel; 4] = [
     DownloadModel {
         management_model: "Bcu1",
@@ -102,6 +101,9 @@ const MODELS: [DownloadModel; 4] = [
         load_control: direct_path,
         authorize_on_connect: false,
         has_properties: false,
+        diff_writes: true,
+        // The MV-0012 template's own second step is the halt.
+        halt_app_first: false,
         default_max_apdu: 15,
     },
     DownloadModel {
@@ -112,6 +114,8 @@ const MODELS: [DownloadModel; 4] = [
         load_control: declared_path,
         authorize_on_connect: true,
         has_properties: true,
+        diff_writes: true,
+        halt_app_first: true,
         default_max_apdu: 15,
     },
     DownloadModel {
@@ -120,6 +124,8 @@ const MODELS: [DownloadModel; 4] = [
         load_control: forced_property_path,
         authorize_on_connect: true,
         has_properties: true,
+        diff_writes: false,
+        halt_app_first: false,
         default_max_apdu: 15,
     },
     DownloadModel {
@@ -128,6 +134,8 @@ const MODELS: [DownloadModel; 4] = [
         load_control: declared_path,
         authorize_on_connect: true,
         has_properties: true,
+        diff_writes: false,
+        halt_app_first: false,
         default_max_apdu: 15,
     },
 ];

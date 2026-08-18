@@ -807,7 +807,8 @@ Structure (sans-io core + thin tokio driver):
   `model.rs` (`DownloadModel`: one static definition row per
   management model — the embedded `ImageLayout` with placement, ASAP
   base and codings, plus the load-control path policy,
-  authorize-on-connect, property surface, APDU default; supported
+  authorize-on-connect, property surface, diffed memory writes
+  (BCU-era EEPROM), APDU default; supported
   rows: Bcu1, Bcu2, BimM112, SystemB). The end-to-end
   test tier is `conformance-configuration` (see the conformance crate).
 

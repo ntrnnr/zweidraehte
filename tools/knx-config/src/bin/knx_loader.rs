@@ -555,10 +555,13 @@ async fn run_unload(
     let mut connection = bus.connect_device(ia).await.context("while attempting to connect to the device")?;
     let result = async {
         let mut downloader = Downloader::with_path(&mut connection, path, max_apdu);
-        if let Some(model) = model
-            && !model.authorize_on_connect
-        {
-            downloader = downloader.without_authorize();
+        if let Some(model) = model {
+            if !model.authorize_on_connect {
+                downloader = downloader.without_authorize();
+            }
+            if model.diff_writes {
+                downloader = downloader.with_diffed_writes();
+            }
         }
         downloader
             .run(&instructions, &DeviceImage::new())

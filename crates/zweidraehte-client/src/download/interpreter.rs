@@ -156,6 +156,10 @@ pub struct Downloader<'a, T> {
     /// BCU1, which predates `A_Authorize` — see
     /// [`DownloadModel::authorize_on_connect`](super::model::DownloadModel::authorize_on_connect).
     authorize: bool,
+    /// Whether memory writes are diffed against the device's current
+    /// content (BCU-era EEPROM) — see
+    /// [`DownloadModel::diff_writes`](super::model::DownloadModel::diff_writes).
+    diff_writes: bool,
     /// Progress reporting, when a UI wants it.
     progress: Option<ProgressSink>,
     /// Base addresses the device reported for relative segments, by
@@ -190,6 +194,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
             chunk,
             key: [0xFF; 4],
             authorize: true,
+            diff_writes: false,
             progress: None,
             bases: BTreeMap::new(),
             tolerated_errors: BTreeSet::new(),
@@ -200,6 +205,14 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     /// speak the service (BCU1 masks).
     pub fn without_authorize(mut self) -> Self {
         self.authorize = false;
+        self
+    }
+
+    /// Diff memory writes against the device's current content and
+    /// write only the changed runs — the BCU-era EEPROM economy ETS
+    /// practices (see [`DownloadModel::diff_writes`](super::model::DownloadModel::diff_writes)).
+    pub fn with_diffed_writes(mut self) -> Self {
+        self.diff_writes = true;
         self
     }
 
@@ -436,11 +449,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                     return Ok(());
                 }
                 for (part_address, bytes) in parts {
-                    if *verify {
-                        self.write_verified(part_address, &bytes).await?;
-                    } else {
-                        self.write_chunked(part_address, &bytes).await?;
-                    }
+                    self.write_bytes(part_address, &bytes, *verify).await?;
                 }
                 Ok(())
             }
@@ -459,13 +468,7 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
                 Ok(())
             }
 
-            Instruction::WriteMemory { address, data, verify } => {
-                if *verify {
-                    self.write_verified(*address, data).await
-                } else {
-                    self.write_chunked(*address, data).await
-                }
-            }
+            Instruction::WriteMemory { address, data, verify } => self.write_bytes(*address, data, *verify).await,
 
             Instruction::CompareMemory { address, expected } => {
                 let mut read = Vec::with_capacity(expected.len());
@@ -584,6 +587,62 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
     // ========================================================================
     // Primitives
     // ========================================================================
+
+    /// A memory write, on this downloader's write policy: diffed
+    /// against the device where the model asks for it, plain
+    /// otherwise; read-back verified when the instruction says so.
+    async fn write_bytes(&mut self, address: u16, data: &[u8], verify: bool) -> Result<()> {
+        if self.diff_writes {
+            return self.write_diffed(address, data, verify).await;
+        }
+        if verify { self.write_verified(address, data).await } else { self.write_chunked(address, data).await }
+    }
+
+    /// Read the span and write only the runs that differ — what ETS
+    /// does to BCU-era EEPROM (BCU1.log: a re-download that changed a
+    /// handful of bytes reads every window and writes 8 small runs).
+    /// EEPROM bytes are wear-limited and slow to write; reading first
+    /// costs one pass and typically saves most of the write pass.
+    ///
+    /// Nearby changes coalesce into one run: ETS writes
+    /// `$0135 Count=7` for changed bytes at $0135/37/38/3A/3B — a
+    /// couple of unchanged bytes rewritten with their own value cost
+    /// less than another telegram.
+    async fn write_diffed(&mut self, address: u16, data: &[u8], verify: bool) -> Result<()> {
+        let mut current = Vec::with_capacity(data.len());
+        for start in (0..data.len()).step_by(self.chunk) {
+            let len = self.chunk.min(data.len() - start);
+            current.extend(self.target.memory_read(address + start as u16, len as u8).await?);
+        }
+        if current.len() < data.len() {
+            return Err(Error::Parse("short memory read while diffing a write"));
+        }
+
+        // Coalesce differing bytes into runs, bridging gaps of up to
+        // three equal bytes.
+        const BRIDGE: usize = 3;
+        let mut runs: Vec<(usize, usize)> = Vec::new();
+        for (i, (new, old)) in data.iter().zip(&current).enumerate() {
+            if new == old {
+                continue;
+            }
+            match runs.last_mut() {
+                Some((_, end)) if i - *end <= BRIDGE => *end = i + 1,
+                _ => runs.push((i, i + 1)),
+            }
+        }
+
+        for (start, end) in runs {
+            let run_address = address + start as u16;
+            let run = data[start..end].to_vec();
+            if verify {
+                self.write_verified(run_address, &run).await?;
+            } else {
+                self.write_chunked(run_address, &run).await?;
+            }
+        }
+        Ok(())
+    }
 
     /// Chunked `DMP_MemWrite_RCo` (no read-back).
     async fn write_chunked(&mut self, address: u16, data: &[u8]) -> Result<()> {
@@ -921,11 +980,13 @@ mod bcu1_tests {
     struct ScriptedBcu1 {
         memory: HashMap<u16, u8>,
         restarted: bool,
+        /// `memory_write` calls — the diff tests count telegrams.
+        writes: usize,
     }
 
     impl ScriptedBcu1 {
         fn new() -> Self {
-            Self { memory: HashMap::new(), restarted: false }
+            Self { memory: HashMap::new(), restarted: false, writes: 0 }
         }
     }
 
@@ -940,6 +1001,7 @@ mod bcu1_tests {
             Ok((0..count).map(|i| *self.memory.get(&(address + u16::from(i))).unwrap_or(&0)).collect())
         }
         async fn memory_write(&mut self, address: u16, data: &[u8]) -> Result<()> {
+            self.writes += 1;
             for (i, byte) in data.iter().enumerate() {
                 self.memory.insert(address + i as u16, *byte);
             }
@@ -973,7 +1035,10 @@ mod bcu1_tests {
     /// The full MV-0012 DefaultProcedure against a plain memory
     /// surface: memory writes only, no `A_Authorize` (the scripted
     /// device panics on it), and the finished EEPROM window carries
-    /// the compiled bytes.
+    /// the compiled bytes. The BCU1 model diffs its writes, so a byte
+    /// the device already holds — this scripted one reads unwritten
+    /// memory as 00 — is never written; assertions read through the
+    /// same lens the device does.
     #[tokio::test(start_paused = true)]
     async fn full_bcu1_download_is_memory_writes_only() {
         let c = compiled();
@@ -981,33 +1046,71 @@ mod bcu1_tests {
         c.execute(&mut device, 15).await.expect("the scripted download succeeds");
         assert!(device.restarted);
 
+        let at = |device: &ScriptedBcu1, address: u16| device.memory.get(&address).copied().unwrap_or(0);
+
         // RunError (010Dh): halted at the start, cleared at the end.
-        assert_eq!(device.memory[&0x010D], 0xFF);
+        assert_eq!(at(&device, 0x010D), 0xFF);
         // The GA table: muted mid-procedure (0116h ← 01), then the
         // compiled length 3 (IA slot + 2 GAs). The template's write
         // windows deliberately skip 0117h–0118h — the device's own IA
         // is `A_PhysicalAddress_Write` business, never the download's
         // — and the 230-byte window at 0119h starts exactly at the
         // first group address.
-        assert_eq!(device.memory[&0x0116], 3);
+        assert_eq!(at(&device, 0x0116), 3);
         assert!(!device.memory.contains_key(&0x0117), "the IA slot is never written by the download");
         assert!(!device.memory.contains_key(&0x0118), "the IA slot is never written by the download");
         for (offset, expected) in [0x00u8, 0x01, 0x10, 0x03].into_iter().enumerate() {
-            assert_eq!(device.memory[&(0x0119 + offset as u16)], expected, "GA byte {offset}");
+            assert_eq!(at(&device, 0x0119 + offset as u16), expected, "GA byte {offset}");
         }
-        // The RAM-flags areas were zeroed.
+        // The RAM-flags zeroing wrote nothing: the diff saw zeros
+        // already there. (ETS's own trace writes only the two bytes
+        // that differed.)
         for address in (0x00CE..0x00CE + 9).chain(0x00D7..0x00D7 + 9) {
-            assert_eq!(device.memory[&address], 0x00, "RAM flags at {address:#06X}");
+            assert_eq!(at(&device, address), 0x00, "RAM flags at {address:#06X}");
+            assert!(!device.memory.contains_key(&address), "already-zero RAM flags are not rewritten");
         }
         // The parameter patch reached its EEPROM address.
-        assert_eq!(device.memory[&(0x0100 + 200)], 0xEE);
-        // The vendor ramp went out where nothing overrode it.
-        assert_eq!(device.memory[&0x0100], 0x00);
-        assert_eq!(device.memory[&0x01FE], 0xFE);
+        assert_eq!(at(&device, 0x0100 + 200), 0xEE);
+        // The vendor ramp went out where nothing overrode it (its 00
+        // bytes diffed away against the blank device).
+        assert_eq!(at(&device, 0x0100), 0x00);
+        assert_eq!(at(&device, 0x01FE), 0xFE);
         // The fixup's routine address (U_GetTMx on MV-0012, 0D6Ch)
         // reached the device inside the 0119h window.
-        assert_eq!(device.memory[&0x01EF], 0x0D);
-        assert_eq!(device.memory[&0x01F0], 0x6C);
+        assert_eq!(at(&device, 0x01EF), 0x0D);
+        assert_eq!(at(&device, 0x01F0), 0x6C);
+    }
+
+    /// The diff economy itself: a device already holding most of a
+    /// window gets only the changed runs, with nearby changes
+    /// coalesced into one write — the shape of ETS's BCU1 re-download
+    /// (BCU1.log writes `$0135 Count=7` for five changed bytes).
+    #[tokio::test(start_paused = true)]
+    async fn diffed_writes_touch_only_changed_runs() {
+        let mut device = ScriptedBcu1::new();
+        for i in 0..16u16 {
+            device.memory.insert(0x0200 + i, i as u8);
+        }
+
+        // Change bytes 4, 6 and 7 (one bridged run) and byte 15.
+        let mut data: Vec<u8> = (0..16).collect();
+        data[4] = 0xA4;
+        data[6] = 0xA6;
+        data[7] = 0xA7;
+        data[15] = 0xAF;
+
+        let mut downloader = Downloader::with_path(&mut device, LoadControlPath::Direct, 15).with_diffed_writes();
+        downloader
+            .run(&[Instruction::WriteMemory { address: 0x0200, data: data.clone(), verify: true }], &DeviceImage::new())
+            .await
+            .expect("runs");
+
+        // Two runs: [4..8) bridged across the unchanged byte 5, and
+        // [15..16). Each verified write is one memory_write call.
+        assert_eq!(device.writes, 2, "one write per changed run");
+        for (i, byte) in data.iter().enumerate() {
+            assert_eq!(device.memory[&(0x0200 + i as u16)], *byte, "byte {i}");
+        }
     }
 
     /// `ReadIntoImage` snapshots device bytes into the image's gaps —

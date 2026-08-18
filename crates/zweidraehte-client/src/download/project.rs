@@ -34,7 +34,7 @@ use super::image::DeviceImage;
 use super::interpreter::{DownloadTarget, Downloader, LoadControlPath};
 use super::ir::{Instruction, controls_to_instructions};
 use super::mask::{LsmModel, MachineRole, MaskData};
-use super::model::{DownloadModel, ImageLayout, Placement, family_management_model};
+use super::model::{DownloadModel, ImageLayout, Placement};
 use super::product::{ParameterLocation, ProductData};
 use crate::error::{Error, Result};
 
@@ -99,6 +99,9 @@ pub struct CompiledDownload {
     /// From the model row: whether `Connect` authorizes (everything
     /// but BCU1).
     authorize: bool,
+    /// From the model row: whether memory writes are diffed against
+    /// the device (the BCU-era EEPROM economy).
+    diff_writes: bool,
 }
 
 impl CompiledDownload {
@@ -116,6 +119,9 @@ impl CompiledDownload {
         let mut downloader = Downloader::with_path(target, self.path, max_apdu);
         if !self.authorize {
             downloader = downloader.without_authorize();
+        }
+        if self.diff_writes {
+            downloader = downloader.with_diffed_writes();
         }
         downloader.run(&self.instructions, &self.image).await
     }
@@ -142,21 +148,17 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     let model = download_model(mask)?;
     let path = (model.load_control)(mask)?;
 
-    // The image half follows the *product's* mask when it differs
-    // from the (device-selected) mask compiled for: a BCU1 program
-    // downloaded into a downward-compatible BCU2 keeps its RT1 table
-    // realization — the application reads the tables, and it was
-    // built for RT1 — while the procedure above is the device's. For
-    // the ordinary same-mask download this resolves to `model.layout`.
-    let layout = product
-        .mask_version
-        .map(|mv| family_management_model(mv.family()))
-        .and_then(DownloadModel::for_management_model)
-        .map(|product_model| &product_model.layout)
-        .unwrap_or(&model.layout);
-
+    // The image half follows the (device-selected) mask too — even
+    // for a BCU1 program carried by a downward-compatible BCU2. The
+    // one byte where RT1 and RT2 genuinely differ, the group-object
+    // config octet's bit 7 ("shall be 1" in RT1, UpdateEnable in
+    // RT2), follows the *silicon reading the table*: ETS writes the
+    // same program's descriptors as D3/93 (bit 7 forced) to a real
+    // 0012 device and as 53/13 (plain RT2 flags) to a 0020 carrying
+    // it, matching 03/05/01 §4.18.3 vs §4.18.4. The remaining BCU-era
+    // codings are octet-identical between the families.
     let mut image = DeviceImage::new();
-    build_image(&mut image, layout, &mask.lsm_model(), product, project)?;
+    build_image(&mut image, &model.layout, &mask.lsm_model(), product, project)?;
     apply_fixups(&mut image, mask, product)?;
 
     let controls = assemble_controls(mask, product, ProcedureKind::LoadAll)?;
@@ -176,8 +178,15 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
     let assembled = controls_to_instructions(&controls, product.task_identity)?;
     let instructions = resolve_relative_steps(assembled, &image);
     let instructions = if implicit_writes { insert_image_writes(instructions, &image) } else { instructions };
+    let instructions = if model.halt_app_first { halt_application_first(instructions, mask)? } else { instructions };
 
-    Ok(CompiledDownload { image, instructions, path, authorize: model.authorize_on_connect })
+    Ok(CompiledDownload {
+        image,
+        instructions,
+        path,
+        authorize: model.authorize_on_connect,
+        diff_writes: model.diff_writes,
+    })
 }
 
 /// The [`DownloadModel`] row for a mask, or the error every
@@ -196,6 +205,39 @@ fn download_model(mask: &MaskData<'_>) -> Result<&'static DownloadModel> {
 /// have chosen.
 pub fn load_control_path(mask: &MaskData<'_>) -> Result<LoadControlPath> {
     (download_model(mask)?.load_control)(mask)
+}
+
+/// Halt the application before anything else touches the device: a
+/// `RunError` ← 00 write inserted right after `Connect`.
+///
+/// The BCU2 Load/all template only halts in its memory phase, *after*
+/// the LSM cycle — an order that assumes the app is not running.
+/// `LoadCompleted` on the application machine (re)starts the user
+/// code mid-download, which wedged a real BCU2 that was running its
+/// application until its programming button was pressed (prog mode
+/// force-halts user code, which is also why downloads to a device in
+/// prog mode never showed this). ETS's own BCU1 re-download trace
+/// halts first — its third telegram is `$010D ← 00`. The address
+/// comes from the mask's `RunError` resource; the template's own
+/// later halt then rewrites the byte with its existing value (or
+/// diff-skips), and its closing `RunError ← FF` + restart bring the
+/// app back up cleanly.
+fn halt_application_first(instructions: Vec<Instruction>, mask: &MaskData<'_>) -> Result<Vec<Instruction>> {
+    let run_error = mask.standard_memory_address("RunError").ok_or(Error::DownloadConfig(
+        "this mask's model halts the application first, but the mask locates no RunError in memory",
+    ))?;
+
+    let mut out = Vec::with_capacity(instructions.len() + 1);
+    let mut inserted = false;
+    for instruction in instructions {
+        let is_connect = matches!(instruction, Instruction::Connect);
+        out.push(instruction);
+        if is_connect && !inserted {
+            out.push(Instruction::WriteMemory { address: run_error, data: vec![0x00], verify: true });
+            inserted = true;
+        }
+    }
+    Ok(out)
 }
 
 /// Patch the program's fixups into the image: BCU-era native code
@@ -1054,6 +1096,19 @@ mod tests {
         let c = compile(&mask, &product, &project).expect("compiles");
         assert_eq!(c.path(), LoadControlPath::Property);
 
+        // The application is halted (RunError 010Dh ← 00) right after
+        // Connect, *before* the LSM cycle — LoadCompleted (re)starts
+        // the user code, and doing that to a running device mid-
+        // download wedges it.
+        assert!(matches!(c.instructions[0], Instruction::Connect));
+        assert_eq!(c.instructions[1], Instruction::WriteMemory { address: 0x010D, data: vec![0x00], verify: true });
+        let first_lsm = c
+            .instructions
+            .iter()
+            .position(|i| matches!(i, Instruction::LsmEvent { .. }))
+            .expect("the template cycles machines");
+        assert!(first_lsm > 1, "the halt precedes every LSM event");
+
         // The MV-0020 template's machinery is all there…
         assert!(c.instructions.iter().any(|i| matches!(i, Instruction::LsmEvent { .. })));
         assert!(c.instructions.iter().any(|i| matches!(i, Instruction::TaskPointers { lsm: 3, .. })));
@@ -1073,12 +1128,13 @@ mod tests {
             .expect("the template's data phase");
         assert!(first_write > completed, "EnableSegmentWrite=false suppresses the implicit data phase");
 
-        // The tables stay RT1: the product's group object table is
-        // overlaid with config bit 7 forced, exactly as when a real
-        // BCU1 carries it.
+        // The tables follow the *device's* realization: on the BCU2
+        // the config octet is plain RT2 flags — no forced bit 7. ETS
+        // writes exactly this asymmetry (D3/93 to a real 0012, 53/13
+        // to a 0020 carrying the same program).
         let (address, bytes) = c.image.regions().next().expect("the EEPROM segment");
         assert_eq!(address, 0x0100);
-        assert_eq!(bytes[83], 0x17 | 0x80, "object 0 config keeps RT1's forced bit 7");
+        assert_eq!(bytes[83], 0x17, "object 0 config is plain RT2 flags on the BCU2");
 
         // The fixup resolved U_GetTMx against the *device's* mask:
         // MV-0020's 20579 = 5063h — the code would call MV-0012's

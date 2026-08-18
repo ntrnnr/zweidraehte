@@ -160,6 +160,19 @@ impl<'a> MaskData<'a> {
         self.inner.mask_entry_address(me_suffix)
     }
 
+    /// The address of a named resource, when the mask locates it in
+    /// plain device memory (`AddressSpace="StandardMemory"`) — e.g.
+    /// `"RunError"` (010Dh on the BCU-era masks) or
+    /// `"ProgrammingMode"`.
+    pub fn standard_memory_address(&self, name: &str) -> Option<u16> {
+        let resources = self.inner.resource_map();
+        let resource = resources.get(name).copied()?;
+        if !resource.is_standard_memory() {
+            return None;
+        }
+        u16::try_from(resource.start_address()?).ok()
+    }
+
     /// A procedure template by type and subtype, e.g.
     /// `("Unload", "all")` or `("Load", "all")`. System 7 masks carry
     /// only `Unload`; their Load procedures are product-supplied.
@@ -561,6 +574,10 @@ pub(crate) mod fixtures {
             <Resource Name="ProgrammingMode" Access="remote local1">
               <Location AddressSpace="StandardMemory" StartAddress="96" />
               <ResourceType Length="1" Flavour="ProgrammingMode_Bcu1" />
+            </Resource>
+            <Resource Name="RunError" Access="remote local1">
+              <Location AddressSpace="StandardMemory" StartAddress="269" />
+              <ResourceType Length="1" Flavour="Runerror_Bcu1" />
             </Resource>
             <Resource Name="GroupAddressTableLoadControl" Access="remote local2">
               <Location AddressSpace="SystemProperty" InterfaceObjectRef="1" PropertyID="5" StartAddress="0" />
