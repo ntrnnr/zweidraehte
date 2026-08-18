@@ -5,6 +5,7 @@
 
 mod app;
 mod download;
+mod tables;
 mod ui;
 
 use std::fs::File;

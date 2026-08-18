@@ -23,8 +23,8 @@
 use std::collections::HashMap;
 
 use crate::schema::{
-    ApplicationProgram, ChannelIndependentItem, ChannelItem, Choose, Knx, ParameterBlock, ParameterBlockItem,
-    ParameterItem, WhenItem,
+    ApplicationProgram, Channel, ChannelIndependentItem, ChannelItem, Choose, DynamicItem, Knx, ParameterBlock,
+    ParameterBlockItem, ParameterItem, WhenItem,
 };
 
 /// All of a document's translations, indexed for application.
@@ -163,19 +163,29 @@ impl Applier<'_> {
         }
 
         // Dynamic: channel, block, separator and rename titles.
+        // Translations are data, not conditional display, so every
+        // choose branch is visited — including the Dynamic-level
+        // chooses ETS6 programs gate whole channels behind.
         if let Some(dynamic) = &mut program.dynamic {
-            if let Some(cib) = &mut dynamic.channel_independent_block {
-                for item in &mut cib.items {
-                    self.cib_item(item);
+            for item in &mut dynamic.items {
+                match item {
+                    DynamicItem::ChannelIndependentBlock(cib) => {
+                        for item in &mut cib.items {
+                            self.cib_item(item);
+                        }
+                    }
+                    DynamicItem::Channel(channel) => self.channel(channel),
+                    DynamicItem::Choose(choose) => self.choose(choose),
                 }
             }
-            for channel in &mut dynamic.channels {
-                let id = channel.id.clone();
-                self.set_opt(&id, "Text", &mut channel.text);
-                for item in &mut channel.items {
-                    self.channel_item(item);
-                }
-            }
+        }
+    }
+
+    fn channel(&mut self, channel: &mut Channel) {
+        let id = channel.id.clone();
+        self.set_opt(&id, "Text", &mut channel.text);
+        for item in &mut channel.items {
+            self.channel_item(item);
         }
     }
 
@@ -244,6 +254,7 @@ impl Applier<'_> {
         match item {
             WhenItem::ParameterBlock(pb) => self.block(pb),
             WhenItem::Choose(choose) => self.choose(choose),
+            WhenItem::Channel(channel) => self.channel(channel),
             WhenItem::ParameterSeparator(separator) => {
                 let id = separator.id.clone();
                 self.set_opt(&id, "Text", &mut separator.text);
@@ -319,7 +330,7 @@ mod tests {
             crate::schema::ParameterTypeDef::TypeRestriction(r) => assert_eq!(r.enumerations[0].text, "Aus"),
             other => panic!("expected a restriction, got {other:?}"),
         }
-        match &program.dynamic.as_ref().expect("dynamic").channels[0].items[0] {
+        match &program.dynamic.as_ref().expect("dynamic").all_channels()[0].items[0] {
             crate::schema::ChannelItem::ParameterBlock(pb) => assert_eq!(pb.text.as_deref(), Some("Allgemein")),
             other => panic!("expected a block, got {other:?}"),
         }

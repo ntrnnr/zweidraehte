@@ -1,6 +1,7 @@
 //! Application state and logic for the KNX TUI viewer.
 
-use zweidraehte_knxprod::runtime::master_data::{MaskVersion, TableFlavour};
+use crate::tables::{self, TableFormats, TableShape};
+use zweidraehte_knxprod::runtime::master_data::MaskVersion;
 use zweidraehte_knxprod::runtime::model::{DynamicVisitor, ParameterValue, walk_dynamic};
 use zweidraehte_knxprod::schema::{
     Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject, ComObjectPriority,
@@ -122,6 +123,33 @@ pub struct MemoryAnnotation {
     pub param_id: String,
 }
 
+/// Annotations for a table's count field and named header fields
+/// (individual address, RAM-flags pointer), from its wire shape. The
+/// header octets are the device's, so their annotations say so.
+fn table_header_annotations(table: &str, base_offset: u32, shape: &TableShape) -> Vec<MemoryAnnotation> {
+    let mut annotations = vec![MemoryAnnotation {
+        offset: base_offset,
+        bit_offset: 0,
+        name: format!("{table}: Entry Count"),
+        size_bits: (shape.count_len * 8) as u16,
+        param_id: String::new(),
+    }];
+
+    let mut at = base_offset + shape.count_len as u32;
+    for (label, len) in shape.header_fields {
+        annotations.push(MemoryAnnotation {
+            offset: at,
+            bit_offset: 0,
+            name: format!("{table}: {label} (device-owned)"),
+            size_bits: (len * 8) as u16,
+            param_id: String::new(),
+        });
+        at += *len as u32;
+    }
+
+    annotations
+}
+
 /// A node in the sidebar tree (for Parameters tab).
 #[derive(Debug, Clone)]
 pub struct TreeNode {
@@ -154,12 +182,13 @@ impl TreeNode {
 pub enum NodeType {
     /// Device-wide settings (ChannelIndependentBlock)
     DeviceSettings,
-    /// A channel
-    Channel(usize),
+    /// A channel, identified by its `Id` (channels can be nested in
+    /// Dynamic-level chooses, so there is no stable index to hold).
+    Channel(String),
     /// A parameter block within device settings or channel
     ParameterBlock {
-        /// Parent: None = device settings, Some(idx) = channel
-        parent: Option<usize>,
+        /// Parent: None = device settings, Some(id) = channel
+        parent: Option<String>,
         /// Block name/ID
         block_name: String,
     },
@@ -167,8 +196,8 @@ pub enum NodeType {
     ModuleInstance {
         /// Module instance ID
         instance_id: String,
-        /// Parent context: None = device level, Some(idx) = channel
-        parent: Option<usize>,
+        /// Parent context: None = device level, Some(id) = channel
+        parent: Option<String>,
     },
 }
 
@@ -197,12 +226,13 @@ pub struct VisibleTreeNode {
 pub enum VisibleNodeType {
     /// Channel-independent block (device settings)
     DeviceSettings,
-    /// A channel with its index
-    Channel { index: usize },
-    /// A parameter block
-    ParameterBlock { block_name: String },
-    /// A module instance
-    Module { instance_id: String },
+    /// A channel, by its `Id`
+    Channel { id: String },
+    /// A parameter block, with the id of the channel it sits in (None
+    /// for device settings)
+    ParameterBlock { block_name: String, parent_channel: Option<String> },
+    /// A module instance, with the id of the channel it sits in
+    Module { instance_id: String, parent_channel: Option<String> },
 }
 
 /// Visitor that builds a tree of visible elements.
@@ -215,8 +245,8 @@ pub struct TreeBuilderVisitor<'a> {
     device: &'a Device,
     /// Root nodes (CIB and channels)
     root_nodes: Vec<VisibleTreeNode>,
-    /// Current channel index (None when in CIB)
-    current_channel_idx: Option<usize>,
+    /// Current channel id (None when in CIB)
+    current_channel_id: Option<String>,
     /// Stack of parent nodes we're building into
     node_stack: Vec<VisibleTreeNode>,
     /// Whether we're inside a parameter block that has visible items
@@ -231,7 +261,7 @@ impl<'a> TreeBuilderVisitor<'a> {
         Self {
             device,
             root_nodes: Vec::new(),
-            current_channel_idx: None,
+            current_channel_id: None,
             node_stack: Vec::new(),
             in_visible_block: false,
             in_module: false,
@@ -271,11 +301,23 @@ impl<'a> TreeBuilderVisitor<'a> {
         }
         false
     }
+
+    /// Pre-ETS4-style blocks title themselves via `ParamRefId`: ETS shows the
+    /// referenced parameter's text (with the ref's own override winning).
+    fn block_header_text(&self, block: &ParameterBlock) -> Option<String> {
+        let ref_id = block.param_ref_id.as_ref()?;
+        let param_ref = self.device.get_parameter_ref(ref_id)?;
+        let text = match &param_ref.text {
+            Some(text) => text.clone(),
+            None => self.device.get_parameter_info(&param_ref.ref_id)?.text.clone(),
+        };
+        (!text.is_empty()).then_some(text)
+    }
 }
 
 impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
     fn enter_channel_independent_block(&mut self, _block: &ChannelIndependentBlock) {
-        self.current_channel_idx = None;
+        self.current_channel_id = None;
         // Create device settings node that will collect children
         self.node_stack.push(VisibleTreeNode {
             id: "device".to_string(),
@@ -295,24 +337,14 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
     }
 
     fn enter_channel(&mut self, channel: &Channel) {
-        // Determine channel index by counting existing channel nodes
-        let channel_idx =
-            self.root_nodes.iter().filter(|n| matches!(n.node_type, VisibleNodeType::Channel { .. })).count();
-
-        // Also count the CIB node that may have been added
-        let _has_cib = self.root_nodes.iter().any(|n| matches!(n.node_type, VisibleNodeType::DeviceSettings));
-
-        // The actual channel index in the dynamic section
-        // TODO: Adjust index when CIB node is present (currently a no-op).
-        let actual_idx = channel_idx;
-        self.current_channel_idx = Some(actual_idx);
+        self.current_channel_id = Some(channel.id.clone());
 
         let raw_name = channel.text.clone().unwrap_or_else(|| channel.name.clone());
 
         self.node_stack.push(VisibleTreeNode {
-            id: format!("channel_{}", actual_idx),
+            id: format!("channel_{}", channel.id),
             raw_name,
-            node_type: VisibleNodeType::Channel { index: actual_idx },
+            node_type: VisibleNodeType::Channel { id: channel.id.clone() },
             children: Vec::new(),
         });
     }
@@ -321,7 +353,7 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         if let Some(node) = self.node_stack.pop() {
             self.root_nodes.push(node);
         }
-        self.current_channel_idx = None;
+        self.current_channel_id = None;
     }
 
     fn enter_parameter_block(&mut self, block: &ParameterBlock) {
@@ -343,10 +375,11 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
             .active_block_rename(&block.id)
             .map(str::to_string)
             .or_else(|| block.text.clone())
+            .or_else(|| self.block_header_text(block))
             .unwrap_or_else(|| block_name.clone());
 
-        let id = if let Some(ch_idx) = self.current_channel_idx {
-            format!("channel_{}_block_{}", ch_idx, block_name)
+        let id = if let Some(ch_id) = &self.current_channel_id {
+            format!("channel_{}_block_{}", ch_id, block_name)
         } else {
             format!("device_block_{}", block_name)
         };
@@ -354,7 +387,10 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         let child_node = VisibleTreeNode {
             id,
             raw_name: raw_text,
-            node_type: VisibleNodeType::ParameterBlock { block_name: block_name.clone() },
+            node_type: VisibleNodeType::ParameterBlock {
+                block_name: block_name.clone(),
+                parent_channel: self.current_channel_id.clone(),
+            },
             children: Vec::new(),
         };
 
@@ -374,8 +410,8 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
             return;
         }
 
-        let id = if let Some(ch_idx) = self.current_channel_idx {
-            format!("channel_{}_module_{}", ch_idx, module.id)
+        let id = if let Some(ch_id) = &self.current_channel_id {
+            format!("channel_{}_module_{}", ch_id, module.id)
         } else {
             format!("device_module_{}", module.id)
         };
@@ -386,7 +422,10 @@ impl<'a> DynamicVisitor for TreeBuilderVisitor<'a> {
         let child_node = VisibleTreeNode {
             id,
             raw_name,
-            node_type: VisibleNodeType::Module { instance_id: module.id.clone() },
+            node_type: VisibleNodeType::Module {
+                instance_id: module.id.clone(),
+                parent_channel: self.current_channel_id.clone(),
+            },
             children: Vec::new(),
         };
 
@@ -850,16 +889,16 @@ impl App {
             // Interpolate the display name
             let name = match &node.node_type {
                 VisibleNodeType::DeviceSettings => node.raw_name.clone(),
-                VisibleNodeType::Channel { index } => {
+                VisibleNodeType::Channel { id } => {
                     // For channels, interpolate {{0}} with TextParameterRefId
-                    if let Some(channel) = dynamic.channels.get(*index) {
+                    if let Some(channel) = dynamic.find_channel(id) {
                         self.device.interpolate_channel_text(&node.raw_name, channel.text_parameter_ref_id.as_deref())
                     } else {
                         self.device.interpolate_text(&node.raw_name)
                     }
                 }
                 VisibleNodeType::ParameterBlock { .. } => self.device.interpolate_text(&node.raw_name),
-                VisibleNodeType::Module { instance_id } => {
+                VisibleNodeType::Module { instance_id, .. } => {
                     // For modules, get the expanded module and interpolate with its args
                     self.interpolate_module_name(instance_id, &node.raw_name)
                 }
@@ -868,25 +907,12 @@ impl App {
             // Convert to NodeType
             let node_type = match &node.node_type {
                 VisibleNodeType::DeviceSettings => NodeType::DeviceSettings,
-                VisibleNodeType::Channel { index } => NodeType::Channel(*index),
-                VisibleNodeType::ParameterBlock { block_name } => {
-                    // Determine parent from node id
-                    let parent = if node.id.starts_with("channel_") {
-                        // Extract channel index from id like "channel_0_block_foo"
-                        node.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
-                    } else {
-                        None
-                    };
-                    NodeType::ParameterBlock { parent, block_name: block_name.clone() }
+                VisibleNodeType::Channel { id } => NodeType::Channel(id.clone()),
+                VisibleNodeType::ParameterBlock { block_name, parent_channel } => {
+                    NodeType::ParameterBlock { parent: parent_channel.clone(), block_name: block_name.clone() }
                 }
-                VisibleNodeType::Module { instance_id } => {
-                    // Determine parent from node id
-                    let parent = if node.id.starts_with("channel_") {
-                        node.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
-                    } else {
-                        None
-                    };
-                    NodeType::ModuleInstance { instance_id: instance_id.clone(), parent }
+                VisibleNodeType::Module { instance_id, parent_channel } => {
+                    NodeType::ModuleInstance { instance_id: instance_id.clone(), parent: parent_channel.clone() }
                 }
             };
 
@@ -913,26 +939,18 @@ impl App {
 
             let name = match &child.node_type {
                 VisibleNodeType::ParameterBlock { .. } => self.device.interpolate_text(&child.raw_name),
-                VisibleNodeType::Module { instance_id } => self.interpolate_module_name(instance_id, &child.raw_name),
+                VisibleNodeType::Module { instance_id, .. } => {
+                    self.interpolate_module_name(instance_id, &child.raw_name)
+                }
                 _ => child.raw_name.clone(),
             };
 
             let node_type = match &child.node_type {
-                VisibleNodeType::ParameterBlock { block_name } => {
-                    let parent = if child.id.starts_with("channel_") {
-                        child.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
-                    } else {
-                        None
-                    };
-                    NodeType::ParameterBlock { parent, block_name: block_name.clone() }
+                VisibleNodeType::ParameterBlock { block_name, parent_channel } => {
+                    NodeType::ParameterBlock { parent: parent_channel.clone(), block_name: block_name.clone() }
                 }
-                VisibleNodeType::Module { instance_id } => {
-                    let parent = if child.id.starts_with("channel_") {
-                        child.id.strip_prefix("channel_").and_then(|s| s.split('_').next()).and_then(|s| s.parse().ok())
-                    } else {
-                        None
-                    };
-                    NodeType::ModuleInstance { instance_id: instance_id.clone(), parent }
+                VisibleNodeType::Module { instance_id, parent_channel } => {
+                    NodeType::ModuleInstance { instance_id: instance_id.clone(), parent: parent_channel.clone() }
                 }
                 _ => continue, // Skip unexpected types at child level
             };
@@ -1198,32 +1216,6 @@ impl App {
         value.is_some_and(|v| Condition::parse(test).is_some_and(|c| c.matches(v)))
     }
 
-    fn add_cib_blocks_to_tree(&mut self, cib: &ChannelIndependentBlock, depth: usize) {
-        let mut blocks = Vec::new();
-        self.collect_visible_cib_blocks(cib, &mut blocks);
-
-        for pb in blocks {
-            let block_name = pb.name.clone().unwrap_or_else(|| pb.id.clone());
-            let block_id = format!("device_block_{}", block_name);
-            let raw_text = self
-                .device
-                .active_block_rename(&pb.id)
-                .map(str::to_string)
-                .or_else(|| pb.text.clone())
-                .unwrap_or_else(|| block_name.clone());
-            let text = self.device.interpolate_text(&raw_text);
-
-            self.tree_nodes.push(TreeNode {
-                id: block_id,
-                name: text,
-                depth,
-                expanded: false,
-                has_children: false,
-                node_type: NodeType::ParameterBlock { parent: None, block_name },
-            });
-        }
-    }
-
     /// Collect all visible parameter blocks from CIB, including those nested in Choose blocks.
     fn collect_visible_cib_blocks<'a>(&self, cib: &'a ChannelIndependentBlock, blocks: &mut Vec<&'a ParameterBlock>) {
         for item in &cib.items {
@@ -1238,116 +1230,6 @@ impl App {
                     self.collect_blocks_from_choose(choose, blocks);
                 }
             }
-        }
-    }
-
-    fn add_channel_blocks_to_tree(&mut self, channel: &Channel, channel_idx: usize, depth: usize) {
-        // Add parameter blocks
-        let mut blocks = Vec::new();
-        self.collect_visible_channel_blocks(channel, &mut blocks);
-
-        for pb in blocks {
-            let block_name = pb.name.clone().unwrap_or_else(|| pb.id.clone());
-            let block_id = format!("channel_{}_block_{}", channel_idx, block_name);
-            let raw_text = self
-                .device
-                .active_block_rename(&pb.id)
-                .map(str::to_string)
-                .or_else(|| pb.text.clone())
-                .unwrap_or_else(|| block_name.clone());
-            let text = self.device.interpolate_text(&raw_text);
-
-            self.tree_nodes.push(TreeNode {
-                id: block_id,
-                name: text,
-                depth,
-                expanded: false,
-                has_children: false,
-                node_type: NodeType::ParameterBlock { parent: Some(channel_idx), block_name },
-            });
-        }
-
-        // Add visible module instances
-        let mut modules = Vec::new();
-        self.collect_visible_channel_modules(channel, &mut modules);
-
-        for module in modules {
-            // Get module name from expanded module data
-            let expanded = self.device.get_expanded_module(&module.id);
-            let name = if let Some(exp) = expanded {
-                // Try to build a friendly display name from the module's Dynamic section
-                if let Some(module_def) = self.device.get_module_def(&exp.module_def_id) {
-                    // Get the first ParameterBlock's text and text_parameter_ref_id
-                    let (block_text, text_param_ref_id) = module_def
-                        .dynamic
-                        .as_ref()
-                        .and_then(|dyn_sec| {
-                            dyn_sec.items.iter().find_map(|item| {
-                                if let ModuleDefDynamicItem::ParameterBlock(pb) = item {
-                                    Some((pb.text.clone(), pb.text_parameter_ref_id.clone()))
-                                } else {
-                                    None
-                                }
-                            })
-                        })
-                        .unwrap_or((None, None));
-
-                    // Look up the text parameter value for {{0}} substitution
-                    let text_param_value = text_param_ref_id.and_then(|ref_id| {
-                        // Find the ParameterRef to get the parameter ID
-                        let param_ref = module_def
-                            .static_section
-                            .parameter_refs
-                            .as_ref()
-                            .and_then(|refs| refs.refs.iter().find(|pr| pr.id == ref_id));
-
-                        param_ref.and_then(|pr| {
-                            // Build composite ID and look up value
-                            let composite_id = format!("{}::{}", exp.instance_id, pr.ref_id);
-                            self.device.get_module_parameter_value_by_composite_id(&composite_id).and_then(
-                                |v| match v {
-                                    ParameterValue::Text(s) if !s.is_empty() => Some(s.clone()),
-                                    ParameterValue::Integer(i) => Some(i.to_string()),
-                                    _ => None,
-                                },
-                            )
-                        })
-                    });
-
-                    if let Some(text) = block_text {
-                        // Interpolate {{ChNo}} and {{0}} in the text
-                        self.device.interpolate_module_text_with_param(&text, exp, text_param_value.as_deref())
-                    } else if let Some(instance_name) = &exp.name {
-                        self.device.interpolate_module_text(instance_name, exp)
-                    } else {
-                        // Fallback: use module name with channel number
-                        if let Some(zweidraehte_knxprod::runtime::model::ModuleArgValue::Numeric(ch)) =
-                            exp.args.get("ChNo")
-                        {
-                            format!("{} {}", module_def.name, ch)
-                        } else {
-                            module_def.name.clone()
-                        }
-                    }
-                } else if let Some(instance_name) = &exp.name {
-                    self.device.interpolate_module_text(instance_name, exp)
-                } else {
-                    module.id.clone()
-                }
-            } else {
-                module.name.clone().unwrap_or_else(|| module.id.clone())
-            };
-
-            let node_id = format!("channel_{}_module_{}", channel_idx, module.id);
-
-            self.tree_nodes.push(TreeNode {
-                id: node_id,
-                name,
-                depth,
-                expanded: false,
-                has_children: false,
-                node_type: NodeType::ModuleInstance { instance_id: module.id.clone(), parent: Some(channel_idx) },
-            });
         }
     }
 
@@ -1417,7 +1299,7 @@ impl App {
                 // but headers still lands here.)
                 NodeType::DeviceSettings | NodeType::Channel(_) => {}
                 NodeType::ParameterBlock { parent, block_name } => {
-                    self.build_block_content(*parent, block_name);
+                    self.build_block_content(parent.as_deref(), block_name);
                 }
                 NodeType::ModuleInstance { instance_id, .. } => {
                     self.build_module_content(instance_id);
@@ -1426,62 +1308,21 @@ impl App {
         }
     }
 
-    fn build_device_settings_content(&mut self) {
-        let cib = self.device.dynamic_section().and_then(|d| d.channel_independent_block.clone());
-
-        if let Some(cib) = cib {
-            for item in &cib.items {
-                match item {
-                    ChannelIndependentItem::ParameterBlockRename(_) => {}
-                    ChannelIndependentItem::ParameterBlock(pb) => {
-                        self.add_block_items(&pb.items);
-                    }
-                    ChannelIndependentItem::Choose(choose) => {
-                        // Process Choose blocks to include their visible content
-                        self.add_choose_items(choose);
-                    }
-                }
-            }
-        }
-    }
-
-    fn build_channel_content(&mut self, channel_idx: usize) {
-        let channel = self.device.dynamic_section().and_then(|d| d.channels.get(channel_idx).cloned());
-
-        if let Some(channel) = channel {
-            for item in &channel.items {
-                match item {
-                    ChannelItem::ParameterBlockRename(_) => {}
-                    ChannelItem::ParameterBlock(pb) => {
-                        self.add_block_items(&pb.items);
-                    }
-                    ChannelItem::Choose(choose) => {
-                        // Process Choose blocks to include their visible content
-                        self.add_choose_items(choose);
-                    }
-                    ChannelItem::Module(_) => {
-                        // Module instances have their own dynamic content - skip for now
-                    }
-                }
-            }
-        }
-    }
-
-    fn build_block_content(&mut self, parent: Option<usize>, block_name: &str) {
+    fn build_block_content(&mut self, parent: Option<&str>, block_name: &str) {
         let dynamic = self.device.dynamic_section().cloned();
 
         if let Some(dynamic) = dynamic {
             match parent {
                 None => {
                     // Device settings block
-                    if let Some(cib) = &dynamic.channel_independent_block
+                    if let Some(cib) = dynamic.channel_independent_block()
                         && let Some(pb) = self.find_block_in_cib(cib, block_name)
                     {
                         self.add_block_items(&pb.items.clone());
                     }
                 }
-                Some(channel_idx) => {
-                    if let Some(channel) = dynamic.channels.get(channel_idx)
+                Some(channel_id) => {
+                    if let Some(channel) = dynamic.find_channel(channel_id)
                         && let Some(pb) = self.find_block_in_channel(channel, block_name)
                     {
                         self.add_block_items(&pb.items.clone());
@@ -1664,6 +1505,8 @@ impl App {
                     self.content_items.push(ContentItem::Separator { text, ui_hint: sep.ui_hint.clone() });
                 }
                 WhenItem::Assign(_) => {}
+                // Modules cannot nest channels.
+                WhenItem::Channel(_) => {}
                 WhenItem::Module(_) => {}
             }
         }
@@ -2232,6 +2075,9 @@ impl App {
                 WhenItem::Choose(nested_choose) => {
                     self.add_choose_items(nested_choose);
                 }
+                // Channels inside whens exist only at Dynamic level;
+                // page content is built per block, never through them.
+                WhenItem::Channel(_) => {}
                 WhenItem::ComObjectRefRef(_) | WhenItem::Assign(_) | WhenItem::Module(_) => {
                     // Skip comm objects, assignments, and modules in parameters view
                 }
@@ -2586,24 +2432,24 @@ impl App {
             .and_then(|l| l.start_address)
     }
 
-    /// Get the table flavour for address table from mask version.
-    fn get_address_table_flavour(&self) -> TableFlavour {
-        self.get_mask_version()
-            .and_then(|mv| mv.address_table())
-            .and_then(|r| r.resource_type.as_ref())
-            .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::parse_flavour(f))
-            .unwrap_or(TableFlavour::AddressTableSystemB)
+    /// The family's table wire formats — decided by the product's own
+    /// mask version; master data is not needed for this.
+    fn table_formats(&self) -> TableFormats {
+        TableFormats::for_mask(self.device.mask_version())
     }
 
-    /// Get the table flavour for association table from mask version.
-    fn get_association_table_flavour(&self) -> TableFlavour {
+    /// Whether a System B device uses the small association format
+    /// (one-octet identifiers). This is the one table property the
+    /// mask alone does not fix — it comes from the master data's
+    /// flavour, defaulting to the big format without it.
+    fn association_entries_are_small(&self) -> bool {
+        use zweidraehte_knxprod::runtime::master_data::TableFlavour;
         self.get_mask_version()
             .and_then(|mv| mv.association_table())
             .and_then(|r| r.resource_type.as_ref())
             .and_then(|rt| rt.flavour.as_ref())
-            .map(|f| TableFlavour::parse_flavour(f))
-            .unwrap_or(TableFlavour::AssociationTableSystemB)
+            .map(|f| TableFlavour::parse_flavour(f).uses_u8_entries())
+            .unwrap_or(false)
     }
 
     /// Rebuild memory segments from the Code section in the ApplicationProgram.
@@ -2724,52 +2570,43 @@ impl App {
         let offset = at.offset.unwrap_or(0);
         let max_entries = at.max_entries;
 
-        // Get table flavour from mask version
-        let flavour = self.get_address_table_flavour();
-        let count_size = flavour.count_size();
-        let entry_size = flavour.entry_size();
+        let format = self.table_formats();
+        let shape = format.adt_shape();
 
-        // Check if this table references an existing code segment
-        // If so, add annotations to that segment instead of creating a new one
+        // A table living inside a real code segment (BCU2, System 7)
+        // is shown in place: splice the configured count and entries
+        // over the segment's default bytes — the IA octets between
+        // them stay the device's — and annotate the result.
         if let Some(code_segment) = &at.code_segment
             && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
         {
-            // Add annotations to existing segment
-            let annotations = self.build_address_table_annotations(offset, &flavour);
+            let group_addresses: Vec<u16> = self.device.all_group_addresses().iter().map(|ga| ga.to_u16()).collect();
+            if let Some(blob) = format.adt_blob(&group_addresses) {
+                tables::splice_count_and_entries(
+                    &mut self.memory_segments[seg_idx].data,
+                    offset as usize,
+                    &shape,
+                    &blob,
+                    Some(max_entries),
+                );
+            }
+            let annotations = self.build_address_table_annotations(offset, &shape);
             self.memory_segments[seg_idx].annotations.extend(annotations);
             return;
         }
 
-        // Create a standalone synthetic segment (for System B or if segment not found)
-        // Use real assigned group addresses instead of placeholders
-        let group_addresses = self.device.all_group_addresses();
-        let addr_count = group_addresses.len() as u16;
+        // Create a standalone synthetic segment (for System B or if
+        // segment not found), from the real assigned group addresses.
+        let group_addresses: Vec<u16> = self.device.all_group_addresses().iter().map(|ga| ga.to_u16()).collect();
+        let data = format.adt_blob(&group_addresses).unwrap_or_default();
 
-        // Build table data based on flavour
-        let mut data = Vec::with_capacity(count_size + (addr_count as usize) * entry_size);
-
-        // Count field (size depends on flavour)
-        if count_size == 1 {
-            data.push(addr_count as u8);
-        } else {
-            data.push((addr_count >> 8) as u8);
-            data.push((addr_count & 0xFF) as u8);
-        }
-
-        // Write actual group addresses (or 0x0000 if none assigned)
-        for addr in &group_addresses {
-            let bytes = addr.to_bytes();
-            data.push(bytes[0]);
-            data.push(bytes[1]);
-        }
-
-        let annotations = self.build_address_table_annotations(0, &flavour);
+        let annotations = self.build_address_table_annotations(0, &shape);
 
         self.memory_segments.push(MemorySegment {
             id: "ADT".to_string(),
             segment_type: SegmentType::Relative,
             address: offset,
-            size: count_size as u32 + (max_entries as u32) * entry_size as u32,
+            size: (shape.entries_base() + max_entries as usize * shape.entry_len) as u32,
             memory_type: Some("Address Table".to_string()),
             load_state_machine: Some(1), // LSM 1 is typically for ADT
             data,
@@ -2779,27 +2616,18 @@ impl App {
     }
 
     /// Build annotations for Address Table entries.
-    fn build_address_table_annotations(&self, base_offset: u32, flavour: &TableFlavour) -> Vec<MemoryAnnotation> {
-        let mut annotations = Vec::new();
-        let count_size = flavour.count_size() as u32;
-        let entry_size = flavour.entry_size() as u32;
-
-        annotations.push(MemoryAnnotation {
-            offset: base_offset,
-            bit_offset: 0,
-            name: "ADT: Entry Count".to_string(),
-            size_bits: (count_size * 8) as u16,
-            param_id: String::new(),
-        });
+    fn build_address_table_annotations(&self, base_offset: u32, shape: &TableShape) -> Vec<MemoryAnnotation> {
+        let mut annotations = table_header_annotations("ADT", base_offset, shape);
 
         // Use real group addresses for annotations
+        let entries_base = base_offset + shape.entries_base() as u32;
         let group_addresses = self.device.all_group_addresses();
         for (idx, addr) in group_addresses.iter().enumerate() {
             annotations.push(MemoryAnnotation {
-                offset: base_offset + count_size + (idx as u32 * entry_size),
+                offset: entries_base + (idx as u32 * shape.entry_len as u32),
                 bit_offset: 0,
                 name: format!("ADT[{}] {}", idx + 1, addr), // 1-based TSAP
-                size_bits: (entry_size * 8) as u16,
+                size_bits: (shape.entry_len * 8) as u16,
                 param_id: String::new(),
             });
         }
@@ -2830,58 +2658,53 @@ impl App {
         let offset = at.offset.unwrap_or(0);
         let max_entries = at.max_entries;
 
-        // Get table flavour from mask version
-        let flavour = self.get_association_table_flavour();
-        let count_size = flavour.count_size();
-        let entry_size = flavour.entry_size();
+        let format = self.table_formats();
+        let small_entries = self.association_entries_are_small();
+        let shape = format.ast_shape(small_entries);
 
-        // Check if this table references an existing code segment
+        let association_entries = self.device.build_association_entries();
+        let pairs: Vec<(u16, u16)> = association_entries.iter().map(|e| (e.tsap, e.asap)).collect();
+        let blob = format.ast_blob(&pairs, small_entries);
+
+        // A table living inside a real code segment is shown in
+        // place: splice the configured count and entries over the
+        // segment's default bytes.
         if let Some(code_segment) = &at.code_segment
             && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
         {
-            // Add annotations to existing segment
-            let annotations = self.build_association_table_annotations(offset, &flavour);
+            if let Some(blob) = &blob {
+                tables::splice_count_and_entries(
+                    &mut self.memory_segments[seg_idx].data,
+                    offset as usize,
+                    &shape,
+                    blob,
+                    Some(max_entries),
+                );
+            }
+            let annotations = self.build_association_table_annotations(offset, &shape);
             self.memory_segments[seg_idx].annotations.extend(annotations);
             return;
         }
 
-        // Create a standalone synthetic segment using real association entries
-        let association_entries = self.device.build_association_entries();
-        let entry_count = association_entries.len() as u16;
-
-        // Build table data based on flavour
-        let mut data = Vec::with_capacity(count_size + (entry_count as usize) * entry_size);
-
-        // Count field (size depends on flavour)
-        if count_size == 1 {
-            data.push(entry_count as u8);
-        } else {
-            data.push((entry_count >> 8) as u8);
-            data.push((entry_count & 0xFF) as u8);
-        }
-
-        // Write association entries: TSAP -> ASAP mappings
-        for entry in &association_entries {
-            if flavour.uses_u8_entries() {
-                // Small format: u8 TSAP + u8 ASAP (BCU1/BCU2/M112/SystemBSmall)
-                data.push(entry.tsap as u8);
-                data.push(entry.asap as u8);
-            } else {
-                // Big format: u16 TSAP + u16 ASAP (SystemB/SystemBBig)
-                data.push((entry.tsap >> 8) as u8);
-                data.push((entry.tsap & 0xFF) as u8);
-                data.push((entry.asap >> 8) as u8);
-                data.push((entry.asap & 0xFF) as u8);
+        // Create a standalone synthetic segment. The small System B
+        // association format has no download coding; build it by hand.
+        let data = blob.unwrap_or_else(|| {
+            let mut data = Vec::with_capacity(shape.entries_base() + pairs.len() * shape.entry_len);
+            data.extend_from_slice(&(pairs.len() as u16).to_be_bytes());
+            for &(tsap, asap) in &pairs {
+                data.push(tsap as u8);
+                data.push(asap as u8);
             }
-        }
+            data
+        });
 
-        let annotations = self.build_association_table_annotations(0, &flavour);
+        let annotations = self.build_association_table_annotations(0, &shape);
 
         self.memory_segments.push(MemorySegment {
             id: "AST".to_string(),
             segment_type: SegmentType::Relative,
             address: offset,
-            size: count_size as u32 + (max_entries as u32) * entry_size as u32,
+            size: (shape.entries_base() + max_entries as usize * shape.entry_len) as u32,
             memory_type: Some("Association Table".to_string()),
             load_state_machine: Some(2), // LSM 2 is typically for AST
             data,
@@ -2891,20 +2714,11 @@ impl App {
     }
 
     /// Build annotations for Association Table entries.
-    fn build_association_table_annotations(&self, base_offset: u32, flavour: &TableFlavour) -> Vec<MemoryAnnotation> {
-        let mut annotations = Vec::new();
-        let count_size = flavour.count_size() as u32;
-        let entry_size = flavour.entry_size() as u32;
-
-        annotations.push(MemoryAnnotation {
-            offset: base_offset,
-            bit_offset: 0,
-            name: "AST: Entry Count".to_string(),
-            size_bits: (count_size * 8) as u16,
-            param_id: String::new(),
-        });
+    fn build_association_table_annotations(&self, base_offset: u32, shape: &TableShape) -> Vec<MemoryAnnotation> {
+        let mut annotations = table_header_annotations("AST", base_offset, shape);
 
         // Use real association entries for annotations
+        let entries_base = base_offset + shape.entries_base() as u32;
         let association_entries = self.device.build_association_entries();
         let address_table = self.device.all_group_addresses();
 
@@ -2917,10 +2731,10 @@ impl App {
             };
 
             annotations.push(MemoryAnnotation {
-                offset: base_offset + count_size + (idx as u32 * entry_size),
+                offset: entries_base + (idx as u32 * shape.entry_len as u32),
                 bit_offset: 0,
                 name: format!("AST[{}] {} -> CO{}", idx, ga_str, entry.asap),
-                size_bits: (entry_size * 8) as u16,
+                size_bits: (shape.entry_len * 8) as u16,
                 param_id: String::new(),
             });
         }
@@ -2928,29 +2742,19 @@ impl App {
         annotations
     }
 
-    /// Does this device use the BIM M112 (System 7) group object table
-    /// format rather than Realisation Type 7 (System B)?
-    ///
-    /// M112: `[count:1][ram_flags_ptr:2BE][(data_ptr:2BE, flags, type) × count]`,
-    /// objects numbered from 0, entry for object n at `3 + n*4`.
-    /// RT7 (03/05/01 §4.18.6.2.4, Table 87): `[count:2BE][(flags, type) × count]`,
-    /// objects numbered from 1 (the table cannot express ASAP 0), entry
-    /// for object n at `2 + (n-1)*2`.
-    fn cot_is_m112(&self) -> bool {
-        let mask_version = self.device.mask_version().to_string();
-        mask_version.starts_with("MV-07") && !mask_version.ends_with("B0")
-    }
-
     /// Generate the Communication Object Table (COT) as a synthetic memory segment.
     ///
     /// The COT stores type and flags for each communication object, at
-    /// the position its *object number* names (see [`Self::cot_is_m112`]
-    /// for the two formats) — sparse numbering leaves zeroed gap
-    /// entries, matching what our download engine compiles and both
-    /// device stacks serve.
+    /// the position its *object number* names — sparse numbering
+    /// leaves zeroed gap entries, matching what our download engine
+    /// compiles and the device stacks serve. The per-family formats
+    /// come from [`TableFormats::cot_shape`]; RT7 numbers objects from
+    /// 1 (its table cannot express ASAP 0), the absolute-table
+    /// families from 0.
     ///
-    /// For System 7.x devices, the table is placed within an AbsoluteSegment.
-    /// For System B devices, it's loaded via a separate Load State Machine.
+    /// For BCU2 and System 7 devices the table lives inside an
+    /// AbsoluteSegment; for System B it's loaded via a separate Load
+    /// State Machine.
     fn generate_com_object_table(&mut self) {
         let static_section = &self.device.static_section();
 
@@ -2968,55 +2772,55 @@ impl App {
         let offset = cot_config.as_ref().and_then(|c| c.offset).unwrap_or(0);
         let max_entries = cot_config.as_ref().and_then(|c| c.max_entries).unwrap_or(255);
 
-        // Check if this table references an existing code segment
+        let format = self.table_formats();
+        let shape = format.cot_shape();
+        let first_asap = format.cot_first_asap();
+
+        // A table living inside a real code segment is shown in
+        // place: overlay each visible object's config/type octets over
+        // the vendor's default rows — count, RAM-flags pointer and
+        // data pointers are the firmware's and stay untouched, which
+        // is also exactly what an ETS download does here.
         if let Some(cot) = cot_config
             && let Some(code_segment) = &cot.code_segment
             && let Some(seg_idx) = self.memory_segments.iter().position(|s| s.id == *code_segment)
         {
-            // Add annotations to existing segment
+            let rows: Vec<(u16, u8, u8)> = cot_entries.iter().map(|e| (e.number, e.flags, e.type_byte)).collect();
+            tables::overlay_cot(format, &mut self.memory_segments[seg_idx].data, offset as usize, &rows);
             let annotations = self.build_com_object_table_annotations(offset, &cot_entries);
             self.memory_segments[seg_idx].annotations.extend(annotations);
             return;
         }
 
-        // Create a standalone synthetic segment in the device's format.
-        // Pointers only the firmware knows (M112 RAM-flags pointer and
-        // per-entry data pointers) stay zero.
-        let (data, declared_size) = if self.cot_is_m112() {
-            let entry_count = (max_obj_num as usize + 1).min(255);
-            let mut data = vec![0u8; 3 + entry_count * 4];
-            data[0] = entry_count as u8;
-            for entry in &cot_entries {
-                let entry_offset = 3 + (entry.number as usize) * 4;
-                if let Some(bytes) = data.get_mut(entry_offset + 2..entry_offset + 4) {
-                    bytes[0] = entry.flags;
-                    bytes[1] = entry.type_byte;
-                }
-            }
-            (data, 3 + (max_entries as u32) * 4)
+        // Create a standalone synthetic segment in the device's
+        // format. Pointers only the firmware knows (RAM-flags pointer
+        // and per-entry data pointers) stay zero; the config/type
+        // octets are the entry's trailing two in every format.
+        let entry_count = if first_asap == 0 {
+            (max_obj_num as usize + 1).min(255)
         } else {
-            // RT7 counts entries from ASAP 1: entry n sits at
-            // 2 + (n-1)*2 and the count is the highest number, not
-            // highest + 1. An object number 0 cannot exist in this
-            // table (the download engine rejects such product data);
-            // skip rather than wrap around.
-            let entry_count = max_obj_num as usize;
-            let mut data = vec![0u8; 2 + entry_count * 2];
-            data[0..2].copy_from_slice(&(entry_count as u16).to_be_bytes());
-            for entry in &cot_entries {
-                if entry.number == 0 {
-                    continue;
-                }
-                let entry_offset = 2 + (entry.number as usize - 1) * 2;
-                if let Some(bytes) = data.get_mut(entry_offset..entry_offset + 2) {
-                    // Table 87 is a big-endian descriptor: flags high,
-                    // type low.
-                    bytes[0] = entry.flags;
-                    bytes[1] = entry.type_byte;
-                }
-            }
-            (data, 2 + (max_entries as u32) * 2)
+            // RT7 counts from ASAP 1: the count is the highest number,
+            // not highest + 1. An object number below first_asap
+            // cannot exist in this table (the download engine rejects
+            // such product data); it is skipped below rather than
+            // wrapped around.
+            max_obj_num as usize
         };
+        let mut data = vec![0u8; shape.entries_base() + entry_count * shape.entry_len];
+        match shape.count_len {
+            1 => data[0] = entry_count as u8,
+            _ => data[0..2].copy_from_slice(&(entry_count as u16).to_be_bytes()),
+        }
+        for entry in &cot_entries {
+            if entry.number < first_asap {
+                continue;
+            }
+            let entry_offset = shape.entries_base() + (entry.number - first_asap) as usize * shape.entry_len;
+            if let Some(bytes) = data.get_mut(entry_offset + shape.entry_len - 2..entry_offset + shape.entry_len) {
+                bytes[0] = entry.flags;
+                bytes[1] = entry.type_byte;
+            }
+        }
 
         let annotations = self.build_com_object_table_annotations(0, &cot_entries);
 
@@ -3024,7 +2828,7 @@ impl App {
             id: "COT".to_string(),
             segment_type: SegmentType::Relative,
             address: offset,
-            size: declared_size,
+            size: (shape.entries_base() + max_entries as usize * shape.entry_len) as u32,
             memory_type: Some("ComObject Table".to_string()),
             load_state_machine: Some(3), // LSM 3 is typically for COT
             data,
@@ -3163,27 +2967,13 @@ impl App {
     /// builder writes them. See [`Self::cot_is_m112`] for the two
     /// formats and their numbering bases.
     fn build_com_object_table_annotations(&self, base_offset: u32, entries: &[CotEntry]) -> Vec<MemoryAnnotation> {
-        let mut annotations = Vec::new();
+        let format = self.table_formats();
+        let shape = format.cot_shape();
+        let first_number = format.cot_first_asap();
 
-        let (entry_size, entries_base, first_number) = if self.cot_is_m112() {
-            annotations.push(MemoryAnnotation {
-                offset: base_offset,
-                bit_offset: 0,
-                name: "COT: Entry Count + RAM-flags pointer".to_string(),
-                size_bits: 24,
-                param_id: String::new(),
-            });
-            (4u32, base_offset + 3, 0u16)
-        } else {
-            annotations.push(MemoryAnnotation {
-                offset: base_offset,
-                bit_offset: 0,
-                name: "COT: Entry Count".to_string(),
-                size_bits: 16,
-                param_id: String::new(),
-            });
-            (2u32, base_offset + 2, 1u16)
-        };
+        let mut annotations = table_header_annotations("COT", base_offset, &shape);
+        let entry_size = shape.entry_len as u32;
+        let entries_base = base_offset + shape.entries_base() as u32;
 
         for entry in entries {
             // RT7 cannot hold ASAP 0 — the data builder skipped it too.

@@ -8,13 +8,69 @@ use super::modules::Module;
 // Dynamic Section
 // ============================================================================
 
-/// The Dynamic section for UI organization
+/// The Dynamic section for UI organization.
+///
+/// Kept as a document-order item list because the MTXML content model
+/// is one: ETS6-era programs put `choose` elements directly under
+/// `Dynamic`, with whole `Channel`s inside the `when` branches (the
+/// L&J E032 programs gate every button channel this way).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DynamicSection {
-    #[serde(rename = "ChannelIndependentBlock", skip_serializing_if = "Option::is_none")]
-    pub channel_independent_block: Option<ChannelIndependentBlock>,
-    #[serde(rename = "Channel", default, skip_serializing_if = "Vec::is_empty")]
-    pub channels: Vec<Channel>,
+    #[serde(rename = "$value", default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<DynamicItem>,
+}
+
+/// Items that can appear directly under `Dynamic`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DynamicItem {
+    #[serde(rename = "ChannelIndependentBlock")]
+    ChannelIndependentBlock(ChannelIndependentBlock),
+    #[serde(rename = "Channel")]
+    Channel(Channel),
+    #[serde(rename = "choose")]
+    Choose(Choose),
+}
+
+impl DynamicSection {
+    /// The (first) top-level `ChannelIndependentBlock`, if any.
+    pub fn channel_independent_block(&self) -> Option<&ChannelIndependentBlock> {
+        self.items.iter().find_map(|item| match item {
+            DynamicItem::ChannelIndependentBlock(cib) => Some(cib),
+            _ => None,
+        })
+    }
+
+    /// Every channel in document order, regardless of `choose` gating —
+    /// for consumers that need the full roster (translations, module
+    /// discovery, lookup by id), not the currently visible one.
+    pub fn all_channels(&self) -> Vec<&Channel> {
+        fn from_choose<'a>(choose: &'a Choose, out: &mut Vec<&'a Channel>) {
+            for when in &choose.whens {
+                for item in &when.items {
+                    match item {
+                        WhenItem::Channel(channel) => out.push(channel),
+                        WhenItem::Choose(nested) => from_choose(nested, out),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let mut channels = Vec::new();
+        for item in &self.items {
+            match item {
+                DynamicItem::Channel(channel) => channels.push(channel),
+                DynamicItem::Choose(choose) => from_choose(choose, &mut channels),
+                DynamicItem::ChannelIndependentBlock(_) => {}
+            }
+        }
+        channels
+    }
+
+    /// Look up a channel by its `Id`, wherever it is nested.
+    pub fn find_channel(&self, id: &str) -> Option<&Channel> {
+        self.all_channels().into_iter().find(|c| c.id == id)
+    }
 }
 
 /// ChannelIndependentBlock - contains device-wide settings that appear outside of any channel tab
@@ -80,6 +136,12 @@ pub struct ParameterBlock {
     pub text: Option<String>,
     #[serde(rename = "@TextParameterRefId", skip_serializing_if = "Option::is_none")]
     pub text_parameter_ref_id: Option<String>,
+    /// Pre-ETS4-style block header: a parameter ref whose text is the block's
+    /// title. Converted legacy programs (`PreEts4Style`) key each block's
+    /// content `choose` on this very ref, so its presence makes the ref part
+    /// of the visible tree.
+    #[serde(rename = "@ParamRefId", skip_serializing_if = "Option::is_none")]
+    pub param_ref_id: Option<String>,
     #[serde(rename = "@InternalDescription", skip_serializing_if = "Option::is_none")]
     pub internal_description: Option<String>,
     #[serde(rename = "@Inline", skip_serializing_if = "Option::is_none")]
@@ -242,6 +304,11 @@ pub enum WhenItem {
     Module(Module),
     #[serde(rename = "ParameterBlockRename")]
     ParameterBlockRename(ParameterBlockRename),
+    /// A whole channel — only meaningful in the `when` branches of a
+    /// Dynamic-level `choose`, where ETS6 programs gate entire channel
+    /// pages on an enable parameter.
+    #[serde(rename = "Channel")]
+    Channel(Channel),
 }
 
 /// Renames a referenced [`ParameterBlock`]'s display text while the

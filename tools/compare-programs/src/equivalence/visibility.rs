@@ -8,8 +8,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use zweidraehte_knxprod::schema::{
-    ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ParameterBlock,
-    ParameterBlockItem, WhenItem,
+    ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicItem,
+    ParameterBlock, ParameterBlockItem, WhenItem,
 };
 
 use super::canonical::{CanonicalProgram, ParameterKey};
@@ -322,14 +322,21 @@ impl VisibilityMap {
         let mut map = Self::default();
 
         if let Some(ref dynamic) = program.dynamic {
-            // Process channel-independent block
-            if let Some(ref cib) = dynamic.channel_independent_block {
-                map.process_channel_independent_block(cib, VisibilityConstraint::Always);
-            }
-
-            // Process channels
-            for channel in &dynamic.channels {
-                map.process_channel(channel, VisibilityConstraint::Always);
+            for item in &dynamic.items {
+                match item {
+                    DynamicItem::ChannelIndependentBlock(cib) => {
+                        map.process_channel_independent_block(cib, VisibilityConstraint::Always);
+                    }
+                    DynamicItem::Channel(channel) => {
+                        map.process_channel(channel, VisibilityConstraint::Always);
+                    }
+                    // ETS6 programs gate whole channels behind a
+                    // Dynamic-level choose; the constraint algebra is
+                    // the same as for any nested choose.
+                    DynamicItem::Choose(choose) => {
+                        map.process_choose(choose, VisibilityConstraint::Always);
+                    }
+                }
             }
         }
 
@@ -458,6 +465,9 @@ impl VisibilityMap {
             }
             WhenItem::Choose(choose) => {
                 self.process_choose(choose, constraint);
+            }
+            WhenItem::Channel(channel) => {
+                self.process_channel(channel, constraint);
             }
             WhenItem::ParameterSeparator(_) => {
                 // Separators don't have visibility

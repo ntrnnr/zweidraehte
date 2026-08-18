@@ -1242,6 +1242,7 @@ impl MtxmlGenerator {
                         name: Some(block.name.to_string()),
                         text: Some(block.text.to_string()),
                         text_parameter_ref_id: block_text_ref,
+                        param_ref_id: None,
                         internal_description: None,
                         inline: None,
                         show_in_com_object_tree: None,
@@ -1481,6 +1482,7 @@ impl MtxmlGenerator {
             name: Some(def.name.clone()),
             text: Some("{{ChNo}}: {{0}}".to_string()), // Use module argument for channel and text param for name
             text_parameter_ref_id: text_param_ref_id.map(|s| s.to_string()),
+            param_ref_id: None,
             internal_description: None,
             inline: None,
             show_in_com_object_tree: None,
@@ -2761,8 +2763,7 @@ impl MtxmlGenerator {
         }
 
         Ok(DynamicSection {
-            channel_independent_block: None,
-            channels: vec![Channel {
+            items: vec![DynamicItem::Channel(Channel {
                 id: format!("{}_CH-1", app_id),
                 name: config.channel_name.to_string(),
                 text: None,
@@ -2774,13 +2775,14 @@ impl MtxmlGenerator {
                     name: Some(config.name.to_string()),
                     text: None,
                     text_parameter_ref_id: None,
+                    param_ref_id: None,
                     internal_description: None,
                     inline: None,
                     show_in_com_object_tree: None,
                     layout: None,
                     items,
                 })],
-            }],
+            })],
         })
     }
 
@@ -2915,7 +2917,12 @@ impl MtxmlGenerator {
             })
             .collect::<Result<Vec<_>, GeneratorError>>()?;
 
-        Ok(DynamicSection { channel_independent_block, channels })
+        // Document order is serialization order: the CIB precedes the
+        // channels, as ETS expects.
+        let mut items: Vec<DynamicItem> = Vec::with_capacity(channels.len() + 1);
+        items.extend(channel_independent_block.map(DynamicItem::ChannelIndependentBlock));
+        items.extend(channels.into_iter().map(DynamicItem::Channel));
+        Ok(DynamicSection { items })
     }
     /// Build a parameter ref map for use in dynamic section generation.
     ///
@@ -3199,6 +3206,7 @@ impl MtxmlGenerator {
             name: Some(block.name.to_string()),
             text: Some(resolved_text),
             text_parameter_ref_id,
+            param_ref_id: None,
             internal_description: None,
             inline: None,
             show_in_com_object_tree: None,
@@ -3278,6 +3286,7 @@ impl MtxmlGenerator {
             name: None,
             text: None,
             text_parameter_ref_id: None,
+            param_ref_id: None,
             internal_description: None,
             inline: None,
             show_in_com_object_tree: None,
@@ -4357,12 +4366,14 @@ impl MtxmlGenerator {
         // Check references in Dynamic section
         if let Some(dynamic) = &app.dynamic {
             // Check ChannelIndependentBlock
-            if let Some(cib) = &dynamic.channel_independent_block {
+            if let Some(cib) = dynamic.channel_independent_block() {
                 Self::validate_channel_independent_items(&cib.items, &param_ref_ids, &com_obj_ref_ids)?;
             }
 
-            // Check Channels
-            for channel in &dynamic.channels {
+            // Check Channels (wherever they sit — the generator never
+            // emits Dynamic-level chooses, but validation should not
+            // depend on that)
+            for channel in dynamic.all_channels() {
                 Self::validate_channel_items(&channel.items, &param_ref_ids, &com_obj_ref_ids)?;
             }
         }
@@ -4509,6 +4520,9 @@ impl MtxmlGenerator {
                 WhenItem::ParameterBlock(pb) => {
                     Self::validate_parameter_block_items(&pb.items, param_ref_ids, com_obj_ref_ids)?;
                 }
+                WhenItem::Channel(channel) => {
+                    Self::validate_channel_items(&channel.items, param_ref_ids, com_obj_ref_ids)?;
+                }
                 WhenItem::ParameterSeparator(_) => {}
                 WhenItem::Assign(_) => {
                     // Assign elements copy parameter values; validation would check refs exist
@@ -4562,7 +4576,7 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
     }
 
     // Walk channel-independent block
-    if let Some(ref cib) = dynamic.channel_independent_block {
+    if let Some(cib) = dynamic.channel_independent_block() {
         for item in &cib.items {
             match item {
                 ChannelIndependentItem::ParameterBlock(block) => {
@@ -4579,7 +4593,7 @@ fn collect_block_name_map(dynamic: &DynamicSection) -> HashMap<String, String> {
     }
 
     // Walk channels
-    for channel in &dynamic.channels {
+    for channel in dynamic.all_channels() {
         for item in &channel.items {
             match item {
                 ChannelItem::ParameterBlock(block) => {

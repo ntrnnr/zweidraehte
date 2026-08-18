@@ -152,7 +152,7 @@ impl ProgramSummary {
         let (channel_count, has_channel_independent_block) = program
             .dynamic
             .as_ref()
-            .map(|d| (d.channels.len(), d.channel_independent_block.is_some()))
+            .map(|d| (d.all_channels().len(), d.channel_independent_block().is_some()))
             .unwrap_or((0, false));
 
         Some(ProgramSummary {
@@ -307,9 +307,10 @@ mod tests {
 
         // Verify Module instance in Dynamic section
         let dynamic = program.dynamic.as_ref().expect("Dynamic should be present");
-        assert_eq!(dynamic.channels.len(), 1);
+        let channels = dynamic.all_channels();
+        assert_eq!(channels.len(), 1);
 
-        let channel = &dynamic.channels[0];
+        let channel = channels[0];
         assert_eq!(channel.items.len(), 1);
 
         // Check that the choose/when/Module structure is parsed

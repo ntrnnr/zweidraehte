@@ -7,8 +7,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::schema::{
-    Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicSection, Module, ModuleDef,
-    ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterBlockRename, WhenItem,
+    Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, DynamicItem, DynamicSection, Module,
+    ModuleDef, ModuleDefDynamicItem, ParameterBlock, ParameterBlockItem, ParameterBlockRename, WhenItem,
 };
 
 /// Represents a KNX choose/when condition test.
@@ -351,18 +351,25 @@ pub fn walk_dynamic<V, E>(
     V: DynamicVisitor,
     E: ConditionEvaluator,
 {
-    // Walk channel-independent block
-    if let Some(cib) = &dynamic.channel_independent_block {
-        visitor.enter_channel_independent_block(cib);
-        walk_channel_independent_block(cib, visitor, evaluator, module_defs, None);
-        visitor.leave_channel_independent_block(cib);
-    }
-
-    // Walk channels
-    for channel in &dynamic.channels {
-        visitor.enter_channel(channel);
-        walk_channel(channel, visitor, evaluator, module_defs);
-        visitor.leave_channel(channel);
+    for item in &dynamic.items {
+        match item {
+            DynamicItem::ChannelIndependentBlock(cib) => {
+                visitor.enter_channel_independent_block(cib);
+                walk_channel_independent_block(cib, visitor, evaluator, module_defs, None);
+                visitor.leave_channel_independent_block(cib);
+            }
+            DynamicItem::Channel(channel) => {
+                visitor.enter_channel(channel);
+                walk_channel(channel, visitor, evaluator, module_defs);
+                visitor.leave_channel(channel);
+            }
+            // A Dynamic-level choose gates whole channels (ETS6
+            // programs); it evaluates like any other choose, and only
+            // the active branch's channels are visited.
+            DynamicItem::Choose(choose) => {
+                walk_choose(choose, visitor, evaluator, module_defs, None);
+            }
+        }
     }
 }
 
@@ -528,6 +535,11 @@ fn walk_when_items<V, E>(
             }
             WhenItem::ParameterSeparator(sep) => {
                 visitor.visit_separator(Some(&sep.id), sep.text.as_deref());
+            }
+            WhenItem::Channel(channel) => {
+                visitor.enter_channel(channel);
+                walk_channel(channel, visitor, evaluator, module_defs);
+                visitor.leave_channel(channel);
             }
             // Assign elements are runtime operations, not structural
             WhenItem::Assign(_) => {}

@@ -39,7 +39,7 @@ use crate::runtime::model::{
 };
 use crate::schema::{
     ApplicationProgram, Channel, ChannelIndependentBlock, ChannelIndependentItem, ChannelItem, Choose, ComObject,
-    ComObjectRef, DynamicSection, Module, ModuleArg, ModuleDef, ModuleDefDynamicItem, ParameterBlock,
+    ComObjectRef, DynamicItem, DynamicSection, Module, ModuleArg, ModuleDef, ModuleDefDynamicItem, ParameterBlock,
     ParameterBlockItem, ParameterRef, ParameterType, WhenItem,
 };
 
@@ -660,7 +660,11 @@ impl Device {
             // and replaced afterwards, so no extra copy is needed — on
             // large products the set holds ~100k ids and cloning it per
             // iteration costs more than the traversal itself.
-            for _ in 0..8 {
+            // The cap must cover the deepest selector chain: converted
+            // BCU2 programs alternate block-header refs and nested
+            // selectors up to ~8 levels, and each level opens one
+            // iteration after its selector became visible.
+            for _ in 0..16 {
                 let mut params = HashSet::new();
                 let mut objects = HashSet::new();
                 let mut modules = HashSet::new();
@@ -782,81 +786,120 @@ fn traverse_dynamic_section(
     renames: &mut HashMap<String, String>,
     previously_visible: &HashSet<String>,
 ) {
-    if let Some(cib) = &dynamic.channel_independent_block {
-        for item in &cib.items {
-            match item {
-                ChannelIndependentItem::ParameterBlock(pb) => {
-                    traverse_parameter_block(
-                        pb,
-                        None,
-                        ctx,
-                        visible_params,
-                        visible_objects,
-                        visible_modules,
-                        renames,
-                        previously_visible,
-                    );
+    for item in &dynamic.items {
+        match item {
+            DynamicItem::ChannelIndependentBlock(cib) => {
+                for item in &cib.items {
+                    match item {
+                        ChannelIndependentItem::ParameterBlock(pb) => {
+                            traverse_parameter_block(
+                                pb,
+                                None,
+                                ctx,
+                                visible_params,
+                                visible_objects,
+                                visible_modules,
+                                renames,
+                                previously_visible,
+                            );
+                        }
+                        ChannelIndependentItem::Choose(choose) => {
+                            traverse_choose(
+                                choose,
+                                None,
+                                ctx,
+                                visible_params,
+                                visible_objects,
+                                visible_modules,
+                                renames,
+                                previously_visible,
+                            );
+                        }
+                        ChannelIndependentItem::ParameterBlockRename(rename) => {
+                            renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
+                        }
+                    }
                 }
-                ChannelIndependentItem::Choose(choose) => {
-                    traverse_choose(
-                        choose,
-                        None,
-                        ctx,
-                        visible_params,
-                        visible_objects,
-                        visible_modules,
-                        renames,
-                        previously_visible,
-                    );
-                }
-                ChannelIndependentItem::ParameterBlockRename(rename) => {
-                    renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
-                }
+            }
+            DynamicItem::Channel(channel) => {
+                traverse_channel(
+                    channel,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
+            }
+            // ETS6 programs gate whole channels on an enable parameter
+            // via a Dynamic-level choose; the gate works exactly like
+            // any other choose, and the channels sit in its when
+            // branches (WhenItem::Channel).
+            DynamicItem::Choose(choose) => {
+                traverse_choose(
+                    choose,
+                    None,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
             }
         }
     }
+}
 
-    for channel in &dynamic.channels {
-        for item in &channel.items {
-            match item {
-                ChannelItem::ParameterBlock(pb) => {
-                    traverse_parameter_block(
-                        pb,
-                        None,
-                        ctx,
-                        visible_params,
-                        visible_objects,
-                        visible_modules,
-                        renames,
-                        previously_visible,
-                    );
-                }
-                ChannelItem::Choose(choose) => {
-                    traverse_choose(
-                        choose,
-                        None,
-                        ctx,
-                        visible_params,
-                        visible_objects,
-                        visible_modules,
-                        renames,
-                        previously_visible,
-                    );
-                }
-                ChannelItem::Module(module) => {
-                    traverse_module(
-                        module,
-                        ctx,
-                        visible_params,
-                        visible_objects,
-                        visible_modules,
-                        renames,
-                        previously_visible,
-                    );
-                }
-                ChannelItem::ParameterBlockRename(rename) => {
-                    renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
-                }
+fn traverse_channel(
+    channel: &Channel,
+    ctx: &VisibilityReadCtx<'_>,
+    visible_params: &mut HashSet<String>,
+    visible_objects: &mut HashSet<String>,
+    visible_modules: &mut HashSet<String>,
+    renames: &mut HashMap<String, String>,
+    previously_visible: &HashSet<String>,
+) {
+    for item in &channel.items {
+        match item {
+            ChannelItem::ParameterBlock(pb) => {
+                traverse_parameter_block(
+                    pb,
+                    None,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
+            }
+            ChannelItem::Choose(choose) => {
+                traverse_choose(
+                    choose,
+                    None,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
+            }
+            ChannelItem::Module(module) => {
+                traverse_module(
+                    module,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
+            }
+            ChannelItem::ParameterBlockRename(rename) => {
+                renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
             }
         }
     }
@@ -872,6 +915,15 @@ fn traverse_parameter_block(
     renames: &mut HashMap<String, String>,
     previously_visible: &HashSet<String>,
 ) {
+    // A block's `ParamRefId` header ref is a placement like any other: ETS
+    // shows its parameter's text as the block title. Pre-ETS4 converted
+    // programs (e.g. BCU2 products) rely on this by gating each block's
+    // content `choose` on this very ref — without seeding it here, no choose
+    // in such a program ever opens.
+    if let Some(header_ref) = &pb.param_ref_id {
+        visible_params.insert(header_ref.clone());
+    }
+
     for item in &pb.items {
         match item {
             ParameterBlockItem::ParameterRefRef(prr) => {
@@ -1036,6 +1088,17 @@ fn traverse_when_items(
             }
             WhenItem::ParameterBlockRename(rename) => {
                 renames.insert(rename.ref_id.clone(), rename.text.clone().unwrap_or_default());
+            }
+            WhenItem::Channel(channel) => {
+                traverse_channel(
+                    channel,
+                    ctx,
+                    visible_params,
+                    visible_objects,
+                    visible_modules,
+                    renames,
+                    previously_visible,
+                );
             }
             WhenItem::ParameterSeparator(_) | WhenItem::Assign(_) => {}
         }
@@ -1306,15 +1369,22 @@ fn expand_all_modules(
 ) -> HashMap<String, ExpandedModule> {
     let mut expanded = HashMap::new();
 
+    // Discovery is unconditional — every choose branch is scanned, not
+    // just the active one, so module instances exist regardless of the
+    // current parameter values.
     if let Some(dynamic) = &program.dynamic {
-        // From channel-independent block
-        if let Some(cib) = &dynamic.channel_independent_block {
-            collect_modules_from_cib(cib, module_defs, &mut expanded);
-        }
-
-        // From channels
-        for channel in &dynamic.channels {
-            collect_modules_from_channel(channel, module_defs, &mut expanded);
+        for item in &dynamic.items {
+            match item {
+                DynamicItem::ChannelIndependentBlock(cib) => {
+                    collect_modules_from_cib(cib, module_defs, &mut expanded);
+                }
+                DynamicItem::Channel(channel) => {
+                    collect_modules_from_channel(channel, module_defs, &mut expanded);
+                }
+                DynamicItem::Choose(choose) => {
+                    collect_modules_from_choose(choose, module_defs, &mut expanded);
+                }
+            }
         }
     }
 
@@ -1402,6 +1472,9 @@ fn collect_modules_from_choose(
                 WhenItem::Choose(nested) => {
                     collect_modules_from_choose(nested, module_defs, expanded);
                 }
+                WhenItem::Channel(channel) => {
+                    collect_modules_from_channel(channel, module_defs, expanded);
+                }
                 _ => {}
             }
         }
@@ -1461,12 +1534,255 @@ fn expand_module(module: &Module, module_defs: &HashMap<String, ModuleDef>) -> O
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::parser::parse_application_program_from_file;
+    use crate::runtime::parser::{parse_application_program, parse_application_program_from_file};
     use std::path::Path;
+
+    /// The pre-ETS4 converter idiom (BCU2 and other converted legacy
+    /// programs): each block titles itself via `ParamRefId` and gates its
+    /// entire content on a `choose` keyed on that very ref. The header ref
+    /// is placed nowhere else, so it must count as visible by virtue of the
+    /// block referencing it — otherwise no choose in the program ever opens.
+    /// A second, modern-style block without `ParamRefId` proves the seeding
+    /// changes nothing for ordinary programs.
+    const PRE_ETS4_FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
+  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+    <ApplicationProgram Id="M-00FA_A-2" ApplicationNumber="2" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0021" Name="Legacy fixture" LoadProcedureStyle="ProductProcedure" PeiType="17" DefaultLanguage="de-DE" DynamicTableManagement="true" Linkable="true" PreEts4Style="true">
+      <Static>
+        <Code><AbsoluteSegment Id="M-00FA_A-2_AS-0274" Address="628" Size="8" /></Code>
+        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-2_PT-PAGE" Name="Page"><TypeNone /></ParameterType>
+          <ParameterType Id="M-00FA_A-2_PT-MODE" Name="Mode"><TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="M-00FA_A-2_PT-MODE_EN-0" /><Enumeration Text="On" Value="1" Id="M-00FA_A-2_PT-MODE_EN-1" /></TypeRestriction></ParameterType>
+          <ParameterType Id="M-00FA_A-2_PT-N8" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="100" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>
+          <Parameter Id="M-00FA_A-2_P-100" Name="PageGeneral" ParameterType="M-00FA_A-2_PT-PAGE" Text="general" Value="" />
+          <Parameter Id="M-00FA_A-2_P-1" Name="Mode" ParameterType="M-00FA_A-2_PT-MODE" Text="Mode" Value="1"><Memory CodeSegment="M-00FA_A-2_AS-0274" Offset="0" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-2_P-2" Name="Level" ParameterType="M-00FA_A-2_PT-N8" Text="Level" Value="10"><Memory CodeSegment="M-00FA_A-2_AS-0274" Offset="1" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-2_P-3" Name="Other" ParameterType="M-00FA_A-2_PT-N8" Text="Other" Value="20"><Memory CodeSegment="M-00FA_A-2_AS-0274" Offset="2" BitOffset="0" /></Parameter>
+        </Parameters>
+        <ParameterRefs>
+          <ParameterRef Id="M-00FA_A-2_P-100_R-100" RefId="M-00FA_A-2_P-100" />
+          <ParameterRef Id="M-00FA_A-2_P-1_R-1" RefId="M-00FA_A-2_P-1" />
+          <ParameterRef Id="M-00FA_A-2_P-2_R-2" RefId="M-00FA_A-2_P-2" />
+          <ParameterRef Id="M-00FA_A-2_P-3_R-3" RefId="M-00FA_A-2_P-3" />
+        </ParameterRefs>
+        <ComObjectTable>
+          <ComObject Id="M-00FA_A-2_O-1" Name="Switch" Text="Switch" Number="1" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+        </ComObjectTable>
+        <ComObjectRefs>
+          <ComObjectRef Id="M-00FA_A-2_O-1_R-1" RefId="M-00FA_A-2_O-1" />
+        </ComObjectRefs>
+      </Static>
+      <Dynamic>
+        <Channel Id="M-00FA_A-2_CH-0" Name="Generic" Text="" Number="0">
+          <ParameterBlock Id="M-00FA_A-2_PB-100" Name="General" ParamRefId="M-00FA_A-2_P-100_R-100">
+            <choose ParamRefId="M-00FA_A-2_P-100_R-100">
+              <when default="true">
+                <ParameterRefRef RefId="M-00FA_A-2_P-1_R-1" />
+                <choose ParamRefId="M-00FA_A-2_P-1_R-1">
+                  <when test="1">
+                    <ParameterRefRef RefId="M-00FA_A-2_P-2_R-2" />
+                    <ComObjectRefRef RefId="M-00FA_A-2_O-1_R-1" />
+                  </when>
+                </choose>
+              </when>
+            </choose>
+          </ParameterBlock>
+          <ParameterBlock Id="M-00FA_A-2_PB-2" Text="Plain">
+            <ParameterRefRef RefId="M-00FA_A-2_P-3_R-3" />
+          </ParameterBlock>
+        </Channel>
+      </Dynamic>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    #[test]
+    fn block_param_ref_id_opens_gated_chooses() {
+        let knx = parse_application_program(PRE_ETS4_FIXTURE).expect("the fixture parses");
+        let program =
+            knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
+        let device = Device::new(program, None, None);
+
+        // The header ref itself is part of the tree...
+        assert!(device.is_param_ref_visible("M-00FA_A-2_P-100_R-100"));
+        // ...which opens the content choose (default branch) on the next
+        // fixpoint iteration, and the nested selector one iteration later.
+        assert!(device.is_param_ref_visible("M-00FA_A-2_P-1_R-1"));
+        assert!(device.is_param_ref_visible("M-00FA_A-2_P-2_R-2"));
+        assert!(device.is_com_object_ref_visible("M-00FA_A-2_O-1_R-1"));
+        // The modern-style block is unaffected.
+        assert!(device.is_param_ref_visible("M-00FA_A-2_P-3_R-3"));
+    }
+
+    /// The ETS6 idiom (L&J E032): whole channels sit inside `when`
+    /// branches of a `choose` directly under `Dynamic`, gated by an
+    /// enable parameter placed in the ChannelIndependentBlock. The
+    /// channel roster must be complete regardless of gating, while
+    /// visibility follows the selector chain.
+    const GATED_CHANNEL_FIXTURE: &str = r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+    <ApplicationProgram Id="M-00FA_A-3" ApplicationNumber="3" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0021" Name="Gated channels" LoadProcedureStyle="ProductProcedure" PeiType="17" DefaultLanguage="de-DE" DynamicTableManagement="true" Linkable="true">
+      <Static>
+        <Code><AbsoluteSegment Id="M-00FA_A-3_AS-0274" Address="628" Size="8" /></Code>
+        <ParameterTypes>
+          <ParameterType Id="M-00FA_A-3_PT-USAGE" Name="Usage"><TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="disabled" Value="0" Id="M-00FA_A-3_PT-USAGE_EN-0" /><Enumeration Text="enabled" Value="3" Id="M-00FA_A-3_PT-USAGE_EN-3" /></TypeRestriction></ParameterType>
+          <ParameterType Id="M-00FA_A-3_PT-N8" Name="N8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="100" /></ParameterType>
+        </ParameterTypes>
+        <Parameters>
+          <Parameter Id="M-00FA_A-3_P-10" Name="Usage" ParameterType="M-00FA_A-3_PT-USAGE" Text="usage" Value="0"><Memory CodeSegment="M-00FA_A-3_AS-0274" Offset="0" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-3_P-11" Name="Subtype" ParameterType="M-00FA_A-3_PT-N8" Text="subtype" Value="0"><Memory CodeSegment="M-00FA_A-3_AS-0274" Offset="1" BitOffset="0" /></Parameter>
+          <Parameter Id="M-00FA_A-3_P-12" Name="Level" ParameterType="M-00FA_A-3_PT-N8" Text="level" Value="5"><Memory CodeSegment="M-00FA_A-3_AS-0274" Offset="2" BitOffset="0" /></Parameter>
+        </Parameters>
+        <ParameterRefs>
+          <ParameterRef Id="M-00FA_A-3_P-10_R-10" RefId="M-00FA_A-3_P-10" />
+          <ParameterRef Id="M-00FA_A-3_P-11_R-11" RefId="M-00FA_A-3_P-11" />
+          <ParameterRef Id="M-00FA_A-3_P-12_R-12" RefId="M-00FA_A-3_P-12" />
+        </ParameterRefs>
+        <ComObjectTable>
+          <ComObject Id="M-00FA_A-3_O-1" Name="Switch" Text="Switch" Number="1" FunctionText="On/Off" ObjectSize="1 Bit" ReadFlag="Disabled" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+        </ComObjectTable>
+        <ComObjectRefs>
+          <ComObjectRef Id="M-00FA_A-3_O-1_R-1" RefId="M-00FA_A-3_O-1" />
+        </ComObjectRefs>
+      </Static>
+      <Dynamic>
+        <ChannelIndependentBlock>
+          <ParameterBlock Id="M-00FA_A-3_PB-1" Text="input setup">
+            <ParameterRefRef RefId="M-00FA_A-3_P-10_R-10" />
+            <choose ParamRefId="M-00FA_A-3_P-10_R-10">
+              <when test="3">
+                <ParameterRefRef RefId="M-00FA_A-3_P-11_R-11" />
+              </when>
+            </choose>
+          </ParameterBlock>
+        </ChannelIndependentBlock>
+        <choose ParamRefId="M-00FA_A-3_P-10_R-10">
+          <when test="3">
+            <choose ParamRefId="M-00FA_A-3_P-11_R-11">
+              <when test="0">
+                <Channel Id="M-00FA_A-3_CH-1" Name="Button A" Text="input A" Number="1">
+                  <ParameterBlock Id="M-00FA_A-3_PB-2" Text="button A">
+                    <ParameterRefRef RefId="M-00FA_A-3_P-12_R-12" />
+                    <ComObjectRefRef RefId="M-00FA_A-3_O-1_R-1" />
+                  </ParameterBlock>
+                </Channel>
+              </when>
+            </choose>
+          </when>
+        </choose>
+      </Dynamic>
+    </ApplicationProgram>
+  </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    #[test]
+    fn dynamic_level_choose_gates_whole_channels() {
+        let knx = parse_application_program(GATED_CHANNEL_FIXTURE).expect("the fixture parses");
+        let program =
+            knx.manufacturer_data.manufacturer.application_programs.programs.into_iter().next().expect("one program");
+        let mut device = Device::new(program, None, None);
+
+        // The roster sees the gated channel regardless of visibility.
+        let dynamic = device.program().dynamic.as_ref().expect("dynamic");
+        assert_eq!(dynamic.all_channels().len(), 1);
+        assert!(dynamic.find_channel("M-00FA_A-3_CH-1").is_some());
+
+        // Disabled (default): the channel's contents are hidden.
+        assert!(!device.is_param_ref_visible("M-00FA_A-3_P-12_R-12"));
+        assert!(!device.is_com_object_ref_visible("M-00FA_A-3_O-1_R-1"));
+
+        // Enable: the subtype ref appears (CIB choose) and its default
+        // value 0 routes the Dynamic-level choose to the channel.
+        device.set_parameter_value("M-00FA_A-3_P-10", ParameterValue::Integer(3));
+        assert!(device.is_param_ref_visible("M-00FA_A-3_P-11_R-11"));
+        assert!(device.is_param_ref_visible("M-00FA_A-3_P-12_R-12"));
+        assert!(device.is_com_object_ref_visible("M-00FA_A-3_O-1_R-1"));
+
+        // Disable again: everything behind the gate goes away.
+        device.set_parameter_value("M-00FA_A-3_P-10", ParameterValue::Integer(0));
+        assert!(!device.is_param_ref_visible("M-00FA_A-3_P-12_R-12"));
+        assert!(!device.is_com_object_ref_visible("M-00FA_A-3_O-1_R-1"));
+    }
+
+    /// The real ETS6 MV-0021 product the fixture above distills
+    /// (licensed vendor data; skipped when absent). Before Dynamic-level
+    /// chooses were modeled, all 36 channels were silently dropped at
+    /// parse time and no com object could ever become visible.
+    #[test]
+    fn lj_e032_channels_appear_when_buttons_are_enabled() {
+        let path = Path::new("../../manuf_tool_data/M-00E1_A-E032-40-9322.xml");
+        if !path.exists() {
+            eprintln!("Skipping test - L&J E032 file not found");
+            return;
+        }
+
+        let knx = parse_application_program_from_file(path).expect("Failed to parse");
+        let program = knx
+            .manufacturer_data
+            .manufacturer
+            .application_programs
+            .programs
+            .into_iter()
+            .next()
+            .expect("No application program found");
+        let mut device = Device::new(program, None, None);
+
+        assert_eq!(device.program().dynamic.as_ref().expect("dynamic").all_channels().len(), 36);
+
+        // Factory default: input A disabled, no button channel content.
+        let objects_before = device.visible_com_object_refs().count();
+
+        // Enable input A as a switching button: usage on, standard
+        // connection, button mode — the selector chain of the first
+        // Dynamic-level choose (P-19 -> P-21 -> UP-83).
+        device.set_parameter_value("M-00E1_A-E032-40-9322_P-19", ParameterValue::Integer(3));
+        device.set_parameter_value("M-00E1_A-E032-40-9322_P-21", ParameterValue::Integer(0));
+        device.set_parameter_value("M-00E1_A-E032-40-9322_UP-83", ParameterValue::Integer(0));
+
+        let objects_after = device.visible_com_object_refs().count();
+        assert!(
+            objects_after > objects_before,
+            "enabling input A must surface its com objects ({objects_before} -> {objects_after})"
+        );
+        // The button A channel's page contents are now visible.
+        assert!(device.is_param_ref_visible("M-00E1_A-E032-40-9322_P-22_R-22"));
+    }
+
+    /// The real MV-0021 product the fixture distills (licensed vendor data;
+    /// skipped when absent). Before the `ParamRefId` seeding, this program
+    /// rendered completely empty: zero visible refs of either kind.
+    #[test]
+    fn lj_bcu2_program_has_visible_surface() {
+        let path = Path::new("../../manuf_tool_data/L&J-ta8fxct-sec-en-de-30/M-00E1/M-00E1_A-E024-30-0403.xml");
+        if !path.exists() {
+            eprintln!("Skipping test - L&J file not found");
+            return;
+        }
+
+        let knx = parse_application_program_from_file(path).expect("Failed to parse");
+        let program = knx
+            .manufacturer_data
+            .manufacturer
+            .application_programs
+            .programs
+            .into_iter()
+            .next()
+            .expect("No application program found");
+        let device = Device::new(program, None, None);
+
+        // Loose lower bounds: the factory-default configuration shows a few
+        // hundred of the 1604 parameter refs but keeps most of the 683
+        // object refs behind per-button mode selections (16 visible today).
+        let visible_params = device.visible_param_refs().count();
+        let visible_objects = device.visible_com_object_refs().count();
+        assert!(visible_params > 100, "only {visible_params} visible parameter refs");
+        assert!(visible_objects >= 10, "only {visible_objects} visible com-object refs");
+    }
 
     #[test]
     fn test_mdt_module_expansion() {
-        let path = Path::new("../manuf_tool_data/VC-EASY-03_MDT_KP_V35/M-0083/M-0083_A-0070-35-1740.xml");
+        let path = Path::new("../../manuf_tool_data/VC-EASY-03_MDT_KP_V35/M-0083/M-0083_A-0070-35-1740.xml");
         if !path.exists() {
             eprintln!("Skipping test - MDT file not found");
             return;
