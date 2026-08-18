@@ -35,8 +35,7 @@ use panic_probe as _;
 use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
 use zweidraehte_microdevice::co_flags;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
-use zweidraehte_microdevice::device_def::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
-use zweidraehte_microdevice::family::Bcu2Family;
+use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition, Bcu2Family};
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 

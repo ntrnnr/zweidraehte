@@ -16,7 +16,8 @@ use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, Lo
 use zweidraehte_proto::pid;
 
 use crate::device::{EEPROM_SIZE, MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, RAM2_BASE, RAM2_SIZE};
-use crate::family::{LsmPath, MicroDeviceFamily, bcu2_offsets};
+use crate::families::bcu2::offsets as bcu2_offsets;
+use crate::family::{LsmPath, MicroDeviceFamily};
 use crate::frame::apci;
 
 /// A_Key_Response is the one escaped APCI the frame module's shared

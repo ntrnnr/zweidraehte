@@ -22,7 +22,8 @@ use zweidraehte_proto::transport::TlEvent;
 
 use crate::co_flags;
 use crate::eeprom::Tables;
-use crate::family::{MicroDeviceFamily, bcu2_offsets};
+use crate::families::bcu2::offsets as bcu2_offsets;
+use crate::family::MicroDeviceFamily;
 use crate::frame::{self, FrameBuf, FrameView, Tpci};
 use crate::management::{ManagementState, ServiceResult};
 use crate::transport::{TlOutput, TlState};
@@ -30,7 +31,7 @@ use crate::transport::{TlOutput, TlState};
 /// Sizing ceilings shared by all families this crate will carry. The
 /// BCU2 numbers happen to hit them exactly; a micro-System-7 family
 /// will need these revisited (larger EEPROM window, 4 machines).
-pub const EEPROM_SIZE: usize = crate::family::BCU2_EEPROM_SIZE;
+pub const EEPROM_SIZE: usize = crate::families::bcu2::BCU2_EEPROM_SIZE;
 pub const RAM_SIZE: usize = 0x100;
 pub const RAM2_SIZE: usize = 0xE0;
 /// KNX address of the first RAM2 byte.

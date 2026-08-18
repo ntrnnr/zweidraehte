@@ -25,7 +25,7 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use zweidraehte_microdevice::device_def::Bcu2CoDescriptor;
+use zweidraehte_microdevice::families::bcu2::Bcu2CoDescriptor;
 
 use super::bcu2_stack;
 

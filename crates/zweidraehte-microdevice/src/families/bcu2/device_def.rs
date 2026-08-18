@@ -16,7 +16,7 @@
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 use crate::device::EEPROM_SIZE;
-use crate::family::bcu2_offsets;
+use crate::families::bcu2::offsets as bcu2_offsets;
 
 /// One group object as the RT2 table stores it.
 #[derive(Debug, Clone, Copy)]

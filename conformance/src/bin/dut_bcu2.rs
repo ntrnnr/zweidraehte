@@ -29,7 +29,7 @@ use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blockin
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_microdevice::device::{Microdevice, PollInput, PollOutput};
-use zweidraehte_microdevice::family::Bcu2Family;
+use zweidraehte_microdevice::families::bcu2::Bcu2Family;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
 
 /// `ServiceType::L_Data_Req` — the service every outgoing DUT frame

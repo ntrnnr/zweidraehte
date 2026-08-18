@@ -9,7 +9,7 @@
 //! DUT and the generated product file (`bcu2_product`) are built from.
 
 use zweidraehte_microdevice::device::DeviceIdentity;
-use zweidraehte_microdevice::device_def::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
+use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;

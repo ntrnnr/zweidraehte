@@ -37,8 +37,8 @@
 
 pub mod co_flags;
 pub mod device;
-pub mod device_def;
 pub mod eeprom;
+pub mod families;
 pub mod family;
 pub mod frame;
 pub mod group_comm;
@@ -50,8 +50,8 @@ pub mod transport;
 pub mod snapshot;
 
 pub use device::{Microdevice, PollInput, PollOutput};
-pub use device_def::Bcu2DeviceDefinition;
-pub use family::{Bcu2Family, MicroDeviceFamily};
+pub use families::bcu2::{Bcu2DeviceDefinition, Bcu2Family};
+pub use family::MicroDeviceFamily;
 
 /// Crate-internal logging shim: `log` on the host, `defmt` on embedded,
 /// nothing when neither feature is enabled. Only `debug!` exists — this

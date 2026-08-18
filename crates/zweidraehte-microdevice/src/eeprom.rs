@@ -175,7 +175,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::family::Bcu2Family;
+    use crate::families::bcu2::Bcu2Family;
 
     /// A hand-laid BCU2 EEPROM: address table at 0116h with two GAs,
     /// association table and group object table behind their pointer

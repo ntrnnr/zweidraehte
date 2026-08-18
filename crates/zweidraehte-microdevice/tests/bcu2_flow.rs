@@ -3,8 +3,7 @@
 //! paths, driven frame-by-frame the way the bus would.
 
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
-use zweidraehte_microdevice::device_def::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
-use zweidraehte_microdevice::family::Bcu2Family;
+use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition, Bcu2Family};
 use zweidraehte_microdevice::frame::{FrameBuf, FrameView, Tpci, apci, data_frame, tpci_numbered};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState};
