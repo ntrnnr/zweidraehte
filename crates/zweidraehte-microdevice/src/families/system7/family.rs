@@ -5,7 +5,7 @@ use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::family::{LsmPath, MicroDeviceFamily};
-use crate::management::ManagementState;
+use crate::management::{ManagementState, dispatch_lsm_event};
 
 /// System 7 / BIM M112, TP1, mask version 0705h.
 ///
@@ -172,5 +172,71 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
         if machine == 2 || machine == 3 {
             mgmt.run_stopped[machine] = false;
         }
+    }
+
+    /// Fifteen settable keys for sixteen levels: the free-access level
+    /// 15 owns no key, and `A_Key_Write` targeting it answers FFh.
+    fn key_write_level_valid(level: u8) -> bool {
+        usize::from(level) < Self::AUTH_LEVELS - 1
+    }
+
+    /// The option register (not inverted, kept outside the EEPROM
+    /// window) and the read-only load-status bytes at B6EAh — one
+    /// `LoadState` octet per machine.
+    fn special_byte_read(addr: u16, _eeprom: &[u8], mgmt: &ManagementState) -> Option<u8> {
+        if addr == offsets::OPTION_REG_ADDR {
+            return Some(mgmt.option_reg);
+        }
+        let machine = usize::from(addr.checked_sub(offsets::LOAD_STATUS_ADDR)?);
+        (machine < Self::LSM_COUNT).then(|| mgmt.lsm[machine].state.into())
+    }
+
+    fn special_byte_write(addr: u16, value: u8, _eeprom: &mut [u8], mgmt: &mut ManagementState) -> bool {
+        if addr == offsets::OPTION_REG_ADDR {
+            mgmt.option_reg = value;
+            return true;
+        }
+        // The load-status bytes are write-protected: consume the write
+        // so it cannot land anywhere.
+        (offsets::LOAD_STATUS_ADDR..offsets::LOAD_STATUS_ADDR + Self::LSM_COUNT as u16).contains(&addr)
+    }
+
+    /// The memory-mapped load-control window (03/05/02 §3.31.2):
+    /// `[machine:4][event:4]` in the first octet, then the same segment
+    /// payload the property path carries — except that an
+    /// `AdditionalLoadControls` memory record inserts a segment ID
+    /// octet between the segment type and the start address, which the
+    /// property record does not have. This procedure supports one
+    /// segment per machine and the ID is 00h, so it is dropped and the
+    /// re-framed record drives the same state machine the property
+    /// path drives.
+    fn memory_write_intercept(addr: u16, data: &[u8], eeprom: &mut [u8], mgmt: &mut ManagementState) -> bool {
+        let window = offsets::LOAD_CONTROL_ADDR..offsets::LOAD_CONTROL_ADDR + offsets::LOAD_CONTROL_MAX as u16;
+        if !window.contains(&addr) {
+            return false;
+        }
+        // A record not starting at the window base is malformed;
+        // oversized or empty records are dropped the same way. All are
+        // consumed — nothing may fall through into the byte mapper.
+        if addr != offsets::LOAD_CONTROL_ADDR || data.is_empty() || data.len() > offsets::LOAD_CONTROL_MAX {
+            return true;
+        }
+        let machine = usize::from(data[0] >> 4);
+        let event = data[0] & 0x0F;
+        if machine == 0 || machine > Self::LSM_COUNT {
+            return true;
+        }
+        let mut record = [0u8; offsets::LOAD_CONTROL_MAX];
+        record[0] = event;
+        let len = if event == 0x03 && data.len() >= 3 {
+            record[1] = data[1]; // segment type; data[1 + 1] is the segment ID
+            record[2..data.len() - 1].copy_from_slice(&data[3..]);
+            data.len() - 1
+        } else {
+            record[1..data.len()].copy_from_slice(&data[1..]);
+            data.len()
+        };
+        dispatch_lsm_event::<Self>(machine - 1, &record[..len], eeprom, mgmt);
+        true
     }
 }

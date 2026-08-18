@@ -80,6 +80,9 @@ pub struct ManagementState {
     /// RUNCONTROL_STOP → Terminated). Volatile on purpose: a re-powered
     /// device starts a loaded application running again.
     pub run_stopped: [bool; MAX_LSM],
+    /// The option register, for families that keep it outside the
+    /// EEPROM image (System 7's cell at 0100h). Persistent.
+    pub option_reg: u8,
 }
 
 impl ManagementState {
@@ -96,6 +99,7 @@ impl ManagementState {
             auth_keys: [[0xFF; 4]; MAX_AUTH_LEVELS],
             lsm: [Lsm::new(); MAX_LSM],
             run_stopped: [false; MAX_LSM],
+            option_reg: 0,
         }
     }
 

@@ -21,6 +21,9 @@ pub struct MicroSnapshot {
     pub lsm_states: [u8; MAX_LSM],
     pub table_refs: [u16; MAX_LSM],
     pub device_control: u8,
+    /// Absent in snapshots taken before the System 7 family existed.
+    #[serde(default)]
+    pub option_reg: u8,
 }
 
 impl MicroSnapshot {
@@ -31,6 +34,7 @@ impl MicroSnapshot {
             lsm_states: device.mgmt.lsm.map(|l| l.state.into()),
             table_refs: device.mgmt.lsm.map(|l| l.table_ref),
             device_control: device.mgmt.device_control,
+            option_reg: device.mgmt.option_reg,
         }
     }
 
@@ -53,6 +57,7 @@ impl MicroSnapshot {
             };
         }
         device.mgmt.device_control = self.device_control;
+        device.mgmt.option_reg = self.option_reg;
         device
     }
 }

@@ -83,5 +83,6 @@ pub fn factory_snapshot() -> MicroSnapshot {
         ],
         table_refs: [0x0116, 0, 0, 0],
         device_control: 0,
+        option_reg: 0,
     }
 }
