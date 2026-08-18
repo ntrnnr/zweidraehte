@@ -1,7 +1,7 @@
 //! The memory tab's view over the download engine's table codings.
 //!
 //! The three management tables are displayed *in place*, inside the
-//! segments a product's defaults occupy (BCU2, System 7) or as
+//! segments a product's defaults occupy (BCU1, BCU2, System 7) or as
 //! synthetic segments (System B). Byte layouts and count semantics
 //! come from `zweidraehte_client::download`'s
 //! [`TableCoding`] declarations — the same code the download compiler
@@ -10,7 +10,7 @@
 //! their layout for annotations, and does the in-place work of
 //! splicing the configured entries over a segment's default bytes.
 
-use zweidraehte_client::download::{Addr2, Addr7, Addr8, Asso6, Asso8, Co7, Cot2, CotM112, TableCoding};
+use zweidraehte_client::download::{Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, Cot1, Cot2, CotM112, TableCoding};
 use zweidraehte_client::{ComObjectFlags, ComObjectType, GroupAddress, IndividualAddress};
 
 /// Which family's table wire formats a product uses. Fixed per mask
@@ -18,12 +18,16 @@ use zweidraehte_client::{ComObjectFlags, ComObjectType, GroupAddress, Individual
 /// data needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableFormats {
+    /// System 1 / BCU1 (masks 0010h–0013h and the PL110 siblings
+    /// 1012h/1013h): RT1 tables — RT2's layouts with the group object
+    /// table's config bit 7 fixed at 1.
+    Bcu1,
     /// System 2 / BCU2 (masks 0020h, 0021h, 0025h): RT2 tables.
     Bcu2,
     /// System 7 / BIM M112 (07x1..07x5 masks): RT8 + M112 tables.
     M112,
     /// System B (x7B0 masks) — also the fallback for families whose
-    /// tables we cannot display natively (BCU1, couplers).
+    /// tables we cannot display natively (couplers).
     SystemB,
 }
 
@@ -59,6 +63,7 @@ impl TableShape {
 impl TableFormats {
     pub fn for_mask(mask_version: &str) -> Self {
         match mask_version {
+            "MV-0010" | "MV-0011" | "MV-0012" | "MV-0013" | "MV-1012" | "MV-1013" => Self::Bcu1,
             "MV-0020" | "MV-0021" | "MV-0025" => Self::Bcu2,
             // System 7 masks are 07xxh with the System B TP1 mask
             // 07B0h carved out (its RF/IP siblings 27B0h/57B0h do not
@@ -70,6 +75,7 @@ impl TableFormats {
 
     pub fn adt_shape(self) -> TableShape {
         match self {
+            Self::Bcu1 => TableShape::of::<Addr1>(),
             Self::Bcu2 => TableShape::of::<Addr2>(),
             Self::M112 => TableShape::of::<Addr8>(),
             Self::SystemB => TableShape::of::<Addr7>(),
@@ -81,7 +87,7 @@ impl TableFormats {
     /// families ignore it.
     pub fn ast_shape(self, small_entries: bool) -> TableShape {
         match self {
-            Self::Bcu2 | Self::M112 => TableShape::of::<Asso8>(),
+            Self::Bcu1 | Self::Bcu2 | Self::M112 => TableShape::of::<Asso8>(),
             Self::SystemB if small_entries => {
                 // `AssociationTable_SystemBSmall` has no download
                 // coding yet — describe its shape literally.
@@ -93,6 +99,7 @@ impl TableFormats {
 
     pub fn cot_shape(self) -> TableShape {
         match self {
+            Self::Bcu1 => TableShape::of::<Cot1>(),
             Self::Bcu2 => TableShape::of::<Cot2>(),
             Self::M112 => TableShape::of::<CotM112>(),
             Self::SystemB => TableShape::of::<Co7>(),
@@ -105,7 +112,7 @@ impl TableFormats {
     pub fn cot_first_asap(self) -> u16 {
         match self {
             Self::SystemB => 1,
-            Self::Bcu2 | Self::M112 => 0,
+            Self::Bcu1 | Self::Bcu2 | Self::M112 => 0,
         }
     }
 
@@ -119,6 +126,7 @@ impl TableFormats {
         // they stay the device's — so a placeholder does.
         let ia = IndividualAddress::new(0, 0, 0);
         match self {
+            Self::Bcu1 => Addr1 { individual_address: ia }.blob(&gas).ok(),
             Self::Bcu2 => Addr2 { individual_address: ia }.blob(&gas).ok(),
             Self::M112 => Addr8 { individual_address: ia }.blob(&gas).ok(),
             Self::SystemB => Addr7.blob(&gas).ok(),
@@ -131,7 +139,7 @@ impl TableFormats {
     /// spliced).
     pub fn ast_blob(self, entries: &[(u16, u16)], small_entries: bool) -> Option<Vec<u8>> {
         match self {
-            Self::Bcu2 | Self::M112 => {
+            Self::Bcu1 | Self::Bcu2 | Self::M112 => {
                 let narrowed: Option<Vec<(u8, u8)>> = entries
                     .iter()
                     .map(|&(tsap, asap)| Some((u8::try_from(tsap).ok()?, u8::try_from(asap).ok()?)))
@@ -187,6 +195,7 @@ pub fn overlay_cot(format: TableFormats, data: &mut [u8], base: usize, rows: &[(
     for &(number, flags, object_type) in rows {
         let row = [(number, ComObjectFlags::from_byte(flags), ComObjectType::from(object_type))];
         let _ = match format {
+            TableFormats::Bcu1 => Cot1::overlay(table, &row),
             TableFormats::Bcu2 => Cot2::overlay(table, &row),
             TableFormats::M112 => CotM112::overlay(table, &row),
             TableFormats::SystemB => return,
@@ -204,7 +213,8 @@ mod tests {
         assert_eq!(TableFormats::for_mask("MV-0705"), TableFormats::M112);
         assert_eq!(TableFormats::for_mask("MV-07B0"), TableFormats::SystemB);
         assert_eq!(TableFormats::for_mask("MV-57B0"), TableFormats::SystemB);
-        assert_eq!(TableFormats::for_mask("MV-0012"), TableFormats::SystemB);
+        assert_eq!(TableFormats::for_mask("MV-0012"), TableFormats::Bcu1);
+        assert_eq!(TableFormats::for_mask("MV-1012"), TableFormats::Bcu1);
     }
 
     /// The scenario the L&J MV-0021 product exposed: its `AS-0116`
@@ -241,6 +251,16 @@ mod tests {
         let mut short = vec![0xFF; 4];
         splice_count_and_entries(&mut short, 0, &shape, &blob, None);
         assert_eq!(short, [0x03, 0xFF, 0xFF, 0x00]);
+    }
+
+    #[test]
+    fn bcu1_cot_overlay_forces_config_bit_7() {
+        // Same vendor table as below, but through the RT1 coding the
+        // overlaid config octet gains the fixed bit 7 (03/05/01
+        // §4.18.3) even though the flags byte does not carry it.
+        let mut segment = vec![0x02, 0xCE, 0xC6, 0x00, 0x00, 0xC7, 0x00, 0x00];
+        overlay_cot(TableFormats::Bcu1, &mut segment, 0, &[(1, 0x47, 0x00)]);
+        assert_eq!(segment, [0x02, 0xCE, 0xC6, 0x00, 0x00, 0xC7, 0xC7, 0x00]);
     }
 
     #[test]
