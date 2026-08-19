@@ -6,16 +6,14 @@ description = "KNX protocol types, message parsing, and encoding"
 
 [dependencies]
 zweidraehte-util = { path = "../zweidraehte-util", default-features = false }
-zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false }
+zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false, optional = true }
 
 zerocopy = { workspace = true }
 const-default = { workspace = true }
 paste = { workspace = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
-embassy-sync = { workspace = true }
-embassy-futures = { workspace = true }
-embassy-time = { workspace = true }
+embassy-sync = { workspace = true, optional = true }
 defmt = { workspace = true, optional = true }
 log = { workspace = true, optional = true }
 heapless = { workspace = true }
@@ -32,11 +30,18 @@ quickcheck_macros = "1"
 test-case = "3.3"
 
 [features]
-defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-platform/defmt", "heapless/defmt"]
-log = ["dep:log", "zweidraehte-util/log", "zweidraehte-platform/log"]
+defmt = ["dep:defmt", "zweidraehte-util/defmt", "zweidraehte-platform?/defmt", "heapless/defmt"]
+log = ["dep:log", "zweidraehte-util/log", "zweidraehte-platform?/log"]
 alloc = []
-std = ["alloc", "zweidraehte-platform/std"]
-knxip = []
+std = ["alloc", "zweidraehte-platform?/std"]
+knxip = ["dep:zweidraehte-platform"]
+# The pool-allocated message buffers (`Buffer`, `BufferManager`,
+# `DynBufferManager`) hand freed buffers back through an embassy channel,
+# which is the crate's only embassy dependency. Gated so synchronous
+# consumers (the microdevice stack, the client) that bring their own
+# storage get a zero-embassy dependency graph; the `MessageBuffer` trait
+# itself is always available.
+buffer-pool = ["dep:embassy-sync"]
 # KNX USB interface framing (HID reports, USB Transfer Protocol, Bus
 # Access Server). Pure codec shared by the device stack's USB host link
 # layer and the client library's USB connector.

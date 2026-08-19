@@ -14,7 +14,7 @@ features = ["knxip", "ip-secure", "tp1", "rf", "ip-interface", "std"]
 
 [dependencies]
 zweidraehte-util = { path = "../zweidraehte-util", default-features = false }
-zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
+zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false, features = ["buffer-pool"] }
 zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false }
 zweidraehte-ets = { path = "../zweidraehte-ets" }
 zweidraehte-device-macros = { path = "../zweidraehte-device-macros" }
@@ -60,7 +60,7 @@ test-case = "3.3"
 # `embassy-time`, and it exposes the proto modules only through a
 # `#[doc(hidden)]` macro-support module that is not public API.
 embassy-time = { workspace = true }
-zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
+zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false, features = ["buffer-pool"] }
 # The persist-gate round-trip (mc_timer watermark, 03/08/09 §2.2.4.2)
 # uses CriticalSectionRawMutex reply channels; lib tests need the std
 # critical-section implementation to link.
