@@ -5,12 +5,12 @@
 
 use crate::{
     HasSecurityMode,
-    ets::DeviceDescriptor,
     memory::{MemoryError, MemoryMap},
     objects::tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, TableMemory},
 };
 use zweidraehte_proto::AccessContext;
 use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::device::DeviceDescriptor;
 
 /// Memory layout information for System B devices.
 ///

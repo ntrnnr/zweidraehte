@@ -17,6 +17,7 @@ zweidraehte-util = { path = "../zweidraehte-util", default-features = false }
 zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false, features = ["buffer-pool"] }
 zweidraehte-platform = { path = "../zweidraehte-platform", default-features = false }
 zweidraehte-ets = { path = "../zweidraehte-ets" }
+zweidraehte-ets-model = { path = "../zweidraehte-ets-model" }
 zweidraehte-device-macros = { path = "../zweidraehte-device-macros" }
 
 zerocopy = { workspace = true }

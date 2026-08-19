@@ -3,7 +3,7 @@
 //! Only available with the `knxprod` feature since translations are only
 //! needed for ETS product definition generation.
 
-zweidraehte_device::ets_translations! {
+zweidraehte_ets_model::ets_translations! {
     pub LIGHT_SWITCH_TRANSLATIONS;
 
     "de-DE" {

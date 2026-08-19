@@ -9,15 +9,16 @@ edition = "2024"
 name = "devices"
 
 [dependencies]
-zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false }
+zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false, optional = true }
 zweidraehte-proto = { path = "../../crates/zweidraehte-proto", default-features = false }
+zweidraehte-ets-model = { path = "../../crates/zweidraehte-ets-model" }
 zweidraehte-microdevice = { path = "../../crates/zweidraehte-microdevice", optional = true }
 zweidraehte-util = { path = "../../crates/zweidraehte-util" }
 const-default = { workspace = true }
 zerocopy = { workspace = true }
 serde = { workspace = true }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod", optional = true }
-embassy-time.workspace = true
+embassy-time = { workspace = true, optional = true }
 
 [features]
 # `demos` is default so `cargo test -p zweidraehte-devices` compiles the
@@ -25,16 +26,21 @@ embassy-time.workspace = true
 # `default-features = false` and stay no_std/lean.
 default = ["demos"]
 knxprod = ["dep:zweidraehte-knxprod"]
+# The full-stack (embassy) flavor of the definitions: the modules
+# holding runtime comm-object containers and app logic on
+# `zweidraehte-device`.
+full = ["dep:zweidraehte-device", "dep:embassy-time"]
 # The microdevice (BCU-era) flavor of the shared definitions: the
 # canonical descriptor tables, the polled button/application logic, and
 # the EEPROM parameter accessors the micro firmware targets share.
 micro = ["dep:zweidraehte-microdevice"]
-defmt = ["zweidraehte-device/defmt", "zweidraehte-proto/defmt"]
-log = ["zweidraehte-device/log", "zweidraehte-proto/log"]
+defmt = ["zweidraehte-device?/defmt", "zweidraehte-proto/defmt"]
+log = ["zweidraehte-device?/log", "zweidraehte-proto/log"]
 # Host-side demo/replication device definitions (std only).
 demos = [
+    "full",
     "knxprod",
     "log",
     "zweidraehte-proto/std",
-    "embassy-time/std",
+    "embassy-time?/std",
 ]

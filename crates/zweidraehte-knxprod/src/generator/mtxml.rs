@@ -12,9 +12,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use base64::Engine;
 
-use zweidraehte_device::ets::{
-    EtsCommObjectDef, EtsParamType, EtsTranslation, EtsUnionFieldInfo, TranslationAttribute,
-};
+use zweidraehte_ets_model::{EtsCommObjectDef, EtsParamType, EtsTranslation, EtsUnionFieldInfo, TranslationAttribute};
 
 use super::baggage::{baggages_to_refs, make_baggage_id};
 use crate::definition::module::{ModuleArgRole, ModuleArgType, StoredModuleDef};

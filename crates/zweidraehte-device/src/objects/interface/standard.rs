@@ -29,8 +29,8 @@ use zweidraehte_proto::dpt::PDT_Control;
 
 use crate::StackState;
 use crate::device_model::{DeviceModelEvent, DeviceModelNotifier, RunTarget};
-use crate::ets::DeviceDescriptor;
 use crate::objects::tables::{HasLoadStateMachine, HasRunStateMachine, LoadAction, RunEvent};
+use zweidraehte_proto::device::DeviceDescriptor;
 use zweidraehte_proto::dpt::{
     DeviceControl, InterfaceObjectType, KNXVersion, PDT_Generic02, PDT_Generic04, PDT_Generic05, PDT_Generic06,
     PDT_Generic08, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong, PDT_Version, ProgrammingMode,

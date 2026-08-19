@@ -33,7 +33,7 @@ log = "0.4"
 # layers come from `SecureIpDeviceBuilder`.
 zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["linux", "ip-secure", "log"] }
 zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", features = ["log", "linux"] }
-zweidraehte-devices = { path = "../../../examples/devices", default-features = false }
+zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["full"] }
 # Host support: JSON config storage, FileIdentity, GetrandomRng, and the
 # file-backed sequence/SIAT store (LinuxSecureSeqStorage).
 zweidraehte-support = { path = "../../../examples/support" }

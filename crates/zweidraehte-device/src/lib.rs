@@ -88,7 +88,7 @@ pub mod logging;
 #[doc(hidden)]
 pub mod __macro_support {
     pub use ::embassy_futures;
-    pub use ::zweidraehte_proto::{access, dpt, messages, properties};
+    pub use ::zweidraehte_proto::{access, device, dpt, messages, properties};
 }
 
 // Device-specific modules
@@ -98,7 +98,6 @@ pub mod config;
 pub mod context;
 pub mod device_model;
 pub mod diagnostics;
-pub mod ets;
 pub mod extension;
 pub mod layers;
 pub mod lifecycle;

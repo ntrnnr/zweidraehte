@@ -257,43 +257,43 @@ pub(crate) fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                     size_bytes: 1,
                     size_bits: 8,
                     align: 1,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::UnsignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::UnsignedInt),
                 }),
                 "u16" => Ok(TypeInfo {
                     size_bytes: 2,
                     size_bits: 16,
                     align: 2,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::UnsignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::UnsignedInt),
                 }),
                 "u32" => Ok(TypeInfo {
                     size_bytes: 4,
                     size_bits: 32,
                     align: 4,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::UnsignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::UnsignedInt),
                 }),
                 "i8" => Ok(TypeInfo {
                     size_bytes: 1,
                     size_bits: 8,
                     align: 1,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::SignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::SignedInt),
                 }),
                 "i16" => Ok(TypeInfo {
                     size_bytes: 2,
                     size_bits: 16,
                     align: 2,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::SignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::SignedInt),
                 }),
                 "i32" => Ok(TypeInfo {
                     size_bytes: 4,
                     size_bits: 32,
                     align: 4,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::SignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::SignedInt),
                 }),
                 "bool" => Ok(TypeInfo {
                     size_bytes: 1,
                     size_bits: 1,
                     align: 1,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::UnsignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::UnsignedInt),
                 }),
                 // Big-endian types - KNX uses big-endian for parameter storage
                 // BeU16/BeU32/etc are custom wrappers with serde support
@@ -302,25 +302,25 @@ pub(crate) fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                     size_bytes: 2,
                     size_bits: 16,
                     align: 1, // [u8; 2] has alignment 1
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::UnsignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::UnsignedInt),
                 }),
                 "BeU32" | "BigU32" | "U32" => Ok(TypeInfo {
                     size_bytes: 4,
                     size_bits: 32,
                     align: 1, // [u8; 4] has alignment 1
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::UnsignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::UnsignedInt),
                 }),
                 "BeI16" | "BigI16" | "I16" => Ok(TypeInfo {
                     size_bytes: 2,
                     size_bits: 16,
                     align: 1,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::SignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::SignedInt),
                 }),
                 "BeI32" | "BigI32" | "I32" => Ok(TypeInfo {
                     size_bytes: 4,
                     size_bits: 32,
                     align: 1,
-                    param_type: quote!(zweidraehte_device::ets::EtsParamType::SignedInt),
+                    param_type: quote!(zweidraehte_ets_model::EtsParamType::SignedInt),
                 }),
                 _ => {
                     // Unknown type - treat as raw bytes
@@ -357,7 +357,7 @@ pub(crate) fn get_type_info(ty: &Type) -> syn::Result<TypeInfo> {
                         size_bytes: len,
                         size_bits,
                         align: 1, // [u8; N] has alignment of 1
-                        param_type: quote!(zweidraehte_device::ets::EtsParamType::None),
+                        param_type: quote!(zweidraehte_ets_model::EtsParamType::None),
                     });
                 }
             }

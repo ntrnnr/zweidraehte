@@ -21,7 +21,7 @@
 //! read, or either drifting from the device's actual memory map —
 //! surfaces as a failed download rather than as a silently wrong file.
 
-use zweidraehte_device::ets::{EtsCommObjectDef, EtsCommObjectRefDef};
+use zweidraehte_ets_model::{EtsCommObjectDef, EtsCommObjectRefDef};
 use zweidraehte_knxprod::{
     ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef, System7MemoryLayout, System7Segment,
 };

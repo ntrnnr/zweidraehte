@@ -28,7 +28,6 @@ use serde::{Deserialize, Serialize};
 use zweidraehte_device::bcus::system_b::{
     IpSecureInterfaceExtensionFor, IpSecureResources, SystemBDeviceState, SystemBStackDefinition,
 };
-use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
 use zweidraehte_device::layers::application::services::{PropertyExtValueService, StandardAlServices};
 use zweidraehte_device::layers::linklayers::knxip::{
     KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureDeviceTcp,
@@ -41,6 +40,7 @@ use zweidraehte_device::prelude::IpPlatform;
 use zweidraehte_device::storage::HasDeviceConfig;
 use zweidraehte_device::{DEFAULT_MULTICAST_ADDR, PlainIpDeviceBuilder};
 use zweidraehte_platform::{IpConfig, LinuxIpTransport, NetworkConfig};
+use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 use super::fixture_common::GetrandomRng;
 use crate::ipc::ip_secure::{DUT_BACKBONE_KEY, DUT_USER1_PASSWORD_HASH, MCAST_ENV, PORT_ENV, SECURE_ROUTING_ENV};

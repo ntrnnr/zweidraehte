@@ -34,7 +34,7 @@ static_cell = { workspace = true }
 # KNX stack and device definitions
 zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt", "tp1"] }
 zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", default-features = false, features = ["defmt"] }
-zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["defmt"] }
+zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["full", "defmt"] }
 
 # Shared STM32 platform code (DirectUart, StmFlashStorage, FramKv,
 # UidSeededRng, Stm32CommonSecureState)

@@ -141,7 +141,7 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
         // Add to selector variants
         let variant_name_str = variant_name.to_string();
         selector_variants.push(quote! {
-            zweidraehte_device::ets::EtsEnumVariant {
+            zweidraehte_ets_model::EtsEnumVariant {
                 text: #display_name,
                 variant_name: #variant_name_str,
                 value: #discriminant_value,
@@ -228,17 +228,17 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
                         };
 
                         union_params.push(quote! {
-                            zweidraehte_device::ets::EtsUnionVariantParam {
+                            zweidraehte_ets_model::EtsUnionVariantParam {
                                 variant_name: #variant_name_str,
                                 variant_value: #discriminant_value,
-                                param: zweidraehte_device::ets::EtsParamDef {
+                                param: zweidraehte_ets_model::EtsParamDef {
                                     name: #field_name_str,
                                     display_name: #field_display,
                                     suffix: #suffix_expr,
                                     offset: #param_offset,
                                     size_bits: #field_type::ETS_SIZE_BITS,
                                     bit_offset: #bit_offset,
-                                    param_type: zweidraehte_device::ets::EtsParamType::Enum,
+                                    param_type: zweidraehte_ets_model::EtsParamType::Enum,
                                     hidden: false,
                                     no_memory: false,
                                     type_name: None,
@@ -293,9 +293,9 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
                     // Determine param type - if has enum_variants, it's an Enum type
                     // If marked as string or has text_pattern, it's a String type
                     let param_type = if field_attrs.enum_variants.is_some() {
-                        quote!(zweidraehte_device::ets::EtsParamType::Enum)
+                        quote!(zweidraehte_ets_model::EtsParamType::Enum)
                     } else if field_attrs.string_field || field_attrs.text_pattern.is_some() {
-                        quote!(zweidraehte_device::ets::EtsParamType::String)
+                        quote!(zweidraehte_ets_model::EtsParamType::String)
                     } else {
                         type_info.param_type.clone()
                     };
@@ -315,7 +315,7 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
                                 let text = &v.text;
                                 let value = v.value;
                                 quote! {
-                                    zweidraehte_device::ets::EtsEnumVariant {
+                                    zweidraehte_ets_model::EtsEnumVariant {
                                         text: #text,
                                         variant_name: #text,
                                         value: #value,
@@ -343,10 +343,10 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
                         if let Some(ref suffix) = field_attrs.suffix { quote!(Some(#suffix)) } else { quote!(None) };
 
                     union_params.push(quote! {
-                        zweidraehte_device::ets::EtsUnionVariantParam {
+                        zweidraehte_ets_model::EtsUnionVariantParam {
                             variant_name: #variant_name_str,
                             variant_value: #discriminant_value,
-                            param: zweidraehte_device::ets::EtsParamDef {
+                            param: zweidraehte_ets_model::EtsParamDef {
                                 name: #field_name_str,
                                 display_name: #field_display,
                                 suffix: #suffix_expr,
@@ -417,7 +417,7 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
             /// ETS union information for this enum.
             ///
             /// Contains metadata about the union structure for ETS export.
-            pub const ETS_UNION_INFO: zweidraehte_device::ets::EtsUnionInfo = zweidraehte_device::ets::EtsUnionInfo {
+            pub const ETS_UNION_INFO: zweidraehte_ets_model::EtsUnionInfo = zweidraehte_ets_model::EtsUnionInfo {
                 name: #enum_name_str,
                 // Use actual Rust size including alignment padding
                 total_size: core::mem::size_of::<#enum_name>() as u16,
@@ -434,18 +434,18 @@ pub(crate) fn derive_ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStr
             /// Selector variants for ETS dropdown.
             ///
             /// These are the display names and values for the discriminant.
-            pub const ETS_SELECTOR_VARIANTS: &'static [zweidraehte_device::ets::EtsEnumVariant] = &[
+            pub const ETS_SELECTOR_VARIANTS: &'static [zweidraehte_ets_model::EtsEnumVariant] = &[
                 #(#selector_variants),*
             ];
         }
 
         // Implement the marker trait
-        impl zweidraehte_device::ets::EtsUnionType for #enum_name {
-            fn ets_union_info() -> &'static zweidraehte_device::ets::EtsUnionInfo {
+        impl zweidraehte_ets_model::EtsUnionType for #enum_name {
+            fn ets_union_info() -> &'static zweidraehte_ets_model::EtsUnionInfo {
                 &Self::ETS_UNION_INFO
             }
 
-            fn ets_selector_variants() -> &'static [zweidraehte_device::ets::EtsEnumVariant] {
+            fn ets_selector_variants() -> &'static [zweidraehte_ets_model::EtsEnumVariant] {
                 Self::ETS_SELECTOR_VARIANTS
             }
         }

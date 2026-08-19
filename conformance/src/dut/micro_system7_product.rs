@@ -8,7 +8,7 @@
 //! micro DUT reuses it with its own (much smaller) capacities and the
 //! micro fixture's segment placement.
 
-use zweidraehte_device::ets::{EtsCommObjectDef, EtsCommObjectRefDef};
+use zweidraehte_ets_model::{EtsCommObjectDef, EtsCommObjectRefDef};
 use zweidraehte_knxprod::{
     ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef, System7MemoryLayout, System7Segment,
 };

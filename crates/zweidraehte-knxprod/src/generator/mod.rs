@@ -32,9 +32,8 @@ use crate::definition::module::ModuleCollection;
 use crate::definition::page_layout::PageStructure;
 use crate::schema::{BaggageDef, BusAccessType, MaskFamily};
 
-use zweidraehte_device::ets::{
-    DeviceDescriptor, EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt, EtsTranslation, EtsUnionFieldInfo,
-};
+use zweidraehte_ets_model::{EtsCommObjectDef, EtsCommObjectRefDef, EtsParamDefExt, EtsTranslation, EtsUnionFieldInfo};
+use zweidraehte_proto::device::DeviceDescriptor;
 
 // Re-export public types
 pub use baggage::BaggageGenerator;

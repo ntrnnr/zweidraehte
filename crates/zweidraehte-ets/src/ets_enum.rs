@@ -86,7 +86,7 @@ pub(crate) fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStre
 
         let variant_name_str = variant_ident.to_string();
         enum_variants.push(quote! {
-            zweidraehte_device::ets::EtsEnumVariant {
+            zweidraehte_ets_model::EtsEnumVariant {
                 text: #display_name,
                 variant_name: #variant_name_str,
                 value: #discriminant,
@@ -115,7 +115,7 @@ pub(crate) fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStre
     Ok(quote! {
         impl #enum_name {
             /// ETS enum variants for dropdown display.
-            pub const ETS_VARIANTS: &'static [zweidraehte_device::ets::EtsEnumVariant] = &[
+            pub const ETS_VARIANTS: &'static [zweidraehte_ets_model::EtsEnumVariant] = &[
                 #(#enum_variants),*
             ];
 
@@ -123,8 +123,8 @@ pub(crate) fn derive_ets_enum_impl(input: &DeriveInput) -> syn::Result<TokenStre
             pub const ETS_SIZE_BITS: u16 = #size_bits;
         }
 
-        impl zweidraehte_device::ets::EtsEnumType for #enum_name {
-            fn ets_variants() -> &'static [zweidraehte_device::ets::EtsEnumVariant] {
+        impl zweidraehte_ets_model::EtsEnumType for #enum_name {
+            fn ets_variants() -> &'static [zweidraehte_ets_model::EtsEnumVariant] {
                 Self::ETS_VARIANTS
             }
 

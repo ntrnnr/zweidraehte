@@ -150,7 +150,7 @@ pub(crate) fn ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> 
     for field in &layout_fields {
         let ty = &field.ty;
         align_expr = quote! {
-            zweidraehte_device::ets::union_max(#align_expr, core::mem::align_of::<#ty>())
+            zweidraehte_ets_model::union_max(#align_expr, core::mem::align_of::<#ty>())
         };
     }
     layout_consts.push(quote! {
@@ -174,7 +174,7 @@ pub(crate) fn ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> 
             #[doc(hidden)]
         #[allow(non_upper_case_globals)]
             const #off_ident: usize =
-                zweidraehte_device::ets::union_align_up(#end_ident, core::mem::align_of::<#ty>());
+                zweidraehte_ets_model::union_align_up(#end_ident, core::mem::align_of::<#ty>());
             #[doc(hidden)]
         #[allow(non_upper_case_globals)]
             const #next_end: usize = #off_ident + core::mem::size_of::<#ty>();
@@ -186,7 +186,7 @@ pub(crate) fn ets_params_impl(input: &DeriveInput) -> syn::Result<TokenStream2> 
     layout_consts.push(quote! {
         #[doc(hidden)]
         #[allow(non_upper_case_globals)]
-        const #total_ident: usize = zweidraehte_device::ets::union_align_up(#end_ident, #align_ident);
+        const #total_ident: usize = zweidraehte_ets_model::union_align_up(#end_ident, #align_ident);
     });
 
     // ========================================================================

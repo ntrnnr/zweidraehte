@@ -13,8 +13,8 @@ use zweidraehte_proto::dpt::{
 use zweidraehte_proto::properties::PropertyError;
 
 use crate::StackState;
-use crate::ets::DeviceDescriptor;
 use crate::objects::interface::{WriteResponse, interface_object, pid};
+use zweidraehte_proto::device::DeviceDescriptor;
 
 #[interface_object(object_type = InterfaceObjectType::Device, levels = 16)]
 pub struct System7DeviceObject<'a, S: StackState> {

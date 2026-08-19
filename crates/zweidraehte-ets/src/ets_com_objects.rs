@@ -180,14 +180,14 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
                 // For objects with refs, use first ref's DPT info as base
                 let first_ref_dpt = &obj.refs[0].dpt;
                 quote! {
-                    zweidraehte_device::ets::EtsCommObjectDef {
+                    zweidraehte_ets_model::EtsCommObjectDef {
                         index: #index,
                         name: #name,
                         display_name: #display_name,
                         function_text: #function_text,
-                        dpt_main: <#first_ref_dpt as zweidraehte_device::ets::HasDptInfo>::DPT_MAIN,
-                        dpt_sub: <#first_ref_dpt as zweidraehte_device::ets::HasDptInfo>::DPT_SUB,
-                        size_bits: <#first_ref_dpt as zweidraehte_device::ets::HasDptInfo>::SIZE_BITS as u8,
+                        dpt_main: <#first_ref_dpt as zweidraehte_ets_model::HasDptInfo>::DPT_MAIN,
+                        dpt_sub: <#first_ref_dpt as zweidraehte_ets_model::HasDptInfo>::DPT_SUB,
+                        size_bits: <#first_ref_dpt as zweidraehte_ets_model::HasDptInfo>::SIZE_BITS as u8,
                         default_flags: #default_flags,
                         object_size_override: #object_size_override_expr,
                         text_template: #text_template_expr,
@@ -197,14 +197,14 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
                 // Use inner_ty to extract DPT info (handles both ComObject<T> and bare T)
                 let inner_ty = &obj.inner_ty;
                 quote! {
-                    zweidraehte_device::ets::EtsCommObjectDef {
+                    zweidraehte_ets_model::EtsCommObjectDef {
                         index: #index,
                         name: #name,
                         display_name: #display_name,
                         function_text: #function_text,
-                        dpt_main: <#inner_ty as zweidraehte_device::ets::HasDptInfo>::DPT_MAIN,
-                        dpt_sub: <#inner_ty as zweidraehte_device::ets::HasDptInfo>::DPT_SUB,
-                        size_bits: <#inner_ty as zweidraehte_device::ets::HasDptInfo>::SIZE_BITS as u8,
+                        dpt_main: <#inner_ty as zweidraehte_ets_model::HasDptInfo>::DPT_MAIN,
+                        dpt_sub: <#inner_ty as zweidraehte_ets_model::HasDptInfo>::DPT_SUB,
+                        size_bits: <#inner_ty as zweidraehte_ets_model::HasDptInfo>::SIZE_BITS as u8,
                         default_flags: #default_flags,
                         object_size_override: #object_size_override_expr,
                         text_template: #text_template_expr,
@@ -271,7 +271,7 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
                     let update = opt_bool_to_tokens(ref_attr.update);
                     let read_on_init = opt_bool_to_tokens(ref_attr.read_on_init);
                     quote! {
-                        Some(zweidraehte_device::ets::FlagOverrides {
+                        Some(zweidraehte_ets_model::FlagOverrides {
                             read: #read,
                             write: #write,
                             communication: #communication,
@@ -285,14 +285,14 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
                 };
 
                 ets_comm_object_refs.push(quote! {
-                    zweidraehte_device::ets::EtsCommObjectRefDef {
+                    zweidraehte_ets_model::EtsCommObjectRefDef {
                         object_index: #index,
                         ref_name: #ref_name,
                         text: #text_tokens,
                         function_text: #function_text,
-                        dpt_main: <#ref_dpt as zweidraehte_device::ets::HasDptInfo>::DPT_MAIN,
-                        dpt_sub: <#ref_dpt as zweidraehte_device::ets::HasDptInfo>::DPT_SUB,
-                        size_bits: <#ref_dpt as zweidraehte_device::ets::HasDptInfo>::SIZE_BITS as u8,
+                        dpt_main: <#ref_dpt as zweidraehte_ets_model::HasDptInfo>::DPT_MAIN,
+                        dpt_sub: <#ref_dpt as zweidraehte_ets_model::HasDptInfo>::DPT_SUB,
+                        size_bits: <#ref_dpt as zweidraehte_ets_model::HasDptInfo>::SIZE_BITS as u8,
                         flag_overrides: #flag_overrides,
                         selector_value: #selector_value,
                         selector_value_name: #selector_value_name,
@@ -306,14 +306,14 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
             let ref_name = obj.ident.to_string();
             let function_text = obj.attrs.function.clone().unwrap_or_default();
             ets_comm_object_refs.push(quote! {
-                zweidraehte_device::ets::EtsCommObjectRefDef {
+                zweidraehte_ets_model::EtsCommObjectRefDef {
                     object_index: #index,
                     ref_name: #ref_name,
                     text: None,
                     function_text: #function_text,
-                    dpt_main: <#inner_ty as zweidraehte_device::ets::HasDptInfo>::DPT_MAIN,
-                    dpt_sub: <#inner_ty as zweidraehte_device::ets::HasDptInfo>::DPT_SUB,
-                    size_bits: <#inner_ty as zweidraehte_device::ets::HasDptInfo>::SIZE_BITS as u8,
+                    dpt_main: <#inner_ty as zweidraehte_ets_model::HasDptInfo>::DPT_MAIN,
+                    dpt_sub: <#inner_ty as zweidraehte_ets_model::HasDptInfo>::DPT_SUB,
+                    size_bits: <#inner_ty as zweidraehte_ets_model::HasDptInfo>::SIZE_BITS as u8,
                     flag_overrides: None,
                     selector_value: None,
                     selector_value_name: None,
@@ -432,13 +432,13 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
         impl #struct_name {
             /// ETS communication object definitions for this module.
             #[allow(dead_code)]
-            pub const ETS_COMM_OBJECTS: &'static [zweidraehte_device::ets::EtsCommObjectDef] = &[
+            pub const ETS_COMM_OBJECTS: &'static [zweidraehte_ets_model::EtsCommObjectDef] = &[
                 #(#ets_comm_objects),*
             ];
 
             /// ETS communication object reference definitions.
             #[allow(dead_code)]
-            pub const ETS_COMM_OBJECT_REFS: &'static [zweidraehte_device::ets::EtsCommObjectRefDef] = &[
+            pub const ETS_COMM_OBJECT_REFS: &'static [zweidraehte_ets_model::EtsCommObjectRefDef] = &[
                 #(#ets_comm_object_refs),*
             ];
 
@@ -447,8 +447,8 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
             pub const NUM_COMM_OBJECTS: usize = #num_objects;
         }
 
-        impl zweidraehte_device::ets::HasModuleCommObjects for #struct_name {
-            const ETS_COMM_OBJECTS: &'static [zweidraehte_device::ets::EtsCommObjectDef] = #struct_name::ETS_COMM_OBJECTS;
+        impl zweidraehte_ets_model::HasModuleCommObjects for #struct_name {
+            const ETS_COMM_OBJECTS: &'static [zweidraehte_ets_model::EtsCommObjectDef] = #struct_name::ETS_COMM_OBJECTS;
         }
 
         #selector_impl
@@ -643,8 +643,8 @@ fn generate_module_based_impl(
             /// This is derived from the module's `MODULE_COMM_OBJECTS` constant,
             /// replicated for each instance with adjusted indices.
             #[allow(dead_code)]
-            pub const ETS_COMM_OBJECTS: &'static [zweidraehte_device::ets::EtsCommObjectDef] =
-                <#element_type as zweidraehte_device::ets::HasModuleCommObjects>::ETS_COMM_OBJECTS;
+            pub const ETS_COMM_OBJECTS: &'static [zweidraehte_ets_model::EtsCommObjectDef] =
+                <#element_type as zweidraehte_ets_model::HasModuleCommObjects>::ETS_COMM_OBJECTS;
 
             /// Number of communication objects per module instance.
             pub const OBJECTS_PER_INSTANCE: usize = #objects_per_instance;
@@ -653,9 +653,9 @@ fn generate_module_based_impl(
             pub const NUM_COMM_OBJECTS: usize = #total_objects;
         }
 
-        impl zweidraehte_device::ets::HasModuleCommObjects for #struct_name {
-            const ETS_COMM_OBJECTS: &'static [zweidraehte_device::ets::EtsCommObjectDef] =
-                <#element_type as zweidraehte_device::ets::HasModuleCommObjects>::ETS_COMM_OBJECTS;
+        impl zweidraehte_ets_model::HasModuleCommObjects for #struct_name {
+            const ETS_COMM_OBJECTS: &'static [zweidraehte_ets_model::EtsCommObjectDef] =
+                <#element_type as zweidraehte_ets_model::HasModuleCommObjects>::ETS_COMM_OBJECTS;
         }
     };
 

@@ -12,8 +12,9 @@
 use serde::{Deserialize, Serialize};
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_device::ets::ets_range_enum;
 use zweidraehte_device::prelude::*;
+use zweidraehte_ets_model::ets_range_enum;
+use zweidraehte_ets_model::{EtsComObjects, EtsEnum, ets_params, ets_union};
 use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use zweidraehte_knxprod::ets_pages;
 use zweidraehte_proto::dpt::*;
@@ -5943,7 +5944,7 @@ mod tests {
 //
 // This demonstrates the `ets_translations!` macro for defining translations
 // separately from the enum/param definitions to keep code clean.
-zweidraehte_device::ets_translations! {
+zweidraehte_ets_model::ets_translations! {
     pub MDT_TRANSLATIONS_DE;
 
     "de-DE" {

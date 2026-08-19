@@ -126,14 +126,14 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
 
             // Generate selector parameter (the discriminant, 1 byte)
             param_defs.push(quote! {
-                zweidraehte_device::ets::EtsParamDef {
+                zweidraehte_ets_model::EtsParamDef {
                     name: #selector_name,
                     display_name: #selector_display,
                     suffix: None,
                     offset: #offset_expr,
                     size_bits: 8,
                     bit_offset: 0,
-                    param_type: zweidraehte_device::ets::EtsParamType::Enum,
+                    param_type: zweidraehte_ets_model::EtsParamType::Enum,
                     hidden: false,
                     no_memory: false,
                     type_name: None,
@@ -148,7 +148,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
             );
 
             enum_variant_consts.push(quote! {
-                const #selector_const_name: &[zweidraehte_device::ets::EtsEnumVariant] =
+                const #selector_const_name: &[zweidraehte_ets_model::EtsEnumVariant] =
                     #field_type::ETS_SELECTOR_VARIANTS;
             });
 
@@ -157,15 +157,15 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
                 if let Some(val) = attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
 
             param_ext_defs.push(quote! {
-                zweidraehte_device::ets::EtsParamDefExt {
-                    base: zweidraehte_device::ets::EtsParamDef {
+                zweidraehte_ets_model::EtsParamDefExt {
+                    base: zweidraehte_ets_model::EtsParamDef {
                         name: #selector_name,
                         display_name: #selector_display,
                         suffix: None,
                         offset: #offset_expr,
                         size_bits: 8,
                         bit_offset: 0,
-                        param_type: zweidraehte_device::ets::EtsParamType::Enum,
+                        param_type: zweidraehte_ets_model::EtsParamType::Enum,
                         hidden: false,
                         no_memory: false,
                         type_name: None,
@@ -179,7 +179,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
 
             // Track the union field for ETS_UNIONS generation
             union_field_entries.push(quote! {
-                zweidraehte_device::ets::EtsUnionFieldInfo {
+                zweidraehte_ets_model::EtsUnionFieldInfo {
                     field_name: #name_str,
                     display_name: #selector_display,
                     offset: #offset_expr,
@@ -203,14 +203,14 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
             let type_name_expr = if let Some(ref tn) = attrs.type_name { quote!(Some(#tn)) } else { quote!(None) };
 
             param_defs.push(quote! {
-                zweidraehte_device::ets::EtsParamDef {
+                zweidraehte_ets_model::EtsParamDef {
                     name: #name_str,
                     display_name: #display_name,
                     suffix: #suffix_expr,
                     offset: #offset_expr,
                     size_bits: #size_bits_expr,
                     bit_offset: #bit_offset,
-                    param_type: zweidraehte_device::ets::EtsParamType::Enum,
+                    param_type: zweidraehte_ets_model::EtsParamType::Enum,
                     hidden: #hidden,
                     no_memory: #no_memory,
                     type_name: #type_name_expr,
@@ -223,7 +223,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
                 syn::Ident::new(&format!("{}_VARIANTS", field_name.to_string().to_uppercase()), field_name.span());
 
             enum_variant_consts.push(quote! {
-                const #const_name: &[zweidraehte_device::ets::EtsEnumVariant] = #field_type::ETS_VARIANTS;
+                const #const_name: &[zweidraehte_ets_model::EtsEnumVariant] = #field_type::ETS_VARIANTS;
             });
 
             // For ets_enum fields, use explicit default if provided, otherwise use the enum's
@@ -236,15 +236,15 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
             };
 
             param_ext_defs.push(quote! {
-                zweidraehte_device::ets::EtsParamDefExt {
-                    base: zweidraehte_device::ets::EtsParamDef {
+                zweidraehte_ets_model::EtsParamDefExt {
+                    base: zweidraehte_ets_model::EtsParamDef {
                         name: #name_str,
                         display_name: #display_name,
                         suffix: #suffix_expr,
                         offset: #offset_expr,
                         size_bits: #size_bits_expr,
                         bit_offset: #bit_offset,
-                        param_type: zweidraehte_device::ets::EtsParamType::Enum,
+                        param_type: zweidraehte_ets_model::EtsParamType::Enum,
                         hidden: #hidden,
                         no_memory: #no_memory,
                         type_name: #type_name_expr,
@@ -267,9 +267,9 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
         // Determine param type - if has enum_variants, it's an Enum type
         // If marked as string, it's a String type
         let param_type = if attrs.enum_variants.is_some() {
-            quote!(zweidraehte_device::ets::EtsParamType::Enum)
+            quote!(zweidraehte_ets_model::EtsParamType::Enum)
         } else if attrs.string_field {
-            quote!(zweidraehte_device::ets::EtsParamType::String)
+            quote!(zweidraehte_ets_model::EtsParamType::String)
         } else {
             type_info.param_type.clone()
         };
@@ -282,7 +282,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
         let is_text_source = attrs.text_source;
         let type_name_expr = if let Some(ref tn) = attrs.type_name { quote!(Some(#tn)) } else { quote!(None) };
         param_defs.push(quote! {
-            zweidraehte_device::ets::EtsParamDef {
+            zweidraehte_ets_model::EtsParamDef {
                 name: #name_str,
                 display_name: #display_name,
                 suffix: #suffix_expr,
@@ -309,13 +309,13 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
                     let text = &v.text;
                     let value = v.value;
                     quote! {
-                        zweidraehte_device::ets::EtsEnumVariant { text: #text, variant_name: #text, value: #value }
+                        zweidraehte_ets_model::EtsEnumVariant { text: #text, variant_name: #text, value: #value }
                     }
                 })
                 .collect();
 
             enum_variant_consts.push(quote! {
-                const #const_name: &[zweidraehte_device::ets::EtsEnumVariant] = &[
+                const #const_name: &[zweidraehte_ets_model::EtsEnumVariant] = &[
                     #(#variant_defs),*
                 ];
             });
@@ -328,8 +328,8 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
         let default_value_expr = if let Some(val) = attrs.default_value { quote!(Some(#val)) } else { quote!(None) };
 
         param_ext_defs.push(quote! {
-            zweidraehte_device::ets::EtsParamDefExt {
-                base: zweidraehte_device::ets::EtsParamDef {
+            zweidraehte_ets_model::EtsParamDefExt {
+                base: zweidraehte_ets_model::EtsParamDef {
                     name: #name_str,
                     display_name: #display_name,
                     suffix: #suffix_expr,
@@ -357,7 +357,7 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
     } else {
         quote! {
             /// Information about union fields in this struct.
-            pub const ETS_UNIONS: &'static [zweidraehte_device::ets::EtsUnionFieldInfo] = &[
+            pub const ETS_UNIONS: &'static [zweidraehte_ets_model::EtsUnionFieldInfo] = &[
                 #(#union_field_entries),*
             ];
         }
@@ -536,14 +536,14 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
             /// ETS parameter definitions for this struct.
             ///
             /// Contains metadata for each field that can be exported to ETS format.
-            pub const ETS_PARAMS: &'static [zweidraehte_device::ets::EtsParamDef] = &[
+            pub const ETS_PARAMS: &'static [zweidraehte_ets_model::EtsParamDef] = &[
                 #(#param_defs),*
             ];
 
             /// Extended ETS parameter definitions with enum variants.
             ///
             /// Contains full metadata including enum variants for ETS export.
-            pub const ETS_PARAMS_EXT: &'static [zweidraehte_device::ets::EtsParamDefExt] = &[
+            pub const ETS_PARAMS_EXT: &'static [zweidraehte_ets_model::EtsParamDefExt] = &[
                 #(#param_ext_defs),*
             ];
 
@@ -553,8 +553,8 @@ pub(crate) fn derive_ets_params_impl(input: &DeriveInput) -> syn::Result<TokenSt
             #union_info_output
         }
 
-        impl zweidraehte_device::ets::HasModuleParams for #struct_name {
-            const ETS_PARAMS_EXT: &'static [zweidraehte_device::ets::EtsParamDefExt] = #struct_name::ETS_PARAMS_EXT;
+        impl zweidraehte_ets_model::HasModuleParams for #struct_name {
+            const ETS_PARAMS_EXT: &'static [zweidraehte_ets_model::EtsParamDefExt] = #struct_name::ETS_PARAMS_EXT;
         }
 
         #module_helper_impls

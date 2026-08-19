@@ -442,7 +442,7 @@ macro_rules! system_b_standard_stack {
 
         impl $crate::StackDefinition for $stack {
             // ---- device-specific bill of materials -------------------------
-            const DEVICE: &'static $crate::ets::DeviceDescriptor = $device;
+            const DEVICE: &'static $crate::__macro_support::device::DeviceDescriptor = $device;
             const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
             // System B numbers communication objects from 1 — the
             // RealizationType-7 CO table cannot express ASAP 0.

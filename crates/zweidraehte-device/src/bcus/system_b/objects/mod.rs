@@ -44,12 +44,12 @@ use zweidraehte_proto::dpt::{InterfaceObjectType, PDT_Generic05, PDT_UnsignedCha
 use crate::HasSecurityMode;
 use crate::StackDefinition;
 use crate::context::layer::LayerContext;
-use crate::ets::DeviceDescriptor;
 use crate::objects::interface::HasRoutingCount;
 use crate::objects::tables::{
     HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, HasPeiApplication,
 };
 use crate::service::Augment;
+use zweidraehte_proto::device::DeviceDescriptor;
 
 // ============================================================================
 // IO List Constants

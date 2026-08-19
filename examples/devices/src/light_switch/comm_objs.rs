@@ -24,6 +24,7 @@
 use super::params::ButtonConfigDiscriminant;
 use zweidraehte_device::objects::comm::{ComObject, ComObjectStorage};
 use zweidraehte_device::prelude::*;
+use zweidraehte_ets_model::EtsComObjects;
 use zweidraehte_proto::dpt::*;
 
 /// Communication objects for the 2-button light switch.

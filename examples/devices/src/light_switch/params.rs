@@ -18,8 +18,7 @@ use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
-use zweidraehte_device::ets::ets_range_enum;
-use zweidraehte_device::prelude::*;
+use zweidraehte_ets_model::{EtsEnum, ets_params, ets_range_enum, ets_union};
 
 // ============================================================================
 // Simple Enums
@@ -56,6 +55,7 @@ impl DebounceTime {
         }
     }
 
+    #[cfg(feature = "full")]
     pub const fn as_duration(self) -> embassy_time::Duration {
         embassy_time::Duration::from_millis(self.as_ms() as u64)
     }
@@ -92,6 +92,7 @@ impl LongPressTime {
         }
     }
 
+    #[cfg(feature = "full")]
     pub const fn as_duration(self) -> embassy_time::Duration {
         embassy_time::Duration::from_millis(self.as_ms() as u64)
     }
@@ -223,7 +224,7 @@ pub enum ButtonConfig {
 // Object description text fields for each button. These are editable in ETS
 // and appear in the comm object tree via `{{param:default}}` text templates.
 // They have no device memory footprint.
-zweidraehte_device::ets_virtual_params! {
+zweidraehte_ets_model::ets_virtual_params! {
     pub LIGHT_SWITCH_VIRTUAL_PARAMS {
         btn1_description: String(30) => "Object description",
         btn2_description: String(30) => "Object description",

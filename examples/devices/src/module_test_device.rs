@@ -230,6 +230,7 @@ use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use zweidraehte_device::prelude::*;
+use zweidraehte_ets_model::{EtsComObjects, EtsEnum, ets_params, ets_union};
 use zweidraehte_proto::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
 
 use zweidraehte_knxprod::definition::module::ModuleCollection;
@@ -242,7 +243,7 @@ use zweidraehte_knxprod::schema::BaggageDef;
 // ============================================================================
 
 // German translations for the dimmer module device
-zweidraehte_device::ets_translations! {
+zweidraehte_ets_model::ets_translations! {
     pub MODULE_TRANSLATIONS_DE;
 
     "de-DE" {
@@ -279,7 +280,7 @@ zweidraehte_device::ets_translations! {
 }
 
 // English translations (for completeness / as reference)
-zweidraehte_device::ets_translations! {
+zweidraehte_ets_model::ets_translations! {
     pub MODULE_TRANSLATIONS_EN;
 
     "en-US" {
@@ -357,7 +358,7 @@ pub const SERIAL_NUMBER: [u8; 6] = [0x00, 0xFA, 0x10, 0x00, 0x00, 0x01];
 // - Device name for display in ETS
 // - Location/room information
 // - Any text that's only needed in ETS, not on the device
-zweidraehte_device::ets_virtual_params! {
+zweidraehte_ets_model::ets_virtual_params! {
     pub DEVICE_VIRTUAL_PARAMS {
         device_name: String(50) => "Device name" [text_source],
     }

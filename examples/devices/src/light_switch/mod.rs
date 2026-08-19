@@ -28,8 +28,11 @@
 //! }
 //! ```
 
+#[cfg(feature = "full")]
 pub mod app;
+#[cfg(feature = "full")]
 pub mod comm_objs;
+#[cfg(feature = "full")]
 pub mod easter_egg;
 pub mod params;
 
@@ -43,7 +46,7 @@ pub mod translations;
 
 pub use params::*;
 
-use zweidraehte_device::ets::{DeviceDescriptor, MaskVersion};
+use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 // ============================================================================
 // Device Identity

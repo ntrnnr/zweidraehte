@@ -73,7 +73,7 @@ pub(crate) fn field_offset_ident(enum_name: &syn::Ident, variant: &syn::Ident, i
 /// the union's alignment.
 pub(crate) fn data_offset_expr(enum_name: &syn::Ident) -> TokenStream2 {
     let align = align_ident(enum_name);
-    quote! { zweidraehte_device::ets::union_align_up(1, #align) }
+    quote! { zweidraehte_ets_model::union_align_up(1, #align) }
 }
 
 pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
@@ -114,7 +114,7 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
         for field in variant.fields.iter() {
             let ty = &field.ty;
             align_expr = quote! {
-                zweidraehte_device::ets::union_max(#align_expr, core::mem::align_of::<#ty>())
+                zweidraehte_ets_model::union_max(#align_expr, core::mem::align_of::<#ty>())
             };
         }
     }
@@ -153,7 +153,7 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 let data_offset = data_offset_expr(enum_name);
                 quote!(#data_offset)
             } else {
-                quote!(zweidraehte_device::ets::union_align_up(#end_ident, core::mem::align_of::<#ty>()))
+                quote!(zweidraehte_ets_model::union_align_up(#end_ident, core::mem::align_of::<#ty>()))
             };
             layout_consts.push(quote! {
                     #[doc(hidden)]
@@ -173,12 +173,12 @@ pub(crate) fn ets_union_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let total_ident = format_ident!("__ETS_UNION_{}_TOTAL", enum_name);
     let mut widest: TokenStream2 = quote!(1usize);
     for end in &variant_end_idents {
-        widest = quote! { zweidraehte_device::ets::union_max(#widest, #end) };
+        widest = quote! { zweidraehte_ets_model::union_max(#widest, #end) };
     }
     layout_consts.push(quote! {
         #[doc(hidden)]
         #[allow(non_upper_case_globals)]
-        const #total_ident: usize = zweidraehte_device::ets::union_align_up(#widest, #align_ident);
+        const #total_ident: usize = zweidraehte_ets_model::union_align_up(#widest, #align_ident);
     });
 
     // ========================================================================

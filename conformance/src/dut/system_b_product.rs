@@ -12,7 +12,7 @@
 //! into the mask's own Load template at `LdCtrlMerge` points, rather
 //! than one self-contained `ProductProcedure`.
 
-use zweidraehte_device::ets::{EtsCommObjectDef, EtsCommObjectRefDef};
+use zweidraehte_ets_model::{EtsCommObjectDef, EtsCommObjectRefDef};
 use zweidraehte_knxprod::{ApplicationProgramDef, KnxprodBuilder, SingleDeviceDef};
 
 use super::systemb_stack::device_info;

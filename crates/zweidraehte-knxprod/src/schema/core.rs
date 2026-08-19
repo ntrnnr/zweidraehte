@@ -10,7 +10,7 @@ use super::static_section::StaticSection;
 // Re-export MaskFamily from the stack crate. The enum and
 // `from_mask_version()` live in `zweidraehte_proto::messages::knx`;
 // generation-specific behaviour is added via `MaskFamilyExt` below.
-pub use zweidraehte_device::ets::MaskFamily;
+pub use zweidraehte_proto::device::MaskFamily;
 
 // ============================================================================
 // Mask Family — MTXML Generation Extensions

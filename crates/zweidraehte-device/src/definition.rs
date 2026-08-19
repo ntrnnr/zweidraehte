@@ -10,12 +10,13 @@ use const_default::ConstDefault;
 use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
+use zweidraehte_proto::device::DeviceDescriptor;
 
 use crate::{
     LayerStackBuilder, config,
     context::StackContext,
     context::layer::LayerContext,
-    ets, layers,
+    layers,
     layers::transport::TlStyle,
     memory::MemoryMap,
     objects::{
@@ -69,7 +70,7 @@ impl ConstDefault for NoParams {
 
 impl NoParams {
     /// Empty parameter list — nothing is ETS-visible.
-    pub const ETS_PARAMS_EXT: &'static [crate::ets::EtsParamDefExt] = &[];
+    pub const ETS_PARAMS_EXT: &'static [zweidraehte_ets_model::EtsParamDefExt] = &[];
 }
 
 pub trait StackDefinition: Copy + 'static {
@@ -83,7 +84,7 @@ pub trait StackDefinition: Copy + 'static {
     /// # Example
     ///
     /// ```rust,ignore
-    /// use zweidraehte_device::ets::DeviceDescriptor;
+    /// use zweidraehte_proto::device::DeviceDescriptor;
     ///
     /// const MY_DEVICE: DeviceDescriptor = DeviceDescriptor {
     ///     mask_version: MaskVersion::SystemBTp1,
@@ -108,7 +109,7 @@ pub trait StackDefinition: Copy + 'static {
     /// The serial number is NOT part of the device descriptor because it's unique
     /// per physical device instance (factory-programmed). Serial number should be
     /// stored in runtime state and read from persistent storage or hardware.
-    const DEVICE: &'static ets::DeviceDescriptor;
+    const DEVICE: &'static DeviceDescriptor;
 
     /// Maximum APDU length for compile-time buffer allocation.
     ///

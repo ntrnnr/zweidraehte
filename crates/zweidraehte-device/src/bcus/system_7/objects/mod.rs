@@ -32,7 +32,6 @@ use crate::{
     HasPersistence, HasSecurityMode, StackDefinition, StackState,
     context::layer::LayerContext,
     device_model::DeviceModelNotifier,
-    ets::DeviceDescriptor,
     objects::interface::{
         AddressTableSpec, AssociationTableSpec, FullPropertyReadRequest, FullPropertyWriteRequest,
         FunctionPropertyRequest, FunctionPropertyResult, HasDeviceObject, HasRoutingCount, InterfaceObject,
@@ -46,6 +45,7 @@ use crate::{
     service::{Augment, ServiceCtx},
 };
 use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::device::DeviceDescriptor;
 use zweidraehte_proto::dpt::{
     DeviceControl, InterfaceObjectType, PDT_Generic05, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode, RoutingCount,
 };

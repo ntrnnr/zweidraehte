@@ -61,6 +61,7 @@ impl core::fmt::Display for BeU16 {
     }
 }
 use zweidraehte_device::prelude::*;
+use zweidraehte_ets_model::{EtsComObjects, EtsEnum, ets_params, ets_union};
 use zweidraehte_proto::dpt::*;
 
 // ============================================================================

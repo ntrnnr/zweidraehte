@@ -1,0 +1,9 @@
+[package]
+name = "zweidraehte-ets-model"
+version = "0.1.0"
+edition = "2024"
+description = "ETS data model: parameter/comm-object metadata types and the ets proc-macro front door"
+
+[dependencies]
+zweidraehte-proto = { path = "../zweidraehte-proto", default-features = false }
+zweidraehte-ets = { path = "../zweidraehte-ets" }

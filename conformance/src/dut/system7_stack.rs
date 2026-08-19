@@ -69,8 +69,8 @@ use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO,
 // - GO6 (ASAP 7): 1-bit object for transport layer 2.1
 
 pub mod comm_objs {
-    use zweidraehte_device::ets::EtsComObjects;
     use zweidraehte_device::objects::comm::ComObject;
+    use zweidraehte_ets_model::EtsComObjects;
     use zweidraehte_proto::dpt::{DPT_Switch, DPT_Value_1_Ucount};
 
     // `bus_hook` keeps the derive-generated `ComObjects` dispatch but lets

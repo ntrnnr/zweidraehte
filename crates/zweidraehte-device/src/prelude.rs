@@ -28,7 +28,7 @@ pub use crate::layers::transport::cemi::{
 pub use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 // Device identity and ETS derive macros
-pub use crate::ets::{DeviceDescriptor, EtsComObjects, EtsEnum, MaskVersion, ets_params, ets_union};
+pub use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 
 // Communication objects
 pub use crate::objects::comm::{ComObject, ComObjectEvent, ComObjectIndex, ComObjectStatus, ComObjects};

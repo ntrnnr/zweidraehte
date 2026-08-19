@@ -2825,6 +2825,7 @@ dependencies = [
  "heapless 0.9.2",
  "panic-probe",
  "stm32-metapac",
+ "zweidraehte-devices",
  "zweidraehte-microdevice",
  "zweidraehte-proto",
 ]
@@ -2853,6 +2854,22 @@ dependencies = [
  "zweidraehte-device",
  "zweidraehte-devices",
  "zweidraehte-platform",
+]
+
+[[package]]
+name = "stm32g0_tp1_micro_system7_light_switch"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "heapless 0.9.2",
+ "panic-probe",
+ "stm32-metapac",
+ "zweidraehte-devices",
+ "zweidraehte-microdevice",
+ "zweidraehte-proto",
 ]
 
 [[package]]
@@ -3448,6 +3465,7 @@ dependencies = [
  "zerocopy",
  "zweidraehte-device-macros",
  "zweidraehte-ets",
+ "zweidraehte-ets-model",
  "zweidraehte-platform",
  "zweidraehte-proto",
  "zweidraehte-util",
@@ -3471,6 +3489,8 @@ dependencies = [
  "serde",
  "zerocopy",
  "zweidraehte-device",
+ "zweidraehte-ets-model",
+ "zweidraehte-microdevice",
  "zweidraehte-proto",
  "zweidraehte-util",
 ]
@@ -3482,6 +3502,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.116",
+]
+
+[[package]]
+name = "zweidraehte-ets-model"
+version = "0.1.0"
+dependencies = [
+ "zweidraehte-ets",
+ "zweidraehte-proto",
 ]
 
 [[package]]

@@ -6444,6 +6444,8 @@ dependencies = [
  "zerocopy",
  "zweidraehte-client",
  "zweidraehte-device",
+ "zweidraehte-devices",
+ "zweidraehte-ets-model",
  "zweidraehte-knxprod",
  "zweidraehte-microdevice",
  "zweidraehte-platform",
@@ -6479,6 +6481,7 @@ dependencies = [
  "zerocopy",
  "zweidraehte-device-macros",
  "zweidraehte-ets",
+ "zweidraehte-ets-model",
  "zweidraehte-platform",
  "zweidraehte-proto",
  "zweidraehte-util",
@@ -6502,7 +6505,9 @@ dependencies = [
  "serde",
  "zerocopy",
  "zweidraehte-device",
+ "zweidraehte-ets-model",
  "zweidraehte-knxprod",
+ "zweidraehte-microdevice",
  "zweidraehte-proto",
  "zweidraehte-util",
 ]
@@ -6514,6 +6519,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.116",
+]
+
+[[package]]
+name = "zweidraehte-ets-model"
+version = "0.1.0"
+dependencies = [
+ "zweidraehte-ets",
+ "zweidraehte-proto",
 ]
 
 [[package]]
@@ -6557,7 +6570,7 @@ dependencies = [
  "uuid",
  "zerocopy",
  "zip",
- "zweidraehte-device",
+ "zweidraehte-ets-model",
  "zweidraehte-proto",
 ]
 

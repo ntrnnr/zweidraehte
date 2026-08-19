@@ -208,7 +208,7 @@ pub(crate) fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_
         }
 
         variant_entries.push(quote! {
-            zweidraehte_device::ets::EtsEnumVariant { text: #display_text, variant_name: #variant_name_str, value: #value }
+            zweidraehte_ets_model::EtsEnumVariant { text: #display_text, variant_name: #variant_name_str, value: #value }
         });
     }
 
@@ -244,7 +244,7 @@ pub(crate) fn generate_range_enum(input: EtsRangeEnumInput) -> syn::Result<proc_
             pub const ETS_SIZE_BITS: u16 = #size_bits;
 
             /// ETS variant definitions for parameter generation
-            pub const ETS_VARIANTS: &'static [zweidraehte_device::ets::EtsEnumVariant] = &[
+            pub const ETS_VARIANTS: &'static [zweidraehte_ets_model::EtsEnumVariant] = &[
                 #(#variant_entries),*
             ];
         }

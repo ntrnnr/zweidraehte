@@ -1,55 +1,20 @@
-//! ETS Export functionality for generating KNX product definitions.
+//! The ETS data model: the metadata vocabulary describing a device's
+//! parameters, communication objects and translations for product
+//! generation — and the single front door to the `zweidraehte-ets`
+//! proc macros that emit it.
 //!
-//! This module provides types and traits for exporting device configuration
-//! to formats compatible with ETS (Engineering Tool Software) and the KNX
-//! Manufacturing Tool.
+//! This crate is deliberately light: it depends on `zweidraehte-proto`
+//! only, so device definitions, the product generator
+//! (`zweidraehte-knxprod`) and firmware can carry the metadata without
+//! dragging the device stack (or its executor) into their dependency
+//! graphs. The device *runtime* types the `EtsComObjects` derive also
+//! wires up live in `zweidraehte-device` — a struct deriving it needs
+//! that crate; everything else here stands alone.
 //!
-//! # Overview
-//!
-//! To create a product definition for ETS, you need:
-//!
-//! 1. **Device Descriptor** - Identifies the firmware/hardware platform (compile-time)
-//! 2. **Parameters** - User-configurable application parameters
-//! 3. **Communication Objects** - Group objects with DPT info
-//! 4. **Memory Layout** - Where tables and parameters are located
-//!
-//! Note: Per-device instance data (serial number, individual address) is stored
-//! in runtime state, not the device descriptor.
-//!
-//! # Usage
-//!
-//! The [`DeviceDescriptor`] struct consolidates all firmware-level metadata:
+//! # Defining parameters
 //!
 //! ```rust,ignore
-//! use zweidraehte_device::ets::DeviceDescriptor;
-//!
-//! const DEVICE: DeviceDescriptor = DeviceDescriptor {
-//!     // Hardware/firmware identification
-//!     mask_version: MaskVersion::SystemBTp1,
-//!     manufacturer_id: 0x00FA,
-//!     hardware_type: [0x00, 0x00, 0x00, 0x00, 0x00, 0x01],
-//!
-//!     // Application identification
-//!     application_id: 0xF023,
-//!     application_version: 0x01,
-//!
-//!     // Table capacities
-//!     max_address_table_entries: 64,
-//!     max_association_table_entries: 64,
-//!     max_com_objects: 32,
-//!
-//!     // PEI type (0 = no PEI)
-//!     pei_type: 0,
-//! };
-//! ```
-//!
-//! # Derive Macro for Parameters
-//!
-//! Use the `#[ets_params]` macro to automatically generate ETS parameter
-//! definitions from a struct:
-//!
-//! ```rust,ignore
-//! use zweidraehte_device::ets::EtsParams;
+//! use zweidraehte_ets_model::{ets_params, ets_union, EtsEnum};
 //!
 //! #[ets_params]
 //! pub struct MyParams {
@@ -60,24 +25,23 @@
 //!     /// Temperature setpoint
 //!     #[ets(display = "Setpoint")]
 //!     pub setpoint: u16,
-//!
-//!     /// Enable feature
-//!     #[ets(display = "Feature Enabled")]
-//!     pub enabled: bool,
 //! }
 //!
-//! // Access generated definitions:
-//! let params = MyParams::ETS_PARAMS;
+//! // Access the generated definitions:
+//! let params = MyParams::ETS_PARAMS_EXT;
 //! ```
+//!
+//! Device identification (`DeviceDescriptor`, `MaskVersion`) is
+//! protocol vocabulary and lives in `zweidraehte_proto::device`.
 
-// Re-export the derive macros
+#![no_std]
+
+// The proc macros, re-exported so a definition author depends on one
+// crate: the macros emit paths into this crate's types.
 pub use zweidraehte_ets::EtsComObjects;
 pub use zweidraehte_ets::EtsEnum;
 pub use zweidraehte_ets::ets_range_enum;
 pub use zweidraehte_ets::{ets_params, ets_union};
-
-// Re-export protocol-level device identification types from proto
-pub use zweidraehte_proto::device::{DeviceDescriptor, MaskFamily, MaskVersion};
 
 // ============================================================================
 // `#[ets(no_memory)]` — rejected combinations
@@ -96,7 +60,7 @@ pub use zweidraehte_proto::device::{DeviceDescriptor, MaskFamily, MaskVersion};
 ///
 /// ```compile_fail
 /// use serde::{Deserialize, Serialize};
-/// use zweidraehte_device::ets::{ets_params, ets_union};
+/// use zweidraehte_ets_model::{ets_params, ets_union};
 ///
 /// #[ets_union]
 /// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -125,7 +89,7 @@ struct NoMemoryOnUnionIsRejected;
 ///
 /// ```compile_fail
 /// use serde::{Deserialize, Serialize};
-/// use zweidraehte_device::ets::ets_params;
+/// use zweidraehte_ets_model::ets_params;
 ///
 /// #[ets_params]
 /// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -145,7 +109,7 @@ struct NoMemoryWithSkipIsRejected;
 ///
 /// ```compile_fail
 /// use serde::{Deserialize, Serialize};
-/// use zweidraehte_device::ets::ets_params;
+/// use zweidraehte_ets_model::ets_params;
 ///
 /// #[ets_params]
 /// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -169,7 +133,7 @@ struct NoMemoryOnModuleIsRejected;
 ///
 /// ```compile_fail
 /// use serde::{Deserialize, Serialize};
-/// use zweidraehte_device::ets::ets_params;
+/// use zweidraehte_ets_model::ets_params;
 ///
 /// #[ets_params]
 /// #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -440,7 +404,7 @@ pub struct EtsUnionInfo {
 /// # Example
 ///
 /// ```rust,ignore
-/// use zweidraehte_device::ets::{EtsUnionType, ets_union};
+/// use zweidraehte_ets_model::{EtsUnionType, ets_union};
 ///
 /// #[ets_union]
 /// #[repr(C, u8)]
@@ -469,7 +433,7 @@ pub trait EtsUnionType {
 /// # Example
 ///
 /// ```rust,ignore
-/// use zweidraehte_device::ets::{EtsEnum, EtsEnumType};
+/// use zweidraehte_ets_model::{EtsEnum, EtsEnumType};
 ///
 /// #[derive(EtsEnum)]
 /// #[repr(u8)]
@@ -751,7 +715,7 @@ impl HasModuleCommObjects for () {
 /// # Syntax
 ///
 /// ```rust,ignore
-/// use zweidraehte_device::ets_virtual_params;
+/// use zweidraehte_ets_model::ets_virtual_params;
 ///
 /// ets_virtual_params! {
 ///     pub DIMMER_CHANNEL_VIRTUAL_PARAMS {
@@ -796,17 +760,17 @@ macro_rules! ets_virtual_params {
         }
     ) => {
         $(#[$attr])*
-        $vis const $name: &[$crate::ets::EtsParamDefExt] = &[
+        $vis const $name: &[$crate::EtsParamDefExt] = &[
             $(
-                $crate::ets::EtsParamDefExt {
-                    base: $crate::ets::EtsParamDef {
+                $crate::EtsParamDefExt {
+                    base: $crate::EtsParamDef {
                         name: stringify!($param_name),
                         display_name: $display,
                         suffix: None,
                         offset: 0,
                         size_bits: ($size * 8) as u16,
                         bit_offset: 0,
-                        param_type: $crate::ets::EtsParamType::String,
+                        param_type: $crate::EtsParamType::String,
                         hidden: false,
                         no_memory: true,
                         type_name: None,
@@ -886,7 +850,7 @@ pub struct EtsTranslation {
 /// # Syntax
 ///
 /// ```rust,ignore
-/// use zweidraehte_device::ets_translations;
+/// use zweidraehte_ets_model::ets_translations;
 ///
 /// ets_translations! {
 ///     pub DEVICE_TRANSLATIONS;
@@ -957,7 +921,7 @@ macro_rules! __ets_translations_accumulate {
         @name [$name:ident]
     ) => {
         $(#[$attr])*
-        $vis const $name: &[$crate::ets::EtsTranslation] = &[
+        $vis const $name: &[$crate::EtsTranslation] = &[
             $($acc)*
         ];
     };
@@ -1018,10 +982,10 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!(stringify!($enum_type), "::", stringify!($variant)),
-                    attribute: $crate::ets::TranslationAttribute::Text,
+                    attribute: $crate::TranslationAttribute::Text,
                     text: $text,
                 },
             ]
@@ -1047,10 +1011,10 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("obj::", stringify!($obj_name)),
-                    attribute: $crate::ets::TranslationAttribute::Text,
+                    attribute: $crate::TranslationAttribute::Text,
                     text: $text,
                 },
             ]
@@ -1076,16 +1040,16 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("obj::", stringify!($obj_name)),
-                    attribute: $crate::ets::TranslationAttribute::Text,
+                    attribute: $crate::TranslationAttribute::Text,
                     text: $text,
                 },
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("obj::", stringify!($obj_name)),
-                    attribute: $crate::ets::TranslationAttribute::FunctionText,
+                    attribute: $crate::TranslationAttribute::FunctionText,
                     text: $func,
                 },
             ]
@@ -1111,10 +1075,10 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("param::", stringify!($param_name)),
-                    attribute: $crate::ets::TranslationAttribute::Text,
+                    attribute: $crate::TranslationAttribute::Text,
                     text: $text,
                 },
             ]
@@ -1140,10 +1104,10 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("param::", stringify!($param_name)),
-                    attribute: $crate::ets::TranslationAttribute::SuffixText,
+                    attribute: $crate::TranslationAttribute::SuffixText,
                     text: $text,
                 },
             ]
@@ -1173,10 +1137,10 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("obj_ref::", stringify!($obj_name), "::", stringify!($variant)),
-                    attribute: $crate::ets::TranslationAttribute::Text,
+                    attribute: $crate::TranslationAttribute::Text,
                     text: $text,
                 },
             ]
@@ -1202,16 +1166,16 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("obj_ref::", stringify!($obj_name), "::", stringify!($variant)),
-                    attribute: $crate::ets::TranslationAttribute::Text,
+                    attribute: $crate::TranslationAttribute::Text,
                     text: $text,
                 },
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("obj_ref::", stringify!($obj_name), "::", stringify!($variant)),
-                    attribute: $crate::ets::TranslationAttribute::FunctionText,
+                    attribute: $crate::TranslationAttribute::FunctionText,
                     text: $func,
                 },
             ]
@@ -1237,10 +1201,10 @@ macro_rules! __ets_translations_items {
         $crate::__ets_translations_items!(
             @acc [
                 $($acc)*
-                $crate::ets::EtsTranslation {
+                $crate::EtsTranslation {
                     language: $lang,
                     ref_path: concat!("block::", $block_name),
-                    attribute: $crate::ets::TranslationAttribute::Text,
+                    attribute: $crate::TranslationAttribute::Text,
                     text: $text,
                 },
             ]

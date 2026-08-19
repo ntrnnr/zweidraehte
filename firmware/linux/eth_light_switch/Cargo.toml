@@ -27,5 +27,5 @@ log = "0.4"
 # so the demo feature is not needed — take it default-features = false.
 zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["linux", "knxip", "log"] }
 zweidraehte-platform = { path = "../../../crates/zweidraehte-platform", features = ["log", "linux"] }
-zweidraehte-devices = { path = "../../../examples/devices", default-features = false }
+zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["full"] }
 zweidraehte-support = { path = "../../../examples/support" }

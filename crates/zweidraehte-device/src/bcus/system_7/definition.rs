@@ -202,7 +202,7 @@ macro_rules! system_7_standard_stack {
 
         impl $crate::StackDefinition for $stack {
             // ---- device-specific bill of materials -------------------------
-            const DEVICE: &'static $crate::ets::DeviceDescriptor = $device;
+            const DEVICE: &'static $crate::__macro_support::device::DeviceDescriptor = $device;
             const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
             // System 7 numbers communication objects from 0 (M112 table,
             // ASAP 0 valid).

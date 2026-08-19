@@ -511,7 +511,7 @@ impl MtxmlGenerator {
 
         // Helper to check if a variant matches the translation ref_path variant name.
         // Checks both the Rust variant name and the display text.
-        let variant_matches = |v: &zweidraehte_device::ets::EtsEnumVariant| -> bool {
+        let variant_matches = |v: &zweidraehte_ets_model::EtsEnumVariant| -> bool {
             // Exact match on Rust variant name (case-insensitive)
             if v.variant_name.to_lowercase() == variant_lower {
                 return true;
@@ -529,7 +529,7 @@ impl MtxmlGenerator {
         };
 
         // Collect all enum variants from all sources
-        let mut all_variants: Vec<(&Option<&str>, &[zweidraehte_device::ets::EtsEnumVariant])> = Vec::new();
+        let mut all_variants: Vec<(&Option<&str>, &[zweidraehte_ets_model::EtsEnumVariant])> = Vec::new();
 
         // Device-level params
         for param in config.all_params() {
@@ -633,7 +633,7 @@ impl MtxmlGenerator {
 
         // Helper: given a list of enum variants and the ParameterType ID, add
         // each variant's Enumeration ID to the map.
-        let mut collect = |variants: &[zweidraehte_device::ets::EtsEnumVariant], type_id: &str| {
+        let mut collect = |variants: &[zweidraehte_ets_model::EtsEnumVariant], type_id: &str| {
             for v in variants {
                 let enum_id = format!("{}_EN-{}", type_id, v.value);
                 map.entry((v.variant_name.to_string(), v.value)).or_default().push(enum_id);
@@ -923,11 +923,11 @@ impl MtxmlGenerator {
             let regular_params = def.params.unwrap_or(&[]);
 
             // First check virtual params for text_source
-            let text_param_num = zweidraehte_device::ets::EtsParamDefExt::find_text_source_index(virtual_params)
+            let text_param_num = zweidraehte_ets_model::EtsParamDefExt::find_text_source_index(virtual_params)
                 .map(|idx| idx + 1) // 1-based param number
                 .or_else(|| {
                     // Then check regular params (offset by virtual_params length)
-                    zweidraehte_device::ets::EtsParamDefExt::find_text_source_index(regular_params)
+                    zweidraehte_ets_model::EtsParamDefExt::find_text_source_index(regular_params)
                         .map(|idx| virtual_params.len() + idx + 1)
                 });
 
@@ -1021,7 +1021,7 @@ impl MtxmlGenerator {
             // Get default value - use empty string for text parameters
             let default_value: String = if let Some(val) = param_ext.default_value {
                 val.to_string()
-            } else if param.param_type == zweidraehte_device::ets::EtsParamType::String {
+            } else if param.param_type == zweidraehte_ets_model::EtsParamType::String {
                 String::new() // Empty string for text parameters
             } else {
                 "0".to_string()
@@ -1736,7 +1736,7 @@ impl MtxmlGenerator {
     }
 
     /// Generate a type name from a parameter definition.
-    fn param_type_name(param: &zweidraehte_device::ets::EtsParamDef) -> String {
+    fn param_type_name(param: &zweidraehte_ets_model::EtsParamDef) -> String {
         // Use explicit type_name if provided
         if let Some(type_name) = param.type_name {
             return type_name.to_string();
@@ -1772,9 +1772,9 @@ impl MtxmlGenerator {
     /// This is necessary because different variants (e.g., ForcibleControl vs Switch)
     /// may have the same param name (e.g., "value") but different enum options.
     fn union_variant_param_type_name(
-        param: &zweidraehte_device::ets::EtsParamDef,
+        param: &zweidraehte_ets_model::EtsParamDef,
         variant_name: &str,
-        enum_variants: Option<&[zweidraehte_device::ets::EtsEnumVariant]>,
+        enum_variants: Option<&[zweidraehte_ets_model::EtsEnumVariant]>,
     ) -> String {
         // Use explicit type_name if provided
         if let Some(type_name) = param.type_name {
@@ -1804,8 +1804,8 @@ impl MtxmlGenerator {
     /// 63, since `1i64 << size_bits` would overflow or produce an incorrect max
     /// value in those cases.
     fn build_type_def(
-        param: &zweidraehte_device::ets::EtsParamDef,
-        enum_variants: Option<&[zweidraehte_device::ets::EtsEnumVariant]>,
+        param: &zweidraehte_ets_model::EtsParamDef,
+        enum_variants: Option<&[zweidraehte_ets_model::EtsEnumVariant]>,
         type_id: &str,
     ) -> Result<ParameterTypeDef, GeneratorError> {
         match param.param_type {

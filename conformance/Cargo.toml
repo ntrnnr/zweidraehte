@@ -33,6 +33,7 @@ default = ["dut"]
 dut = [
     "dep:zweidraehte-device",
     "dep:zweidraehte-devices",
+    "dep:zweidraehte-ets-model",
     "dep:zweidraehte-microdevice",
     "dep:zweidraehte-knxprod",
     "dep:base64",
@@ -94,6 +95,7 @@ zweidraehte-microdevice = { path = "../crates/zweidraehte-microdevice", features
 # dut::system_b_product.
 zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod", optional = true }
 zweidraehte-devices = { path = "../examples/devices", features = ["demos", "micro"], optional = true }
+zweidraehte-ets-model = { path = "../crates/zweidraehte-ets-model", optional = true }
 # The BCU2 product generator base64-encodes the DUT's boot EEPROM image
 # into the product file's default <Data>.
 base64 = { workspace = true, optional = true }
