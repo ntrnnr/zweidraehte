@@ -3,7 +3,7 @@
 //! The stack core (runloop, group communication, transport layer,
 //! memory-service dispatch, authorization flow) is generic over
 //! [`MicroDeviceFamily`]; the family owns the fixed memory map, the
-//! table wire codings, the load-state-machine path, the interface
+//! table wire codings, the load and run state behavior, the interface
 //! object roster, and the device descriptor. The instances live in
 //! [`crate::families`]: BCU2 (masks 0020h/0021h/0025h), micro-System-7
 //! (RT8/M112 tables, memory-mapped load controls, 16 authorization
@@ -27,22 +27,6 @@ use crate::management::{ManagementState, ServiceResult};
 /// runtime state or dynamic dispatch.
 pub trait MemoryAccessPolicy: 'static {
     const REGIONS: &'static [MemoryRegion];
-}
-
-/// How load-control records reach the device's load state machines.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LsmPath {
-    /// Records are written to `PID_LOAD_STATE_CONTROL` on the table /
-    /// application interface objects (BCU2, System B). `obj_base` is
-    /// the interface object index of machine 1 (the address table).
-    Property { obj_base: u8 },
-    /// Records are written to a memory-mapped load-control window and
-    /// the state is read back from status bytes (System 7, BIM M112).
-    MemoryMapped { control_addr: u16, status_base: u16 },
-    /// The family has no load state machines at all: a download is a
-    /// plain `A_Memory_Write` sequence with client-side read-back
-    /// (BCU1).
-    None,
 }
 
 /// The state that backs one property in the generic management server.
@@ -70,7 +54,7 @@ pub enum PropertyBacking {
     OrderInfo,
     /// Boot identity hardware type.
     HardwareType,
-    /// The family's maximum APDU length.
+    /// The stack's fixed TP1 standard-frame APDU limit.
     MaxApduLength,
     /// One of the family's load state machines.
     LoadState,
@@ -168,10 +152,6 @@ pub trait MicroDeviceFamily: 'static {
     /// exclusively connection-oriented; System 7 also answers
     /// connectionless property and descriptor reads.
     const CONNECTIONLESS_MANAGEMENT: bool;
-    /// Maximum APDU length. BCU2 has no MaxApduLength resource, so the
-    /// spec default of 15 octets applies.
-    const MAX_APDU: usize;
-
     // ── Memory windows ───────────────────────────────────────────────
 
     /// KNX address of EEPROM offset 0.
@@ -246,12 +226,6 @@ pub trait MicroDeviceFamily: 'static {
 
     // ── Management model ─────────────────────────────────────────────
 
-    /// How load-control records reach the load state machines. The
-    /// property path (`PID_LOAD_STATE_CONTROL` on the objects from
-    /// `LSM_OBJ_BASE`) works on every family; `MemoryMapped` says a
-    /// memory window *additionally* exists, which the family serves
-    /// through its memory intercept hooks.
-    const LSM_PATH: LsmPath;
     /// Interface object index of machine 0 (the address table).
     const LSM_OBJ_BASE: u8;
     /// Number of load state machines (BCU2: ADT, AST, application;

@@ -1,5 +1,5 @@
 //! The BCU-era management surface: memory services over the flat
-//! image, the four-object property server, the property-path load
+//! image, the family-defined property server, the property-path load
 //! state machines, authorization, device descriptor, and restart.
 //!
 //! Everything here answers exactly the request sequence a management
@@ -12,6 +12,7 @@
 
 use heapless::Vec;
 use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, LoadState};
 use zweidraehte_proto::pid;
@@ -19,22 +20,24 @@ use zweidraehte_proto::properties::PropertyDescriptionResponse;
 
 use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, SYSTEM_STATUS_ADDR};
 use crate::family::{MicroDeviceFamily, PropertyBacking};
-use crate::frame::ApciCode;
+use crate::frame::{ApciCode, MAX_APDU_PAYLOAD_LENGTH};
+
+const MAX_MEMORY_DATA_LENGTH: u8 = (MAX_APDU_PAYLOAD_LENGTH - 2) as u8;
 
 /// One reply APDU. `small6` rides in the APCI low octet for the short
 /// services; the payload follows.
 pub struct Reply {
     pub apci: ApciCode,
     pub small6: u8,
-    pub payload: Vec<u8, 14>,
+    pub payload: Vec<u8, MAX_APDU_PAYLOAD_LENGTH>,
 }
 
 impl Reply {
     pub(crate) fn new(apci: ApciCode, small6: u8, payload: &[u8]) -> Self {
         let mut p = Vec::new();
         // Payloads are built in this module and never exceed the
-        // 15-octet APDU (1 APCI octet + 14 payload octets).
-        p.extend_from_slice(payload).expect("management replies fit the BCU2 APDU");
+        // Standard TP1 APDU (1 APCI octet + the remaining payload).
+        p.extend_from_slice(payload).expect("management reply fits the TP1 APDU");
         Self { apci, small6, payload: p }
     }
 }
@@ -222,7 +225,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     }
 
     fn memory_response(address: &[u8], count: u8, bytes: &[u8]) -> ServiceResult {
-        let mut data: Vec<u8, 14> = Vec::new();
+        let mut data: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
         let _ = data.extend_from_slice(address);
         let _ = data.extend_from_slice(bytes);
         ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, count, &data))
@@ -233,10 +236,10 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             return ServiceResult::None;
         }
         let addr = u16::from_be_bytes([payload[0], payload[1]]);
-        // The 15-octet APDU caps a response at 12 data bytes. KNX error
+        // The standard TP1 APDU caps a response at 12 data bytes. KNX error
         // handling rejects an oversized request with count zero; silently
         // truncating would claim success for a different operation.
-        if count > 12
+        if count > MAX_MEMORY_DATA_LENGTH
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
                 addr,
@@ -248,7 +251,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         {
             return Self::memory_response(payload, 0, &[]);
         }
-        let mut data: Vec<u8, 14> = Vec::new();
+        let mut data: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
         for i in 0..count {
             let _ = data.push(self.mem_read_byte(addr.wrapping_add(u16::from(i))));
         }
@@ -341,7 +344,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         let Some((obj, prop_id, count, start)) = parse_property_header(payload) else {
             return ServiceResult::None;
         };
-        let mut reply: Vec<u8, 14> = Vec::new();
+        let mut reply: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
         let _ = reply.extend_from_slice(&payload[..4]);
         match self.property_read(obj, prop_id, count, start, access) {
             Some(data) => {
@@ -363,7 +366,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         };
         let data = &payload[4..];
         let accepted = self.property_write(obj, prop_id, count, start, data, access);
-        let mut reply: Vec<u8, 14> = Vec::new();
+        let mut reply: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
         let _ = reply.extend_from_slice(&payload[..4]);
         if accepted {
             // Positive confirmation carries the property's current
@@ -424,7 +427,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 let _ = v.extend_from_slice(&self.identity.hardware_type);
             }
             PropertyBacking::MaxApduLength => {
-                let _ = v.extend_from_slice(&(F::MAX_APDU as u16).to_be_bytes());
+                let _ = v.extend_from_slice(&MAX_APDU_LENGTH_TP1_STANDARD.to_be_bytes());
             }
             PropertyBacking::LoadState => {
                 let machine = self.lsm_index(obj)?;

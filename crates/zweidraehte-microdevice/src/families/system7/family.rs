@@ -12,7 +12,7 @@ use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
-use crate::family::{LsmPath, MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
+use crate::family::{MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::management::{ManagementState, dispatch_lsm_event};
 
 /// System 7 / BIM M112, TP1, mask version 0705h.
@@ -116,7 +116,6 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     const TL_STYLE: TlStyle = TlStyle::Style3;
     const AUTH_LEVELS: usize = 16;
     const CONNECTIONLESS_MANAGEMENT: bool = true;
-    const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = offsets::ADT_ADDR;
     const EEPROM_SIZE: usize = EEPROM_LEN;
@@ -162,8 +161,6 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     // Machines 1..=4 (ADT, AST, App, App2) answer on interface objects
     // 1..=4 through PID_LOAD_STATE_CONTROL — what ETS drives — and
     // additionally through the memory window at 0104h.
-    const LSM_PATH: LsmPath =
-        LsmPath::MemoryMapped { control_addr: offsets::LOAD_CONTROL_ADDR, status_base: offsets::LOAD_STATUS_ADDR };
     const LSM_OBJ_BASE: u8 = 1;
     const LSM_COUNT: usize = 4;
     const OBJECT_COUNT: u8 = 5;

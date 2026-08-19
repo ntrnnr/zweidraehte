@@ -4,7 +4,7 @@ use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
-use crate::family::{LsmPath, MicroDeviceFamily};
+use crate::family::MicroDeviceFamily;
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
@@ -39,7 +39,6 @@ impl MicroDeviceFamily for Bcu1Family {
     /// off entirely.
     const AUTH_LEVELS: usize = 0;
     const CONNECTIONLESS_MANAGEMENT: bool = false;
-    const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = 0x0100;
     const EEPROM_SIZE: usize = BCU1_EEPROM_SIZE;
@@ -86,7 +85,6 @@ impl MicroDeviceFamily for Bcu1Family {
     // No load state machines and no interface objects: the management
     // surface is memory access, the device descriptor, restart, and
     // A_ADC_Read — nothing else.
-    const LSM_PATH: LsmPath = LsmPath::None;
     const LSM_OBJ_BASE: u8 = 0;
     const LSM_COUNT: usize = 0;
     const OBJECT_COUNT: u8 = 0;

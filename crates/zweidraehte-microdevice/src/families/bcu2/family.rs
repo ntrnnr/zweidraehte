@@ -12,7 +12,7 @@ use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::device::DeviceIdentity;
-use crate::family::{LsmPath, MicroDeviceFamily, PropertyBacking, PropertySpec};
+use crate::family::{MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
@@ -181,7 +181,6 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     const TL_STYLE: TlStyle = TlStyle::Style1;
     const AUTH_LEVELS: usize = 4;
     const CONNECTIONLESS_MANAGEMENT: bool = false;
-    const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = 0x0100;
     const EEPROM_SIZE: usize = BCU2_EEPROM_SIZE;
@@ -223,7 +222,6 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
 
     // Machines 1..=3 (ADT, AST, application) live behind
     // PID_LOAD_STATE_CONTROL on interface objects 1..=3.
-    const LSM_PATH: LsmPath = LsmPath::Property { obj_base: 1 };
     const LSM_OBJ_BASE: u8 = 1;
     const LSM_COUNT: usize = 3;
     const OBJECT_COUNT: u8 = 4;

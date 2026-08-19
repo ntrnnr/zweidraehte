@@ -1,5 +1,5 @@
-//! Ultra-lightweight, **no-async** KNX device stack for the BCU-era
-//! management models, starting with BCU2 (mask 0020h).
+//! Ultra-lightweight, **no-async** KNX device stack for fixed-map TP1
+//! BCU-era management models, starting with BCU2 (mask 0020h).
 //!
 //! # Why a second device stack
 //!
@@ -15,11 +15,11 @@
 //!
 //! There is no executor. The application owns a [`Microdevice`] and calls
 //! [`Microdevice::poll`] from its main loop, feeding one input per call:
-//! a byte from the UART ISR ring, a complete frame from a frame-oriented
-//! link, or a timer tick. Every call returns the frames the stack wants
-//! on the bus. Interrupts only ever post bytes into a ring buffer that
-//! the main loop drains — the stack itself is single-threaded `&mut self`
-//! code with no interior mutability and no locks.
+//! a complete TP1 standard frame or a timer tick. A byte-oriented link
+//! driver drains the UART ISR ring and assembles the frame first. Every
+//! call returns the frames the stack wants on the bus — the stack itself
+//! is single-threaded `&mut self` code with no interior mutability and no
+//! locks.
 //!
 //! # The EEPROM bytes ARE the tables
 //!

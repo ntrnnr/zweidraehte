@@ -12,6 +12,7 @@ use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7Dev
 use zweidraehte_microdevice::frame::{ApciCode, FrameView, Tpci, data_frame};
 use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadState, RunState};
 
@@ -164,12 +165,14 @@ fn property_descriptions_and_values_share_one_roster() {
     // nonexistent now carries its real descriptor.
     let rsp = exchange(&mut dev, 4, ApciCode::PropertyDescriptionRead, 0, &[0, 56, 0], 0).expect("described");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x38, 0x07, 0x04, 0x40, 0x01, 0xF0]);
+    let rsp = exchange(&mut dev, 5, ApciCode::PropertyValueRead, 0, &[0, 56, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &MAX_APDU_LENGTH_TP1_STANDARD.to_be_bytes());
 
     // Unknown PID lookup and an exhausted index scan both return the
     // zero-descriptor form, with the caller's lookup key preserved.
-    let rsp = exchange(&mut dev, 5, ApciCode::PropertyDescriptionRead, 0, &[0, 0xFE, 0], 0).expect("negative reply");
+    let rsp = exchange(&mut dev, 6, ApciCode::PropertyDescriptionRead, 0, &[0, 0xFE, 0], 0).expect("negative reply");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0xFE, 0x00, 0, 0, 0, 0]);
-    let rsp = exchange(&mut dev, 6, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 8], 0).expect("end of roster");
+    let rsp = exchange(&mut dev, 7, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 8], 0).expect("end of roster");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x00, 0x08, 0, 0, 0, 0]);
 }
 

@@ -8,11 +8,10 @@
 //! ring outside this struct, and everything in here is plain
 //! `&mut self` code.
 //!
-//! Byte-oriented media (TPUART) assemble frames *outside* the core in
-//! their link driver and feed the result through [`PollInput::Frame`];
-//! frame-oriented media (the conformance IPC socket, RF, KNX/IP) pass
-//! their frames straight in. That keeps the core medium-agnostic
-//! without a trait between it and the driver.
+//! The core accepts TP1 standard frames without their checksum. A
+//! byte-oriented TPUART driver assembles those frames outside the core;
+//! the conformance IPC adapter supplies the same layout directly.
+//! Native RF and KNX/IP frame formats are outside this stack's scope.
 
 use core::marker::PhantomData;
 

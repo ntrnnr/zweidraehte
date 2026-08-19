@@ -1,9 +1,10 @@
 //! TP1 standard-frame view and builder.
 //!
-//! A BCU2 speaks TP1 standard frames only: its 15-octet APDU ceiling
-//! means an extended frame never carries anything it could say. That
-//! lets this stack work directly on the wire layout (minus the
-//! checksum octet, which the link driver owns):
+//! Every family supported by this stack speaks TP1 standard frames
+//! only. Its fixed 15-octet APDU ceiling fits that format, so extended
+//! frames are deliberately unsupported. That lets this stack work
+//! directly on the wire layout (minus the checksum octet, which the
+//! link driver owns):
 //!
 //! ```text
 //! octet 0      control  (FT=1, repeat flag, priority)
@@ -27,14 +28,18 @@
 
 use heapless::Vec;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::messages::knx::AddressType;
 
 pub use zweidraehte_proto::messages::knx::{ApciCode, Tpci};
 
-/// Largest frame this stack emits or accepts: 7 header octets plus a
-/// 15-octet APDU.
-pub const MAX_FRAME: usize = 7 + 15;
+pub(crate) const MAX_APDU_LENGTH: usize = MAX_APDU_LENGTH_TP1_STANDARD as usize;
+pub(crate) const MAX_APDU_PAYLOAD_LENGTH: usize = MAX_APDU_LENGTH - 1;
+
+/// Largest frame this stack emits or accepts: seven header octets plus the
+/// standard TP1 APDU limit.
+pub const MAX_FRAME: usize = 7 + MAX_APDU_LENGTH;
 
 /// One outbound frame.
 pub type FrameBuf = Vec<u8, MAX_FRAME>;
@@ -53,7 +58,7 @@ pub struct FrameView<'a> {
 
 impl<'a> FrameView<'a> {
     /// Parse a standard frame. Rejects extended frames (control bit 7
-    /// clear) — a BCU2 does not understand them — and frames whose
+    /// clear) — this stack does not understand them — and frames whose
     /// length nibble disagrees with the byte count.
     pub fn parse(frame: &'a [u8]) -> Option<Self> {
         if frame.len() < 7 {
@@ -141,7 +146,7 @@ fn build(
 ) -> FrameBuf {
     let mut frame = FrameBuf::new();
     let length = apdu.len();
-    debug_assert!(length <= 15, "APDU exceeds the standard-frame length nibble");
+    debug_assert!(length <= MAX_APDU_LENGTH, "APDU exceeds the standard-frame length nibble");
     // The push cannot fail: 7 + length <= MAX_FRAME by the assert above.
     let _ = frame.push(TP1_STD_CTRL_BASE | (priority_bits & 0x0C));
     let _ = frame.extend_from_slice(source.as_bytes());
@@ -172,7 +177,7 @@ pub fn data_frame(
 ) -> FrameBuf {
     let apci10 = apci.wire10_base() | u16::from(small_data & 0x3F);
     let tpci_octet = tpci.octet() | ((apci10 >> 8) as u8 & 0x03);
-    let mut apdu: Vec<u8, 15> = Vec::new();
+    let mut apdu: Vec<u8, MAX_APDU_LENGTH> = Vec::new();
     let _ = apdu.push(apci10 as u8);
     let _ = apdu.extend_from_slice(payload);
     build(priority_bits, source, dest, is_group, tpci_octet, &apdu)
