@@ -364,14 +364,15 @@ insert = [{ inject = { data = "BC #EDI #BDUT_ADDR 6A 01 D4 00 09 00 10 42 00 02 
 # and linkage in the answer are properties of the loaded application,
 # not of GO Diagnostics. The reference app's GO 1 is `07 5F` size 00 and
 # its GO 8 `04 DB` size 07; ours are 1-bit and 3-octet objects with full
-# flags, both linked and plain — `04 DF` with size codes 01 and 09, the
-# values the hand-written 6.2.24 twin documents field by field. DPT_ID
-# stays zero either way (our CO table does not track DPTs).
+# flags, both linked and plain — `04 DF` with size codes 00 (Uint1) and
+# 09 (Byte3), the Table 87 type codes the hand-written 6.2.24 twin
+# documents field by field. DPT_ID stays zero either way (our CO table
+# does not track DPTs).
 
 [[patch]]
 replace = "BBCE515F-9681-4368-8EB8-081EE2C12437"
-why = "6.2.24: GO 1's configuration word and size code are the loaded application's, ours reads 04DF/01"
-insert = [{ expect = { data = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 01 04 DF 01 00 00 00 00", timeout_ms = 200 } }]
+why = "6.2.24: GO 1's configuration word and size code are the loaded application's, ours reads 04DF/00"
+insert = [{ expect = { data = "3C 60 #BDUT_ADDR #EDI 11 01 D6 00 09 00 10 42 20 00 00 01 04 DF 00 00 00 00 00", timeout_ms = 200 } }]
 
 [[patch]]
 replace = "148AC46B-C6AB-40FD-9586-E0BB617FB974"

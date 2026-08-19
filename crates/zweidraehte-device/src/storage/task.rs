@@ -155,7 +155,7 @@ impl SaveGuardToken for () {
 ///   device is watching), then applies the erase code to the runtime
 ///   state ([`HasPersistence::apply_erase_code`]) and the durable regions
 ///   ([`StorageHooks::erase`] — mc_timer clear + sending-SeqNr exhaustion
-///   re-init on factory codes), persists if dirty, waits
+///   re-init on factory codes), persists unconditionally, waits
 ///   [`RESTART_SETTLE_DELAY`], and resets via [`SystemControl`].
 /// - [`PersistRequest::EtsDownloadComplete`] (advisory) saves the config if
 ///   dirty.
@@ -199,10 +199,21 @@ where
                 knx.state().apply_erase_code(code);
                 storage.erase(code);
 
-                // Persist the (possibly reset) state if it ended up dirty,
-                // behind the busy gate (the bus keeps running while we save —
-                // the remote TL may still retry the A_Restart_Response).
-                save_if_dirty(knx, storage, &guard).await;
+                // Persist the (possibly reset) state — unconditionally, not
+                // just if dirty. A BCU writes management state straight to
+                // EEPROM, so on a real BCU *everything* survives a restart;
+                // our lazy dirty-flag model must flush here to match. The
+                // dirty flag also deliberately under-reports: state that
+                // changes on attacker-controlled receive traffic (the
+                // security failures log, 03/05/01 §6.3 — "saved at power
+                // down and restored at power up", checked across restarts
+                // by TSSJ 3.8.12.1/.2) never marks dirty, because doing so
+                // would turn a sustained secure-telegram attack into a
+                // flash write per DIRTY_SAVE_POLL. A controlled restart is
+                // rare and is such state's one durable checkpoint. Behind
+                // the busy gate (the bus keeps running while we save — the
+                // remote TL may still retry the A_Restart_Response).
+                save_config_guarded(knx, storage, &guard).await;
 
                 // `restart` does not return on success. If a platform's
                 // implementation ever does return (a mock refusing resets),
@@ -223,9 +234,10 @@ where
     }
 }
 
-/// One guarded save, shared by every arm of the [`storage_task`] loop: skip
-/// when the state is clean; otherwise raise the [`SaveGuard`], write the
-/// config blob, and clear the dirty flag before releasing.
+/// One guarded save, shared by the periodic and on-demand arms of the
+/// [`storage_task`] loop: skip when the state is clean; otherwise raise the
+/// [`SaveGuard`], write the config blob, and clear the dirty flag before
+/// releasing.
 async fn save_if_dirty<D, G>(knx: Stack<'static, D>, storage: D::Storage, guard: &G)
 where
     D: StackDefinition,
@@ -233,11 +245,23 @@ where
     G: SaveGuard,
 {
     if knx.state().is_dirty() {
-        let token = guard.acquire().await;
-        storage.save_config(knx.state());
-        knx.state().clear_dirty();
-        token.release().await;
+        save_config_guarded(knx, storage, guard).await;
     }
+}
+
+/// The guarded save itself, dirty or not. The restart arm calls this
+/// directly: some state intentionally never marks dirty (see the restart
+/// arm's comment) and a controlled restart is where it gets persisted.
+async fn save_config_guarded<D, G>(knx: Stack<'static, D>, storage: D::Storage, guard: &G)
+where
+    D: StackDefinition,
+    D::Storage: HasConfigStore<State = D::State>,
+    G: SaveGuard,
+{
+    let token = guard.acquire().await;
+    storage.save_config(knx.state());
+    knx.state().clear_dirty();
+    token.release().await;
 }
 
 /// Emit the monomorphic embassy wrapper for the generic
