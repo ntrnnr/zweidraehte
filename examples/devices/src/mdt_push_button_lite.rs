@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_device::prelude::*;
 use zweidraehte_ets_model::ets_range_enum;
-use zweidraehte_ets_model::{EtsComObjects, EtsEnum, ets_params, ets_union};
+use zweidraehte_ets_model::{EtsEnum, ets_com_objects, ets_params, ets_union};
 use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
 use zweidraehte_knxprod::ets_pages;
 use zweidraehte_proto::dpt::*;
@@ -1229,7 +1229,6 @@ pub mod comm_objs {
     use super::*;
     // Import the ObjectType enum for selector values
     use super::ObjectType;
-    use zweidraehte_device::objects::comm::ComObjectStorage;
 
     /// MDT Push Button Lite communication objects.
     /// Total: 87 objects (many are dummy placeholders)
@@ -1242,7 +1241,7 @@ pub mod comm_objs {
     /// - 2 Bytes (DPT 7.600 Colour temp, DPT 9.001 Temp, DPT 9.004 Lux)
     /// - 3 Bytes (DPT 232.600 RGB)
     /// - 4 Bytes (reserved for future use)
-    #[derive(EtsComObjects)]
+    #[ets_com_objects]
     #[ets(selector_enum = ObjectType)]
     pub struct MdtComObjects {
         // ====================================================================
@@ -1251,12 +1250,12 @@ pub mod comm_objs {
         /// Presence - Button activation output
         /// MDT: C=1, T=1, R=0, W=0, U=0, ROI=0
         #[ets(index = 72, name = "Presence", display = "Button activation", function = "Output", flags = C | T | LOW)]
-        pub presence: ComObject<DPT_Switch>,
+        pub presence: DPT_Switch,
 
         /// Mode - Operation status (cyclic)
         /// MDT: C=1, T=1, R=1, W=0, U=0, ROI=0
         #[ets(index = 77, name = "Mode", display = "Operation", function = "Output", flags = C | R | T | LOW)]
-        pub mode: ComObject<DPT_State>,
+        pub mode: DPT_State,
 
         // ====================================================================
         // Push Button 1 Objects (indices 0-9)
@@ -1400,7 +1399,7 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button1_tip_lux", dpt = DPT_Value_Lux, text = "PB1 tip: {{button1_description:Push button 1}}", function = "Brightness value")]
         #[ets_ref(ref_name = "button1_tip_rgb", dpt = DPT_Colour_RGB, text = "PB1 tip: {{button1_description:Push button 1}}", function = "RGB value")]
         #[ets_ref(ref_name = "button1_tip_hsv", dpt = DPT_Colour_RGB, text = "PB1 tip: {{button1_description:Push button 1}}", function = "HSV value")]
-        pub button1_main: ComObject<ComObjectStorage<4>>,
+        pub button1_main: DPT_Switch,
 
         /// Push button 1 - Secondary output (stop/slats)
         /// MDT: C=1, T=1, R=0, W=0, U=0, ROI=0
@@ -1486,7 +1485,7 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button1_2x_tip_lux", dpt = DPT_Value_Lux, text = "PB1, 2x tip: {{button1_description:Push button 1}}", function = "Brightness value", read = false)]
         #[ets_ref(ref_name = "button1_2x_tip_rgb", dpt = DPT_Colour_RGB, text = "PB1, 2x tip: {{button1_description:Push button 1}}", function = "RGB value", read = false)]
         #[ets_ref(ref_name = "button1_2x_tip_hsv", dpt = DPT_Colour_RGB, text = "PB1, 2x tip: {{button1_description:Push button 1}}", function = "HSV value", read = false)]
-        pub button1_secondary: ComObject<ComObjectStorage<4>>,
+        pub button1_secondary: DPT_Switch,
 
         /// Push button 1 - Status for toggle input
         /// MDT: C=1, T=1, R=0, W=1, U=0, ROI=0
@@ -1612,7 +1611,7 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button1_additional_obj_lux", dpt = DPT_Value_Lux, text = "PB1: {{button1_description:Push button 1}} (2. object)", function = "Brightness value", write = false, update = false)]
         #[ets_ref(ref_name = "button1_additional_obj_rgb", dpt = DPT_Colour_RGB, text = "PB1: {{button1_description:Push button 1}} (2. object)", function = "RGB value", write = false, update = false)]
         #[ets_ref(ref_name = "button1_additional_obj_hsv", dpt = DPT_Colour_RGB, text = "PB1: {{button1_description:Push button 1}} (2. object)", function = "HSV value", write = false, update = false)]
-        pub button1_status_toggle: ComObject<ComObjectStorage<4>>,
+        pub button1_status_toggle: DPT_Switch,
 
         /// Push button 1 - Status for display input
         /// MDT: C=1, T=0, R=0, W=1, U=0, ROI=0 -> 0x10+0x04+0x03 = 0x17
@@ -1648,7 +1647,7 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "PB1/2 long: {{button1_description:Push buttons 1/2}}", function = "Status for toggle", transmit = true, update = true)]
         // PB1/2 Group extra long: prefix
         #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "PB1/2 Group extra long: {{button1_description:Push buttons 1/2}}", function = "Blind Up/Down", write = false, transmit = true)]
-        pub button1_status_display: ComObject<ComObjectStorage<4>>,
+        pub button1_status_display: DPT_Switch,
 
         /// Push button 1 - Extra long switch output
         /// MDT: C=1, T=1, R=0, W=0, U=0, ROI=0
@@ -1705,7 +1704,7 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button1_extra_lux", dpt = DPT_Value_Lux, text = "PB1: {{button1_description:Push button 1}}", function = "Brightness value", write = false, update = false)]
         #[ets_ref(ref_name = "button1_extra_rgb", dpt = DPT_Colour_RGB, text = "PB1: {{button1_description:Push button 1}}", function = "RGB value", write = false, update = false)]
         #[ets_ref(ref_name = "button1_extra_hsv", dpt = DPT_Colour_RGB, text = "PB1: {{button1_description:Push button 1}}", function = "HSV value", write = false, update = false)]
-        pub button1_extra_long: ComObject<ComObjectStorage<4>>,
+        pub button1_extra_long: DPT_Switch,
 
         /// Push button 1 - Blocking object input
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
@@ -1713,7 +1712,7 @@ pub mod comm_objs {
         #[ets(index = 9, name = "Eingang 0", display = "Push button 1", function = "Blocking Object", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Enable, text = "PB1: {{button1_description:Push button 1}}")]
         #[ets_ref(dpt = DPT_Enable, text = "PB1/2: {{button1_description:Push buttons 1/2}}")]
-        pub button1_blocking: ComObject<DPT_Enable>,
+        pub button1_blocking: DPT_Enable,
 
         // ====================================================================
         // Push Button 2 Objects (indices 10-19)
@@ -1818,7 +1817,7 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button2_tip_lux", dpt = DPT_Value_Lux, text = "PB2 tip: {{button2_description:Push button 2}}", function = "Brightness value")]
         #[ets_ref(ref_name = "button2_tip_rgb", dpt = DPT_Colour_RGB, text = "PB2 tip: {{button2_description:Push button 2}}", function = "RGB value")]
         #[ets_ref(ref_name = "button2_tip_hsv", dpt = DPT_Colour_RGB, text = "PB2 tip: {{button2_description:Push button 2}}", function = "HSV value")]
-        pub button2_main: ComObject<ComObjectStorage<4>>,
+        pub button2_main: DPT_Switch,
 
         /// Push button 2 - Secondary output
         /// MDT: C=1, T=1, R=0, W=0, U=0, ROI=0
@@ -1894,7 +1893,7 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button2_2x_tip_lux", dpt = DPT_Value_Lux, text = "PB2, 2x tip: {{button2_description:Push button 2}}", function = "Brightness value", read = false)]
         #[ets_ref(ref_name = "button2_2x_tip_rgb", dpt = DPT_Colour_RGB, text = "PB2, 2x tip: {{button2_description:Push button 2}}", function = "RGB value", read = false)]
         #[ets_ref(ref_name = "button2_2x_tip_hsv", dpt = DPT_Colour_RGB, text = "PB2, 2x tip: {{button2_description:Push button 2}}", function = "HSV value", read = false)]
-        pub button2_secondary: ComObject<ComObjectStorage<4>>,
+        pub button2_secondary: DPT_Switch,
 
         /// Push button 2 - Status for toggle input
         /// MDT O-12: C=1, T=0, R=0, W=1, U=0, ROI=0 (no transmit!) -> 0x17
@@ -1996,7 +1995,7 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button2_3x_tip_lux", dpt = DPT_Value_Lux, text = "PB2, 3x tip: {{button2_description:Push button 2}}", function = "Brightness value", write = false, update = false)]
         #[ets_ref(ref_name = "button2_3x_tip_rgb", dpt = DPT_Colour_RGB, text = "PB2, 3x tip: {{button2_description:Push button 2}}", function = "RGB value", write = false, update = false)]
         #[ets_ref(ref_name = "button2_3x_tip_hsv", dpt = DPT_Colour_RGB, text = "PB2, 3x tip: {{button2_description:Push button 2}}", function = "HSV value", write = false, update = false)]
-        pub button2_status_toggle: ComObject<ComObjectStorage<4>>,
+        pub button2_status_toggle: DPT_Switch,
 
         /// Push button 2 - Status for display input
         /// MDT: C=1, T=0, R=0, W=1, U=0, ROI=0 -> 0x17
@@ -2025,7 +2024,7 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "PB2 Group extra long: {{button2_description:Push button 2}}", function = "Blind Up/Down", write = false, transmit = true)]
         // Blinds mode - unconditional ref (no when selector) for extra long group O-13
         #[ets_ref(dpt = DPT_UpDown, text = "PB2 group extra long: {{button2_description:Push button 2}}", function = "Blind Up/Down", write = false, transmit = true)]
-        pub button2_status_display: ComObject<ComObjectStorage<4>>,
+        pub button2_status_display: DPT_Switch,
 
         /// Push button 2 - Extra long switch output
         /// MDT: C=1, T=1, R=0, W=0, U=0, ROI=0
@@ -2065,14 +2064,14 @@ pub mod comm_objs {
         #[ets_ref(ref_name = "button2_extra_lux", dpt = DPT_Value_Lux, text = "PB2: {{button2_description:Push button 2}}", function = "Brightness value", write = false, update = false)]
         #[ets_ref(ref_name = "button2_extra_rgb", dpt = DPT_Colour_RGB, text = "PB2: {{button2_description:Push button 2}}", function = "RGB value", write = false, update = false)]
         #[ets_ref(ref_name = "button2_extra_hsv", dpt = DPT_Colour_RGB, text = "PB2: {{button2_description:Push button 2}}", function = "HSV value", write = false, update = false)]
-        pub button2_extra_long: ComObject<ComObjectStorage<4>>,
+        pub button2_extra_long: DPT_Switch,
 
         /// Push button 2 - Blocking object input
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         /// Note: MDT has 1 ref with Text "PB2:" but same DPT
         #[ets(index = 19, name = "Eingang 1", display = "Push button 2", function = "Blocking Object", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Enable, text = "PB2: {{button2_description:Push button 2}}")]
-        pub button2_blocking: ComObject<DPT_Enable>,
+        pub button2_blocking: DPT_Enable,
 
         // ====================================================================
         // Slap Button Objects (indices 40-49)
@@ -2113,7 +2112,7 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_Value_Lux, when = ObjectType::Brightness, function = "Brightness value")]
         #[ets_ref(dpt = DPT_Colour_RGB, when = ObjectType::Rgb, function = "RGB value")]
         #[ets_ref(dpt = DPT_Colour_RGB, when = ObjectType::Rgb, function = "HSV value")]
-        pub slap_short_main: ComObject<ComObjectStorage<4>>,
+        pub slap_short_main: DPT_Switch,
 
         /// Slap button short - Status for toggle (multi-DPT, matches main object type)
         /// MDT: C=1, T=0, R=0, W=1, U=0, ROI=0 -> 0x17
@@ -2129,7 +2128,7 @@ pub mod comm_objs {
         // MDT has only 2 refs for O-41, both DPT_Switch with flag overrides
         #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, function = "Status for toggle", transmit = true, update = true)]
         #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, function = "Status for toggle", transmit = true, update = true)]
-        pub slap_short_status: ComObject<ComObjectStorage<4>>,
+        pub slap_short_status: DPT_Switch,
 
         /// Slap button long - Main output (multi-DPT, 4 bytes)
         /// MDT: C=1, T=1, R=0, W=0, U=0, ROI=0
@@ -2167,7 +2166,7 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_Value_Lux, when = ObjectType::Brightness, function = "Brightness value")]
         #[ets_ref(dpt = DPT_Colour_RGB, when = ObjectType::Rgb, function = "RGB value")]
         #[ets_ref(dpt = DPT_Colour_RGB, when = ObjectType::Rgb, function = "HSV value")]
-        pub slap_long_main: ComObject<ComObjectStorage<4>>,
+        pub slap_long_main: DPT_Switch,
 
         /// Slap button long - Status for toggle (multi-DPT, matches main object type)
         /// MDT: C=1, T=0, R=0, W=1, U=0, ROI=0 -> 0x17
@@ -2183,7 +2182,7 @@ pub mod comm_objs {
         // MDT has only 2 refs for O-43, both DPT_Switch with flag overrides
         #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, function = "Status for toggle", transmit = true, update = true)]
         #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, function = "Status for toggle", transmit = true, update = true)]
-        pub slap_long_status: ComObject<ComObjectStorage<4>>,
+        pub slap_long_status: DPT_Switch,
 
         /// Slap button - Blocking object
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
@@ -2194,7 +2193,7 @@ pub mod comm_objs {
             function = "Blocking Object",
             flags = C | W | T | U | LOW
         )]
-        pub slap_blocking: ComObject<DPT_Enable>,
+        pub slap_blocking: DPT_Enable,
 
         // ====================================================================
         // Logic Objects (indices 50-61)
@@ -2203,13 +2202,13 @@ pub mod comm_objs {
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 50, name = "Eingangslogik 1 A", display = "Logic", function = "Input 1 A", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 1 {{logic1_description:}}", function = "Input 1 A")]
-        pub logic1_input_a: ComObject<DPT_Switch>,
+        pub logic1_input_a: DPT_Switch,
 
         /// Logic 1 Input B
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 51, name = "Eingangslogik 1 B", display = "Logic", function = "Input 1 B", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 1 {{logic1_description:}}", function = "Input 1 B")]
-        pub logic1_input_b: ComObject<DPT_Switch>,
+        pub logic1_input_b: DPT_Switch,
 
         /// Logic 1 Output (multi-DPT based on LogicObjectType)
         /// MDT: C=1, T=1, R=1, W=0, U=0, ROI=0
@@ -2230,19 +2229,19 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_SceneNumber, when = LogicObjectType::Scene, text = "Logic 1 {{logic1_description:}}", function = "Output 1 Scene")]
         #[ets_ref(dpt = DPT_Value_1_Ucount, when = LogicObjectType::Value, text = "Logic 1 {{logic1_description:}}", function = "Output 1 Value")]
         #[ets_ref(dpt = DPT_Switch_Control, when = LogicObjectType::ForcibleControl, text = "Logic 1 {{logic1_description:}}", function = "Output 1 Value")]
-        pub logic1_output: ComObject<ComObjectStorage<1>>,
+        pub logic1_output: DPT_Switch,
 
         /// Logic 2 Input A
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 53, name = "Eingangslogik 2 A", display = "Logic", function = "Input 2 A", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 2 {{logic2_description:}}", function = "Input 2 A")]
-        pub logic2_input_a: ComObject<DPT_Switch>,
+        pub logic2_input_a: DPT_Switch,
 
         /// Logic 2 Input B
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 54, name = "Eingangslogik 2 B", display = "Logic", function = "Input 2 B", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 2 {{logic2_description:}}", function = "Input 2 B")]
-        pub logic2_input_b: ComObject<DPT_Switch>,
+        pub logic2_input_b: DPT_Switch,
 
         /// Logic 2 Output (multi-DPT based on LogicObjectType)
         /// MDT: C=1, T=1, R=1, W=0, U=0, ROI=0
@@ -2263,19 +2262,19 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_SceneNumber, when = LogicObjectType::Scene, text = "Logic 2 {{logic2_description:}}", function = "Output 2 Scene")]
         #[ets_ref(dpt = DPT_Value_1_Ucount, when = LogicObjectType::Value, text = "Logic 2 {{logic2_description:}}", function = "Output 2 Value")]
         #[ets_ref(dpt = DPT_Switch_Control, when = LogicObjectType::ForcibleControl, text = "Logic 2 {{logic2_description:}}", function = "Output 2 Value")]
-        pub logic2_output: ComObject<ComObjectStorage<1>>,
+        pub logic2_output: DPT_Switch,
 
         /// Logic 3 Input A
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 56, name = "Eingangslogik 3 A", display = "Logic", function = "Input 3 A", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 3 {{logic3_description:}}", function = "Input 3 A")]
-        pub logic3_input_a: ComObject<DPT_Switch>,
+        pub logic3_input_a: DPT_Switch,
 
         /// Logic 3 Input B
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 57, name = "Eingangslogik 3 B", display = "Logic", function = "Input 3 B", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 3 {{logic3_description:}}", function = "Input 3 B")]
-        pub logic3_input_b: ComObject<DPT_Switch>,
+        pub logic3_input_b: DPT_Switch,
 
         /// Logic 3 Output (multi-DPT based on LogicObjectType)
         /// MDT: C=1, T=1, R=1, W=0, U=0, ROI=0
@@ -2296,19 +2295,19 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_SceneNumber, when = LogicObjectType::Scene, text = "Logic 3 {{logic3_description:}}", function = "Output 3 Scene")]
         #[ets_ref(dpt = DPT_Value_1_Ucount, when = LogicObjectType::Value, text = "Logic 3 {{logic3_description:}}", function = "Output 3 Value")]
         #[ets_ref(dpt = DPT_Switch_Control, when = LogicObjectType::ForcibleControl, text = "Logic 3 {{logic3_description:}}", function = "Output 3 Value")]
-        pub logic3_output: ComObject<ComObjectStorage<1>>,
+        pub logic3_output: DPT_Switch,
 
         /// Logic 4 Input A
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 59, name = "Eingangslogik 4 A", display = "Logic", function = "Input 4 A", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 4 {{logic4_description:}}", function = "Input 4 A")]
-        pub logic4_input_a: ComObject<DPT_Switch>,
+        pub logic4_input_a: DPT_Switch,
 
         /// Logic 4 Input B
         /// MDT: C=1, T=1, R=0, W=1, U=1, ROI=0
         #[ets(index = 60, name = "Eingangslogik 4 B", display = "Logic", function = "Input 4 B", flags = C | W | T | U | LOW)]
         #[ets_ref(dpt = DPT_Switch, text = "Logic 4 {{logic4_description:}}", function = "Input 4 B")]
-        pub logic4_input_b: ComObject<DPT_Switch>,
+        pub logic4_input_b: DPT_Switch,
 
         /// Logic 4 Output (multi-DPT based on LogicObjectType)
         /// MDT: C=1, T=1, R=1, W=0, U=0, ROI=0
@@ -2329,7 +2328,7 @@ pub mod comm_objs {
         #[ets_ref(dpt = DPT_SceneNumber, when = LogicObjectType::Scene, text = "Logic 4 {{logic4_description:}}", function = "Output 4 Scene")]
         #[ets_ref(dpt = DPT_Value_1_Ucount, when = LogicObjectType::Value, text = "Logic 4 {{logic4_description:}}", function = "Output 4 Value")]
         #[ets_ref(dpt = DPT_Switch_Control, when = LogicObjectType::ForcibleControl, text = "Logic 4 {{logic4_description:}}", function = "Output 4 Value")]
-        pub logic4_output: ComObject<ComObjectStorage<1>>,
+        pub logic4_output: DPT_Switch,
 
         // ====================================================================
         // Dummy Objects (placeholders for future use / padding)
@@ -2337,133 +2336,133 @@ pub mod comm_objs {
         // ====================================================================
         // Button 1 dummies (5-8)
         #[ets(index = 5, name = "Obj5", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_5: ComObject<DPT_Switch>,
+        pub dummy_5: DPT_Switch,
         #[ets(index = 6, name = "Obj6", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_6: ComObject<DPT_Switch>,
+        pub dummy_6: DPT_Switch,
         #[ets(index = 7, name = "Obj7", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_7: ComObject<DPT_Switch>,
+        pub dummy_7: DPT_Switch,
         #[ets(index = 8, name = "Obj8", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_8: ComObject<DPT_Switch>,
+        pub dummy_8: DPT_Switch,
 
         // Button 2 dummies (15-18)
         #[ets(index = 15, name = "Obj15", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_15: ComObject<DPT_Switch>,
+        pub dummy_15: DPT_Switch,
         #[ets(index = 16, name = "Obj16", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_16: ComObject<DPT_Switch>,
+        pub dummy_16: DPT_Switch,
         #[ets(index = 17, name = "Obj17", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_17: ComObject<DPT_Switch>,
+        pub dummy_17: DPT_Switch,
         #[ets(index = 18, name = "Obj18", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_18: ComObject<DPT_Switch>,
+        pub dummy_18: DPT_Switch,
 
         // Button group 3 dummies (20-28) - 4-byte objects for future extension
         #[ets(index = 20, name = "Obj20", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_20: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_20: DPT_Value_4_Ucount,
         #[ets(index = 21, name = "Obj21", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_21: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_21: DPT_Value_4_Ucount,
         #[ets(index = 22, name = "Obj22", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_22: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_22: DPT_Value_4_Ucount,
         #[ets(index = 23, name = "Obj23", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_23: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_23: DPT_Value_4_Ucount,
         #[ets(index = 24, name = "Obj24", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_24: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_24: DPT_Value_4_Ucount,
         #[ets(index = 25, name = "Obj25", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_25: ComObject<DPT_Switch>,
+        pub dummy_25: DPT_Switch,
         #[ets(index = 26, name = "Obj26", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_26: ComObject<DPT_Switch>,
+        pub dummy_26: DPT_Switch,
         #[ets(index = 27, name = "Obj27", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_27: ComObject<DPT_Switch>,
+        pub dummy_27: DPT_Switch,
         #[ets(index = 28, name = "Obj28", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_28: ComObject<DPT_Switch>,
+        pub dummy_28: DPT_Switch,
 
         // Button group 4 dummies (29-39)
         #[ets(index = 29, name = "Obj29", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_29: ComObject<DPT_Switch>,
+        pub dummy_29: DPT_Switch,
         #[ets(index = 30, name = "Obj30", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_30: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_30: DPT_Value_4_Ucount,
         #[ets(index = 31, name = "Obj31", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_31: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_31: DPT_Value_4_Ucount,
         #[ets(index = 32, name = "Obj32", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_32: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_32: DPT_Value_4_Ucount,
         #[ets(index = 33, name = "Obj33", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_33: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_33: DPT_Value_4_Ucount,
         #[ets(index = 34, name = "Obj34", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_34: ComObject<DPT_Value_4_Ucount>,
+        pub dummy_34: DPT_Value_4_Ucount,
         #[ets(index = 35, name = "Obj35", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_35: ComObject<DPT_Switch>,
+        pub dummy_35: DPT_Switch,
         #[ets(index = 36, name = "Obj36", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_36: ComObject<DPT_Switch>,
+        pub dummy_36: DPT_Switch,
         #[ets(index = 37, name = "Obj37", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_37: ComObject<DPT_Switch>,
+        pub dummy_37: DPT_Switch,
         #[ets(index = 38, name = "Obj38", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_38: ComObject<DPT_Switch>,
+        pub dummy_38: DPT_Switch,
         #[ets(index = 39, name = "Obj39", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_39: ComObject<DPT_Switch>,
+        pub dummy_39: DPT_Switch,
 
         // Slap button dummies (44-48)
         #[ets(index = 44, name = "Obj44", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_44: ComObject<DPT_Switch>,
+        pub dummy_44: DPT_Switch,
         #[ets(index = 45, name = "Obj45", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_45: ComObject<DPT_Switch>,
+        pub dummy_45: DPT_Switch,
         #[ets(index = 46, name = "Obj46", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_46: ComObject<DPT_Switch>,
+        pub dummy_46: DPT_Switch,
         #[ets(index = 47, name = "Obj47", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_47: ComObject<DPT_Switch>,
+        pub dummy_47: DPT_Switch,
         #[ets(index = 48, name = "Obj48", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_48: ComObject<DPT_Switch>,
+        pub dummy_48: DPT_Switch,
 
         // Logic dummies (62-70)
         #[ets(index = 62, name = "Obj62", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_62: ComObject<DPT_Value_1_Ucount>,
+        pub dummy_62: DPT_Value_1_Ucount,
         #[ets(index = 63, name = "Obj63", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_63: ComObject<DPT_Value_1_Ucount>,
+        pub dummy_63: DPT_Value_1_Ucount,
         #[ets(index = 64, name = "Obj64", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_64: ComObject<DPT_Value_1_Ucount>,
+        pub dummy_64: DPT_Value_1_Ucount,
         #[ets(index = 65, name = "Obj65", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_65: ComObject<DPT_Value_1_Ucount>,
+        pub dummy_65: DPT_Value_1_Ucount,
         #[ets(index = 66, name = "Obj66", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_66: ComObject<DPT_Switch>,
+        pub dummy_66: DPT_Switch,
         #[ets(index = 67, name = "Obj67", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_67: ComObject<DPT_Switch>,
+        pub dummy_67: DPT_Switch,
         #[ets(index = 68, name = "Obj68", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_68: ComObject<DPT_Switch>,
+        pub dummy_68: DPT_Switch,
         #[ets(index = 69, name = "Obj69", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_69: ComObject<DPT_Switch>,
+        pub dummy_69: DPT_Switch,
         #[ets(index = 70, name = "Obj70", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_70: ComObject<DPT_Switch>,
+        pub dummy_70: DPT_Switch,
         #[ets(index = 71, name = "Obj71", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_71: ComObject<DPT_Switch>,
+        pub dummy_71: DPT_Switch,
 
         // Status area dummies (73-76)
         #[ets(index = 73, name = "Obj73", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_73: ComObject<DPT_PropDataType>,
+        pub dummy_73: DPT_PropDataType,
         #[ets(index = 74, name = "Obj74", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_74: ComObject<DPT_PropDataType>,
+        pub dummy_74: DPT_PropDataType,
         #[ets(index = 75, name = "Obj75", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_75: ComObject<DPT_Switch>,
+        pub dummy_75: DPT_Switch,
         #[ets(index = 76, name = "Obj76", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_76: ComObject<DPT_Switch>,
+        pub dummy_76: DPT_Switch,
 
         // Reserved area dummies (78-87)
         #[ets(index = 78, name = "Obj78", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_78: ComObject<DPT_Switch>,
+        pub dummy_78: DPT_Switch,
         #[ets(index = 79, name = "Obj79", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_79: ComObject<DPT_PropDataType>,
+        pub dummy_79: DPT_PropDataType,
         #[ets(index = 80, name = "Obj80", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_80: ComObject<DPT_Switch>,
+        pub dummy_80: DPT_Switch,
         #[ets(index = 81, name = "Obj81", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_81: ComObject<DPT_Switch>,
+        pub dummy_81: DPT_Switch,
         #[ets(index = 82, name = "Obj82", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_82: ComObject<DPT_Switch>,
+        pub dummy_82: DPT_Switch,
         #[ets(index = 83, name = "Obj83", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_83: ComObject<DPT_Switch>,
+        pub dummy_83: DPT_Switch,
         #[ets(index = 84, name = "Obj84", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_84: ComObject<DPT_Switch>,
+        pub dummy_84: DPT_Switch,
         #[ets(index = 85, name = "Obj85", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_85: ComObject<DPT_Switch>,
+        pub dummy_85: DPT_Switch,
         #[ets(index = 86, name = "Obj86", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_86: ComObject<DPT_Switch>,
+        pub dummy_86: DPT_Switch,
         #[ets(index = 87, name = "Obj87", display = "Dummy", function = "", flags = LOW)]
-        pub dummy_87: ComObject<DPT_Value_1_Ucount>,
+        pub dummy_87: DPT_Value_1_Ucount,
     }
 }
 

@@ -76,82 +76,82 @@ use super::fixture_common::{
 
 pub mod comm_objs {
     use zweidraehte_device::objects::comm::ComObject;
-    use zweidraehte_ets_model::EtsComObjects;
+    use zweidraehte_ets_model::ets_com_objects;
     use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 
-    #[derive(EtsComObjects)]
+    #[ets_com_objects]
     #[ets(bus_hook)]
     pub struct System7SecureComObjects {
         /// GO0: Main 1-bit object (UINT1) whose flags/value GO1-GO3 shadow.
         #[ets(index = 1)]
-        pub go_0: ComObject<DPT_Switch>,
+        pub go_0: DPT_Switch,
 
         /// GO1: GO0's communication flags.
         #[ets(index = 2)]
-        pub go_1_comm_flags: ComObject<DPT_Value_1_Ucount>,
+        pub go_1_comm_flags: DPT_Value_1_Ucount,
 
         /// GO2: GO0's configuration flags from the COT.
         #[ets(index = 3, initial = DPT_Value_1_Ucount::from(0xDFu8))]
-        pub go_2_config_flags: ComObject<DPT_Value_1_Ucount>,
+        pub go_2_config_flags: DPT_Value_1_Ucount,
 
         /// GO3: GO0's value as 8-bit.
         #[ets(index = 4)]
-        pub go_3_value: ComObject<DPT_Value_1_Ucount>,
+        pub go_3_value: DPT_Value_1_Ucount,
 
         /// GO0_BYTE3: 3-byte main object. Its shadow set stays because
         /// the AN170 diagnostics GAs (3/1/6, 3/1/7) associate to
         /// GO2_BYTE3 and the template pins the GO indexes literally.
         #[ets(index = 5)]
-        pub go_0_byte3: ComObject<DPT_Colour_RGB>,
+        pub go_0_byte3: DPT_Colour_RGB,
 
         /// GO1_BYTE3: GO0_BYTE3's communication flags.
         #[ets(index = 6)]
-        pub go_1_byte3_comm_flags: ComObject<DPT_Value_1_Ucount>,
+        pub go_1_byte3_comm_flags: DPT_Value_1_Ucount,
 
         /// GO2_BYTE3: GO0_BYTE3's configuration flags — and the target
         /// of the Section 6.2 / AN170 GO-diagnostics group addresses.
         #[ets(index = 7, initial = DPT_Value_1_Ucount::from(0xDFu8))]
-        pub go_2_byte3_config_flags: ComObject<DPT_Value_1_Ucount>,
+        pub go_2_byte3_config_flags: DPT_Value_1_Ucount,
 
         /// GO3_BYTE3: GO0_BYTE3's value as 3-byte.
         #[ets(index = 8)]
-        pub go_3_byte3_value: ComObject<DPT_Colour_RGB>,
+        pub go_3_byte3_value: DPT_Colour_RGB,
 
         /// GO4: read-on-init test object.
         #[ets(index = 9)]
-        pub go_4: ComObject<DPT_Value_1_Ucount>,
+        pub go_4: DPT_Value_1_Ucount,
 
         /// GO5: 8-bit object for network layer 3.1 (long-format response).
         #[ets(index = 10)]
-        pub go_5_network_test: ComObject<DPT_Value_1_Ucount>,
+        pub go_5_network_test: DPT_Value_1_Ucount,
 
         /// GO6: 1-bit object for transport layer 2.1 + security GO_SEC_2.
         #[ets(index = 11)]
-        pub go_6_transport_test: ComObject<DPT_Switch>,
+        pub go_6_transport_test: DPT_Switch,
 
         /// GO_SEC_0: receives on 1/1/1, transmits on 2/2/2 (auth-only).
         #[ets(index = 12)]
-        pub go_sec_0: ComObject<DPT_Switch>,
+        pub go_sec_0: DPT_Switch,
 
         /// GO_SEC_1: receives on 3/3/3, transmits on 4/4/4 (auth+conf).
         #[ets(index = 13)]
-        pub go_sec_1: ComObject<DPT_Switch>,
+        pub go_sec_1: DPT_Switch,
 
         /// GO_SEC_3: receives on 6/6/6 (conf-only flag test).
         #[ets(index = 14)]
-        pub go_sec_3: ComObject<DPT_Switch>,
+        pub go_sec_3: DPT_Switch,
 
         /// GO_DIAG_NO_C: 1-byte object without the C flag (6.2.6/6.2.14).
         #[ets(index = 15)]
-        pub go_diag_no_c: ComObject<DPT_Value_1_Ucount>,
+        pub go_diag_no_c: DPT_Value_1_Ucount,
 
         /// GO_DIAG_NO_W: 1-byte object without the W flag (6.2.6).
         #[ets(index = 16)]
-        pub go_diag_no_w: ComObject<DPT_Value_1_Ucount>,
+        pub go_diag_no_w: DPT_Value_1_Ucount,
 
         /// GO_DIAG_NO_T: 1-byte object without the T flag (6.2.14).
         #[ets(index = 17)]
-        pub go_diag_no_t: ComObject<DPT_Value_1_Ucount>,
+        pub go_diag_no_t: DPT_Value_1_Ucount,
     }
 }
 

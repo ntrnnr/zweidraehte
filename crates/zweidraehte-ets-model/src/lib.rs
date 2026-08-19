@@ -38,8 +38,8 @@
 
 // The proc macros, re-exported so a definition author depends on one
 // crate: the macros emit paths into this crate's types.
-pub use zweidraehte_ets::EtsComObjects;
 pub use zweidraehte_ets::EtsEnum;
+pub use zweidraehte_ets::ets_com_objects;
 pub use zweidraehte_ets::ets_range_enum;
 pub use zweidraehte_ets::{ets_params, ets_union};
 

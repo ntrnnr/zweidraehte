@@ -2,26 +2,50 @@ use proc_macro2::TokenStream as TokenStream2;
 use quote::quote;
 use syn::parse::ParseStream;
 use syn::spanned::Spanned;
-use syn::{Attribute, Data, DeriveInput, Fields, Token};
+use syn::{Attribute, Fields, Token};
 
-pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<TokenStream2> {
+/// Parse the attribute macro's arguments: optionally
+/// `runtime_cfg = "feature-name"`.
+fn parse_macro_args(args: TokenStream2) -> syn::Result<Option<String>> {
+    if args.is_empty() {
+        return Ok(None);
+    }
+    let mut runtime_cfg = None;
+    let parser = syn::meta::parser(|meta| {
+        if meta.path.is_ident("runtime_cfg") {
+            let lit: syn::LitStr = meta.value()?.parse()?;
+            runtime_cfg = Some(lit.value());
+            Ok(())
+        } else {
+            Err(meta.error("unknown ets_com_objects argument; expected `runtime_cfg = \"feature\"`"))
+        }
+    });
+    syn::parse::Parser::parse2(parser, args)?;
+    Ok(runtime_cfg)
+}
+
+/// Keep every attribute the macro does not consume (doc comments,
+/// derives, ...), dropping the `#[ets]` / `#[ets_ref]` ones.
+fn strip_ets_attrs(attrs: &[Attribute]) -> Vec<Attribute> {
+    attrs.iter().filter(|a| !a.path().is_ident("ets") && !a.path().is_ident("ets_ref")).cloned().collect()
+}
+
+pub(crate) fn ets_com_objects_impl(args: TokenStream2, item: TokenStream2) -> syn::Result<TokenStream2> {
+    let runtime_cfg = parse_macro_args(args)?;
+    let input: syn::ItemStruct = syn::parse2(item)?;
     let struct_name = &input.ident;
+    let struct_vis = &input.vis;
 
     // Parse struct-level attributes
     let struct_attrs = parse_com_objects_struct_attrs(&input.attrs)?;
+    let passthrough_attrs = strip_ets_attrs(&input.attrs);
 
     // Extract fields from struct
-    let fields = match &input.data {
-        Data::Struct(data) => match &data.fields {
-            Fields::Named(fields) => &fields.named,
-            _ => {
-                return Err(syn::Error::new_spanned(
-                    input,
-                    "EtsComObjects can only be derived for structs with named fields",
-                ));
-            }
-        },
-        _ => return Err(syn::Error::new_spanned(input, "EtsComObjects can only be derived for structs")),
+    let fields = match &input.fields {
+        Fields::Named(fields) => &fields.named,
+        _ => {
+            return Err(syn::Error::new_spanned(&input, "#[ets_com_objects] requires a struct with named fields"));
+        }
     };
 
     // Parse all fields, separating regular fields from module fields
@@ -44,14 +68,16 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
             continue;
         }
 
-        // Regular field - validate index is present
+        // Regular field. The declared type is the object's
+        // factory-default DPT (`extract_inner_type` also tolerates a
+        // spelled-out `ComObject<T>`, taking `T`).
         let inner_ty = extract_inner_type(&field_ty);
         let refs = parse_ets_ref_attrs(&field.attrs)?;
 
         if attrs.index.is_none() {
             return Err(syn::Error::new_spanned(
                 field,
-                "EtsComObjects fields must have #[ets(index = N)] or #[ets(module = ...)]",
+                "#[ets_com_objects] fields must have #[ets(index = N)] or #[ets(module = ...)]",
             ));
         }
 
@@ -59,17 +85,37 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
         // Multi-DPT objects have selector_param and use ComObjectStorage for runtime type selection
         let is_multi_dpt = attrs.selector_param.is_some();
 
-        com_objects.push(ComObjectField { ident: field_ident, inner_ty, attrs, refs, has_refs, is_multi_dpt });
+        com_objects.push(ComObjectField {
+            ident: field_ident,
+            passthrough_attrs: strip_ets_attrs(&field.attrs),
+            vis: field.vis.clone(),
+            inner_ty,
+            attrs,
+            refs,
+            has_refs,
+            is_multi_dpt,
+        });
     }
 
     // For now, we support at most one module field
     if module_fields.len() > 1 {
-        return Err(syn::Error::new_spanned(input, "Only one module field is currently supported per struct"));
+        return Err(syn::Error::new_spanned(&input, "Only one module field is currently supported per struct"));
     }
 
     // If we have a module field, generate module-based implementation
     if let Some(module_field) = module_fields.into_iter().next() {
-        return generate_module_based_impl(struct_name, &struct_attrs, &com_objects, &module_field);
+        if runtime_cfg.is_some() {
+            return Err(syn::Error::new_spanned(
+                &input,
+                "module-based declarations always need the device stack; runtime_cfg is not supported here",
+            ));
+        }
+        let struct_emission = emit_struct_verbatim(&input);
+        let generated = generate_module_based_impl(struct_name, &struct_attrs, &com_objects, &module_field)?;
+        return Ok(quote! {
+            #struct_emission
+            #generated
+        });
     }
 
     // The lowest logical index in the struct, exposed as
@@ -378,31 +424,69 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
 
     let num_objects = com_objects.len();
 
-    // Generate __max_size helper if we have multi-dpt objects (using ComObjectStorage)
-    let has_multi_dpt = com_objects.iter().any(|obj| obj.is_multi_dpt);
-    let max_size_helper = if has_multi_dpt {
-        quote! {
-            impl #struct_name {
-                /// Helper const fn to compute max of sizes
-                #[doc(hidden)]
-                const fn __max_size(sizes: &[usize]) -> usize {
-                    let mut max = 0usize;
-                    let mut i = 0;
-                    while i < sizes.len() {
-                        if sizes[i] > max {
-                            max = sizes[i];
-                        }
-                        i += 1;
-                    }
-                    max
+    // ── The runtime struct ──────────────────────────────────────────
+    //
+    // The declaration's field types are plain DPT types; the runtime
+    // container wraps them. Multi-DPT objects get a storage sized to
+    // the widest DPT any of their refs can configure — computed here,
+    // so a declaration cannot under-size a slot.
+    let struct_fields: Vec<_> = com_objects
+        .iter()
+        .map(|obj| {
+            let attrs = &obj.passthrough_attrs;
+            let vis = &obj.vis;
+            let ident = &obj.ident;
+            let ty = if obj.is_multi_dpt {
+                let sizes: Vec<_> = obj
+                    .refs
+                    .iter()
+                    .map(|r| {
+                        let dpt = &r.dpt;
+                        quote!(<#dpt as zweidraehte_ets_model::HasDptInfo>::SIZE_BITS)
+                    })
+                    .collect();
+                quote! {
+                    zweidraehte_device::objects::comm::ComObject<
+                        zweidraehte_device::objects::comm::ComObjectStorage<{
+                            let sizes: &[usize] = &[#(#sizes),*];
+                            let mut max = 0usize;
+                            let mut i = 0;
+                            while i < sizes.len() {
+                                if sizes[i] > max {
+                                    max = sizes[i];
+                                }
+                                i += 1;
+                            }
+                            (max + 7) / 8
+                        }>,
+                    >
                 }
+            } else {
+                let inner_ty = &obj.inner_ty;
+                quote!(zweidraehte_device::objects::comm::ComObject<#inner_ty>)
+            };
+            quote! {
+                #(#attrs)*
+                #vis #ident: #ty
             }
+        })
+        .collect();
+
+    let runtime_struct = quote! {
+        #(#passthrough_attrs)*
+        #struct_vis struct #struct_name {
+            #(#struct_fields),*
         }
-    } else {
-        quote!()
     };
 
-    Ok(quote! {
+    // ── Assembly ────────────────────────────────────────────────────
+    //
+    // The metadata half (Index enum, the ETS_* consts) references only
+    // `zweidraehte-ets-model` types and is emitted unconditionally; the
+    // runtime half needs `zweidraehte-device` and goes behind the
+    // declaration's `runtime_cfg` feature when one is named — with a
+    // unit struct standing in so the metadata has a type to hang off.
+    let unconditional = quote! {
         /// Enum with all communication object names and their indices
         #[allow(dead_code)]
         #[derive(core::marker::ConstParamTy, Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,24 +494,6 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
         pub enum Index {
             #(#index_variants),*
         }
-
-        #[allow(dead_code)]
-        impl zweidraehte_device::objects::comm::ComObjectIndex for Index {
-            fn from_index(idx: u16) -> Option<Self> {
-                match idx {
-                    #(#index_from_arms,)*
-                    _ => None,
-                }
-            }
-
-            fn index(&self) -> u16 {
-                *self as u16
-            }
-        }
-
-        #max_size_helper
-
-        #com_objects_impl
 
         impl #struct_name {
             /// ETS communication object definitions for this module.
@@ -450,8 +516,98 @@ pub(crate) fn derive_ets_com_objects_impl(input: &DeriveInput) -> syn::Result<To
         impl zweidraehte_ets_model::HasModuleCommObjects for #struct_name {
             const ETS_COMM_OBJECTS: &'static [zweidraehte_ets_model::EtsCommObjectDef] = #struct_name::ETS_COMM_OBJECTS;
         }
+    };
 
-        #selector_impl
+    let index_trait_impl = quote! {
+        #[allow(dead_code)]
+        impl zweidraehte_device::objects::comm::ComObjectIndex for Index {
+            fn from_index(idx: u16) -> Option<Self> {
+                match idx {
+                    #(#index_from_arms,)*
+                    _ => None,
+                }
+            }
+
+            fn index(&self) -> u16 {
+                *self as u16
+            }
+        }
+    };
+
+    // Per-item runtime pieces, so a cfg attribute can prefix each.
+    let runtime_items = [runtime_struct, index_trait_impl, com_objects_impl, selector_impl];
+
+    match runtime_cfg {
+        Some(feature) => {
+            let gated: Vec<_> = runtime_items
+                .iter()
+                .filter(|t| !t.is_empty())
+                .map(|t| apply_cfg_to_items(t, &feature))
+                .collect::<syn::Result<Vec<_>>>()?;
+            let unit_docs = &passthrough_attrs;
+            Ok(quote! {
+                #unconditional
+
+                #(#gated)*
+
+                /// Metadata-only stand-in: the runtime container needs
+                /// the device stack, which this build does not carry.
+                #(#unit_docs)*
+                #[cfg(not(feature = #feature))]
+                #struct_vis struct #struct_name;
+            })
+        }
+        None => Ok(quote! {
+            #unconditional
+            #(#runtime_items)*
+        }),
+    }
+}
+
+/// Re-emit the declaration's struct with the `#[ets]`/`#[ets_ref]`
+/// attributes consumed (module-based declarations keep their field
+/// types verbatim — the array of module objects is already a runtime
+/// type).
+fn emit_struct_verbatim(input: &syn::ItemStruct) -> TokenStream2 {
+    let attrs = strip_ets_attrs(&input.attrs);
+    let vis = &input.vis;
+    let ident = &input.ident;
+    let fields: Vec<_> = match &input.fields {
+        Fields::Named(named) => named
+            .named
+            .iter()
+            .map(|f| {
+                let attrs = strip_ets_attrs(&f.attrs);
+                let vis = &f.vis;
+                let ident = &f.ident;
+                let ty = &f.ty;
+                quote! { #(#attrs)* #vis #ident: #ty }
+            })
+            .collect(),
+        _ => unreachable!("checked for named fields above"),
+    };
+    quote! {
+        #(#attrs)*
+        #vis struct #ident {
+            #(#fields),*
+        }
+    }
+}
+
+/// Attach `#[cfg(feature = ...)]` to every top-level item in `tokens`.
+///
+/// The runtime token streams may hold several items (an impl plus the
+/// bus hook, the selector enum plus its accessor impls); a cfg
+/// attribute only applies to one item, so the stream is parsed back
+/// into items and each gets its own.
+fn apply_cfg_to_items(tokens: &TokenStream2, feature: &str) -> syn::Result<TokenStream2> {
+    let file: syn::File = syn::parse2(quote!(#tokens))?;
+    let items = file.items;
+    Ok(quote! {
+        #(
+            #[cfg(feature = #feature)]
+            #items
+        )*
     })
 }
 
@@ -1193,6 +1349,11 @@ fn parse_ets_ref_attrs(attrs: &[Attribute]) -> syn::Result<Vec<ComObjectRefAttrs
 struct ComObjectField {
     /// Field identifier
     ident: syn::Ident,
+    /// Field attributes minus the consumed `#[ets]`/`#[ets_ref]` ones,
+    /// forwarded onto the emitted runtime struct's field.
+    passthrough_attrs: Vec<Attribute>,
+    /// Field visibility, forwarded likewise.
+    vis: syn::Visibility,
     /// Inner type (the T in ComObject<T>, or the type itself if not wrapped)
     inner_ty: syn::Type,
     /// Parsed #[ets(...)] attributes

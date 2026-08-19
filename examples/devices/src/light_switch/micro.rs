@@ -22,12 +22,13 @@ use zweidraehte_microdevice::co_flags;
 use zweidraehte_microdevice::device::Microdevice;
 use zweidraehte_microdevice::families::CoDescriptor;
 use zweidraehte_microdevice::families::bcu2::Bcu2DeviceDefinition;
+use zweidraehte_microdevice::families::builder::{build_bcu2_descriptors, build_system7_descriptors};
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
 use zweidraehte_microdevice::family::MicroDeviceFamily;
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::com_object::ComObjectFlags;
 
 use super::LightSwitchDevice;
+use super::comm_objs::LightSwitchComObjects;
 use super::params::{ButtonConfig, ButtonsMode, DEFAULT_PARAM_BYTES, LightSwitchParams, RockerDirection, SwitchAction};
 
 // ============================================================================
@@ -40,21 +41,9 @@ use super::params::{ButtonConfig, ButtonsMode, DEFAULT_PARAM_BYTES, LightSwitchP
 const BTN1_ASAPS: (u8, u8, u8) = (0, 1, 2);
 const BTN2_ASAPS: (u8, u8, u8) = (3, 4, 5);
 
-/// Config octets, from the same flag sets `LightSwitchComObjects`
-/// declares: primary and secondary transmit (C|T), status is the
-/// feedback sink (C|W|T|U|ROI). All at low priority (bits 1:0 = 11b).
-const PRIORITY_LOW: u8 = 0x03;
-const CONFIG_PRIMARY: u8 = ComObjectFlags::CE_FLAG_MASK | ComObjectFlags::TE_FLAG_MASK | PRIORITY_LOW;
-const CONFIG_STATUS: u8 = ComObjectFlags::CE_FLAG_MASK
-    | ComObjectFlags::WE_FLAG_MASK
-    | ComObjectFlags::TE_FLAG_MASK
-    | ComObjectFlags::UE_FLAG_MASK
-    | ComObjectFlags::ROI_FLAG_MASK
-    | PRIORITY_LOW;
-
-/// Page-0 RAM addresses of the six object values, one byte each. The
-/// widest configurable DPT is one byte (`DPT_SceneControl`), so a
-/// reconfigured object can never outgrow its slot.
+/// Page-0 RAM address of the first object's value slot. Slot widths
+/// come from the declaration (the widest DPT each object's refs can
+/// configure), so the layout follows the metadata.
 const DATA_BASE: u8 = 0xC6;
 /// Page-0 RAM address of the first RAM-flags byte.
 const RAM_FLAGS_PTR: u8 = 0xD0;
@@ -62,38 +51,22 @@ const RAM_FLAGS_PTR: u8 = 0xD0;
 /// The RT2 group object table of the BCU2 variant — the rows the boot
 /// image bakes and the mask-0020 product database ships as segment
 /// defaults, so a download's `Cot2::overlay` keeps the pointers while
-/// re-typing the objects per configured DPT.
-pub const CO_DESCRIPTORS_BCU2: [CoDescriptor; 6] = {
-    let mut t = [CoDescriptor { data_ptr: 0, config: 0, value_type: 0 }; 6];
-    let mut i = 0;
-    while i < 6 {
-        t[i] = CoDescriptor {
-            data_ptr: DATA_BASE + i as u8,
-            // Status objects sit at triple position 1.
-            config: if i % 3 == 1 { CONFIG_STATUS } else { CONFIG_PRIMARY },
-            // 1-bit switch, the factory default configuration.
-            value_type: 0x00,
-        };
-        i += 1;
-    }
-    t
-};
+/// re-typing the objects per configured DPT. Derived from the same
+/// [`LightSwitchComObjects`] declaration the full stack builds its
+/// runtime container from — one source, no drift.
+pub const CO_DESCRIPTORS_BCU2: [CoDescriptor; 6] = build_bcu2_descriptors(
+    LightSwitchComObjects::ETS_COMM_OBJECTS,
+    LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+    DATA_BASE,
+);
 
 /// The M112 group object table of the micro System 7 variant — the
 /// same six rows with the family's two-byte data pointers.
-pub const CO_DESCRIPTORS_S7: [System7CoDescriptor; 6] = {
-    let mut t = [System7CoDescriptor { data_ptr: 0, config: 0, value_type: 0 }; 6];
-    let mut i = 0;
-    while i < 6 {
-        t[i] = System7CoDescriptor {
-            data_ptr: CO_DESCRIPTORS_BCU2[i].data_ptr as u16,
-            config: CO_DESCRIPTORS_BCU2[i].config,
-            value_type: CO_DESCRIPTORS_BCU2[i].value_type,
-        };
-        i += 1;
-    }
-    t
-};
+pub const CO_DESCRIPTORS_S7: [System7CoDescriptor; 6] = build_system7_descriptors(
+    LightSwitchComObjects::ETS_COMM_OBJECTS,
+    LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+    DATA_BASE as u16,
+);
 
 // ============================================================================
 // The device definitions
@@ -521,6 +494,30 @@ mod tests {
         assert_eq!(b.poll(true, 1000, 50, 500), None);
         assert_eq!(b.poll(false, 1100, 50, 500), None);
         assert_eq!(b.poll(false, 1160, 50, 500), Some(MicroButtonEvent::LongPressRelease));
+    }
+
+    /// Pins the derived tables to the values the hand-written ones
+    /// carried: the boot images, the product-database segment data and
+    /// the download overlay all depend on these bytes.
+    #[test]
+    fn derived_co_descriptors_match_the_wire_tables() {
+        for (i, row) in CO_DESCRIPTORS_BCU2.iter().enumerate() {
+            assert_eq!(row.data_ptr, 0xC6 + i as u8, "object {i} slot");
+            // Primary/secondary transmit (C|T|LOW), status is the
+            // feedback sink (C|W|T|U|ROI|LOW).
+            let expected_config = if i % 3 == 1 { 0xF7 } else { 0x47 };
+            assert_eq!(row.config, expected_config, "object {i} config");
+            // Factory configuration is Switch everywhere: 1-bit
+            // primaries/status, and the secondaries' declared default
+            // is the 4-bit dimming control.
+            let expected_type = if i % 3 == 2 { 0x03 } else { 0x00 };
+            assert_eq!(row.value_type, expected_type, "object {i} type");
+        }
+        for (bcu2, s7) in CO_DESCRIPTORS_BCU2.iter().zip(CO_DESCRIPTORS_S7.iter()) {
+            assert_eq!(s7.data_ptr, bcu2.data_ptr as u16);
+            assert_eq!(s7.config, bcu2.config);
+            assert_eq!(s7.value_type, bcu2.value_type);
+        }
     }
 
     #[test]

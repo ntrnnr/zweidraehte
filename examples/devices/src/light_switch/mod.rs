@@ -30,7 +30,6 @@
 
 #[cfg(feature = "full")]
 pub mod app;
-#[cfg(feature = "full")]
 pub mod comm_objs;
 #[cfg(feature = "full")]
 pub mod easter_egg;

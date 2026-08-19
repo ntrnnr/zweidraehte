@@ -347,11 +347,17 @@ pub fn derive_ets_enum(input: TokenStream) -> TokenStream {
 /// - `#[ets_ref(..., read = true/false)]` - Override read flag
 /// - `#[ets_ref(..., write = true/false)]` - Override write flag
 /// - etc. for other flags
-#[proc_macro_derive(EtsComObjects, attributes(ets, ets_ref))]
-pub fn derive_ets_com_objects(input: TokenStream) -> TokenStream {
-    let input = parse_macro_input!(input as DeriveInput);
-
-    match ets_com_objects::derive_ets_com_objects_impl(&input) {
+/// Declared as an **attribute macro** so the struct itself stays
+/// stack-agnostic: fields carry the object's factory-default DPT type,
+/// and the macro emits the runtime container (`ComObject<...>` fields,
+/// storage sized to the widest `#[ets_ref]` DPT) alongside the pure
+/// ETS metadata. With `runtime_cfg = "feature"` the runtime half is
+/// emitted behind `#[cfg(feature = "...")]` of the *declaring* crate,
+/// leaving a unit struct plus metadata for builds without the device
+/// stack.
+#[proc_macro_attribute]
+pub fn ets_com_objects(args: TokenStream, item: TokenStream) -> TokenStream {
+    match ets_com_objects::ets_com_objects_impl(args.into(), item.into()) {
         Ok(tokens) => tokens.into(),
         Err(err) => err.to_compile_error().into(),
     }

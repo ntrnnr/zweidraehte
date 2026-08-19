@@ -70,47 +70,47 @@ use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO,
 
 pub mod comm_objs {
     use zweidraehte_device::objects::comm::ComObject;
-    use zweidraehte_ets_model::EtsComObjects;
+    use zweidraehte_ets_model::ets_com_objects;
     use zweidraehte_proto::dpt::{DPT_Switch, DPT_Value_1_Ucount};
 
     // `bus_hook` keeps the derive-generated `ComObjects` dispatch but lets
     // us write the `ComObjectBusHook` impl (the shadow-object mirroring)
     // ourselves — see the hook impl below the module.
-    #[derive(EtsComObjects)]
+    #[ets_com_objects]
     #[ets(bus_hook)]
     pub struct System7ComObjects {
         /// GO0: Main 1-bit object (UINT1) whose flags/value the shadows
         /// GO1-GO3 access.
         #[ets(index = 1)]
-        pub go_0: ComObject<DPT_Switch>,
+        pub go_0: DPT_Switch,
 
         /// GO1: GO0's communication flags (read request, transmission
         /// request, error, update).
         #[ets(index = 2)]
-        pub go_1_comm_flags: ComObject<DPT_Value_1_Ucount>,
+        pub go_1_comm_flags: DPT_Value_1_Ucount,
 
         /// GO2: GO0's configuration flags from the COT. Seeded with
         /// GO0's default flags byte so the shadow value is sensible
         /// before the first `prepare_read` recomputes it.
         #[ets(index = 3, initial = DPT_Value_1_Ucount::from(0xDFu8))]
-        pub go_2_config_flags: ComObject<DPT_Value_1_Ucount>,
+        pub go_2_config_flags: DPT_Value_1_Ucount,
 
         /// GO3: GO0's value as 8-bit (read/write without touching flags).
         #[ets(index = 4)]
-        pub go_3_value: ComObject<DPT_Value_1_Ucount>,
+        pub go_3_value: DPT_Value_1_Ucount,
 
         /// GO4: Standalone read-on-init test object.
         #[ets(index = 5)]
-        pub go_4: ComObject<DPT_Value_1_Ucount>,
+        pub go_4: DPT_Value_1_Ucount,
 
         /// GO5: 8-bit object for network layer test 3.1 (an octet-wide
         /// object answers a read in the long frame format).
         #[ets(index = 6)]
-        pub go_5_network_test: ComObject<DPT_Value_1_Ucount>,
+        pub go_5_network_test: DPT_Value_1_Ucount,
 
         /// GO6: 1-bit object for transport layer test 2.1.
         #[ets(index = 7)]
-        pub go_6_transport_test: ComObject<DPT_Switch>,
+        pub go_6_transport_test: DPT_Switch,
     }
 }
 

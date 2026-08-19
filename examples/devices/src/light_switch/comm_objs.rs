@@ -22,13 +22,17 @@
 //! back to the default if the user hasn't changed it.
 
 use super::params::ButtonConfigDiscriminant;
-use zweidraehte_device::objects::comm::{ComObject, ComObjectStorage};
-use zweidraehte_device::prelude::*;
-use zweidraehte_ets_model::EtsComObjects;
+use zweidraehte_ets_model::ets_com_objects;
 use zweidraehte_proto::dpt::*;
 
 /// Communication objects for the 2-button light switch.
-#[derive(EtsComObjects)]
+///
+/// The declaration is stack-agnostic: each field's type is the
+/// object's factory-default DPT, and the macro derives everything —
+/// the ETS metadata (always), and the full stack's runtime container
+/// only under the `full` feature, so the micro flavor reads the same
+/// declaration without carrying the device stack.
+#[ets_com_objects(runtime_cfg = "full")]
 pub struct LightSwitchComObjects {
     // ====================================================================
     // Button 1
@@ -43,14 +47,14 @@ pub struct LightSwitchComObjects {
         index = 0,
         display = "Button 1 switching",
         function = "Primary output",
-        flags = C | T,
+        flags = C | T | LOW,
         selector_param = "button1_config_selector"
     )]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Switch, text = "Button 1 {{btn1_description:}} switching", function = "Switch on/off")]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Dimmer, text = "Button 1 {{btn1_description:}} switching", function = "Switch toggle")]
     #[ets_ref(dpt = DPT_UpDown, when = ButtonConfigDiscriminant::Blind, text = "Button 1 {{btn1_description:}} move", function = "Move up/down")]
     #[ets_ref(dpt = DPT_SceneControl, when = ButtonConfigDiscriminant::Scene, text = "Button 1 {{btn1_description:}} scene", function = "Scene control")]
-    pub btn1_primary: ComObject<ComObjectStorage<1>>,
+    pub btn1_primary: DPT_Switch,
 
     /// Button 1 status feedback — receives current actuator state.
     ///
@@ -61,12 +65,12 @@ pub struct LightSwitchComObjects {
         index = 1,
         display = "Button 1 status",
         function = "Status feedback",
-        flags = C | W | T | U | ROI,
+        flags = C | W | T | U | ROI | LOW,
         selector_param = "button1_config_selector"
     )]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Switch, text = "Button 1 {{btn1_description:}} status", function = "Switch status")]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Dimmer, text = "Button 1 {{btn1_description:}} status", function = "Dimmer status")]
-    pub btn1_status: ComObject<ComObjectStorage<1>>,
+    pub btn1_status: DPT_Switch,
 
     /// Button 1 secondary output — only active in Dimmer and Blind modes.
     ///
@@ -76,12 +80,12 @@ pub struct LightSwitchComObjects {
         index = 2,
         display = "Button 1 dimming/step",
         function = "Secondary output",
-        flags = C | T,
+        flags = C | T | LOW,
         selector_param = "button1_config_selector"
     )]
     #[ets_ref(dpt = DPT_Control_Dimming, when = ButtonConfigDiscriminant::Dimmer, text = "Button 1 {{btn1_description:}} dimming", function = "Dimming control")]
     #[ets_ref(dpt = DPT_Step, when = ButtonConfigDiscriminant::Blind, text = "Button 1 {{btn1_description:}} step", function = "Step/stop")]
-    pub btn1_secondary: ComObject<ComObjectStorage<1>>,
+    pub btn1_secondary: DPT_Control_Dimming,
 
     // ====================================================================
     // Button 2
@@ -91,36 +95,36 @@ pub struct LightSwitchComObjects {
         index = 3,
         display = "Button 2 switching",
         function = "Primary output",
-        flags = C | T,
+        flags = C | T | LOW,
         selector_param = "button2_config_selector"
     )]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Switch, text = "Button 2 {{btn2_description:}} switching", function = "Switch on/off")]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Dimmer, text = "Button 2 {{btn2_description:}} switching", function = "Switch toggle")]
     #[ets_ref(dpt = DPT_UpDown, when = ButtonConfigDiscriminant::Blind, text = "Button 2 {{btn2_description:}} move", function = "Move up/down")]
     #[ets_ref(dpt = DPT_SceneControl, when = ButtonConfigDiscriminant::Scene, text = "Button 2 {{btn2_description:}} scene", function = "Scene control")]
-    pub btn2_primary: ComObject<ComObjectStorage<1>>,
+    pub btn2_primary: DPT_Switch,
 
     /// Button 2 status feedback — receives current actuator state.
     #[ets(
         index = 4,
         display = "Button 2 status",
         function = "Status feedback",
-        flags = C | W | T | U | ROI,
+        flags = C | W | T | U | ROI | LOW,
         selector_param = "button2_config_selector"
     )]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Switch, text = "Button 2 {{btn2_description:}} status", function = "Switch status")]
     #[ets_ref(dpt = DPT_Switch, when = ButtonConfigDiscriminant::Dimmer, text = "Button 2 {{btn2_description:}} status", function = "Dimmer status")]
-    pub btn2_status: ComObject<ComObjectStorage<1>>,
+    pub btn2_status: DPT_Switch,
 
     /// Button 2 secondary output — only active in Dimmer and Blind modes.
     #[ets(
         index = 5,
         display = "Button 2 dimming/step",
         function = "Secondary output",
-        flags = C | T,
+        flags = C | T | LOW,
         selector_param = "button2_config_selector"
     )]
     #[ets_ref(dpt = DPT_Control_Dimming, when = ButtonConfigDiscriminant::Dimmer, text = "Button 2 {{btn2_description:}} dimming", function = "Dimming control")]
     #[ets_ref(dpt = DPT_Step, when = ButtonConfigDiscriminant::Blind, text = "Button 2 {{btn2_description:}} step", function = "Step/stop")]
-    pub btn2_secondary: ComObject<ComObjectStorage<1>>,
+    pub btn2_secondary: DPT_Control_Dimming,
 }

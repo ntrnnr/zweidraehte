@@ -16,11 +16,11 @@
 //!
 //! ## 1. Communication Objects (`DimmerChannelObjects`)
 //!
-//! Define comm objects FIRST with `#[derive(EtsComObjects)]`. This single type serves both
+//! Define comm objects FIRST with `#[ets_com_objects]`. This single type serves both
 //! ETS metadata generation AND runtime storage:
 //!
 //! ```rust,ignore
-//! #[derive(EtsComObjects)]
+//! #[ets_com_objects]
 //! pub struct DimmerChannelObjects {
 //!     #[ets(index = 0, display = "Switch", function = "Switch on/off",
 //!           flags = C | R | W | T, text_template = "Ch{{ChNo}} Switch: {{0}}")]
@@ -142,7 +142,7 @@
 //! Use `#[ets(module = ModuleType)]` on comm object arrays too:
 //!
 //! ```rust,ignore
-//! #[derive(EtsComObjects)]
+//! #[ets_com_objects]
 //! pub struct DimmerCommObjects {
 //!     #[ets(module = DimmerChannelModule)]
 //!     pub channels: [DimmerChannelObjects; 4],
@@ -223,14 +223,14 @@
 //! # Module Structure Note
 //!
 //! The `comm_objs` module contains nested submodules to avoid `Index` type name
-//! collisions from multiple `#[derive(EtsComObjects)]` invocations. Each derive
+//! collisions from multiple `#[ets_com_objects]` invocations. Each derive
 //! generates its own `Index` type, so they need separate namespaces.
 
 use serde::{Deserialize, Serialize};
 use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use zweidraehte_device::prelude::*;
-use zweidraehte_ets_model::{EtsComObjects, EtsEnum, ets_params, ets_union};
+use zweidraehte_ets_model::{EtsEnum, ets_com_objects, ets_params};
 use zweidraehte_proto::dpt::{DPT_Scaling, DPT_State, DPT_Switch};
 
 use zweidraehte_knxprod::definition::module::ModuleCollection;
@@ -471,7 +471,7 @@ impl DeviceParams {
 // Dimmer Channel Communication Objects
 // ============================================================================
 //
-// Define the communication objects FIRST using #[derive(EtsComObjects)].
+// Define the communication objects FIRST using #[ets_com_objects].
 // This single type provides BOTH ETS metadata AND runtime storage.
 
 /// Communication objects for a dimmer channel.
@@ -483,7 +483,7 @@ impl DeviceParams {
 /// Text template substitution in ETS:
 /// - `{{ChNo}}` is replaced by the channel number argument
 /// - `{{0}}` is replaced by the value of the parameter referenced by `TextParameterRefId`
-#[derive(EtsComObjects)]
+#[ets_com_objects]
 pub struct DimmerChannelObjects {
     #[ets(
         index = 0,
@@ -492,7 +492,7 @@ pub struct DimmerChannelObjects {
         flags = C | R | W | T,
         text_template = "Ch{{ChNo}} Switch: {{0}}"
     )]
-    pub switch: ComObject<DPT_Switch>,
+    pub switch: DPT_Switch,
 
     #[ets(
         index = 1,
@@ -501,7 +501,7 @@ pub struct DimmerChannelObjects {
         flags = C | R | W | T,
         text_template = "Ch{{ChNo}} Dim: {{0}}"
     )]
-    pub dim_value: ComObject<DPT_Scaling>,
+    pub dim_value: DPT_Scaling,
 
     #[ets(
         index = 2,
@@ -510,7 +510,7 @@ pub struct DimmerChannelObjects {
         flags = C | T,
         text_template = "Ch{{ChNo}} Status: {{0}}"
     )]
-    pub status: ComObject<DPT_State>,
+    pub status: DPT_State,
 }
 
 // ============================================================================
@@ -617,7 +617,7 @@ pub mod comm_objs {
     ///
     /// Auto-generates `ComObjects` impl and `channel_object_index(instance, local_obj)` helper.
     /// See module-level docs for usage examples.
-    #[derive(EtsComObjects)]
+    #[ets_com_objects]
     pub struct DimmerCommObjects {
         #[ets(module = DimmerChannelModule)]
         pub channels: [DimmerChannelObjects; NUM_CHANNELS],
