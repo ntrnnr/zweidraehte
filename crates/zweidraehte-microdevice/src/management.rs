@@ -12,6 +12,7 @@
 
 use heapless::Vec;
 use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, LoadState};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse;
@@ -150,8 +151,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         let has_properties = F::OBJECT_COUNT > 0;
         match code {
             ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6),
-            ApciCode::MemoryRead => self.memory_read(small6, payload),
-            ApciCode::MemoryWrite => self.memory_write(small6, payload),
+            ApciCode::MemoryRead if connection_oriented => self.memory_read(small6, payload, access),
+            ApciCode::MemoryWrite if connection_oriented => self.memory_write(small6, payload, access),
             // Authorization belongs to a transport connection. In
             // particular, a connectionless System 7 request must not
             // acquire or reuse another client's connection level.
@@ -220,22 +221,41 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         (off < F::EEPROM_SIZE).then_some(off)
     }
 
-    fn memory_read(&mut self, count: u8, payload: &[u8]) -> ServiceResult {
+    fn memory_response(address: &[u8], count: u8, bytes: &[u8]) -> ServiceResult {
+        let mut data: Vec<u8, 14> = Vec::new();
+        let _ = data.extend_from_slice(address);
+        let _ = data.extend_from_slice(bytes);
+        ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, count, &data))
+    }
+
+    fn memory_read(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult {
         if payload.len() != 2 {
             return ServiceResult::None;
         }
         let addr = u16::from_be_bytes([payload[0], payload[1]]);
-        // The 15-octet APDU caps a response at 12 data bytes.
-        let count = count.min(12);
+        // The 15-octet APDU caps a response at 12 data bytes. KNX error
+        // handling rejects an oversized request with count zero; silently
+        // truncating would claim success for a different operation.
+        if count > 12
+            || !memory_access_allowed(
+                F::MEMORY_REGIONS,
+                addr,
+                usize::from(count),
+                MemoryOperation::Read,
+                access.access_level,
+                F::AUTH_LEVELS as u8,
+            )
+        {
+            return Self::memory_response(payload, 0, &[]);
+        }
         let mut data: Vec<u8, 14> = Vec::new();
-        let _ = data.extend_from_slice(payload);
         for i in 0..count {
             let _ = data.push(self.mem_read_byte(addr.wrapping_add(u16::from(i))));
         }
-        ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, count, &data))
+        Self::memory_response(payload, count, &data)
     }
 
-    fn memory_write(&mut self, count: u8, payload: &[u8]) -> ServiceResult {
+    fn memory_write(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult {
         if payload.len() < 2 {
             return ServiceResult::None;
         }
@@ -244,15 +264,29 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         if data.len() != usize::from(count) {
             return ServiceResult::None;
         }
+        if !memory_access_allowed(
+            F::MEMORY_REGIONS,
+            addr,
+            data.len(),
+            MemoryOperation::Write,
+            access.access_level,
+            F::AUTH_LEVELS as u8,
+        ) {
+            return if self.mgmt.verify_mode() {
+                Self::memory_response(&payload[..2], 0, &[])
+            } else {
+                ServiceResult::None
+            };
+        }
         if !F::memory_write_intercept(addr, data, self.eeprom.as_mut(), &mut self.mgmt) {
             for (i, &byte) in data.iter().enumerate() {
                 self.mem_write_byte(addr.wrapping_add(i as u16), byte);
             }
         }
-        // Verify mode: answer with the bytes as the memory now holds
-        // them, so the client sees exactly what stuck.
+        // A successful verify response echoes the accepted write, matching
+        // the full stack and allowing a write-only region to confirm success.
         if self.mgmt.verify_mode() {
-            return self.memory_read(count, &payload[..2]);
+            return Self::memory_response(&payload[..2], count, data);
         }
         ServiceResult::None
     }

@@ -63,7 +63,7 @@ pub struct System7DeviceDefinition {
     pub app_params: &'static [u8],
 }
 
-impl<const EEPROM_LEN: usize, const COT_ADDR: u16> System7Family<EEPROM_LEN, COT_ADDR> {
+impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P> System7Family<EEPROM_LEN, COT_ADDR, P> {
     /// Build the boot EEPROM image. Panics when the definition cannot
     /// fit, which is a compile-time error in practice since
     /// definitions are `const`.

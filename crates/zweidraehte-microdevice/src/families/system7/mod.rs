@@ -7,4 +7,4 @@ pub mod family;
 pub mod offsets;
 
 pub use device_def::{System7CoDescriptor, System7DeviceDefinition};
-pub use family::System7Family;
+pub use family::{StandardSystem7MemoryPolicy, System7Family};

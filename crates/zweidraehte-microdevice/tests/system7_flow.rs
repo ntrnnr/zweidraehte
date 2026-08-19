@@ -6,15 +6,52 @@
 mod common;
 use common::{CLIENT, DUT, apdu, connect, exchange};
 
+use zweidraehte_microdevice::MemoryAccessPolicy;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
 use zweidraehte_microdevice::frame::{ApciCode, FrameView, Tpci, data_frame};
+use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadState, RunState};
 
 /// The DUT product: 1 KiB of user EEPROM from 4000h, the group object
 /// table published at 4200h.
 type Fam = System7Family<0x400, 0x4200>;
+
+/// Test-only policy mirroring the conformance fixture's adjacent open,
+/// direction-protected, and level-guarded regions. Keeping it here proves
+/// that a product can select protection without putting fixture addresses in
+/// the shipping System 7 profile.
+struct ProtectedMemoryPolicy;
+
+impl MemoryAccessPolicy for ProtectedMemoryPolicy {
+    const REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(0x0000, 0x100),
+        MemoryRegion::open(0x0100, 1),
+        MemoryRegion::open(0x0104, 12),
+        MemoryRegion::open(0x0700, 0x100),
+        MemoryRegion::open(0x4000, 0x400),
+        MemoryRegion::open(0x4400, 0x100),
+        MemoryRegion::read_only(0x4500, 0x10, MemoryPermission::Open),
+        MemoryRegion::write_only(0x4510, 0x10, MemoryPermission::Open),
+        MemoryRegion::new(
+            0x4520,
+            0xE0,
+            MemoryPermission::Level(AccessLevel::Configuration),
+            MemoryPermission::Level(AccessLevel::Configuration),
+        ),
+        MemoryRegion::new(
+            0x4600,
+            0x100,
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+        ),
+        MemoryRegion::read_only(0xB6EA, 4, MemoryPermission::Open),
+    ];
+}
+
+type ProtectedFam = System7Family<0x700, 0x4200, ProtectedMemoryPolicy>;
 
 static COS: &[System7CoDescriptor] = &[
     // ASAP 0: 1-bit switch input, write+update enabled.
@@ -43,20 +80,38 @@ fn definition() -> System7DeviceDefinition {
     }
 }
 
-fn device() -> Microdevice<Fam> {
-    let def = definition();
-    let identity = DeviceIdentity {
+fn identity() -> DeviceIdentity {
+    DeviceIdentity {
         serial_number: [0, 0x83, 0x07, 0x05, 0, 1],
         order_info: [0; 10],
         hardware_type: [0, 0x83, 0, 0, 0x07, 0x05],
-    };
-    let mut dev = Microdevice::new(Fam::build_eeprom(&def), identity, 1);
+    }
+}
+
+fn device() -> Microdevice<Fam> {
+    let def = definition();
+    let mut dev = Microdevice::new(Fam::build_eeprom(&def), identity(), 1);
     // Factory image with the tables and application marked loaded,
     // like a programmed device fresh off the line. App2 stays empty.
     for (machine, table_ref) in Fam::factory_table_refs(&def).into_iter().enumerate().take(3) {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
         dev.mgmt.lsm[machine].table_ref = table_ref;
     }
+    dev
+}
+
+fn protected_memory_device() -> Microdevice<ProtectedFam> {
+    let mut eeprom = ProtectedFam::build_eeprom(&definition());
+    eeprom[0x400] = 0x0F;
+    eeprom[0x4FF] = 0x22;
+    eeprom[0x500] = 0x11;
+    eeprom[0x520] = 0xAA;
+    eeprom[0x600] = 0xFF;
+    let mut dev = Microdevice::new(eeprom, identity(), 1);
+    dev.mgmt.auth_keys[0] = [0xAA; 4];
+    dev.mgmt.auth_keys[1] = [0xBB; 4];
+    dev.mgmt.reset_connection_auth::<ProtectedFam>();
+    assert_eq!(dev.mgmt.auth_level, 2, "the default key grants configuration access");
     dev
 }
 
@@ -160,6 +215,60 @@ fn property_access_is_request_scoped() {
         exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[0, 14, 0x10, 0x01, 0x04], 0).expect("write answered");
     assert_eq!(apdu(&rsp)[6], 0x04);
     assert_eq!(dev.mgmt.device_control, 0x04);
+}
+
+#[test]
+fn memory_access_is_region_and_connection_scoped() {
+    let mut dev = protected_memory_device();
+
+    // A_Memory services are connection-oriented even on System 7, whose
+    // device-oriented property services also accept unnumbered requests.
+    let unnumbered =
+        data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::MemoryRead, 1, &[0x45, 0x20]);
+    assert!(dev.poll(PollInput::Frame(&unnumbered), 0).frames.is_empty());
+
+    connect(&mut dev);
+
+    // The default key grants level 2: the configuration block is visible,
+    // while the product-manufacturer block answers with count zero.
+    let rsp = exchange(&mut dev, 0, ApciCode::MemoryRead, 1, &[0x45, 0x20], 0).expect("level-2 read answered");
+    assert_eq!(apdu(&rsp)[4], 0xAA);
+    let rsp = exchange(&mut dev, 1, ApciCode::MemoryRead, 1, &[0x46, 0x00], 0).expect("denial answered");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 0);
+
+    // Verify mode makes rejected writes observable without changing memory.
+    dev.mgmt.device_control = 0x04;
+    let rsp = exchange(&mut dev, 2, ApciCode::MemoryWrite, 1, &[0x46, 0x00, 0x55], 0).expect("denial answered");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 0);
+    assert_eq!(dev.eeprom_image()[0x600], 0xFF);
+
+    let rsp = exchange(&mut dev, 3, ApciCode::MemoryRead, 1, &[0x45, 0x00], 0).expect("read-only region read");
+    assert_eq!(apdu(&rsp)[4], 0x11);
+    let rsp = exchange(&mut dev, 4, ApciCode::MemoryWrite, 1, &[0x45, 0x00, 0x33], 0).expect("read-only denial");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 0);
+    assert_eq!(dev.eeprom_image()[0x500], 0x11);
+
+    let rsp = exchange(&mut dev, 5, ApciCode::MemoryRead, 1, &[0x45, 0x10], 0).expect("write-only denial");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 0);
+    let rsp = exchange(&mut dev, 6, ApciCode::MemoryWrite, 1, &[0x45, 0x10, 0x44], 0).expect("write confirmed");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 1);
+    assert_eq!(apdu(&rsp)[4], 0x44);
+
+    // An operation is atomic with respect to regions: it cannot begin in
+    // open memory and spill into a differently protected neighbour.
+    let rsp = exchange(&mut dev, 7, ApciCode::MemoryRead, 2, &[0x44, 0xFF], 0).expect("straddle denied");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 0);
+
+    // Oversized standard-frame reads fail instead of being truncated to a
+    // different operation.
+    let rsp = exchange(&mut dev, 8, ApciCode::MemoryRead, 13, &[0x44, 0x00], 0).expect("oversize answered");
+    assert_eq!(apdu(&rsp)[1] & 0x3F, 0);
+
+    let rsp =
+        exchange(&mut dev, 9, ApciCode::AuthorizeRequest, 0, &[0x00, 0xAA, 0xAA, 0xAA, 0xAA], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0);
+    let rsp = exchange(&mut dev, 10, ApciCode::MemoryRead, 1, &[0x46, 0x00], 0).expect("level-1 read answered");
+    assert_eq!(apdu(&rsp)[4], 0xFF);
 }
 
 #[test]

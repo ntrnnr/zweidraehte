@@ -54,7 +54,7 @@ pub use device::{Microdevice, PollInput, PollOutput};
 pub use families::bcu1::{Bcu1DeviceDefinition, Bcu1Family};
 pub use families::bcu2::{Bcu2DeviceDefinition, Bcu2Family};
 pub use families::system7::{System7DeviceDefinition, System7Family};
-pub use family::MicroDeviceFamily;
+pub use family::{MemoryAccessPolicy, MicroDeviceFamily};
 
 /// Crate-internal logging shim: `log` on the host, `defmt` on embedded,
 /// nothing when neither feature is enabled. Only `debug!` exists — this

@@ -12,12 +12,22 @@
 
 use heapless::Vec;
 use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor};
 use zweidraehte_proto::transport::TlStyle;
 
 use crate::device::DeviceIdentity;
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
+
+/// A compile-time memory-region policy.
+///
+/// Profiles with product- or fixture-specific memory protection can provide a
+/// zero-sized implementation and select it as a type parameter without adding
+/// runtime state or dynamic dispatch.
+pub trait MemoryAccessPolicy: 'static {
+    const REGIONS: &'static [MemoryRegion];
+}
 
 /// How load-control records reach the device's load state machines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +183,13 @@ pub trait MicroDeviceFamily: 'static {
     /// [`crate::device::RAM2_CEILING`].
     const RAM2_BASE: u16;
     const RAM2_SIZE: usize;
+    /// Complete absolute memory-access map for the management service.
+    ///
+    /// Storage dispatch remains fixed in the core; these regions state
+    /// which complete requests may reach it and at what authorization
+    /// level. Gaps are inaccessible rather than zero-filled phantom
+    /// memory.
+    const MEMORY_REGIONS: &'static [MemoryRegion];
 
     // ── Fixed EEPROM offsets (from `EEPROM_BASE`) ───────────────────
 

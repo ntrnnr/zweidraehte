@@ -34,6 +34,7 @@ pub mod device;
 pub mod dpt;
 pub mod encoding;
 pub mod error;
+pub mod memory;
 pub mod messages;
 pub mod pid;
 pub mod properties;

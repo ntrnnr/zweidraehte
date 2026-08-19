@@ -71,6 +71,7 @@ pub const NUM_AUTH_KEYS: usize = 3;
 /// `PID_DEVICE_CONTROL` where 07B0h leaves it free. Reusing an object on
 /// a new mask still means reading that mask's column.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum AccessLevel {
     /// Level 0 in both models. DevEdit/TransApp.
     SystemManufacturer,

@@ -30,7 +30,9 @@ use zweidraehte_device::{
     restart::EraseCode,
     storage::StaticIdentity,
 };
-use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::access::AccessLevel;
+use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, check_memory_access};
+use zweidraehte_proto::{AccessContext, MAX_ACCESS_LEVELS};
 
 // ============================================================================
 // Communication Objects (BCU1-style with shadow objects)
@@ -840,24 +842,28 @@ impl ConformanceMemoryMap {
     /// Base address for user memory region (for A_UserMemory_* tests)
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 
-    /// Whether `[address, end_address)` starts inside a region and runs
-    /// past its end — a *partly protected* access.
-    ///
-    /// The extended memory services answer with the protection they meet
-    /// rather than "address void": the address is not void, part of what
-    /// was asked for simply cannot be served. TSS J 5.1.5 writes six
-    /// octets starting on the last read-only octet and expects FBh
-    /// (E_READ_ONLY); 5.2.4 reads the same range and expects FAh
-    /// (E_ACCESS_WRITE_ONLY). Both answer for the region the access
-    /// *starts* in.
-    pub(crate) fn straddles(address: u16, end_address: u16, base: u16, size: u16) -> bool {
-        address >= base && address < base + size && end_address > base + size
-    }
-
-    /// Whether `octet` falls inside `[base, base + size)`.
-    fn within(octet: u16, base: u16, size: u16) -> bool {
-        octet >= base && octet < base + size
-    }
+    const ACCESS_REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(Self::LINEAR_MEMORY_BASE, LINEAR_MEMORY_SIZE as u32),
+        MemoryRegion::read_only(Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE as u32, MemoryPermission::Open),
+        MemoryRegion::write_only(
+            Self::WRITEONLY_MEMORY_BASE,
+            Self::WRITEONLY_MEMORY_SIZE as u32,
+            MemoryPermission::Open,
+        ),
+        MemoryRegion::new(
+            Self::LEVEL2_MEMORY_BASE,
+            LEVEL2_MEMORY_SIZE as u32,
+            MemoryPermission::Level(AccessLevel::Configuration),
+            MemoryPermission::Level(AccessLevel::Configuration),
+        ),
+        MemoryRegion::new(
+            Self::LEVEL1_MEMORY_BASE,
+            LEVEL1_MEMORY_SIZE as u32,
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+        ),
+        MemoryRegion::open(Self::USER_MEMORY_BASE, USER_MEMORY_SIZE as u32),
+    ];
 
     /// The error a partly protected access must report, or `None` when it
     /// straddles no boundary this map knows.
@@ -871,33 +877,18 @@ impl ConformanceMemoryMap {
     /// region per access, and reports `AccessDenied` → FCh
     /// (E_ILLEGAL_COMMAND).
     pub(crate) fn partly_protected(address: u16, end_address: u16, writing: bool) -> Option<MemoryError> {
-        const REGIONS: [(u16, u16); 6] = [
-            (ConformanceMemoryMap::LINEAR_MEMORY_BASE, LINEAR_MEMORY_SIZE as u16),
-            (ConformanceMemoryMap::READONLY_MEMORY_BASE, ConformanceMemoryMap::READONLY_MEMORY_SIZE),
-            (ConformanceMemoryMap::WRITEONLY_MEMORY_BASE, ConformanceMemoryMap::WRITEONLY_MEMORY_SIZE),
-            (ConformanceMemoryMap::LEVEL2_MEMORY_BASE, LEVEL2_MEMORY_SIZE as u16),
-            (ConformanceMemoryMap::LEVEL1_MEMORY_BASE, LEVEL1_MEMORY_SIZE as u16),
-            (ConformanceMemoryMap::USER_MEMORY_BASE, USER_MEMORY_SIZE as u16),
-        ];
-
-        if !REGIONS.iter().any(|&(base, size)| Self::straddles(address, end_address, base, size)) {
-            return None;
+        let operation = if writing { MemoryOperation::Write } else { MemoryOperation::Read };
+        match check_memory_access(
+            Self::ACCESS_REGIONS,
+            address,
+            usize::from(end_address.saturating_sub(address)),
+            operation,
+            AccessContext::MAX_ACCESS,
+            MAX_ACCESS_LEVELS as u8,
+        ) {
+            Some(Err(error)) => Some(error),
+            _ => None,
         }
-
-        // The octets at each end of the access, head first: an access is
-        // refused by the region it starts in before the one it reaches.
-        let tail = end_address.saturating_sub(1);
-        for octet in [address, tail] {
-            if writing && Self::within(octet, Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE) {
-                return Some(MemoryError::WriteProtected);
-            }
-            if !writing && Self::within(octet, Self::WRITEONLY_MEMORY_BASE, Self::WRITEONLY_MEMORY_SIZE) {
-                // The read path renders `WriteProtected` as FAh
-                // (E_ACCESS_WRITE_ONLY).
-                return Some(MemoryError::WriteProtected);
-            }
-        }
-        Some(MemoryError::AccessDenied)
     }
 }
 
@@ -910,6 +901,17 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
         let end_address = address.saturating_add(data.len() as u16);
+
+        if let Some(access) = check_memory_access(
+            Self::ACCESS_REGIONS,
+            address,
+            data.len(),
+            MemoryOperation::Read,
+            ctx,
+            MAX_ACCESS_LEVELS as u8,
+        ) {
+            access?;
+        }
 
         // Address Table (ADT): 0x0100 - 0x0115
         let adt = tables.adt().borrow();
@@ -956,9 +958,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // For M-2.6 tests: "protected" (level 3 = no access).
         // For M-2.11 tests: "level 2 block" accessible with default key.
         if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16 {
-            if !ctx.has_level(2) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
             let mem = tables.level2_memory.borrow();
             data.copy_from_slice(&mem[offset..offset + data.len()]);
@@ -969,9 +968,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // Requires access level <= 1 (levels 0 or 1 only).
         // Used by M-2.11 tests as "level 1 block".
         if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16 {
-            if !ctx.has_level(1) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;
             let mem = tables.level1_memory.borrow();
             data.copy_from_slice(&mem[offset..offset + data.len()]);
@@ -1006,11 +1002,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             return Err(MemoryError::WriteProtected);
         }
 
-        // A partly protected access reports the protection it met.
-        if let Some(e) = Self::partly_protected(address, end_address, false) {
-            return Err(e);
-        }
-
         // Address is outside accessible range
         Err(MemoryError::NotAccessible)
     }
@@ -1023,6 +1014,17 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
         let end_address = address.saturating_add(data.len() as u16);
+
+        if let Some(access) = check_memory_access(
+            Self::ACCESS_REGIONS,
+            address,
+            data.len(),
+            MemoryOperation::Write,
+            ctx,
+            MAX_ACCESS_LEVELS as u8,
+        ) {
+            access?;
+        }
 
         // Address Table (ADT): 0x0100 - 0x0115
         {
@@ -1078,9 +1080,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // For M-2.6 tests: "protected" (level 3 = no access).
         // For M-2.11 tests: "level 2 block" accessible with default key.
         if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + LEVEL2_MEMORY_SIZE as u16 {
-            if !ctx.has_level(2) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
             let mut mem = tables.level2_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
@@ -1091,9 +1090,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
         // Requires access level <= 1 (levels 0 or 1 only).
         // Used by M-2.11 tests as "level 1 block".
         if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + LEVEL1_MEMORY_SIZE as u16 {
-            if !ctx.has_level(1) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;
             let mut mem = tables.level1_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
@@ -1121,11 +1117,6 @@ impl MemoryMap<ConformanceState> for ConformanceMemoryMap {
             && end_address <= Self::WRITEONLY_MEMORY_BASE + Self::WRITEONLY_MEMORY_SIZE
         {
             return Ok(data.len());
-        }
-
-        // A partly protected access reports the protection it met.
-        if let Some(e) = Self::partly_protected(address, end_address, true) {
-            return Err(e);
         }
 
         // Address is outside accessible range

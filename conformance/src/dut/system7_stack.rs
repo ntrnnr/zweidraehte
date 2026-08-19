@@ -36,8 +36,9 @@ use zweidraehte_device::prelude::*;
 use zweidraehte_device::{
     PlainDeviceBuilder,
     bcus::system_7::{
-        ExtensionAugmentFor, System7DeviceConfig, System7DeviceModel, System7DeviceState, System7MemoryMap,
-        System7ProductLayout, System7StateInit, Tp1ExtensionConfig, Tp1ExtensionState, create_system_7_objects,
+        ExtensionAugmentFor, SYSTEM7_MAX_ACCESS_LEVELS, System7DeviceConfig, System7DeviceModel, System7DeviceState,
+        System7MemoryMap, System7ProductLayout, System7StateInit, Tp1ExtensionConfig, Tp1ExtensionState,
+        create_system_7_objects,
     },
     context::layer::LayerContext,
     device_model::{DeviceModelEvent, DeviceModelNotifier, DmNotificationSlot},
@@ -49,7 +50,9 @@ use zweidraehte_device::{
     storage::{HasDeviceConfig, StaticIdentity},
 };
 use zweidraehte_proto::AccessContext;
+use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
+use zweidraehte_proto::memory::{MemoryOperation, MemoryPermission, MemoryRegion, check_memory_access};
 
 use super::fixture_common::{CONFORMANCE_DD2, CONFORMANCE_USER_MANUFACTURER_INFO, TestParameters};
 
@@ -472,39 +475,31 @@ impl ConformanceSystem7MemoryMap {
     /// Base address of the user memory region.
     pub const USER_MEMORY_BASE: u16 = 0x7FF0;
 
+    const ACCESS_REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(Self::LINEAR_MEMORY_BASE, EEPROM_LINEAR_SIZE as u32),
+        MemoryRegion::read_only(Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE as u32, MemoryPermission::Open),
+        MemoryRegion::write_only(
+            Self::WRITEONLY_MEMORY_BASE,
+            Self::WRITEONLY_MEMORY_SIZE as u32,
+            MemoryPermission::Open,
+        ),
+        MemoryRegion::new(
+            Self::LEVEL2_MEMORY_BASE,
+            EEPROM_LEVEL2_SIZE as u32,
+            MemoryPermission::Level(AccessLevel::Configuration),
+            MemoryPermission::Level(AccessLevel::Configuration),
+        ),
+        MemoryRegion::new(
+            Self::LEVEL1_MEMORY_BASE,
+            EEPROM_LEVEL1_SIZE as u32,
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+        ),
+        MemoryRegion::open(Self::USER_MEMORY_BASE, USER_MEMORY_SIZE as u32),
+    ];
+
     pub const fn new() -> Self {
         Self
-    }
-
-    /// Whether `[address, end_address)` starts inside a region and runs
-    /// past its end — a *partly protected* access. Same contract as
-    /// `ConformanceMemoryMap::partly_protected`.
-    fn partly_protected(address: u16, end_address: u16, writing: bool) -> Option<MemoryError> {
-        const REGIONS: [(u16, u16); 6] = [
-            (ConformanceSystem7MemoryMap::LINEAR_MEMORY_BASE, EEPROM_LINEAR_SIZE as u16),
-            (ConformanceSystem7MemoryMap::READONLY_MEMORY_BASE, ConformanceSystem7MemoryMap::READONLY_MEMORY_SIZE),
-            (ConformanceSystem7MemoryMap::WRITEONLY_MEMORY_BASE, ConformanceSystem7MemoryMap::WRITEONLY_MEMORY_SIZE),
-            (ConformanceSystem7MemoryMap::LEVEL2_MEMORY_BASE, EEPROM_LEVEL2_SIZE as u16),
-            (ConformanceSystem7MemoryMap::LEVEL1_MEMORY_BASE, EEPROM_LEVEL1_SIZE as u16),
-            (ConformanceSystem7MemoryMap::USER_MEMORY_BASE, USER_MEMORY_SIZE as u16),
-        ];
-
-        let straddles = |base: u16, size: u16| address >= base && address < base + size && end_address > base + size;
-        if !REGIONS.iter().any(|&(base, size)| straddles(base, size)) {
-            return None;
-        }
-
-        let within = |octet: u16, base: u16, size: u16| octet >= base && octet < base + size;
-        let tail = end_address.saturating_sub(1);
-        for octet in [address, tail] {
-            if writing && within(octet, Self::READONLY_MEMORY_BASE, Self::READONLY_MEMORY_SIZE) {
-                return Some(MemoryError::WriteProtected);
-            }
-            if !writing && within(octet, Self::WRITEONLY_MEMORY_BASE, Self::WRITEONLY_MEMORY_SIZE) {
-                return Some(MemoryError::WriteProtected);
-            }
-        }
-        Some(MemoryError::AccessDenied)
     }
 }
 
@@ -517,6 +512,17 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
         let end_address = address.saturating_add(data.len() as u16);
+
+        if let Some(access) = check_memory_access(
+            Self::ACCESS_REGIONS,
+            address,
+            data.len(),
+            MemoryOperation::Read,
+            ctx,
+            SYSTEM7_MAX_ACCESS_LEVELS as u8,
+        ) {
+            access?;
+        }
 
         // Accessible block: no access level restriction.
         if address >= Self::LINEAR_MEMORY_BASE && end_address <= Self::LINEAR_MEMORY_BASE + EEPROM_LINEAR_SIZE as u16 {
@@ -547,9 +553,6 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
 
         // Level-2 block: requires access level <= 2.
         if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + EEPROM_LEVEL2_SIZE as u16 {
-            if !ctx.has_level(2) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
             let mem = state.level2_memory.borrow();
             data.copy_from_slice(&mem[offset..offset + data.len()]);
@@ -558,9 +561,6 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
 
         // Level-1 block: requires access level <= 1.
         if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + EEPROM_LEVEL1_SIZE as u16 {
-            if !ctx.has_level(1) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;
             let mem = state.level1_memory.borrow();
             data.copy_from_slice(&mem[offset..offset + data.len()]);
@@ -575,11 +575,6 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
             return Ok(data.len());
         }
 
-        // A partly protected access reports the protection it met.
-        if let Some(e) = Self::partly_protected(address, end_address, false) {
-            return Err(e);
-        }
-
         // Everything else is the family map's business.
         System7MemoryMap::new().read(&state.inner, address, data, ctx)
     }
@@ -592,6 +587,17 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
         ctx: AccessContext,
     ) -> Result<usize, MemoryError> {
         let end_address = address.saturating_add(data.len() as u16);
+
+        if let Some(access) = check_memory_access(
+            Self::ACCESS_REGIONS,
+            address,
+            data.len(),
+            MemoryOperation::Write,
+            ctx,
+            SYSTEM7_MAX_ACCESS_LEVELS as u8,
+        ) {
+            access?;
+        }
 
         // Accessible block: no access level restriction.
         if address >= Self::LINEAR_MEMORY_BASE && end_address <= Self::LINEAR_MEMORY_BASE + EEPROM_LINEAR_SIZE as u16 {
@@ -618,9 +624,6 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
 
         // Level-2 block: requires access level <= 2.
         if address >= Self::LEVEL2_MEMORY_BASE && end_address <= Self::LEVEL2_MEMORY_BASE + EEPROM_LEVEL2_SIZE as u16 {
-            if !ctx.has_level(2) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL2_MEMORY_BASE) as usize;
             let mut mem = state.level2_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
@@ -629,9 +632,6 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
 
         // Level-1 block: requires access level <= 1.
         if address >= Self::LEVEL1_MEMORY_BASE && end_address <= Self::LEVEL1_MEMORY_BASE + EEPROM_LEVEL1_SIZE as u16 {
-            if !ctx.has_level(1) {
-                return Err(MemoryError::AccessDenied);
-            }
             let offset = (address - Self::LEVEL1_MEMORY_BASE) as usize;
             let mut mem = state.level1_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
@@ -644,11 +644,6 @@ impl MemoryMap<ConformanceSystem7State> for ConformanceSystem7MemoryMap {
             let mut mem = state.user_memory.borrow_mut();
             mem[offset..offset + data.len()].copy_from_slice(data);
             return Ok(data.len());
-        }
-
-        // A partly protected access reports the protection it met.
-        if let Some(e) = Self::partly_protected(address, end_address, true) {
-            return Err(e);
         }
 
         // Everything else is the family map's business.

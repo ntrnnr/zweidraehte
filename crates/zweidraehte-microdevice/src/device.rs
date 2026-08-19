@@ -18,6 +18,7 @@ use core::marker::PhantomData;
 
 use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::memory::memory_regions_valid;
 use zweidraehte_proto::transport::TlEvent;
 
 use crate::co_flags;
@@ -111,6 +112,11 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     pub fn new(eeprom: F::EepromStore, identity: DeviceIdentity, time_divisor: u32) -> Self {
         const {
             assert!(F::RAM2_SIZE <= RAM2_CEILING, "family RAM2 window exceeds the shared ceiling");
+            assert!(F::AUTH_LEVELS <= MAX_AUTH_LEVELS, "family authorization levels exceed the shared ceiling");
+            assert!(
+                memory_regions_valid(F::MEMORY_REGIONS),
+                "family memory regions overlap or exceed the address space"
+            );
         }
         let mut mgmt = ManagementState::new();
         mgmt.reset_connection_auth::<F>();

@@ -1,5 +1,6 @@
 //! The BCU1 instance of the family seam.
 
+use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -46,6 +47,10 @@ impl MicroDeviceFamily for Bcu1Family {
     /// the one EEPROM segment.
     const RAM2_BASE: u16 = 0;
     const RAM2_SIZE: usize = 0;
+    const MEMORY_REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
+        MemoryRegion::open(Self::EEPROM_BASE, Self::EEPROM_SIZE as u32),
+    ];
 
     const ADDR_TABLE_OFFSET: usize = 0x16;
     fn ia_eeprom_offset() -> usize {

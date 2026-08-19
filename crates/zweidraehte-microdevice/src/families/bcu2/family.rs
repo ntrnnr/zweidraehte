@@ -5,6 +5,7 @@ use zweidraehte_proto::dpt::{
     DeviceControl, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_PollGroupSettings, PDT_UnsignedChar,
     PDT_UnsignedInt, PropertyDataDefinition,
 };
+use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunEvent, RunState};
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::transport::TlStyle;
@@ -186,6 +187,11 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     const EEPROM_SIZE: usize = BCU2_EEPROM_SIZE;
     const RAM2_BASE: u16 = 0x0900;
     const RAM2_SIZE: usize = 0xE0;
+    const MEMORY_REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
+        MemoryRegion::open(Self::EEPROM_BASE, Self::EEPROM_SIZE as u32),
+        MemoryRegion::open(Self::RAM2_BASE, Self::RAM2_SIZE as u32),
+    ];
 
     const ADDR_TABLE_OFFSET: usize = 0x16;
     fn ia_eeprom_offset() -> usize {

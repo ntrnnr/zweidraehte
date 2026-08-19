@@ -16,22 +16,11 @@
 //! [`HasCommunicationObjectTable`](crate::objects::tables::HasCommunicationObjectTable).
 
 use zweidraehte_proto::AccessContext;
+pub use zweidraehte_proto::memory::MemoryError;
 
 // ============================================================================
 // Memory Map
 // ============================================================================
-
-/// Memory access error
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum MemoryError {
-    /// Address is not mapped / accessible
-    NotAccessible,
-    /// Address is read-only (for writes)
-    WriteProtected,
-    /// Access denied due to insufficient authorization level
-    AccessDenied,
-}
 
 /// Trait for memory maps that dispatch reads/writes to tables.
 ///

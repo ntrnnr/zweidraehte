@@ -1,15 +1,18 @@
 //! The System 7 instance of the family seam.
 
+use core::marker::PhantomData;
+
 use zweidraehte_proto::dpt::{
     DeviceControl, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
     PropertyDataDefinition,
 };
+use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, MemLoadControlRecord, RunEvent, RunState};
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
-use crate::family::{LsmPath, MicroDeviceFamily, PropertyBacking, PropertySpec};
+use crate::family::{LsmPath, MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::management::{ManagementState, dispatch_lsm_event};
 
 /// System 7 / BIM M112, TP1, mask version 0705h.
@@ -25,7 +28,27 @@ use crate::management::{ManagementState, dispatch_lsm_event};
 ///   no device-side location resource and no interface object; ETS
 ///   knows the address from the product database, so the device and
 ///   the product definition must agree on it at compile time.
-pub struct System7Family<const EEPROM_LEN: usize, const COT_ADDR: u16>;
+/// - `P` — an optional compile-time memory-access policy. Products use
+///   [`StandardSystem7MemoryPolicy`]; fixtures can substitute protected
+///   regions without adding runtime state or changing family behavior.
+pub struct System7Family<const EEPROM_LEN: usize, const COT_ADDR: u16, P = StandardSystem7MemoryPolicy<EEPROM_LEN>>(
+    PhantomData<P>,
+);
+
+/// The mask's regular memory surface for a product with `EEPROM_LEN`
+/// bytes of user EEPROM.
+pub struct StandardSystem7MemoryPolicy<const EEPROM_LEN: usize>;
+
+impl<const EEPROM_LEN: usize> MemoryAccessPolicy for StandardSystem7MemoryPolicy<EEPROM_LEN> {
+    const REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
+        MemoryRegion::open(offsets::OPTION_REG_ADDR, 1),
+        MemoryRegion::open(offsets::LOAD_CONTROL_ADDR, offsets::LOAD_CONTROL_MAX as u32),
+        MemoryRegion::open(0x0700, 0x100),
+        MemoryRegion::open(offsets::ADT_ADDR, EEPROM_LEN as u32),
+        MemoryRegion::read_only(offsets::LOAD_STATUS_ADDR, 4, MemoryPermission::Open),
+    ];
+}
 
 /// Machine roster: 0 = group address table, 1 = association table,
 /// 2 = application program, 3 = application program 2. The two
@@ -64,7 +87,7 @@ const PROGRAM_PROPERTIES: &[PropertySpec] = &[
     PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 15, PropertyBacking::TableReference),
 ];
 
-impl<const EEPROM_LEN: usize, const COT_ADDR: u16> System7Family<EEPROM_LEN, COT_ADDR> {
+impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> System7Family<EEPROM_LEN, COT_ADDR, P> {
     /// Is this interface object one of the two application program
     /// objects? Object index minus `LSM_OBJ_BASE` is the machine
     /// index; the application machines are the roster's tail from
@@ -81,7 +104,9 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> System7Family<EEPROM_LEN, COT
     }
 }
 
-impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7Family<EEPROM_LEN, COT_ADDR> {
+impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroDeviceFamily
+    for System7Family<EEPROM_LEN, COT_ADDR, P>
+{
     type EepromStore = [u8; EEPROM_LEN];
     fn blank_eeprom() -> Self::EepromStore {
         [0; EEPROM_LEN]
@@ -98,6 +123,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
     // The 100h-byte resource window at 0700h ("resources from 0700h").
     const RAM2_BASE: u16 = 0x0700;
     const RAM2_SIZE: usize = 0x100;
+    const MEMORY_REGIONS: &'static [MemoryRegion] = P::REGIONS;
 
     // RT8: the table starts the user EEPROM, and the IA is defined as
     // bytes 1–2 of the blob (4001h–4002h) — there is no separate cell.
