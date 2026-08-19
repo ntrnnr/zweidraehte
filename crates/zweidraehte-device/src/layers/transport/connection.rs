@@ -203,8 +203,17 @@ pub struct ConnectionTable<const MAX_INCOMING: usize, const MAX_OUTGOING: usize>
 }
 
 impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_INCOMING, MAX_OUTGOING> {
-    /// Create a new empty connection table
+    /// Create a new empty connection table.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the combined capacity exceeds the 256 slots representable
+    /// by the transport layer's `u8` connection indices.
     pub const fn new() -> Self {
+        core::assert!(
+            MAX_INCOMING <= u8::MAX as usize + 1 && MAX_OUTGOING <= u8::MAX as usize + 1 - MAX_INCOMING,
+            "transport layer supports at most 256 combined connection slots",
+        );
         Self {
             incoming: [const { Connection::new() }; MAX_INCOMING],
             outgoing: [const { Connection::new() }; MAX_OUTGOING],
@@ -360,5 +369,31 @@ impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> ConnectionTable<MAX_I
 impl<const MAX_INCOMING: usize, const MAX_OUTGOING: usize> Default for ConnectionTable<MAX_INCOMING, MAX_OUTGOING> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assigns_disjoint_incoming_and_outgoing_slots() {
+        let mut table = ConnectionTable::<2, 1>::new();
+
+        let first = table.allocate_incoming(IndividualAddress::new(1, 1, 1)).expect("first incoming slot");
+        assert_eq!(first.slot_index, 0);
+        first.state = ConnectionState::OpenIdle;
+
+        let second = table.allocate_incoming(IndividualAddress::new(1, 1, 2)).expect("second incoming slot");
+        assert_eq!(second.slot_index, 1);
+        second.state = ConnectionState::OpenIdle;
+
+        assert_eq!(table.allocate_outgoing(IndividualAddress::new(1, 1, 3)).expect("outgoing slot").slot_index, 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "transport layer supports at most 256 combined connection slots")]
+    fn rejects_unrepresentable_slot_count() {
+        let _ = ConnectionTable::<257, 0>::new();
     }
 }

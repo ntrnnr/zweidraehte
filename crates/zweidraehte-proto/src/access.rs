@@ -406,8 +406,8 @@ pub enum AccessSource {
 
 /// Per-connection access level store.
 ///
-/// Sized by the total number of transport-layer connections
-/// (`TL_MAX_INCOMING + TL_MAX_OUTGOING`) and owned by the device state type.
+/// Sized for the total number of incoming and outgoing transport-layer
+/// connection slots and owned by the device state type.
 /// The transport and application layers access it through the
 /// [`HasConnectionAuth`] trait, which hides the const generic `N`.
 ///

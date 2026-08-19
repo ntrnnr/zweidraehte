@@ -43,19 +43,6 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
     ///
     /// You must call this in a background task, to process KNX messages.
     pub async fn run(self) -> ! {
-        // Validate that outgoing connections require Style 3 (which has the
-        // CONNECTING state needed for client-initiated connections).
-        //
-        // Would ideally live in a `const { assert!(...) }` block that runs at
-        // monomorphisation time, but rustc refuses to evaluate the expression
-        // because it depends on `StackDefinition` associated consts
-        // (`overly complex generic constant`). Keep the runtime assert until
-        // const-eval limitations ease.
-        assert!(
-            D::TL_MAX_OUTGOING == 0 || D::TL_STYLE.supports_outgoing_connections(),
-            "TL_MAX_OUTGOING > 0 requires TlStyle::Style3 (has CONNECTING state for client connections)",
-        );
-
         // Run state machine initialization, DeviceControl sync, and lifecycle
         // events are handled by the DeviceModel via the registry's
         // `init_layers()` lifecycle pass.

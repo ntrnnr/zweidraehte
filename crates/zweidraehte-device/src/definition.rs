@@ -111,10 +111,10 @@ pub trait StackDefinition: Copy + 'static {
     /// stored in runtime state and read from persistent storage or hardware.
     const DEVICE: &'static DeviceDescriptor;
 
-    /// Maximum APDU length for compile-time buffer allocation.
+    /// Maximum wire APDU length for compile-time buffer allocation.
     ///
-    /// This is the APDU payload size (not the full buffer size). The actual buffer
-    /// size is calculated by [`config::buffer_size_for_apdu()`] which adds:
+    /// This is the complete APDU size measured from the TPCI octet. The actual
+    /// buffer size is calculated by [`config::buffer_size_for_apdu()`] which adds:
     /// - Frame overhead (6 bytes): ctrl + src + dst + npdu
     /// - Headroom (16 bytes): for cEMI expansion + KNXnet/IP headers
     ///
@@ -123,10 +123,10 @@ pub trait StackDefinition: Copy + 'static {
     /// The runtime limit is what gets reported via PID 56 (MAX_APDU_LENGTH) in the Device Object.
     ///
     /// Common values:
-    /// - [`config::MAX_APDU_LENGTH_TP1_STANDARD`] (14): Standard TP1 without EFF
-    /// - [`config::MAX_APDU_LENGTH_EXTENDED`] (255): TP1 with EFF or KNX/IP
+    /// - [`config::MAX_APDU_LENGTH_TP1_STANDARD`] (15): Standard TP1 without EFF
+    /// - [`config::MAX_APDU_LENGTH_EXTENDED`] (254): TP1 with EFF or KNX/IP
     ///
-    /// Default is 255 (full support for extended frames).
+    /// Default is 254 (full support for extended frames).
     const MAX_APDU_LENGTH: u16 = config::MAX_APDU_LENGTH_EXTENDED;
 
     /// Device descriptor type 2 (14 bytes, optional).
@@ -151,39 +151,6 @@ pub trait StackDefinition: Copy + 'static {
     /// Set to `None` if not supported. If `None`, the stack will not respond
     /// to A_UserManufacturerInfo_Read requests.
     const USER_MANUFACTURER_INFO: Option<&'static [u8; 3]> = None;
-
-    /// Maximum incoming transport-layer connections (from remote devices).
-    ///
-    /// A typical KNX device accepts 1 incoming connection (from ETS or a
-    /// configurator). Routers or gateways may need more. Default: 1.
-    ///
-    /// # Important: overrides are currently ignored by the standard builders
-    ///
-    /// Due to a `generic_const_exprs` limitation, the standard layer builders
-    /// ([`PlainDeviceBuilder`](crate::PlainDeviceBuilder),
-    /// [`PlainIpDeviceBuilder`](crate::PlainIpDeviceBuilder), and
-    /// [`SecureDeviceBuilder`](crate::SecureDeviceBuilder)) always construct
-    /// `TransportLayer` with the hard-coded defaults (1 incoming, 0 outgoing).
-    /// Overriding this constant on your `StackDefinition` is **silently a
-    /// no-op** with those builders. To use a non-default value you must write
-    /// a custom `LayerStackBuilder` that passes explicit const generics to
-    /// `TransportLayer::new`.
-    const TL_MAX_INCOMING: usize = 1;
-
-    /// Maximum outgoing transport-layer connections (initiated by us).
-    ///
-    /// A typical KNX device has 0 outgoing connections. Routers or gateways
-    /// that actively connect to other devices need more. Default: 0.
-    ///
-    /// Only valid with [`TlStyle::Style3`] or higher — the transport layer
-    /// will panic at startup if `TL_MAX_OUTGOING > 0` with a style that
-    /// does not support outgoing connections.
-    ///
-    /// # Important: overrides are currently ignored by the standard builders
-    ///
-    /// See [`TL_MAX_INCOMING`](Self::TL_MAX_INCOMING) — the same limitation
-    /// applies here.
-    const TL_MAX_OUTGOING: usize = 0;
 
     /// The wire ASAP of the device's first communication object.
     ///

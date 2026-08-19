@@ -36,7 +36,7 @@ pub const MAX_REPETITIONS: u8 = 3;
 /// client opening connections to remote devices must also run `Style3` —
 /// it is the only style with the CONNECTING state.
 ///
-/// A server-only device (`TL_MAX_OUTGOING = 0`) running `Style3` never
+/// A server-only transport layer (`MAX_OUTGOING = 0`) running `Style3` never
 /// enters CONNECTING — that state is only reachable through a local
 /// T_Connect.req — so it runs exactly the CLOSED / OPEN_IDLE / OPEN_WAIT
 /// subset of the Style 3 table, at no extra RAM cost.
@@ -52,9 +52,9 @@ impl TlStyle {
     /// Whether this style supports client-initiated outgoing connections.
     ///
     /// Only `Style3` carries the CONNECTING state needed to open connections
-    /// to remote peers. A device with `TL_MAX_OUTGOING > 0` that does not
-    /// pick `Style3` cannot actually initiate connections; the device
-    /// stack's runner rejects that combination at startup.
+    /// to remote peers. A transport layer configured with `MAX_OUTGOING > 0`
+    /// that does not pick `Style3` cannot actually initiate connections; the
+    /// device transport-layer constructor rejects that combination.
     pub const fn supports_outgoing_connections(self) -> bool {
         matches!(self, Self::Style3)
     }

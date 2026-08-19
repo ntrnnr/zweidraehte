@@ -227,11 +227,9 @@ defines a zero-sized struct and implements `StackDefinition` for it.
 | Item | Kind | Default | Purpose |
 |---|---|---|---|
 | `DEVICE` | `&'static DeviceDescriptor` | — | Mask version, manufacturer ID, hardware type, app ID/version, table capacities, PEI type. |
-| `MAX_APDU_LENGTH` | `u16` | `MAX_APDU_LENGTH_EXTENDED` (255) | Compile-time buffer allocation ceiling. Runtime value may be lower. |
+| `MAX_APDU_LENGTH` | `u16` | `MAX_APDU_LENGTH_EXTENDED` (254) | Compile-time wire-APDU allocation ceiling. Runtime value may be lower. |
 | `DEVICE_DESCRIPTOR_TYPE2` | `Option<&'static [u8;14]>` | `None` | Extended device descriptor. |
 | `USER_MANUFACTURER_INFO` | `Option<&'static [u8;3]>` | `None` | Optional. |
-| `TL_MAX_INCOMING` | `usize` | `1` | Max incoming transport connections. |
-| `TL_MAX_OUTGOING` | `usize` | `0` | Max outgoing transport connections. |
 | `TL_STYLE` | `TlStyle` | — | TL state-machine style per 03/03/04 §5.4. |
 | `Mutex` | `RawMutex` | `NoopRawMutex` | Inter-executor synchronisation. `CriticalSectionRawMutex` when user code and stack share preemption. |
 | `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure. Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
@@ -248,6 +246,12 @@ defines a zero-sized struct and implements `StackDefinition` for it.
 | `AlExtensions` | `ApciHandler<Self> + Default` | `()` | Extra AL APCI handlers. Composed by tupling — e.g. `(SystemBAlServices, DomainAddressService)`. |
 | `Augments<'a>` | `Augment<Self>` | `()` | Device-wide augment chain. See §3.12. |
 | `LayerBuilder` | `LayerStackBuilder<Self>` | — | Wires NL/TL/AL together. |
+
+The built-in layer compositions use one incoming transport connection and no
+outgoing connections. Non-default capacities belong to an expert custom
+`LayerStackBuilder`, expressed through `TransportLayer`'s const generics and a
+device state with a matching `HasConnectionAuth` store; they are not
+`StackDefinition` settings.
 
 **Methods required:** `create_state(init) -> State`,
 `create_augments(state, platform, layer_ctx) -> Augments<'a>`, and
@@ -1571,4 +1575,3 @@ augment — `RfExtensionState` + `RfAugment` is the template to copy.
    `PropertyServiceContext` if you implement management.
 5. Run your async task; communicate with the router over `req`
    / `ind` / `conf` channels.
-

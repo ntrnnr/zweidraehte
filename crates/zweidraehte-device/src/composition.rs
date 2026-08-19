@@ -6,6 +6,12 @@
 //!
 //! - [`PlainDeviceBuilder`] — standard `(NL, TL, AL)` stack
 //! - [`PlainIpDeviceBuilder`] — KNX/IP `(NL, CemiTL<TL>, AL)` stack (requires `knxip` feature)
+//!
+//! The built-in compositions accept one incoming transport connection and
+//! initiate none. A different fixed-size connection table is an expert
+//! composition: use [`TransportLayer`] with explicit const generics in a
+//! custom [`LayerStackBuilder`] and provide matching per-connection
+//! authorization storage in the device state.
 
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 
@@ -217,46 +223,6 @@ where
 }
 
 // ============================================================================
-// Shared layer-stack assembly helpers
-// ============================================================================
-
-/// Assert that the device left the TL connection limits at their defaults.
-///
-/// TODO: Use `{ D::TL_MAX_INCOMING }` and `{ D::TL_MAX_OUTGOING }` as const
-/// generics in the built-in layer-stack constructors once
-/// `generic_const_exprs` no longer overflows for trait consts forwarded
-/// through where-clauses.
-///
-/// Until then, non-default values of `TL_MAX_INCOMING` / `TL_MAX_OUTGOING`
-/// are silently ignored by every constructor in this module. These asserts
-/// catch an accidental override at runtime; honouring the consts requires a
-/// custom [`LayerStackBuilder`] that passes them to `TransportLayer::new`.
-///
-/// `builder` names the builder in the panic message so the device author
-/// knows which one dropped the override. In release builds the whole body
-/// compiles away.
-#[inline]
-fn debug_assert_default_tl_limits<D: StackDefinition>(builder: &'static str) {
-    // Positional `{}` rather than inline `{builder}` capture: under the
-    // `defmt` feature these asserts expand to defmt macros, whose format
-    // strings do not support captured identifiers.
-    debug_assert_eq!(
-        D::TL_MAX_INCOMING,
-        1,
-        "TL_MAX_INCOMING override has no effect with {}; \
-         write a custom LayerStackBuilder that passes the const to TransportLayer::new",
-        builder
-    );
-    debug_assert_eq!(
-        D::TL_MAX_OUTGOING,
-        0,
-        "TL_MAX_OUTGOING override has no effect with {}; \
-         write a custom LayerStackBuilder that passes the const to TransportLayer::new",
-        builder
-    );
-}
-
-// ============================================================================
 // Standard Layer Stack — (NL, TL, AL)
 // ============================================================================
 
@@ -332,7 +298,6 @@ impl<'a, D: StackDefinition, AL: Layer<D> + HasAppRequest> StandardLayerStack<'a
 impl<'a, D: StackDefinition> StandardLayerStack<'a, D, ApplicationLayer<'a, D>> {
     /// Construct the standard `(NL, TL, AL)` layer stack.
     pub fn standard(ctx: &'a StackContext<'a, D>) -> Self {
-        debug_assert_default_tl_limits::<D>("PlainDeviceBuilder");
         Self::from_al(ctx, ApplicationLayer::new(ctx))
     }
 }
@@ -347,8 +312,6 @@ where
 {
     /// Construct the standard secure `(NL, TL, SecureAL<AL>)` layer stack.
     pub fn standard_secure(ctx: &'a StackContext<'a, D>) -> Self {
-        debug_assert_default_tl_limits::<D>("SecureDeviceBuilder");
-
         // KNX Data Secure wraps the plain application layer. The store is
         // owned by the storage layer; pull it out of the handle carried on
         // the `LayerContext` (`D::Storage: HasSeqStore` above).
@@ -518,7 +481,6 @@ impl<'a, D: StackDefinition, AL: Layer<D> + HasAppRequest> IpLayerStack<'a, D, A
 #[cfg(feature = "knxip")]
 impl<'a, D: StackDefinition> IpLayerStack<'a, D, ApplicationLayer<'a, D>> {
     pub fn with_cemi(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
-        debug_assert_default_tl_limits::<D>("PlainIpDeviceBuilder");
         Self::from_al(ctx, channels, ApplicationLayer::new(ctx))
     }
 }
@@ -537,8 +499,6 @@ where
     /// plain `ApplicationLayer`, as in
     /// [`standard_secure`](StandardLayerStack::standard_secure)).
     pub fn with_cemi_secure(ctx: &'a StackContext<'a, D>, channels: &'a CemiTransportLayerChannelPair) -> Self {
-        debug_assert_default_tl_limits::<D>("SecureIpDeviceBuilder");
-
         // KNX Data Secure wraps the plain application layer; the secure
         // wrapper holds the persistent sequence-number storage from the
         // device's secure extension state. The store is owned by the

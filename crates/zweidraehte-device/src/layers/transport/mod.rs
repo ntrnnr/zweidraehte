@@ -136,6 +136,10 @@ enum PendingNlRequest {
 /// - `D`: Stack definition providing table types
 /// - `MAX_INCOMING`: Maximum number of incoming connections (default: 1)
 /// - `MAX_OUTGOING`: Maximum number of outgoing connections (default: 0)
+///
+/// The built-in layer compositions use the defaults. A custom composition
+/// selecting other values must provide a [`HasConnectionAuth`] store with at
+/// least `MAX_INCOMING + MAX_OUTGOING` slots in `D::State`.
 pub struct TransportLayer<'a, D: StackDefinition, const MAX_INCOMING: usize = 1, const MAX_OUTGOING: usize = 0> {
     /// Unified device state (contains tables and runtime state)
     state: &'a D::State,
@@ -168,10 +172,22 @@ impl<'a, D: StackDefinition, const MAX_INCOMING: usize, const MAX_OUTGOING: usiz
     /// With the `conformance` feature enabled, reads `KNX_TIME_DIVISOR` from
     /// the environment to scale protocol timeouts for fast IPC-based testing.
     /// If absent or unparseable, spec-compliant timeouts are used.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the combined connection capacity exceeds the 256 slots
+    /// representable by connection indices, or when outgoing connections are
+    /// configured for a transport style without the client-side `Connecting`
+    /// state.
     pub fn new(ctx: &'a StackContext<'a, D>) -> Self {
         let state = ctx.state();
         let lctx = ctx.layer_context();
         let style = D::TL_STYLE;
+
+        assert!(
+            MAX_OUTGOING == 0 || style.supports_outgoing_connections(),
+            "outgoing transport connections require TlStyle::Style3",
+        );
 
         #[cfg(feature = "conformance")]
         let (ack_timeout, conn_timeout) = {
