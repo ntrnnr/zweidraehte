@@ -6,6 +6,7 @@ description = "Ultra-lightweight, no-async KNX device stack for BCU-era masks"
 
 [dependencies]
 zweidraehte-proto = { path = "../zweidraehte-proto" }
+zweidraehte-ets-model = { path = "../zweidraehte-ets-model" }
 
 heapless = { workspace = true }
 serde = { workspace = true, optional = true }

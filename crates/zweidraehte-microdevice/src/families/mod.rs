@@ -7,6 +7,7 @@
 
 pub mod bcu1;
 pub mod bcu2;
+pub mod builder;
 pub mod system7;
 
 use crate::frame::ApciCode;
