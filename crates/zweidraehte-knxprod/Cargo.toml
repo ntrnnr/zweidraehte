@@ -7,7 +7,7 @@ license = "AGPL-3.0-only"
 description = "KNX product definition generator - schema, generator, and page layout DSL"
 
 [dependencies]
-zweidraehte-device = { path = "../zweidraehte-device" }
+zweidraehte-ets-model = { path = "../zweidraehte-ets-model" }
 zweidraehte-proto = { path = "../zweidraehte-proto" }
 
 serde = { workspace = true }

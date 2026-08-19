@@ -20,7 +20,7 @@
 //!
 //! ```rust,ignore
 //! use zweidraehte_knxprod::definition::module::{KnxModule, ModuleArgDef, ModuleInstance};
-//! use zweidraehte_device::ets::{EtsComObjects, ets_params};
+//! use zweidraehte_ets_model::{EtsComObjects, ets_params};
 //!
 //! // Define parameters for a dimmer channel module
 //! #[ets_params]
@@ -283,13 +283,13 @@ pub trait KnxModule {
     ///
     /// This type provides module parameter definitions via the `HasModuleParams` trait
     /// which is automatically implemented by `#[ets_params]`.
-    type Params: zweidraehte_device::ets::HasModuleParams;
+    type Params: zweidraehte_ets_model::HasModuleParams;
 
     /// Communication objects type - must derive `EtsComObjects`.
     ///
     /// This type provides communication object definitions via the `HasModuleCommObjects`
     /// trait which is automatically implemented by `#[derive(EtsComObjects)]`.
-    type Objects: zweidraehte_device::ets::HasModuleCommObjects;
+    type Objects: zweidraehte_ets_model::HasModuleCommObjects;
 
     /// Optional internal description for the module
     const INTERNAL_DESCRIPTION: Option<&'static str> = None;
@@ -299,8 +299,8 @@ pub trait KnxModule {
     /// **Default implementation**: Automatically uses `<Self::Params as HasModuleParams>::ETS_PARAMS_EXT`.
     ///
     /// Override only if you need different behavior (e.g., to return `None` for no params).
-    const MODULE_PARAMS: Option<&'static [zweidraehte_device::ets::EtsParamDefExt]> =
-        Some(<Self::Params as zweidraehte_device::ets::HasModuleParams>::ETS_PARAMS_EXT);
+    const MODULE_PARAMS: Option<&'static [zweidraehte_ets_model::EtsParamDefExt]> =
+        Some(<Self::Params as zweidraehte_ets_model::HasModuleParams>::ETS_PARAMS_EXT);
 
     /// Virtual parameter definitions for the module.
     ///
@@ -328,15 +328,15 @@ pub trait KnxModule {
     ///     },
     /// ]);
     /// ```
-    const VIRTUAL_PARAMS: Option<&'static [zweidraehte_device::ets::EtsParamDefExt]> = None;
+    const VIRTUAL_PARAMS: Option<&'static [zweidraehte_ets_model::EtsParamDefExt]> = None;
 
     /// Communication object definitions for the module.
     ///
     /// **Default implementation**: Automatically uses `<Self::Objects as HasModuleCommObjects>::ETS_COMM_OBJECTS`.
     ///
     /// Override only if you need different behavior (e.g., to return `None` for no objects).
-    const MODULE_COMM_OBJECTS: Option<&'static [zweidraehte_device::ets::EtsCommObjectDef]> =
-        Some(<Self::Objects as zweidraehte_device::ets::HasModuleCommObjects>::ETS_COMM_OBJECTS);
+    const MODULE_COMM_OBJECTS: Option<&'static [zweidraehte_ets_model::EtsCommObjectDef]> =
+        Some(<Self::Objects as zweidraehte_ets_model::HasModuleCommObjects>::ETS_COMM_OBJECTS);
 
     /// Custom page layout for the module's `<Dynamic>` section.
     ///
@@ -777,13 +777,13 @@ pub struct StoredModuleDef {
     pub internal_description: Option<String>,
     /// Parameter definitions for the module (from ETS_PARAMS_EXT).
     /// Used to generate the ModuleDef/Static/Parameters section.
-    pub params: Option<&'static [zweidraehte_device::ets::EtsParamDefExt]>,
+    pub params: Option<&'static [zweidraehte_ets_model::EtsParamDefExt]>,
     /// Virtual parameter definitions for the module (from VIRTUAL_PARAMS).
     /// These exist only in ETS for text substitution and are NOT stored in device memory.
-    pub virtual_params: Option<&'static [zweidraehte_device::ets::EtsParamDefExt]>,
+    pub virtual_params: Option<&'static [zweidraehte_ets_model::EtsParamDefExt]>,
     /// Communication object definitions for the module (from ETS_COMM_OBJECTS).
     /// Used to generate the ModuleDef/Static/ComObjectTable section.
-    pub comm_objects: Option<&'static [zweidraehte_device::ets::EtsCommObjectDef]>,
+    pub comm_objects: Option<&'static [zweidraehte_ets_model::EtsCommObjectDef]>,
     /// Module page layout (using ets_module_pages! macro).
     /// If None, a simple layout with all params and comm objects is auto-generated.
     pub page_layout: Option<crate::definition::page_layout::ModulePageLayout>,
@@ -1030,7 +1030,7 @@ impl ModuleCollection {
 /// ```rust,ignore
 /// use zweidraehte_knxprod::define_module;
 /// use zweidraehte_proto::dpt::DPT_Switch;
-/// use zweidraehte_device::ets::EtsComObjects;
+/// use zweidraehte_ets_model::EtsComObjects;
 /// use zweidraehte_device::objects::comm::ComObject;
 ///
 /// // Define objects once - used for both ETS metadata and runtime storage
@@ -1224,7 +1224,7 @@ macro_rules! __define_module_params_struct {
             // generated module struct carries the same no-uninitialized-bytes
             // guarantee as a hand-written one, without the macro here having to
             // reason about layout at all.
-            #[::zweidraehte_device::ets::ets_params]
+            #[::zweidraehte_ets_model::ets_params]
             #[derive(Debug, Clone, Copy, ::serde::Serialize, ::serde::Deserialize)]
             $vis struct [<$module_name Params>] {
                 $(
@@ -1266,7 +1266,7 @@ macro_rules! __define_module_virtual_params {
         )+]
     ) => {
         $crate::paste::paste! {
-            $vis const [<$module_name:snake:upper _VIRTUAL_PARAMS>]: &[::zweidraehte_device::ets::EtsParamDefExt] = &[
+            $vis const [<$module_name:snake:upper _VIRTUAL_PARAMS>]: &[::zweidraehte_ets_model::EtsParamDefExt] = &[
                 $(
                     $crate::__vp_def!(
                         name: $vp_name,
@@ -1293,8 +1293,8 @@ macro_rules! __vp_def {
         display: $display:literal,
         modifier: [text_source]
     ) => {
-        ::zweidraehte_device::ets::EtsParamDefExt {
-            base: ::zweidraehte_device::ets::EtsParamDef {
+        ::zweidraehte_ets_model::EtsParamDefExt {
+            base: ::zweidraehte_ets_model::EtsParamDef {
                 name: stringify!($name),
                 display_name: $display,
                 suffix: None,
@@ -1321,8 +1321,8 @@ macro_rules! __vp_def {
         display: $display:literal,
         modifier: []
     ) => {
-        ::zweidraehte_device::ets::EtsParamDefExt {
-            base: ::zweidraehte_device::ets::EtsParamDef {
+        ::zweidraehte_ets_model::EtsParamDefExt {
+            base: ::zweidraehte_ets_model::EtsParamDef {
                 name: stringify!($name),
                 display_name: $display,
                 suffix: None,
@@ -1347,25 +1347,25 @@ macro_rules! __vp_def {
 #[doc(hidden)]
 macro_rules! __vp_param_type {
     (String) => {
-        ::zweidraehte_device::ets::EtsParamType::String
+        ::zweidraehte_ets_model::EtsParamType::String
     };
     (u8) => {
-        ::zweidraehte_device::ets::EtsParamType::UnsignedInt
+        ::zweidraehte_ets_model::EtsParamType::UnsignedInt
     };
     (u16) => {
-        ::zweidraehte_device::ets::EtsParamType::UnsignedInt
+        ::zweidraehte_ets_model::EtsParamType::UnsignedInt
     };
     (u32) => {
-        ::zweidraehte_device::ets::EtsParamType::UnsignedInt
+        ::zweidraehte_ets_model::EtsParamType::UnsignedInt
     };
     (i8) => {
-        ::zweidraehte_device::ets::EtsParamType::SignedInt
+        ::zweidraehte_ets_model::EtsParamType::SignedInt
     };
     (i16) => {
-        ::zweidraehte_device::ets::EtsParamType::SignedInt
+        ::zweidraehte_ets_model::EtsParamType::SignedInt
     };
     (i32) => {
-        ::zweidraehte_device::ets::EtsParamType::SignedInt
+        ::zweidraehte_ets_model::EtsParamType::SignedInt
     };
 }
 
@@ -1500,7 +1500,7 @@ macro_rules! __module_virtual_params {
     ($module_name:ident []) => {};
     ($module_name:ident [$($vp_name:ident)+]) => {
         $crate::paste::paste! {
-            const VIRTUAL_PARAMS: Option<&'static [::zweidraehte_device::ets::EtsParamDefExt]> =
+            const VIRTUAL_PARAMS: Option<&'static [::zweidraehte_ets_model::EtsParamDefExt]> =
                 Some([<$module_name:snake:upper _VIRTUAL_PARAMS>]);
         }
     };

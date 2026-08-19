@@ -147,6 +147,34 @@ pub struct System7MemoryLayout {
     pub serial_number: [u8; 6],
 }
 
+/// BCU2 (mask 0020h family) memory layout: the RT2 table page and the
+/// parameter block, each its own absolute EEPROM segment.
+///
+/// The table segment's `Data` is the device's baked boot image — that
+/// is load-bearing, not decoration: the download engine synthesizes
+/// group object tables with zeroed RAM pointers and only preserves
+/// real ones through `Cot2::overlay`, which runs when the product
+/// ships the table bytes as segment data. The parameter segment's
+/// data is the generator's `param_defaults` blob, so parameters sit
+/// at offset 0 of their segment and the `<Memory>` references need no
+/// base-offset arithmetic.
+#[derive(Debug, Clone)]
+pub struct Bcu2MemoryLayout {
+    /// Address of the table segment — 0100h on every BCU2.
+    pub tables_address: u32,
+    /// The baked table page (`Bcu2DeviceDefinition::build_eeprom()` up
+    /// to the parameter block).
+    pub tables_data: &'static [u8],
+    /// Table offsets within the table segment, from the definition's
+    /// `addr_table_offset()` / `assoc_table_offset()` / `cot_offset()`.
+    pub addr_table_offset: u32,
+    pub assoc_table_offset: u32,
+    pub cot_offset: u32,
+    /// Address of the parameter segment (its size and data come from
+    /// `param_defaults`).
+    pub params_address: u32,
+}
+
 // ============================================================================
 // Public Definition Types
 // ============================================================================
@@ -180,6 +208,8 @@ pub struct ApplicationProgramDef<'a> {
     pub absolute_segment_address: Option<u32>,
     /// System 7 memory layout configuration.
     pub system7_layout: Option<System7MemoryLayout>,
+    /// BCU2 memory layout configuration.
+    pub bcu2_layout: Option<Bcu2MemoryLayout>,
     /// Application hash/suffix for the ApplicationProgram ID (4 hex chars).
     /// If None, defaults to "0000".
     pub application_hash: Option<&'a str>,
@@ -461,6 +491,8 @@ pub(crate) struct ApplicationProgramConfig<'a> {
     pub absolute_segment_address: Option<u32>,
     /// System 7 memory layout configuration (if None, uses simple single-segment layout)
     pub system7_layout: Option<System7MemoryLayout>,
+    /// BCU2 memory layout configuration.
+    pub bcu2_layout: Option<Bcu2MemoryLayout>,
     /// Application hash/suffix for the ApplicationProgram ID (4 hex chars).
     /// If None, defaults to "0000". Example: "E59D" for MDT devices.
     pub application_hash: Option<&'a str>,

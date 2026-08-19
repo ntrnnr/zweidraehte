@@ -197,6 +197,11 @@ impl MtxmlGenerator {
             max_security_individual_address_entries: config.max_security_individual_address_entries,
             max_security_group_key_table_entries: config.max_security_group_key_table_entries,
             max_security_p2p_key_table_entries: config.max_security_p2p_key_table_entries,
+            // BCU2 packs the address and association tables dynamically
+            // behind one another; without this flag ETS would treat the
+            // product's association-table position as fixed and end up
+            // disagreeing with the device's re-pointed AssocTabPtr.
+            dynamic_table_management: config.bcu2_layout.is_some(),
             ..Default::default()
         };
 
@@ -715,8 +720,12 @@ impl MtxmlGenerator {
         let code_segment_id = match mask_family.data_segment_type() {
             DataSegmentType::Relative => format!("{}_RS-04-00000", app_id),
             DataSegmentType::Absolute => {
+                // For BCU2, parameters live in their own segment.
+                if let Some(ref layout) = config.bcu2_layout {
+                    format!("{}_AS-{:04X}", app_id, layout.params_address)
+                }
                 // For System 7 with full layout, use the first EEPROM segment
-                if let Some(ref layout) = config.system7_layout {
+                else if let Some(ref layout) = config.system7_layout {
                     // Find the EEPROM segment (usually the parameter segment)
                     let eeprom_seg = layout
                         .segments
@@ -736,24 +745,31 @@ impl MtxmlGenerator {
 
         // Build address/association tables only for masks that support them
         let (address_table, association_table) = if mask_family.generates_address_tables() {
-            // For System 7, use code segments from the layout if available
-            let (addr_seg, assoc_seg) = if let Some(ref layout) = config.system7_layout {
+            // The layouts name where the tables live: System 7 gives
+            // each table its own segment, BCU2 packs them into the one
+            // table page at offsets the definition computed.
+            let (addr_seg, addr_off, assoc_seg, assoc_off) = if let Some(ref layout) = config.bcu2_layout {
+                let seg = format!("{}_AS-{:04X}", app_id, layout.tables_address);
+                (Some(seg.clone()), layout.addr_table_offset, Some(seg), layout.assoc_table_offset)
+            } else if let Some(ref layout) = config.system7_layout {
                 (
                     Some(format!("{}_AS-{}", app_id, layout.address_table_segment)),
+                    layout.address_table_offset,
                     Some(format!("{}_AS-{}", app_id, layout.association_table_segment)),
+                    layout.association_table_offset,
                 )
             } else {
-                (None, None)
+                (None, 0, None, 0)
             };
             (
                 Some(AddressTable {
                     code_segment: addr_seg,
-                    offset: Some(0),
+                    offset: Some(addr_off),
                     max_entries: config.device.max_address_table_entries,
                 }),
                 Some(AssociationTable {
                     code_segment: assoc_seg,
-                    offset: Some(0),
+                    offset: Some(assoc_off),
                     max_entries: config.device.max_association_table_entries,
                 }),
             )
@@ -1518,8 +1534,10 @@ impl MtxmlGenerator {
                 }
             }
             DataSegmentType::Absolute => {
-                // Check if we have a full System 7 layout
-                if let Some(ref layout) = config.system7_layout {
+                // Check if we have a full BCU2 or System 7 layout
+                if let Some(ref layout) = config.bcu2_layout {
+                    Self::build_bcu2_code(app_id, layout, &data, size)
+                } else if let Some(ref layout) = config.system7_layout {
                     Self::build_system7_code(app_id, layout)
                 } else {
                     // Simple single-segment layout
@@ -1537,6 +1555,36 @@ impl MtxmlGenerator {
                     }
                 }
             }
+        }
+    }
+
+    /// Build the Code section for a BCU2 layout: the table page at
+    /// 0100h carrying the baked boot image (so a download's
+    /// `Cot2::overlay` finds — and keeps — the real group object
+    /// pointers), and the parameter segment carrying the defaults
+    /// blob (`param_data`, already base64).
+    fn build_bcu2_code(app_id: &str, layout: &Bcu2MemoryLayout, param_data: &str, param_size: u32) -> Code {
+        let tables = base64::engine::general_purpose::STANDARD.encode(layout.tables_data);
+        Code {
+            absolute_segments: vec![
+                AbsoluteSegment {
+                    id: format!("{}_AS-{:04X}", app_id, layout.tables_address),
+                    address: layout.tables_address,
+                    size: layout.tables_data.len() as u32,
+                    memory_type: Some("EEPROM".to_string()),
+                    data: Some(tables),
+                    mask: None,
+                },
+                AbsoluteSegment {
+                    id: format!("{}_AS-{:04X}", app_id, layout.params_address),
+                    address: layout.params_address,
+                    size: param_size,
+                    memory_type: Some("EEPROM".to_string()),
+                    data: Some(param_data.to_string()),
+                    mask: None,
+                },
+            ],
+            relative_segments: vec![],
         }
     }
 
@@ -2225,14 +2273,17 @@ impl MtxmlGenerator {
         app_id: &str,
         mask_family: MaskFamily,
     ) -> ComObjectTable {
-        // For System 7, use the third segment (typically 4400) for ComObjectTable
-        let code_segment = if let Some(ref layout) = config.system7_layout {
-            // Find the com object table segment (usually after address and association tables)
-            layout.segments.get(2).map(|seg| format!("{}_AS-{}", app_id, seg.name))
+        // The layouts name where the group object table lives: BCU2
+        // packs it into the table page; System 7 gives it the third
+        // segment (after address and association tables).
+        let (code_segment, offset) = if let Some(ref layout) = config.bcu2_layout {
+            (Some(format!("{}_AS-{:04X}", app_id, layout.tables_address)), layout.cot_offset)
+        } else if let Some(ref layout) = config.system7_layout {
+            (layout.segments.get(2).map(|seg| format!("{}_AS-{}", app_id, seg.name)), 0)
         } else {
-            None
+            (None, 0)
         };
-        let mut table = ComObjectTable { code_segment, offset: Some(0), ..ComObjectTable::default() };
+        let mut table = ComObjectTable { code_segment, offset: Some(offset), ..ComObjectTable::default() };
         let start_index = mask_family.com_object_start_index();
 
         // Build a map of object_index -> (ref_count, max_size_bits)

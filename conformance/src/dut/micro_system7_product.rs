@@ -133,6 +133,7 @@ pub fn generate_mtxml() -> Result<String, String> {
         union_fields: None,
         channel_name: "Conformance",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: Some(layout),
         application_hash: None,
         non_reg_relevant_data_version: None,

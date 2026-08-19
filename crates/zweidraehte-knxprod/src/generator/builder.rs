@@ -531,6 +531,7 @@ impl<'a> KnxprodBuilder<'a> {
             channel_name: app.channel_name,
             absolute_segment_address: app.absolute_segment_address,
             system7_layout: app.system7_layout.clone(),
+            bcu2_layout: app.bcu2_layout.clone(),
             application_hash: app.application_hash,
             non_reg_relevant_data_version: app.non_reg_relevant_data_version,
             replaces_versions: app.replaces_versions,

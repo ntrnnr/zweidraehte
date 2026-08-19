@@ -116,6 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(MdtParams::ETS_UNIONS),
         channel_name: "Push Button",
         absolute_segment_address: None, // Using system7_layout instead
+        bcu2_layout: None,
         system7_layout: Some(system7_layout),
         application_hash: Some("E59D"), // MDT uses E59D suffix
         non_reg_relevant_data_version: Some(28),

@@ -45,8 +45,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: None,
         channel_name: "General",
         absolute_segment_address: None, // System B uses relative segments
-        system7_layout: None,           // System B doesn't use System 7 layout
-        application_hash: None,         // Use default 0000
+        bcu2_layout: None,
+        system7_layout: None,   // System B doesn't use System 7 layout
+        application_hash: None, // Use default 0000
         non_reg_relevant_data_version: None,
         replaces_versions: None,
         application_data_hash: None,

@@ -20,15 +20,15 @@ use const_default::ConstDefault;
 
 use devices::light_switch::{
     DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_IP_SECURE, DEVICE_DESCRIPTOR_RF, DEVICE_DESCRIPTOR_RF_SECURE,
-    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_SECURE, DEVICE_DESCRIPTOR_TP1_SYSTEM7,
-    DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE, LightSwitchDevice, LightSwitchParams, comm_objs,
+    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_BCU2, DEVICE_DESCRIPTOR_TP1_SECURE, DEVICE_DESCRIPTOR_TP1_SYSTEM7,
+    DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE, LightSwitchDevice, LightSwitchParams, comm_objs, micro,
     params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
 };
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
 use zweidraehte_knxprod::{
-    ApplicationProgramDef, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef, KnxprodBuilder,
-    ProductDef, RfRxCapabilities, RfTxCapabilities, System7MemoryLayout, System7Segment,
+    ApplicationProgramDef, Bcu2MemoryLayout, CatalogEntryDef, CatalogSectionDef, DeviceInstanceDef, HardwareDef,
+    KnxprodBuilder, ProductDef, RfRxCapabilities, RfTxCapabilities, System7MemoryLayout, System7Segment,
 };
 
 // The hardware serial numbers come from the device definition's
@@ -85,6 +85,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let defaults = LightSwitchParams::DEFAULT;
     let param_bytes = zweidraehte_generators::params_as_bytes(&defaults);
 
+    // The microdevice variants' baked images, from the same definitions
+    // their firmware boots. What the product database ships as segment
+    // data is what a download preserves: the BCU2 table page carries
+    // the RT2 tables with their RAM pointers, and the System 7 group
+    // object table default carries the M112 pointers (sliced out of
+    // the image at the family's COT address).
+    let bcu2_image = micro::bcu2_definition().build_eeprom();
+    let bcu2_tables: &'static [u8] =
+        Box::leak(bcu2_image[..micro::BCU2_PARAMS_IMAGE_OFFSET].to_vec().into_boxed_slice());
+    let s7_micro_image = micro::LightSwitchS7Family::build_eeprom(&micro::system7_definition());
+    let s7_micro_cot = &s7_micro_image[0x200..0x200 + 3 + LightSwitchDevice::MAX_COM_OBJECTS as usize * 4];
+
     let page_layout = LightSwitchDevice::page_layout();
 
     // Both variants share the same application logic — only the device
@@ -100,6 +112,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: None,
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -131,6 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: None,
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -173,6 +187,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: None,
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -207,6 +222,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: None,
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -242,6 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: None,
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -309,6 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: None,
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -376,8 +394,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // slots. Must match the firmware's `cot_address`/COT
                 // window size (`System7StackDefinition::COT_SIZE`).
                 size: 3 + LightSwitchDevice::MAX_COM_OBJECTS as u32 * 4,
+                // No MemoryType on purpose: the parameter `<Memory>`
+                // references bind to the first *EEPROM* segment with
+                // data (4300 below), and this one must not shadow it.
                 memory_type: None,
-                data: None,
+                // The default table bytes, baked from the same
+                // definition the micro System 7 firmware boots — the
+                // download engine preserves a product's RAM pointers
+                // (`CotM112::overlay`) only when the product ships
+                // them; the full-stack firmware ignores the pointers,
+                // so one product serves both implementations.
+                data: Some(Box::leak(s7_micro_cot.to_vec().into_boxed_slice())),
                 mask: None,
             },
             System7Segment {
@@ -418,6 +445,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: Some(system7_layout),
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -454,6 +482,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         union_fields: Some(LightSwitchParams::ETS_UNIONS),
         channel_name: "General",
         absolute_segment_address: None,
+        bcu2_layout: None,
         system7_layout: Some(system7_secure_layout),
         application_hash: None,
         non_reg_relevant_data_version: None,
@@ -474,10 +503,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_p2p_key_table_entries: Some(0),
     };
 
-    // Build a multi-device package: eight application programs, nine
-    // hardware definitions (IP, IP-Secure, TP1, TP1-Secure, TP1-System7,
-    // TP1-System7-Secure, RF, RF-Secure, RF-Secure-Retransmitter), and a
-    // single catalog section with all of them.
+    // The BCU2 (mask 0020h) variant on the microdevice stack: two
+    // absolute EEPROM segments — the baked RT2 table page at 0100h and
+    // the parameter block at 0200h — with the table offsets the shared
+    // definition computes. Unlike System 7 there is no PID 78 identity
+    // guard; the mask's DefaultProcedure drives the download.
+    let bcu2_def = micro::bcu2_definition();
+    let app_tp1_bcu2 = ApplicationProgramDef {
+        name: "LightSwitch2TPBCU2",
+        device: &DEVICE_DESCRIPTOR_TP1_BCU2,
+        params: LightSwitchParams::ETS_PARAMS_EXT,
+        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
+        param_defaults: param_bytes,
+        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
+        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+        union_fields: Some(LightSwitchParams::ETS_UNIONS),
+        channel_name: "General",
+        absolute_segment_address: None,
+        bcu2_layout: Some(Bcu2MemoryLayout {
+            tables_address: 0x0100,
+            tables_data: bcu2_tables,
+            addr_table_offset: bcu2_def.addr_table_offset() as u32,
+            assoc_table_offset: bcu2_def.assoc_table_offset() as u32,
+            cot_offset: bcu2_def.cot_offset() as u32,
+            params_address: 0x0100 + micro::BCU2_PARAMS_IMAGE_OFFSET as u32,
+        }),
+        system7_layout: None,
+        application_hash: None,
+        non_reg_relevant_data_version: None,
+        replaces_versions: None,
+        application_data_hash: None,
+        page_layout: Some(LightSwitchDevice::page_layout()),
+        modules: None,
+        baggages: None,
+        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
+        is_secure_enabled: None,
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
+        max_security_individual_address_entries: None,
+        max_security_group_key_table_entries: None,
+        max_security_p2p_key_table_entries: None,
+    };
+
+    // Build a multi-device package: nine application programs, ten
+    // hardware definitions (IP, IP-Secure, TP1, TP1-Secure, TP1-BCU2,
+    // TP1-System7, TP1-System7-Secure, RF, RF-Secure,
+    // RF-Secure-Retransmitter), and a single catalog section with all
+    // of them.
     let mut builder = KnxprodBuilder::new(LightSwitchDevice::MANUFACTURER_ID);
     let app_ip_ref = builder.application_program(&app_ip);
     let app_ip_secure_ref = builder.application_program(&app_ip_secure);
@@ -487,6 +562,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_rf_secure_ref = builder.application_program(&app_rf_secure);
     let app_tp1_system7_ref = builder.application_program(&app_tp1_system7);
     let app_tp1_system7_secure_ref = builder.application_program(&app_tp1_system7_secure);
+    let app_tp1_bcu2_ref = builder.application_program(&app_tp1_bcu2);
 
     let hw_ip_ref = builder.hardware(HardwareDef {
         serial_number: SERIAL_NUMBER_IP,
@@ -560,6 +636,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             visible_description: None,
         }],
         application_programs: vec![app_tp1_secure_ref],
+    });
+
+    let hw_tp1_bcu2_ref = builder.hardware(HardwareDef {
+        serial_number: LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2,
+        hardware_version: 1,
+        name: "2-Button Light Switch TP1 BCU2",
+        bus_current: Some(10),
+        is_ip_enabled: None,
+        is_rf_retransmitter: None,
+        rf_rx_capabilities: None,
+        rf_tx_capabilities: None,
+        products: vec![ProductDef {
+            name: "Light Switch 2-fold (TP1, BCU2)",
+            order_number: "LS-0002-TP-B2",
+            is_rail_mounted: false,
+            visible_description: None,
+        }],
+        application_programs: vec![app_tp1_bcu2_ref],
     });
 
     let hw_tp1_system7_ref = builder.hardware(HardwareDef {
@@ -694,6 +788,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 application_program: app_tp1_secure_ref,
             },
             CatalogEntryDef {
+                name: "Light Switch 2-fold (TP1, BCU2)",
+                hardware: hw_tp1_bcu2_ref,
+                product_order_number: "LS-0002-TP-B2",
+                application_program: app_tp1_bcu2_ref,
+            },
+            CatalogEntryDef {
                 name: "Light Switch 2-fold (TP1, System 7)",
                 hardware: hw_tp1_system7_ref,
                 product_order_number: "LS-0002-TP-S7",
@@ -756,6 +856,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardware: hw_tp1_secure_ref,
             product_order_number: "LS-0002-TP-SEC",
             application_program: app_tp1_secure_ref,
+        });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch TP1 BCU2",
+            hardware: hw_tp1_bcu2_ref,
+            product_order_number: "LS-0002-TP-B2",
+            application_program: app_tp1_bcu2_ref,
         });
         builder.device_instance(DeviceInstanceDef {
             name: "2-Button Light Switch TP1 System 7",

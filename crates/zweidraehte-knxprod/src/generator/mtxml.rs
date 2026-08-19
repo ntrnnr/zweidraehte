@@ -29,8 +29,8 @@ use super::traversal::{
     collect_pictures_from_layout, collect_pictures_from_module_layout, collect_union_variant_texts,
 };
 use super::{
-    ActiveConditions, ApplicationProgramConfig, GeneratorError, MaskFamily, ParamRefMap, System7MemoryLayout,
-    validate_param_offsets,
+    ActiveConditions, ApplicationProgramConfig, Bcu2MemoryLayout, GeneratorError, MaskFamily, ParamRefMap,
+    System7MemoryLayout, validate_param_offsets,
 };
 use crate::signing::KnxSchemaVersion;
 

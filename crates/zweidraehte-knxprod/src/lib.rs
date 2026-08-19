@@ -103,10 +103,10 @@ pub mod runtime;
 
 // Generators - main API for creating MTXML
 pub use generator::{
-    AppProgramRef, ApplicationProgramDef, BaggageGenerator, BuilderError, BusInterfaceDef, CatalogEntryDef,
-    CatalogGenerator, CatalogSectionDef, DeviceInstanceDef, GeneratorError, HardwareDef, HardwareGenerator,
-    HardwareRef, KnxprodBuilder, KnxprodOutput, MtxmlGenerator, ProductDef, RfRxCapabilities, RfTxCapabilities,
-    SingleDeviceDef, System7MemoryLayout, System7Segment,
+    AppProgramRef, ApplicationProgramDef, BaggageGenerator, Bcu2MemoryLayout, BuilderError, BusInterfaceDef,
+    CatalogEntryDef, CatalogGenerator, CatalogSectionDef, DeviceInstanceDef, GeneratorError, HardwareDef,
+    HardwareGenerator, HardwareRef, KnxprodBuilder, KnxprodOutput, MtxmlGenerator, ProductDef, RfRxCapabilities,
+    RfTxCapabilities, SingleDeviceDef, System7MemoryLayout, System7Segment,
 };
 pub use schema::BusAccessType;
 
