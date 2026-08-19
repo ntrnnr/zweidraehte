@@ -20,9 +20,17 @@
 //! workspace calls the "internal format" for standard frames, which is
 //! why the conformance harness's TP1-without-checksum injects can be
 //! fed in verbatim.
+//!
+//! The protocol vocabulary — [`ApciCode`], [`Tpci`] and their wire
+//! codings — is the proto crate's; this module only owns the frame
+//! octet layout around them.
 
 use heapless::Vec;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
+use zweidraehte_proto::messages::knx::AddressType;
+
+pub use zweidraehte_proto::messages::knx::{ApciCode, Tpci};
 
 /// Largest frame this stack emits or accepts: 7 header octets plus a
 /// 15-octet APDU.
@@ -30,53 +38,6 @@ pub const MAX_FRAME: usize = 7 + 15;
 
 /// One outbound frame.
 pub type FrameBuf = Vec<u8, MAX_FRAME>;
-
-// ============================================================================
-// 10-bit APCI vocabulary
-// ============================================================================
-
-/// The 10-bit APCI values a BCU2 needs, spelled as full 10-bit numbers
-/// (bits 9..6 select the short code; escaped services use 3Cxh with
-/// the low octet carrying the sub-code).
-pub mod apci {
-    pub const GROUP_VALUE_READ: u16 = 0x000;
-    pub const GROUP_VALUE_RESPONSE: u16 = 0x040;
-    pub const GROUP_VALUE_WRITE: u16 = 0x080;
-    pub const INDIVIDUAL_ADDRESS_WRITE: u16 = 0x0C0;
-    pub const INDIVIDUAL_ADDRESS_READ: u16 = 0x100;
-    pub const INDIVIDUAL_ADDRESS_RESPONSE: u16 = 0x140;
-    pub const ADC_READ: u16 = 0x180;
-    pub const ADC_RESPONSE: u16 = 0x1C0;
-    pub const MEMORY_READ: u16 = 0x200;
-    pub const MEMORY_RESPONSE: u16 = 0x240;
-    pub const MEMORY_WRITE: u16 = 0x280;
-    pub const DEVICE_DESCRIPTOR_READ: u16 = 0x300;
-    pub const DEVICE_DESCRIPTOR_RESPONSE: u16 = 0x340;
-    pub const RESTART: u16 = 0x380;
-    pub const AUTHORIZE_REQUEST: u16 = 0x3D1;
-    pub const AUTHORIZE_RESPONSE: u16 = 0x3D2;
-    pub const PROPERTY_VALUE_READ: u16 = 0x3D5;
-    pub const PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
-    pub const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
-    pub const PROPERTY_DESCRIPTION_READ: u16 = 0x3D8;
-    pub const PROPERTY_DESCRIPTION_RESPONSE: u16 = 0x3D9;
-}
-
-/// TPCI classification of octet 6 (top two bits).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tpci {
-    /// Unnumbered data (T_Data_Group / T_Data_Broadcast /
-    /// T_Data_Individual).
-    Unnumbered,
-    /// Numbered data on a transport connection, sequence 0..=15.
-    Numbered { seq: u8 },
-    /// T_Connect (0x80) or T_Disconnect (0x81).
-    Control { disconnect: bool },
-    /// T_ACK (0xC2) or T_NAK (0xC3) with sequence number.
-    ControlAck { nak: bool, seq: u8 },
-    /// A control PDU this stack does not know.
-    Unknown,
-}
 
 /// A parsed view over one standard frame (without checksum).
 #[derive(Debug, Clone, Copy)]
@@ -116,31 +77,24 @@ impl<'a> FrameView<'a> {
         })
     }
 
-    pub fn tpci(&self) -> Tpci {
-        let octet = self.tpdu[0];
-        match octet >> 6 {
-            // Unnumbered data carries zero in the sequence bits; a
-            // frame with 00xxxxb, x ≠ 0 is invalid TPCI coding the
-            // conformance suite expects dropped (transport layer 2.1).
-            0b00 => {
-                if octet & 0x3C == 0 {
-                    Tpci::Unnumbered
-                } else {
-                    Tpci::Unknown
-                }
-            }
-            0b01 => Tpci::Numbered { seq: (octet >> 2) & 0x0F },
-            0b10 => match octet {
-                0x80 => Tpci::Control { disconnect: false },
-                0x81 => Tpci::Control { disconnect: true },
-                _ => Tpci::Unknown,
-            },
-            _ => match octet & 0xC3 {
-                0xC2 => Tpci::ControlAck { nak: false, seq: (octet >> 2) & 0x0F },
-                0xC3 => Tpci::ControlAck { nak: true, seq: (octet >> 2) & 0x0F },
-                _ => Tpci::Unknown,
-            },
+    /// The destination's address type: the AT bit, with the zero group
+    /// address distinguished as the broadcast.
+    fn address_type(&self) -> AddressType {
+        if !self.is_group {
+            AddressType::Individual
+        } else if self.dest_raw == [0, 0] {
+            AddressType::Broadcast
+        } else {
+            AddressType::Group
         }
+    }
+
+    /// The frame's TPCI. `None` covers the codings 03/03/04 leaves
+    /// reserved — among them unnumbered data with non-zero sequence
+    /// bits, which the conformance suite expects dropped (transport
+    /// layer 2.1).
+    pub fn tpci(&self) -> Option<Tpci> {
+        Tpci::from_octet(self.tpdu[0], self.address_type())
     }
 
     /// The 10-bit APCI of a data PDU (needs at least one APDU octet).
@@ -174,14 +128,6 @@ impl<'a> FrameView<'a> {
 // Building
 // ============================================================================
 
-/// Control octet for a fresh (not repeated) standard frame with the
-/// given priority bits (already shifted to bits 3..2).
-fn control_octet(priority_bits: u8) -> u8 {
-    // FT=1 (standard), repeat flag 1 (= not repeated), the two
-    // fixed-one bits of the TP1 control octet, priority as given.
-    0xB0 | (priority_bits & 0x0C)
-}
-
 /// Build one standard frame. `tpci_octet` carries the TPCI bits; for a
 /// data PDU the APCI's top two bits are OR-ed in here and `apci_low`
 /// is octet 7. `payload` follows.
@@ -197,19 +143,20 @@ fn build(
     let length = apdu.len();
     debug_assert!(length <= 15, "APDU exceeds the standard-frame length nibble");
     // The push cannot fail: 7 + length <= MAX_FRAME by the assert above.
-    let _ = frame.push(control_octet(priority_bits));
+    let _ = frame.push(TP1_STD_CTRL_BASE | (priority_bits & 0x0C));
     let _ = frame.extend_from_slice(source.as_bytes());
     let _ = frame.extend_from_slice(&dest);
     let at = if is_group { 0x80 } else { 0x00 };
     // Hop count 6 — the value every non-router device transmits with.
-    let _ = frame.push(at | 0x60 | (length as u8));
+    let _ = frame.push(at | NPCI_HOP_COUNT_6 | (length as u8));
     let _ = frame.push(tpci_octet);
     let _ = frame.extend_from_slice(apdu);
     frame
 }
 
-/// A data APDU: 10-bit APCI plus payload, with up to 6 bits of small
-/// data folded into the APCI low octet.
+/// A data APDU: the service's APCI plus payload, with up to 6 bits of
+/// small data folded into the APCI low octet (short services only —
+/// the other families spend those bits on the service code).
 // A frame is exactly these eight facts; a builder struct would spread
 // one wire layout over two types.
 #[allow(clippy::too_many_arguments)]
@@ -218,25 +165,17 @@ pub fn data_frame(
     source: IndividualAddress,
     dest: [u8; 2],
     is_group: bool,
-    tpci_bits: u8,
-    apci10: u16,
+    tpci: Tpci,
+    apci: ApciCode,
     small_data: u8,
     payload: &[u8],
 ) -> FrameBuf {
-    let tpci = tpci_bits | ((apci10 >> 8) as u8 & 0x03);
-    let apci_low = (apci10 as u8) | (small_data & 0x3F);
+    let apci10 = apci.wire10_base() | u16::from(small_data & 0x3F);
+    let tpci_octet = tpci.octet() | ((apci10 >> 8) as u8 & 0x03);
     let mut apdu: Vec<u8, 15> = Vec::new();
-    let _ = apdu.push(apci_low);
+    let _ = apdu.push(apci10 as u8);
     let _ = apdu.extend_from_slice(payload);
-    build(priority_bits, source, dest, is_group, tpci, &apdu)
-}
-
-/// TPCI bits for an unnumbered data PDU.
-pub const TPCI_UNNUMBERED: u8 = 0x00;
-
-/// TPCI bits for a numbered (connection-oriented) data PDU.
-pub fn tpci_numbered(seq: u8) -> u8 {
-    0x40 | ((seq & 0x0F) << 2)
+    build(priority_bits, source, dest, is_group, tpci_octet, &apdu)
 }
 
 /// A T_ACK / T_NAK control frame.
@@ -247,14 +186,14 @@ pub fn ack_frame(
     nak: bool,
     seq: u8,
 ) -> FrameBuf {
-    let octet = if nak { 0xC3 } else { 0xC2 } | ((seq & 0x0F) << 2);
-    build(priority_bits, source, dest.0, false, octet, &[])
+    let tpci = if nak { Tpci::Nack(seq) } else { Tpci::Ack(seq) };
+    build(priority_bits, source, dest.0, false, tpci.octet(), &[])
 }
 
 /// A T_Disconnect control frame.
 pub fn disconnect_frame(source: IndividualAddress, dest: IndividualAddress) -> FrameBuf {
     // Connection control PDUs travel at system priority.
-    build(0x00, source, dest.0, false, 0x81, &[])
+    build(0x00, source, dest.0, false, Tpci::Disconnect.octet(), &[])
 }
 
 #[cfg(test)]
@@ -267,8 +206,8 @@ mod tests {
         let raw = [0xBC, 0x11, 0x01, 0x08, 0x01, 0xE1, 0x00, 0x81];
         let view = FrameView::parse(&raw).expect("valid standard frame");
         assert!(view.is_group);
-        assert_eq!(view.tpci(), Tpci::Unnumbered);
-        assert_eq!(view.apci(), Some(apci::GROUP_VALUE_WRITE | 0x01));
+        assert_eq!(view.tpci(), Some(Tpci::DataGroup));
+        assert_eq!(view.apci(), Some(ApciCode::GroupValueWrite.wire10_base() | 0x01));
         assert_eq!(view.hop_count, 6);
         assert_eq!(view.payload(), &[]);
     }
@@ -278,11 +217,11 @@ mod tests {
         let connect = [0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0x80];
         let view = FrameView::parse(&connect).expect("valid control frame");
         assert!(!view.is_group);
-        assert_eq!(view.tpci(), Tpci::Control { disconnect: false });
+        assert_eq!(view.tpci(), Some(Tpci::Connect));
 
         let ack = [0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0xC6];
         let view = FrameView::parse(&ack).expect("valid ack frame");
-        assert_eq!(view.tpci(), Tpci::ControlAck { nak: false, seq: 1 });
+        assert_eq!(view.tpci(), Some(Tpci::Ack(1)));
     }
 
     #[test]
@@ -300,8 +239,8 @@ mod tests {
             IndividualAddress::new(1, 1, 10),
             IndividualAddress::new(0, 0, 1).0,
             false,
-            tpci_numbered(2),
-            apci::MEMORY_RESPONSE,
+            Tpci::DataConnected(2),
+            ApciCode::MemoryReadResponse,
             3,
             &[0x01, 0x16, 0xAA, 0xBB, 0xCC],
         );
@@ -316,8 +255,8 @@ mod tests {
             IndividualAddress::new(1, 1, 10),
             IndividualAddress::new(0, 0, 1).0,
             false,
-            tpci_numbered(0),
-            apci::PROPERTY_VALUE_RESPONSE,
+            Tpci::DataConnected(0),
+            ApciCode::PropertyValueResponse,
             0,
             &[0x01, 0x05, 0x10, 0x01],
         );

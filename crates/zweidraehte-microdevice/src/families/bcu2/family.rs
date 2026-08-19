@@ -1,13 +1,14 @@
 //! The BCU2 instance of the family seam.
 
 use heapless::Vec;
-use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunEvent, RunState};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::device::DeviceIdentity;
 use crate::family::{LsmPath, MicroDeviceFamily};
+use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
 /// BCU2 / System 2, TP1 — masks 0020h (the default), 0021h and 0025h.
@@ -34,6 +35,10 @@ impl<const MASK: u16> Bcu2Family<MASK> {
         MASK == 0x0020 || MASK == 0x0021 || MASK == 0x0025,
         "Bcu2Family covers masks 0020h, 0021h and 0025h only",
     );
+
+    /// The Application Program interface object: the last of the
+    /// machines behind `LSM_OBJ_BASE` (index 3 on the BCU2 roster).
+    const APP_OBJECT: u8 = Self::LSM_OBJ_BASE + Self::LSM_COUNT as u8 - 1;
 }
 
 impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
@@ -102,24 +107,28 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     /// byte carries no active (low) error bits. ETS halts the device by
     /// writing 00h there and clears it back to FFh after the download.
     fn is_app_running(eeprom: &[u8], mgmt: &ManagementState) -> bool {
-        eeprom.get(offsets::RUN_ERROR).copied() == Some(0xFF)
+        eeprom.get(offsets::RUN_ERROR).copied() == Some(offsets::RUN_ERROR_ALL_CLEAR)
             && mgmt.lsm[Self::LSM_COUNT - 1].state == LoadState::Loaded
     }
 
     fn run_state_read(obj: u8, eeprom: &[u8], mgmt: &ManagementState) -> Option<u8> {
-        (obj == 3).then(|| if Self::is_app_running(eeprom, mgmt) { 0x01 } else { 0x00 })
+        (obj == Self::APP_OBJECT)
+            .then(|| if Self::is_app_running(eeprom, mgmt) { RunState::Running } else { RunState::Halted }.into())
     }
 
     fn run_state_write(obj: u8, value: u8, eeprom: &mut [u8], _mgmt: &mut ManagementState) -> bool {
-        if obj != 3 {
+        if obj != Self::APP_OBJECT {
             return false;
         }
-        // Run control: 1 restarts, 2 stops. The BCU2 run state is a
-        // consequence of RunError + load state, so the controls only
-        // touch RunError.
-        match value {
-            0x01 => eeprom[offsets::RUN_ERROR] = 0xFF,
-            0x02 => eeprom[offsets::RUN_ERROR] = 0x00,
+        // The BCU2 run state is a consequence of RunError + load
+        // state, so the controls only touch RunError.
+        match RunEvent::from(value) {
+            RunEvent::Restart => eeprom[offsets::RUN_ERROR] = offsets::RUN_ERROR_ALL_CLEAR,
+            RunEvent::Stop => eeprom[offsets::RUN_ERROR] = offsets::RUN_ERROR_HALTED,
+            // Ready (00h) is a no-op; anything else — including the
+            // device-internal events sharing the byte space — is
+            // ignored the way the mask firmware ignores unknown
+            // values.
             _ => {}
         }
         true
@@ -137,24 +146,18 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
             2 => {
                 // Clearing the ApplicationID's DevType+Version is what
                 // un-marks the program as present.
-                let dev_type = offsets::APPLICATION_ID + 2;
+                let dev_type = offsets::APPLICATION_ID_DEV_TYPE;
                 eeprom[dev_type..dev_type + 3].fill(0);
             }
             _ => {}
         }
     }
 
-    // The option register stores the complement of what the client
-    // reads and writes.
     fn special_byte_read(addr: u16, eeprom: &[u8], _mgmt: &ManagementState) -> Option<u8> {
-        (addr == Self::EEPROM_BASE + offsets::OPTION_REG as u16).then(|| !eeprom[offsets::OPTION_REG])
+        crate::families::option_reg_read(addr, Self::EEPROM_BASE, offsets::OPTION_REG, eeprom)
     }
     fn special_byte_write(addr: u16, value: u8, eeprom: &mut [u8], _mgmt: &mut ManagementState) -> bool {
-        if addr == Self::EEPROM_BASE + offsets::OPTION_REG as u16 {
-            eeprom[offsets::OPTION_REG] = !value;
-            return true;
-        }
-        false
+        crate::families::option_reg_write(addr, value, Self::EEPROM_BASE, offsets::OPTION_REG, eeprom)
     }
 
     fn property_read_hook(
@@ -197,7 +200,7 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     }
 
     /// A BCU2 exposes its analog channels through `A_ADC_Read`.
-    fn extra_service(base: u16, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
-        crate::families::adc_read_stub(base, small6, payload)
+    fn extra_service(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
+        crate::families::adc_read_stub(code, small6, payload)
     }
 }

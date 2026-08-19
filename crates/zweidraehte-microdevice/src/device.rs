@@ -22,7 +22,7 @@ use zweidraehte_proto::transport::TlEvent;
 use crate::co_flags;
 use crate::eeprom::Tables;
 use crate::family::MicroDeviceFamily;
-use crate::frame::{self, FrameBuf, FrameView, Tpci};
+use crate::frame::{self, ApciCode, FrameBuf, FrameView, Tpci};
 use crate::management::{ManagementState, ServiceResult};
 use crate::transport::{TlOutput, TlState};
 
@@ -34,6 +34,15 @@ pub const RAM_SIZE: usize = 0x100;
 pub const RAM2_CEILING: usize = 0x100;
 pub const MAX_AUTH_LEVELS: usize = 16;
 pub const MAX_LSM: usize = 4;
+
+/// Page-0 RAM address of the system status byte — a BCU silicon fact:
+/// the mask ROM keeps programming mode (bit 0) here and ETS toggles it
+/// through plain memory writes.
+pub(crate) const SYSTEM_STATUS_ADDR: usize = 0x60;
+/// The programming-mode bit of the system status byte.
+const PROGMODE_BIT: u8 = 0x01;
+/// The parity bit keeping the system status byte's population even.
+const PARITY_BIT: u8 = 0x80;
 
 /// Boot-time identity that does not live in the EEPROM image.
 #[derive(Debug, Clone, Copy)]
@@ -127,18 +136,18 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     // how the mask firmware guards the byte against corruption.
 
     pub fn is_programming_mode(&self) -> bool {
-        self.ram[0x60] & 0x01 != 0
+        self.ram[SYSTEM_STATUS_ADDR] & PROGMODE_BIT != 0
     }
 
     pub fn set_programming_mode(&mut self, enabled: bool) {
-        let mut value = self.ram[0x60] & 0x7E;
+        let mut value = self.ram[SYSTEM_STATUS_ADDR] & !(PROGMODE_BIT | PARITY_BIT);
         if enabled {
-            value |= 0x01;
+            value |= PROGMODE_BIT;
         }
-        if !(value & 0x7F).count_ones().is_multiple_of(2) {
-            value |= 0x80;
+        if !(value & !PARITY_BIT).count_ones().is_multiple_of(2) {
+            value |= PARITY_BIT;
         }
-        self.ram[0x60] = value;
+        self.ram[SYSTEM_STATUS_ADDR] = value;
     }
 
     /// Whether the application program runs — the family's judgment
@@ -183,22 +192,23 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
         let source = view.source;
         let event = match view.tpci() {
-            Tpci::Control { disconnect: false } => TlEvent::ReceivedConnect { source },
-            Tpci::Control { disconnect: true } => TlEvent::ReceivedDisconnect { source },
-            Tpci::Numbered { seq } => TlEvent::ReceivedData { source, seq_no: seq },
-            Tpci::ControlAck { nak: false, seq } => TlEvent::ReceivedAck { source, seq_no: seq },
-            Tpci::ControlAck { nak: true, seq } => TlEvent::ReceivedNack { source, seq_no: seq },
+            Some(Tpci::Connect) => TlEvent::ReceivedConnect { source },
+            Some(Tpci::Disconnect) => TlEvent::ReceivedDisconnect { source },
+            Some(Tpci::DataConnected(seq)) => TlEvent::ReceivedData { source, seq_no: seq },
+            Some(Tpci::Ack(seq)) => TlEvent::ReceivedAck { source, seq_no: seq },
+            Some(Tpci::Nack(seq)) => TlEvent::ReceivedNack { source, seq_no: seq },
             // Connectionless data to our individual address: a BCU2
             // serves its management exclusively connection-oriented;
             // System 7 answers device-oriented connectionless services
             // (03/03/07 §3.1) with a connectionless reply.
-            Tpci::Unnumbered => {
+            Some(Tpci::DataIndividual) => {
                 if F::CONNECTIONLESS_MANAGEMENT {
                     self.dispatch_connectionless(&view, source, out);
                 }
                 return;
             }
-            Tpci::Unknown => return,
+            // Reserved TPCI codings and address-type mismatches.
+            _ => return,
         };
 
         let outputs = self.tl.process(event, now_ms);
@@ -241,6 +251,16 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         }
     }
 
+    /// Split one management APDU into the service code and the short
+    /// services' 6-bit in-APCI payload. The other wire families spend
+    /// those bits on the service code itself, so they carry no small
+    /// data.
+    fn split_apci(apci10: u16) -> (ApciCode, u8) {
+        let code = ApciCode::from_wire10(apci10);
+        let small6 = if u8::from(code) < 0x10 { (apci10 & 0x3F) as u8 } else { 0 };
+        (code, small6)
+    }
+
     /// Handle a management APDU and send whatever it answers.
     fn dispatch_management(
         &mut self,
@@ -250,14 +270,11 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         out: &mut PollOutput,
     ) {
         let Some(apci10) = view.apci() else { return };
-        // Escaped services (top nibble Fh) use the whole low octet as
-        // the code; short services carry up to 6 data bits there.
-        let (base, small6) = if apci10 >> 6 == 0x0F { (apci10, 0) } else { (apci10 & 0x3C0, (apci10 & 0x3F) as u8) };
-
-        match self.handle_service(base, small6, view.payload(), source) {
+        let (code, small6) = Self::split_apci(apci10);
+        match self.handle_service(code, small6, view.payload(), source) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
-                self.send_reply(source, view.priority_bits(), reply.apci10, reply.small6, &reply.payload, now_ms, out);
+                self.send_reply(source, view.priority_bits(), reply.apci, reply.small6, &reply.payload, now_ms, out);
             }
             ServiceResult::Restart => {
                 out.restart = true;
@@ -271,8 +288,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// `A_Restart` still restarts.
     fn dispatch_connectionless(&mut self, view: &FrameView<'_>, source: IndividualAddress, out: &mut PollOutput) {
         let Some(apci10) = view.apci() else { return };
-        let (base, small6) = if apci10 >> 6 == 0x0F { (apci10, 0) } else { (apci10 & 0x3C0, (apci10 & 0x3F) as u8) };
-        match self.handle_service(base, small6, view.payload(), source) {
+        let (code, small6) = Self::split_apci(apci10);
+        match self.handle_service(code, small6, view.payload(), source) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
                 let own = self.individual_address();
@@ -281,8 +298,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                     own,
                     source.0,
                     false,
-                    frame::TPCI_UNNUMBERED,
-                    reply.apci10,
+                    Tpci::DataIndividual,
+                    reply.apci,
                     reply.small6,
                     &reply.payload,
                 ));
@@ -301,7 +318,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         &mut self,
         dest: IndividualAddress,
         priority_bits: u8,
-        apci10: u16,
+        apci: ApciCode,
         small6: u8,
         payload: &[u8],
         now_ms: u32,
@@ -316,8 +333,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                     own,
                     dest.0,
                     false,
-                    frame::tpci_numbered(seq),
-                    apci10,
+                    Tpci::DataConnected(seq),
+                    apci,
                     small6,
                     payload,
                 );
@@ -330,27 +347,27 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     // ── Broadcast services (programming mode) ───────────────────────
 
     fn handle_broadcast(&mut self, view: FrameView<'_>, out: &mut PollOutput) {
-        if view.tpci() != Tpci::Unnumbered {
+        if view.tpci() != Some(Tpci::DataBroadcast) {
             return;
         }
         let Some(apci10) = view.apci() else { return };
-        match apci10 & 0x3C0 {
-            frame::apci::INDIVIDUAL_ADDRESS_WRITE => {
+        match ApciCode::from_wire10(apci10) {
+            ApciCode::IndividualAddressWrite => {
                 let payload = view.payload();
                 if self.is_programming_mode() && payload.len() == 2 {
                     let base = F::ia_eeprom_offset();
                     self.eeprom.as_mut()[base..base + 2].copy_from_slice(payload);
                 }
             }
-            frame::apci::INDIVIDUAL_ADDRESS_READ if self.is_programming_mode() => {
+            ApciCode::IndividualAddressRead if self.is_programming_mode() => {
                 let own = self.individual_address();
                 out.push(frame::data_frame(
                     view.priority_bits(),
                     own,
                     [0, 0],
                     true,
-                    frame::TPCI_UNNUMBERED,
-                    frame::apci::INDIVIDUAL_ADDRESS_RESPONSE,
+                    Tpci::DataBroadcast,
+                    ApciCode::IndividualAddressResponse,
                     0,
                     &[],
                 ));

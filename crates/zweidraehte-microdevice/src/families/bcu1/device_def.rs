@@ -14,7 +14,7 @@ use super::offsets;
 /// One group object as the RT1 table stores it — the layout is RT2's
 /// 3-byte entry octet for octet (the client's `Cot1` coding forces
 /// config bit 7 on; the image stores whatever the definition says).
-pub type Bcu1CoDescriptor = crate::families::bcu2::Bcu2CoDescriptor;
+pub type Bcu1CoDescriptor = crate::families::CoDescriptor;
 
 /// A BCU1 product definition.
 #[derive(Debug, Clone, Copy)]
@@ -50,7 +50,8 @@ impl Bcu1DeviceDefinition {
     }
 
     /// EEPROM offset of the association table (behind the address
-    /// table's declared capacity).
+    /// table's declared capacity: the length byte, the IA slot, then
+    /// two octets per group address).
     pub const fn assoc_table_offset(&self) -> usize {
         self.addr_table_offset() + 3 + self.max_group_addresses as usize * 2
     }
@@ -75,14 +76,11 @@ impl Bcu1DeviceDefinition {
         // The whole EEPROM is checksummed. TODO: make CheckLim a
         // definition field if a replicated product ever declares a
         // narrower checked range.
-        e[offsets::CHECK_LIM] = 0xFF;
+        e[offsets::CHECK_LIM] = offsets::CHECK_LIM_WHOLE_EEPROM;
         e[offsets::PEI_TYPE] = self.pei_type;
-        // RunError all-clear (error bits are active-low).
-        e[offsets::RUN_ERROR] = 0xFF;
-        // Routing count constant 6 in bits 6..4, the universal default.
-        e[0x0E] = 0x60;
-        // Three BUSY and three NAK retransmissions.
-        e[0x0F] = 0x33;
+        e[offsets::RUN_ERROR] = offsets::RUN_ERROR_ALL_CLEAR;
+        e[offsets::ROUTING_COUNT] = offsets::ROUTING_COUNT_DEFAULT;
+        e[offsets::TX_RETRY] = offsets::TX_RETRY_DEFAULT;
 
         // ── Table placement ─────────────────────────────────────────
         // Address table is fixed at 0116h; the other two follow their

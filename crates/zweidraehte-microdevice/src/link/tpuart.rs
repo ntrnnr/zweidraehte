@@ -18,6 +18,7 @@
 //! stack's TPUART layer.
 
 use heapless::Vec;
+use zweidraehte_proto::encoding::tp1::calculate_tp1_checksum;
 
 use crate::link::RxBuf;
 
@@ -32,6 +33,20 @@ const U_L_DATA_END: u8 = 0x40;
 
 /// `U_AckInformation` flags.
 const ACK_ADDRESSED: u8 = 0x01;
+
+// Receive-direction classifiers of the host protocol. The chip tags
+// what it forwards by the byte's shape: L_Data control fields have bit
+// 7 set / bit 6 clear / bits 4, 1..0 fixed, everything else is a
+// service code.
+/// Control-field pattern of a standard L_Data frame: `10x1 xx00`.
+const LDATA_CLASSIFIER_MASK: u8 = 0xD3;
+const LDATA_CLASSIFIER_VALUE: u8 = 0x90;
+/// Reset.indication — the chip completed a reset and is ready.
+const RESET_INDICATION: u8 = 0x03;
+/// L_Data.confirm: `x000 1011`, bit 7 carries success.
+const LDATA_CONFIRM_MASK: u8 = 0x7F;
+const LDATA_CONFIRM_PATTERN: u8 = 0x0B;
+const LDATA_CONFIRM_POSITIVE: u8 = 0x80;
 
 /// Inter-byte gap after which a half-received frame is abandoned.
 /// TP1's own gap limit is ~2.6 bit times; 5 ms is generous slack for
@@ -118,7 +133,7 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
         }
         let mut wire: Vec<u8, MAX_WIRE> = Vec::new();
         let _ = wire.extend_from_slice(frame);
-        let _ = wire.push(checksum(frame));
+        let _ = wire.push(calculate_tp1_checksum(frame));
         for (i, &byte) in wire.iter().enumerate() {
             let selector = if i + 1 == wire.len() {
                 // The last octet rides with U_L_DataEnd carrying the
@@ -202,7 +217,7 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
                     let complete = core::mem::replace(buf, Vec::new());
                     self.rx = RxState::Idle;
                     let (frame, wire_checksum) = complete.split_at(complete.len() - 1);
-                    if wire_checksum[0] == checksum(frame) {
+                    if wire_checksum[0] == calculate_tp1_checksum(frame) {
                         let mut out = RxBuf::new();
                         let _ = out.extend_from_slice(frame);
                         return TpUartEvent::Frame(out);
@@ -214,31 +229,23 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
     }
 
     fn classify_first_byte(&mut self, byte: u8, now_ms: u32) -> TpUartEvent {
-        // Control-field pattern of a standard L_Data frame: bit 7 set,
-        // bit 6 clear, bits 4 and 1..0 fixed — 10x1 xx00.
-        if byte & 0xD3 == 0x90 {
+        if byte & LDATA_CLASSIFIER_MASK == LDATA_CLASSIFIER_VALUE {
             let mut buf = Vec::new();
             let _ = buf.push(byte);
             self.rx = RxState::Receiving { buf, expected: usize::MAX, last_byte_ms: now_ms, acked: false };
             return TpUartEvent::None;
         }
         match byte {
-            0x03 => TpUartEvent::ResetIndication,
-            // L_Data.confirm: x0001011, bit 7 = success.
-            b if b & 0x7F == 0x0B => {
+            RESET_INDICATION => TpUartEvent::ResetIndication,
+            b if b & LDATA_CONFIRM_MASK == LDATA_CONFIRM_PATTERN => {
                 self.tx = TxState::Idle;
-                TpUartEvent::TxConfirmed { positive: b & 0x80 != 0 }
+                TpUartEvent::TxConfirmed { positive: b & LDATA_CONFIRM_POSITIVE != 0 }
             }
             // State.indication (xxxxx111) and everything else the
             // chip may volunteer: ignored.
             _ => TpUartEvent::None,
         }
     }
-}
-
-/// The TP1 checksum: the inverted XOR over all frame octets.
-fn checksum(frame: &[u8]) -> u8 {
-    !frame.iter().fold(0u8, |acc, &b| acc ^ b)
 }
 
 #[cfg(test)]
@@ -266,7 +273,7 @@ mod tests {
         assert!(result.is_none(), "checksum still outstanding");
         // The ack decision fired on the header.
         assert_eq!(d.pending_tx(), &[U_ACK_INFORMATION | ACK_ADDRESSED]);
-        let TpUartEvent::Frame(f) = d.push_byte(checksum(&frame), 8) else {
+        let TpUartEvent::Frame(f) = d.push_byte(calculate_tp1_checksum(&frame), 8) else {
             panic!("frame must complete on its checksum octet");
         };
         assert_eq!(f.as_slice(), &frame);
@@ -293,7 +300,7 @@ mod tests {
         assert_eq!(tx[0], U_L_DATA_START);
         assert_eq!(tx[1], 0xB0);
         assert_eq!(tx[tx.len() - 2], U_L_DATA_END | 7);
-        assert_eq!(tx[tx.len() - 1], checksum(&frame));
+        assert_eq!(tx[tx.len() - 1], calculate_tp1_checksum(&frame));
         d.clear_tx();
         assert!(!d.ready_to_send(), "busy until confirmed");
 
@@ -301,7 +308,7 @@ mod tests {
         for &b in frame.iter() {
             assert!(matches!(d.push_byte(b, 1), TpUartEvent::None));
         }
-        assert!(matches!(d.push_byte(checksum(&frame), 1), TpUartEvent::None));
+        assert!(matches!(d.push_byte(calculate_tp1_checksum(&frame), 1), TpUartEvent::None));
         let TpUartEvent::TxConfirmed { positive: true } = d.push_byte(0x8B, 2) else {
             panic!("positive confirm expected");
         };

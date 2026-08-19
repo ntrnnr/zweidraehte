@@ -21,11 +21,26 @@ pub const VERSION: usize = 0x07;
 /// the checked range is offsets `CHECK_LIM..(CheckLim value - 1)`
 /// inclusive, legal values 09h–FFh (09_04_01 §3.1.10.3.7).
 pub const CHECK_LIM: usize = 0x08;
+/// Smallest legal CheckLim value; anything below means the checked
+/// range is empty.
+pub const CHECK_LIM_MIN: usize = 0x09;
+/// The factory CheckLim: FFh checks the whole EEPROM below EE_EXOR.
+pub const CHECK_LIM_WHOLE_EEPROM: u8 = 0xFF;
 /// Required PEI type (ETS writes it; hardware PEI via ADC channel 4).
 pub const PEI_TYPE: usize = 0x09;
 /// RunError byte: 00h halts the application, FFh clears all error
 /// flags (active-low bits).
 pub const RUN_ERROR: usize = 0x0D;
+/// RunError value with every (active-low) error bit clear — the
+/// running state.
+pub const RUN_ERROR_ALL_CLEAR: u8 = 0xFF;
+/// RoutingCnt: hop count in bits 6..4; the factory value is count 6.
+pub const ROUTING_COUNT: usize = 0x0E;
+pub const ROUTING_COUNT_DEFAULT: u8 = 0x60;
+/// Retry limits: BUSY retries in the high nibble, NAK retries in the
+/// low; the factory value is three of each.
+pub const TX_RETRY: usize = 0x0F;
+pub const TX_RETRY_DEFAULT: u8 = 0x33;
 /// Pointer byte to the association table (value + 0100h), valid range
 /// 19h–FEh.
 pub const ASSOC_TAB_PTR: usize = 0x11;

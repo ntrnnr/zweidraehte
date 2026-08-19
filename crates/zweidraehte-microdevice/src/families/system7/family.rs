@@ -1,7 +1,7 @@
 //! The System 7 instance of the family seam.
 
 use heapless::Vec;
-use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunState};
+use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, MemLoadControlRecord, RunEvent, RunState};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::transport::TlStyle;
 
@@ -32,9 +32,18 @@ const APP_MACHINE: usize = 2;
 
 impl<const EEPROM_LEN: usize, const COT_ADDR: u16> System7Family<EEPROM_LEN, COT_ADDR> {
     /// Is this interface object one of the two application program
-    /// objects (indices 3 and 4, machines 2 and 3)?
+    /// objects? Object index minus `LSM_OBJ_BASE` is the machine
+    /// index; the application machines are the roster's tail from
+    /// [`APP_MACHINE`].
     fn app_machine_of(obj: u8) -> Option<usize> {
-        (obj == 3 || obj == 4).then(|| usize::from(obj) - 1)
+        let machine = usize::from(obj.checked_sub(Self::LSM_OBJ_BASE)?);
+        (APP_MACHINE..Self::LSM_COUNT).contains(&machine).then_some(machine)
+    }
+
+    /// Does this machine index name an application program (and thus
+    /// carry a run state machine)?
+    fn is_app_machine(machine: usize) -> bool {
+        (APP_MACHINE..Self::LSM_COUNT).contains(&machine)
     }
 }
 
@@ -130,12 +139,13 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
 
     fn run_state_write(obj: u8, value: u8, _eeprom: &mut [u8], mgmt: &mut ManagementState) -> bool {
         let Some(machine) = Self::app_machine_of(obj) else { return false };
-        // §4.24.2.3.2 Table 96: 0 = no-op, 1 = restart, 2 = stop.
-        // Anything else is not a run event a client may raise.
-        match value {
-            0x00 => {}
-            0x01 => mgmt.run_stopped[machine] = false,
-            0x02 => {
+        // 03/05/01 §4.24.2.3.2 Table 96: only Ready, Restart and Stop
+        // may arrive from a client — the internal events sharing the
+        // byte space are refused.
+        match RunEvent::from(value) {
+            RunEvent::Ready => {}
+            RunEvent::Restart => mgmt.run_stopped[machine] = false,
+            RunEvent::Stop => {
                 if mgmt.lsm[machine].state == LoadState::Loaded {
                     mgmt.run_stopped[machine] = true;
                 }
@@ -166,7 +176,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
                 }
             }
             // Unloading an application halts its run state machine.
-            2 | 3 => mgmt.run_stopped[machine] = false,
+            m if Self::is_app_machine(m) => mgmt.run_stopped[machine] = false,
             _ => {}
         }
     }
@@ -175,7 +185,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
     /// freshly loaded application runs (03/05/01 §4.24, RunEvent
     /// Loaded), clearing any Stop left from the previous program.
     fn load_completed_side_effect(machine: usize, _eeprom: &mut [u8], mgmt: &mut ManagementState) {
-        if machine == 2 || machine == 3 {
+        if Self::is_app_machine(machine) {
             mgmt.run_stopped[machine] = false;
         }
     }
@@ -251,14 +261,14 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
         if addr != offsets::LOAD_CONTROL_ADDR || data.is_empty() || data.len() > offsets::LOAD_CONTROL_MAX {
             return true;
         }
-        let machine = usize::from(data[0] >> 4);
-        let event = data[0] & 0x0F;
+        let (machine, event) = MemLoadControlRecord::split_tag(data[0]);
+        let machine = usize::from(machine);
         if machine == 0 || machine > Self::LSM_COUNT {
             return true;
         }
         let mut record = [0u8; offsets::LOAD_CONTROL_MAX];
-        record[0] = event;
-        let len = if event == 0x03 && data.len() >= 3 {
+        record[0] = event.into();
+        let len = if event == LoadEvent::AdditionalLoadControls && data.len() >= 3 {
             record[1] = data[1]; // segment type; data[1 + 1] is the segment ID
             record[2..data.len() - 1].copy_from_slice(&data[3..]);
             data.len() - 1

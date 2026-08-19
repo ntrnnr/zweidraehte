@@ -18,16 +18,9 @@ use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use crate::families::bcu2::family::BCU2_EEPROM_SIZE;
 use crate::families::bcu2::offsets as bcu2_offsets;
 
-/// One group object as the RT2 table stores it.
-#[derive(Debug, Clone, Copy)]
-pub struct Bcu2CoDescriptor {
-    /// Page-0 RAM address of the value.
-    pub data_ptr: u8,
-    /// Config octet (`ComObjectFlags` coding).
-    pub config: u8,
-    /// Type octet (`ComObjectType` coding).
-    pub value_type: u8,
-}
+/// One group object as the RT2 table stores it — the shared RT1/RT2
+/// entry from [`crate::families::CoDescriptor`].
+pub type Bcu2CoDescriptor = crate::families::CoDescriptor;
 
 /// A BCU2 product definition.
 #[derive(Debug, Clone, Copy)]
@@ -61,7 +54,8 @@ impl Bcu2DeviceDefinition {
     }
 
     /// EEPROM offset of the association table (behind the address
-    /// table's declared capacity).
+    /// table's declared capacity: the length byte, the IA slot, then
+    /// two octets per group address).
     pub const fn assoc_table_offset(&self) -> usize {
         self.addr_table_offset() + 3 + self.max_group_addresses as usize * 2
     }
@@ -93,18 +87,15 @@ impl Bcu2DeviceDefinition {
         e[app + 2..app + 4].copy_from_slice(&self.device_type.to_be_bytes());
         e[app + 4] = self.version;
         e[bcu2_offsets::PEI_TYPE] = self.pei_type;
-        // RunError all-clear (error bits are active-low).
-        e[0x0D] = 0xFF;
-        // Routing count constant 6 in bits 6..4, the universal default.
-        e[0x0E] = 0x60;
-        // Three BUSY and three NAK retransmissions.
-        e[0x0F] = 0x33;
+        e[bcu2_offsets::RUN_ERROR] = bcu2_offsets::RUN_ERROR_ALL_CLEAR;
+        e[bcu2_offsets::ROUTING_COUNT] = bcu2_offsets::ROUTING_COUNT_DEFAULT;
+        e[bcu2_offsets::TX_RETRY] = bcu2_offsets::TX_RETRY_DEFAULT;
         // ManagementStyle 48h: native BCU2 management, the value ETS
         // reads from 0115h to rule out BCU1-compat mode. Mask 0025h
         // has no such cell — its master data declares the style as a
         // constant, and ETS never reads the address.
         if mask != 0x0025 {
-            e[bcu2_offsets::MANAGEMENT_STYLE] = 0x48;
+            e[bcu2_offsets::MANAGEMENT_STYLE] = bcu2_offsets::MANAGEMENT_STYLE_NATIVE;
         }
 
         // ── Table placement ─────────────────────────────────────────
@@ -113,10 +104,13 @@ impl Bcu2DeviceDefinition {
         let addr_table = self.addr_table_offset();
         let assoc_table = self.assoc_table_offset();
         let cot = self.cot_offset();
+        // One-byte pointer cells reach 0100h + FFh at most, so every
+        // table must end below 0200h.
+        const RT2_POINTER_CEILING: usize = 0x100;
         let cot_end = cot + 2 + self.comm_objects.len() * 3;
-        assert!(cot_end <= 0x100, "RT2 tables must fit below 0200h (one-byte pointers)");
-        e[0x11] = assoc_table as u8;
-        e[0x12] = cot as u8;
+        assert!(cot_end <= RT2_POINTER_CEILING, "RT2 tables must fit below 0200h (one-byte pointers)");
+        e[bcu2_offsets::ASSOC_TAB_PTR] = assoc_table as u8;
+        e[bcu2_offsets::COMMS_TAB_PTR] = cot as u8;
 
         // ── Address table ───────────────────────────────────────────
         // RT2 length counts the IA slot.

@@ -14,6 +14,7 @@ use heapless::Vec;
 use zweidraehte_proto::transport::TlStyle;
 
 use crate::device::DeviceIdentity;
+use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
 /// How load-control records reach the device's load state machines.
@@ -258,7 +259,7 @@ pub trait MicroDeviceFamily: 'static {
     // ── Family-specific services ─────────────────────────────────────
 
     /// Management APCIs outside the generic set (BCU2's `A_ADC_Read`).
-    fn extra_service(_base: u16, _small6: u8, _payload: &[u8]) -> Option<ServiceResult> {
+    fn extra_service(_code: ApciCode, _small6: u8, _payload: &[u8]) -> Option<ServiceResult> {
         None
     }
 

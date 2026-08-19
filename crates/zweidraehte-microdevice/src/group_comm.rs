@@ -20,7 +20,7 @@ use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use crate::co_flags;
 use crate::device::{Microdevice, PollOutput, RAM_SIZE};
 use crate::family::MicroDeviceFamily;
-use crate::frame::{self, FrameView, Tpci, apci};
+use crate::frame::{self, ApciCode, FrameView, Tpci};
 
 impl<F: MicroDeviceFamily> Microdevice<F> {
     /// Value location and size of an object, if its table entry maps
@@ -34,11 +34,11 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     }
 
     pub(crate) fn handle_group(&mut self, view: FrameView<'_>, out: &mut PollOutput) {
-        if view.tpci() != Tpci::Unnumbered || !self.is_running() {
+        if view.tpci() != Some(Tpci::DataGroup) || !self.is_running() {
             return;
         }
         let Some(apci10) = view.apci() else { return };
-        let base = apci10 & 0x3C0;
+        let code = ApciCode::from_wire10(apci10);
         let small6 = (apci10 & 0x3F) as u8;
         let Some(tsap) = self.tables().tsap_of(view.dest_group()) else { return };
 
@@ -57,15 +57,15 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             if !flags.communication_enable() {
                 continue;
             }
-            match base {
-                apci::GROUP_VALUE_WRITE if flags.write_enable() => {
+            match code {
+                ApciCode::GroupValueWrite if flags.write_enable() => {
                     self.store_received_value(asap, small6, view.payload());
                 }
-                apci::GROUP_VALUE_RESPONSE if flags.update_enable() => {
+                ApciCode::GroupValueResponse if flags.update_enable() => {
                     self.store_received_value(asap, small6, view.payload());
                 }
-                apci::GROUP_VALUE_READ if flags.read_enable() => {
-                    self.send_group_value(asap, tsap, apci::GROUP_VALUE_RESPONSE, out);
+                ApciCode::GroupValueRead if flags.read_enable() => {
+                    self.send_group_value(asap, tsap, ApciCode::GroupValueResponse, out);
                     // One read, one response — even when several
                     // objects share the TSAP.
                     return;
@@ -101,7 +101,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
     /// Build and queue one outgoing group telegram carrying the
     /// object's value.
-    fn send_group_value(&mut self, asap: u8, tsap: u8, apci10: u16, out: &mut PollOutput) {
+    fn send_group_value(&mut self, asap: u8, tsap: u8, apci: ApciCode, out: &mut PollOutput) {
         let Some(ga) = self.tables().ga_of_tsap(tsap) else { return };
         let Some(entry) = self.tables().co_entry(asap) else { return };
         let Some((addr, size)) = self.value_slot(asap) else { return };
@@ -112,19 +112,9 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         // priority in the TP1 control-octet encoding.
         let priority_bits = (entry.config & 0x03) << 2;
         let frame = if short {
-            frame::data_frame(priority_bits, own, ga.0, true, frame::TPCI_UNNUMBERED, apci10, self.ram[addr] & 0x3F, &[
-            ])
+            frame::data_frame(priority_bits, own, ga.0, true, Tpci::DataGroup, apci, self.ram[addr] & 0x3F, &[])
         } else {
-            frame::data_frame(
-                priority_bits,
-                own,
-                ga.0,
-                true,
-                frame::TPCI_UNNUMBERED,
-                apci10,
-                0,
-                &self.ram[addr..addr + size],
-            )
+            frame::data_frame(priority_bits, own, ga.0, true, Tpci::DataGroup, apci, 0, &self.ram[addr..addr + size])
         };
         out.push(frame);
         self.update_flags(asap, |f| f | co_flags::VALUE_VALID);
@@ -160,15 +150,15 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                         own,
                         ga.0,
                         true,
-                        frame::TPCI_UNNUMBERED,
-                        apci::GROUP_VALUE_READ,
+                        Tpci::DataGroup,
+                        ApciCode::GroupValueRead,
                         0,
                         &[],
                     ));
                 }
                 self.update_flags(asap, |f| co_flags::set_tx_state(f & !co_flags::READ_REQUEST, co_flags::TX_IDLE_OK));
             } else if cfg.transmission_enable() {
-                self.send_group_value(asap, tsap, apci::GROUP_VALUE_WRITE, out);
+                self.send_group_value(asap, tsap, ApciCode::GroupValueWrite, out);
                 self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_OK));
             } else {
                 self.update_flags(asap, |f| co_flags::set_tx_state(f, co_flags::TX_IDLE_ERROR));

@@ -3,18 +3,18 @@
 //! state machine, and RT8 group communication, driven frame-by-frame
 //! the way the bus would.
 
+mod common;
+use common::{CLIENT, DUT, apdu, connect, exchange};
+
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
-use zweidraehte_microdevice::frame::{FrameBuf, FrameView, Tpci, apci, data_frame, tpci_numbered};
+use zweidraehte_microdevice::frame::{ApciCode, FrameView, Tpci, data_frame};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadState, RunState};
 
 /// The DUT product: 1 KiB of user EEPROM from 4000h, the group object
 /// table published at 4200h.
 type Fam = System7Family<0x400, 0x4200>;
-
-const CLIENT: IndividualAddress = IndividualAddress::new(0, 0, 1);
-const DUT: IndividualAddress = IndividualAddress::new(1, 1, 10);
 
 static COS: &[System7CoDescriptor] = &[
     // ASAP 0: 1-bit switch input, write+update enabled.
@@ -59,62 +59,26 @@ fn device() -> Microdevice<Fam> {
     dev
 }
 
-fn step(dev: &mut Microdevice<Fam>, frame: &[u8], now: u32) -> Vec<FrameBuf> {
-    dev.poll(PollInput::Frame(frame), now).frames.into_iter().collect()
-}
-
-fn connect(dev: &mut Microdevice<Fam>) {
-    let t_connect = [0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0x80];
-    let replies = step(dev, &t_connect, 0);
-    assert!(replies.is_empty(), "an incoming connect is accepted silently on Style 3 too");
-}
-
-/// Send numbered data, expect T_ACK plus optionally a numbered reply;
-/// acknowledge the reply like a well-behaved client.
-fn exchange(dev: &mut Microdevice<Fam>, seq: u8, apci10: u16, small6: u8, payload: &[u8], now: u32) -> Option<Vec<u8>> {
-    let request = data_frame(0x00, CLIENT, DUT.0, false, tpci_numbered(seq), apci10, small6, payload);
-    let replies = step(dev, &request, now);
-    assert!(!replies.is_empty(), "expected at least a T_ACK");
-    let ack = FrameView::parse(&replies[0]).expect("parsable ack");
-    assert_eq!(ack.tpci(), Tpci::ControlAck { nak: false, seq }, "first reply is the T_ACK");
-
-    let response = replies.get(1).map(|r| {
-        let view = FrameView::parse(r).expect("parsable response");
-        let Tpci::Numbered { seq: rsp_seq } = view.tpci() else {
-            panic!("data response expected, got {:?}", view.tpci());
-        };
-        let client_ack = [0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0xC2 | (rsp_seq << 2)];
-        let extra = step(dev, &client_ack, now);
-        assert!(extra.is_empty(), "T_ACK draws no further frames");
-        r.to_vec()
-    });
-    assert!(replies.len() <= 2, "one request never yields more than ack + response");
-    response
-}
-
-/// The response's APDU bytes: octet 6 onward.
-fn apdu(frame: &[u8]) -> &[u8] {
-    &frame[6..]
-}
-
 #[test]
 fn dd0_and_sixteen_level_authorization() {
     let mut dev = device();
     connect(&mut dev);
 
     // DD0 → 0705h.
-    let rsp = exchange(&mut dev, 0, apci::DEVICE_DESCRIPTOR_READ, 0, &[], 0).expect("DD0 answered");
+    let rsp = exchange(&mut dev, 0, ApciCode::DeviceDescriptorRead, 0, &[], 0).expect("DD0 answered");
     assert_eq!(apdu(&rsp), &[0x43, 0x40, 0x07, 0x05]);
 
     // Factory FF key → level 0; a wrong key → free access level 15.
-    let rsp = exchange(&mut dev, 1, apci::AUTHORIZE_REQUEST, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("answered");
+    let rsp =
+        exchange(&mut dev, 1, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("answered");
     assert_eq!(apdu(&rsp)[2], 0x00, "granted level 0");
-    let rsp = exchange(&mut dev, 2, apci::AUTHORIZE_REQUEST, 0, &[0x00, 0x12, 0x34, 0x56, 0x78], 0).expect("answered");
+    let rsp =
+        exchange(&mut dev, 2, ApciCode::AuthorizeRequest, 0, &[0x00, 0x12, 0x34, 0x56, 0x78], 0).expect("answered");
     assert_eq!(apdu(&rsp)[2], 0x0F, "wrong key falls to free level 15");
 
     // A_Key_Write to the free level is refused with FFh: level 15 owns
     // no key by construction.
-    let rsp = exchange(&mut dev, 3, 0x3D3, 0, &[0x0F, 0x01, 0x02, 0x03, 0x04], 0).expect("answered");
+    let rsp = exchange(&mut dev, 3, ApciCode::KeyWrite, 0, &[0x0F, 0x01, 0x02, 0x03, 0x04], 0).expect("answered");
     assert_eq!(apdu(&rsp)[2], 0xFF, "the free level cannot be keyed");
 }
 
@@ -124,10 +88,10 @@ fn option_reg_is_plain_and_lives_at_0100h() {
     connect(&mut dev);
     // Factory reads 00h (unlike BCU2's inverted FFh) and a write reads
     // back uninverted.
-    let rsp = exchange(&mut dev, 0, apci::MEMORY_READ, 1, &[0x01, 0x00], 0).expect("answered");
+    let rsp = exchange(&mut dev, 0, ApciCode::MemoryRead, 1, &[0x01, 0x00], 0).expect("answered");
     assert_eq!(apdu(&rsp)[4], 0x00);
-    exchange(&mut dev, 1, apci::MEMORY_WRITE, 1, &[0x01, 0x00, 0x55], 0);
-    let rsp = exchange(&mut dev, 2, apci::MEMORY_READ, 1, &[0x01, 0x00], 0).expect("answered");
+    exchange(&mut dev, 1, ApciCode::MemoryWrite, 1, &[0x01, 0x00, 0x55], 0);
+    let rsp = exchange(&mut dev, 2, ApciCode::MemoryRead, 1, &[0x01, 0x00], 0).expect("answered");
     assert_eq!(apdu(&rsp)[4], 0x55);
 }
 
@@ -139,7 +103,7 @@ fn memory_mapped_lsm_cycle_on_app2() {
     fn mem_write(dev: &mut Microdevice<Fam>, seq: &mut u8, addr: u16, data: &[u8]) {
         let mut payload = addr.to_be_bytes().to_vec();
         payload.extend_from_slice(data);
-        exchange(dev, *seq, apci::MEMORY_WRITE, data.len() as u8, &payload, 0);
+        exchange(dev, *seq, ApciCode::MemoryWrite, data.len() as u8, &payload, 0);
         *seq = (*seq + 1) & 0x0F;
     }
 
@@ -160,18 +124,18 @@ fn memory_mapped_lsm_cycle_on_app2() {
     // LoadCompleted, then read the four status bytes at B6EAh:
     // ADT/AST/App Loaded, App2 now Loaded too.
     mem_write(&mut dev, &mut seq, 0x0104, &[0x42]);
-    let rsp = exchange(&mut dev, seq, apci::MEMORY_READ, 4, &[0xB6, 0xEA], 0).expect("status answered");
+    let rsp = exchange(&mut dev, seq, ApciCode::MemoryRead, 4, &[0xB6, 0xEA], 0).expect("status answered");
     assert_eq!(&apdu(&rsp)[4..8], &[0x01, 0x01, 0x01, 0x01]);
     seq = (seq + 1) & 0x0F;
 
     // PID_TABLE_REFERENCE on object 4 reads the allocated address.
-    let rsp = exchange(&mut dev, seq, apci::PROPERTY_VALUE_READ, 0, &[4, 7, 0x10, 0x01], 0).expect("answered");
+    let rsp = exchange(&mut dev, seq, ApciCode::PropertyValueRead, 0, &[4, 7, 0x10, 0x01], 0).expect("answered");
     assert_eq!(&apdu(&rsp)[6..10], &[0x00, 0x00, 0x43, 0x00]);
     seq = (seq + 1) & 0x0F;
 
     // Unload through the window; the status byte drops to Unloaded.
     mem_write(&mut dev, &mut seq, 0x0104, &[0x44]);
-    let rsp = exchange(&mut dev, seq, apci::MEMORY_READ, 4, &[0xB6, 0xEA], 0).expect("status answered");
+    let rsp = exchange(&mut dev, seq, ApciCode::MemoryRead, 4, &[0xB6, 0xEA], 0).expect("status answered");
     assert_eq!(&apdu(&rsp)[4..8], &[0x01, 0x01, 0x01, 0x00]);
 
     // The status bytes are write-protected.
@@ -187,13 +151,21 @@ fn property_path_lsm_still_works() {
     // path. The RT8 count byte collapses to 0 and mutes the device;
     // the IA survives.
     let rsp =
-        exchange(&mut dev, 0, apci::PROPERTY_VALUE_WRITE, 0, &[1, 5, 0x10, 0x01, 0x04], 0).expect("write answered");
+        exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &[1, 5, 0x10, 0x01, 0x04], 0).expect("write answered");
     assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Unloaded));
     assert_eq!(dev.eeprom_image()[0], 0, "GA count zeroed");
     assert_eq!(dev.individual_address(), DUT, "the IA survives the unload");
 
-    let read =
-        data_frame(0x0C, CLIENT, GroupAddress::from_three_level(1, 0, 2).0, true, 0x00, apci::GROUP_VALUE_READ, 0, &[]);
+    let read = data_frame(
+        0x0C,
+        CLIENT,
+        GroupAddress::from_three_level(1, 0, 2).0,
+        true,
+        Tpci::DataGroup,
+        ApciCode::GroupValueRead,
+        0,
+        &[],
+    );
     let out = dev.poll(PollInput::Frame(&read), 0);
     assert!(out.frames.is_empty(), "a muted device answers no group reads");
 }
@@ -204,27 +176,35 @@ fn run_state_stop_terminates_instead_of_halting() {
     connect(&mut dev);
 
     // Loaded application reads Running.
-    let rsp = exchange(&mut dev, 0, apci::PROPERTY_VALUE_READ, 0, &[3, 6, 0x10, 0x01], 0).expect("answered");
+    let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[3, 6, 0x10, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Running));
 
     // RUNCONTROL_STOP → Terminated (03/05/01 §4.24.2.3.3 Table 97:
     // no HALTED intermediate reachable from the bus on this profile),
     // and group traffic stops.
-    let rsp = exchange(&mut dev, 1, apci::PROPERTY_VALUE_WRITE, 0, &[3, 6, 0x10, 0x01, 0x02], 0).expect("answered");
+    let rsp = exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x02], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Terminated));
     assert!(!dev.is_running());
-    let read =
-        data_frame(0x0C, CLIENT, GroupAddress::from_three_level(1, 0, 2).0, true, 0x00, apci::GROUP_VALUE_READ, 0, &[]);
+    let read = data_frame(
+        0x0C,
+        CLIENT,
+        GroupAddress::from_three_level(1, 0, 2).0,
+        true,
+        Tpci::DataGroup,
+        ApciCode::GroupValueRead,
+        0,
+        &[],
+    );
     let out = dev.poll(PollInput::Frame(&read), 0);
     assert!(out.frames.is_empty(), "a terminated application answers no group reads");
 
     // RUNCONTROL_RESTART revives it.
-    let rsp = exchange(&mut dev, 2, apci::PROPERTY_VALUE_WRITE, 0, &[3, 6, 0x10, 0x01, 0x01], 0).expect("answered");
+    let rsp = exchange(&mut dev, 2, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Running));
     assert!(dev.is_running());
 
     // The unloaded App2 reads Halted.
-    let rsp = exchange(&mut dev, 3, apci::PROPERTY_VALUE_READ, 0, &[4, 6, 0x10, 0x01], 0).expect("answered");
+    let rsp = exchange(&mut dev, 3, ApciCode::PropertyValueRead, 0, &[4, 6, 0x10, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Halted));
 }
 
@@ -232,7 +212,8 @@ fn run_state_stop_terminates_instead_of_halting() {
 fn individual_address_write_lands_in_the_adt() {
     let mut dev = device();
     let new_ia = IndividualAddress::new(2, 3, 4);
-    let write = data_frame(0x00, CLIENT, [0, 0], true, 0x00, apci::INDIVIDUAL_ADDRESS_WRITE, 0, new_ia.as_bytes());
+    let write =
+        data_frame(0x00, CLIENT, [0, 0], true, Tpci::DataGroup, ApciCode::IndividualAddressWrite, 0, new_ia.as_bytes());
     dev.poll(PollInput::Frame(&write), 0);
     assert_eq!(dev.individual_address(), DUT, "ignored outside programming mode");
 
@@ -248,9 +229,16 @@ fn rt8_group_communication() {
     let mut dev = device();
 
     // A bus write to 1/0/1 lands in ASAP 0's RAM slot.
-    let write =
-        data_frame(0x0C, CLIENT, GroupAddress::from_three_level(1, 0, 1).0, true, 0x00, apci::GROUP_VALUE_WRITE, 1, &[
-        ]);
+    let write = data_frame(
+        0x0C,
+        CLIENT,
+        GroupAddress::from_three_level(1, 0, 1).0,
+        true,
+        Tpci::DataGroup,
+        ApciCode::GroupValueWrite,
+        1,
+        &[],
+    );
     dev.poll(PollInput::Frame(&write), 0);
     let mut value = [0u8; 1];
     assert_eq!(dev.read_value(0, &mut value), 1);
@@ -262,7 +250,7 @@ fn rt8_group_communication() {
     dev.set_transmit_request(1);
     let out = dev.poll(PollInput::Timer, 10);
     let tx = FrameView::parse(&out.frames[0]).expect("parsable");
-    assert_eq!(tx.apci(), Some(apci::GROUP_VALUE_WRITE | 0x01));
+    assert_eq!(tx.apci(), Some(ApciCode::GroupValueWrite.wire10_base() | 0x01));
     assert_eq!(tx.dest_group(), GroupAddress::from_three_level(1, 0, 2));
 }
 
@@ -272,7 +260,7 @@ fn snapshot_round_trip_preserves_option_reg() {
     use zweidraehte_microdevice::snapshot::MicroSnapshot;
     let mut dev = device();
     connect(&mut dev);
-    exchange(&mut dev, 0, apci::MEMORY_WRITE, 1, &[0x01, 0x00, 0x5A], 0);
+    exchange(&mut dev, 0, ApciCode::MemoryWrite, 1, &[0x01, 0x00, 0x5A], 0);
     let snap = MicroSnapshot::capture(&dev);
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");

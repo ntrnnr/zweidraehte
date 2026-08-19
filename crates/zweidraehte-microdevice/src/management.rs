@@ -12,32 +12,28 @@
 
 use heapless::Vec;
 use zweidraehte_proto::address::IndividualAddress;
-use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, LoadState};
-use zweidraehte_proto::pid;
+use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, LoadState};
+use zweidraehte_proto::pid::{self, pdt};
 
-use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE};
+use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, SYSTEM_STATUS_ADDR};
 use crate::family::MicroDeviceFamily;
-use crate::frame::apci;
-
-/// A_Key_Response is the one escaped APCI the frame module's shared
-/// vocabulary does not carry (nothing else in the workspace sends it).
-const APCI_KEY_RESPONSE: u16 = 0x3D4;
+use crate::frame::ApciCode;
 
 /// One reply APDU. `small6` rides in the APCI low octet for the short
 /// services; the payload follows.
 pub struct Reply {
-    pub apci10: u16,
+    pub apci: ApciCode,
     pub small6: u8,
     pub payload: Vec<u8, 14>,
 }
 
 impl Reply {
-    pub(crate) fn new(apci10: u16, small6: u8, payload: &[u8]) -> Self {
+    pub(crate) fn new(apci: ApciCode, small6: u8, payload: &[u8]) -> Self {
         let mut p = Vec::new();
         // Payloads are built in this module and never exceed the
         // 15-octet APDU (1 APCI octet + 14 payload octets).
         p.extend_from_slice(payload).expect("management replies fit the BCU2 APDU");
-        Self { apci10, small6, payload: p }
+        Self { apci, small6, payload: p }
     }
 }
 
@@ -113,7 +109,7 @@ impl ManagementState {
     }
 
     pub fn verify_mode(&self) -> bool {
-        self.device_control & 0x04 != 0
+        self.device_control & pid::device_control::VERIFY_MODE != 0
     }
 }
 
@@ -127,7 +123,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// Dispatch one connection-oriented management APDU.
     pub(crate) fn handle_service(
         &mut self,
-        base: u16,
+        code: ApciCode,
         small6: u8,
         payload: &[u8],
         _source: IndividualAddress,
@@ -138,22 +134,22 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         // decode — the TL ACK still goes out, no reply follows.
         let has_auth = F::AUTH_LEVELS > 0;
         let has_properties = F::OBJECT_COUNT > 0;
-        match base {
-            apci::DEVICE_DESCRIPTOR_READ => self.device_descriptor_read(small6),
-            apci::MEMORY_READ => self.memory_read(small6, payload),
-            apci::MEMORY_WRITE => self.memory_write(small6, payload),
-            apci::AUTHORIZE_REQUEST if has_auth => self.authorize(payload),
-            0x3D3 /* A_Key_Write */ if has_auth => self.key_write(payload),
-            apci::PROPERTY_VALUE_READ if has_properties => self.property_value_read(payload),
-            apci::PROPERTY_VALUE_WRITE if has_properties => self.property_value_write(payload),
-            apci::PROPERTY_DESCRIPTION_READ if has_properties => self.property_description_read(payload),
-            apci::RESTART => {
+        match code {
+            ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6),
+            ApciCode::MemoryRead => self.memory_read(small6, payload),
+            ApciCode::MemoryWrite => self.memory_write(small6, payload),
+            ApciCode::AuthorizeRequest if has_auth => self.authorize(payload),
+            ApciCode::KeyWrite if has_auth => self.key_write(payload),
+            ApciCode::PropertyValueRead if has_properties => self.property_value_read(payload),
+            ApciCode::PropertyValueWrite if has_properties => self.property_value_write(payload),
+            ApciCode::PropertyDescriptionRead if has_properties => self.property_description_read(payload),
+            ApciCode::Restart => {
                 // Only the basic restart exists on these masks; the
                 // master-reset variant (escape bit in the low octet)
                 // postdates them.
                 if small6 == 0 { ServiceResult::Restart } else { ServiceResult::None }
             }
-            _ => F::extra_service(base, small6, payload).unwrap_or(ServiceResult::None),
+            _ => F::extra_service(code, small6, payload).unwrap_or(ServiceResult::None),
         }
     }
 
@@ -191,7 +187,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             // over the whole octet (bit 7 is the parity bit); the mask
             // firmware drops writes that fail the check, so a corrupted
             // telegram cannot flip programming mode.
-            if addr == 0x0060 && !value.count_ones().is_multiple_of(2) {
+            if usize::from(addr) == SYSTEM_STATUS_ADDR && !value.count_ones().is_multiple_of(2) {
                 return;
             }
             self.ram[a] = value;
@@ -219,7 +215,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         for i in 0..count {
             let _ = data.push(self.mem_read_byte(addr.wrapping_add(u16::from(i))));
         }
-        ServiceResult::Reply(Reply::new(apci::MEMORY_RESPONSE, count, &data))
+        ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, count, &data))
     }
 
     fn memory_write(&mut self, count: u8, payload: &[u8]) -> ServiceResult {
@@ -246,18 +242,20 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
     // ── Device descriptor ───────────────────────────────────────────
 
+    /// 03/03/07 §3.4.2: an unsupported descriptor type is answered
+    /// with type 3Fh and no data.
+    const DD_TYPE_UNSUPPORTED: u8 = 0x3F;
+
     fn device_descriptor_read(&self, descriptor_type: u8) -> ServiceResult {
         if descriptor_type == 0 {
-            return ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 0, &F::DD0.to_be_bytes()));
+            return ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, 0, &F::DD0.to_be_bytes()));
         }
         if descriptor_type == 2
             && let Some(dd2) = F::device_descriptor2(self.eeprom.as_ref(), &self.identity, &self.mgmt)
         {
-            return ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 2, &dd2));
+            return ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, 2, &dd2));
         }
-        // 03/03/07 §3.4.2: an unsupported descriptor type is answered
-        // with type 3Fh and no data.
-        ServiceResult::Reply(Reply::new(apci::DEVICE_DESCRIPTOR_RESPONSE, 0x3F, &[]))
+        ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, Self::DD_TYPE_UNSUPPORTED, &[]))
     }
 
     // ── Authorization ───────────────────────────────────────────────
@@ -272,7 +270,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             .find(|&level| self.mgmt.auth_keys[usize::from(level)] == key)
             .unwrap_or(free_level);
         self.mgmt.auth_level = granted;
-        ServiceResult::Reply(Reply::new(apci::AUTHORIZE_RESPONSE, 0, &[granted]))
+        ServiceResult::Reply(Reply::new(ApciCode::AuthorizeResponse, 0, &[granted]))
     }
 
     fn key_write(&mut self, payload: &[u8]) -> ServiceResult {
@@ -283,10 +281,10 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         if !F::key_write_level_valid(level) || self.mgmt.auth_level > level {
             // Not privileged enough to set this level's key: answer
             // with FFh, the "not modified" convention.
-            return ServiceResult::Reply(Reply::new(APCI_KEY_RESPONSE, 0, &[0xFF]));
+            return ServiceResult::Reply(Reply::new(ApciCode::KeyResponse, 0, &[0xFF]));
         }
         self.mgmt.auth_keys[usize::from(level)] = payload[1..5].try_into().expect("length checked above");
-        ServiceResult::Reply(Reply::new(APCI_KEY_RESPONSE, 0, &[level]))
+        ServiceResult::Reply(Reply::new(ApciCode::KeyResponse, 0, &[level]))
     }
 
     // ── Property services ───────────────────────────────────────────
@@ -300,13 +298,13 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         match self.property_read(obj, prop_id, count, start) {
             Some(data) => {
                 let _ = reply.extend_from_slice(&data);
-                ServiceResult::Reply(Reply::new(apci::PROPERTY_VALUE_RESPONSE, 0, &reply))
+                ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &reply))
             }
             // Unknown property / bad index: the negative response is
             // the same header with the element count zeroed.
             None => {
                 reply[2] = start.to_be_bytes()[0] & 0x0F;
-                ServiceResult::Reply(Reply::new(apci::PROPERTY_VALUE_RESPONSE, 0, &reply))
+                ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &reply))
             }
         }
     }
@@ -329,7 +327,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         } else {
             reply[2] = 0;
         }
-        ServiceResult::Reply(Reply::new(apci::PROPERTY_VALUE_RESPONSE, 0, &reply))
+        ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &reply))
     }
 
     /// Read `count` elements from `start` of a property. Properties on
@@ -459,23 +457,30 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 max as u8,
                 levels,
             ];
-            ServiceResult::Reply(Reply::new(apci::PROPERTY_DESCRIPTION_RESPONSE, 0, &reply))
+            ServiceResult::Reply(Reply::new(ApciCode::PropertyDescriptionResponse, 0, &reply))
         };
+        // The `access` octet of A_PropertyDescription_Response
+        // (03/03/07 §3.4.3.1): read level in the high nibble, write
+        // level in the low. These masks answer with read level 3 and —
+        // where writeable — write level 1, matching real BCU2 silicon.
+        const ACCESS_READ3: u8 = 0x30;
+        const ACCESS_READ3_WRITE1: u8 = 0x31;
         // Only lookup by PID is served; the by-index enumeration ETS
         // uses for object browsing has no client here yet.
         // TODO: by-index enumeration when a tool is seen relying on it.
-        const PDT_CONTROL: u8 = 0;
-        const PDT_UNSIGNED_INT: u8 = 4;
-        const PDT_UNSIGNED_LONG: u8 = 9;
         match u16::from(prop_id) {
-            pid::OBJECT_TYPE if obj < F::OBJECT_COUNT => describe(PDT_UNSIGNED_INT, false, 1, 0x30),
-            pid::LOAD_STATE_CONTROL if self.lsm_index(obj).is_some() => describe(PDT_CONTROL, true, 1, 0x31),
-            pid::RUN_STATE_CONTROL if F::run_state_read(obj, self.eeprom.as_ref(), &self.mgmt).is_some() => {
-                describe(PDT_CONTROL, true, 1, 0x31)
+            pid::OBJECT_TYPE if obj < F::OBJECT_COUNT => describe(pdt::UNSIGNED_INT, false, 1, ACCESS_READ3),
+            pid::LOAD_STATE_CONTROL if self.lsm_index(obj).is_some() => {
+                describe(pdt::CONTROL, true, 1, ACCESS_READ3_WRITE1)
             }
-            pid::TABLE_REFERENCE if self.lsm_index(obj).is_some() => describe(PDT_UNSIGNED_LONG, false, 1, 0x30),
-            // Unknown property: type 0, max 0 — the spec's "does not
-            // exist" answer.
+            pid::RUN_STATE_CONTROL if F::run_state_read(obj, self.eeprom.as_ref(), &self.mgmt).is_some() => {
+                describe(pdt::CONTROL, true, 1, ACCESS_READ3_WRITE1)
+            }
+            pid::TABLE_REFERENCE if self.lsm_index(obj).is_some() => {
+                describe(pdt::UNSIGNED_LONG, false, 1, ACCESS_READ3)
+            }
+            // Unknown property: type 0, max 0, no access — the spec's
+            // "does not exist" answer.
             _ => describe(0, false, 0, 0x00),
         }
     }
@@ -539,24 +544,23 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
             let Some(&segment_type) = record.get(1) else { return };
             match LoadSegment::from(segment_type) {
                 LoadSegment::AbsoluteData => {
-                    // AllocAbsDataSeg: [type][start:2BE][length:2BE]
-                    // [access][memtype][memattr][reserved]. The
-                    // segment lives at a fixed or product-defined
-                    // address on these families, so allocation is
-                    // remembering the address for PID_TABLE_REFERENCE
-                    // — after checking the segment actually fits the
-                    // device's storage, which is how an oversized
-                    // product surfaces as a load Error rather than a
-                    // silently truncated table.
-                    if record.len() >= 6 {
-                        let start = u16::from_be_bytes([record[2], record[3]]);
-                        let length = u16::from_be_bytes([record[4], record[5]]);
-                        if F::abs_segment_fits(start, length) {
-                            lsm.table_ref = start;
+                    // AllocAbsDataSeg. The segment lives at a fixed or
+                    // product-defined address on these families, so
+                    // allocation is remembering the address for
+                    // PID_TABLE_REFERENCE — after checking the segment
+                    // actually fits the device's storage, which is how
+                    // an oversized product surfaces as a load Error
+                    // rather than a silently truncated table.
+                    if let Some(segment) = AbsSegment::parse(&record[1..]) {
+                        if F::abs_segment_fits(segment.start_address, segment.length) {
+                            lsm.table_ref = segment.start_address;
                         } else {
                             lsm.state = LoadState::Err;
                         }
                     } else if record.len() >= 4 {
+                        // A record truncated after the start address:
+                        // too short for AbsSegment, but the address is
+                        // still worth remembering (no length to check).
                         lsm.table_ref = u16::from_be_bytes([record[2], record[3]]);
                     }
                 }

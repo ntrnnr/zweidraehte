@@ -4,6 +4,7 @@ use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::family::{LsmPath, MicroDeviceFamily};
+use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
 /// BCU1 / System 1, TP1, mask version 0012h.
@@ -95,7 +96,7 @@ impl MicroDeviceFamily for Bcu1Family {
     /// mask without load state machines is DevTyp ≠ 0 (the unload
     /// sequence zeroes DevTyp + Version to un-mark the program).
     fn is_app_running(eeprom: &[u8], _mgmt: &ManagementState) -> bool {
-        eeprom.get(offsets::RUN_ERROR).copied() == Some(0xFF)
+        eeprom.get(offsets::RUN_ERROR).copied() == Some(offsets::RUN_ERROR_ALL_CLEAR)
             && eeprom.get(offsets::DEV_TYP..offsets::DEV_TYP + 2).is_some_and(|d| d != [0, 0])
     }
 
@@ -107,10 +108,8 @@ impl MicroDeviceFamily for Bcu1Family {
     }
     fn unload_side_effect(_machine: usize, _eeprom: &mut [u8], _mgmt: &mut ManagementState) {}
 
-    // The option register stores the complement of what the client
-    // reads and writes — same silicon behavior as BCU2.
     fn special_byte_read(addr: u16, eeprom: &[u8], _mgmt: &ManagementState) -> Option<u8> {
-        (addr == Self::EEPROM_BASE + offsets::OPTION_REG as u16).then(|| !eeprom[offsets::OPTION_REG])
+        crate::families::option_reg_read(addr, Self::EEPROM_BASE, offsets::OPTION_REG, eeprom)
     }
 
     /// Beyond the option-register inversion, this is where the BCU's
@@ -119,8 +118,7 @@ impl MicroDeviceFamily for Bcu1Family {
     /// updated". ETS relies on it and never writes 01FFh itself
     /// (hardware-confirmed, `BCU1_PLAN.md`).
     fn special_byte_write(addr: u16, value: u8, eeprom: &mut [u8], _mgmt: &mut ManagementState) -> bool {
-        if addr == Self::EEPROM_BASE + offsets::OPTION_REG as u16 {
-            eeprom[offsets::OPTION_REG] = !value;
+        if crate::families::option_reg_write(addr, value, Self::EEPROM_BASE, offsets::OPTION_REG, eeprom) {
             return true;
         }
         let Some(off) = addr.checked_sub(Self::EEPROM_BASE).map(usize::from) else {
@@ -136,8 +134,8 @@ impl MicroDeviceFamily for Bcu1Family {
 
     /// A BCU1 exposes its analog channels through `A_ADC_Read` just
     /// like BCU2 (the PEI hardware detection runs over them).
-    fn extra_service(base: u16, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
-        crate::families::adc_read_stub(base, small6, payload)
+    fn extra_service(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
+        crate::families::adc_read_stub(code, small6, payload)
     }
 }
 
@@ -146,7 +144,7 @@ impl MicroDeviceFamily for Bcu1Family {
 /// an out-of-spec value (legal 09h–FFh).
 fn checked_range_end(eeprom: &[u8]) -> usize {
     let lim = usize::from(eeprom[offsets::CHECK_LIM]);
-    if lim >= 0x09 { lim } else { offsets::CHECK_LIM }
+    if lim >= offsets::CHECK_LIM_MIN { lim } else { offsets::CHECK_LIM }
 }
 
 /// Recompute the EE_EXOR checksum over the checked range.

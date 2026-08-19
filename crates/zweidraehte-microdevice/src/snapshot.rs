@@ -71,9 +71,6 @@ impl core::fmt::Debug for MicroSnapshot {
     }
 }
 
-#[allow(dead_code)]
-fn assert_auth_capacity() {
-    // MAX_AUTH_LEVELS keys are captured; a family with more would
-    // silently truncate. Compile-time tripwire.
-    const _: () = assert!(MAX_AUTH_LEVELS >= 16);
-}
+// MAX_AUTH_LEVELS keys are captured; a family with more would
+// silently truncate. Compile-time tripwire.
+const _: () = assert!(MAX_AUTH_LEVELS >= 16);
