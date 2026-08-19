@@ -6,9 +6,20 @@
 //! loop {
 //!     drain UART → TPUART driver → frames → stack.poll()
 //!     stack timer tick → pending transmissions
-//!     application: check group-object flags, drive the LED
+//!     application: LightSwitchMicroApp — buttons, params, LED
 //! }
 //! ```
+//!
+//! The product is the shared 2-button light switch
+//! (`devices::light_switch`) — and this device presents itself as the
+//! *same* mask-0705 product the full-stack `g0_tp1_system7_light_switch`
+//! firmware implements: identical application ID, hardware type and
+//! memory geometry, so one `.knxprod` drives either implementation.
+//! Parameters are read straight out of the EEPROM image ETS writes
+//! them into; behavior comes from `light_switch::micro`.
+//!
+//! One physical button: PC11 drives button 1's configured function;
+//! button 2's objects are live on the bus but have no key.
 //!
 //! Hardware (same board as `g0_tp1_light_switch`):
 //!   PA9  = USART1_TX → TPUART RXD        PD2  = prog button (low-active)
@@ -31,51 +42,16 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use cortex_m_rt::{entry, exception};
 use defmt_rtt as _;
+use devices::light_switch::LightSwitchDevice;
+use devices::light_switch::micro::{self, LightSwitchMicroApp};
 use panic_probe as _;
 use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
-use zweidraehte_microdevice::co_flags;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
-use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
-use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
-// ============================================================================
-// The product
-// ============================================================================
-
-/// ASAP 0: the switch input — the bus writes it, the LED follows.
-const SWITCH_ASAP: u8 = 0;
-/// ASAP 1: the status output — the button toggles it and transmits.
-const STATUS_ASAP: u8 = 1;
-
-/// The product's family instantiation: 1 KiB of user EEPROM backed
+/// The shared product's family instantiation: 1 KiB of user EEPROM
 /// from 4000h, the M112 group object table published at 4200h.
-type Fam = System7Family<0x400, 0x4200>;
-
-static COM_OBJECTS: &[System7CoDescriptor] = &[
-    // 1-bit, communication + write + update, low priority.
-    System7CoDescriptor { data_ptr: 0x00C6, config: 0x9F, value_type: 0x00 },
-    // 1-bit, communication + transmit + read, low priority.
-    System7CoDescriptor { data_ptr: 0x00C7, config: 0x4F, value_type: 0x00 },
-];
-
-fn definition() -> System7DeviceDefinition {
-    System7DeviceDefinition {
-        manufacturer_id: 0x00FA,
-        device_type: 0x0B71,
-        version: 1,
-        // Factory address until ETS commissions one over the bus.
-        individual_address: IndividualAddress::new(15, 15, 255),
-        max_group_addresses: 8,
-        max_associations: 8,
-        ram_flags_ptr: 0x00D0,
-        comm_objects: COM_OBJECTS,
-        group_addresses: &[] as &[GroupAddress],
-        associations: &[],
-        ast_offset: 0x100,
-        app_offset: 0x300,
-    }
-}
+type Fam = micro::LightSwitchS7Family;
 
 // ============================================================================
 // Milliseconds via SysTick
@@ -186,12 +162,16 @@ fn main() -> ! {
 
     init_hardware();
 
+    // The identity of the shared mask-0705 product: the download's
+    // `LdCtrlCompareProp` verifies PID 78 against the product's
+    // hardware serial, so this must be the System 7 hardware type.
     let identity = DeviceIdentity {
-        serial_number: [0x00, 0xFA, 0x00, 0x00, 0x0B, 0x21],
+        serial_number: [0x00, 0xFA, 0x00, 0x00, 0x03, 0x06],
         order_info: [0; 10],
-        hardware_type: [0; 6],
+        hardware_type: LightSwitchDevice::HARDWARE_TYPE_TP1_SYSTEM7,
     };
-    let mut stack: Microdevice<Fam> = Microdevice::new(Fam::build_eeprom(&definition()), identity, 1);
+    let mut stack: Microdevice<Fam> = Microdevice::new(Fam::build_eeprom(&micro::system7_definition()), identity, 1);
+    let mut app = LightSwitchMicroApp::new(micro::S7_PARAMS_IMAGE_OFFSET);
 
     // The TPUART acks frames for our IA and for group addresses the
     // table carries. The filter sees the raw header octets; the stack
@@ -204,7 +184,6 @@ fn main() -> ! {
     defmt::info!("micro-System-7 stack up, IA {}", stack.individual_address().0);
 
     let mut prog_button_last = false;
-    let mut user_button_last = false;
     let mut last_tick = 0u32;
 
     loop {
@@ -257,22 +236,14 @@ fn main() -> ! {
             }
         }
 
-        // ── Application: the classic flag loop ──────────────────────
-        if stack.object_flags(SWITCH_ASAP) & co_flags::UPDATE != 0 {
-            stack.clear_update_flag(SWITCH_ASAP);
-            let mut value = [0u8; 1];
-            stack.read_value(SWITCH_ASAP, &mut value);
-            set_led(GPIOC, 12, value[0] & 1 != 0);
+        // ── Application: the shared light-switch behavior ───────────
+        // PC11 is button 1; the board has no second button. The user
+        // LED mirrors button 1's status object — the actuator feedback
+        // in Switch/Dimmer configurations.
+        app.poll(&mut stack, button_pressed(GPIOC, 11), false, now);
+        if let Some(on) = app.take_btn1_status_update(&mut stack) {
+            set_led(GPIOC, 12, on);
         }
-
-        let user_button = button_pressed(GPIOC, 11);
-        if user_button && !user_button_last {
-            let mut value = [0u8; 1];
-            stack.read_value(STATUS_ASAP, &mut value);
-            stack.write_value(STATUS_ASAP, &[value[0] ^ 1]);
-            stack.set_transmit_request(STATUS_ASAP);
-        }
-        user_button_last = user_button;
 
         let prog_button = button_pressed(GPIOD, 2);
         if prog_button && !prog_button_last {

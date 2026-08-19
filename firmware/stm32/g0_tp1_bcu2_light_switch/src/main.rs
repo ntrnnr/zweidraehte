@@ -6,9 +6,21 @@
 //! loop {
 //!     drain UART → TPUART driver → frames → stack.poll()
 //!     stack timer tick → pending transmissions
-//!     application: check group-object flags, drive the LED
+//!     application: LightSwitchMicroApp — buttons, params, LED
 //! }
 //! ```
+//!
+//! The product is the shared 2-button light switch
+//! (`devices::light_switch`): six group objects, the ETS-configurable
+//! parameters (function per button, debounce and long-press times)
+//! read straight out of the EEPROM image ETS writes them into, and
+//! the behavior of `light_switch::micro` — the same semantics the
+//! System B firmware runs, minus the executor. The mask-0020 product
+//! database entry comes from `gen_light_switch_mtxml`, baked from the
+//! same `micro::bcu2_definition()` this image boots.
+//!
+//! One physical button: PC11 drives button 1's configured function;
+//! button 2's objects are live on the bus but have no key.
 //!
 //! Hardware (same board as `g0_tp1_light_switch`):
 //!   PA9  = USART1_TX → TPUART RXD        PD2  = prog button (low-active)
@@ -31,47 +43,13 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use cortex_m_rt::{entry, exception};
 use defmt_rtt as _;
+use devices::light_switch::LightSwitchDevice;
+use devices::light_switch::micro::{self, LightSwitchMicroApp};
 use panic_probe as _;
 use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
-use zweidraehte_microdevice::co_flags;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
-use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition, Bcu2Family};
+use zweidraehte_microdevice::families::bcu2::Bcu2Family;
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
-use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
-
-// ============================================================================
-// The product
-// ============================================================================
-
-/// ASAP 0: the switch input — the bus writes it, the LED follows.
-const SWITCH_ASAP: u8 = 0;
-/// ASAP 1: the status output — the button toggles it and transmits.
-const STATUS_ASAP: u8 = 1;
-
-static COM_OBJECTS: &[Bcu2CoDescriptor] = &[
-    // 1-bit, communication + write + update, low priority.
-    Bcu2CoDescriptor { data_ptr: 0xC6, config: 0x9F, value_type: 0x00 },
-    // 1-bit, communication + transmit + read, low priority.
-    Bcu2CoDescriptor { data_ptr: 0xC7, config: 0x4F, value_type: 0x00 },
-];
-
-fn definition() -> Bcu2DeviceDefinition {
-    Bcu2DeviceDefinition {
-        manufacturer_id: 0x00FA,
-        app_manufacturer_id: 0x00FA,
-        device_type: 0x0B21,
-        version: 1,
-        pei_type: 0,
-        // Factory address until ETS commissions one over the bus.
-        individual_address: IndividualAddress::new(15, 15, 255),
-        max_group_addresses: 8,
-        max_associations: 8,
-        ram_flags_ptr: 0xD0,
-        comm_objects: COM_OBJECTS,
-        group_addresses: &[] as &[GroupAddress],
-        associations: &[],
-    }
-}
 
 // ============================================================================
 // Milliseconds via SysTick
@@ -183,11 +161,12 @@ fn main() -> ! {
     init_hardware();
 
     let identity = DeviceIdentity {
-        serial_number: [0x00, 0xFA, 0x00, 0x00, 0x0B, 0x21],
+        serial_number: [0x00, 0xFA, 0x00, 0x00, 0x03, 0x08],
         order_info: [0; 10],
-        hardware_type: [0; 6],
+        hardware_type: LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2,
     };
-    let mut stack: Microdevice<Bcu2Family> = Microdevice::new(definition().build_eeprom(), identity, 1);
+    let mut stack: Microdevice<Bcu2Family> = Microdevice::new(micro::bcu2_definition().build_eeprom(), identity, 1);
+    let mut app = LightSwitchMicroApp::new(micro::BCU2_PARAMS_IMAGE_OFFSET);
 
     // The TPUART acks frames for our IA and for group addresses the
     // table carries. The filter sees the raw header octets; the stack
@@ -200,7 +179,6 @@ fn main() -> ! {
     defmt::info!("BCU2 micro stack up, IA {}", stack.individual_address().0);
 
     let mut prog_button_last = false;
-    let mut user_button_last = false;
     let mut last_tick = 0u32;
 
     loop {
@@ -253,22 +231,14 @@ fn main() -> ! {
             }
         }
 
-        // ── Application: the classic flag loop ──────────────────────
-        if stack.object_flags(SWITCH_ASAP) & co_flags::UPDATE != 0 {
-            stack.clear_update_flag(SWITCH_ASAP);
-            let mut value = [0u8; 1];
-            stack.read_value(SWITCH_ASAP, &mut value);
-            set_led(GPIOC, 12, value[0] & 1 != 0);
+        // ── Application: the shared light-switch behavior ───────────
+        // PC11 is button 1; the board has no second button. The user
+        // LED mirrors button 1's status object — the actuator feedback
+        // in Switch/Dimmer configurations.
+        app.poll(&mut stack, button_pressed(GPIOC, 11), false, now);
+        if let Some(on) = app.take_btn1_status_update(&mut stack) {
+            set_led(GPIOC, 12, on);
         }
-
-        let user_button = button_pressed(GPIOC, 11);
-        if user_button && !user_button_last {
-            let mut value = [0u8; 1];
-            stack.read_value(STATUS_ASAP, &mut value);
-            stack.write_value(STATUS_ASAP, &[value[0] ^ 1]);
-            stack.set_transmit_request(STATUS_ASAP);
-        }
-        user_button_last = user_button;
 
         let prog_button = button_pressed(GPIOD, 2);
         if prog_button && !prog_button_last {
