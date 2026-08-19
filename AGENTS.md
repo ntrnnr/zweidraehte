@@ -410,6 +410,7 @@ crates/
   zweidraehte-device-macros/ Proc-macros for interface objects, service registries, extension state
   zweidraehte-platform/      Platform abstraction (serial, sockets, network)
   zweidraehte-ets/           Procedural macros for ETS parameter definitions
+  zweidraehte-ets-model/     ETS metadata types the macros emit (proto-only deps)
   zweidraehte-knxprod/       KNX product data: MTXML/.knxprod generator + parser
   zweidraehte-client/        PC-side management client (tunnel/USB, secure, ETS-style download)
   zweidraehte-util/          Embedded utility types (button input, etc.)
@@ -748,7 +749,13 @@ Subdirectories:
 - `profiles/`, `patches/` - the committed TOML for the above
 
 #### 5. ETS Macros Crate (`crates/zweidraehte-ets`)
-**Purpose**: Procedural macros for generating ETS parameter definitions
+**Purpose**: Procedural macros for generating ETS parameter definitions.
+The generated code references `zweidraehte-ets-model` (metadata) and —
+for `#[ets_com_objects]`'s runtime half only — `zweidraehte-device`
+(the runtime comm-object containers), so every macro consumer needs the
+model crate as a direct dependency, and `ets_com_objects` declarations
+additionally the device crate unless they gate the runtime half with
+`runtime_cfg`.
 
 Macros provided:
 - `#[derive(EtsParams)]` - For parameter structs
@@ -760,10 +767,20 @@ Macros provided:
   - Creates discriminant enum for type-safe access
 - `#[derive(EtsEnum)]` - For simple enums (`#[repr(u8)]`)
   - Generates ETS_VARIANTS constant for dropdown parameters
-- `#[derive(EtsComObjects)]` - For communication object definitions
-  - Generates Index enum, ETS_COMM_OBJECTS array
+- `#[ets_com_objects]` - For communication object definitions
+  (attribute macro; fields are declared with the object's
+  factory-default proto DPT type — no `ComObject<...>` in source)
+  - Always generates the Index enum and the ETS_COMM_OBJECTS /
+    ETS_COMM_OBJECT_REFS metadata (model-crate types)
+  - Generates the full-stack runtime container (`ComObject` fields with
+    auto-sized multi-DPT storage, `ComObjects`/`ComObjectBusHook`
+    impls); `runtime_cfg = "feature"` gates that half behind the
+    declaring crate's feature, leaving a unit struct + metadata for
+    device-stack-free builds (how `light_switch/comm_objs.rs` serves
+    both the System B firmware and the micro table builders)
   - Supports multi-DPT objects with selector-based typed access
-  - Attributes: `index`, `display`, `function`, `flags`, `selector_enum`,
+  - Attributes: `index`, `display`, `function`, `flags` (incl. the
+    priority — spell `| LOW`), `selector_enum`,
     `initial` (non-default seed value in the generated `new()`)
   - Struct attrs: `bus_hook` (derived dispatch + hand-written
     `ComObjectBusHook`), `manual_impl` (hand-write both)
@@ -795,6 +812,22 @@ Macros provided:
   `#[runtime_only]`, `#[config(ty = ..., from = ..., to = ..., serde_default =
   ...)]`, `#[erase(default = ...)]`.
 
+#### 5c. ETS Model Crate (`crates/zweidraehte-ets-model`)
+**Purpose**: The ETS data model — the pure metadata vocabulary the macros
+emit and the product generator consumes (`EtsParamDef`/`EtsParamDefExt`,
+`EtsEnumVariant`, the union info types, `EtsCommObjectDef`/`RefDef`,
+`HasDptInfo`, `EtsTranslation`, plus the `ets_virtual_params!` /
+`ets_translations!` declarative macros). Depends on `zweidraehte-proto`
+only, so device definitions and `zweidraehte-knxprod` carry the metadata
+without dragging the device stack (or embassy) into their graphs.
+
+It is also the **front door to the proc macros**: it re-exports
+`ets_params`, `ets_union`, `EtsEnum`, `ets_com_objects`,
+`ets_range_enum` from `zweidraehte-ets` (serde-style companion
+pattern), so a definition author depends on this one crate. Device identification
+(`DeviceDescriptor`, `MaskVersion`, `MaskFamily`) is protocol vocabulary
+and is imported from `zweidraehte_proto::device`, not from here.
+
 #### 6. KNXPROD Generator Crate (`crates/zweidraehte-knxprod`)
 **Purpose**: KNX product data — generate *and* read. Writes MTXML /
 `.knxprod` from device definitions, and parses `knx_master.xml` and
@@ -803,7 +836,8 @@ mask and product layers).
 
 **Features** (split so the client can depend on the pure XML core
 without HTTP/crypto/ZIP): with no features the crate is quick-xml +
-serde only. `master-data` adds `MasterDataSource` resolution (fetch
+serde + `zweidraehte-proto`/`zweidraehte-ets-model` only — it does
+**not** depend on the device stack. `master-data` adds `MasterDataSource` resolution (fetch
 from update.knx.org + on-disk cache). `product-files` adds `.knxprod`
 archive *reading* (`runtime::knxprod::KnxprodArchive`). `packaging`
 (default) is signing + `.knxprod`/`.knxproj` writing, and implies the
@@ -882,9 +916,14 @@ Modules:
 - `module_test_device.rs` - Module test device, 4-channel dimmer (feature `demos`)
 - `system_b_demo.rs` - Demo System B device (feature `demos`)
 
-Features: `demos` is a **default feature** so `cargo test -p
-zweidraehte-devices` covers the demo definitions; firmware consumers use
-`default-features = false` and stay no_std/lean.
+Features: `full` gates the full-stack (embassy / `zweidraehte-device`)
+modules — `light_switch/{app,comm_objs,easter_egg}`, `ip_interface`, and
+`embassy-time`; `micro` gates `light_switch/micro` on
+`zweidraehte-microdevice`. `demos` (a **default feature**, implying
+`full`) adds the std demo/replication definitions so `cargo test -p
+zweidraehte-devices` covers them. Firmware consumers use
+`default-features = false` plus `full` or `micro`; the micro path is
+embassy-free by construction.
 
 #### 7b. Generators Crate (`examples/generators`, package `zweidraehte-generators`)
 **Purpose**: MTXML/.knxprod generator binaries — thin glue between a device
@@ -980,7 +1019,7 @@ Notable devices:
   - `#[derive(EtsParams)]` - Parameter struct definitions
   - `#[derive(EtsEnum)]` - Simple enum dropdowns
   - `#[derive(EtsUnion)]` - Tagged union/variant parameters
-  - `#[derive(EtsComObjects)]` - Communication object definitions
+  - `#[ets_com_objects]` - Communication object definitions
   - `ets_pages!` - Page layout macro for ETS UI structure
   - `define_module!` - Reusable module definitions for multi-channel devices
   - Conditional visibility (`when`/`choose` blocks)
@@ -1026,13 +1065,23 @@ zweidraehte-proto          (no_std, pure protocol types)
   │     └── firmware/*
   └── zweidraehte-client
 
-zweidraehte-ets            (proc-macro, no runtime deps)
-  └── zweidraehte-device
+zweidraehte-ets            (proc-macro, no runtime deps; generated code
+  │                         references zweidraehte-ets-model, and for
+  │                         ets_com_objects' runtime half also
+  │                         zweidraehte-device)
+  └── zweidraehte-ets-model
+
+zweidraehte-ets-model      (no_std ETS metadata; deps: proto + the
+  ├── zweidraehte-device   proc-macro crate it fronts)
+  ├── zweidraehte-knxprod
+  ├── examples/devices
+  └── conformance/
 
 zweidraehte-device-macros  (proc-macro, no runtime deps)
   └── zweidraehte-device
 
-zweidraehte-knxprod        (std, XML generation)
+zweidraehte-knxprod        (std, XML generation; deps: proto + ets-model,
+  │                         NOT the device stack)
   ├── examples/devices     (feature "knxprod"/"demos")
   ├── examples/generators
   ├── tools/knxprod-tui

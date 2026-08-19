@@ -37,8 +37,15 @@ The DSL consists of derive macros and a declarative macro:
 | `#[ets_params]` | Define device parameters |
 | `#[derive(EtsEnum)]` | Define simple enumerations for dropdowns |
 | `#[ets_union]` | Define tagged unions for variant parameters (attribute, not derive) |
-| `#[derive(EtsComObjects)]` | Define communication objects |
+| `#[ets_com_objects]` | Define communication objects (attribute, not derive) |
 | `ets_pages!` | Define the ETS parameter page layout |
+
+All the `Ets*` macros are imported from **`zweidraehte_ets_model`** (the
+metadata crate, which fronts the `zweidraehte-ets` proc-macro crate);
+their generated metadata lives there too. Only the `#[ets_com_objects]` runtime half
+additionally requires `zweidraehte-device`, because it wires up the
+runtime comm-object containers. `ets_pages!` comes from
+`zweidraehte_knxprod`.
 
 ---
 
@@ -514,25 +521,46 @@ ModeB {
 
 ## EtsComObjects - Communication Objects
 
-Use `#[derive(EtsComObjects)]` to define communication objects (group objects).
+Use the `#[ets_com_objects]` **attribute macro** to define communication
+objects (group objects). The declaration is stack-agnostic: each field's
+type is the object's **factory-default DPT** (a plain
+`zweidraehte_proto::dpt` type), and the macro generates
+
+- **always**: the ETS metadata (`ETS_COMM_OBJECTS`,
+  `ETS_COMM_OBJECT_REFS`, `NUM_COMM_OBJECTS`) and the `Index` enum —
+  pure `zweidraehte-ets-model` types, so product generators and the
+  micro stack's table builders consume the same declaration;
+- **runtime**: the full stack's container — the struct is re-emitted
+  with `ComObject<...>` fields (multi-DPT objects get a
+  `ComObjectStorage` automatically sized to the widest `#[ets_ref]`
+  DPT), plus the `ComObjects`/`ComObjectIndex`/`ComObjectBusHook`
+  impls. With `#[ets_com_objects(runtime_cfg = "full")]` this half is
+  emitted behind `#[cfg(feature = "full")]` of the declaring crate,
+  leaving a unit struct + metadata for builds without the device
+  stack; without the argument the runtime is unconditional.
 
 ### Basic Usage
 
 ```rust
-#[derive(Debug, EtsComObjects)]
+use zweidraehte_ets_model::ets_com_objects;
+use zweidraehte_proto::dpt::*;
+
+#[ets_com_objects]
 // `selector_enum` is a STRUCT-level attribute (not a field
 // attribute) and takes a bare type path, not a quoted string.
 #[ets(selector_enum = ObjectType)]
 pub struct MyComObjects {
     /// Simple switch object
     #[ets_ref(dpt = DPT_Switch, text = "Switch Output", function = "Switching")]
-    pub switch_output: ComObject<ComObjectStorage<1>>,
+    pub switch_output: DPT_Switch,
 
-    /// Object with multiple DPT types based on selector
+    /// Object with multiple DPT types based on selector — the storage
+    /// is sized to the widest ref automatically; the declared type is
+    /// the factory-default DPT.
     #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "Value Output", function = "Switch")]
     #[ets_ref(dpt = DPT_Value_1_Ucount, when = ObjectType::Percent, text = "Value Output", function = "Value")]
     #[ets_ref(dpt = DPT_SceneNumber, when = ObjectType::Scene, text = "Value Output", function = "Scene")]
-    pub value_output: ComObject<ComObjectStorage<4>>,
+    pub value_output: DPT_Switch,
 }
 ```
 
@@ -911,32 +939,31 @@ Modules provide:
 - **Argument-based addressing**: Parameters use `BaseOffset`, comm objects use `BaseNumber`
 
 A module consists of two parts:
-1. **Communication Objects** - Defined with `#[derive(EtsComObjects)]`
+1. **Communication Objects** - Defined with `#[ets_com_objects]`
 2. **Module Definition** - Defined with the `define_module!` macro
 
 ### Step 1: Define Communication Objects
 
-Define comm objects FIRST with `#[derive(EtsComObjects)]`. This single type serves both
+Define comm objects FIRST with `#[ets_com_objects]`. This single type serves both
 ETS metadata generation AND runtime storage:
 
 ```rust
-use zweidraehte_device::prelude::*;
-use zweidraehte_device::objects::comm::{ComObject, ComObjectStorage};
+use zweidraehte_ets_model::ets_com_objects;
 use zweidraehte_proto::dpt::*;
 
-#[derive(EtsComObjects)]
+#[ets_com_objects]
 pub struct DimmerChannelObjects {
     #[ets(index = 0, display = "Switch", function = "Switch on/off",
           flags = C | R | W | T, text_template = "Ch{{ChNo}} Switch: {{0}}")]
-    pub switch: ComObject<DPT_Switch>,
+    pub switch: DPT_Switch,
 
     #[ets(index = 1, display = "Dimming", function = "Dimming value %",
           flags = C | R | W | T)]
-    pub dim_value: ComObject<DPT_Scaling>,
+    pub dim_value: DPT_Scaling,
 
     #[ets(index = 2, display = "Status", function = "Status feedback",
           flags = C | T)]
-    pub status: ComObject<DPT_State>,
+    pub status: DPT_State,
 }
 ```
 
@@ -1132,7 +1159,7 @@ The `#[ets(module = ...)]` attribute automatically generates:
 Similarly, use `#[ets(module = ModuleType)]` on comm object arrays:
 
 ```rust
-#[derive(EtsComObjects)]
+#[ets_com_objects]
 pub struct DeviceCommObjects {
     #[ets(module = DimmerChannelModule)]
     pub channels: [DimmerChannelObjects; 4],
@@ -1277,7 +1304,7 @@ No firmware changes are needed for modules - your firmware just sees flat parame
 
 See [examples/devices/src/module_test_device.rs](../examples/devices/src/module_test_device.rs) for a complete working example with:
 - Module definition using `define_module!` macro
-- Communication objects with `#[derive(EtsComObjects)]`
+- Communication objects with `#[ets_com_objects]`
 - Device params using `#[ets(module = ...)]` for automatic helpers
 - `ets_pages!` layout with `module_instances`
 - Generated MTXML validation
@@ -1288,10 +1315,10 @@ See [examples/devices/src/module_test_device.rs](../examples/devices/src/module_
 
 Modules declare virtual parameters in their `virtual_params { }` block;
 for **device-level** (non-module) ETS-only parameters use the
-`ets_virtual_params!` macro from `zweidraehte_device`:
+`ets_virtual_params!` macro from `zweidraehte_ets_model`:
 
 ```rust
-zweidraehte_device::ets_virtual_params! {
+zweidraehte_ets_model::ets_virtual_params! {
     pub DEVICE_VIRTUAL_PARAMS {
         device_name: String(50) => "Device name" [text_source],
     }
@@ -1306,12 +1333,12 @@ regular `ETS_PARAMS`.
 
 ## ets_translations! - Translation Tables
 
-`ets_translations!` (also from `zweidraehte_device`) declares per-locale
+`ets_translations!` (also from `zweidraehte_ets_model`) declares per-locale
 display-text overrides for enum variants, parameters, comm objects, and
 page/block titles, which the generator emits as MTXML `<Translations>`:
 
 ```rust
-zweidraehte_device::ets_translations! {
+zweidraehte_ets_model::ets_translations! {
     pub MODULE_TRANSLATIONS_DE;
 
     "de-DE" {
@@ -1333,7 +1360,7 @@ those files for the full entry grammar.
 
 ```rust
 use zweidraehte_knxprod::definition::page_layout::{EtsPageLayout, PageStructure};
-use zweidraehte_device::prelude::*;  // re-exports the Ets* derives
+use zweidraehte_ets_model::{EtsComObjects, EtsEnum, ets_params, ets_union};
 
 // Simple enum for dropdowns
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EtsEnum, Default)]
@@ -1385,7 +1412,7 @@ pub struct DeviceParams {
 #[derive(Debug, EtsComObjects)]
 pub struct DeviceObjects {
     #[ets_ref(dpt = DPT_Switch, text = "Main Output", function = "Switching")]
-    pub main_output: ComObject<ComObjectStorage<1>>,
+    pub main_output: DPT_Switch,
 }
 
 // Page layout
@@ -1808,11 +1835,11 @@ For simple communication objects with a single DPT:
 pub struct DeviceObjects {
     #[ets(index = 0)]
     #[ets_ref(dpt = DPT_Switch, text = "Switch Output", function = "Switching")]
-    pub switch_output: ComObject<DPT_Switch>,
+    pub switch_output: DPT_Switch,
 
     #[ets(index = 1)]
     #[ets_ref(dpt = DPT_Scaling, text = "Dimmer Output", function = "Value")]
-    pub dimmer_output: ComObject<DPT_Scaling>,
+    pub dimmer_output: DPT_Scaling,
 }
 
 // Reading and writing
@@ -1863,7 +1890,7 @@ pub struct DeviceObjects {
     #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "Output", function = "Switch")]
     #[ets_ref(dpt = DPT_Scaling, when = ObjectType::Percent, text = "Output", function = "Value")]
     #[ets_ref(dpt = DPT_SceneNumber, when = ObjectType::Scene, text = "Output", function = "Scene")]
-    pub main_output: ComObject<ComObjectStorage<4>>,  // 4 bytes to fit largest DPT
+    pub main_output: DPT_Switch,  // factory-default DPT; storage auto-sized from the refs
 }
 
 // Manual type handling based on parameter
@@ -1915,12 +1942,12 @@ pub struct DeviceObjects {
     #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "Output", function = "Switch")]
     #[ets_ref(dpt = DPT_Scaling, when = ObjectType::Percent, text = "Output", function = "Value")]
     #[ets_ref(dpt = DPT_SceneNumber, when = ObjectType::Scene, text = "Output", function = "Scene")]
-    pub main_output: ComObject<ComObjectStorage<4>>,
+    pub main_output: DPT_Switch,
 
     #[ets(index = 1)]
     #[ets_ref(dpt = DPT_Switch, when = ObjectType::Switch, text = "Status", function = "Switch")]
     #[ets_ref(dpt = DPT_Scaling, when = ObjectType::Percent, text = "Status", function = "Value")]
-    pub status_output: ComObject<ComObjectStorage<4>>,
+    pub status_output: DPT_Switch,
 }
 
 // Generated by the macro:
