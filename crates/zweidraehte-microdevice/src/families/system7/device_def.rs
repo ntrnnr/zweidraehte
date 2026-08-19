@@ -55,6 +55,12 @@ pub struct System7DeviceDefinition {
     pub ast_offset: usize,
     /// Image offset (from 4000h) of the factory application segment.
     pub app_offset: usize,
+    /// Factory-default application parameter bytes, laid down at
+    /// `app_offset` — the same bytes the product database ships as the
+    /// parameter segment's default data, so an undownloaded device
+    /// behaves like a factory-configured one. Empty for products
+    /// without ETS-configurable parameters.
+    pub app_params: &'static [u8],
 }
 
 impl<const EEPROM_LEN: usize, const COT_ADDR: u16> System7Family<EEPROM_LEN, COT_ADDR> {
@@ -105,6 +111,13 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> System7Family<EEPROM_LEN, COT
             e[off..off + 2].copy_from_slice(&co.data_ptr.to_be_bytes());
             e[off + 2] = co.config;
             e[off + 3] = co.value_type;
+        }
+
+        // ── Application parameters at the application segment ───────
+        if !def.app_params.is_empty() {
+            let end = def.app_offset + def.app_params.len();
+            assert!(end <= EEPROM_LEN, "application parameters do not fit the image");
+            e[def.app_offset..end].copy_from_slice(def.app_params);
         }
 
         e
@@ -161,6 +174,7 @@ mod tests {
             associations: ASSOCS,
             ast_offset: 0x100,
             app_offset: 0x300,
+            app_params: &[0xA5, 0x01, 0x02],
         }
     }
 
@@ -184,5 +198,8 @@ mod tests {
         let entry = t.co_entry(1).expect("ASAP 1 exists");
         assert_eq!(entry.data_ptr, 0x00C7);
         assert_eq!(entry.value_type, 0x06);
+
+        // The factory parameters sit at the application segment.
+        assert_eq!(&image[0x300..0x303], &[0xA5, 0x01, 0x02]);
     }
 }

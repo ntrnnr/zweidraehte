@@ -61,6 +61,7 @@ pub fn definition() -> Bcu2DeviceDefinition {
         comm_objects: COM_OBJECTS,
         group_addresses: GROUP_ADDRESSES,
         associations: ASSOCIATIONS,
+        app_params: None,
     }
 }
 

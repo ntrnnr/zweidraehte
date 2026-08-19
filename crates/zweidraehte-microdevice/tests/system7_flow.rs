@@ -39,6 +39,7 @@ fn definition() -> System7DeviceDefinition {
         associations: &[(1, 0), (2, 1)],
         ast_offset: 0x100,
         app_offset: 0x300,
+        app_params: &[],
     }
 }
 

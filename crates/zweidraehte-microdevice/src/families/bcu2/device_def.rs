@@ -45,6 +45,12 @@ pub struct Bcu2DeviceDefinition {
     pub group_addresses: &'static [GroupAddress],
     /// Factory-loaded associations `(tsap, asap)`.
     pub associations: &'static [(u8, u8)],
+    /// Factory-default application parameter bytes and the image
+    /// offset (from 0100h) they occupy — the same bytes the product
+    /// database ships as the parameter segment's default data, so an
+    /// undownloaded device behaves like a factory-configured one.
+    /// `None` for products without ETS-configurable parameters.
+    pub app_params: Option<(&'static [u8], usize)>,
 }
 
 impl Bcu2DeviceDefinition {
@@ -139,6 +145,14 @@ impl Bcu2DeviceDefinition {
             e[off] = co.data_ptr;
             e[off + 1] = co.config;
             e[off + 2] = co.value_type;
+        }
+
+        // ── Application parameters ──────────────────────────────────
+        if let Some((bytes, offset)) = self.app_params {
+            let end = offset + bytes.len();
+            assert!(offset >= cot_end, "application parameters overlap the tables");
+            assert!(end <= BCU2_EEPROM_SIZE, "application parameters do not fit the image");
+            e[offset..end].copy_from_slice(bytes);
         }
 
         e

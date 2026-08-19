@@ -96,6 +96,7 @@ pub fn definition() -> System7DeviceDefinition {
         associations: ASSOCIATIONS,
         ast_offset: 0x100,
         app_offset: 0x300,
+        app_params: &[],
     }
 }
 

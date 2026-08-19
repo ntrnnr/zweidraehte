@@ -34,6 +34,7 @@ fn definition() -> Bcu2DeviceDefinition {
         comm_objects: COS,
         group_addresses: GAS,
         associations: &[(1, 0), (2, 1)],
+        app_params: None,
     }
 }
 
