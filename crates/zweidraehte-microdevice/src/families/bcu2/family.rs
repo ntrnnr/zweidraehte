@@ -10,6 +10,7 @@ use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunEvent, RunSt
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
 use zweidraehte_proto::tables::association::SendingAssociation;
+use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -209,12 +210,7 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
 
     const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::IndexedChecked;
 
-    // RT2 group object table: [count:1][ram_flags_ptr:1] then
-    // [data_ptr:1][config:1][type:1] per entry.
-    const COT_HEADER_LEN: usize = 2;
-    const COT_ENTRY_LEN: usize = 3;
-    const COT_CFG_OFFSET: usize = 1;
-    const COT_TYPE_OFFSET: usize = 2;
+    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::Rt2;
 
     // Machines 1..=3 (ADT, AST, application) live behind
     // PID_LOAD_STATE_CONTROL on interface objects 1..=3.

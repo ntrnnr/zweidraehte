@@ -11,6 +11,7 @@ use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, MemL
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
 use zweidraehte_proto::tables::association::SendingAssociation;
+use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -147,12 +148,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
 
     const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::FirstMatch;
 
-    // System 7 group object table: [count:1][ram_flags_ptr:2BE] then
-    // [data_ptr:2BE][config:1][type:1] per entry.
-    const COT_HEADER_LEN: usize = 3;
-    const COT_ENTRY_LEN: usize = 4;
-    const COT_CFG_OFFSET: usize = 2;
-    const COT_TYPE_OFFSET: usize = 3;
+    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::System7;
 
     // Machines 1..=4 (ADT, AST, App, App2) answer on interface objects
     // 1..=4 through PID_LOAD_STATE_CONTROL — what ETS drives — and

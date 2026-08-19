@@ -18,6 +18,7 @@ use zweidraehte_proto::{
     address::{GroupAddress, IndividualAddress},
     tables::address::BcuAddressTableView,
     tables::association::BcuAssociationTableView,
+    tables::com_object::BcuComObjectTableView,
 };
 
 use crate::family::MicroDeviceFamily;
@@ -49,10 +50,6 @@ pub struct Tables<'a, F: MicroDeviceFamily> {
 impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
     pub fn new(eeprom: &'a [u8], mgmt: &'a ManagementState) -> Self {
         Self { eeprom, mgmt, _family: PhantomData }
-    }
-
-    fn byte(&self, offset: usize) -> u8 {
-        self.eeprom.get(offset).copied().unwrap_or(0)
     }
 
     // ── Address table ───────────────────────────────────────────────
@@ -147,37 +144,26 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         F::cot_table_offset(self.eeprom, self.mgmt)
     }
 
+    fn com_object_table(&self) -> BcuComObjectTableView<'_> {
+        let data = self.eeprom.get(self.cot_offset()..).unwrap_or_default();
+        BcuComObjectTableView::new(data, F::COM_OBJECT_TABLE_FORMAT)
+    }
+
     pub fn co_count(&self) -> u8 {
-        self.byte(self.cot_offset())
+        u8::try_from(self.com_object_table().entry_count()).expect("one-octet count bounds the group object table")
     }
 
     /// The RAM-flags pointer from the table header (1 or 2 bytes wide
     /// depending on the family).
     pub fn ram_flags_ptr(&self) -> u16 {
-        let base = self.cot_offset() + 1;
-        let mut value: u16 = 0;
-        for i in 0..(F::COT_HEADER_LEN - 1) {
-            value = (value << 8) | u16::from(self.byte(base + i));
-        }
-        value
+        self.com_object_table().ram_flags_ptr().unwrap_or(0)
     }
 
     pub fn co_entry(&self, asap: u8) -> Option<CoEntry> {
-        if asap >= self.co_count() {
-            return None;
-        }
-        let off = self.cot_offset() + F::COT_HEADER_LEN + usize::from(asap) * F::COT_ENTRY_LEN;
-        if off + F::COT_ENTRY_LEN > self.eeprom.len() {
-            return None;
-        }
-        let mut data_ptr: u16 = 0;
-        for i in 0..F::COT_CFG_OFFSET {
-            data_ptr = (data_ptr << 8) | u16::from(self.eeprom[off + i]);
-        }
-        Some(CoEntry {
-            data_ptr,
-            config: self.eeprom[off + F::COT_CFG_OFFSET],
-            value_type: self.eeprom[off + F::COT_TYPE_OFFSET],
+        self.com_object_table().entry(u16::from(asap)).map(|entry| CoEntry {
+            data_ptr: entry.data_ptr,
+            config: entry.config,
+            value_type: entry.object_type,
         })
     }
 }

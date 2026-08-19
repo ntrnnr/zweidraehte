@@ -7,3 +7,4 @@
 
 pub mod address;
 pub mod association;
+pub mod com_object;

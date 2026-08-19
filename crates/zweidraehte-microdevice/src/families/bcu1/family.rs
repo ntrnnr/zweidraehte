@@ -2,6 +2,7 @@
 
 use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::tables::association::SendingAssociation;
+use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -68,14 +69,7 @@ impl MicroDeviceFamily for Bcu1Family {
 
     const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::Indexed;
 
-    // RT1 group object table: [count:1][ram_flags_ptr:1] then
-    // [data_ptr:1][config:1][type:1] per entry. (RT1's config bit 7 is
-    // a fixed 1 where RT2 reads UpdateEnable — a client-side encoding
-    // rule; the device reads the octet the same way either way.)
-    const COT_HEADER_LEN: usize = 2;
-    const COT_ENTRY_LEN: usize = 3;
-    const COT_CFG_OFFSET: usize = 1;
-    const COT_TYPE_OFFSET: usize = 2;
+    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::Rt1;
 
     // No load state machines and no interface objects: the management
     // surface is memory access, the device descriptor, restart, and

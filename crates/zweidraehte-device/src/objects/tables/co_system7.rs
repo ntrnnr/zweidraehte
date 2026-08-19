@@ -34,15 +34,13 @@
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableView, BcuComObjectTableViewMut};
 
 use super::{
     AbsoluteAlloc, ComObjectFlags, ComObjectTableEntry, ComObjectType, CommunicationObjectTable, Table, TableMemory,
 };
 
-/// Byte offset of the first entry (count + RAM-flags pointer).
-const HEADER_LEN: usize = 3;
-/// Byte size of one entry.
-const ENTRY_LEN: usize = 4;
+const FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::System7;
 
 #[serde_as]
 #[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
@@ -62,34 +60,25 @@ impl<const N: usize> TableMemory for System7ComObjectTableImpl<N> {
 }
 
 impl<const N: usize> Table<System7ComObjectTableImpl<N>, AbsoluteAlloc> {
-    /// Byte offset of entry `idx`, or `None` past the stored count or
-    /// the physical capacity.
-    fn entry_offset(&self, idx: u16) -> Option<usize> {
-        // The count is bus-downloaded data and must not exceed the
-        // physical capacity.
-        let count = (self.table.data[0] as usize).min((N - HEADER_LEN) / ENTRY_LEN);
-        let idx = idx as usize;
-        if idx >= count {
-            return None;
-        }
-        Some(HEADER_LEN + idx * ENTRY_LEN)
+    fn view(&self) -> BcuComObjectTableView<'_> {
+        BcuComObjectTableView::new(&self.table.data, FORMAT)
     }
 }
 
 impl<const N: usize> CommunicationObjectTable for Table<System7ComObjectTableImpl<N>, AbsoluteAlloc> {
     fn max_entries(&self) -> usize {
-        (N - HEADER_LEN) / ENTRY_LEN
+        N.saturating_sub(FORMAT.header_len()) / FORMAT.entry_len()
     }
 
     fn entry_count(&self) -> u16 {
-        (self.table.data[0] as u16).min(self.max_entries() as u16)
+        self.view().entry_count()
     }
 
     fn object(&self, idx: u16) -> Option<ComObjectTableEntry> {
-        let off = self.entry_offset(idx)?;
+        let entry = self.view().entry(idx)?;
         Some(ComObjectTableEntry {
-            object_type: ComObjectType::from(self.table.data[off + 3]),
-            flags: ComObjectFlags::from_byte(self.table.data[off + 2]),
+            object_type: ComObjectType::from(entry.object_type),
+            flags: ComObjectFlags::from_byte(entry.config),
         })
     }
 
@@ -102,11 +91,7 @@ impl<const N: usize> CommunicationObjectTable for Table<System7ComObjectTableImp
     }
 
     fn set_object_flags(&mut self, idx: u16, flags: ComObjectFlags) -> bool {
-        let Some(off) = self.entry_offset(idx) else {
-            return false;
-        };
-        self.table.data[off + 2] = flags.to_byte();
-        true
+        BcuComObjectTableViewMut::new(&mut self.table.data, FORMAT).set_config(idx, flags.to_byte())
     }
 }
 

@@ -15,6 +15,7 @@ use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor};
 use zweidraehte_proto::tables::association::SendingAssociation;
+use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
 use zweidraehte_proto::transport::TlStyle;
 
 use crate::device::DeviceIdentity;
@@ -203,16 +204,8 @@ pub trait MicroDeviceFamily: 'static {
 
     // ── Group object table coding ────────────────────────────────────
 
-    /// Header bytes before the entries: count byte + RAM-flags pointer
-    /// (1-byte pointer on BCU2, 2-byte big-endian on System 7).
-    const COT_HEADER_LEN: usize;
-    /// Bytes per entry: data pointer + config + type (3 on BCU2,
-    /// 4 on System 7 where the data pointer is two bytes).
-    const COT_ENTRY_LEN: usize;
-    /// Offset of the config octet within an entry.
-    const COT_CFG_OFFSET: usize;
-    /// Offset of the type octet within an entry.
-    const COT_TYPE_OFFSET: usize;
+    /// Realization- or profile-specific group-object-table byte coding.
+    const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat;
 
     // ── Management model ─────────────────────────────────────────────
 

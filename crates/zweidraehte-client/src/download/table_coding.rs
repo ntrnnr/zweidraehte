@@ -40,6 +40,7 @@ use std::borrow::Cow;
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
+use zweidraehte_proto::tables::com_object::{BcuComObjectTableFormat, BcuComObjectTableViewMut};
 
 use crate::error::{Error, Result};
 
@@ -309,6 +310,36 @@ pub struct ComObjectEntry {
     pub object_type: u8,
 }
 
+/// Patch installation-owned fields in a compact BCU group object table while
+/// preserving its product-defined pointers.
+fn overlay_bcu_com_object_table(
+    defaults: &mut [u8],
+    objects: &[(u16, ComObjectFlags, ComObjectType)],
+    format: BcuComObjectTableFormat,
+) -> Result<()> {
+    if defaults.len() < format.header_len() {
+        return Err(Error::ProductData(
+            "the product's group object table data is shorter than its own header".to_string(),
+        ));
+    }
+
+    let mut table = BcuComObjectTableViewMut::new(defaults, format);
+    let count = table.as_view().declared_entry_count();
+    for (number, flags, object_type) in objects {
+        if *number >= count {
+            return Err(Error::ProductData(format!(
+                "object {number} lies outside the product's default group object table ({count} rows)"
+            )));
+        }
+        if !table.set_config_and_type(*number, flags.to_byte(), (*object_type).into()) {
+            return Err(Error::ProductData(format!(
+                "the product's group object table data is truncated before object {number}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The System 7 group object table, pinned by an ETS download trace and
 /// its `GroupObjectTable_M112` formatter (see the device crate's
 /// `co_system7` module):
@@ -341,28 +372,7 @@ impl System7ComObjectTableCoding {
     /// type in the standard coding (`00h` = 1 bit). Rows for objects
     /// not in `objects` keep their product defaults.
     pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
-        if defaults.len() < 3 {
-            return Err(Error::ProductData(
-                "the product's group object table data is shorter than its own header".to_string(),
-            ));
-        }
-        let count = u16::from(defaults[0]);
-        for (number, flags, object_type) in objects {
-            if *number >= count {
-                return Err(Error::ProductData(format!(
-                    "object {number} lies outside the product's default group object table ({count} rows)"
-                )));
-            }
-            let row = 3 + 4 * usize::from(*number);
-            if row + 3 >= defaults.len() {
-                return Err(Error::ProductData(format!(
-                    "the product's group object table data is truncated before object {number}"
-                )));
-            }
-            defaults[row + 2] = flags.to_byte();
-            defaults[row + 3] = (*object_type).into();
-        }
-        Ok(())
+        overlay_bcu_com_object_table(defaults, objects, BcuComObjectTableFormat::System7)
     }
 }
 
@@ -442,28 +452,7 @@ impl Cot2 {
     /// data pointers are the firmware's and survive untouched; only
     /// the two installation-owned octets per row change.
     pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
-        if defaults.len() < 2 {
-            return Err(Error::ProductData(
-                "the product's group object table data is shorter than its own header".to_string(),
-            ));
-        }
-        let count = u16::from(defaults[0]);
-        for (number, flags, object_type) in objects {
-            if *number >= count {
-                return Err(Error::ProductData(format!(
-                    "object {number} lies outside the product's default group object table ({count} rows)"
-                )));
-            }
-            let row = 2 + 3 * usize::from(*number);
-            if row + 2 >= defaults.len() {
-                return Err(Error::ProductData(format!(
-                    "the product's group object table data is truncated before object {number}"
-                )));
-            }
-            defaults[row + 1] = flags.to_byte();
-            defaults[row + 2] = (*object_type).into();
-        }
-        Ok(())
+        overlay_bcu_com_object_table(defaults, objects, BcuComObjectTableFormat::Rt2)
     }
 }
 
@@ -523,13 +512,7 @@ impl Cot1 {
     /// product-supplied default table — [`Cot2::overlay`]'s contract,
     /// with the config octet's bit 7 forced to 1 on the way in.
     pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
-        let forced: Vec<_> = objects
-            .iter()
-            .map(|&(number, flags, object_type)| {
-                (number, ComObjectFlags::from_byte(flags.to_byte() | ComObjectFlags::UE_FLAG_MASK), object_type)
-            })
-            .collect();
-        Cot2::overlay(defaults, &forced)
+        overlay_bcu_com_object_table(defaults, objects, BcuComObjectTableFormat::Rt1)
     }
 }
 
@@ -547,7 +530,7 @@ impl TableCoding for Cot1 {
 
     fn write_entry(entry: &ComObjectEntry2, out: &mut Vec<u8>) {
         out.push(entry.data_ptr);
-        out.push(entry.config | ComObjectFlags::UE_FLAG_MASK);
+        out.push(BcuComObjectTableFormat::Rt1.encode_config(entry.config));
         out.push(entry.object_type);
     }
 }
@@ -720,8 +703,23 @@ mod tests {
             .expect("row 1 exists");
         assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x47, 0x00, 0xC7, 0x43, 0x00]);
 
-        // A row beyond the product's System 7 table is refused.
+        // A row beyond the product's RT2 table is refused.
         assert!(Cot2::overlay(&mut defaults, &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)]).is_err());
+    }
+
+    #[test]
+    fn compact_cot_overlay_rejects_a_physically_truncated_row() {
+        // Count declares two System 7 rows, but only row 0 is physically
+        // present. The declared range and the storage bound remain distinct.
+        let mut defaults = [2, 0, 0, 0, 0, 0x47, 0];
+        let error = System7ComObjectTableCoding::overlay(&mut defaults, &[(
+            1,
+            ComObjectFlags::from_byte(0x43),
+            ComObjectType::Uint1,
+        )])
+        .expect_err("row 1 is truncated");
+
+        assert!(error.to_string().contains("truncated before object 1"));
     }
 
     #[test]
