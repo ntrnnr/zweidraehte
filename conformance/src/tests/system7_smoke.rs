@@ -31,6 +31,7 @@ pub fn create_system7_smoke_suite() -> TestSuite {
         // S7-1: Device Descriptor Type 0 answers the System 7 mask
         // ====================================================================
         system7_contract::descriptor_type_0_case("S7-1 DD0 reads 0705h"),
+        system7_contract::property_roster_case("S7-1a DeviceControl property contract"),
         // ====================================================================
         // S7-2: Programming mode via the memory byte at 0060h
         // ====================================================================

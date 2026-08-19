@@ -34,6 +34,7 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
         // MS7-1: Device Descriptor Type 0 answers the System 7 mask
         // ====================================================================
         system7_contract::descriptor_type_0_case("MS7-1 DD0 reads 0705h"),
+        system7_contract::property_roster_case("MS7-1a DeviceControl property contract"),
         // ====================================================================
         // MS7-1b: The compact profile also defines unsupported DD behavior
         // ====================================================================

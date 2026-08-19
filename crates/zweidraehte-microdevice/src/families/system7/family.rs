@@ -1,13 +1,15 @@
 //! The System 7 instance of the family seam.
 
-use heapless::Vec;
+use zweidraehte_proto::dpt::{
+    DeviceControl, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
+    PropertyDataDefinition,
+};
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, MemLoadControlRecord, RunEvent, RunState};
-use zweidraehte_proto::pid;
+use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
-use crate::device::DeviceIdentity;
-use crate::family::{LsmPath, MicroDeviceFamily};
+use crate::family::{LsmPath, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::management::{ManagementState, dispatch_lsm_event};
 
 /// System 7 / BIM M112, TP1, mask version 0705h.
@@ -29,6 +31,38 @@ pub struct System7Family<const EEPROM_LEN: usize, const COT_ADDR: u16>;
 /// 2 = application program, 3 = application program 2. The two
 /// application machines carry run state machines.
 const APP_MACHINE: usize = 2;
+
+// The roster is deliberately smaller than the full stack's extensible System 7
+// object model: it contains the fixed properties the BCU-era download and
+// diagnostics paths actually serve. The common prefix (ObjectType,
+// DeviceControl, OrderInfo) retains the full object's indices.
+const DEVICE_PROPERTIES: &[PropertySpec] = &[
+    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 15, PropertyBacking::ObjectType),
+    PropertySpec::read_write(pid::DEVICE_CONTROL, DeviceControl::ID, 15, 1, PropertyBacking::DeviceControl),
+    PropertySpec::read_only(pid::ORDER_INFO, PDT_Generic10::ID, 15, PropertyBacking::OrderInfo),
+    // Hardware type is boot identity in the micro stack. Describing it
+    // read-only is intentional until privileged writes have a persistent
+    // backing; claiming the profile's RW access while rejecting every write
+    // would recreate the inventory/behavior disagreement this roster removes.
+    PropertySpec::read_only(pid::device::HARDWARE_TYPE, PDT_Generic06::ID, 15, PropertyBacking::HardwareType),
+    PropertySpec::read_write(pid::device::PROGMODE, ProgrammingMode::ID, 15, 15, PropertyBacking::ProgrammingMode),
+    PropertySpec::read_only(pid::SERIAL_NUMBER, PDT_Generic06::ID, 15, PropertyBacking::SerialNumber),
+    PropertySpec::read_only(pid::FIRMWARE_REVISION, PDT_UnsignedChar::ID, 15, PropertyBacking::FirmwareRevision),
+    PropertySpec::read_only(pid::device::MAX_APDU_LENGTH, PDT_UnsignedInt::ID, 15, PropertyBacking::MaxApduLength),
+];
+
+const TABLE_PROPERTIES: &[PropertySpec] = &[
+    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 15, PropertyBacking::ObjectType),
+    PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 15, 2, PropertyBacking::LoadState),
+    PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 15, PropertyBacking::TableReference),
+];
+
+const PROGRAM_PROPERTIES: &[PropertySpec] = &[
+    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 15, PropertyBacking::ObjectType),
+    PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 15, 1, PropertyBacking::LoadState),
+    PropertySpec::read_write(pid::RUN_STATE_CONTROL, pdt::CONTROL, 15, 1, PropertyBacking::RunState),
+    PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 15, PropertyBacking::TableReference),
+];
 
 impl<const EEPROM_LEN: usize, const COT_ADDR: u16> System7Family<EEPROM_LEN, COT_ADDR> {
     /// Is this interface object one of the two application program
@@ -57,7 +91,6 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
     const TL_STYLE: TlStyle = TlStyle::Style3;
     const AUTH_LEVELS: usize = 16;
     const CONNECTIONLESS_MANAGEMENT: bool = true;
-    const PROGMODE_PROPERTY: bool = true;
     const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = offsets::ADT_ADDR;
@@ -113,6 +146,16 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
         // Application Program (3), Interface Program (4) — the types
         // equal the indices, as on BCU2.
         idx as u16
+    }
+
+    fn property_spec(object_index: u8, property_index: u8) -> Option<PropertySpec> {
+        let roster = match object_index {
+            0 => DEVICE_PROPERTIES,
+            1 | 2 => TABLE_PROPERTIES,
+            3 | 4 => PROGRAM_PROPERTIES,
+            _ => return None,
+        };
+        roster.get(usize::from(property_index)).copied()
     }
 
     /// No RunError byte on System 7: the application runs when its
@@ -194,30 +237,6 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
     /// 15 owns no key, and `A_Key_Write` targeting it answers FFh.
     fn key_write_level_valid(level: u8) -> bool {
         usize::from(level) < Self::AUTH_LEVELS - 1
-    }
-
-    /// The properties a System 7 download actually reads beyond the
-    /// generic set: the identity guard and the APDU negotiation.
-    /// TODO: PID_PROGMODE (54), PID_MCB_TABLE (27) and PID_IO_LIST
-    /// (71) when a test or tool is seen relying on them.
-    fn property_read_hook(
-        obj: u8,
-        prop_id: u16,
-        _eeprom: &[u8],
-        identity: &DeviceIdentity,
-        _mgmt: &ManagementState,
-    ) -> Option<Vec<u8, 10>> {
-        let mut v: Vec<u8, 10> = Vec::new();
-        match (obj, prop_id) {
-            (0, pid::device::HARDWARE_TYPE) => {
-                let _ = v.extend_from_slice(&identity.hardware_type);
-            }
-            (0, pid::device::MAX_APDU_LENGTH) => {
-                let _ = v.extend_from_slice(&(Self::MAX_APDU as u16).to_be_bytes());
-            }
-            _ => return None,
-        }
-        Some(v)
     }
 
     /// The option register (not inverted, kept outside the EEPROM

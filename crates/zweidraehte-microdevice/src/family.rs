@@ -11,6 +11,8 @@
 //! machines, no authorization).
 
 use heapless::Vec;
+use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor};
 use zweidraehte_proto::transport::TlStyle;
 
 use crate::device::DeviceIdentity;
@@ -31,6 +33,98 @@ pub enum LsmPath {
     /// plain `A_Memory_Write` sequence with client-side read-back
     /// (BCU1).
     None,
+}
+
+/// The state that backs one property in the generic management server.
+///
+/// A family roster selects one of these behaviors for every property it
+/// exposes. [`FamilySpecific`](Self::FamilySpecific) is the escape hatch for
+/// values whose storage really is profile-specific; their data still cannot
+/// exist without a descriptor in the same roster.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PropertyBacking {
+    /// The interface object's mask-defined type number.
+    ObjectType,
+    /// `ManagementState::device_control`.
+    DeviceControl,
+    /// The fixed BCU-era service-control view.
+    ServiceControl,
+    /// The programming-mode bit shared with memory address 0060h.
+    ProgrammingMode,
+    /// The micro stack's firmware revision.
+    FirmwareRevision,
+    /// Boot identity serial number.
+    SerialNumber,
+    /// Boot identity order information.
+    OrderInfo,
+    /// Boot identity hardware type.
+    HardwareType,
+    /// The family's maximum APDU length.
+    MaxApduLength,
+    /// One of the family's load state machines.
+    LoadState,
+    /// The load state machine's allocated table address.
+    TableReference,
+    /// One of the family's run state machines.
+    RunState,
+    /// Storage and encoding handled by the family's property hooks.
+    FamilySpecific,
+}
+
+/// One entry in a BCU family's ordered interface-object property roster.
+///
+/// The index passed to [`MicroDeviceFamily::property_spec`] is the observable
+/// property index. Keeping the descriptor and backing together makes value
+/// lookup, PID lookup, and by-index description enumeration use the same
+/// inventory.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub struct PropertySpec {
+    /// Wire metadata returned by the property-description service.
+    pub descriptor: PropertyDescriptor,
+    /// Generic behavior or family hook that serves the value.
+    pub backing: PropertyBacking,
+}
+
+impl PropertySpec {
+    /// Define a read-only property for the plaintext BCU-era management
+    /// model.
+    ///
+    /// The micro stack has no Data Secure property policy layer, so its
+    /// descriptors use [`AccessPolicy::OPEN`]. The regular property-
+    /// description service transmits the legacy read/write levels below.
+    pub const fn read_only(pid: u16, pdt: u8, read_level: u8, backing: PropertyBacking) -> Self {
+        Self {
+            descriptor: PropertyDescriptor::new(
+                pid,
+                pdt,
+                1,
+                PropertyAccess::ReadOnly,
+                read_level,
+                0,
+                AccessPolicy::OPEN,
+            ),
+            backing,
+        }
+    }
+
+    /// Define a read-write property for the plaintext BCU-era management
+    /// model.
+    pub const fn read_write(pid: u16, pdt: u8, read_level: u8, write_level: u8, backing: PropertyBacking) -> Self {
+        Self {
+            descriptor: PropertyDescriptor::new(
+                pid,
+                pdt,
+                1,
+                PropertyAccess::ReadWrite,
+                read_level,
+                write_level,
+                AccessPolicy::OPEN,
+            ),
+            backing,
+        }
+    }
 }
 
 /// Compile-time description of one BCU-era management model.
@@ -64,10 +158,6 @@ pub trait MicroDeviceFamily: 'static {
     /// exclusively connection-oriented; System 7 also answers
     /// connectionless property and descriptor reads.
     const CONNECTIONLESS_MANAGEMENT: bool;
-    /// Whether programming mode is additionally exposed as
-    /// `PID_PROGMODE` on the device object (System 7; BCU2 predates
-    /// property-based management).
-    const PROGMODE_PROPERTY: bool;
     /// Maximum APDU length. BCU2 has no MaxApduLength resource, so the
     /// spec default of 15 octets applies.
     const MAX_APDU: usize;
@@ -156,6 +246,29 @@ pub trait MicroDeviceFamily: 'static {
     /// Interface object type of object index `idx` (only called with
     /// `idx < OBJECT_COUNT`).
     fn object_type(idx: u8) -> u16;
+
+    /// One entry in the ordered property roster of an interface object.
+    ///
+    /// Entries must be contiguous from index zero. Returning `None` ends a
+    /// by-index scan; BCU1 returns it immediately because it has no property
+    /// model.
+    fn property_spec(_object_index: u8, _property_index: u8) -> Option<PropertySpec> {
+        None
+    }
+
+    /// Find a property and its observable index by PID.
+    ///
+    /// Families normally implement only [`property_spec`](Self::property_spec);
+    /// this default walks that one roster so PID and index lookup cannot drift.
+    fn property_spec_by_id(object_index: u8, pid: u16) -> Option<(u8, PropertySpec)> {
+        for index in 0..=u8::MAX {
+            let spec = Self::property_spec(object_index, index)?;
+            if spec.descriptor.pid == pid {
+                return Some((index, spec));
+            }
+        }
+        None
+    }
 
     // ── Run state model ──────────────────────────────────────────────
 

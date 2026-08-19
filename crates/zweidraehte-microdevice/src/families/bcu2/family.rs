@@ -1,13 +1,17 @@
 //! The BCU2 instance of the family seam.
 
 use heapless::Vec;
+use zweidraehte_proto::dpt::{
+    DeviceControl, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_PollGroupSettings, PDT_UnsignedChar,
+    PDT_UnsignedInt, PropertyDataDefinition,
+};
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunEvent, RunState};
-use zweidraehte_proto::pid;
+use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::device::DeviceIdentity;
-use crate::family::{LsmPath, MicroDeviceFamily};
+use crate::family::{LsmPath, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
@@ -39,6 +43,128 @@ impl<const MASK: u16> Bcu2Family<MASK> {
     /// The Application Program interface object: the last of the
     /// machines behind `LSM_OBJ_BASE` (index 3 on the BCU2 roster).
     const APP_OBJECT: u8 = Self::LSM_OBJ_BASE + Self::LSM_COUNT as u8 - 1;
+
+    /// Device-object roster. The sibling masks share values but not every
+    /// write level, so the descriptors are built from the const mask instead
+    /// of copied into three almost-identical tables.
+    fn device_property(index: u8) -> Option<PropertySpec> {
+        let privileged_write = if MASK == 0x0020 { 3 } else { 0 };
+        match index {
+            0 => Some(PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 3, PropertyBacking::ObjectType)),
+            1 => Some(PropertySpec::read_write(
+                pid::DEVICE_CONTROL,
+                DeviceControl::ID,
+                3,
+                privileged_write,
+                PropertyBacking::DeviceControl,
+            )),
+            2 => Some(PropertySpec::read_write(
+                pid::SERVICE_CONTROL,
+                PDT_UnsignedInt::ID,
+                3,
+                privileged_write,
+                PropertyBacking::ServiceControl,
+            )),
+            3 => Some(PropertySpec::read_only(
+                pid::FIRMWARE_REVISION,
+                PDT_UnsignedChar::ID,
+                3,
+                PropertyBacking::FirmwareRevision,
+            )),
+            4 => Some(PropertySpec::read_only(pid::SERIAL_NUMBER, PDT_Generic06::ID, 3, PropertyBacking::SerialNumber)),
+            5 => Some(PropertySpec::read_only(pid::ORDER_INFO, PDT_Generic10::ID, 3, PropertyBacking::OrderInfo)),
+            6 => Some(PropertySpec::read_only(
+                pid::MANUFACTURER_ID,
+                PDT_UnsignedInt::ID,
+                3,
+                PropertyBacking::FamilySpecific,
+            )),
+            7 => Some(PropertySpec::read_only(pid::PEI_TYPE, PDT_UnsignedChar::ID, 3, PropertyBacking::FamilySpecific)),
+            // These two resources are readable, but the micro stack does not
+            // yet persist their profile-defined writes. Advertising RO is
+            // honest; the missing write behavior is tracked separately.
+            8 => Some(PropertySpec::read_only(
+                pid::PORT_CONFIGURATION,
+                PDT_UnsignedChar::ID,
+                3,
+                PropertyBacking::FamilySpecific,
+            )),
+            9 => Some(PropertySpec::read_only(
+                pid::POLL_GROUP_SETTINGS,
+                PDT_PollGroupSettings::ID,
+                3,
+                PropertyBacking::FamilySpecific,
+            )),
+            10 => Some(PropertySpec::read_only(
+                pid::MANUFACTURER_DATA,
+                PDT_Generic04::ID,
+                3,
+                PropertyBacking::FamilySpecific,
+            )),
+            11 if MASK == 0x0025 => Some(PropertySpec::read_only(
+                pid::device::HARDWARE_TYPE,
+                PDT_Generic06::ID,
+                3,
+                PropertyBacking::HardwareType,
+            )),
+            _ => None,
+        }
+    }
+
+    fn table_property(index: u8) -> Option<PropertySpec> {
+        let load_write = if MASK == 0x0020 { 3 } else { 1 };
+        match index {
+            0 => Some(PropertySpec::read_only(pid::OBJECT_TYPE, pdt::UNSIGNED_INT, 3, PropertyBacking::ObjectType)),
+            1 => Some(PropertySpec::read_write(
+                pid::LOAD_STATE_CONTROL,
+                pdt::CONTROL,
+                3,
+                load_write,
+                PropertyBacking::LoadState,
+            )),
+            2 => Some(PropertySpec::read_only(
+                pid::TABLE_REFERENCE,
+                pdt::UNSIGNED_LONG,
+                3,
+                PropertyBacking::TableReference,
+            )),
+            _ => None,
+        }
+    }
+
+    fn application_property(index: u8) -> Option<PropertySpec> {
+        let control_write = if MASK == 0x0020 { 3 } else { 0 };
+        match index {
+            0 => Some(PropertySpec::read_only(pid::OBJECT_TYPE, pdt::UNSIGNED_INT, 3, PropertyBacking::ObjectType)),
+            1 => Some(PropertySpec::read_write(
+                pid::LOAD_STATE_CONTROL,
+                pdt::CONTROL,
+                3,
+                control_write,
+                PropertyBacking::LoadState,
+            )),
+            2 => Some(PropertySpec::read_write(
+                pid::RUN_STATE_CONTROL,
+                pdt::CONTROL,
+                3,
+                control_write,
+                PropertyBacking::RunState,
+            )),
+            3 => Some(PropertySpec::read_only(
+                pid::TABLE_REFERENCE,
+                pdt::UNSIGNED_LONG,
+                3,
+                PropertyBacking::TableReference,
+            )),
+            4 => Some(PropertySpec::read_only(
+                pid::PROGRAM_VERSION,
+                PDT_Generic05::ID,
+                3,
+                PropertyBacking::FamilySpecific,
+            )),
+            _ => None,
+        }
+    }
 }
 
 impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
@@ -54,7 +180,6 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     const TL_STYLE: TlStyle = TlStyle::Style1;
     const AUTH_LEVELS: usize = 4;
     const CONNECTIONLESS_MANAGEMENT: bool = false;
-    const PROGMODE_PROPERTY: bool = false;
     const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = 0x0100;
@@ -101,6 +226,15 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
         // the BCU2 roster: Device (0), Address Table (1), Association
         // Table (2), Application Program (3).
         idx as u16
+    }
+
+    fn property_spec(object_index: u8, property_index: u8) -> Option<PropertySpec> {
+        match object_index {
+            0 => Self::device_property(property_index),
+            1 | 2 => Self::table_property(property_index),
+            3 => Self::application_property(property_index),
+            _ => None,
+        }
     }
 
     /// The application program runs when it is loaded and the RunError

@@ -13,10 +13,11 @@
 use heapless::Vec;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, LoadState};
-use zweidraehte_proto::pid::{self, pdt};
+use zweidraehte_proto::pid;
+use zweidraehte_proto::properties::PropertyDescriptionResponse;
 
 use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, SYSTEM_STATUS_ADDR};
-use crate::family::MicroDeviceFamily;
+use crate::family::{MicroDeviceFamily, PropertyBacking};
 use crate::frame::ApciCode;
 
 /// One reply APDU. `small6` rides in the APCI low octet for the short
@@ -335,6 +336,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// `start <= 1, count <= 1` is out of range. Reading element 0
     /// returns the element count (1) as a 16-bit value, per 03/03/07.
     fn property_read(&self, obj: u8, prop_id: u8, count: u8, start: u16) -> Option<Vec<u8, 10>> {
+        let (_, spec) = F::property_spec_by_id(obj, u16::from(prop_id))?;
         if start == 0 {
             return (count != 0).then(|| {
                 let mut v = Vec::new();
@@ -346,43 +348,47 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             return None;
         }
         let mut v: Vec<u8, 10> = Vec::new();
-        match (obj, u16::from(prop_id)) {
-            (_, pid::OBJECT_TYPE) if obj < F::OBJECT_COUNT => {
+        match spec.backing {
+            PropertyBacking::ObjectType => {
                 let _ = v.extend_from_slice(&F::object_type(obj).to_be_bytes());
             }
-            // Device object.
-            (0, pid::DEVICE_CONTROL) => {
+            PropertyBacking::DeviceControl => {
                 let _ = v.push(self.mgmt.device_control);
             }
-            (0, pid::SERVICE_CONTROL) => {
+            PropertyBacking::ServiceControl => {
                 let _ = v.extend_from_slice(&[0x00, 0x00]);
             }
-            (0, pid::device::PROGMODE) if F::PROGMODE_PROPERTY => {
+            PropertyBacking::ProgrammingMode => {
                 let _ = v.push(u8::from(self.is_programming_mode()));
             }
-            (0, pid::FIRMWARE_REVISION) => {
+            PropertyBacking::FirmwareRevision => {
                 let _ = v.push(1);
             }
-            (0, pid::SERIAL_NUMBER) => {
+            PropertyBacking::SerialNumber => {
                 let _ = v.extend_from_slice(&self.identity.serial_number);
             }
-            (0, pid::ORDER_INFO) => {
+            PropertyBacking::OrderInfo => {
                 let _ = v.extend_from_slice(&self.identity.order_info);
             }
-            // Table / application objects.
-            (_, pid::LOAD_STATE_CONTROL) => {
+            PropertyBacking::HardwareType => {
+                let _ = v.extend_from_slice(&self.identity.hardware_type);
+            }
+            PropertyBacking::MaxApduLength => {
+                let _ = v.extend_from_slice(&(F::MAX_APDU as u16).to_be_bytes());
+            }
+            PropertyBacking::LoadState => {
                 let machine = self.lsm_index(obj)?;
                 let _ = v.push(self.mgmt.lsm[machine].state.into());
             }
-            (_, pid::TABLE_REFERENCE) => {
+            PropertyBacking::TableReference => {
                 let machine = self.lsm_index(obj)?;
                 let _ = v.extend_from_slice(&u32::from(self.mgmt.lsm[machine].table_ref).to_be_bytes());
             }
-            (_, pid::RUN_STATE_CONTROL) => {
+            PropertyBacking::RunState => {
                 let state = F::run_state_read(obj, self.eeprom.as_ref(), &self.mgmt)?;
                 let _ = v.push(state);
             }
-            _ => {
+            PropertyBacking::FamilySpecific => {
                 return F::property_read_hook(
                     obj,
                     u16::from(prop_id),
@@ -399,32 +405,38 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         if count != 1 || start != 1 {
             return false;
         }
-        match (obj, u16::from(prop_id)) {
-            (0, pid::DEVICE_CONTROL) if data.len() == 1 => {
+        let Some((_, spec)) = F::property_spec_by_id(obj, u16::from(prop_id)) else {
+            return false;
+        };
+        match spec.backing {
+            PropertyBacking::DeviceControl if data.len() == 1 => {
                 self.mgmt.device_control = data[0];
                 true
             }
-            (0, pid::SERVICE_CONTROL) if data.len() == 2 => {
+            PropertyBacking::ServiceControl if data.len() == 2 => {
                 // Accepted and discarded: the controllable services
                 // (PEI abort, user program checks) have no equivalent
                 // here. TODO: honor the IndividualAddressWriteEnable
                 // bit once a client is seen driving it on mask 0020h.
                 true
             }
-            (0, pid::device::PROGMODE) if F::PROGMODE_PROPERTY && data.len() == 1 => {
+            PropertyBacking::ProgrammingMode if data.len() == 1 => {
                 self.set_programming_mode(data[0] & 0x01 != 0);
                 true
             }
-            (_, pid::LOAD_STATE_CONTROL) => {
+            PropertyBacking::LoadState => {
                 let Some(machine) = self.lsm_index(obj) else { return false };
                 dispatch_lsm_event::<F>(machine, data, self.eeprom.as_mut(), &mut self.mgmt);
                 true
             }
-            (_, pid::RUN_STATE_CONTROL) if data.len() == 1 => {
+            PropertyBacking::RunState if data.len() == 1 => {
                 F::run_state_write(obj, data[0], self.eeprom.as_mut(), &mut self.mgmt)
             }
-            _ => F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
-                .unwrap_or(false),
+            PropertyBacking::FamilySpecific => {
+                F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
+                    .unwrap_or(false)
+            }
+            _ => false,
         }
     }
 
@@ -444,45 +456,28 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         if payload.len() != 3 {
             return ServiceResult::None;
         }
-        let (obj, prop_id, prop_idx) = (payload[0], payload[1], payload[2]);
-        // [W|PDT][hi][lo][access]: writeable bit + PDT in octet 3, a
-        // 12-bit max element count, and the read/write levels.
-        let describe = |pdt: u8, writeable: bool, max: u16, levels: u8| {
-            let reply = [
-                obj,
-                prop_id,
-                prop_idx,
-                if writeable { 0x80 } else { 0x00 } | (pdt & 0x3F),
-                (max >> 8) as u8 & 0x0F,
-                max as u8,
-                levels,
-            ];
-            ServiceResult::Reply(Reply::new(ApciCode::PropertyDescriptionResponse, 0, &reply))
+        let (obj, requested_pid, requested_idx) = (payload[0], payload[1], payload[2]);
+        let found = if requested_pid == 0 {
+            F::property_spec(obj, requested_idx).map(|spec| (requested_idx, spec))
+        } else {
+            F::property_spec_by_id(obj, u16::from(requested_pid))
         };
-        // The `access` octet of A_PropertyDescription_Response
-        // (03/03/07 §3.4.3.1): read level in the high nibble, write
-        // level in the low. These masks answer with read level 3 and —
-        // where writeable — write level 1, matching real BCU2 silicon.
-        const ACCESS_READ3: u8 = 0x30;
-        const ACCESS_READ3_WRITE1: u8 = 0x31;
-        // Only lookup by PID is served; the by-index enumeration ETS
-        // uses for object browsing has no client here yet.
-        // TODO: by-index enumeration when a tool is seen relying on it.
-        match u16::from(prop_id) {
-            pid::OBJECT_TYPE if obj < F::OBJECT_COUNT => describe(pdt::UNSIGNED_INT, false, 1, ACCESS_READ3),
-            pid::LOAD_STATE_CONTROL if self.lsm_index(obj).is_some() => {
-                describe(pdt::CONTROL, true, 1, ACCESS_READ3_WRITE1)
-            }
-            pid::RUN_STATE_CONTROL if F::run_state_read(obj, self.eeprom.as_ref(), &self.mgmt).is_some() => {
-                describe(pdt::CONTROL, true, 1, ACCESS_READ3_WRITE1)
-            }
-            pid::TABLE_REFERENCE if self.lsm_index(obj).is_some() => {
-                describe(pdt::UNSIGNED_LONG, false, 1, ACCESS_READ3)
-            }
-            // Unknown property: type 0, max 0, no access — the spec's
-            // "does not exist" answer.
-            _ => describe(0, false, 0, 0x00),
+
+        let mut reply = [0u8; 7];
+        if let Some((property_index, spec)) = found {
+            let response = PropertyDescriptionResponse::from_descriptor(
+                u16::from(obj),
+                u16::from(property_index),
+                &spec.descriptor,
+            );
+            let encoded = response.encode(&mut reply);
+            debug_assert_eq!(encoded, reply.len());
+        } else {
+            // Unknown property / exhausted by-index scan: echo the lookup
+            // key and zero the descriptor, per 03/03/07.
+            reply[..3].copy_from_slice(&[obj, requested_pid, requested_idx]);
         }
+        ServiceResult::Reply(Reply::new(ApciCode::PropertyDescriptionResponse, 0, &reply))
     }
 }
 

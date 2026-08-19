@@ -84,6 +84,41 @@ fn dd0_and_sixteen_level_authorization() {
 }
 
 #[test]
+fn property_descriptions_and_values_share_one_roster() {
+    let mut dev = device();
+    connect(&mut dev);
+
+    // By-PID lookup returns the roster index, not the request's placeholder
+    // index. DeviceControl deliberately shares index 1 and its descriptor
+    // with the full System 7 stack.
+    let rsp = exchange(&mut dev, 0, ApciCode::PropertyDescriptionRead, 0, &[0, 14, 0], 0).expect("described");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x0E, 0x01, 0xB3, 0x30, 0x01, 0xF1]);
+
+    // The same roster entry selects the value behavior.
+    let rsp = exchange(&mut dev, 1, ApciCode::PropertyValueRead, 0, &[0, 14, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[0x00]);
+
+    // By-index enumeration returns the actual PID and metadata for a
+    // family-backed value. HardwareType is index 3 in the compact roster.
+    let rsp = exchange(&mut dev, 2, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 3], 0).expect("enumerated");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x4E, 0x03, 0x16, 0x60, 0x01, 0xF0]);
+    let rsp = exchange(&mut dev, 3, ApciCode::PropertyValueRead, 0, &[0, 78, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[0x00, 0x83, 0x00, 0x00, 0x07, 0x05]);
+
+    // A family-backed property that used to be readable but described as
+    // nonexistent now carries its real descriptor.
+    let rsp = exchange(&mut dev, 4, ApciCode::PropertyDescriptionRead, 0, &[0, 56, 0], 0).expect("described");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x38, 0x07, 0x04, 0x40, 0x01, 0xF0]);
+
+    // Unknown PID lookup and an exhausted index scan both return the
+    // zero-descriptor form, with the caller's lookup key preserved.
+    let rsp = exchange(&mut dev, 5, ApciCode::PropertyDescriptionRead, 0, &[0, 0xFE, 0], 0).expect("negative reply");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0xFE, 0x00, 0, 0, 0, 0]);
+    let rsp = exchange(&mut dev, 6, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 8], 0).expect("end of roster");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x00, 0x08, 0, 0, 0, 0]);
+}
+
+#[test]
 fn option_reg_is_plain_and_lives_at_0100h() {
     let mut dev = device();
     connect(&mut dev);

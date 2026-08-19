@@ -28,6 +28,17 @@ pub(super) fn descriptor_type_0_case(name: &'static str) -> TestCase {
     ])
 }
 
+pub(super) fn property_roster_case(name: &'static str) -> TestCase {
+    TestCase::new(name).with_steps(vec![
+        comment("DeviceControl has the same PID, index, PDT, and access levels"),
+        inject("BC #EDI #BDUT 64 03 D8 00 0E 00"),
+        expect("BC #BDUT #EDI 68 03 D9 00 0E 01 B3 30 01 F1", 400),
+        comment("The descriptor and value lookup name the same property"),
+        inject("BC #EDI #BDUT 65 03 D5 00 0E 10 01"),
+        expect("BC #BDUT #EDI 66 03 D6 00 0E 10 01 00", 400),
+    ])
+}
+
 pub(super) fn programming_mode_case(name: &'static str) -> TestCase {
     TestCase::new(name).with_steps(vec![
         comment("Resources §4.26.3: bit 0 = prog_mode, bit 7 = parity"),

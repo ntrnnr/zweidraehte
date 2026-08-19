@@ -71,6 +71,8 @@ fn hardware_type_answers_on_0025_only() {
     connect(&mut dev);
     let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[0, 78, 0x10, 0x01], 0).expect("answered");
     assert_eq!(&apdu(&rsp)[6..12], &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    let rsp = exchange(&mut dev, 1, ApciCode::PropertyDescriptionRead, 0, &[0, 78, 0], 0).expect("described");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x4E, 0x0B, 0x16, 0x60, 0x01, 0x30]);
 
     // The HC05 masks predate the property: negative response (element
     // count zeroed, no data).
@@ -79,6 +81,8 @@ fn hardware_type_answers_on_0025_only() {
     let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[0, 78, 0x10, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp).len(), 6, "no data in the negative response");
     assert_eq!(apdu(&rsp)[4] & 0xF0, 0, "element count zeroed");
+    let rsp = exchange(&mut dev, 1, ApciCode::PropertyDescriptionRead, 0, &[0, 78, 0], 0).expect("negative reply");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x4E, 0x00, 0, 0, 0, 0]);
 }
 
 #[test]

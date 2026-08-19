@@ -38,7 +38,6 @@ impl MicroDeviceFamily for Bcu1Family {
     /// off entirely.
     const AUTH_LEVELS: usize = 0;
     const CONNECTIONLESS_MANAGEMENT: bool = false;
-    const PROGMODE_PROPERTY: bool = false;
     const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = 0x0100;
