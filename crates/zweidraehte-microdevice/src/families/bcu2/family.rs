@@ -57,6 +57,7 @@ impl MicroDeviceFamily for Bcu2Family {
     fn ga_count(length_byte: u8) -> u8 {
         length_byte.saturating_sub(1)
     }
+    const SENDING_ASSOC_INDEXED: bool = true;
 
     // RT2 group object table: [count:1][ram_flags_ptr:1] then
     // [data_ptr:1][config:1][type:1] per entry.

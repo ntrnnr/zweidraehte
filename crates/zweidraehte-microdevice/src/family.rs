@@ -100,6 +100,13 @@ pub trait MicroDeviceFamily: 'static {
     /// Number of group addresses encoded by the leading count byte.
     fn ga_count(length_byte: u8) -> u8;
 
+    /// How the sending association resolves. RT2 (03/05/01
+    /// §4.17.4.3.1) indexes: the slot whose number equals the ASAP,
+    /// with TSAP FEh as the unused-slot sentinel. RT8 scans: the first
+    /// entry naming the ASAP — the table is sorted by TSAP, so slot
+    /// numbers correspond to nothing.
+    const SENDING_ASSOC_INDEXED: bool;
+
     // ── Group object table coding ────────────────────────────────────
 
     /// Header bytes before the entries: count byte + RAM-flags pointer
@@ -158,6 +165,29 @@ pub trait MicroDeviceFamily: 'static {
     /// whose application objects carry one (System 7: a freshly loaded
     /// application runs, clearing any earlier Stop).
     fn load_completed_side_effect(_machine: usize, _eeprom: &mut [u8], _mgmt: &mut ManagementState) {}
+    /// Whether an `AllocAbsDataSeg` segment fits the device's storage.
+    /// A rejected allocation throws the machine into Error, which is
+    /// how a client learns the device cannot hold what the product
+    /// asks for.
+    ///
+    /// The default checks a segment against the window it starts in —
+    /// EEPROM, page-0 RAM (the BCU-era templates allocate the group
+    /// object values there), or the second RAM window — and accepts
+    /// segments outside every backed window untouched, the way real
+    /// masks accept allocations in regions the system software owns.
+    fn abs_segment_fits(start: u16, length: u16) -> bool {
+        let end = u32::from(start) + u32::from(length);
+        if start >= Self::EEPROM_BASE && usize::from(start - Self::EEPROM_BASE) < Self::EEPROM_SIZE {
+            return end <= u32::from(Self::EEPROM_BASE) + Self::EEPROM_SIZE as u32;
+        }
+        if usize::from(start) < crate::device::RAM_SIZE {
+            return end <= crate::device::RAM_SIZE as u32;
+        }
+        if start >= Self::RAM2_BASE && usize::from(start - Self::RAM2_BASE) < Self::RAM2_SIZE {
+            return end <= u32::from(Self::RAM2_BASE) + Self::RAM2_SIZE as u32;
+        }
+        true
+    }
 
     // ── Memory-map intercepts ────────────────────────────────────────
     //

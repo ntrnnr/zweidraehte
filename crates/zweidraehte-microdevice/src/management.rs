@@ -514,9 +514,21 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
                     // AllocAbsDataSeg: [type][start:2BE][length:2BE]
                     // [access][memtype][memattr][reserved]. The
                     // segment lives at a fixed or product-defined
-                    // address on these families, so allocation is just
-                    // remembering the address for PID_TABLE_REFERENCE.
-                    if record.len() >= 4 {
+                    // address on these families, so allocation is
+                    // remembering the address for PID_TABLE_REFERENCE
+                    // — after checking the segment actually fits the
+                    // device's storage, which is how an oversized
+                    // product surfaces as a load Error rather than a
+                    // silently truncated table.
+                    if record.len() >= 6 {
+                        let start = u16::from_be_bytes([record[2], record[3]]);
+                        let length = u16::from_be_bytes([record[4], record[5]]);
+                        if F::abs_segment_fits(start, length) {
+                            lsm.table_ref = start;
+                        } else {
+                            lsm.state = LoadState::Err;
+                        }
+                    } else if record.len() >= 4 {
                         lsm.table_ref = u16::from_be_bytes([record[2], record[3]]);
                     }
                 }

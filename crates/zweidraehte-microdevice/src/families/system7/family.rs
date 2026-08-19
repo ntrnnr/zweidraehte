@@ -80,6 +80,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
     fn ga_count(length_byte: u8) -> u8 {
         length_byte
     }
+    const SENDING_ASSOC_INDEXED: bool = false;
 
     // M112 group object table: [count:1][ram_flags_ptr:2BE] then
     // [data_ptr:2BE][config:1][type:1] per entry.

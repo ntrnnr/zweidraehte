@@ -39,7 +39,7 @@ use zweidraehte_client::{
     ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, IndividualAddress, KnxBus,
     MachineRef, MaskVersion,
 };
-use zweidraehte_conformance::dut::{bcu2_product, system_b_product, system7_product};
+use zweidraehte_conformance::dut::{bcu2_product, micro_system7_product, system_b_product, system7_product};
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
@@ -136,6 +136,13 @@ async fn main() -> ExitCode {
             ("BCU2 programming-mode individual addressing", scenario_bcu2_programming_mode_addressing),
             ("BCU2 download over the property path", scenario_bcu2_full_download),
             ("BCU2 unload-all invalidates the tables", scenario_bcu2_unload_all),
+        ]),
+        ("Micro System 7 (mask 0705, micro stack)", DutMode::MicroSystem7, &[
+            ("micro-S7 descriptor smoke read", scenario_micro_s7_descriptor),
+            ("micro-S7 programming-mode individual addressing", scenario_micro_s7_programming_mode_addressing),
+            ("micro-S7 download over the property path", scenario_micro_s7_full_download),
+            ("micro-S7 unload-all over the memory window", scenario_micro_s7_unload_all),
+            ("micro-S7 oversized segment allocation fails typed", scenario_micro_s7_oversized_segment),
         ]),
         ("System B (mask 07B0)", DutMode::SystemB, &[
             ("system B descriptor smoke read", scenario_system_b_descriptor),
@@ -592,6 +599,233 @@ fn scenario_bcu2_unload_all<'a>(
             if dev_type != [0x00, 0x00, 0x00] {
                 return Err(format!("ApplicationID tail {dev_type:02X?}, expected zeroed"));
             }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
+}
+
+// ============================================================================
+// Micro System 7 scenarios
+// ============================================================================
+//
+// The micro-System-7 DUT is the no-async `zweidraehte-microdevice`
+// stack behind `conformance-dut-micro-system7` — the same MV-0705
+// mask the full-fat System 7 DUT runs, so the download compiles from
+// the same master-data template with the BimM112 model row (forced
+// property path). The unload scenario deliberately goes the other way:
+// `Downloader::new` with the mask's memory resources drives the
+// 0104h load-control window and reads the B6EAh status bytes, so both
+// of the micro stack's load-control paths see real client traffic.
+
+/// The micro DUT's product layer, generated from the same definition
+/// the DUT boots (see `dut::micro_system7_product`).
+fn micro_s7_dut_product() -> Result<ProductData, String> {
+    let mtxml = micro_system7_product::generate_mtxml()?;
+    ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the generated product file back: {e}"))
+}
+
+fn micro_s7_mask(masks: &MaskDb) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
+    masks.mask(MaskVersion::System7Tp1).ok_or_else(|| "the master data does not describe MV-0705".to_string())
+}
+
+fn scenario_micro_s7_descriptor<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let result = async {
+            let descriptor = conn.device_descriptor_read(0).await.map_err(|e| format!("descriptor read: {e}"))?;
+            if descriptor != [0x07, 0x05] {
+                return Err(format!("descriptor {descriptor:02X?}, expected mask 0705"));
+            }
+            // The System 7 signature reads: the plain (uninverted)
+            // OptionReg at 0100h, and sixteen-level authorization with
+            // the factory key granting level 0.
+            let option_reg = conn.memory_read(0x0100, 1).await.map_err(|e| format!("OptionReg: {e}"))?;
+            if option_reg != [0x00] {
+                return Err(format!("OptionReg {option_reg:02X?}, expected 00h uninverted"));
+            }
+            let level = conn.authorize(&[0xFF; 4]).await.map_err(|e| format!("authorize: {e}"))?;
+            if level != 0 {
+                return Err(format!("authorize granted level {level}, expected 0"));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
+}
+
+fn scenario_micro_s7_programming_mode_addressing<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let new_ia = IndividualAddress::new(1, 0, 88);
+
+        control.set_programming_mode(true).await.map_err(|e| format!("prog mode on: {e}"))?;
+        let nm = bus.network_management();
+        nm.write_individual_address(new_ia).await.map_err(|e| format!("IA write: {e}"))?;
+        control.set_programming_mode(false).await.map_err(|e| format!("prog mode off: {e}"))?;
+
+        // RT8 keeps the IA at bytes 1–2 of the address table blob
+        // (4001h) — connected management at the new address proves the
+        // write, a memory read shows where it landed.
+        let mut conn = bus.connect_device(new_ia).await.map_err(|e| format!("connect at new IA: {e}"))?;
+        let result = async {
+            let slot = conn.memory_read(0x4001, 2).await.map_err(|e| format!("IA slot read: {e}"))?;
+            if slot != new_ia.as_bytes() {
+                return Err(format!("IA slot {slot:02X?}, expected {:02X?}", new_ia.as_bytes()));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
+}
+
+fn scenario_micro_s7_full_download<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
+
+        let masks = mask_db()?;
+        let mask = micro_s7_mask(&masks)?;
+        let product = micro_s7_dut_product()?;
+
+        let mut project = ProjectConfig::new(dut_ia());
+        // GO3 is the transmit-capable status object of the fixture.
+        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
+        project.max_apdu = 15; // the micro stack talks standard frames only
+
+        // Sanity: BIM M112 compiles to the property path — the
+        // forced-property override modeled on real 0705h silicon.
+        let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
+        if compiled.path() != LoadControlPath::Property {
+            return Err("a BIM M112 download must compile to the property load-control path".to_string());
+        }
+
+        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+
+        // The procedure ended in a restart; everything must have
+        // survived the respawn.
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
+        let checks = async {
+            // The three machines the download drove, read through the
+            // memory-mapped status bytes; App2 stays untouched.
+            let states = conn.memory_read(0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
+            if states[..3] != [u8::from(LoadState::Loaded); 3] || states[3] != u8::from(LoadState::Unloaded) {
+                return Err(format!("load states {states:02X?}, expected [Loaded ×3, Unloaded]"));
+            }
+            // The RT8 address table at 4000h: the count is GAs only,
+            // then the IA, then the single rewired GA.
+            let adt = conn.memory_read(0x4000, 5).await.map_err(|e| format!("ADT read: {e}"))?;
+            if adt != [0x01, 0x10, 0x01, 0x19, 0x01] {
+                return Err(format!("ADT {adt:02X?}, expected [01 10 01 19 01]"));
+            }
+            // The M112 group object table at the product address:
+            // positional, so all four objects are present.
+            let cot = conn.memory_read(0x4200, 3).await.map_err(|e| format!("COT read: {e}"))?;
+            if cot[0] != 4 {
+                return Err(format!("COT count {}, expected 4", cot[0]));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        checks?;
+
+        // The wiring is live: GO3 transmitting must hit the rewired GA.
+        let mut events = bus.group_events();
+        control.trigger_group_write(3).await.map_err(|e| format!("trigger: {e}"))?;
+        let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .map_err(|_| "no group telegram after trigger".to_string())?
+            .map_err(|e| format!("group events: {e}"))?;
+        if telegram.group != rewired_ga || telegram.service != GroupService::Write {
+            return Err(format!("unexpected telegram {:?} on {}", telegram.service, telegram.group));
+        }
+        Ok(())
+    })
+}
+
+fn scenario_micro_s7_unload_all<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let masks = mask_db()?;
+        let mask = micro_s7_mask(&masks)?;
+        // The mask's memory resources put the Downloader on the
+        // memory-mapped path: records to 0104h, states from B6EAh —
+        // the micro stack's second load-control path under real
+        // client traffic.
+        let resources = dut_resources(&masks)?;
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let result = async {
+            let unload = assemble(&mask, &ProductData::default(), ProcedureKind::UnloadAll)
+                .map_err(|e| format!("assembling Unload-all from the mask: {e}"))?;
+            let mut downloader = Downloader::new(&mut conn, resources, 15);
+            downloader.run(&unload, &DeviceImage::new()).await.map_err(|e| format!("unload: {e}"))?;
+
+            let states = conn.memory_read(0xB6EA, 4).await.map_err(|e| format!("load states: {e}"))?;
+            if states != [u8::from(LoadState::Unloaded); 4] {
+                return Err(format!("load states {states:02X?}, expected all Unloaded"));
+            }
+            // RT8 unload zeroes the GA count but spares the IA at
+            // bytes 1–2.
+            let adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
+            if adt != [0x00, 0x10, 0x01] {
+                return Err(format!("ADT head {adt:02X?}, expected cleared count with IA intact"));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
+}
+
+fn scenario_micro_s7_oversized_segment<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let resources = dut_resources(&mask_db()?)?;
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let result = async {
+            let mut downloader = Downloader::new(&mut conn, resources, 15);
+            // 4 KiB into a 1 KiB backing: the allocation must be
+            // rejected and throw the machine into Error.
+            let doomed = [Instruction::LsmEvent { lsm: 1, event: LoadEvent::StartLoading }, Instruction::AbsSegment {
+                lsm: 1,
+                segment: AbsSegment::eeprom(0x4000, 0x1000),
+            }];
+            match downloader.run(&doomed, &DeviceImage::new()).await {
+                Err(ClientError::LoadState {
+                    machine: MachineRef::Machine(LsmMachine::AddressTable),
+                    state: LoadState::Err,
+                    ..
+                }) => {}
+                other => return Err(format!("expected a LoadState error, got {other:?}")),
+            }
+            // Recovery: Unload brings the machine back to a defined
+            // state.
+            let mut downloader = Downloader::new(&mut conn, resources, 15);
+            downloader
+                .run(&[Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload }], &DeviceImage::new())
+                .await
+                .map_err(|e| format!("recovery unload: {e}"))?;
             Ok(())
         }
         .await;

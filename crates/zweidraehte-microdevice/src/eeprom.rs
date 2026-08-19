@@ -117,16 +117,26 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         })
     }
 
-    /// The sending association of an ASAP — an *index*, not a scan:
-    /// RT2 (03/05/01 §4.17.4.3.1) defines it as "the Association with
+    /// The sending association of an ASAP, resolved the family's way.
+    ///
+    /// RT2 (03/05/01 §4.17.4.3.1) *indexes*: "the Association with
     /// association number equal to the value of the ASAP", and the
-    /// entry must name that same ASAP or the transmission request is
+    /// slot must name that same ASAP or the transmission request is
     /// confirmed negatively. TSAP FEh is the unused-association
     /// sentinel (§4.17.3.4.1) a dynamic-table-management download
     /// writes into the slot of an object with no group address; it is
-    /// no sending association either. Both cases resolve to `None`,
-    /// which the transmit scan reports as idle-with-error.
+    /// no sending association either.
+    ///
+    /// RT8 *scans*: the table is sorted by TSAP, so the sending
+    /// association is the first entry naming the ASAP — the same rule
+    /// the full stack's `AssoTab8` applies.
+    ///
+    /// Either way `None` means no association, which the transmit scan
+    /// reports as idle-with-error.
     pub fn sending_tsap(&self, asap: u8) -> Option<u8> {
+        if !F::SENDING_ASSOC_INDEXED {
+            return self.associations().find(|&(_, a)| a == asap).map(|(tsap, _)| tsap);
+        }
         if asap >= self.assoc_count() {
             return None;
         }
@@ -329,6 +339,16 @@ mod tests {
         let blank_mgmt = ManagementState::new();
         let t = Tables::<S7>::new(&e, &blank_mgmt);
         assert_eq!(t.assoc_count(), 0);
+        assert_eq!(t.sending_tsap(0), None);
+
+        // RT8 resolves the sending association by scan, not by slot:
+        // a single entry linking ASAP 3 through TSAP 1 sits in slot 0
+        // and still sends (the shape a one-link download writes).
+        e[0x100] = 1;
+        e[0x101] = 1;
+        e[0x102] = 3;
+        let t = Tables::<S7>::new(&e, &mgmt);
+        assert_eq!(t.sending_tsap(3), Some(1));
         assert_eq!(t.sending_tsap(0), None);
     }
 
