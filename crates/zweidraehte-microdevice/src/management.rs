@@ -11,7 +11,7 @@
 //! 0100h–046Fh, RunError clear, restart.
 
 use heapless::Vec;
-use zweidraehte_proto::address::IndividualAddress;
+use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, LoadState};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse;
@@ -69,7 +69,8 @@ pub struct ManagementState {
     /// A_Memory_Response reading the bytes back.
     pub device_control: u8,
     /// Authorization level of the active connection (0 = most
-    /// privileged). Reset to free access when the connection closes.
+    /// privileged). Reset to the default key's level when the connection
+    /// closes.
     pub auth_level: u8,
     pub auth_keys: [[u8; 4]; MAX_AUTH_LEVELS],
     pub lsm: [Lsm; MAX_LSM],
@@ -83,12 +84,13 @@ pub struct ManagementState {
 }
 
 impl ManagementState {
+    const DEFAULT_KEY: [u8; 4] = [0xFF; 4];
+
     pub fn new() -> Self {
         Self {
             device_control: 0,
-            // Until someone authorizes, a connection runs at the least
-            // privileged (free access) level. Filled properly by
-            // `reset_connection_auth` once the family is known; 15 is
+            // Placeholder until `Microdevice::new` resolves the default
+            // key against the concrete family's authorization model; 15 is
             // the ceiling and safe for every family.
             auth_level: (MAX_AUTH_LEVELS - 1) as u8,
             // Factory state: every level keyed FFFFFFFFh, which is why
@@ -100,13 +102,23 @@ impl ManagementState {
         }
     }
 
+    const fn free_access_level<F: MicroDeviceFamily>() -> u8 {
+        // BCU1 has no authorization model. Zero is harmless there and
+        // avoids underflow; no BCU1 service consults this field.
+        F::AUTH_LEVELS.saturating_sub(1) as u8
+    }
+
+    fn access_level_for_key<F: MicroDeviceFamily>(&self, key: &[u8; 4]) -> u8 {
+        let free_level = Self::free_access_level::<F>();
+        (0..free_level).find(|&level| self.auth_keys[usize::from(level)] == *key).unwrap_or(free_level)
+    }
+
+    pub(crate) fn default_access_level<F: MicroDeviceFamily>(&self) -> u8 {
+        self.access_level_for_key::<F>(&Self::DEFAULT_KEY)
+    }
+
     pub fn reset_connection_auth<F: MicroDeviceFamily>(&mut self) {
-        // A family without A_Authorize (BCU1) has no levels to fall
-        // back to; the field is never consulted there.
-        if F::AUTH_LEVELS == 0 {
-            return;
-        }
-        self.auth_level = (F::AUTH_LEVELS - 1) as u8;
+        self.auth_level = self.default_access_level::<F>();
     }
 
     pub fn verify_mode(&self) -> bool {
@@ -127,7 +139,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         code: ApciCode,
         small6: u8,
         payload: &[u8],
-        _source: IndividualAddress,
+        access: AccessContext,
+        connection_oriented: bool,
     ) -> ServiceResult {
         // A_Authorize/A_Key_Write and the property services are BCU2
         // additions; a family predating them (BCU1) ignores the APCIs
@@ -139,10 +152,13 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6),
             ApciCode::MemoryRead => self.memory_read(small6, payload),
             ApciCode::MemoryWrite => self.memory_write(small6, payload),
-            ApciCode::AuthorizeRequest if has_auth => self.authorize(payload),
-            ApciCode::KeyWrite if has_auth => self.key_write(payload),
-            ApciCode::PropertyValueRead if has_properties => self.property_value_read(payload),
-            ApciCode::PropertyValueWrite if has_properties => self.property_value_write(payload),
+            // Authorization belongs to a transport connection. In
+            // particular, a connectionless System 7 request must not
+            // acquire or reuse another client's connection level.
+            ApciCode::AuthorizeRequest if has_auth && connection_oriented => self.authorize(payload),
+            ApciCode::KeyWrite if has_auth && connection_oriented => self.key_write(payload, access),
+            ApciCode::PropertyValueRead if has_properties => self.property_value_read(payload, access),
+            ApciCode::PropertyValueWrite if has_properties => self.property_value_write(payload, access),
             ApciCode::PropertyDescriptionRead if has_properties => self.property_description_read(payload),
             ApciCode::Restart => {
                 // Only the basic restart exists on these masks; the
@@ -266,20 +282,17 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             return ServiceResult::None;
         }
         let key: [u8; 4] = payload[1..5].try_into().expect("length checked above");
-        let free_level = (F::AUTH_LEVELS - 1) as u8;
-        let granted = (0..F::AUTH_LEVELS as u8)
-            .find(|&level| self.mgmt.auth_keys[usize::from(level)] == key)
-            .unwrap_or(free_level);
+        let granted = self.mgmt.access_level_for_key::<F>(&key);
         self.mgmt.auth_level = granted;
         ServiceResult::Reply(Reply::new(ApciCode::AuthorizeResponse, 0, &[granted]))
     }
 
-    fn key_write(&mut self, payload: &[u8]) -> ServiceResult {
+    fn key_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
         if payload.len() != 5 {
             return ServiceResult::None;
         }
         let level = payload[0];
-        if !F::key_write_level_valid(level) || self.mgmt.auth_level > level {
+        if !F::key_write_level_valid(level) || !access.has_level(level) {
             // Not privileged enough to set this level's key: answer
             // with FFh, the "not modified" convention.
             return ServiceResult::Reply(Reply::new(ApciCode::KeyResponse, 0, &[0xFF]));
@@ -290,13 +303,13 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
     // ── Property services ───────────────────────────────────────────
 
-    fn property_value_read(&mut self, payload: &[u8]) -> ServiceResult {
+    fn property_value_read(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
         let Some((obj, prop_id, count, start)) = parse_property_header(payload) else {
             return ServiceResult::None;
         };
         let mut reply: Vec<u8, 14> = Vec::new();
         let _ = reply.extend_from_slice(&payload[..4]);
-        match self.property_read(obj, prop_id, count, start) {
+        match self.property_read(obj, prop_id, count, start, access) {
             Some(data) => {
                 let _ = reply.extend_from_slice(&data);
                 ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &reply))
@@ -310,19 +323,19 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         }
     }
 
-    fn property_value_write(&mut self, payload: &[u8]) -> ServiceResult {
+    fn property_value_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
         let Some((obj, prop_id, count, start)) = parse_property_header(payload) else {
             return ServiceResult::None;
         };
         let data = &payload[4..];
-        let accepted = self.property_write(obj, prop_id, count, start, data);
+        let accepted = self.property_write(obj, prop_id, count, start, data, access);
         let mut reply: Vec<u8, 14> = Vec::new();
         let _ = reply.extend_from_slice(&payload[..4]);
         if accepted {
             // Positive confirmation carries the property's current
             // value — the read-back a client would get, which for the
             // load-state controls is the machine's new state.
-            if let Some(data) = self.property_read(obj, prop_id, count, start) {
+            if let Some(data) = self.property_read(obj, prop_id, count, start, access) {
                 let _ = reply.extend_from_slice(&data);
             }
         } else {
@@ -335,8 +348,11 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// these masks are all single-element, so anything beyond
     /// `start <= 1, count <= 1` is out of range. Reading element 0
     /// returns the element count (1) as a 16-bit value, per 03/03/07.
-    fn property_read(&self, obj: u8, prop_id: u8, count: u8, start: u16) -> Option<Vec<u8, 10>> {
+    fn property_read(&self, obj: u8, prop_id: u8, count: u8, start: u16, access: AccessContext) -> Option<Vec<u8, 10>> {
         let (_, spec) = F::property_spec_by_id(obj, u16::from(prop_id))?;
+        if !spec.descriptor.can_read(access) {
+            return None;
+        }
         if start == 0 {
             return (count != 0).then(|| {
                 let mut v = Vec::new();
@@ -401,13 +417,24 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         Some(v)
     }
 
-    fn property_write(&mut self, obj: u8, prop_id: u8, count: u8, start: u16, data: &[u8]) -> bool {
+    fn property_write(
+        &mut self,
+        obj: u8,
+        prop_id: u8,
+        count: u8,
+        start: u16,
+        data: &[u8],
+        access: AccessContext,
+    ) -> bool {
         if count != 1 || start != 1 {
             return false;
         }
         let Some((_, spec)) = F::property_spec_by_id(obj, u16::from(prop_id)) else {
             return false;
         };
+        if !spec.descriptor.can_write(access) {
+            return false;
+        }
         match spec.backing {
             PropertyBacking::DeviceControl if data.len() == 1 => {
                 self.mgmt.device_control = data[0];

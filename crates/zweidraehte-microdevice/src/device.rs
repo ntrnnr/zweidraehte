@@ -16,6 +16,7 @@
 
 use core::marker::PhantomData;
 
+use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::transport::TlEvent;
 
@@ -111,13 +112,15 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         const {
             assert!(F::RAM2_SIZE <= RAM2_CEILING, "family RAM2 window exceeds the shared ceiling");
         }
+        let mut mgmt = ManagementState::new();
+        mgmt.reset_connection_auth::<F>();
         Self {
             eeprom,
             ram: [0; RAM_SIZE],
             ram2: [0; RAM2_CEILING],
             identity,
             tl: TlState::new(F::TL_STYLE, time_divisor),
-            mgmt: ManagementState::new(),
+            mgmt,
             _family: PhantomData,
         }
     }
@@ -271,7 +274,8 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     ) {
         let Some(apci10) = view.apci() else { return };
         let (code, small6) = Self::split_apci(apci10);
-        match self.handle_service(code, small6, view.payload(), source) {
+        let access = AccessContext::new(self.mgmt.auth_level);
+        match self.handle_service(code, small6, view.payload(), access, true) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
                 self.send_reply(source, view.priority_bits(), reply.apci, reply.small6, &reply.payload, now_ms, out);
@@ -289,7 +293,11 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     fn dispatch_connectionless(&mut self, view: &FrameView<'_>, source: IndividualAddress, out: &mut PollOutput) {
         let Some(apci10) = view.apci() else { return };
         let (code, small6) = Self::split_apci(apci10);
-        match self.handle_service(code, small6, view.payload(), source) {
+        // Connectionless requests are not part of the active transport
+        // connection. Give them the profile's default-key level, never the
+        // level a connected client may have acquired with A_Authorize.
+        let access = AccessContext::new(self.mgmt.default_access_level::<F>());
+        match self.handle_service(code, small6, view.payload(), access, false) {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
                 let own = self.individual_address();

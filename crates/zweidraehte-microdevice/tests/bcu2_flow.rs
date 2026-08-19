@@ -68,6 +68,10 @@ fn dd0_and_management_style_and_authorize() {
         .expect("authorize answered");
     assert_eq!(apdu(&rsp)[1], 0xD2, "A_Authorize_Response");
     assert_eq!(apdu(&rsp)[2], 0x00, "granted level 0");
+
+    // Like System 7's level 15, BCU2's free level 3 owns no key.
+    let rsp = exchange(&mut dev, 3, ApciCode::KeyWrite, 0, &[0x03, 1, 2, 3, 4], 0).expect("key response");
+    assert_eq!(apdu(&rsp)[2], 0xFF);
 }
 
 #[test]

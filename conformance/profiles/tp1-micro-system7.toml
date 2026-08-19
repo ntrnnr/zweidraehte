@@ -18,7 +18,7 @@
 #   which the micro stack defers (SESSION.md).
 # - Management's memory collections need the conformance test memory
 #   regions (accessible 0Fh block, read-only/write-only/level-guarded
-#   windows) and access-level enforcement — also deferred.
+#   windows), which remain deferred.
 #
 # The micro stack speaks standard frames only (MAX_APDU 15), so once
 # Management joins, its extended-frame conditionals flip the other way
@@ -118,17 +118,6 @@ literals is self-consistent. EITT never reads them either: it computes \
 a sequence number for every management telegram before running the \
 sequence (manual 12.2.3.14). Same entry as the other profiles; the \
 staleness is the template's, not the device's.\
-"""
-
-[[template.not_applicable]]
-id = "2F319664-DCA2-4B15-96A6-03C5ED531C33"
-why = """
-2.6 denies a load-control write to an unauthorised connection, and the \
-micro stack does not enforce access levels yet — the deferral is \
-deliberate and crate-wide (SESSION.md tracks it, together with the \
-BCU2 suites that currently drive load state machines unauthorised and \
-would need authorising first). The full-fat System 7 profile runs this \
-case; it joins here when enforcement lands.\
 """
 
 # ============================================================================

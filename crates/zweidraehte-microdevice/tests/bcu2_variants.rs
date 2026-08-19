@@ -93,7 +93,22 @@ fn stack_allocation_record_is_accepted_while_loading() {
     // machine code — the machine must stay in Loading, not error out.
     let mut dev = device::<0x0021>();
     connect(&mut dev);
-    let mut seq = 0u8;
+
+    // Application controls on 0021h require level 0. A wrong key drops
+    // the connection to free access and the write must have no side effect.
+    let rsp = exchange(&mut dev, 0, ApciCode::AuthorizeRequest, 0, &[0x00, 0xDE, 0xAD, 0xBE, 0xEF], 0)
+        .expect("authorize answered");
+    assert_eq!(apdu(&rsp)[2], 3);
+    let rsp =
+        exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[3, 5, 0x10, 0x01, 0x04], 0).expect("denial answered");
+    assert_eq!(&apdu(&rsp)[2..], &[3, 5, 0, 1]);
+    assert_eq!(dev.mgmt.lsm[2].state, LoadState::Loaded);
+
+    let rsp =
+        exchange(&mut dev, 2, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0);
+
+    let mut seq = 3u8;
     let mut send_record = |dev: &mut Microdevice<Bcu2Family<0x0021>>, obj: u8, record: &[u8]| -> Vec<u8> {
         let mut payload = vec![obj, 5, 0x10, 0x01];
         payload.extend_from_slice(record);

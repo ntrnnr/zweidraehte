@@ -119,6 +119,50 @@ fn property_descriptions_and_values_share_one_roster() {
 }
 
 #[test]
+fn property_access_is_request_scoped() {
+    let mut dev = device();
+
+    // Move the default FFFFFFFFh key below DeviceControl's write level 1,
+    // while keeping a distinct level-0 key for the connected tool.
+    dev.mgmt.auth_keys[0] = [0xAA; 4];
+    dev.mgmt.auth_keys[1] = [0xBB; 4];
+    dev.mgmt.reset_connection_auth::<Fam>();
+    assert_eq!(dev.mgmt.auth_level, 2, "the default key now grants level 2");
+
+    // A_Authorize is connection-oriented. An unnumbered request neither
+    // answers nor changes the level the next connection starts with.
+    let authorize = data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::AuthorizeRequest, 0, &[
+        0x00, 0xAA, 0xAA, 0xAA, 0xAA,
+    ]);
+    let out = dev.poll(PollInput::Frame(&authorize), 0);
+    assert!(out.frames.is_empty(), "connectionless authorize is ignored");
+    assert_eq!(dev.mgmt.auth_level, 2);
+
+    connect(&mut dev);
+    let rsp =
+        exchange(&mut dev, 0, ApciCode::AuthorizeRequest, 0, &[0x00, 0xAA, 0xAA, 0xAA, 0xAA], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0, "the connected tool gets level 0");
+
+    // A connectionless write uses the default-key level, not the active
+    // connection's level 0, and is therefore denied with count zero.
+    let write = data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::PropertyValueWrite, 0, &[
+        0, 14, 0x10, 0x01, 0x04,
+    ]);
+    let out = dev.poll(PollInput::Frame(&write), 0);
+    assert_eq!(out.frames.len(), 1);
+    let view = FrameView::parse(&out.frames[0]).expect("parsable response");
+    assert_eq!(view.tpci(), Some(Tpci::DataIndividual));
+    assert_eq!(&apdu(&out.frames[0])[2..], &[0, 14, 0, 1]);
+    assert_eq!(dev.mgmt.device_control, 0, "denied write has no side effect");
+
+    // The same write succeeds through the authorized connection.
+    let rsp =
+        exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[0, 14, 0x10, 0x01, 0x04], 0).expect("write answered");
+    assert_eq!(apdu(&rsp)[6], 0x04);
+    assert_eq!(dev.mgmt.device_control, 0x04);
+}
+
+#[test]
 fn option_reg_is_plain_and_lives_at_0100h() {
     let mut dev = device();
     connect(&mut dev);
@@ -183,11 +227,14 @@ fn memory_mapped_lsm_cycle_on_app2() {
 fn property_path_lsm_still_works() {
     let mut dev = device();
     connect(&mut dev);
+    let rsp =
+        exchange(&mut dev, 0, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0);
     // Unload the ADT via PID_LOAD_STATE_CONTROL on object 1 — the ETS
     // path. The RT8 count byte collapses to 0 and mutes the device;
     // the IA survives.
     let rsp =
-        exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &[1, 5, 0x10, 0x01, 0x04], 0).expect("write answered");
+        exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[1, 5, 0x10, 0x01, 0x04], 0).expect("write answered");
     assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Unloaded));
     assert_eq!(dev.eeprom_image()[0], 0, "GA count zeroed");
     assert_eq!(dev.individual_address(), DUT, "the IA survives the unload");
@@ -215,10 +262,14 @@ fn run_state_stop_terminates_instead_of_halting() {
     let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[3, 6, 0x10, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Running));
 
+    let rsp =
+        exchange(&mut dev, 1, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0);
+
     // RUNCONTROL_STOP → Terminated (03/05/01 §4.24.2.3.3 Table 97:
     // no HALTED intermediate reachable from the bus on this profile),
     // and group traffic stops.
-    let rsp = exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x02], 0).expect("answered");
+    let rsp = exchange(&mut dev, 2, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x02], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Terminated));
     assert!(!dev.is_running());
     let read = data_frame(
@@ -235,12 +286,12 @@ fn run_state_stop_terminates_instead_of_halting() {
     assert!(out.frames.is_empty(), "a terminated application answers no group reads");
 
     // RUNCONTROL_RESTART revives it.
-    let rsp = exchange(&mut dev, 2, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x01], 0).expect("answered");
+    let rsp = exchange(&mut dev, 3, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Running));
     assert!(dev.is_running());
 
     // The unloaded App2 reads Halted.
-    let rsp = exchange(&mut dev, 3, ApciCode::PropertyValueRead, 0, &[4, 6, 0x10, 0x01], 0).expect("answered");
+    let rsp = exchange(&mut dev, 4, ApciCode::PropertyValueRead, 0, &[4, 6, 0x10, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Halted));
 }
 
@@ -297,6 +348,8 @@ fn snapshot_round_trip_preserves_option_reg() {
     let mut dev = device();
     connect(&mut dev);
     exchange(&mut dev, 0, ApciCode::MemoryWrite, 1, &[0x01, 0x00, 0x5A], 0);
+    dev.mgmt.auth_keys[0] = [0xAA; 4];
+    dev.mgmt.auth_keys[1] = [0xBB; 4];
     let snap = MicroSnapshot::capture(&dev);
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");
@@ -305,4 +358,5 @@ fn snapshot_round_trip_preserves_option_reg() {
     assert_eq!(restored.mgmt.option_reg, 0x5A);
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);
     assert_eq!(restored.individual_address(), DUT);
+    assert_eq!(restored.mgmt.auth_level, 2, "restored keys determine disconnected access");
 }

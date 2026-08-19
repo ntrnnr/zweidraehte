@@ -50,6 +50,9 @@ impl MicroSnapshot {
         for (slot, key) in device.mgmt.auth_keys.iter_mut().zip(self.auth_keys.iter()) {
             *slot = *key;
         }
+        // `Microdevice::new` saw the factory-default key array. Resolve the
+        // disconnected access level again after restoring the persisted keys.
+        device.mgmt.reset_connection_auth::<F>();
         for i in 0..MAX_LSM {
             device.mgmt.lsm[i] = Lsm {
                 state: LoadState::try_from(self.lsm_states[i]).unwrap_or(LoadState::Unloaded),

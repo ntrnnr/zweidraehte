@@ -377,9 +377,10 @@ pub trait MicroDeviceFamily: 'static {
     }
 
     /// Whether `A_Key_Write` may target this authorization level.
-    /// System 7 refuses its free-access level 15, which owns no key.
+    /// The least-privileged level owns no key on either authorization
+    /// model, so it cannot be written.
     fn key_write_level_valid(level: u8) -> bool {
-        usize::from(level) < Self::AUTH_LEVELS
+        usize::from(level) < Self::AUTH_LEVELS.saturating_sub(1)
     }
 
     /// Device Descriptor Type 2, for families that answer it (System 7).

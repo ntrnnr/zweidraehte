@@ -233,12 +233,6 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
         }
     }
 
-    /// Fifteen settable keys for sixteen levels: the free-access level
-    /// 15 owns no key, and `A_Key_Write` targeting it answers FFh.
-    fn key_write_level_valid(level: u8) -> bool {
-        usize::from(level) < Self::AUTH_LEVELS - 1
-    }
-
     /// The option register (not inverted, kept outside the EEPROM
     /// window) and the read-only load-status bytes at B6EAh — one
     /// `LoadState` octet per machine.

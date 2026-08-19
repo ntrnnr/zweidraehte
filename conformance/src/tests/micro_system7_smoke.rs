@@ -71,6 +71,11 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
             expect("B0 #BDUT #EDI 60 CA", 0),
             expect("BC #BDUT #EDI 62 4B D2 0F", 400),
             inject_delay("B0 #EDI #BDUT 60 CA", 200),
+            comment("Free access cannot write level-1 PID_DEVICE_CONTROL"),
+            inject("BC #EDI #BDUT 66 4F D7 00 0E 10 01 04"),
+            expect("B0 #BDUT #EDI 60 CE", 0),
+            expect("BC #BDUT #EDI 65 4F D6 00 0E 00 01", 400),
+            inject_delay("B0 #EDI #BDUT 60 CE", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
         // ====================================================================
