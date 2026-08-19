@@ -1,7 +1,7 @@
 //! System 7 DUT stack definition for conformance tests.
 //!
 //! Mirrors the plain [`IpcConformanceTestStack`] but on the System 7
-//! family (mask 0705h): RT8 tables with the individual address inside
+//! family (mask 0705h): System 7 tables with the individual address inside
 //! the address-table blob, `System7MemoryMap`'s absolute address space
 //! (progmode byte at 0060h, OptionReg at 0100h, load-control window at
 //! 0104h / B6EAh, GA table fixed at 4000h), the five-object interface
@@ -680,7 +680,7 @@ impl StackDefinition for IpcSystem7TestStack {
     // System 7 numbers objects from 0, but this DUT deliberately keeps
     // its objects at wire ASAP 1..7: the EITT templates pin those ASAPs
     // literally (trigger-kick patches, the LoadStateMachines RT8
-    // association blob), so logical == wire here and M112 slot 0 is a
+    // association blob), so logical == wire here and System 7 slot 0 is a
     // spare.
     const FIRST_ASAP: u16 = 0;
     type P = TestParameters;

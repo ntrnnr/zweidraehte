@@ -38,7 +38,7 @@ fn device_descriptor() -> DeviceDescriptor {
 
 /// The DUT's group objects as ETS sees them: the same seven-object
 /// roster the full-fat System 7 DUT's product declares (numbers 1..=7,
-/// BIM M112 slot 0 spare), so both products drive the same fixture
+/// System 7 slot 0 spare), so both products drive the same fixture
 /// shape.
 const COM_OBJECTS: &[EtsCommObjectDef] = &[
     com_object(1, "GO0", 1, ALL_FLAGS),

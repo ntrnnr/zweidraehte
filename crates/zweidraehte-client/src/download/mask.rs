@@ -223,7 +223,7 @@ impl<'a> MaskData<'a> {
     /// is memory-mapped or property-driven. Deriving it here instead
     /// of from the mask *family* matters because the family does not
     /// determine the realization: MV-2705 (System 7 RF) is
-    /// `BimM112`-managed yet drives its machines through properties,
+    /// System 7 yet drives its machines through properties,
     /// and BCU2 masks do the same.
     pub fn lsm_model(&self) -> LsmModel {
         let resources = self.inner.resource_map();
@@ -288,7 +288,7 @@ impl<'a> MaskData<'a> {
 }
 
 /// The fixed memory addresses a memory-mapped download needs
-/// (System 7 / BIM M112), read from the mask's resource list rather
+/// (System 7), read from the mask's resource list rather
 /// than hardcoded.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryResources {
@@ -301,7 +301,7 @@ pub struct MemoryResources {
     /// follow consecutively in [`LsmMachine`] order (ADT, AST, APP,
     /// PEI/APP2).
     pub load_status_addr: u16,
-    /// Fixed location of the RT8 group address table (0705: 4000h).
+    /// Fixed location of the RT8 group address table (4000h).
     pub address_table_addr: u16,
 }
 
@@ -377,7 +377,7 @@ pub struct LsmResource {
 /// Which access realization a mask's machines share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LsmRealization {
-    /// `DM_LoadStateMachineWrite_RCo_Mem` — System 7 / BIM M112 TP.
+    /// `DM_LoadStateMachineWrite_RCo_Mem` — System 7 TP.
     Memory,
     /// `DM_LoadStateMachineWrite_RCo_IO` — System B, BCU2, 2705.
     Property,
@@ -731,7 +731,7 @@ pub(crate) mod fixtures {
 </KNX>"#;
 
     /// MV-2705's shape — the mask that proves realization is not a
-    /// family property: `BimM112`-managed, yet its machines are
+    /// family property: System 7, yet its machines are
     /// property-driven, with `Application` at object **3** (no group
     /// object table on System 7).
     pub const MV_2705_RESOURCES: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -840,7 +840,7 @@ mod tests {
 
     #[test]
     fn realization_is_not_a_family_property() {
-        // The 2705 shape: BimM112-managed, property-driven machines,
+        // The 2705 shape: System 7, property-driven machines,
         // Application at object 3 (no group object table). A
         // family-keyed path choice gets this mask wrong; the model
         // reads what the mask declares.
@@ -975,7 +975,7 @@ mod tests {
 
         // The LSM models the real file yields, pinned per family —
         // including the mask that proves realization is not a family
-        // property (2705: BimM112, property machines, Application at
+        // property (2705: System 7, property machines, Application at
         // object 3) and BCU2 (property machines at objects 1-3).
         let model = |code: u16| real.mask(MaskVersion::from(code)).expect("mask present").lsm_model();
 

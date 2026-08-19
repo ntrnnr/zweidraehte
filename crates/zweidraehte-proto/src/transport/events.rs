@@ -30,7 +30,7 @@ pub const MAX_REPETITIONS: u8 = 3;
 ///
 /// The choice is not free: 06 Profiles v02.02.01 §4.1.2 "TL - connection
 /// oriented" mandates one style per profile — Style 2 for BCU 1 / System 1,
-/// Style 1 for BCU 2 / System 2, and Style 3 for BIM M112 / System B /
+/// Style 1 for BCU 2 / System 2, and Style 3 for System 7 / System B /
 /// masks 5705h / 57B0h. AN160 mandates Style 3 for the RF S-Mode profiles
 /// as well, so every System B device here uses `Style3`. A management
 /// client opening connections to remote devices must also run `Style3` —

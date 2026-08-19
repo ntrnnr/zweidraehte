@@ -4,7 +4,7 @@
 //! and the two shapes are genuinely different rather than variations
 //! on a theme:
 //!
-//! - **System 7 / BIM M112** — the master data carries *only* an
+//! - **System 7** — the master data carries *only* an
 //!   `Unload` template. The Load procedure is wholly product-supplied
 //!   (`LoadProcedureStyle="ProductProcedure"`), because its absolute
 //!   segment addresses only exist in the product database. Assembly is

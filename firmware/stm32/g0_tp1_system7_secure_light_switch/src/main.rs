@@ -19,7 +19,7 @@
 //!
 //! Beyond the System B secure target, the augment chain also carries
 //! the Group Object Table Object (Type 9): System 7's base roster has
-//! no OT 9 (the M112 group object table is memory-mapped, no load state
+//! no OT 9 (the System 7 group object table is memory-mapped, no load state
 //! machine), but §9.2.1.1.1.1 makes the object mandatory once GO
 //! Diagnostics is implemented, which §9.1.2.4 footnote b requires of an
 //! S-Mode secure device with group objects. `PID_GO_DIAGNOSTICS` lives

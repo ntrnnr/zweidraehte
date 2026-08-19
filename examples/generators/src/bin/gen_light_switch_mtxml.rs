@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // their firmware boots. What the product database ships as segment
     // data is what a download preserves: the BCU2 table page carries
     // the RT2 tables with their RAM pointers, and the System 7 group
-    // object table default carries the M112 pointers (sliced out of
+    // object table default carries the System 7 pointers (sliced out of
     // the image at the family's COT address).
     let bcu2_image = micro::bcu2_definition().build_eeprom();
     let bcu2_tables: &'static [u8] =
@@ -350,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_p2p_key_table_entries: Some(0),
     };
 
-    // System 7 TP1 variant: the same light switch on the BIM M112-lineage
+    // System 7 TP1 variant: the same light switch on the 0705 profile
     // mask (0705h). Unlike every variant above, the mask changes the
     // download model: ETS programs it through `ProductProcedure` load
     // procedures over absolute memory segments (LdCtrlAbsSegment + task
@@ -387,7 +387,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             System7Segment {
                 name: "4200",
                 address: 0x4200,
-                // The M112 group object table ETS's System 7 formatter
+                // The group object table ETS's System 7 formatter
                 // writes here: count + RAM-flags pointer + one 4-octet
                 // entry per ComObject Number. Numbers start at 0 on
                 // System 7, so entries span exactly MAX_COM_OBJECTS
@@ -401,7 +401,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // The default table bytes, baked from the same
                 // definition the micro System 7 firmware boots — the
                 // download engine preserves a product's RAM pointers
-                // (`CotM112::overlay`) only when the product ships
+                // (`System7ComObjectTableCoding::overlay`) only when the product ships
                 // them; the full-stack firmware ignores the pointers,
                 // so one product serves both implementations.
                 data: Some(Box::leak(s7_micro_cot.to_vec().into_boxed_slice())),

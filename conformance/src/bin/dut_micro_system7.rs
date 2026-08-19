@@ -4,7 +4,7 @@
 //! Structurally the twin of `dut_bcu2` — see that binary's module doc
 //! for why the strictly request/response IPC protocol maps directly
 //! onto the micro stack's `poll()` runloop. The family differences are
-//! all inside the stack: TL Style 3, RT8/M112 tables, both
+//! all inside the stack: TL Style 3, System 7 tables, both
 //! load-control paths, 16 authorization levels.
 
 use std::io::{self, Write};

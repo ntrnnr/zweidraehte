@@ -95,7 +95,7 @@ pub const fn build_bcu2_descriptors<const N: usize>(
     rows
 }
 
-/// The M112 (System 7) rows — [`build_bcu2_descriptors`] with the
+/// The System 7 rows — [`build_bcu2_descriptors`] with the
 /// family's two-byte data pointers.
 pub const fn build_system7_descriptors<const N: usize>(
     objects: &[EtsCommObjectDef],

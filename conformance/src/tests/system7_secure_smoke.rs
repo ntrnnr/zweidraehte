@@ -138,7 +138,7 @@ pub fn create_system7_secure_smoke_suite() -> TestSuite {
             comment("GO_SEC_0 (flags = A only): GroupValue_Read on 1/1/1 under"),
             comment("GK1; the response transmits on 2/2/2 under GK2. The GA →"),
             comment("TSAP resolution runs over the RT8 address table, the GO"),
-            comment("flags over the M112 numbering (FIRST_ASAP = 0)."),
+            comment("flags over the System 7 numbering (FIRST_ASAP = 0)."),
             inject_group_ao("BC #EDI 09 01 E1 00 00", "GK1"),
             expect_group_ao("BC #BDUT_ADDR 12 02 E1 00 4?", "GK2", TIMEOUT),
         ]),

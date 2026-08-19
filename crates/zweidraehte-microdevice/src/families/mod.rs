@@ -14,7 +14,7 @@ use crate::frame::ApciCode;
 use crate::management::{Reply, ServiceResult};
 
 /// One group object as the RT1/RT2 tables store it — the same three
-/// octets on BCU1 and BCU2. (System 7's M112 table widens the data
+/// octets on BCU1 and BCU2. (The System 7 table widens the data
 /// pointer to 16 bits and has its own descriptor.)
 #[derive(Debug, Clone, Copy)]
 pub struct CoDescriptor {

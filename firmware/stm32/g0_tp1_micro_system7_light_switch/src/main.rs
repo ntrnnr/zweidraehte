@@ -50,7 +50,7 @@ use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
 
 /// The shared product's family instantiation: 1 KiB of user EEPROM
-/// from 4000h, the M112 group object table published at 4200h.
+/// from 4000h, the System 7 group object table published at 4200h.
 type Fam = micro::LightSwitchS7Family;
 
 // ============================================================================

@@ -26,7 +26,7 @@ use zweidraehte_proto::dpt::*;
 /// Device descriptor - matches MDT Push Button Lite 55 1-fold Basic.
 /// ApplicationNumber: 155 (0x009B)
 /// ApplicationVersion: 20 (0x14)
-/// MaskVersion: MV-0705 (System 7 TP1, BIM M112 lineage)
+/// MaskVersion: MV-0705 (System 7 TP1)
 pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
     mask_version: MaskVersion::System7Tp1, // MV-0705
     manufacturer_id: 0x0083,               // MDT

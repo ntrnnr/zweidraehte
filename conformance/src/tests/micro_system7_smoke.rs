@@ -13,7 +13,7 @@
 //!   read-only status bytes at B6EAh
 //! - the §4.24 run state machine (Stop → Terminated, never HALTED)
 //! - programming mode via the parity-guarded byte at 0060h
-//! - group communication over the RT8/M112 tables at 4000h
+//! - group communication over the System 7 tables at 4000h
 //! - A_Restart
 //!
 //! Frame vocabulary matches the other suites (`#EDI` = tool at
@@ -181,7 +181,7 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
         // ====================================================================
-        // MS7-8: Group communication over the RT8/M112 tables
+        // MS7-8: Group communication over the System 7 tables
         // ====================================================================
         system7_contract::group_round_trip_case("MS7-8 Group communication over RT8 tables"),
         // ====================================================================

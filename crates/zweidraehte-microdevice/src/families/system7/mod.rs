@@ -1,4 +1,4 @@
-//! System 7 / BIM M112 (TP1, mask 0705h): family constants, the
+//! System 7 TP1 (mask 0705h): family constants, the
 //! mask-fixed addresses, and the product definition that bakes the
 //! boot image.
 

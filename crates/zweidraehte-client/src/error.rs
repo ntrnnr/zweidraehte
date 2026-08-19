@@ -112,7 +112,7 @@ pub enum Error {
 /// protocol-level identity there is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MachineRef {
-    /// A machine of the memory-mapped path (System 7 / BIM M112).
+    /// A machine of the memory-mapped System 7 path.
     Machine(LsmMachine),
     /// An interface object driven over `PID_LOAD_STATE_CONTROL`
     /// (System B).

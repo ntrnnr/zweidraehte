@@ -1,5 +1,5 @@
 //! System 7 BCU implementation (masks 0700h/0701h/0705h TP1, 2705h RF,
-//! 5705h KNX IP — the BIM M112 lineage).
+//! 5705h KNX IP).
 //!
 //! The management model differs from System B in four load-bearing ways:
 //!

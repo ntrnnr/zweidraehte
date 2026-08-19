@@ -2971,8 +2971,8 @@ impl App {
     /// Build annotations for ComObject Table entries, at the position
     /// each entry's *object number* names — sparse numbering leaves
     /// unannotated gap entries in the table, exactly as the data
-    /// builder writes them. See [`Self::cot_is_m112`] for the two
-    /// formats and their numbering bases.
+    /// builder writes them. [`Self::table_formats`] selects the format
+    /// and its numbering base.
     fn build_com_object_table_annotations(&self, base_offset: u32, entries: &[CotEntry]) -> Vec<MemoryAnnotation> {
         let format = self.table_formats();
         let shape = format.cot_shape();

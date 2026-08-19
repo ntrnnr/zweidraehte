@@ -1226,7 +1226,7 @@ impl<'a, GS> DiagnosticsAugment<'a, GS> {
 /// clause lists the Group Object Table Object as **M** for the GO
 /// Diagnostics profile module. A System B device already has the object
 /// in its base roster, so it needs nothing here. System 7 does not: its
-/// group object table is the M112 format at an absolute address with no
+/// group object table is the System 7 format at an absolute address with no
 /// interface object over it (`AddressSpace="None"` in the ETS master
 /// data for MV-0705), so the object has to come from somewhere for
 /// PID 66 to have a home.

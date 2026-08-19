@@ -508,7 +508,7 @@ The engine drives each family the way its mask does:
 | load state | status bytes at B6EAh | the same property, read back |
 | segments | absolute — the product fixes the address | relative — the client asks for a size, the device answers with a base through `PID_TABLE_REFERENCE` |
 | procedure | the product's whole `ProductProcedure` | the mask's Load template with product fragments spliced in at `LdCtrlMerge` |
-| tables | RT8 (`addr8`/`asso8`/`co_m112`), 1-octet counts, IA inside the address table | RT7 (`addr7`/`asso6`/`co7`), 2-octet counts and identifiers |
+| tables | RT8 linking tables plus `co_system7`, 1-octet counts, IA inside the address table | RT7 (`addr7`/`asso6`/`co7`), 2-octet counts and identifiers |
 
 `LoadControlPath` selects the path; the IR addresses machines by
 *index* rather than a four-variant enum, because System B has five and

@@ -427,7 +427,7 @@ mod erase_codes {
 /// The GO security flags table is positional (element n for the group
 /// object in table slot n, 03/05/01 §6.3.15), while the wire ASAP is
 /// numbered from the family's `FIRST_ASAP` — 1 on System B, 0 on
-/// System 7's M112 table. The device state translates wire → slot when
+/// System 7's group object table. The device state translates wire → slot when
 /// forwarding to the family-blind extension state; a hardcoded `- 1`
 /// there (the original System B code) would shift every System 7
 /// object's security requirement onto its neighbour.

@@ -976,7 +976,7 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
         // At this level the argument is already the 0-based GO-flags table
         // slot. Which wire ASAP that corresponds to depends on the hosting
         // family's numbering base (`StackDefinition::FIRST_ASAP` — 1 for
-        // System B, 0 for System 7's M112 table), and the extension state
+        // System B, 0 for System 7's group object table), and the extension state
         // does not know its family — so the device state's forwarding impl
         // performs the `asap - FIRST_ASAP` translation before this is
         // reached. Keying the table positionally matches how
@@ -1341,7 +1341,7 @@ macro_rules! secure_stack_config {
                 $(
                     // The `go_flags` keys are written in the family's own
                     // ASAP numbering, which starts at `FIRST_ASAP` — 1 for
-                    // System B, 0 for System 7's M112 table. Subtracting it
+                    // System B, 0 for System 7's group object table. Subtracting it
                     // lands each flag on its own object's slot; getting the
                     // base wrong secures every object as its neighbour.
                     go_data[$gf_co - $first_asap] = [$gf_val];

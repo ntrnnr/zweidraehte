@@ -775,7 +775,7 @@ impl<'a, D: StackDefinition> GroupDataProvider<'a, D> {
         let mut cursor = start;
 
         // The COT is wire-indexed. Which ASAPs the stored count covers is
-        // a table-format detail (RealizationType 7 serves 1..=count, M112
+        // a table-format detail (RealizationType 7 serves 1..=count, System 7
         // serves 0..count), so scan the widest range either format can
         // answer and let `object()` reject what it doesn't hold.
         while cursor <= entry_count {

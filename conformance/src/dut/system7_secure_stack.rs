@@ -23,7 +23,7 @@
 //!
 //! The one family twist: `#[ets(index = ...)]` runs 1..17 here where the
 //! System B fixture runs 0..16, because System 7 pins `FIRST_ASAP = 0`
-//! (logical == wire) and the wire ASAPs must stay 1..17. M112 slot 0 is
+//! (logical == wire) and the wire ASAPs must stay 1..17. System 7 slot 0 is
 //! a spare, exactly as on the plain System 7 DUT.
 //!
 //! # Object roster
@@ -810,7 +810,7 @@ impl StackDefinition for IpcSystem7SecureTestStack {
     const MAX_APDU_LENGTH: u16 = device_info::MAX_APDU_LENGTH;
     const TL_STYLE: TlStyle = TlStyle::Style3;
     // Same numbering choice as the plain System 7 DUT: wire ASAPs 1..17
-    // (logical == wire under `FIRST_ASAP = 0`, M112 slot 0 spare), so
+    // (logical == wire under `FIRST_ASAP = 0`, System 7 slot 0 spare), so
     // the TSSJ template's literal GO indexes mean the same objects as on
     // the System B secure DUT.
     const FIRST_ASAP: u16 = 0;

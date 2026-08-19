@@ -237,8 +237,8 @@ impl MaskVersion {
         self.management_model == "SystemB"
     }
 
-    /// Check if this is a BIM M112 (System 7.5) mask version.
-    pub fn is_bim_m112(&self) -> bool {
+    /// Check whether this mask uses the System 7 management model.
+    pub fn is_system7(&self) -> bool {
         self.management_model == "BimM112"
     }
 
@@ -373,7 +373,7 @@ pub struct HawkConfigurationData {
     /// The per-mask programming procedure templates (`LdCtrl*`
     /// instruction streams). System B masks carry complete generic
     /// Load procedures (with `LdCtrlMerge` splice points for the
-    /// product's MTXML fragments); System 7 / BIM M112 masks carry
+    /// product's MTXML fragments); System 7 masks carry
     /// only `Unload all` — their Load procedures are entirely
     /// product-specific.
     #[serde(rename = "Procedures", default)]
@@ -658,8 +658,8 @@ pub enum TableFlavour {
     AssociationTableBcu1,
     /// BCU2-style association table
     AssociationTableBcu2,
-    /// BIM M112 association table
-    AssociationTableM112,
+    /// System 7 association table
+    AssociationTableSystem7,
     /// System B association table (2-byte count + 4-byte entries: u16 TSAP + u16 ASAP)
     AssociationTableSystemB,
     /// System B small association table (2-byte count + 2-byte entries: u8 TSAP + u8 ASAP)
@@ -681,7 +681,7 @@ impl TableFlavour {
             "AddressTable_SystemB" => TableFlavour::AddressTableSystemB,
             "AssociationTable_Bcu1" => TableFlavour::AssociationTableBcu1,
             "AssociationTable_Bcu2" => TableFlavour::AssociationTableBcu2,
-            "AssociationTable_M112" => TableFlavour::AssociationTableM112,
+            "AssociationTable_M112" => TableFlavour::AssociationTableSystem7,
             "AssociationTable_SystemB" => TableFlavour::AssociationTableSystemB,
             "AssociationTable_SystemBSmall" => TableFlavour::AssociationTableSystemBSmall,
             "AssociationTable_SystemBBig" => TableFlavour::AssociationTableSystemBBig,
@@ -693,11 +693,11 @@ impl TableFlavour {
     /// Get the count field size in bytes.
     pub fn count_size(&self) -> usize {
         match self {
-            // BCU1/BCU2/M112 use 1-byte count
+            // BCU1/BCU2/System 7 use a 1-byte count
             TableFlavour::AddressTableBcu1
             | TableFlavour::AssociationTableBcu1
             | TableFlavour::AssociationTableBcu2
-            | TableFlavour::AssociationTableM112 => 1,
+            | TableFlavour::AssociationTableSystem7 => 1,
             // System B uses 2-byte count
             _ => 2,
         }
@@ -709,10 +709,10 @@ impl TableFlavour {
             // Address tables are always 2 bytes per entry (group address)
             TableFlavour::AddressTableBcu1 | TableFlavour::AddressTableSystemB => 2,
 
-            // BCU1/BCU2/M112 use 2-byte entries (u8 TSAP + u8 ASAP)
+            // BCU1/BCU2/System 7 use 2-byte entries (u8 TSAP + u8 ASAP)
             TableFlavour::AssociationTableBcu1
             | TableFlavour::AssociationTableBcu2
-            | TableFlavour::AssociationTableM112 => 2,
+            | TableFlavour::AssociationTableSystem7 => 2,
 
             // SystemBSmall uses 2-byte entries (u8 TSAP + u8 ASAP)
             TableFlavour::AssociationTableSystemBSmall => 2,
@@ -733,7 +733,7 @@ impl TableFlavour {
             self,
             TableFlavour::AssociationTableBcu1
                 | TableFlavour::AssociationTableBcu2
-                | TableFlavour::AssociationTableM112
+                | TableFlavour::AssociationTableSystem7
                 | TableFlavour::AssociationTableSystemBSmall
         )
     }
@@ -822,7 +822,7 @@ mod tests {
         // Test MV-0705 (System 7.5)
         let mv_0705 = master.get_mask_version("MV-0705").expect("MV-0705 not found");
         assert_eq!(mv_0705.name, "7.5");
-        assert!(mv_0705.is_bim_m112());
+        assert!(mv_0705.is_system7());
         assert_eq!(mv_0705.first_app_object_idx(), 5);
 
         let adt_0705 = mv_0705.address_table().expect("Address table not found");
@@ -852,7 +852,7 @@ mod tests {
         // ------------------------------------------------------------
         // Programming procedures.
         //
-        // System 7 (BIM M112) masks carry ONLY "Unload all" — the Load
+        // System 7 masks carry ONLY "Unload all" — the Load
         // procedures are product-specific and live in each product's
         // .knxprod. System B carries the full generic template set.
         // ------------------------------------------------------------

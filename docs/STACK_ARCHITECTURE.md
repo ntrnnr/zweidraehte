@@ -897,11 +897,11 @@ which pieces those are:
   [`asso8.rs`](../crates/zweidraehte-device/src/objects/tables/asso8.rs)):
   1-octet counts, the individual address living *inside* the address
   table blob at its fixed 4000h home, and 2-octet association
-  entries. The group object table is the M112 memory format
-  ([`co_m112.rs`](../crates/zweidraehte-device/src/objects/tables/co_m112.rs))
-  at a compile-time product address — the spec assigns System 7 no
-  GO-table realisation and ETS's own formatter is the normative
-  source.
+  entries. The System 7 group object table
+  ([`co_system7.rs`](../crates/zweidraehte-device/src/objects/tables/co_system7.rs))
+  lives at a compile-time product address. The spec assigns it no
+  realisation; ETS's external `GroupObjectTable_M112` formatter is the
+  normative source.
 - **Memory and load procedures.** A fixed absolute map (user EEPROM
   4000h–CFFFh) with memory-mapped load controls at 0104h/B6EAh,
   driven by absolute-segment allocation records rather than System
@@ -913,7 +913,7 @@ which pieces those are:
   (System B: 6). A *secure* System 7 device adds
   `GroupObjectTableAugment` to provide OT 9 as a pure host for
   `PID_GO_DIAGNOSTICS` (06 Profiles §9.2.1.1.1.1) — no load state
-  machine, the M112 CoTab stays memory-mapped.
+  machine; the System 7 communication-object table stays memory-mapped.
 - **Authorization.** 16 access levels against System B's 4, with
   level 15 free.
 - **Object numbering.** `#[ets(index = N)]` is a 0-based logical

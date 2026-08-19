@@ -188,7 +188,7 @@ breakdown of what works, what needs testing, and what is missing.
   its RF (2705) and KNX/IP (5705) siblings are not built. No other
   mask is implemented:
   no couplers or routers (0912/091A/2920), no USB interface masks, and
-  the legacy families (BCU 1/2, System 300, old BIM M112) are
+  the legacy families (BCU 1/2, System 300, old System 7 masks 0700/0701) are
   deliberately out of scope.
 - **Embedded platform**: no reusable STM32 `Platform` impl, Pico W
   WiFi credentials lack a provisioning mechanism, TCP on the RP2040

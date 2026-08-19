@@ -50,7 +50,7 @@ impl ConstDefault for TestParameters {
 /// DD2 is Optional for System B — 06 Profiles §4.3 "Device
 /// Identification", row "Device Descriptor Type 2", where it is M only
 /// for RF unidirectional and bidirectional and "-" for System 1/2,
-/// BCU 1 and BIM M112. We answer it so the read path is exercised.
+/// BCU 1 and System 7. We answer it so the read path is exercised.
 ///
 /// Its fields are all defined in terms of an E-Mode device: 03/05/01
 /// §4.1.3 describes octets 0-1 as "the manufacturer code of the

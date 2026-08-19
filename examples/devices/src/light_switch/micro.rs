@@ -11,7 +11,7 @@
 //! descriptor tables the firmware bakes into its boot image (the
 //! download engine preserves a product's group-object pointers only if
 //! the product database carries them; see the client's
-//! `CotM112::overlay`).
+//! `System7ComObjectTableCoding::overlay`).
 //!
 //! Behavior mirrors [`super::app`] function by function; where that
 //! module awaits a button release, this one gets the release as a
@@ -60,7 +60,7 @@ pub const CO_DESCRIPTORS_BCU2: [CoDescriptor; 6] = build_bcu2_descriptors(
     DATA_BASE,
 );
 
-/// The M112 group object table of the micro System 7 variant — the
+/// The group object table of the micro System 7 variant — the
 /// same six rows with the family's two-byte data pointers.
 pub const CO_DESCRIPTORS_S7: [System7CoDescriptor; 6] = build_system7_descriptors(
     LightSwitchComObjects::ETS_COMM_OBJECTS,

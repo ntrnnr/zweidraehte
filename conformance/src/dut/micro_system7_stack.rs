@@ -15,7 +15,7 @@ use zweidraehte_microdevice::snapshot::MicroSnapshot;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 
-/// The DUT's family: 1 KiB of user EEPROM backed from 4000h, the M112
+/// The DUT's family: 1 KiB of user EEPROM backed from 4000h, the System 7
 /// group object table published at 4200h. Everything the client's
 /// download engine addresses (ADT 4000h, AST 4100h, COT 4200h, app
 /// segment 4300h) lives inside the backing.
@@ -45,7 +45,7 @@ const ALL_FLAGS_ROI_LOW_PRIO: u8 = 0xFF;
 /// The DUT's group objects: the full-fat System 7 conformance roster
 /// (see `system7_stack::conformance_config`), carried onto the micro
 /// stack so the same EITT profile variables and GUID-anchored patches
-/// resolve. ASAPs 1..=7 with M112 slot 0 spare; value slots in page-0
+/// resolve. ASAPs 1..=7 with System 7 slot 0 spare; value slots in page-0
 /// user RAM (00C6h+), RAM flags at 00D0h.
 ///
 /// - ASAP 1: GO0, 1-bit — the main test object

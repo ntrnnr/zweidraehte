@@ -182,7 +182,7 @@ create_protocol_enum!(
 //
 // A management client drives a load state machine by *writing records*,
 // either into `PID_LOAD_STATE_CONTROL` (property path,
-// `DM_LoadStateMachineWrite_RCo_IO`) or — on the System 7 / BIM M112
+// `DM_LoadStateMachineWrite_RCo_IO`) or — on the System 7
 // masks — into the memory-mapped load-control window at 0104h
 // (`DM_LoadStateMachineWrite_RCo_Mem`, §3.31.2). The two paths carry the
 // same payload; the memory path prefixes it with the target machine
@@ -514,7 +514,7 @@ impl MemLoadControlRecord {
 
     /// The memory-mapped record is always 0Bh octets — 03/05/02
     /// §3.31.2 writes `A_Memory_Write (addr = 0104h, length = 0Bh)`
-    /// for every event, and real BIM M112 silicon latches the window
+    /// for every event, and real System 7 silicon latches the window
     /// only as that complete record (our own stack is lenient, which
     /// is how shorter spellings survived every software tier).
     pub const RECORD_LEN: usize = 11;

@@ -544,7 +544,7 @@ Subdirectories:
     `system_7_standard_stack!`, `System7DeviceState`,
     `System7MemoryMap`, `config.rs`'s `system7_stack_config!`). Differs
     in the management model: RT8 tables (`AddrTab8`/`AssoTab8`, IA
-    inside the address-table blob at 4000h) plus the M112 group object
+    inside the address-table blob at 4000h) plus the System 7 group object
     table at a compile-time product address, fixed absolute memory map
     with memory-mapped load controls (0104h/B6EAh), absolute-segment
     load procedures, 16 authorization levels, no Group Object Table
@@ -895,7 +895,7 @@ Structure (sans-io core + thin tokio driver):
   (`Downloader` over the memory-mapped, property, and direct — no-LSM
   BCU1 — load-control paths), `image.rs` (the assembled
   `DeviceImage`), `table_coding.rs` (the `TableCoding` trait + one
-  declarative impl per table wire format — RT8/M112, RT7, RT2/RT1),
+  declarative impl per table wire format — System 7, RT7, RT2/RT1),
   `model.rs` (`DownloadModel`: one static definition row per
   management model — the embedded `ImageLayout` with placement, ASAP
   base and codings, plus the load-control path policy,
