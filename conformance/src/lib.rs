@@ -765,6 +765,9 @@ pub struct TestSuite {
     /// Whether this suite requires the BCU2 DUT
     /// (`conformance-dut-bcu2`, the no-async micro stack).
     pub use_bcu2_dut: bool,
+    /// Whether this suite requires the micro-System-7 DUT
+    /// (`conformance-dut-micro-system7`, the no-async micro stack).
+    pub use_micro_system7_dut: bool,
 }
 
 impl TestSuite {
@@ -779,6 +782,7 @@ impl TestSuite {
             use_system7_dut: false,
             use_system7_secure_dut: false,
             use_bcu2_dut: false,
+            use_micro_system7_dut: false,
         }
     }
 
@@ -821,6 +825,12 @@ impl TestSuite {
     /// Run this suite against the BCU2 DUT.
     pub fn bcu2(mut self) -> Self {
         self.use_bcu2_dut = true;
+        self
+    }
+
+    /// Run this suite against the micro-System-7 DUT.
+    pub fn micro_system7(mut self) -> Self {
+        self.use_micro_system7_dut = true;
         self
     }
 }
