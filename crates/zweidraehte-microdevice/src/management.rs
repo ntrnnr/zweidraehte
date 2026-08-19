@@ -17,8 +17,11 @@ use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
 use zweidraehte_proto::messages::apdu::load_control::{
     AbsSegment, LoadAction, LoadSegment, LoadState, load_control_transition,
 };
+use zweidraehte_proto::messages::apdu::property::{
+    PropertyDescriptionRead, PropertyDescriptionResponse as PropertyDescriptionApduResponse, PropertyValueHeader,
+};
 use zweidraehte_proto::pid;
-use zweidraehte_proto::properties::PropertyDescriptionResponse;
+use zweidraehte_proto::properties::PropertyDescriptionResponse as PropertyDescription;
 
 use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, SYSTEM_STATUS_ADDR};
 use crate::family::{MicroDeviceFamily, PropertyBacking};
@@ -343,44 +346,42 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     // ── Property services ───────────────────────────────────────────
 
     fn property_value_read(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
-        let Some((obj, prop_id, count, start)) = parse_property_header(payload) else {
+        let Some(header) = PropertyValueHeader::parse_payload(payload) else {
             return ServiceResult::None;
         };
-        let mut reply: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
-        let _ = reply.extend_from_slice(&payload[..4]);
-        match self.property_read(obj, prop_id, count, start, access) {
-            Some(data) => {
-                let _ = reply.extend_from_slice(&data);
-                ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &reply))
-            }
-            // Unknown property / bad index: the negative response is
-            // the same header with the element count zeroed.
-            None => {
-                reply[2] = start.to_be_bytes()[0] & 0x0F;
-                ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &reply))
-            }
+        let obj = header.object_idx as u8;
+        let prop_id = header.prop_id as u8;
+        let count = header.count as u8;
+        match self.property_read(obj, prop_id, count, header.start_idx, access) {
+            Some(data) => property_value_response(header, header.count, &data),
+            // Unknown property / bad index: the negative response keeps the
+            // requested start index but carries a zero element count.
+            None => property_value_response(header, 0, &[]),
         }
     }
 
     fn property_value_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
-        let Some((obj, prop_id, count, start)) = parse_property_header(payload) else {
+        let Some(header) = PropertyValueHeader::parse_payload(payload) else {
             return ServiceResult::None;
         };
-        let data = &payload[4..];
-        let accepted = self.property_write(obj, prop_id, count, start, data, access);
-        let mut reply: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
-        let _ = reply.extend_from_slice(&payload[..4]);
-        if accepted {
+        let obj = header.object_idx as u8;
+        let prop_id = header.prop_id as u8;
+        let count = header.count as u8;
+        let accepted = self.property_write(obj, prop_id, count, header.start_idx, header.payload_data(payload), access);
+        let response_data = if accepted {
             // Positive confirmation carries the property's current
             // value — the read-back a client would get, which for the
             // load-state controls is the machine's new state.
-            if let Some(data) = self.property_read(obj, prop_id, count, start, access) {
-                let _ = reply.extend_from_slice(&data);
-            }
+            self.property_read(obj, prop_id, count, header.start_idx, access)
         } else {
-            reply[2] = 0;
+            None
+        };
+
+        if accepted {
+            property_value_response(header, header.count, response_data.as_deref().unwrap_or_default())
+        } else {
+            property_value_response(header, 0, &[])
         }
-        ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &reply))
     }
 
     /// Read `count` elements from `start` of a property. Properties on
@@ -519,30 +520,33 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     // ── Property descriptions ───────────────────────────────────────
 
     fn property_description_read(&self, payload: &[u8]) -> ServiceResult {
-        if payload.len() != 3 {
+        if payload.len() != PropertyDescriptionRead::PAYLOAD_LEN {
             return ServiceResult::None;
         }
-        let (obj, requested_pid, requested_idx) = (payload[0], payload[1], payload[2]);
+        let Some(request) = PropertyDescriptionRead::parse_payload(payload) else {
+            return ServiceResult::None;
+        };
+        let obj = request.object_idx as u8;
+        let requested_pid = request.prop_id as u8;
+        let requested_idx = request.prop_idx;
         let found = if requested_pid == 0 {
             F::property_spec(obj, requested_idx).map(|spec| (requested_idx, spec))
         } else {
             F::property_spec_by_id(obj, u16::from(requested_pid))
         };
 
-        let mut reply = [0u8; 7];
-        if let Some((property_index, spec)) = found {
-            let response = PropertyDescriptionResponse::from_descriptor(
-                u16::from(obj),
-                u16::from(property_index),
-                &spec.descriptor,
-            );
+        let reply = if let Some((property_index, spec)) = found {
+            let mut reply = [0u8; PropertyDescriptionApduResponse::PAYLOAD_LEN];
+            let response =
+                PropertyDescription::from_descriptor(u16::from(obj), u16::from(property_index), &spec.descriptor);
             let encoded = response.encode(&mut reply);
             debug_assert_eq!(encoded, reply.len());
+            reply
         } else {
             // Unknown property / exhausted by-index scan: echo the lookup
             // key and zero the descriptor, per 03/03/07.
-            reply[..3].copy_from_slice(&[obj, requested_pid, requested_idx]);
-        }
+            PropertyDescriptionApduResponse::encode_error_payload(obj, request.prop_id, requested_idx)
+        };
         ServiceResult::Reply(Reply::new(ApciCode::PropertyDescriptionResponse, 0, &reply))
     }
 }
@@ -622,13 +626,18 @@ fn ram2_offset<F: MicroDeviceFamily>(addr: u16) -> Option<usize> {
     (off < F::RAM2_SIZE).then_some(off)
 }
 
-/// `[obj][pid][count:4|start:12]` — the header every property value
-/// service shares.
-fn parse_property_header(payload: &[u8]) -> Option<(u8, u8, u8, u16)> {
-    if payload.len() < 4 {
-        return None;
-    }
-    let count = payload[2] >> 4;
-    let start = (u16::from(payload[2] & 0x0F) << 8) | u16::from(payload[3]);
-    Some((payload[0], payload[1], count, start))
+/// Build the APCI-stripped payload shared by positive and negative regular
+/// property responses. `count == 0` is the standard negative response.
+fn property_value_response(header: PropertyValueHeader, count: u16, data: &[u8]) -> ServiceResult {
+    let mut payload: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
+    payload
+        .extend_from_slice(&PropertyValueHeader::encode_payload(
+            header.object_idx as u8,
+            header.prop_id,
+            count,
+            header.start_idx,
+        ))
+        .expect("management reply fits the TP1 APDU");
+    payload.extend_from_slice(data).expect("management reply fits the TP1 APDU");
+    ServiceResult::Reply(Reply::new(ApciCode::PropertyValueResponse, 0, &payload))
 }

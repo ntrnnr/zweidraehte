@@ -21,7 +21,7 @@ use crate::messages::knx::offsets;
 /// APDU[4-5]: Count (4 bits) | StartIndex (12 bits), big-endian
 /// APDU[6..]: Data (variable, present in Write and Response)
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PropertyValueHeader {
     pub object_idx: u16,
     pub prop_id: u16,
@@ -30,18 +30,26 @@ pub struct PropertyValueHeader {
 }
 
 impl PropertyValueHeader {
+    /// Header length after the two APCI octets have been removed.
+    pub const PAYLOAD_HEADER_LEN: usize = 4;
     /// Minimum message length for a PropertyValue header (no data payload).
-    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 6;
+    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 2 + Self::PAYLOAD_HEADER_LEN;
 
     /// Parse the fixed header from a full message buffer.
     pub fn parse(buf: &[u8]) -> Option<Self> {
-        if buf.len() < Self::MIN_MSG_LEN {
-            return None;
-        }
-        let count_start = u16::from_be_bytes([buf[offsets::MSG_APCI + 4], buf[offsets::MSG_APCI + 5]]);
+        Self::parse_payload(buf.get(offsets::MSG_APCI + 2..)?)
+    }
+
+    /// Parse the fixed header from an APCI-stripped APDU payload.
+    ///
+    /// This is the boundary used by stacks that decode TPCI/APCI before
+    /// dispatch instead of retaining one full internal message buffer.
+    pub fn parse_payload(payload: &[u8]) -> Option<Self> {
+        let header = payload.get(..Self::PAYLOAD_HEADER_LEN)?;
+        let count_start = u16::from_be_bytes([header[2], header[3]]);
         Some(Self {
-            object_idx: buf[offsets::MSG_APCI + 2] as u16,
-            prop_id: buf[offsets::MSG_APCI + 3] as u16,
+            object_idx: u16::from(header[0]),
+            prop_id: u16::from(header[1]),
             count: count_start >> 12,
             start_idx: count_start & 0x0FFF,
         })
@@ -49,8 +57,18 @@ impl PropertyValueHeader {
 
     /// Return a slice over the data payload following the header (for Write messages).
     pub fn data<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
-        let start = offsets::MSG_APCI + 6;
-        if buf.len() > start { &buf[start..] } else { &[] }
+        self.payload_data(buf.get(offsets::MSG_APCI + 2..).unwrap_or_default())
+    }
+
+    /// Return the data following this header in an APCI-stripped payload.
+    pub fn payload_data<'a>(&self, payload: &'a [u8]) -> &'a [u8] {
+        payload.get(Self::PAYLOAD_HEADER_LEN..).unwrap_or_default()
+    }
+
+    /// Encode the fixed part of an APCI-stripped property-value payload.
+    pub fn encode_payload(object_idx: u8, prop_id: u16, count: u16, start_idx: u16) -> [u8; Self::PAYLOAD_HEADER_LEN] {
+        let [count_start_hi, count_start_lo] = Self::pack_count_start(count, start_idx);
+        [object_idx, prop_id as u8, count_start_hi, count_start_lo]
     }
 
     /// Encode count (4 bits) and start_idx (12 bits) into the packed big-endian
@@ -67,10 +85,8 @@ pub struct PropertyValueResponse;
 impl PropertyValueResponse {
     /// Write a successful response header and data payload.
     pub fn write(buf: &mut [u8], object_idx: u8, prop_id: u16, count: u16, start_idx: u16, data: &[u8]) {
-        buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id as u8;
-        let packed = PropertyValueHeader::pack_count_start(count, start_idx);
-        buf[offsets::MSG_APCI + 4..offsets::MSG_APCI + 6].copy_from_slice(&packed);
+        let header = PropertyValueHeader::encode_payload(object_idx, prop_id, count, start_idx);
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 6].copy_from_slice(&header);
         if !data.is_empty() {
             let start = offsets::MSG_APCI + 6;
             buf[start..start + data.len()].copy_from_slice(data);
@@ -79,10 +95,8 @@ impl PropertyValueResponse {
 
     /// Write an error response (count = 0, no data payload).
     pub fn write_error(buf: &mut [u8], object_idx: u8, prop_id: u16, start_idx: u16) {
-        buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id as u8;
-        let packed = PropertyValueHeader::pack_count_start(0, start_idx);
-        buf[offsets::MSG_APCI + 4..offsets::MSG_APCI + 6].copy_from_slice(&packed);
+        let header = PropertyValueHeader::encode_payload(object_idx, prop_id, 0, start_idx);
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 6].copy_from_slice(&header);
     }
 
     /// Compute total message length for a given data size.
@@ -108,7 +122,7 @@ impl PropertyValueResponse {
 /// APDU[3]:   Property ID (0 = search by prop_idx)
 /// APDU[4]:   Property Index
 /// ```
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PropertyDescriptionRead {
     pub object_idx: u16,
     pub prop_id: u16,
@@ -116,24 +130,29 @@ pub struct PropertyDescriptionRead {
 }
 
 impl PropertyDescriptionRead {
-    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 5;
+    /// Request length after the two APCI octets have been removed.
+    pub const PAYLOAD_LEN: usize = 3;
+    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 2 + Self::PAYLOAD_LEN;
 
     pub fn parse(buf: &[u8]) -> Option<Self> {
-        if buf.len() < Self::MIN_MSG_LEN {
-            return None;
-        }
-        Some(Self {
-            object_idx: buf[offsets::MSG_APCI + 2] as u16,
-            prop_id: buf[offsets::MSG_APCI + 3] as u16,
-            prop_idx: buf[offsets::MSG_APCI + 4],
-        })
+        Self::parse_payload(buf.get(offsets::MSG_APCI + 2..)?)
+    }
+
+    /// Parse an `A_PropertyDescription_Read` after APCI removal.
+    pub fn parse_payload(payload: &[u8]) -> Option<Self> {
+        let payload = payload.get(..Self::PAYLOAD_LEN)?;
+        Some(Self { object_idx: u16::from(payload[0]), prop_id: u16::from(payload[1]), prop_idx: payload[2] })
+    }
+
+    /// Encode an APCI-stripped `A_PropertyDescription_Read` payload.
+    pub const fn encode_payload(obj_idx: u8, prop_id: u16, prop_idx: u8) -> [u8; Self::PAYLOAD_LEN] {
+        [obj_idx, prop_id as u8, prop_idx]
     }
 
     /// Write an `A_PropertyDescription_Read` request into a message buffer.
     pub fn write(buf: &mut [u8], obj_idx: u8, prop_id: u16, prop_idx: u8) {
-        buf[offsets::MSG_APCI + 2] = obj_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id as u8;
-        buf[offsets::MSG_APCI + 4] = prop_idx;
+        let payload = Self::encode_payload(obj_idx, prop_id, prop_idx);
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 5].copy_from_slice(&payload);
     }
 }
 
@@ -144,19 +163,21 @@ impl PropertyDescriptionRead {
 pub struct PropertyDescriptionResponse;
 
 impl PropertyDescriptionResponse {
+    /// Response length after the two APCI octets have been removed.
+    pub const PAYLOAD_LEN: usize = 7;
     /// Message length (same for success and error — always 9 bytes of APDU).
-    pub const MSG_LEN: usize = offsets::MSG_APCI + 9;
+    pub const MSG_LEN: usize = offsets::MSG_APCI + 2 + Self::PAYLOAD_LEN;
+
+    /// Encode a negative APCI-stripped response payload.
+    pub const fn encode_error_payload(object_idx: u8, prop_id: u16, prop_idx: u8) -> [u8; Self::PAYLOAD_LEN] {
+        [object_idx, prop_id as u8, prop_idx, 0, 0, 0, 0]
+    }
 
     /// Write an error response: echo back ObjIdx, PID, PropIdx; zero out
     /// descriptor fields.
     pub fn write_error(buf: &mut [u8], object_idx: u8, prop_id: u16, prop_idx: u8) {
-        buf[offsets::MSG_APCI + 2] = object_idx;
-        buf[offsets::MSG_APCI + 3] = prop_id as u8;
-        buf[offsets::MSG_APCI + 4] = prop_idx;
-        buf[offsets::MSG_APCI + 5] = 0; // Type (WrEnab=0, PDT=0)
-        buf[offsets::MSG_APCI + 6] = 0; // MaxNo high byte
-        buf[offsets::MSG_APCI + 7] = 0; // MaxNo low byte
-        buf[offsets::MSG_APCI + 8] = 0; // Access (ReadAcc=0, WriteAcc=0)
+        let payload = Self::encode_error_payload(object_idx, prop_id, prop_idx);
+        buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 9].copy_from_slice(&payload);
     }
 }
 
@@ -180,6 +201,23 @@ mod tests {
     }
 
     #[test]
+    fn property_value_payload_codec_matches_full_message_codec() {
+        let header_bytes = PropertyValueHeader::encode_payload(3, 56, 1, 0xABC);
+        let payload = [header_bytes[0], header_bytes[1], header_bytes[2], header_bytes[3], 0x11, 0x22, 0x33];
+
+        let header = PropertyValueHeader::parse_payload(&payload).expect("header parses");
+        assert_eq!(header.object_idx, 3);
+        assert_eq!(header.prop_id, 56);
+        assert_eq!(header.count, 1);
+        assert_eq!(header.start_idx, 0xABC);
+        assert_eq!(header.payload_data(&payload), &[0x11, 0x22, 0x33]);
+
+        let mut full = [0u8; 20];
+        PropertyValueResponse::write(&mut full, 3, 56, 1, 0xABC, &[0x11, 0x22, 0x33]);
+        assert_eq!(&full[offsets::MSG_APCI + 2..offsets::MSG_APCI + 9], &payload);
+    }
+
+    #[test]
     fn property_value_count_start_packing() {
         // count=15 (max 4-bit), start_idx=4095 (max 12-bit)
         let mut buf = [0u8; 12];
@@ -192,12 +230,12 @@ mod tests {
     #[test]
     fn property_value_error_response() {
         let mut buf = [0u8; 12];
-        PropertyValueResponse::write_error(&mut buf, 2, 99, 7);
+        PropertyValueResponse::write_error(&mut buf, 2, 99, 0xABC);
         let hdr = PropertyValueHeader::parse(&buf).unwrap();
         assert_eq!(hdr.object_idx, 2);
         assert_eq!(hdr.prop_id, 99);
         assert_eq!(hdr.count, 0); // error indicator
-        assert_eq!(hdr.start_idx, 7);
+        assert_eq!(hdr.start_idx, 0xABC);
     }
 
     #[test]
@@ -213,9 +251,26 @@ mod tests {
     }
 
     #[test]
+    fn property_description_payload_codec_matches_full_message_codec() {
+        let payload = PropertyDescriptionRead::encode_payload(5, 21, 3);
+        assert_eq!(
+            PropertyDescriptionRead::parse_payload(&payload),
+            Some(PropertyDescriptionRead { object_idx: 5, prop_id: 21, prop_idx: 3 })
+        );
+
+        let mut full = [0u8; 11];
+        PropertyDescriptionRead::write(&mut full, 5, 21, 3);
+        assert_eq!(&full[offsets::MSG_APCI + 2..offsets::MSG_APCI + 5], &payload);
+    }
+
+    #[test]
     fn property_description_error_response() {
         let mut buf = [0u8; 15];
         PropertyDescriptionResponse::write_error(&mut buf, 5, 21, 3);
+        assert_eq!(
+            &buf[offsets::MSG_APCI + 2..offsets::MSG_APCI + 9],
+            &PropertyDescriptionResponse::encode_error_payload(5, 21, 3)
+        );
         assert_eq!(buf[offsets::MSG_APCI + 2], 5);
         assert_eq!(buf[offsets::MSG_APCI + 3], 21);
         assert_eq!(buf[offsets::MSG_APCI + 4], 3);
