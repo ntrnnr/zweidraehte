@@ -4,7 +4,7 @@
 //! The engine drives both load-control paths behind one
 //! [`LoadControlPath`] switch: the *memory-mapped* one
 //! (`DM_LoadStateMachineWrite_RCo_Mem`, 03/05/02 §3.31.2) that the
-//! System 7 / BIM M112 masks use — records written to the window at
+//! System 7 masks use — records written to the window at
 //! [`MemoryResources::load_control_addr`], state read back from the
 //! per-machine status bytes — and the *property* one
 //! (`DM_LoadStateMachineWrite_RCo_IO`, `PID_LOAD_STATE_CONTROL`) that
@@ -124,7 +124,7 @@ pub type ProgressSink = Box<dyn FnMut(DownloadEvent) + Send>;
 /// where the record is written and where the resulting state is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadControlPath {
-    /// System 7 / BIM M112: records go to the memory-mapped window,
+    /// System 7: records go to the memory-mapped window,
     /// state comes from the per-machine status bytes
     /// (`DM_LoadStateMachineWrite_RCo_Mem`, 03/05/02 §3.31.2).
     Memory(MemoryResources),
@@ -885,8 +885,9 @@ mod tests {
         assert_eq!(device.states[0], LoadState::Loaded);
         assert!(device.restarted);
 
-        // The ADT blob landed byte-exactly: count 1, IA 1.1.42, GA 2/0/3.
-        for (offset, expected) in [1u8, 0x11, 0x2A, 0x10, 0x03].into_iter().enumerate() {
+        // The ADT blob landed byte-exactly: length 2 counts IA 1.1.42
+        // and GA 2/0/3.
+        for (offset, expected) in [2u8, 0x11, 0x2A, 0x10, 0x03].into_iter().enumerate() {
             assert_eq!(device.memory.get(&(0x4000 + offset as u16)), Some(&expected), "ADT byte {offset}");
         }
     }

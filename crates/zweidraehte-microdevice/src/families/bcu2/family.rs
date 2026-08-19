@@ -8,6 +8,7 @@ use zweidraehte_proto::dpt::{
 use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunEvent, RunState};
 use zweidraehte_proto::pid::{self, pdt};
+use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -205,12 +206,6 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
         usize::from(eeprom.get(offsets::COMMS_TAB_PTR).copied().unwrap_or(0))
     }
 
-    // RT2: the length byte counts the IA slot, so a table holding only
-    // the IA (length 1) has no group addresses — group traffic muted.
-    const MUTE_LENGTH: u8 = 1;
-    fn ga_count(length_byte: u8) -> u8 {
-        length_byte.saturating_sub(1)
-    }
     const SENDING_ASSOC_INDEXED: bool = true;
 
     // RT2 group object table: [count:1][ram_flags_ptr:1] then
@@ -274,7 +269,9 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
 
     fn unload_side_effect(machine: usize, eeprom: &mut [u8], mgmt: &mut ManagementState) {
         match machine {
-            0 => eeprom[Self::ADDR_TABLE_OFFSET] = Self::MUTE_LENGTH,
+            0 => {
+                eeprom[Self::ADDR_TABLE_OFFSET] = BCU_ADDRESS_TABLE_MUTE_LENGTH;
+            }
             1 => {
                 let assoc = Self::assoc_table_offset(eeprom, mgmt);
                 if assoc < Self::EEPROM_SIZE {

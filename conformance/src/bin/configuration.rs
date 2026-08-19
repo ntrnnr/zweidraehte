@@ -298,10 +298,10 @@ fn scenario_system7_full_download<'a>(
             if states != [u8::from(LoadState::Loaded); 3] {
                 return Err(format!("load states {states:02X?}, expected all Loaded"));
             }
-            // ADT: one group address, the DUT's own IA in TSAP 0.
+            // ADT: length 2 for the IA and one group address.
             let adt = conn.memory_read(0x4000, 5).await.map_err(|e| format!("ADT read: {e}"))?;
-            if adt != [1, 0x10, 0x01, 0x19, 0x01] {
-                return Err(format!("ADT {adt:02X?}, expected [01 10 01 19 01]"));
+            if adt != [2, 0x10, 0x01, 0x19, 0x01] {
+                return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
             }
             // AST: the single link, TSAP 1 → object 1.
             let ast = conn.memory_read(0x4100, 3).await.map_err(|e| format!("AST read: {e}"))?;
@@ -365,8 +365,8 @@ fn scenario_system7_unload_all<'a>(
             // (the device would otherwise lose its own address
             // mid-procedure).
             let adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
-            if adt != [0x00, 0x10, 0x01] {
-                return Err(format!("ADT head {adt:02X?}, expected cleared count with IA intact"));
+            if adt != [0x01, 0x10, 0x01] {
+                return Err(format!("ADT head {adt:02X?}, expected IA-only mute length"));
             }
             Ok(())
         }
@@ -687,7 +687,7 @@ fn scenario_bcu2_unload_all<'a>(
 // The micro-System-7 DUT is the no-async `zweidraehte-microdevice`
 // stack behind `conformance-dut-micro-system7` — the same MV-0705
 // mask the full-fat System 7 DUT runs, so the download compiles from
-// the same master-data template with the BimM112 model row (forced
+// the same master-data template with the System 7 model row (forced
 // property path). The unload scenario deliberately goes the other way:
 // `Downloader::new` with the mask's memory resources drives the
 // 0104h load-control window and reads the B6EAh status bytes, so both
@@ -779,11 +779,11 @@ fn scenario_micro_s7_full_download<'a>(
         project.links = vec![GroupLink { group_address: rewired_ga, com_object: 3 }];
         project.max_apdu = 15; // the micro stack talks standard frames only
 
-        // Sanity: BIM M112 compiles to the property path — the
+        // Sanity: System 7 compiles to the property path — the
         // forced-property override modeled on real 0705h silicon.
         let compiled = compile(&mask, &product, &project).map_err(|e| format!("compile: {e}"))?;
         if compiled.path() != LoadControlPath::Property {
-            return Err("a BIM M112 download must compile to the property load-control path".to_string());
+            return Err("a System 7 download must compile to the property load-control path".to_string());
         }
 
         bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
@@ -798,13 +798,13 @@ fn scenario_micro_s7_full_download<'a>(
             if states[..3] != [u8::from(LoadState::Loaded); 3] || states[3] != u8::from(LoadState::Unloaded) {
                 return Err(format!("load states {states:02X?}, expected [Loaded ×3, Unloaded]"));
             }
-            // The RT8 address table at 4000h: the count is GAs only,
-            // then the IA, then the single rewired GA.
+            // The RT8 address table at 4000h: length 2 counts the IA
+            // and the single rewired GA.
             let adt = conn.memory_read(0x4000, 5).await.map_err(|e| format!("ADT read: {e}"))?;
-            if adt != [0x01, 0x10, 0x01, 0x19, 0x01] {
-                return Err(format!("ADT {adt:02X?}, expected [01 10 01 19 01]"));
+            if adt != [0x02, 0x10, 0x01, 0x19, 0x01] {
+                return Err(format!("ADT {adt:02X?}, expected [02 10 01 19 01]"));
             }
-            // The M112 group object table at the product address:
+            // The System 7 group object table at the product address:
             // positional over ASAPs 0..=7 (slot 0 spare), so the count
             // covers all eight rows.
             let cot = conn.memory_read(0x4200, 3).await.map_err(|e| format!("COT read: {e}"))?;
@@ -855,11 +855,11 @@ fn scenario_micro_s7_unload_all<'a>(
             if states != [u8::from(LoadState::Unloaded); 4] {
                 return Err(format!("load states {states:02X?}, expected all Unloaded"));
             }
-            // RT8 unload zeroes the GA count but spares the IA at
-            // bytes 1–2.
+            // RT8 unload keeps only the IA slot in the length and
+            // spares its bytes 1–2.
             let adt = conn.memory_read(0x4000, 3).await.map_err(|e| format!("ADT read: {e}"))?;
-            if adt != [0x00, 0x10, 0x01] {
-                return Err(format!("ADT head {adt:02X?}, expected cleared count with IA intact"));
+            if adt != [0x01, 0x10, 0x01] {
+                return Err(format!("ADT head {adt:02X?}, expected IA-only mute length"));
             }
             Ok(())
         }

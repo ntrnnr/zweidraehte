@@ -11,7 +11,7 @@
 //! [`compile`] follows ETS's own order:
 //!
 //! 1. **Seed** each segment buffer with the product's default `Data`.
-//! 2. **Overlay** the tables generated from the project: the RT8
+//! 2. **Overlay** the tables generated from the project: the System 7
 //!    address table (with the device's IA in its own slot), the
 //!    association table, and the group object table built from the
 //!    product's object definitions.
@@ -135,11 +135,11 @@ impl CompiledDownload {
 ///
 /// - **The load-control path** comes from the mask's LSM model (its
 ///   `<Role>LoadControl` resources). This is per-mask data, not
-///   family lore: MV-2705 is BimM112-managed yet drives its machines
+///   family lore: MV-2705 is System 7 yet drives its machines
 ///   through properties, and a family-keyed choice would break it.
 /// - **The image half** comes from the management model: System B
 ///   hands each interface object its bytes and lets the device place
-///   them; BIM M112 places content at the product's fixed addresses.
+///   them; System 7 places content at the product's fixed addresses.
 ///
 /// The axes really are orthogonal — 2705 wants an absolute image
 /// *and* property-driven machines, which the interpreter already
@@ -557,7 +557,7 @@ fn place_relative(
     Ok(())
 }
 
-/// Place content for an absolute-address model (BIM M112, BCU2,
+/// Place content for an absolute-address model (System 7, BCU2,
 /// BCU1): every addressed segment's content, with the generated
 /// tables landing in the segments the product names for them.
 ///
@@ -629,7 +629,7 @@ fn place_absolute(
             let offset = *offset as usize;
 
             // A group object table the *product* ships as default data
-            // (vendor M112 programs) is overlaid per object instead of
+            // (vendor System 7 programs) is overlaid per object instead of
             // replaced — its count and pointers are firmware facts a
             // synthesized table would zero.
             if *what == "group object table"
@@ -982,9 +982,9 @@ mod tests {
     #[test]
     fn overlays_tables_built_from_the_project() {
         let c = compiled();
-        // ADT: count 2, IA 1.1.42, then 0/0/1 and 0/0/2 ascending.
+        // ADT: length 3 (IA + two GAs), then the encoded entries.
         let adt = c.image.slice(0x4000, 7).expect("ADT in image");
-        assert_eq!(adt, [2, 0x11, 0x2A, 0x00, 0x01, 0x00, 0x02]);
+        assert_eq!(adt, [3, 0x11, 0x2A, 0x00, 0x01, 0x00, 0x02]);
 
         // AST: both links point at object 1; TSAPs follow the sorted
         // address order.
@@ -1143,8 +1143,8 @@ mod tests {
     /// Relative segments carry no address, so they contribute nothing
     /// to an absolute image — System B writes them through its own
     #[test]
-    fn a_product_without_group_objects_contributes_no_m112_table() {
-        // M112: an empty COT blob keeps the COT segment out of the
+    fn a_product_without_group_objects_contributes_no_system7_table() {
+        // System 7: an empty COT blob keeps the COT segment out of the
         // image entirely — no placeholder table is written.
         let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
         let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
@@ -1158,7 +1158,7 @@ mod tests {
 
     #[test]
     fn a_vendor_supplied_cot_is_overlaid_not_replaced() {
-        // Vendor M112 products ship their group object table as the
+        // Vendor System 7 products ship their group object table as the
         // COT segment's default data, whose count and pointers are
         // firmware facts. Only the per-object flags/type octets may
         // change; a synthesized table would zero the pointers.

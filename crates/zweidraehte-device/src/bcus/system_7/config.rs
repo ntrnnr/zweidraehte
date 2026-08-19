@@ -2,12 +2,12 @@
 //!
 //! [`system7_stack_config!`](crate::system7_stack_config) is the
 //! System 7 twin of [`knx_stack_config!`](crate::knx_stack_config): the
-//! same declarative blocks, but building the RT8 table blobs — 1-octet
-//! counts, the individual address embedded in the address table, 1-octet
+//! same declarative blocks, but building the System 7 table blobs — the
+//! individual address embedded in the address table, 1-octet
 //! TSAP/ASAP association entries — and pinning the address table to its
 //! fixed 4000h home.
 
-/// Generate a compile-time device configuration with RT8 tables.
+/// Generate a compile-time device configuration with System 7 tables.
 ///
 /// Same input blocks as `knx_stack_config!`; differences in what comes
 /// out:
@@ -15,9 +15,9 @@
 /// - `AddrTab` / `AssoTab` are the RT8 types
 ///   ([`AddrTab8`](crate::objects::tables::addr8::AddrTab8) /
 ///   [`AssoTab8`](crate::objects::tables::asso8::AssoTab8)); `CoTab` is
-///   the M112 memory format
-///   ([`CoTabM112`](crate::objects::tables::CoTabM112)) that ETS's
-///   System 7 formatter writes. The M112 table is indexed by ASAP, so
+///   the System 7 memory format
+///   ([`System7ComObjectTable`](crate::objects::tables::System7ComObjectTable)) that ETS's
+///   System 7 formatter writes. The table is indexed by ASAP, so
 ///   ASAPs must be contiguous (compile-time checked). Products number
 ///   from 0 (`FIRST_ASAP = 0`, the System 7 convention); the EITT
 ///   conformance DUT starts at 1 because the vendor templates pin its
@@ -63,7 +63,7 @@ macro_rules! system7_stack_config {
 
         pub type AddrTab = $crate::objects::tables::addr8::AddrTab8<{ $name::NUM_GROUP_ADDRS }>;
         pub type AssoTab = $crate::objects::tables::asso8::AssoTab8<{ $name::NUM_ASSOCIATIONS }>;
-        pub type CoTab = $crate::objects::tables::CoTabM112<{ $name::MAX_ASAP }>;
+        pub type CoTab = $crate::objects::tables::System7ComObjectTable<{ $name::MAX_ASAP }>;
 
         impl $name {
             pub const NUM_GROUP_ADDRS: usize = $crate::knx_stack_config!(@count $($tsap)*);
@@ -90,14 +90,13 @@ macro_rules! system7_stack_config {
                 max
             };
 
-            /// M112 group object table: header (count + RAM-flags ptr)
+            /// System 7 group object table: header (count + RAM-flags ptr)
             /// plus one 4-octet entry per ASAP `0..=MAX_ASAP` — the
             /// table is indexed directly by ASAP, so a `FIRST_ASAP` of
             /// 1 leaves entry 0 as a zeroed spare.
             pub const COT_SIZE: usize = 3 + (Self::MAX_ASAP + 1) * 4;
 
-            /// The fixed location of the RT8 address table
-            /// (03/05/01 Resources §4.16.9.2).
+            /// The fixed location of the RT8 address table.
             pub const ADT_ADDRESS: u32 = 0x4000;
 
             pub const fn new() -> Self {
@@ -131,10 +130,14 @@ macro_rules! system7_stack_config {
                     ::zweidraehte_proto::address::IndividualAddress::new(area, line, device)
                 };
 
-                // Build the RT8 address table: [count][IA][GA...], the IA
-                // slot IS the device's address storage on System 7.
+                // Build the RT8 address table: [length][IA][GA...], with
+                // the IA included in `length`.
+                assert!(
+                    Self::NUM_GROUP_ADDRS < u8::MAX as usize,
+                    "RT8 length holds at most 254 group addresses"
+                );
                 let mut addr8_data = [0u8; Self::ADDR8_SIZE];
-                addr8_data[0] = Self::NUM_GROUP_ADDRS as u8;
+                addr8_data[0] = 1 + Self::NUM_GROUP_ADDRS as u8;
                 let ia = individual_address.as_bytes();
                 addr8_data[1] = ia[0];
                 addr8_data[2] = ia[1];
@@ -211,7 +214,7 @@ macro_rules! system7_stack_config {
                 )*
                 assert!(asso_idx == Self::ASSO8_SIZE);
 
-                // Build the group object table in the M112 memory
+                // Build the group object table in the System 7 memory
                 // format: [count][RAM-flags ptr:2] then one
                 // [data ptr:2][config][type] entry per ASAP. Entry
                 // index = ASAP, so the count covers `0..=MAX_ASAP` and
@@ -225,7 +228,7 @@ macro_rules! system7_stack_config {
                 $(
                     assert!(
                         ($asap as usize) == expected_asap,
-                        "system7_stack_config!: ASAPs must be contiguous — the M112 table is indexed by ASAP"
+                        "system7_stack_config!: ASAPs must be contiguous — the System 7 table is indexed by ASAP"
                     );
                     let priority = $crate::knx_stack_config!(@get_priority $($prio)?);
                     let entry = 3 + ($asap as usize) * 4;

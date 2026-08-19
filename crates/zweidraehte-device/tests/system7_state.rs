@@ -328,8 +328,8 @@ mod memory_map {
     #[test]
     fn adt_window_at_4000() {
         let state = fresh_state();
-        // [len=1][IA 1.0.1][GA 0/0/1]
-        MAP.write(&state, 0x4000, &[0x01, 0x10, 0x01, 0x00, 0x01], CTX).expect("table blob write");
+        // [len=2: IA + one GA][IA 1.0.1][GA 0/0/1]
+        MAP.write(&state, 0x4000, &[0x02, 0x10, 0x01, 0x00, 0x01], CTX).expect("table blob write");
         assert_eq!(state.adt.borrow().entry_count(), 1);
         assert_eq!(state.individual_address(), IndividualAddress::from_bytes(&[0x10, 0x01]));
     }
@@ -621,7 +621,7 @@ mod go_table_object {
 
     /// §9.1.2.6.3 gives this object PID_OBJECT_TYPE (M) and
     /// PID_OBJECT_NAME (O) and nothing else. No load state machine in
-    /// particular: the M112 group object table is written by absolute
+    /// particular: the System 7 group object table is written by absolute
     /// memory writes, so a PID_LOAD_STATE_CONTROL here would invent a
     /// fifth load state machine no product database drives.
     #[test]
@@ -681,7 +681,7 @@ mod go_table_object {
 /// §6.3.15). The `go_flags` keys are written in the family's own ASAP
 /// numbering, and the two families do not agree on where that starts —
 /// System B numbers communication objects from 1, System 7 pins
-/// `StackDefinition::FIRST_ASAP = 0` for the M112 table. Subtract the
+/// `StackDefinition::FIRST_ASAP = 0` for the System 7 table. Subtract the
 /// wrong base and every object is secured as its neighbour's, which no
 /// type checks and which a running device reports as working.
 mod security_config {

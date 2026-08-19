@@ -1,12 +1,13 @@
 //! Group Address Table — Realisation Type 8 (03/05/01 Resources §4.16.9).
 //!
-//! The System 7 address table. Fixed at address 4000h in the device's
-//! management address space (Resources §4.16.9.2 — the start of the
-//! profile's user EEPROM), written by the management client with plain
-//! `A_Memory_Write`s after an absolute-segment allocation:
+//! RT8 is fixed at address 4000h. The KNX master data selects the same
+//! `AddressTable_Bcu1` formatter for masks 0705 and 5705, so this is also
+//! the address-table layout used by the System 7 stack. It is written by
+//! the management client with plain `A_Memory_Write`s after an absolute-
+//! segment allocation:
 //!
 //! ```text
-//! offset 0       Length (number of group addresses, NOT bytes)
+//! offset 0       Length (IA slot + number of group addresses)
 //! offset 1..3    Individual Address        (TSAP 0)
 //! offset 3..5    Group Address nr. 1       (TSAP 1)
 //! offset 5..7    Group Address nr. 2       (TSAP 2)
@@ -35,7 +36,10 @@ use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::{
+    address::{GroupAddress, IndividualAddress},
+    tables::address::{BCU_ADDRESS_TABLE_MUTE_LENGTH, BcuAddressTableView},
+};
 
 use super::{AbsoluteAlloc, AddressTable, Table, TableMemory};
 
@@ -47,10 +51,8 @@ pub struct AddrTab8Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<AddrTab8Impl<N>, AbsoluteAlloc> {
-    fn addr(&self, tsap: usize) -> GroupAddress {
-        // TSAP 0 is the Individual Address at offset 1; group address
-        // nr. `tsap` starts at offset 1 + 2 * tsap.
-        GroupAddress::from_bytes(&self.table.data[1 + tsap * 2..3 + tsap * 2])
+    fn view(&self) -> BcuAddressTableView<'_> {
+        BcuAddressTableView::new(&self.table.data)
     }
 
     /// The device's individual address, stored at offset 1–2 (TSAP 0).
@@ -59,7 +61,7 @@ impl<const N: usize> Table<AddrTab8Impl<N>, AbsoluteAlloc> {
     /// (15.15.255, matching erased EEPROM on real silicon) so a
     /// never-addressed device answers on the spec default.
     pub fn individual_address(&self) -> IndividualAddress {
-        IndividualAddress::from_bytes(&self.table.data[1..3])
+        self.view().individual_address().expect("table storage includes the IA slot")
     }
 
     /// Write the device's individual address into its table slot.
@@ -81,65 +83,46 @@ impl<const N: usize> TableMemory for AddrTab8Impl<N> {
         &mut self.data
     }
 
-    /// Unload clears the loadable part — the count and the group
-    /// addresses — but spares the Individual Address slot at offsets
-    /// 1–2. The IA is a separate resource that merely shares the RT8
-    /// memory window (03/05/01 §4.16.9 gives it a dedicated slot ahead
-    /// of the group addresses); Unload only declares the *loadable*
-    /// data invalid, without mandating erasure (§4.23.2.3.2). ETS's
+    /// Unload clears the loadable group-address entries but spares the
+    /// Individual Address slot at offsets
+    /// 1–2. The IA is a separate resource that merely shares this
+    /// memory window. Unload only declares the *loadable*
+    /// data invalid, without mandating erasure (§4.23.2.3.2). Length
+    /// one retains only the IA slot and is the shared BCU-family mute
+    /// coding. ETS's
     /// `ProductProcedure` counts on this: it unloads the table and then
     /// rewrites the blob around the IA bytes, never re-sending them —
     /// wiping the slot would re-address the device to 0.0.0 in the
     /// middle of its own download.
     fn clear_on_unload(&mut self) {
-        self.data[0] = 0;
+        self.data[0] = BCU_ADDRESS_TABLE_MUTE_LENGTH;
         self.data[3..].fill(0);
     }
 }
 
 impl<const N: usize> AddressTable for Table<AddrTab8Impl<N>, AbsoluteAlloc> {
     fn max_entries(&self) -> usize {
-        (N - 3) / 2
+        N.saturating_sub(3) / 2
     }
 
     fn entry_count(&self) -> u16 {
-        // The count is bus-downloaded data and must not exceed physical capacity.
-        (self.table.data[0] as u16).min(self.max_entries() as u16)
+        self.view().group_address_count()
     }
 
     fn address(&self, tsap: u16) -> Option<GroupAddress> {
-        if tsap == 0 || tsap > self.entry_count() {
+        let address = self.view().group_address(tsap);
+        if address.is_none() {
             trace!("TSAP {} is out of bounds (1..{})", tsap, self.entry_count());
-            return None;
         }
-
-        Some(self.addr(tsap as usize))
+        address
     }
 
     fn tsap(&self, address: GroupAddress) -> Option<u16> {
-        let mut low = 1;
-        let mut high = self.entry_count();
-
-        while low <= high {
-            let idx = (low + high) / 2;
-            let addr_tbl = self.addr(idx as usize);
-
-            if address == addr_tbl {
-                return Some(idx);
-            }
-
-            if address < addr_tbl {
-                high = idx - 1;
-            } else {
-                low = idx + 1;
-            }
-        }
-
-        None
+        self.view().tsap(address)
     }
 
     fn contains(&self, address: GroupAddress) -> bool {
-        self.tsap(address).is_some()
+        self.view().contains(address)
     }
 }
 
@@ -164,8 +147,9 @@ mod test {
             None,
         );
 
-        // [len][IA 1.0.1][GA 0/0/1][GA 0/0/2][GA 0/0/4] — sorted ascending.
-        a.write(0, &[3]);
+        // [len][IA 1.0.1][GA 0/0/1][GA 0/0/2][GA 0/0/4] — length 4
+        // includes the IA slot, and the GAs are sorted ascending.
+        a.write(0, &[4]);
         a.write(1, &[0x10, 0x01]);
         a.write(3, GroupAddress::from_three_level(0, 0, 1).as_bytes());
         a.write(5, GroupAddress::from_three_level(0, 0, 2).as_bytes());
@@ -229,7 +213,8 @@ mod test {
         a.write_lsm(&[LoadEvent::Unload.into()], None);
 
         assert_eq!(a.read_lsm(), [u8::from(LoadState::Unloaded)]);
-        assert_eq!(a.entry_count(), 0, "count byte cleared");
+        assert_eq!(a.entry_count(), 0, "mute length leaves no group addresses");
+        assert_eq!(a.data_ref()[0], super::BCU_ADDRESS_TABLE_MUTE_LENGTH, "unload writes the BCU mute length");
         assert!(a.data_ref()[3..].iter().all(|&b| b == 0), "group addresses cleared");
         assert_eq!(a.individual_address(), IndividualAddress::from_bytes(&[0x10, 0x01]), "IA slot survives");
     }

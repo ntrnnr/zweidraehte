@@ -17,10 +17,10 @@ use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use super::family::System7Family;
 use crate::device::MAX_LSM;
 
-/// One group object as the M112 table stores it.
+/// One group object as the System 7 table stores it.
 #[derive(Debug, Clone, Copy)]
 pub struct System7CoDescriptor {
-    /// RAM address of the value (2 bytes on M112; this stack maps
+    /// RAM address of the value (2 bytes on System 7; this stack maps
     /// page-0, so practical values are 0000h–00FFh).
     pub data_ptr: u16,
     /// Config octet (`ComObjectFlags` coding).
@@ -42,7 +42,7 @@ pub struct System7DeviceDefinition {
     pub max_group_addresses: u8,
     /// Association table capacity in entries.
     pub max_associations: u8,
-    /// RAM address of the first RAM-flags byte (M112 carries it as a
+    /// RAM address of the first RAM-flags byte (System 7 carries it as a
     /// 2-byte pointer; this stack maps page-0).
     pub ram_flags_ptr: u16,
     pub comm_objects: &'static [System7CoDescriptor],
@@ -71,17 +71,17 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P> System7Family<EEPROM_LEN, 
         let mut e = [0u8; EEPROM_LEN];
 
         // ── RT8 address table at 4000h ──────────────────────────────
-        // [count][IA:2BE][GA:2BE × count]; count is GAs only, and the
-        // GAs must be ascending (the mask firmware binary-searches).
+        // [length][IA:2BE][GA:2BE × (length - 1)].
+        assert!(def.max_group_addresses < u8::MAX, "RT8 length leaves room for at most 254 group addresses");
         assert!(def.group_addresses.len() <= usize::from(def.max_group_addresses));
         assert!(3 + usize::from(def.max_group_addresses) * 2 <= def.ast_offset, "ADT capacity overlaps the AST");
-        e[0] = def.group_addresses.len() as u8;
+        e[0] = 1 + def.group_addresses.len() as u8;
         e[1..3].copy_from_slice(def.individual_address.as_bytes());
         let mut prev: Option<GroupAddress> = None;
         for (i, ga) in def.group_addresses.iter().enumerate() {
             // Big-endian byte order makes the derived ordering the
             // numeric one.
-            assert!(prev.is_none_or(|p| p < *ga), "RT8 group addresses must ascend");
+            assert!(prev.is_none_or(|p| p < *ga), "group addresses must ascend");
             prev = Some(*ga);
             let off = 3 + i * 2;
             e[off..off + 2].copy_from_slice(ga.as_bytes());
@@ -99,7 +99,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P> System7Family<EEPROM_LEN, 
             e[off + 1] = asap;
         }
 
-        // ── M112 group object table at the product's COT address ────
+        // ── System 7 group object table at the product's COT address ─
         // [count][ram_flags_ptr:2BE][(data_ptr:2BE, config, type) × count]
         let cot = usize::from(COT_ADDR - Self::EEPROM_BASE_CONST);
         let cot_end = cot + 3 + def.comm_objects.len() * 4;

@@ -1,7 +1,7 @@
 //! System 7 stack definition supertrait and the standard-stack macro.
 //!
 //! [`System7StackDefinition`] extends [`StackDefinition`] with the
-//! RT8-shaped table-size consts and the interface-object helper;
+//! System 7 table-size consts and the interface-object helper;
 //! [`system_7_standard_stack!`](crate::system_7_standard_stack)
 //! collapses the always-identical half of a device's `StackDefinition`
 //! impl, mirroring `system_b_standard_stack!`.
@@ -30,7 +30,7 @@ pub use crate::bcus::system_b::ExtensionAugmentFor;
 /// the product database's `ComObjectTable` segment binding. The device
 /// firmware and the product database come from the same device
 /// definition, so the address is a compile-time constant here — the
-/// same shape as the RT8 address table's fixed 4000h, just
+/// same shape as the address table's fixed 4000h, just
 /// per-product. [`System7MemoryMap`] serves the group-object-table
 /// window at this address unconditionally; the table's load lifecycle
 /// rides on the Application Program's load state machine, which is why
@@ -42,9 +42,9 @@ pub trait System7ProductLayout {
 
 /// Supertrait for System 7 devices that use [`System7MemoryMap`].
 ///
-/// Provides the RT8-shaped table sizes derived from
+/// Provides the System 7 table sizes derived from
 /// [`DEVICE`](StackDefinition::DEVICE) (the byte formulas differ from
-/// System B: RT8 tables carry 1-octet counts and the address table
+/// System B: System 7 tables carry 1-octet size fields and the address table
 /// embeds the individual address) and the standard interface-object
 /// helper. Implement with an empty body:
 ///
@@ -52,7 +52,7 @@ pub trait System7ProductLayout {
 /// impl System7StackDefinition for MyDevice {}
 /// ```
 pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> + System7ProductLayout {
-    /// RT8 address table byte size: 1-octet count + 2-octet IA +
+    /// RT8 address table byte size: 1-octet length + 2-octet IA +
     /// 2 octets per group address.
     const ADT_SIZE: usize = 3 + Self::DEVICE.max_address_table_entries as usize * 2;
 
@@ -60,7 +60,7 @@ pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> + Syst
     /// entry (TSAP u8 + ASAP u8).
     const AST_SIZE: usize = 1 + Self::DEVICE.max_association_table_entries as usize * 2;
 
-    /// Group object table byte size in the M112 memory format ETS's
+    /// Group object table byte size in the System 7 memory format ETS's
     /// System 7 formatter writes: 3-octet header (count + RAM-flags
     /// pointer) plus one 4-octet entry per ASAP `0..=max`. The table is
     /// indexed directly by ASAP, so the highest ASAP is
@@ -204,8 +204,8 @@ macro_rules! system_7_standard_stack {
             // ---- device-specific bill of materials -------------------------
             const DEVICE: &'static $crate::__macro_support::device::DeviceDescriptor = $device;
             const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
-            // System 7 numbers communication objects from 0 (M112 table,
-            // ASAP 0 valid).
+            // System 7 numbers communication objects from 0; unlike RT7,
+            // its group object table can represent ASAP 0.
             const FIRST_ASAP: u16 = 0;
 
             type P = $params;

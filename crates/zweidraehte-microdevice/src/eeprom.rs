@@ -14,7 +14,10 @@
 
 use core::marker::PhantomData;
 
-use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::{
+    address::{GroupAddress, IndividualAddress},
+    tables::address::BcuAddressTableView,
+};
 
 use crate::family::MicroDeviceFamily;
 use crate::management::ManagementState;
@@ -53,48 +56,48 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
 
     // ── Address table ───────────────────────────────────────────────
 
+    fn address_table(&self) -> BcuAddressTableView<'_> {
+        let data = self.eeprom.get(F::ADDR_TABLE_OFFSET..).unwrap_or_default();
+        BcuAddressTableView::new(data)
+    }
+
     pub fn addr_length_byte(&self) -> u8 {
-        self.byte(F::ADDR_TABLE_OFFSET)
+        self.address_table().stored_length().unwrap_or(0)
     }
 
     pub fn ga_count(&self) -> u8 {
-        F::ga_count(self.addr_length_byte())
+        u8::try_from(self.address_table().group_address_count()).expect("one-octet count bounds the address table")
     }
 
-    /// Group communication is muted while the table holds no group
-    /// addresses — the state ETS puts the device in for the duration
-    /// of a download by writing the mute length.
+    /// Whether the table carries the family's explicit mute coding.
+    ///
+    /// ETS writes length 1 during a download. Length 0 is different: it
+    /// requests non-selective group reception and is therefore not reported
+    /// as muted.
     pub fn muted(&self) -> bool {
-        self.addr_length_byte() <= F::MUTE_LENGTH
+        self.address_table().is_muted()
     }
 
     /// The device's own individual address, stored as the address
     /// table's first entry (TSAP 0).
     pub fn individual_address(&self) -> IndividualAddress {
-        let off = F::ADDR_TABLE_OFFSET + 1;
-        IndividualAddress([self.byte(off), self.byte(off + 1)])
+        self.address_table().individual_address().unwrap_or_default()
     }
 
     /// Group address of TSAP `tsap` (1-based; TSAP 0 is the IA slot).
     pub fn ga_of_tsap(&self, tsap: u8) -> Option<GroupAddress> {
-        if tsap == 0 || tsap > self.ga_count() {
-            return None;
-        }
-        let off = F::ADDR_TABLE_OFFSET + 1 + usize::from(tsap) * 2;
-        if off + 1 >= self.eeprom.len() {
-            return None;
-        }
-        Some(GroupAddress([self.eeprom[off], self.eeprom[off + 1]]))
+        self.address_table().group_address(u16::from(tsap))
     }
 
     /// TSAP of a destination group address, if the table carries it.
-    /// Linear scan: the tables are sorted, but at BCU2 sizes a scan is
-    /// smaller than a binary search and never wrong about duplicates.
+    /// The linear lookup is deliberate on BCU targets: their tables are small,
+    /// the loop has a smaller code footprint, and a malformed duplicate still
+    /// resolves to the first slot deterministically.
     pub fn tsap_of(&self, ga: GroupAddress) -> Option<u8> {
         if self.muted() {
             return None;
         }
-        (1..=self.ga_count()).find(|&tsap| self.ga_of_tsap(tsap) == Some(ga))
+        self.address_table().first_tsap(ga).and_then(|tsap| u8::try_from(tsap).ok())
     }
 
     // ── Association table ───────────────────────────────────────────
@@ -285,14 +288,14 @@ mod tests {
 
     /// A hand-laid System 7 image (window 4000h..4400h): RT8 address
     /// table at offset 0, association table at offset 0x100 (found
-    /// through machine 1's `table_ref`), M112 group object table at
+    /// through machine 1's `table_ref`), System 7 group object table at
     /// the product address 4200h.
     #[test]
-    fn walks_rt8_and_m112_tables_in_place() {
+    fn walks_system7_tables_in_place() {
         type S7 = crate::families::system7::System7Family<0x400, 0x4200>;
         let mut e = [0u8; 0x400];
-        // ADT: 2 GAs (count excludes the IA), IA 1.1.10 at bytes 1-2.
-        e[0] = 2;
+        // ADT: length 3 (IA + 2 GAs), IA 1.1.10 at bytes 1-2.
+        e[0] = 3;
         e[1] = 0x11;
         e[2] = 0x0A;
         e[3] = 0x08; // 1/0/1
@@ -352,13 +355,13 @@ mod tests {
         assert_eq!(t.sending_tsap(0), None);
     }
 
-    /// RT8 mutes at count 0, and the IA survives because it lives at
-    /// bytes 1-2 rather than in a counted slot.
+    /// RT8 uses the same length-one mute as RT1/RT2. The IA survives
+    /// as the one counted slot.
     #[test]
-    fn rt8_mute_is_count_zero() {
+    fn system7_bcu_table_mute_is_length_one() {
         type S7 = crate::families::system7::System7Family<0x400, 0x4200>;
         let mut e = [0u8; 0x400];
-        e[0] = 0;
+        e[0] = 1;
         e[1] = 0x11;
         e[2] = 0x0A;
         let mgmt = ManagementState::new();
@@ -377,5 +380,20 @@ mod tests {
         assert_eq!(t.tsap_of(GroupAddress::from_three_level(1, 0, 1)), None);
         // The IA slot is untouched by muting.
         assert_eq!(t.individual_address(), IndividualAddress::new(1, 1, 10));
+    }
+
+    /// Resources §4.16.3.3.1 reserves RT1/RT2 length zero for
+    /// non-selective reception. It contains no TSAP mapping, but it is
+    /// not the length-one mute state used during a download.
+    #[test]
+    fn rt2_zero_length_is_not_the_mute_coding() {
+        let mut image = image();
+        image[0x16] = 0;
+        let mgmt = ManagementState::new();
+        let t = Tables::<Bcu2Family>::new(&image, &mgmt);
+
+        assert!(!t.muted());
+        assert_eq!(t.ga_count(), 0);
+        assert_eq!(t.tsap_of(GroupAddress::from_three_level(1, 0, 1)), None);
     }
 }

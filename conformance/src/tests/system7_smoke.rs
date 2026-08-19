@@ -69,15 +69,15 @@ pub fn create_system7_smoke_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
         // ====================================================================
-        // S7-5: RT8 address table at 4000h carries the IA
+        // S7-5: the RT8 table at 4000h carries the IA
         // ====================================================================
         TestCase::new("S7-5 RT8 table blob at 4000h").with_steps(vec![
-            comment("Resources §4.16.9: [len][IA][GAs sorted], fixed at 4000h"),
+            comment("RT8: [len including IA][IA][GAs sorted], fixed at 4000h"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
-            comment("Read the first 7 bytes: len=7, IA=1.0.1, GA 1/0/1, first octet of 2/0/0"),
+            comment("Read the first 7 bytes: len=8, IA=1.0.1, GA 1/0/1, first octet of 2/0/0"),
             inject("BC #EDI #BDUT 63 42 07 40 00"),
             expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 6A 42 47 40 00 07 10 01 08 01 10 00", 400),
+            expect("BC #BDUT #EDI 6A 42 47 40 00 08 10 01 08 01 10 00", 400),
             inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),

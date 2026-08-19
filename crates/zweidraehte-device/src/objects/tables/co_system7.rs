@@ -1,4 +1,4 @@
-//! Group object table in the System 7 (BIM M112) memory format.
+//! Group object table used by the System 7 profile.
 //!
 //! The spec assigns the System 7 masks no group-object-table
 //! realisation — the 2705h mask document (06_01_33 §4.7.1) literally
@@ -7,9 +7,9 @@
 //! `AddressSpace="None"`: the table has no device-side location
 //! resource at all. Its address comes from the product database's
 //! `ComObjectTable` segment binding, and its bytes are written by
-//! ETS's own System 7 formatter. Both make ETS the normative source
-//! for the format, which is (decoded byte-exactly from a download
-//! trace, 2026-08-03):
+//! ETS's `GroupObjectTable_M112` formatter. Both make ETS the normative
+//! source for the format, which is (decoded byte-exactly from a
+//! download trace, 2026-08-03):
 //!
 //! ```text
 //! [count:1][RAM-flags table ptr:2][count × entry]
@@ -46,12 +46,12 @@ const ENTRY_LEN: usize = 4;
 
 #[serde_as]
 #[derive(Debug, Clone, ConstDefault, Serialize, Deserialize)]
-pub struct CoTabM112Impl<const N: usize> {
+pub struct System7ComObjectTableImpl<const N: usize> {
     #[serde_as(as = "[_; N]")]
     data: [u8; N],
 }
 
-impl<const N: usize> TableMemory for CoTabM112Impl<N> {
+impl<const N: usize> TableMemory for System7ComObjectTableImpl<N> {
     const MAX_SIZE: usize = N;
     fn data_ref(&self) -> &[u8] {
         &self.data
@@ -61,7 +61,7 @@ impl<const N: usize> TableMemory for CoTabM112Impl<N> {
     }
 }
 
-impl<const N: usize> Table<CoTabM112Impl<N>, AbsoluteAlloc> {
+impl<const N: usize> Table<System7ComObjectTableImpl<N>, AbsoluteAlloc> {
     /// Byte offset of entry `idx`, or `None` past the stored count or
     /// the physical capacity.
     fn entry_offset(&self, idx: u16) -> Option<usize> {
@@ -76,7 +76,7 @@ impl<const N: usize> Table<CoTabM112Impl<N>, AbsoluteAlloc> {
     }
 }
 
-impl<const N: usize> CommunicationObjectTable for Table<CoTabM112Impl<N>, AbsoluteAlloc> {
+impl<const N: usize> CommunicationObjectTable for Table<System7ComObjectTableImpl<N>, AbsoluteAlloc> {
     fn max_entries(&self) -> usize {
         (N - HEADER_LEN) / ENTRY_LEN
     }
@@ -110,14 +110,15 @@ impl<const N: usize> CommunicationObjectTable for Table<CoTabM112Impl<N>, Absolu
     }
 }
 
-/// The M112 group object table sized for ASAPs `0..=MAX_ASAP`.
-pub type CoTabM112<const MAX_ASAP: usize> = Table<CoTabM112Impl<{ 3 + (MAX_ASAP + 1) * 4 }>, AbsoluteAlloc>;
+/// The System 7 group object table sized for ASAPs `0..=MAX_ASAP`.
+pub type System7ComObjectTable<const MAX_ASAP: usize> =
+    Table<System7ComObjectTableImpl<{ 3 + (MAX_ASAP + 1) * 4 }>, AbsoluteAlloc>;
 
 #[cfg(test)]
 mod test {
     use crate::objects::tables::{ComObjectFlags, ComObjectType, CommunicationObjectTable, TableMemory};
 
-    use super::CoTabM112;
+    use super::System7ComObjectTable;
 
     /// The exact bytes ETS's System 7 formatter wrote for the
     /// six-object light switch (download trace 2026-08-03): count 7
@@ -135,8 +136,8 @@ mod test {
     ];
 
     #[test]
-    fn m112_parses_the_ets_blob() {
-        let mut cot = CoTabM112::<6>::new();
+    fn system7_parses_the_ets_blob() {
+        let mut cot = System7ComObjectTable::<6>::new();
         cot.write(0, &ETS_BLOB);
 
         assert_eq!(cot.entry_count(), 7);
@@ -149,8 +150,8 @@ mod test {
     }
 
     #[test]
-    fn m112_set_object_flags_round_trips() {
-        let mut cot = CoTabM112::<6>::new();
+    fn system7_set_object_flags_round_trips() {
+        let mut cot = System7ComObjectTable::<6>::new();
         cot.write(0, &ETS_BLOB);
 
         assert!(cot.set_object_flags(1, ComObjectFlags::from_byte(0x5F)));
@@ -163,8 +164,8 @@ mod test {
     /// A corrupt count larger than the physical capacity must be
     /// clamped, not index past the buffer.
     #[test]
-    fn m112_count_is_clamped() {
-        let mut cot = CoTabM112::<6>::new();
+    fn system7_count_is_clamped() {
+        let mut cot = System7ComObjectTable::<6>::new();
         cot.write(0, &[0xFF]);
         assert_eq!(cot.entry_count(), 7);
         assert_eq!(cot.object_flags(7), None);

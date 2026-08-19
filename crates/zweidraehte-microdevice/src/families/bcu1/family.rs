@@ -65,12 +65,6 @@ impl MicroDeviceFamily for Bcu1Family {
         usize::from(eeprom.get(offsets::COMMS_TAB_PTR).copied().unwrap_or(0))
     }
 
-    // RT1 counts like RT2: the length byte includes the IA slot, so 1
-    // means "IA only, no group addresses" — the mute the download uses.
-    const MUTE_LENGTH: u8 = 1;
-    fn ga_count(length_byte: u8) -> u8 {
-        length_byte.saturating_sub(1)
-    }
     const SENDING_ASSOC_INDEXED: bool = true;
 
     // RT1 group object table: [count:1][ram_flags_ptr:1] then

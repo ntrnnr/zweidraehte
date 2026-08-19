@@ -308,10 +308,10 @@ async fn system7_load_states_readable() {
     eprintln!("load states ADT/AST/APP/PEI: {states:02X?}");
     assert_eq!(states.len(), 4);
 
-    // The RT8 address table head: count, then the device's own IA —
+    // The RT8 table head: IA-inclusive length, then the IA —
     // which must be the address we are talking to.
     let adt_head = device.memory_read(resources.address_table_addr, 3).await.expect("address table read");
-    eprintln!("address table: {} group addresses, IA {:02X?}", adt_head[0], &adt_head[1..3]);
+    eprintln!("address table: length {}, IA {:02X?}", adt_head[0], &adt_head[1..3]);
     assert_eq!(&adt_head[1..3], target.as_bytes(), "the address table holds the device's own IA");
 
     device.close().await.expect("connection closes");

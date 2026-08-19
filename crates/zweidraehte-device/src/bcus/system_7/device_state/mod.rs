@@ -8,7 +8,7 @@
 //! - **The individual address lives inside the RT8 address table**
 //!   (offset 1–2; see [`addr8`](crate::objects::tables::addr8)). The
 //!   `StackState` accessors delegate there, so the service path and the
-//!   download path share one storage, as on real BIM M112 hardware.
+//!   download path share one storage, as on real System 7 hardware.
 //! - **16 access levels**: keys for levels 0–14, level 15 is free
 //!   access (06 Profiles v02.02.01 §4.2 row 12).
 //! - **Application Program 2 instead of a PEI program** at interface
@@ -33,7 +33,7 @@ use crate::{
         tables::{
             AbsoluteAlloc, HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable,
             HasLoadStateMachine, HasPeiApplication, Table, addr8::AddrTab8Impl, app::Application, asso8::AssoTab8Impl,
-            co_m112::CoTabM112Impl,
+            co_system7::System7ComObjectTableImpl,
         },
     },
     restart::EraseCode,
@@ -116,7 +116,7 @@ pub struct System7DeviceState<
 
     /// Group object table (CO type + flags). Internal — no interface
     /// object exposes it; ETS writes it inside the application segment.
-    pub cot: RefCell<Table<CoTabM112Impl<COT_SIZE>, AbsoluteAlloc>>,
+    pub cot: RefCell<Table<System7ComObjectTableImpl<COT_SIZE>, AbsoluteAlloc>>,
 
     /// Application program (interface object index 3).
     pub app: RefCell<Application<D::P, AbsoluteAlloc>>,
@@ -634,7 +634,7 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
     HasCommunicationObjectTable for System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {
-    type COT = Table<CoTabM112Impl<COT_SIZE>, AbsoluteAlloc>;
+    type COT = Table<System7ComObjectTableImpl<COT_SIZE>, AbsoluteAlloc>;
 
     fn cot(&self) -> &RefCell<Self::COT> {
         &self.cot

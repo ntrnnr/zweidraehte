@@ -10,7 +10,9 @@
 //! their layout for annotations, and does the in-place work of
 //! splicing the configured entries over a segment's default bytes.
 
-use zweidraehte_client::download::{Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, Cot1, Cot2, CotM112, TableCoding};
+use zweidraehte_client::download::{
+    Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, Cot1, Cot2, System7ComObjectTableCoding, TableCoding,
+};
 use zweidraehte_client::{ComObjectFlags, ComObjectType, GroupAddress, IndividualAddress};
 
 /// Which family's table wire formats a product uses. Fixed per mask
@@ -24,8 +26,9 @@ pub enum TableFormats {
     Bcu1,
     /// System 2 / BCU2 (masks 0020h, 0021h, 0025h): RT2 tables.
     Bcu2,
-    /// System 7 / BIM M112 (07x1..07x5 masks): RT8 + M112 tables.
-    M112,
+    /// System 7 (07x1..07x5 masks): RT8 linking tables and the
+    /// profile-specific group object table.
+    System7,
     /// System B (x7B0 masks) — also the fallback for families whose
     /// tables we cannot display natively (couplers).
     SystemB,
@@ -68,7 +71,7 @@ impl TableFormats {
             // System 7 masks are 07xxh with the System B TP1 mask
             // 07B0h carved out (its RF/IP siblings 27B0h/57B0h do not
             // start with 07 in the first place).
-            mv if mv.starts_with("MV-07") && !mv.ends_with("B0") => Self::M112,
+            mv if mv.starts_with("MV-07") && !mv.ends_with("B0") => Self::System7,
             _ => Self::SystemB,
         }
     }
@@ -77,7 +80,7 @@ impl TableFormats {
         match self {
             Self::Bcu1 => TableShape::of::<Addr1>(),
             Self::Bcu2 => TableShape::of::<Addr2>(),
-            Self::M112 => TableShape::of::<Addr8>(),
+            Self::System7 => TableShape::of::<Addr8>(),
             Self::SystemB => TableShape::of::<Addr7>(),
         }
     }
@@ -87,7 +90,7 @@ impl TableFormats {
     /// families ignore it.
     pub fn ast_shape(self, small_entries: bool) -> TableShape {
         match self {
-            Self::Bcu1 | Self::Bcu2 | Self::M112 => TableShape::of::<Asso8>(),
+            Self::Bcu1 | Self::Bcu2 | Self::System7 => TableShape::of::<Asso8>(),
             Self::SystemB if small_entries => {
                 // `AssociationTable_SystemBSmall` has no download
                 // coding yet — describe its shape literally.
@@ -101,7 +104,7 @@ impl TableFormats {
         match self {
             Self::Bcu1 => TableShape::of::<Cot1>(),
             Self::Bcu2 => TableShape::of::<Cot2>(),
-            Self::M112 => TableShape::of::<CotM112>(),
+            Self::System7 => TableShape::of::<System7ComObjectTableCoding>(),
             Self::SystemB => TableShape::of::<Co7>(),
         }
     }
@@ -112,7 +115,7 @@ impl TableFormats {
     pub fn cot_first_asap(self) -> u16 {
         match self {
             Self::SystemB => 1,
-            Self::Bcu1 | Self::Bcu2 | Self::M112 => 0,
+            Self::Bcu1 | Self::Bcu2 | Self::System7 => 0,
         }
     }
 
@@ -128,7 +131,7 @@ impl TableFormats {
         match self {
             Self::Bcu1 => Addr1 { individual_address: ia }.blob(&gas).ok(),
             Self::Bcu2 => Addr2 { individual_address: ia }.blob(&gas).ok(),
-            Self::M112 => Addr8 { individual_address: ia }.blob(&gas).ok(),
+            Self::System7 => Addr8 { individual_address: ia }.blob(&gas).ok(),
             Self::SystemB => Addr7.blob(&gas).ok(),
         }
     }
@@ -139,7 +142,7 @@ impl TableFormats {
     /// spliced).
     pub fn ast_blob(self, entries: &[(u16, u16)], small_entries: bool) -> Option<Vec<u8>> {
         match self {
-            Self::Bcu1 | Self::Bcu2 | Self::M112 => {
+            Self::Bcu1 | Self::Bcu2 | Self::System7 => {
                 let narrowed: Option<Vec<(u8, u8)>> = entries
                     .iter()
                     .map(|&(tsap, asap)| Some((u8::try_from(tsap).ok()?, u8::try_from(asap).ok()?)))
@@ -197,7 +200,7 @@ pub fn overlay_cot(format: TableFormats, data: &mut [u8], base: usize, rows: &[(
         let _ = match format {
             TableFormats::Bcu1 => Cot1::overlay(table, &row),
             TableFormats::Bcu2 => Cot2::overlay(table, &row),
-            TableFormats::M112 => CotM112::overlay(table, &row),
+            TableFormats::System7 => System7ComObjectTableCoding::overlay(table, &row),
             TableFormats::SystemB => return,
         };
     }
@@ -210,7 +213,7 @@ mod tests {
     #[test]
     fn mask_selects_the_family() {
         assert_eq!(TableFormats::for_mask("MV-0021"), TableFormats::Bcu2);
-        assert_eq!(TableFormats::for_mask("MV-0705"), TableFormats::M112);
+        assert_eq!(TableFormats::for_mask("MV-0705"), TableFormats::System7);
         assert_eq!(TableFormats::for_mask("MV-07B0"), TableFormats::SystemB);
         assert_eq!(TableFormats::for_mask("MV-57B0"), TableFormats::SystemB);
         assert_eq!(TableFormats::for_mask("MV-0012"), TableFormats::Bcu1);

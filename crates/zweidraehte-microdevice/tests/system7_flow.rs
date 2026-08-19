@@ -343,12 +343,12 @@ fn property_path_lsm_still_works() {
         exchange(&mut dev, 0, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
     assert_eq!(apdu(&rsp)[2], 0);
     // Unload the ADT via PID_LOAD_STATE_CONTROL on object 1 — the ETS
-    // path. The RT8 count byte collapses to 0 and mutes the device;
+    // path. The RT8 length collapses to the IA-only mute value 1;
     // the IA survives.
     let rsp =
         exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[1, 5, 0x10, 0x01, 0x04], 0).expect("write answered");
     assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Unloaded));
-    assert_eq!(dev.eeprom_image()[0], 0, "GA count zeroed");
+    assert_eq!(dev.eeprom_image()[0], 1, "only the IA slot remains in the table length");
     assert_eq!(dev.individual_address(), DUT, "the IA survives the unload");
 
     let read = data_frame(

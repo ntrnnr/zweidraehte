@@ -22,7 +22,8 @@ use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use super::interpreter::LoadControlPath;
 use super::mask::{LsmRealization, MaskData};
 use super::table_coding::{
-    Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CotM112, TableCoding,
+    Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2,
+    System7ComObjectTableCoding, TableCoding,
 };
 use crate::error::{Error, Result};
 
@@ -40,7 +41,7 @@ pub struct DownloadModel {
     pub(crate) layout: ImageLayout,
     /// The load-control path policy. Mostly derived from the mask's
     /// own LSM resource declarations ([`declared_path`]), but a row
-    /// may overrule them where real silicon does (BIM M112) or where
+    /// may overrule them where real System 7 silicon does or where
     /// there is nothing to declare (BCU1).
     pub load_control: fn(&MaskData<'_>) -> Result<LoadControlPath>,
     /// Whether the `Connect` step issues `A_Authorize`. BCU1 has no
@@ -120,7 +121,7 @@ const MODELS: [DownloadModel; 4] = [
     },
     DownloadModel {
         management_model: "BimM112",
-        layout: BIM_M112_LAYOUT,
+        layout: SYSTEM7_LAYOUT,
         load_control: forced_property_path,
         authorize_on_connect: true,
         has_properties: true,
@@ -150,7 +151,7 @@ fn direct_path(_mask: &MaskData<'_>) -> Result<LoadControlPath> {
     Ok(LoadControlPath::Direct)
 }
 
-/// BIM M112: always the property path, regardless of what the
+/// System 7: always the property path, regardless of what the
 /// resources declare. The master data still describes the legacy
 /// memory-mapped window at 0104h for these masks, but that is not
 /// what ETS does — a Falcon trace of a real MDT 0705 device (ETS.log,
@@ -166,8 +167,8 @@ fn forced_property_path(_mask: &MaskData<'_>) -> Result<LoadControlPath> {
 }
 
 /// The path the mask's own LSM resource declarations describe —
-/// per-mask data, not family lore (MV-2705 is BimM112-managed yet
-/// property-driven, which is why the BimM112 row overrules rather
+/// per-mask data, not family lore (MV-2705 is System 7 yet
+/// property-driven, which is why the System 7 row overrules rather
 /// than trusts this).
 fn declared_path(mask: &MaskData<'_>) -> Result<LoadControlPath> {
     let model = mask.lsm_model();
@@ -193,7 +194,7 @@ fn declared_path(mask: &MaskData<'_>) -> Result<LoadControlPath> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Placement {
     /// Content goes to fixed addresses, into the segments the product
-    /// names (BIM M112: the product fixes every address).
+    /// names (System 7: the product fixes every address).
     AbsoluteSegments,
     /// Content is keyed by interface object; the device allocates the
     /// addresses during load (System B).
@@ -209,11 +210,12 @@ pub(crate) enum Placement {
 pub(crate) struct ImageLayout {
     pub placement: Placement,
     /// First ASAP the model's group object table can express —
-    /// M112 numbers objects from 0, RT7 from 1 (its table cannot hold
+    /// System 7 numbers objects from 0, RT7 from 1 (its table cannot hold
     /// ASAP 0).
     pub first_asap: u16,
     /// The group address table. The individual address is passed to
-    /// every layout; only RT8 stores it (in TSAP slot 0).
+    /// every layout; RT1, RT2, and RT8 store it in TSAP slot 0, while
+    /// RT7 does not.
     pub address_table: fn(IndividualAddress, &[GroupAddress]) -> Result<Vec<u8>>,
     /// The association table, from `(tsap, asap)` pairs.
     pub association_table: fn(&[(u16, u16)]) -> Result<Vec<u8>>,
@@ -301,7 +303,7 @@ fn bcu2_overlay_group_object_table(defaults: &mut [u8], objects: &[super::produc
     Cot2::overlay(defaults, &rows)
 }
 
-/// The BCU2 group object table. Like M112, a product with no group
+/// The BCU2 group object table. Like System 7, a product with no group
 /// objects contributes no blob rather than a header-only table.
 fn bcu2_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>> {
     if rows.is_empty() {
@@ -319,21 +321,21 @@ fn bcu2_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<V
 }
 
 // ============================================================================
-// BIM M112 (System 7)
+// System 7
 // ============================================================================
 
-const BIM_M112_LAYOUT: ImageLayout = ImageLayout {
+const SYSTEM7_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::AbsoluteSegments,
     first_asap: 0,
-    address_table: m112_address_table,
+    address_table: rt8_address_table,
     association_table: narrow_association_table,
-    group_object_table: m112_group_object_table,
-    overlay_group_object_table: Some(m112_overlay_group_object_table),
+    group_object_table: system7_group_object_table,
+    overlay_group_object_table: Some(system7_overlay_group_object_table),
 };
 
-/// RT8: the device's own address rides in the table, ahead of the
+/// RT8: the device's own address rides in the table ahead of the
 /// group addresses.
-fn m112_address_table(ia: IndividualAddress, group_addresses: &[GroupAddress]) -> Result<Vec<u8>> {
+fn rt8_address_table(ia: IndividualAddress, group_addresses: &[GroupAddress]) -> Result<Vec<u8>> {
     Addr8 { individual_address: ia }.blob(group_addresses)
 }
 
@@ -349,20 +351,20 @@ fn narrow_association_table(associations: &[(u16, u16)]) -> Result<Vec<u8>> {
     Asso8.blob(&narrowed)
 }
 
-/// Overlay flags/type onto a vendor-supplied M112 table (see
-/// [`CotM112::overlay`] for why replacing it wholesale corrupts real
+/// Overlay flags/type onto a vendor-supplied System 7 table (see
+/// [`System7ComObjectTableCoding::overlay`] for why replacing it wholesale corrupts real
 /// silicon).
-fn m112_overlay_group_object_table(defaults: &mut [u8], objects: &[super::product::ComObjectDef]) -> Result<()> {
+fn system7_overlay_group_object_table(defaults: &mut [u8], objects: &[super::product::ComObjectDef]) -> Result<()> {
     let rows: Vec<(u16, ComObjectFlags, ComObjectType)> =
         objects.iter().map(|o| (o.number, o.flags, o.object_type)).collect();
-    CotM112::overlay(defaults, &rows)
+    System7ComObjectTableCoding::overlay(defaults, &rows)
 }
 
-/// The BIM M112 group object table. A product with no group objects
+/// The System 7 group object table. A product with no group objects
 /// contributes **no** blob — an empty return keeps the COT segment
-/// out of the image entirely, where `CotM112.blob(&[])` would write a
+/// out of the image entirely, where the coding's `blob(&[])` would write a
 /// three-octet placeholder table.
-fn m112_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>> {
+fn system7_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>> {
     if rows.is_empty() {
         return Ok(Vec::new());
     }
@@ -374,7 +376,7 @@ fn m112_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<V
             object_type: object_type.into(),
         })
         .collect();
-    CotM112 { ram_flags_ptr: 0 }.blob(&entries)
+    System7ComObjectTableCoding { ram_flags_ptr: 0 }.blob(&entries)
 }
 
 // ============================================================================
@@ -432,10 +434,10 @@ mod tests {
 
     #[test]
     fn empty_group_object_rows_differ_per_model_on_purpose() {
-        // M112: no objects -> no blob, so the COT segment stays out of
+        // System 7: no objects -> no blob, so the COT segment stays out of
         // the absolute image. RT7: no objects -> a zero-count table,
         // because the group object table machine still loads.
-        assert_eq!(m112_group_object_table(&[]).expect("builds"), Vec::<u8>::new());
+        assert_eq!(system7_group_object_table(&[]).expect("builds"), Vec::<u8>::new());
         assert_eq!(system_b_group_object_table(&[]).expect("builds"), vec![0x00, 0x00]);
     }
 }

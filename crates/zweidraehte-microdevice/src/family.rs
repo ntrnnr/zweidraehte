@@ -6,7 +6,7 @@
 //! table wire codings, the load and run state behavior, the interface
 //! object roster, and the device descriptor. The instances live in
 //! [`crate::families`]: BCU2 (masks 0020h/0021h/0025h), micro-System-7
-//! (RT8/M112 tables, memory-mapped load controls, 16 authorization
+//! (System 7 tables, memory-mapped load controls, 16 authorization
 //! levels), and BCU1 (mask 0012h — no properties, no load state
 //! machines, no authorization).
 
@@ -176,9 +176,8 @@ pub trait MicroDeviceFamily: 'static {
     /// Start of the address table blob.
     const ADDR_TABLE_OFFSET: usize;
     /// EEPROM-array offset of the device's own individual address
-    /// (2 bytes, big-endian). Both families keep it inside the address
-    /// table blob; where in the blob differs (RT2 stores it behind the
-    /// length byte, RT8 defines bytes 1–2 as the IA).
+    /// (2 bytes, big-endian). The supported BCU-era families keep it at
+    /// bytes 1–2 of their address-table blob.
     fn ia_eeprom_offset() -> usize;
 
     // ── Table location resolution ────────────────────────────────────
@@ -194,15 +193,6 @@ pub trait MicroDeviceFamily: 'static {
     fn assoc_table_offset(eeprom: &[u8], mgmt: &ManagementState) -> usize;
     /// EEPROM-array offset where the group object table starts.
     fn cot_table_offset(eeprom: &[u8], mgmt: &ManagementState) -> usize;
-
-    // ── Address table count semantics ────────────────────────────────
-
-    /// Value of the leading count byte that mutes group communication.
-    /// RT2's length counts the IA slot, so 1 means "IA only, no GAs";
-    /// RT8 counts only GAs, so 0 mutes.
-    const MUTE_LENGTH: u8;
-    /// Number of group addresses encoded by the leading count byte.
-    fn ga_count(length_byte: u8) -> u8;
 
     /// How the sending association resolves. RT2 (03/05/01
     /// §4.17.4.3.1) indexes: the slot whose number equals the ASAP,

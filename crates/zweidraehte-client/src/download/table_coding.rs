@@ -16,17 +16,17 @@
 //!
 //! | | BCU2 (RT2) | System 7 (RT8) | System B |
 //! |---|---|---|---|
-//! | address table | `[len:1][IA:2][GA:2×n]` ([`Addr2`]) | `[count:1][IA:2][GA:2×n]` ([`Addr8`]) | `[count:2BE][GA:2×n]` ([`Addr7`]) |
+//! | address table | `[len:1][IA:2][GA:2×(len-1)]` ([`Addr2`]) | same coding ([`Addr8`]) | `[count:2BE][GA:2×n]` ([`Addr7`]) |
 //! | association table | as RT8 ([`Asso8`]) | `[count:1][(tsap:1,asap:1)×n]` ([`Asso8`]) | `[count:2BE][(tsap:2BE,asap:2BE)×n]` ([`Asso6`]) |
-//! | group object table | `[count:1][ram-ptr:1][(ptr:1,cfg:1,type:1)×n]` ([`Cot2`]) | `[count:1][ram-ptr:2][(ptr:2,cfg:1,type:1)×n]` ([`CotM112`]) | `[count:2BE][(flags:1,type:1)×n]` ([`Co7`]) |
+//! | group object table | `[count:1][ram-ptr:1][(ptr:1,cfg:1,type:1)×n]` ([`Cot2`]) | `[count:1][ram-ptr:2][(ptr:2,cfg:1,type:1)×n]` ([`System7ComObjectTableCoding`]) | `[count:2BE][(flags:1,type:1)×n]` ([`Co7`]) |
 //!
 //! BCU2 and System 7 store the device's own individual address inside
 //! the address table; System B does not. The two families' address
-//! tables differ only in what the leading octet counts: RT2's length
-//! includes the IA slot, RT8's does not.
+//! tables use the same byte coding, including a length that counts the IA
+//! slot. See [`Addr1`] for the specification and ETS evidence.
 //!
 //! BCU1 (RT1) shares the RT2 column outright for the address and
-//! association tables (the [`Addr1`] and [`Asso1`] aliases; 03/05/01
+//! association tables (the [`Addr1`] and [`Asso1`] names; 03/05/01
 //! §4.16.3, §4.17.3); its group object table is [`Cot1`], the RT2
 //! layout with the config octet's bit 7 fixed at 1 instead of
 //! carrying UpdateEnable (03/05/01 §4.18.3).
@@ -115,14 +115,14 @@ pub trait TableCoding {
     const OVERFLOW_MSG: &'static str;
 
     /// The value of the count field. Defaults to the entry count;
-    /// this is a hook because BCU1's RT1 address table counts its IA
-    /// slot too.
+    /// this is a hook because BCU address tables count their IA slot
+    /// too.
     fn count(&self, entries: &[Self::Entry]) -> usize {
         entries.len()
     }
 
-    /// Fixed bytes between count and entries — RT8's individual
-    /// address slot, M112's RAM-flags pointer. Default: none.
+    /// Fixed bytes between count and entries — the BCU address table's
+    /// individual-address slot, System 7's RAM-flags pointer. Default: none.
     fn write_header(&self, _out: &mut Vec<u8>) {}
 
     /// Put the entries in wire order.
@@ -148,9 +148,9 @@ pub trait TableCoding {
     ///
     /// The overflow check tests the count *as written* — computed
     /// after normalization (dedup may shrink it) and through the
-    /// [`count`](Self::count) hook (RT1 counts one more than the
-    /// entries). Checking `entries.len()` instead would let a maximal
-    /// RT1 table pass and then truncate its count octet to zero.
+    /// [`count`](Self::count) hook (BCU address tables count one more
+    /// than the entries). Checking `entries.len()` instead would let a
+    /// maximal table pass and then truncate its count octet to zero.
     fn blob(&self, entries: &[Self::Entry]) -> Result<Vec<u8>> {
         let entries = Self::normalize(entries);
 
@@ -181,31 +181,37 @@ fn expect_sorted(group_addresses: &[GroupAddress]) -> Cow<'_, [GroupAddress]> {
 }
 
 // ============================================================================
-// System 7 (RT8 / BIM M112) codings
+// RT1 and its byte-identical realizations
 // ============================================================================
 
-/// The RT8 group address table (Resources §4.16.9):
+/// The RT1 group address table coding (Resources §4.16.3).
 ///
 /// ```text
-/// [count:1][individual_address:2][group_address:2 × count]
+/// [length:1][individual_address:2][group_address:2 × (length - 1)]
 /// ```
 ///
-/// `count` is the number of *group addresses* — the IA slot ahead of
-/// them is a header, not an entry. TSAP lookup on the device is a
-/// binary search, so the addresses go out sorted ascending.
-pub struct Addr8 {
+/// Section 4.16.3.3.1 explicitly says the length counts the IA. RT2 uses
+/// RT1 unchanged. RT8 repeats this byte layout at fixed address 4000h;
+/// the KNX master data selects the same `AddressTable_Bcu1` formatter for
+/// masks 0705 and 5705, and an observed 0705 ETS image with four GAs carries
+/// length `05h`.
+pub struct Addr1 {
     /// The device's own address, stored in TSAP slot 0 — the one place
-    /// a System 7 device keeps it.
+    /// a BCU-family device keeps it.
     pub individual_address: IndividualAddress,
 }
 
-impl TableCoding for Addr8 {
+impl TableCoding for Addr1 {
     type Entry = GroupAddress;
     const ENTRY_LEN: usize = 2;
     const HEADER_LEN: usize = 2;
     const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("individual address", 2)];
     const COUNT: CountWidth = CountWidth::U8;
-    const OVERFLOW_MSG: &'static str = "RT8 address table holds at most 255 group addresses";
+    const OVERFLOW_MSG: &'static str = "the BCU address table length octet holds at most 254 group addresses";
+
+    fn count(&self, entries: &[GroupAddress]) -> usize {
+        entries.len() + 1
+    }
 
     fn write_header(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(self.individual_address.as_bytes());
@@ -219,6 +225,13 @@ impl TableCoding for Addr8 {
         out.extend_from_slice(ga.as_bytes());
     }
 }
+
+// ============================================================================
+// System 7 codings
+// ============================================================================
+
+/// RT8 uses the RT1 byte coding at fixed address 4000h.
+pub type Addr8 = Addr1;
 
 /// The RT8 association table (Resources §4.17.6):
 ///
@@ -251,7 +264,7 @@ impl TableCoding for Asso8 {
     }
 }
 
-/// One row of the System 7 group object table (BIM M112 format).
+/// One row of the System 7 group object table.
 ///
 /// `config` is the flags octet and `object_type` the 0-based type
 /// coding — raw octets, because a product database supplies them
@@ -264,8 +277,9 @@ pub struct ComObjectEntry {
     pub object_type: u8,
 }
 
-/// The System 7 group object table (BIM M112 format, pinned by ETS
-/// download trace — see the device crate's `co_m112`):
+/// The System 7 group object table, pinned by an ETS download trace and
+/// its `GroupObjectTable_M112` formatter (see the device crate's
+/// `co_system7` module):
 ///
 /// ```text
 /// [count:1][ram_flags_ptr:2 BE][(data_ptr:2 BE, config:1, type:1) × count]
@@ -275,15 +289,15 @@ pub struct ComObjectEntry {
 /// group objects from 0, and the table covers `0..count` gaplessly,
 /// so unused numbers get zeroed rows. Positionally indexed, hence no
 /// normalization.
-pub struct CotM112 {
+pub struct System7ComObjectTableCoding {
     pub ram_flags_ptr: u16,
 }
 
-impl CotM112 {
+impl System7ComObjectTableCoding {
     /// Overlay per-object `config`/`type` octets onto a
     /// product-supplied default table.
     ///
-    /// A vendor product ships its M112 table as segment data whose
+    /// A vendor product ships its System 7 table as segment data whose
     /// count, `ram_flags_ptr` and per-row `data_ptr`s point into the
     /// real firmware's RAM layout — values nothing but the product
     /// database knows, so the table cannot be synthesized the way our
@@ -320,13 +334,13 @@ impl CotM112 {
     }
 }
 
-impl TableCoding for CotM112 {
+impl TableCoding for System7ComObjectTableCoding {
     type Entry = ComObjectEntry;
     const ENTRY_LEN: usize = 4;
     const HEADER_LEN: usize = 2;
     const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("RAM-flags pointer", 2)];
     const COUNT: CountWidth = CountWidth::U8;
-    const OVERFLOW_MSG: &'static str = "BIM M112 group object table holds at most 255 objects";
+    const OVERFLOW_MSG: &'static str = "the System 7 group object table holds at most 255 objects";
 
     fn write_header(&self, out: &mut Vec<u8>) {
         out.extend_from_slice(&self.ram_flags_ptr.to_be_bytes());
@@ -343,49 +357,8 @@ impl TableCoding for CotM112 {
 // BCU2 (System 2, RT2) codings
 // ============================================================================
 
-/// The BCU2 group address table (03/05/01 §4.16.3.1; realisation
-/// types 1 and 2 share the coding, RT2 merely fixes the location at
-/// 0116h, §4.16.4.2):
-///
-/// ```text
-/// [length:1][individual_address:2][group_address:2 × n]
-/// ```
-///
-/// Same wire layout as RT8's [`Addr8`], except the leading length
-/// octet counts the IA slot too (length = 1 + n) where RT8 counts
-/// group addresses only — which is what the [`count`](Self::count)
-/// hook exists for. A factory image pins this down: the L&J MV-0021
-/// product ships 86 default links under length 57h.
-pub struct Addr2 {
-    /// The device's own address, stored ahead of the group addresses
-    /// (its slot is the one the length octet counts extra).
-    pub individual_address: IndividualAddress,
-}
-
-impl TableCoding for Addr2 {
-    type Entry = GroupAddress;
-    const ENTRY_LEN: usize = 2;
-    const HEADER_LEN: usize = 2;
-    const HEADER_FIELDS: &'static [(&'static str, usize)] = &[("individual address", 2)];
-    const COUNT: CountWidth = CountWidth::U8;
-    const OVERFLOW_MSG: &'static str = "the BCU2 address table length octet holds at most 254 group addresses";
-
-    fn count(&self, entries: &[GroupAddress]) -> usize {
-        entries.len() + 1
-    }
-
-    fn write_header(&self, out: &mut Vec<u8>) {
-        out.extend_from_slice(self.individual_address.as_bytes());
-    }
-
-    fn normalize(entries: &[GroupAddress]) -> Cow<'_, [GroupAddress]> {
-        expect_sorted(entries)
-    }
-
-    fn write_entry(ga: &GroupAddress, out: &mut Vec<u8>) {
-        out.extend_from_slice(ga.as_bytes());
-    }
-}
+/// RT2 uses the RT1 byte coding unchanged.
+pub type Addr2 = Addr1;
 
 /// The BCU2 association table (Realisation Type 2, 03/05/01 §4.17.4):
 /// RT2's coding is RT8's — one-octet count, (tsap:1, asap:1) entries —
@@ -410,7 +383,7 @@ pub struct ComObjectEntry2 {
 /// [count:1][ram_flags_ptr:1][(data_ptr:1, config:1, type:1) × count]
 /// ```
 ///
-/// The M112 table's shape with every pointer one octet instead of
+/// The System 7 table's shape with every pointer one octet instead of
 /// two. Positionally indexed from ASAP 0, hence no normalization.
 /// One RT2 coding difference worth knowing when reading `config`
 /// back: bit 7 is UpdateEnable, where RT1 fixes it at 1.
@@ -421,7 +394,7 @@ pub struct Cot2 {
 impl Cot2 {
     /// Overlay per-object `config`/`type` octets onto a
     /// product-supplied default table — same contract as
-    /// [`CotM112::overlay`]: the count, RAM-flags pointer and per-row
+    /// [`System7ComObjectTableCoding::overlay`]: the count, RAM-flags pointer and per-row
     /// data pointers are the firmware's and survive untouched; only
     /// the two installation-owned octets per row change.
     pub fn overlay(defaults: &mut [u8], objects: &[(u16, ComObjectFlags, ComObjectType)]) -> Result<()> {
@@ -472,12 +445,6 @@ impl TableCoding for Cot2 {
 // ============================================================================
 // BCU1 (System 1, RT1) codings
 // ============================================================================
-
-/// The BCU1 group address table (Realisation Type 1, 03/05/01
-/// §4.16.3): RT2's coding octet for octet — RT1 merely lacks RT2's
-/// property-based alternative for locating the table, which is a
-/// download-procedure concern, not a wire format.
-pub type Addr1 = Addr2;
 
 /// The BCU1 association table (Realisation Type 1, 03/05/01 §4.17.3):
 /// the same one-octet-identifier coding RT2 and RT8 use.
@@ -595,7 +562,7 @@ impl TableCoding for Asso6 {
 /// Each entry is the big-endian 16-bit Group Object Descriptor of
 /// Table 87 — the proto types carry it typed, and the octet packing
 /// happens here. Entries are 1-based (ASAP 1 is the first), which is
-/// why `entries[0]` describes object 1 — the opposite of the M112
+/// why `entries[0]` describes object 1 — the opposite of the System 7
 /// table, where ASAPs start at 0. Positionally indexed, hence no
 /// normalization.
 pub struct Co7;
@@ -623,11 +590,11 @@ mod tests {
     #[test]
     fn addr8_blob_matches_device_layout() {
         // Mirrors the device crate's addr8 loaded_table fixture:
-        // count 3, IA 1.0.1, GAs 0/0/1 0/0/2 0/0/4.
+        // length 4, IA 1.0.1, GAs 0/0/1 0/0/2 0/0/4.
         let blob = Addr8 { individual_address: IndividualAddress::new(1, 0, 1) }
             .blob(&[ga(0, 0, 1), ga(0, 0, 2), ga(0, 0, 4)])
             .expect("3 entries fit");
-        assert_eq!(blob, [3, 0x10, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x04]);
+        assert_eq!(blob, [4, 0x10, 0x01, 0x00, 0x01, 0x00, 0x02, 0x00, 0x04]);
     }
 
     #[test]
@@ -639,7 +606,7 @@ mod tests {
     #[test]
     fn cot_blob_matches_the_ets_trace() {
         // The exact bytes ETS wrote for the six-object light switch
-        // (same fixture the device crate parses in co_m112.rs).
+        // (same fixture the device crate parses in co_system7.rs).
         let entries = [
             ComObjectEntry { data_ptr: 0, config: 0x00, object_type: 0x00 }, // ASAP 0 unused
             ComObjectEntry { data_ptr: 0, config: 0x47, object_type: 0x00 },
@@ -649,7 +616,7 @@ mod tests {
             ComObjectEntry { data_ptr: 0, config: 0xD3, object_type: 0x00 },
             ComObjectEntry { data_ptr: 0, config: 0x00, object_type: 0x00 }, // ASAP 6 unused
         ];
-        let blob = CotM112 { ram_flags_ptr: 0 }.blob(&entries).expect("fits");
+        let blob = System7ComObjectTableCoding { ram_flags_ptr: 0 }.blob(&entries).expect("fits");
         assert_eq!(blob, [
             0x07, 0x00, 0x00, //
             0x00, 0x00, 0x00, 0x00, //
@@ -663,10 +630,9 @@ mod tests {
     }
 
     #[test]
-    fn addr2_length_counts_the_ia_slot() {
-        // Same fixture as addr8_blob_matches_device_layout, but the
-        // BCU2 length octet is 4 (IA slot + 3 group addresses) where
-        // RT8 writes 3 — the sole difference between the two codings.
+    fn addr1_addr2_and_addr8_share_the_length_coding() {
+        // The realization-facing names share the byte codec, while their
+        // locations and load procedures remain profile decisions.
         let blob = Addr2 { individual_address: IndividualAddress::new(1, 0, 1) }
             .blob(&[ga(0, 0, 1), ga(0, 0, 2), ga(0, 0, 4)])
             .expect("3 entries fit");
@@ -690,7 +656,7 @@ mod tests {
             .expect("row 1 exists");
         assert_eq!(defaults, [0x02, 0xCE, 0xC6, 0x47, 0x00, 0xC7, 0x43, 0x00]);
 
-        // A row beyond the product's table is refused, as in M112.
+        // A row beyond the product's System 7 table is refused.
         assert!(Cot2::overlay(&mut defaults, &[(2, ComObjectFlags::from_byte(0), ComObjectType::Uint1)]).is_err());
     }
 

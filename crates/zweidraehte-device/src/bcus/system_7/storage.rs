@@ -22,7 +22,8 @@ use zerocopy::{Immutable, IntoBytes, KnownLayout};
 
 use crate::extension::ExtensionConfig;
 use crate::objects::tables::{
-    AbsoluteAlloc, Application, Table, TableMemory, addr8::AddrTab8Impl, asso8::AssoTab8Impl, co_m112::CoTabM112Impl,
+    AbsoluteAlloc, Application, Table, TableMemory, addr8::AddrTab8Impl, asso8::AssoTab8Impl,
+    co_system7::System7ComObjectTableImpl,
 };
 
 /// Number of authorization access levels on System 7 (0–15).
@@ -62,7 +63,7 @@ impl<I, C> System7StateInit<I, C, ()> {
 /// The const generics are the actual byte sizes of each table:
 /// - `ADT_SIZE`: RT8 address table size (3 + MAX_ADDR * 2)
 /// - `AST_SIZE`: RT8 association table size (1 + MAX_ASSO * 2)
-/// - `COT_SIZE`: group object table size in the M112 memory format
+/// - `COT_SIZE`: group object table size in the System 7 memory format
 ///   (3 + (MAX_CO + 1) * 4)
 /// - `P`: Application parameters type
 /// - `E`: Extension-specific persistent config
@@ -105,7 +106,7 @@ pub struct System7DeviceConfig<
     /// Group object table (CO type + flags). Internal — System 7 exposes
     /// no Group Object Table interface object; ETS writes this data as
     /// part of the application memory segment.
-    pub group_object_table: Table<CoTabM112Impl<COT_SIZE>, AbsoluteAlloc>,
+    pub group_object_table: Table<System7ComObjectTableImpl<COT_SIZE>, AbsoluteAlloc>,
 
     /// Application program data (interface object index 3).
     pub application: Application<P, AbsoluteAlloc>,
@@ -165,8 +166,8 @@ impl<
 /// Returns `(adt_size, ast_size, cot_size)` for use as const generics.
 pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (usize, usize, usize) {
     (
-        3 + max_addr * 2,     // ADT RT8: 1-byte count + 2-byte IA + 2 bytes per entry
+        3 + max_addr * 2,     // ADT RT8: 1-byte length + 2-byte IA + 2 bytes per GA
         1 + max_asso * 2,     // AST RT8: 1-byte count + 2 bytes per entry
-        3 + (max_co + 1) * 4, // COT M112: count + RAM-flags ptr + 4 bytes per ASAP 0..=max
+        3 + (max_co + 1) * 4, // System 7 COT: count + RAM-flags ptr + 4 bytes per ASAP 0..=max
     )
 }
