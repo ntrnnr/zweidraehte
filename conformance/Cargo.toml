@@ -32,6 +32,7 @@ license = "AGPL-3.0-only"
 default = ["dut"]
 dut = [
     "dep:zweidraehte-device",
+    "dep:zweidraehte-devices",
     "dep:zweidraehte-microdevice",
     "dep:zweidraehte-knxprod",
     "dep:base64",
@@ -92,6 +93,7 @@ zweidraehte-microdevice = { path = "../crates/zweidraehte-microdevice", features
 # generator/parser round-trip; see dut::system7_product and
 # dut::system_b_product.
 zweidraehte-knxprod = { path = "../crates/zweidraehte-knxprod", optional = true }
+zweidraehte-devices = { path = "../examples/devices", features = ["demos", "micro"], optional = true }
 # The BCU2 product generator base64-encodes the DUT's boot EEPROM image
 # into the product file's default <Data>.
 base64 = { workspace = true, optional = true }

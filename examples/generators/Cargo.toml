@@ -11,7 +11,7 @@ publish = false
 # conversion, `--knxprod` output handling).
 
 [dependencies]
-zweidraehte-devices = { path = "../devices", default-features = false, features = ["demos"] }
+zweidraehte-devices = { path = "../devices", default-features = false, features = ["demos", "micro"] }
 zweidraehte-knxprod = { path = "../../crates/zweidraehte-knxprod" }
 const-default = { workspace = true }
 env_logger = { workspace = true }

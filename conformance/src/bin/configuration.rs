@@ -32,14 +32,16 @@ use std::time::Duration;
 use log::LevelFilter;
 
 use zweidraehte_client::download::{
-    DeviceImage, Downloader, GroupLink, Instruction, LoadControlPath, MaskDb, MemoryResources, ProcedureKind,
-    ProductData, ProjectConfig, assemble, compile,
+    DeviceImage, Downloader, GroupLink, Instruction, LoadControlPath, MaskDb, MemoryResources, ParameterValue,
+    ProcedureKind, ProductData, ProjectConfig, assemble, compile,
 };
 use zweidraehte_client::{
     ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, IndividualAddress, KnxBus,
     MachineRef, MaskVersion,
 };
-use zweidraehte_conformance::dut::{bcu2_product, micro_system7_product, system_b_product, system7_product};
+use zweidraehte_conformance::dut::{
+    bcu2_light_switch_product, bcu2_product, micro_system7_product, system_b_product, system7_product,
+};
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
 use zweidraehte_conformance::logger;
@@ -135,6 +137,7 @@ async fn main() -> ExitCode {
             ("BCU2 descriptor smoke read", scenario_bcu2_descriptor),
             ("BCU2 programming-mode individual addressing", scenario_bcu2_programming_mode_addressing),
             ("BCU2 download over the property path", scenario_bcu2_full_download),
+            ("BCU2 light-switch product download with parameters", scenario_bcu2_light_switch_download),
             ("BCU2 unload-all invalidates the tables", scenario_bcu2_unload_all),
         ]),
         ("Micro System 7 (mask 0705, micro stack)", DutMode::MicroSystem7, &[
@@ -560,6 +563,76 @@ fn scenario_bcu2_full_download<'a>(
             return Err(format!("unexpected telegram {:?} on {}", telegram.service, telegram.group));
         }
         Ok(())
+    })
+}
+
+/// The real light-switch product (six objects, ETS parameters) against
+/// the BCU2 DUT: the download must carry the product's table page —
+/// group object pointers included — into the device, and patch the
+/// overridden parameter bytes into the 0200h segment. This is the
+/// end-to-end proof of the `Bcu2MemoryLayout` generator path and of
+/// the parameter delivery the micro light-switch firmware reads.
+fn scenario_bcu2_light_switch_download<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let masks = mask_db()?;
+        let mask = bcu2_mask(&masks)?;
+        let mtxml = bcu2_light_switch_product::generate_mtxml()?;
+        let product =
+            ProductData::from_mtxml_str(&mtxml).map_err(|e| format!("reading the light-switch product back: {e}"))?;
+
+        let mut project = ProjectConfig::new(dut_ia());
+        // Button 1's primary object onto a group address.
+        project.links = vec![GroupLink { group_address: GroupAddress::from_three_level(3, 2, 1), com_object: 0 }];
+        project.max_apdu = 15;
+        // Two overrides on top of the defaults: debounce 150 ms (4),
+        // long press 1000 ms (3). Parameter ids are ordinal in the
+        // generated MTXML, so the memory offset — the struct layout,
+        // pinned by `DEFAULT_PARAM_BYTES` — is the stable selector:
+        // offset 0 is `debounce_time`, offset 1 `long_press_time`.
+        let param_id = |offset: u32| {
+            product
+                .parameters
+                .iter()
+                .find(|p| p.offset == offset)
+                .map(|p| p.id.clone())
+                .ok_or_else(|| format!("the product lacks a parameter at offset {offset}"))
+        };
+        project.parameters = vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue {
+            id: param_id(1)?,
+            value: vec![3],
+        }];
+
+        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("download: {e}"))?;
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
+        let checks = async {
+            // The group object table at 0146h (offset 46h in the table
+            // page): count, RAM-flags pointer and the six data
+            // pointers must be the product's — the download preserves
+            // them through the overlay, it cannot synthesize them.
+            let cot = conn.memory_read(0x0146, 20).await.map_err(|e| format!("COT read: {e}"))?;
+            if cot[0] != 6 || cot[1] != 0xD0 {
+                return Err(format!("COT header {:02X?}, expected count 6, RAM flags D0h", &cot[..2]));
+            }
+            for (i, row) in cot[2..].chunks(3).enumerate() {
+                if row[0] != 0xC6 + i as u8 {
+                    return Err(format!("object {i} data pointer {:02X}, expected {:02X}", row[0], 0xC6 + i as u8));
+                }
+            }
+            // The parameter block at 0200h: the defaults with the two
+            // overridden bytes.
+            let params = conn.memory_read(0x0200, 8).await.map_err(|e| format!("param read: {e}"))?;
+            if params != [4, 3, 1, 0, 0, 0, 0, 0] {
+                return Err(format!("params {params:02X?}, expected [04 03 01 00 00 00 00 00]"));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        checks
     })
 }
 
