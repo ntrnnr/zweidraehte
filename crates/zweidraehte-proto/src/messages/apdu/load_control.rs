@@ -1,4 +1,4 @@
-//! Load/Run State Machine wire enums.
+//! Load/Run State Machine protocol vocabulary.
 //!
 //! The pure protocol vocabulary of the load and run state machines:
 //!
@@ -8,27 +8,38 @@
 //!   properties (and the internal events the run machine reacts to).
 //! - [`LoadSegment`] — the segment selector inside an `AdditionalLoadControls`
 //!   load command.
+//! - [`load_control_transition`] — the common synchronous Realisation Type 1
+//!   transition table.
 //!
-//! Only the wire encoding lives here. The state machines that consume and
-//! transition these values (`Table<T>`, `RunnableApplication<T>`, the
-//! `Has*StateMachine` traits, and the non-wire `LoadAction` / `RunAction` /
-//! `LoadError` types) stay in the device crate's `objects::tables`.
+//! The transition is shared because it is deterministic protocol logic. State
+//! ownership, allocation, CRC calculation, persistence, and family-specific
+//! side effects remain in the consuming device stacks. Run-state transitions
+//! likewise remain stack-specific until their profile semantics are known to
+//! agree.
 
 use serde::{Deserialize, Serialize};
 
 create_protocol_enum!(
     /// Load state of an interface object (`PID_LOAD_STATE_CONTROL` readback).
+    ///
+    /// Includes the four mandatory states and the optional `Unloading` and
+    /// `LoadCompleting` states from Resources 03/05/01 Table 92. A particular
+    /// device stack need not enter the optional states, but clients must be able
+    /// to decode them while polling another device.
     #[derive(Eq, PartialEq, Copy, Clone, Serialize, Deserialize)]
     pub enum LoadState: u8 {
         Unloaded        , 0x00, "Unloaded";
         Loaded          , 0x01, "Loaded";
         Loading         , 0x02, "Loading";
         Err             , 0x03, "Error";
+        Unloading       , 0x04, "Unloading";
+        LoadCompleting  , 0x05, "LoadCompleting";
     }
 );
 
 create_protocol_enum!(
-    /// Load control command written to `PID_LOAD_STATE_CONTROL`.
+    /// Load control command written to `PID_LOAD_STATE_CONTROL` (Resources
+    /// 03/05/01 Table 93).
     #[derive(Eq, PartialEq, Copy, Clone)]
     pub enum LoadEvent: u8 {
         NoOp                    , 0x00, "NoOp";
@@ -36,10 +47,69 @@ create_protocol_enum!(
         LoadCompleted           , 0x02, "LoadCompleted";
         AdditionalLoadControls  , 0x03, "AdditionalLoadControls";
         Unload                  , 0x04, "Unload";
-        Err                     , 0x05, "Error";
         _,                              "Unknown Load Event 0x{:x}";
     }
 );
+
+/// Side effect requested by a [`load_control_transition`].
+///
+/// The action describes protocol intent without prescribing how a stack owns
+/// memory or orchestrates other state machines. Consumers integrate the action
+/// and returned [`LoadState`] into their own storage and runtime model.
+#[derive(Debug, Eq, PartialEq, Copy, Clone)]
+pub enum LoadAction {
+    /// No side effect is required.
+    None,
+    /// Begin a new load operation.
+    LoadStart,
+    /// Finish the active load operation.
+    LoadEnd,
+    /// Release the loaded resource.
+    Unload,
+    /// Process the allocation record following the event octet.
+    Alloc,
+}
+
+/// Apply an external event to the synchronous Realisation Type 1 load machine.
+///
+/// This implements the recommended transitions in Resources 03/05/01
+/// §4.23.2.3.3 Table 94. Both in-tree device stacks complete unloading and load
+/// completion synchronously, so the optional intermediate states
+/// [`LoadState::Unloading`] and [`LoadState::LoadCompleting`] are never entered
+/// from the four mandatory states. A stack whose transition takes more than two
+/// seconds must implement those intermediate transitions instead of using this
+/// helper unchanged.
+///
+/// This function deliberately does not inspect allocation records or mutate
+/// storage. A [`LoadAction::Alloc`] result tells the consuming stack to do so;
+/// that operation may still replace the returned state with [`LoadState::Err`]
+/// when its profile-specific validation fails. Device restart and internal
+/// error conditions are separate events and therefore are not represented by
+/// [`LoadEvent`].
+#[must_use]
+pub const fn load_control_transition(state: LoadState, event: LoadEvent) -> (LoadState, LoadAction) {
+    match event {
+        LoadEvent::NoOp => (state, LoadAction::None),
+        LoadEvent::StartLoading => match state {
+            LoadState::Unloaded | LoadState::Loaded => (LoadState::Loading, LoadAction::LoadStart),
+            LoadState::Loading | LoadState::Err => (state, LoadAction::None),
+            LoadState::Unloading | LoadState::LoadCompleting => (LoadState::Err, LoadAction::None),
+        },
+        LoadEvent::LoadCompleted => match state {
+            LoadState::Loading => (LoadState::Loaded, LoadAction::LoadEnd),
+            LoadState::Unloaded | LoadState::Loaded | LoadState::Err => (state, LoadAction::None),
+            LoadState::Unloading | LoadState::LoadCompleting => (LoadState::Err, LoadAction::None),
+        },
+        LoadEvent::AdditionalLoadControls => match state {
+            LoadState::Loaded | LoadState::Unloading | LoadState::LoadCompleting => (LoadState::Err, LoadAction::None),
+            LoadState::Loading => (LoadState::Loading, LoadAction::Alloc),
+            LoadState::Unloaded | LoadState::Err => (state, LoadAction::None),
+        },
+        LoadEvent::Unload => (LoadState::Unloaded, LoadAction::Unload),
+        // Unknown event values are ignored, as required for new implementations.
+        LoadEvent::Other(_) => (state, LoadAction::None),
+    }
+}
 
 create_protocol_enum!(
     /// Run state of the Application Program Object (`PID_RUN_STATE_CONTROL`
@@ -529,6 +599,75 @@ impl MemLoadControlRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_control_transition_follows_recommended_table() {
+        use LoadAction::{Alloc, LoadEnd, LoadStart, None, Unload};
+        use LoadEvent::{AdditionalLoadControls, LoadCompleted, NoOp, StartLoading};
+        use LoadState::{Err, LoadCompleting, Loaded, Loading, Unloaded, Unloading};
+
+        let cases = [
+            (Unloaded, NoOp, Unloaded, None),
+            (Loaded, NoOp, Loaded, None),
+            (Loading, NoOp, Loading, None),
+            (Err, NoOp, Err, None),
+            (Unloading, NoOp, Unloading, None),
+            (LoadCompleting, NoOp, LoadCompleting, None),
+            (Unloaded, StartLoading, Loading, LoadStart),
+            (Loaded, StartLoading, Loading, LoadStart),
+            (Loading, StartLoading, Loading, None),
+            (Err, StartLoading, Err, None),
+            (Unloading, StartLoading, Err, None),
+            (LoadCompleting, StartLoading, Err, None),
+            (Unloaded, LoadCompleted, Unloaded, None),
+            (Loaded, LoadCompleted, Loaded, None),
+            (Loading, LoadCompleted, Loaded, LoadEnd),
+            (Err, LoadCompleted, Err, None),
+            (Unloading, LoadCompleted, Err, None),
+            (LoadCompleting, LoadCompleted, Err, None),
+            (Unloaded, AdditionalLoadControls, Unloaded, None),
+            (Loaded, AdditionalLoadControls, Err, None),
+            (Loading, AdditionalLoadControls, Loading, Alloc),
+            (Err, AdditionalLoadControls, Err, None),
+            (Unloading, AdditionalLoadControls, Err, None),
+            (LoadCompleting, AdditionalLoadControls, Err, None),
+            (Unloaded, LoadEvent::Unload, Unloaded, Unload),
+            (Loaded, LoadEvent::Unload, Unloaded, Unload),
+            (Loading, LoadEvent::Unload, Unloaded, Unload),
+            (Err, LoadEvent::Unload, Unloaded, Unload),
+            (Unloading, LoadEvent::Unload, Unloaded, Unload),
+            (LoadCompleting, LoadEvent::Unload, Unloaded, Unload),
+        ];
+
+        for (state, event, expected_state, expected_action) in cases {
+            assert_eq!(load_control_transition(state, event), (expected_state, expected_action));
+        }
+    }
+
+    #[test]
+    fn unknown_load_events_are_ignored() {
+        let states = [
+            LoadState::Unloaded,
+            LoadState::Loaded,
+            LoadState::Loading,
+            LoadState::Err,
+            LoadState::Unloading,
+            LoadState::LoadCompleting,
+        ];
+
+        for event in [LoadEvent::from(0x05), LoadEvent::from(0xFF)] {
+            for state in states {
+                assert_eq!(load_control_transition(state, event), (state, LoadAction::None));
+            }
+        }
+    }
+
+    #[test]
+    fn optional_states_and_unknown_event_codings_match_table_92_and_93() {
+        assert_eq!(LoadState::try_from(0x04), Ok(LoadState::Unloading));
+        assert_eq!(LoadState::try_from(0x05), Ok(LoadState::LoadCompleting));
+        assert_eq!(LoadEvent::from(0x05), LoadEvent::Other(0x05));
+    }
 
     #[test]
     fn abs_segment_record_bytes() {

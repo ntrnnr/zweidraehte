@@ -14,7 +14,9 @@ use heapless::Vec;
 use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
-use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, LoadSegment, LoadState};
+use zweidraehte_proto::messages::apdu::load_control::{
+    AbsSegment, LoadAction, LoadSegment, LoadState, load_control_transition,
+};
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse;
 
@@ -563,43 +565,20 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
         return;
     }
     let Some(&event) = record.first() else { return };
-    // The transition table of 03/05/02 §3.28, the same shape the full
-    // stack's `next_state` implements. The notable non-transitions:
-    // unknown events are ignored (state unchanged, not Error), a
-    // LoadCompleted or segment record outside Loading falls flat
-    // rather than erroring — except a segment record against Loaded,
-    // which is the one combination the spec calls an error — and
-    // StartLoading does not resurrect an Error state.
-    let lsm = &mut mgmt.lsm[machine];
-    match LoadEvent::from(event) {
-        LoadEvent::NoOp => {}
-        LoadEvent::StartLoading => {
-            if lsm.state != LoadState::Err {
-                lsm.state = LoadState::Loading;
-            }
-        }
-        LoadEvent::LoadCompleted => {
-            if lsm.state == LoadState::Loading {
-                lsm.state = LoadState::Loaded;
-                F::load_completed_side_effect(machine, eeprom, mgmt);
-            }
-        }
-        LoadEvent::Unload => {
-            lsm.state = LoadState::Unloaded;
+    let (new_state, action) = load_control_transition(mgmt.lsm[machine].state, event.into());
+    mgmt.lsm[machine].state = new_state;
+
+    match action {
+        LoadAction::LoadStart | LoadAction::None => {}
+        LoadAction::LoadEnd => F::load_completed_side_effect(machine, eeprom, mgmt),
+        LoadAction::Unload => {
             // Side effect first: a family that locates the resource
             // through `table_ref` (System 7's association table) still
             // needs the reference to reach the blob it is emptying.
             F::unload_side_effect(machine, eeprom, mgmt);
             mgmt.lsm[machine].table_ref = 0;
         }
-        LoadEvent::AdditionalLoadControls => {
-            if lsm.state == LoadState::Loaded {
-                lsm.state = LoadState::Err;
-                return;
-            }
-            if lsm.state != LoadState::Loading {
-                return;
-            }
+        LoadAction::Alloc => {
             let Some(&segment_type) = record.get(1) else { return };
             match LoadSegment::from(segment_type) {
                 LoadSegment::AbsoluteData => {
@@ -612,15 +591,15 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
                     // rather than a silently truncated table.
                     if let Some(segment) = AbsSegment::parse(&record[1..]) {
                         if F::abs_segment_fits(segment.start_address, segment.length) {
-                            lsm.table_ref = segment.start_address;
+                            mgmt.lsm[machine].table_ref = segment.start_address;
                         } else {
-                            lsm.state = LoadState::Err;
+                            mgmt.lsm[machine].state = LoadState::Err;
                         }
                     } else if record.len() >= 4 {
                         // A record truncated after the start address:
                         // too short for AbsSegment, but the address is
                         // still worth remembering (no length to check).
-                        lsm.table_ref = u16::from_be_bytes([record[2], record[3]]);
+                        mgmt.lsm[machine].table_ref = u16::from_be_bytes([record[2], record[3]]);
                     }
                 }
                 // Task records (stack/task/pointer/control blobs)
@@ -632,11 +611,9 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
                 | LoadSegment::AbsolutePointer
                 | LoadSegment::TaskCtrl1
                 | LoadSegment::TaskCtrl2 => {}
-                _ => lsm.state = LoadState::Err,
+                _ => mgmt.lsm[machine].state = LoadState::Err,
             }
         }
-        // Unknown load events are ignored — state unchanged.
-        _ => {}
     }
 }
 

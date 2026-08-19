@@ -12,7 +12,7 @@ use crate::objects::interface::{
     FullPropertyReadRequest, FullPropertyWriteRequest, FunctionPropertyRequest, FunctionPropertyResult, PropertyError,
     WriteResponse, interface_object_augment, pid,
 };
-use crate::objects::tables::{LoadEvent, LoadState};
+use crate::objects::tables::LoadEvent;
 use crate::service::ServiceCtx;
 use crate::storage::SequenceNumberStorage;
 use crate::storage::views::SiatAccess;
@@ -21,6 +21,7 @@ use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic02, PDT_Generic06,
     PDT_Generic08, PDT_Generic16, PDT_Generic18, PDT_Generic20, PDT_UnsignedChar, PDT_UnsignedInt,
 };
+use zweidraehte_proto::messages::apdu::load_control::load_control_transition;
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::properties::PropertyRead;
 
@@ -414,28 +415,16 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
         req: &FullPropertyWriteRequest<'_>,
     ) -> Option<Result<WriteResponse, PropertyError>> {
         Some(match req.pid {
-            // PID 5 LOAD_STATE_CONTROL — Realisation Type 1 state machine
-            // (spec 03/05/01 §4.23.2). On Unloaded → Loaded, seed receiving
-            // sequence numbers from the SIAT.
+            // PID 5 LOAD_STATE_CONTROL — synchronous Realisation Type 1
+            // state machine (03/05/01 §4.23.2). This object has no
+            // profile-required segment allocator, so an Alloc action keeps
+            // the machine Loading without further work.
             pid::LOAD_STATE_CONTROL => {
                 if req.data.is_empty() {
                     return Some(Err(PropertyError::BufferTooSmall));
                 }
                 let event = LoadEvent::from(req.data[0]);
-                let cur = self.state.load_state();
-                let new_state = match event {
-                    LoadEvent::NoOp => cur,
-                    LoadEvent::StartLoading => match cur {
-                        LoadState::Err => cur,
-                        _ => LoadState::Loading,
-                    },
-                    LoadEvent::LoadCompleted => match cur {
-                        LoadState::Loading => LoadState::Loaded,
-                        _ => cur,
-                    },
-                    LoadEvent::Unload => LoadState::Unloaded,
-                    _ => cur,
-                };
+                let (new_state, _action) = load_control_transition(self.state.load_state(), event);
                 self.state.set_load_state(new_state);
                 Ok(WriteResponse::byte(new_state.into()))
             }

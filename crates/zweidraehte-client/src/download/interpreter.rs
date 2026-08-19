@@ -305,9 +305,10 @@ impl<'a, T: DownloadTarget> Downloader<'a, T> {
 
             Instruction::LsmEvent { lsm, event } => {
                 self.write_load_control(*lsm, &LoadControlRecord::event(*event), MemLoadControlRecord::event).await?;
-                // Each event has exactly one legal outcome state; §4.23's
-                // other transitions (e.g. LoadCompleted while Unloaded)
-                // land in Error, which the poll surfaces.
+                // The compiled procedure emits these events only in their
+                // valid sequence. Poll for the final state; the poll also
+                // tolerates the optional Unloading and LoadCompleting states
+                // while a slower device finishes the transition.
                 let expected = match event {
                     LoadEvent::StartLoading => LoadState::Loading,
                     LoadEvent::LoadCompleted => LoadState::Loaded,
@@ -771,7 +772,7 @@ mod tests {
         let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture parses");
         db.mask(MaskVersion::System7Tp1).expect("0705").memory_resources().expect("0705 is memory-mapped")
     }
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
     /// A scripted mask-0705 memory surface: plain byte memory plus
@@ -782,6 +783,9 @@ mod tests {
         memory: HashMap<u16, u8>,
         /// ADT, AST, APP, PEI load states.
         states: [LoadState; 4],
+        /// Optional intermediate states returned by successive status
+        /// reads before falling back to `states`.
+        pending_states: VecDeque<LoadState>,
         restarted: bool,
         writes: usize,
         /// What PID_SERIAL_NUMBER answers — the value the fixture's
@@ -794,6 +798,7 @@ mod tests {
             Self {
                 memory: HashMap::new(),
                 states: [LoadState::Unloaded; 4],
+                pending_states: VecDeque::new(),
                 restarted: false,
                 writes: 0,
                 // The serial the fixture's CompareProp expects.
@@ -827,6 +832,9 @@ mod tests {
         }
         async fn memory_read(&mut self, address: u16, count: u8) -> Result<Vec<u8>> {
             if (0xB6EA..0xB6EE).contains(&address) {
+                if let Some(state) = self.pending_states.pop_front() {
+                    return Ok(vec![state.into()]);
+                }
                 return Ok(vec![self.states[(address - 0xB6EA) as usize].into()]);
             }
             Ok((0..count).map(|i| *self.memory.get(&(address + u16::from(i))).unwrap_or(&0)).collect())
@@ -911,6 +919,18 @@ mod tests {
             result,
             Err(Error::LoadState { machine: MachineRef::Machine(LsmMachine::AddressTable), state: LoadState::Err, .. })
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn load_state_poll_accepts_optional_intermediate_states() {
+        let mut device = ScriptedDevice::new();
+        device.states[0] = LoadState::Loaded;
+        device.pending_states =
+            [LoadState::Unloading, LoadState::Unloaded, LoadState::LoadCompleting, LoadState::Loaded].into();
+
+        let mut downloader = Downloader::new(&mut device, resources(), 15);
+        downloader.expect_load_state(1, LoadState::Unloaded).await.expect("Unloading completes to Unloaded");
+        downloader.expect_load_state(1, LoadState::Loaded).await.expect("LoadCompleting completes to Loaded");
     }
 
     #[test]

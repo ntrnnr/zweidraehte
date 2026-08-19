@@ -10,16 +10,18 @@ use zerocopy::{
 
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::dpt::PDT_Generic08;
+use zweidraehte_proto::messages::apdu::load_control::load_control_transition;
 use zweidraehte_proto::util::{crc::crc16_ccitt, packets::BufferView};
 
-// The load/run-state machine *wire* enums are pure protocol values, so they live
-// in `zweidraehte-proto`. The state machines that consume them (`Table<T>`,
-// `RunnableApplication<T>`, the `Has*StateMachine` traits, `LoadAction`,
-// `RunAction`, `LoadError`) stay here. Re-exported so the device-side and
-// downstream `firmware/` paths (`objects::tables::LoadState`, the prelude) keep
-// working without those crates taking a direct `zweidraehte-proto` dependency.
+// The load/run-state machine protocol values and pure load transition live in
+// `zweidraehte-proto`. Re-exported so the device-side and downstream
+// `firmware/` paths (`objects::tables::LoadState`, the prelude) keep working
+// without those crates taking a direct `zweidraehte-proto` dependency. Runtime
+// state ownership and the run-state machine remain here.
 pub use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
-pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadSegment, LoadState, RunEvent, RunState};
+pub use zweidraehte_proto::messages::apdu::load_control::{
+    LoadAction, LoadEvent, LoadSegment, LoadState, RunEvent, RunState,
+};
 
 // ============================================================================
 // Table Accessor Traits
@@ -452,20 +454,6 @@ pub trait HasRunStateMachine {
     }
 }
 
-/// Action produced by a load state machine transition.
-///
-/// Returned by [`HasLoadStateMachine::write_lsm`] so the caller can
-/// orchestrate side effects (e.g., signaling the run state machine on
-/// `LoadEnd` or `Unload`).
-#[derive(Debug, Eq, PartialEq, Copy, Clone)]
-pub enum LoadAction {
-    None,
-    LoadStart,
-    LoadEnd,
-    Unload,
-    Alloc,
-}
-
 #[repr(C)]
 #[derive(Debug, FromBytes, IntoBytes, Unaligned, KnownLayout, Immutable)]
 pub struct McbData {
@@ -573,43 +561,6 @@ impl<T: TableMemory, P: LoadControlPolicy> Table<T, P> {
     pub fn set_table_reference(&mut self, reference: u32) {
         self.table_reference = reference;
     }
-
-    fn next_state(event: LoadEvent, cur_state: LoadState) -> (LoadState, LoadAction) {
-        match event {
-            LoadEvent::NoOp => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
-                LoadState::Loaded => (LoadState::Loaded, LoadAction::None),
-                LoadState::Loading => (LoadState::Loading, LoadAction::None),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::StartLoading => match cur_state {
-                LoadState::Unloaded => (LoadState::Loading, LoadAction::LoadStart),
-                LoadState::Loaded => (LoadState::Loading, LoadAction::LoadStart),
-                LoadState::Loading => (LoadState::Loading, LoadAction::None),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::LoadCompleted => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
-                LoadState::Loaded => (LoadState::Loaded, LoadAction::None),
-                LoadState::Loading => (LoadState::Loaded, LoadAction::LoadEnd),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::AdditionalLoadControls => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::None),
-                LoadState::Loaded => (LoadState::Err, LoadAction::None),
-                LoadState::Loading => (LoadState::Loading, LoadAction::Alloc),
-                LoadState::Err => (LoadState::Err, LoadAction::None),
-            },
-            LoadEvent::Unload => match cur_state {
-                LoadState::Unloaded => (LoadState::Unloaded, LoadAction::Unload),
-                LoadState::Loaded => (LoadState::Unloaded, LoadAction::Unload),
-                LoadState::Loading => (LoadState::Unloaded, LoadAction::Unload),
-                LoadState::Err => (LoadState::Unloaded, LoadAction::Unload),
-            },
-            // Unknown load events are ignored - state remains unchanged
-            _ => (cur_state, LoadAction::None),
-        }
-    }
 }
 
 impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
@@ -620,7 +571,7 @@ impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
             Some(b) => b[0],
             None => return LoadAction::None,
         };
-        let (mut new_state, action) = Self::next_state(event_byte.into(), self.state);
+        let (mut new_state, action) = load_control_transition(self.state, event_byte.into());
 
         match action {
             LoadAction::LoadStart => {}
