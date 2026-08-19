@@ -5,7 +5,7 @@
 //! ETS-loaded tables, dirty tracking, extension state — with the
 //! family's structural differences:
 //!
-//! - **The individual address lives inside the RT8 address table**
+//! - **The individual address lives inside the RT8-coded address table**
 //!   (offset 1–2; see [`addr8`](crate::objects::tables::addr8)). The
 //!   `StackState` accessors delegate there, so the service path and the
 //!   download path share one storage, as on real System 7 hardware.
@@ -59,8 +59,8 @@ pub const SYSTEM7_RAM_SIZE: usize = 256;
 ///
 /// # Generic Parameters
 ///
-/// - `ADT_SIZE`: RT8 address table size in bytes (3 + MAX_ADDR * 2)
-/// - `AST_SIZE`: RT8 association table size in bytes (1 + MAX_ASSO * 2)
+/// - `ADT_SIZE`: RT8-coded address table size in bytes (3 + MAX_ADDR * 2)
+/// - `AST_SIZE`: System 7 association table size in bytes (1 + MAX_ASSO * 2)
 /// - `COT_SIZE`: group object table size in bytes (2 + MAX_CO * 2)
 /// - `D`: Stack definition — provides `D::P` (parameters) and `D::CO`
 ///   (communication objects)
@@ -107,11 +107,11 @@ pub struct System7DeviceState<
     // ========================================================================
     // ETS-Loaded Tables
     // ========================================================================
-    /// RT8 address table, fixed at 4000h. **Also holds the device's
+    /// RT8-coded address table, fixed at 4000h. **Also holds the device's
     /// individual address** at offset 1–2.
     pub adt: RefCell<Table<AddrTab8Impl<ADT_SIZE>, AbsoluteAlloc>>,
 
-    /// RT8 association table, located via `PID_TABLE_REFERENCE`.
+    /// System 7 association table, located via `PID_TABLE_REFERENCE`.
     pub ast: RefCell<Table<AssoTab8Impl<AST_SIZE>, AbsoluteAlloc>>,
 
     /// Group object table (CO type + flags). Internal — no interface

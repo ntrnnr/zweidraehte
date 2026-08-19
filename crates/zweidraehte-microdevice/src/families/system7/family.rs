@@ -10,6 +10,7 @@ use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState, MemLoadControlRecord, RunEvent, RunState};
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
+use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -125,7 +126,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     const RAM2_SIZE: usize = 0x100;
     const MEMORY_REGIONS: &'static [MemoryRegion] = P::REGIONS;
 
-    // RT8: the table starts the user EEPROM, and the IA is defined as
+    // RT8 coding: the table starts the user EEPROM, and the IA is defined as
     // bytes 1–2 of the blob (4001h–4002h) — there is no separate cell.
     const ADDR_TABLE_OFFSET: usize = 0;
     fn ia_eeprom_offset() -> usize {
@@ -144,7 +145,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
         COT_ADDR.checked_sub(Self::EEPROM_BASE).map(usize::from).unwrap_or(EEPROM_LEN)
     }
 
-    const SENDING_ASSOC_INDEXED: bool = false;
+    const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::FirstMatch;
 
     // System 7 group object table: [count:1][ram_flags_ptr:2BE] then
     // [data_ptr:2BE][config:1][type:1] per entry.
@@ -218,7 +219,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
 
     fn unload_side_effect(machine: usize, eeprom: &mut [u8], mgmt: &mut ManagementState) {
         match machine {
-            // RT8 mutes at length 1: the IA at bytes 1–2 survives,
+            // The RT8 coding mutes at length 1: the IA at bytes 1–2 survives,
             // while no GA remains counted.
             0 => {
                 if let Some(count) = eeprom.get_mut(Self::ADDR_TABLE_OFFSET) {

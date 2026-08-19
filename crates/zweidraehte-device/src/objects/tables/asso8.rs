@@ -13,15 +13,21 @@
 //! offset 2 + 2n        ASAP
 //! ```
 //!
-//! One octet per TSAP and per ASAP — an RT8 device is capped at 255
-//! group addresses and 255 group objects by the table format itself.
+//! One octet per TSAP and per ASAP, so either identifier is limited to
+//! the range 0..=255 by the association-table format itself.
 //! The [`AssociationTable`] trait speaks `u16` IDs, so values are
 //! zero-extended on the way out and the write path never has to narrow
 //! (ETS cannot express a wider ID in this format to begin with).
+//!
+//! Resources §4.17.6 specifies RT8's format and location but no sending
+//! lookup rule. The System 7 adapter uses the compact table ETS writes for
+//! mask 0705 and selects the first row naming the requested ASAP; unlike RT6,
+//! a zero count does not invent an identity association.
 
 use const_default::ConstDefault;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+use zweidraehte_proto::tables::association::{BcuAssociationTableView, SendingAssociation};
 
 use super::{AbsoluteAlloc, AssociationTable, Table, TableMemory};
 
@@ -33,108 +39,24 @@ pub struct AssoTab8Impl<const N: usize> {
 }
 
 impl<const N: usize> Table<AssoTab8Impl<N>, AbsoluteAlloc> {
+    fn view(&self) -> BcuAssociationTableView<'_> {
+        BcuAssociationTableView::new(&self.table.data)
+    }
+
     /// Get the TSAP at the given **1-based** index.
     ///
     /// Returns `None` for index 0 or beyond [`entry_count`](AssociationTable::entry_count).
     pub fn tsap(&self, idx: u16) -> Option<u16> {
-        if idx == 0 || idx > self.entry_count() {
-            return None;
-        }
-        // Format: [count, tsap1, asap1, tsap2, asap2, ...] — 2 bytes per entry.
-        Some(self.table.data[1 + ((idx as usize) - 1) * 2] as u16)
+        let number = idx.checked_sub(1)?;
+        self.view().association(number).map(|association| u16::from(association.tsap))
     }
 
     /// Get the ASAP at the given **1-based** index.
     ///
     /// Returns `None` for index 0 or beyond [`entry_count`](AssociationTable::entry_count).
     pub fn asap(&self, idx: u16) -> Option<u16> {
-        if idx == 0 || idx > self.entry_count() {
-            return None;
-        }
-        Some(self.table.data[2 + ((idx as usize) - 1) * 2] as u16)
-    }
-
-    /// Find the next ASAP associated with a given TSAP, scanning from
-    /// `start_idx`. Empty table assumes the default mapping ASAP = TSAP,
-    /// as in [`AssoTab6`](super::asso6::AssoTab6).
-    fn find_next_asap(&self, tsap: u16, start_idx: &mut u16) -> Option<(u16, u16)> {
-        let count = self.entry_count();
-
-        if count > 0 {
-            while *start_idx < count {
-                *start_idx += 1;
-
-                if self.tsap(*start_idx) == Some(tsap) {
-                    let asap = self.asap(*start_idx).expect("idx stays within entry_count");
-                    return Some((asap, *start_idx));
-                }
-            }
-
-            None
-        } else {
-            if *start_idx == 0 {
-                *start_idx = 1;
-                return Some((tsap, 1));
-            }
-
-            None
-        }
-    }
-
-    /// Find the next TSAP associated with a given ASAP, scanning from
-    /// `start_idx`. Empty table assumes the default mapping TSAP = ASAP.
-    fn find_next_tsap(&self, asap: u16, start_idx: &mut u16) -> Option<(u16, u16)> {
-        let count = self.entry_count();
-
-        if count > 0 {
-            while *start_idx < count {
-                *start_idx += 1;
-
-                if self.asap(*start_idx) == Some(asap) {
-                    let tsap = self.tsap(*start_idx).expect("idx stays within entry_count");
-                    return Some((tsap, *start_idx));
-                }
-            }
-
-            None
-        } else {
-            if *start_idx == 0 {
-                *start_idx = 1;
-                return Some((asap, 1));
-            }
-
-            None
-        }
-    }
-}
-
-/// Iterator for TSAPs associated with a given ASAP
-pub struct TsapIterator<'a, const N: usize> {
-    table: &'a Table<AssoTab8Impl<N>, AbsoluteAlloc>,
-    asap: u16,
-    current_idx: u16,
-}
-
-impl<'a, const N: usize> Iterator for TsapIterator<'a, N> {
-    type Item = u16;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.table.find_next_tsap(self.asap, &mut self.current_idx).map(|(tsap, _)| tsap)
-    }
-}
-
-/// Iterator for ASAPs associated with a given TSAP
-pub struct AsapIterator<'a, const N: usize> {
-    table: &'a Table<AssoTab8Impl<N>, AbsoluteAlloc>,
-    tsap: u16,
-    current_idx: u16,
-}
-
-impl<'a, const N: usize> Iterator for AsapIterator<'a, N> {
-    type Item = u16;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.table.find_next_asap(self.tsap, &mut self.current_idx).map(|(asap, _)| asap)
+        let number = idx.checked_sub(1)?;
+        self.view().association(number).map(|association| u16::from(association.asap))
     }
 }
 
@@ -150,48 +72,40 @@ impl<const N: usize> TableMemory for AssoTab8Impl<N> {
 
 impl<const N: usize> AssociationTable for Table<AssoTab8Impl<N>, AbsoluteAlloc> {
     fn max_entries(&self) -> usize {
-        (N - 1) / 2
+        N.saturating_sub(1) / 2
     }
 
     fn entry_count(&self) -> u16 {
-        // The count is bus-downloaded data and must not exceed physical capacity.
-        (self.table.data[0] as u16).min(self.max_entries() as u16)
+        self.view().entry_count()
     }
 
     /// Gets the sending TSAP for a given ASAP
     ///
     /// Returns `Some(tsap)` if a match is found, `None` otherwise.
-    /// When the table is empty, it assumes a default mapping where TSAP == ASAP.
     fn sending_tsap(&self, asap: u16) -> Option<u16> {
         trace!("Finding sending TSAP for ASAP {}", asap);
-
-        let count = self.entry_count();
-
-        if count == 0 {
-            trace!("Table is empty, assuming default TSAP {} for ASAP {}", asap, asap);
-            return Some(asap);
-        }
-
-        for i in 1..=count {
-            if self.asap(i) == Some(asap) {
-                let tsap = self.tsap(i).expect("idx stays within entry_count");
-                trace!("Found sending TSAP {} for ASAP {}", tsap, asap);
-                return Some(tsap);
-            }
-        }
-
-        trace!("No sending TSAP found for ASAP {}", asap);
-        None
+        let asap = u8::try_from(asap).ok()?;
+        let tsap = self.view().sending_tsap(asap, SendingAssociation::FirstMatch).map(u16::from);
+        trace!("Sending TSAP for ASAP {}: {:?}", asap, tsap);
+        tsap
     }
 
     /// Iterator over all TSAPs associated with a given ASAP
     fn tsaps_for_asap(&self, asap: u16) -> impl Iterator<Item = u16> + '_ {
-        TsapIterator { table: self, asap, current_idx: 0 }
+        let asap = u8::try_from(asap).ok();
+        self.view()
+            .associations()
+            .filter(move |association| Some(association.asap) == asap)
+            .map(|association| u16::from(association.tsap))
     }
 
     /// Iterator over all ASAPs associated with a given TSAP
     fn asaps_for_tsap(&self, tsap: u16) -> impl Iterator<Item = u16> + '_ {
-        AsapIterator { table: self, tsap, current_idx: 0 }
+        let tsap = u8::try_from(tsap).ok();
+        self.view()
+            .associations()
+            .filter(move |association| Some(association.tsap) == tsap)
+            .map(|association| u16::from(association.asap))
     }
 }
 
@@ -250,15 +164,15 @@ mod test {
         assert_eq!(ast.asaps_for_tsap(9).count(), 0);
     }
 
-    /// An empty table falls back to the identity mapping, matching the
-    /// RT6 implementation's behaviour.
+    /// RT6 defines an identity fallback for its property table, but RT8 does
+    /// not. A zero-sized byte table therefore contains no association.
     #[test]
-    fn asso8_empty_table_identity_mapping() {
+    fn asso8_empty_table_has_no_mapping() {
         let ast = AssoTab8::<10>::new();
         assert_eq!(ast.entry_count(), 0);
-        assert_eq!(ast.sending_tsap(5), Some(5));
+        assert_eq!(ast.sending_tsap(5), None);
         let tsaps: heapless::Vec<u16, 4> = ast.tsaps_for_asap(7).collect();
-        assert_eq!(&tsaps[..], &[7]);
+        assert!(tsaps.is_empty());
     }
 
     /// A corrupt count byte larger than the physical capacity must be

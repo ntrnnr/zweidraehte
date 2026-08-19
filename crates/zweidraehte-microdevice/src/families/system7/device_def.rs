@@ -4,8 +4,8 @@
 //! table capacities, group objects, factory links, and the placement
 //! of the movable segments — and [`System7Family::build_eeprom`] lays
 //! it down as the byte image the device boots from. The image starts
-//! at 4000h; only the RT8 address table's place in it is fixed by the
-//! mask. The association table and application segment go where the
+//! at 4000h; only the RT8-coded address table's place in it is fixed
+//! by the mask. The association table and application segment go where the
 //! product says (a real download may later re-allocate them anywhere
 //! in the window), and the group object table goes at the family's
 //! `COT_ADDR` — the same address the product database publishes, which
@@ -46,8 +46,8 @@ pub struct System7DeviceDefinition {
     /// 2-byte pointer; this stack maps page-0).
     pub ram_flags_ptr: u16,
     pub comm_objects: &'static [System7CoDescriptor],
-    /// Factory-loaded group addresses (TSAPs 1.. in order). RT8
-    /// mandates ascending order — the builder asserts it.
+    /// Factory-loaded group addresses (TSAPs 1.. in order). The adopted
+    /// RT8 coding mandates ascending order — the builder asserts it.
     pub group_addresses: &'static [GroupAddress],
     /// Factory-loaded associations `(tsap, asap)`.
     pub associations: &'static [(u8, u8)],
@@ -70,9 +70,9 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P> System7Family<EEPROM_LEN, 
     pub fn build_eeprom(def: &System7DeviceDefinition) -> [u8; EEPROM_LEN] {
         let mut e = [0u8; EEPROM_LEN];
 
-        // ── RT8 address table at 4000h ──────────────────────────────
+        // ── RT8-coded address table at 4000h ────────────────────────
         // [length][IA:2BE][GA:2BE × (length - 1)].
-        assert!(def.max_group_addresses < u8::MAX, "RT8 length leaves room for at most 254 group addresses");
+        assert!(def.max_group_addresses < u8::MAX, "RT8 coding leaves room for at most 254 group addresses");
         assert!(def.group_addresses.len() <= usize::from(def.max_group_addresses));
         assert!(3 + usize::from(def.max_group_addresses) * 2 <= def.ast_offset, "ADT capacity overlaps the AST");
         e[0] = 1 + def.group_addresses.len() as u8;
@@ -87,7 +87,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P> System7Family<EEPROM_LEN, 
             e[off..off + 2].copy_from_slice(ga.as_bytes());
         }
 
-        // ── RT8 association table at the product's placement ────────
+        // ── System 7 association table at the product's placement ──
         // [count][(tsap, asap) × count]
         assert!(def.associations.len() <= usize::from(def.max_associations));
         let ast = def.ast_offset;

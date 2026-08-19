@@ -14,10 +14,10 @@
 //! `TableCoding` impl here emits, and both document the same layout.
 //! The formats:
 //!
-//! | | BCU2 (RT2) | System 7 (RT8) | System B |
+//! | | BCU2 (RT2) | System 7 | System B |
 //! |---|---|---|---|
 //! | address table | `[len:1][IA:2][GA:2×(len-1)]` ([`Addr2`]) | same coding ([`Addr8`]) | `[count:2BE][GA:2×n]` ([`Addr7`]) |
-//! | association table | as RT8 ([`Asso8`]) | `[count:1][(tsap:1,asap:1)×n]` ([`Asso8`]) | `[count:2BE][(tsap:2BE,asap:2BE)×n]` ([`Asso6`]) |
+//! | association table | `[count:1][(tsap:1,asap:1)×n]` ([`Asso2`]) | same bytes, compact first-match order ([`System7AssociationTableCoding`]) | `[count:2BE][(tsap:2BE,asap:2BE)×n]` ([`Asso6`]) |
 //! | group object table | `[count:1][ram-ptr:1][(ptr:1,cfg:1,type:1)×n]` ([`Cot2`]) | `[count:1][ram-ptr:2][(ptr:2,cfg:1,type:1)×n]` ([`System7ComObjectTableCoding`]) | `[count:2BE][(flags:1,type:1)×n]` ([`Co7`]) |
 //!
 //! BCU2 and System 7 store the device's own individual address inside
@@ -69,6 +69,16 @@ impl CountWidth {
         match self {
             Self::U8 => 1,
             Self::U16 => 2,
+        }
+    }
+
+    /// Decode a count from the start of a complete table blob.
+    pub fn read(self, data: &[u8]) -> Option<usize> {
+        match self {
+            Self::U8 => data.first().copied().map(usize::from),
+            Self::U16 => {
+                data.get(..2).and_then(|bytes| <[u8; 2]>::try_from(bytes).ok()).map(u16::from_be_bytes).map(usize::from)
+            }
         }
     }
 
@@ -241,8 +251,9 @@ pub type Addr8 = Addr1;
 ///
 /// TSAP is the 1-based index into the group address table (TSAP 0 is
 /// the device's own IA), ASAP the group object number. The format's
-/// one-octet fields cap both at 255. Entries go out sorted by
-/// (TSAP, ASAP), the order ETS writes.
+/// one-octet fields cap both at 255. Section 4.17.6 specifies no
+/// ordering or sending-association rule, so this coding preserves the
+/// caller's row order.
 pub struct Asso8;
 
 impl TableCoding for Asso8 {
@@ -250,6 +261,27 @@ impl TableCoding for Asso8 {
     const ENTRY_LEN: usize = 2;
     const COUNT: CountWidth = CountWidth::U8;
     const OVERFLOW_MSG: &'static str = "RT8 association table holds at most 255 associations";
+
+    fn write_entry(&(tsap, asap): &(u8, u8), out: &mut Vec<u8>) {
+        out.push(tsap);
+        out.push(asap);
+    }
+}
+
+/// The compact System 7 association-table coding used by mask 0705.
+///
+/// ETS names the formatter `AssociationTable_M112`; Profiles §4.5.2
+/// does not assign 0705 to RT8 even though its rows have RT8's byte
+/// shape. Unlike the indexed RT1/RT2 tables, only actual links are
+/// stored, sorted by `(TSAP, ASAP)` and deduplicated. The device finds
+/// a sending association by the first matching ASAP.
+pub struct System7AssociationTableCoding;
+
+impl TableCoding for System7AssociationTableCoding {
+    type Entry = (u8, u8);
+    const ENTRY_LEN: usize = 2;
+    const COUNT: CountWidth = CountWidth::U8;
+    const OVERFLOW_MSG: &'static str = "the System 7 association table holds at most 255 associations";
 
     fn normalize(entries: &[(u8, u8)]) -> Cow<'_, [(u8, u8)]> {
         let mut sorted = entries.to_vec();
@@ -361,10 +393,22 @@ impl TableCoding for System7ComObjectTableCoding {
 pub type Addr2 = Addr1;
 
 /// The BCU2 association table (Realisation Type 2, 03/05/01 §4.17.4):
-/// RT2's coding is RT8's — one-octet count, (tsap:1, asap:1) entries —
-/// so this is an alias, kept so a BCU2 call site names the realisation
-/// type it implements.
-pub type Asso2 = Asso8;
+/// RT2's byte coding is RT8's — one-octet count, (tsap:1, asap:1)
+/// entries — but its build rules make row order load-bearing. Callers
+/// must put ASAP `n`'s sending association in row `n`.
+pub struct Asso2;
+
+impl TableCoding for Asso2 {
+    type Entry = (u8, u8);
+    const ENTRY_LEN: usize = 2;
+    const COUNT: CountWidth = CountWidth::U8;
+    const OVERFLOW_MSG: &'static str = "RT2 association table holds at most 255 associations";
+
+    fn write_entry(&(tsap, asap): &(u8, u8), out: &mut Vec<u8>) {
+        out.push(tsap);
+        out.push(asap);
+    }
+}
 
 /// One row of the BCU2 group object table — [`ComObjectEntry`] with
 /// the pointer narrowed to the one octet the HC05's address space
@@ -447,8 +491,22 @@ impl TableCoding for Cot2 {
 // ============================================================================
 
 /// The BCU1 association table (Realisation Type 1, 03/05/01 §4.17.3):
-/// the same one-octet-identifier coding RT2 and RT8 use.
-pub type Asso1 = Asso8;
+/// the same one-octet-identifier coding RT2 and RT8 use. As with RT2,
+/// callers must arrange the indexed sending-association rows before
+/// encoding.
+pub struct Asso1;
+
+impl TableCoding for Asso1 {
+    type Entry = (u8, u8);
+    const ENTRY_LEN: usize = 2;
+    const COUNT: CountWidth = CountWidth::U8;
+    const OVERFLOW_MSG: &'static str = "RT1 association table holds at most 255 associations";
+
+    fn write_entry(&(tsap, asap): &(u8, u8), out: &mut Vec<u8>) {
+        out.push(tsap);
+        out.push(asap);
+    }
+}
 
 /// The BCU1 group object table (Realisation Type 1, 03/05/01
 /// §4.18.3): [`Cot2`]'s layout with one semantic delta — the config
@@ -598,8 +656,14 @@ mod tests {
     }
 
     #[test]
-    fn asso8_blob_sorts_and_dedups() {
+    fn asso8_blob_preserves_unspecified_row_order() {
         let blob = Asso8.blob(&[(2, 5), (1, 3), (2, 4), (1, 3)]).expect("fits");
+        assert_eq!(blob, [4, 2, 5, 1, 3, 2, 4, 1, 3]);
+    }
+
+    #[test]
+    fn system7_association_blob_sorts_and_dedups() {
+        let blob = System7AssociationTableCoding.blob(&[(2, 5), (1, 3), (2, 4), (1, 3)]).expect("fits");
         assert_eq!(blob, [3, 1, 3, 2, 4, 2, 5]);
     }
 
@@ -703,7 +767,7 @@ mod tests {
     fn overflow_is_checked_on_the_written_count() {
         // 256 distinct associations overflow the one-octet count...
         let too_many: Vec<(u8, u8)> = (0..=255u8).map(|n| (n, n)).collect();
-        assert!(Asso8.blob(&too_many).is_err());
+        assert!(System7AssociationTableCoding.blob(&too_many).is_err());
 
         // ...but duplicates that dedup away below the cap do not: the
         // check tests the count as written, not the input length.
@@ -711,7 +775,7 @@ mod tests {
         with_duplicates.truncate(255);
         with_duplicates.push((0, 0));
         assert_eq!(with_duplicates.len(), 256);
-        let blob = Asso8.blob(&with_duplicates).expect("255 after dedup fits");
+        let blob = System7AssociationTableCoding.blob(&with_duplicates).expect("255 after dedup fits");
         assert_eq!(blob[0], 255);
     }
 }

@@ -5,7 +5,7 @@
 //! the System 7 masks and ETS reaches the table bytes through absolute
 //! memory anyway — omitting it also sidesteps the fact that the shared
 //! array-property helpers assume the System B tables' 2-octet count
-//! prefix, while RT8 uses a single octet.
+//! prefix, while the compact System 7 tables use a single octet.
 //!
 //! Access levels per the 0705h column of Annex A.2.4/A.2.5: reads at 15
 //! ("everyone" in the 16-level model), the load state machine writable

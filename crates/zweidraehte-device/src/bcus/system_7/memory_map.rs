@@ -10,7 +10,7 @@
 //! 0104h            load-control write window, one record ≤ 12 octets
 //!                  (03/05/02 §3.31.2 DMP_LoadStateMachineWrite_RCo_Mem)
 //! 0700h..07FFh     RAM window ("resources from 0700h")
-//! 4000h..          RT8 group address table (fixed, Resources §4.16.9.2)
+//! 4000h..          RT8-coded group address table (fixed at 4000h)
 //! B6EAh..B6EDh     load-state bytes: ADT / AST / APP / APP2
 //! product const    group object table (`System7ProductLayout::COT_ADDRESS` —
 //!                  no location resource exists for it)
@@ -60,8 +60,7 @@ impl System7MemoryMap {
     pub const LOAD_CONTROL_LEN: usize = 12;
     /// Start of the RAM window ("resources from 0700h").
     pub const RAM_ADDR: u16 = 0x0700;
-    /// Fixed location of the RT8 group address table
-    /// (Resources §4.16.9.2).
+    /// Fixed location of the RT8-coded group address table.
     pub const ADT_ADDR: u16 = 0x4000;
     /// Load-state bytes for ADT / AST / APP / APP2, in that order
     /// (03/05/02 §3.31.2).

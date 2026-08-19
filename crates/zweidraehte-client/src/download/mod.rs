@@ -54,6 +54,6 @@ pub use product::{ComObjectDef, FixupDef, LoadProcedureStyle, ParameterLocation,
 pub use project::{CompiledDownload, GroupLink, ParameterValue, ProjectConfig, compile, load_control_path};
 pub use table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2,
-    CountWidth, System7ComObjectTableCoding, TableCoding,
+    CountWidth, System7AssociationTableCoding, System7ComObjectTableCoding, TableCoding,
 };
 pub use zweidraehte_proto::messages::apdu::load_control::{LoadEvent, LoadState};

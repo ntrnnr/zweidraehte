@@ -11,7 +11,8 @@
 //! splicing the configured entries over a segment's default bytes.
 
 use zweidraehte_client::download::{
-    Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, Cot1, Cot2, System7ComObjectTableCoding, TableCoding,
+    Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Co7, Cot1, Cot2, System7AssociationTableCoding,
+    System7ComObjectTableCoding, TableCoding,
 };
 use zweidraehte_client::{ComObjectFlags, ComObjectType, GroupAddress, IndividualAddress};
 
@@ -26,8 +27,8 @@ pub enum TableFormats {
     Bcu1,
     /// System 2 / BCU2 (masks 0020h, 0021h, 0025h): RT2 tables.
     Bcu2,
-    /// System 7 (07x1..07x5 masks): RT8 linking tables and the
-    /// profile-specific group object table.
+    /// System 7 (07x1..07x5 masks): compact one-octet linking tables
+    /// and the profile-specific group object table.
     System7,
     /// System B (x7B0 masks) — also the fallback for families whose
     /// tables we cannot display natively (couplers).
@@ -90,7 +91,9 @@ impl TableFormats {
     /// families ignore it.
     pub fn ast_shape(self, small_entries: bool) -> TableShape {
         match self {
-            Self::Bcu1 | Self::Bcu2 | Self::System7 => TableShape::of::<Asso8>(),
+            Self::Bcu1 => TableShape::of::<Asso1>(),
+            Self::Bcu2 => TableShape::of::<Asso2>(),
+            Self::System7 => TableShape::of::<System7AssociationTableCoding>(),
             Self::SystemB if small_entries => {
                 // `AssociationTable_SystemBSmall` has no download
                 // coding yet — describe its shape literally.
@@ -147,7 +150,12 @@ impl TableFormats {
                     .iter()
                     .map(|&(tsap, asap)| Some((u8::try_from(tsap).ok()?, u8::try_from(asap).ok()?)))
                     .collect();
-                Asso8.blob(&narrowed?).ok()
+                match self {
+                    Self::Bcu1 => Asso1.blob(&narrowed?).ok(),
+                    Self::Bcu2 => Asso2.blob(&narrowed?).ok(),
+                    Self::System7 => System7AssociationTableCoding.blob(&narrowed?).ok(),
+                    Self::SystemB => unreachable!("handled by the outer match"),
+                }
             }
             Self::SystemB if small_entries => None,
             Self::SystemB => Asso6.blob(entries).ok(),

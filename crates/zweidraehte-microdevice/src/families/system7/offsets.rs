@@ -16,6 +16,6 @@ pub const LOAD_CONTROL_MAX: usize = 12;
 /// Read-only load-status bytes, one `LoadState` octet per machine
 /// (ADT, AST, App, App2).
 pub const LOAD_STATUS_ADDR: u16 = 0xB6EA;
-/// The RT8 group address table is fixed at 4000h (Resources
+/// The RT8-coded group address table is fixed at 4000h (Resources
 /// §4.16.9.2), the start of user EEPROM.
 pub const ADT_ADDR: u16 = 0x4000;

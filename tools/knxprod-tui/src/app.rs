@@ -2646,7 +2646,7 @@ impl App {
     ///
     /// The Association Table maps group addresses (TSAP) to communication objects (ASAP).
     /// Format depends on mask version:
-    /// - BCU1 (MV-0705): 1-byte count + N x 2-byte entries (1-byte TSAP + 1-byte ASAP)
+    /// - BCU1/BCU2/System 7: 1-byte count + N x 2-byte entries (1-byte TSAP + 1-byte ASAP)
     /// - System B (MV-07B0): 2-byte count + N x 4-byte entries (2-byte TSAP + 2-byte ASAP)
     ///
     /// Since actual associations are configured in ETS, we generate 1:1 mappings for display.

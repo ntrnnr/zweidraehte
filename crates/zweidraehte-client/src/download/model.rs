@@ -22,8 +22,8 @@ use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use super::interpreter::LoadControlPath;
 use super::mask::{LsmRealization, MaskData};
 use super::table_coding::{
-    Addr1, Addr2, Addr7, Addr8, Asso6, Asso8, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2,
-    System7ComObjectTableCoding, TableCoding,
+    Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CountWidth,
+    System7AssociationTableCoding, System7ComObjectTableCoding, TableCoding,
 };
 use crate::error::{Error, Result};
 
@@ -214,11 +214,15 @@ pub(crate) struct ImageLayout {
     /// ASAP 0).
     pub first_asap: u16,
     /// The group address table. The individual address is passed to
-    /// every layout; RT1, RT2, and RT8 store it in TSAP slot 0, while
-    /// RT7 does not.
+    /// every layout; RT1, RT2, and the System 7 RT8-coded layout store
+    /// it in TSAP slot 0, while RT7 does not.
     pub address_table: fn(IndividualAddress, &[GroupAddress]) -> Result<Vec<u8>>,
-    /// The association table, from `(tsap, asap)` pairs.
-    pub association_table: fn(&[(u16, u16)]) -> Result<Vec<u8>>,
+    /// The association table, from `(tsap, asap)` pairs and the product's
+    /// complete ASAP roster. Indexed RT1/RT2 formats need the roster to
+    /// materialize unused sending slots; compact formats ignore it.
+    pub association_table: fn(&[(u16, u16)], &[u16]) -> Result<Vec<u8>>,
+    /// Width of the association table's leading count field.
+    pub association_count: CountWidth,
     /// The group object table, from gapless descriptor rows where
     /// row `i` is ASAP `first_asap + i`.
     pub group_object_table: fn(&[(ComObjectFlags, ComObjectType)]) -> Result<Vec<u8>>,
@@ -238,7 +242,8 @@ const BCU1_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::AbsoluteSegments,
     first_asap: 0,
     address_table: bcu1_address_table,
-    association_table: narrow_association_table,
+    association_table: bcu1_association_table,
+    association_count: CountWidth::U8,
     group_object_table: bcu1_group_object_table,
     overlay_group_object_table: Some(bcu1_overlay_group_object_table),
 };
@@ -247,6 +252,10 @@ const BCU1_LAYOUT: ImageLayout = ImageLayout {
 /// table, length octet counting its slot.
 fn bcu1_address_table(ia: IndividualAddress, group_addresses: &[GroupAddress]) -> Result<Vec<u8>> {
     Addr1 { individual_address: ia }.blob(group_addresses)
+}
+
+fn bcu1_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result<Vec<u8>> {
+    indexed_association_table(Asso1, associations, roster)
 }
 
 /// Overlay flags/type onto the vendor-supplied table; [`Cot1`]
@@ -283,8 +292,8 @@ const BCU2_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::AbsoluteSegments,
     first_asap: 0,
     address_table: bcu2_address_table,
-    // RT2 associations are RT8's coding (one octet per identifier).
-    association_table: narrow_association_table,
+    association_table: bcu2_association_table,
+    association_count: CountWidth::U8,
     group_object_table: bcu2_group_object_table,
     overlay_group_object_table: Some(bcu2_overlay_group_object_table),
 };
@@ -293,6 +302,10 @@ const BCU2_LAYOUT: ImageLayout = ImageLayout {
 /// octet counts its slot too.
 fn bcu2_address_table(ia: IndividualAddress, group_addresses: &[GroupAddress]) -> Result<Vec<u8>> {
     Addr2 { individual_address: ia }.blob(group_addresses)
+}
+
+fn bcu2_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result<Vec<u8>> {
+    indexed_association_table(Asso2, associations, roster)
 }
 
 /// Overlay flags/type onto the vendor-supplied table, preserving its
@@ -320,6 +333,50 @@ fn bcu2_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<V
     Cot2 { ram_flags_ptr: 0 }.blob(&entries)
 }
 
+/// Build the RT1/RT2 row order required by Resources §4.17.3.4.1 and
+/// §4.17.4.3.1.
+///
+/// Row `n` carries ASAP `n`'s sending TSAP. An object without a link gets
+/// the specified TSAP FEh placeholder; further links follow the indexed
+/// range as non-sending associations. The first project link of an object
+/// is its sending link.
+fn indexed_association_table<C: TableCoding<Entry = (u8, u8)>>(
+    coding: C,
+    associations: &[(u16, u16)],
+    roster: &[u16],
+) -> Result<Vec<u8>> {
+    let slot_count = roster
+        .iter()
+        .chain(associations.iter().map(|(_, asap)| asap))
+        .max()
+        .map(|&max| usize::from(max) + 1)
+        .unwrap_or(0);
+
+    let mut slots: Vec<Option<u8>> = vec![None; slot_count];
+    let mut extras: Vec<(u8, u8)> = Vec::new();
+    for &(tsap, asap) in associations {
+        let tsap = u8::try_from(tsap)
+            .ok()
+            .filter(|&tsap| tsap < 0xFE)
+            .ok_or(Error::DownloadConfig("RT1/RT2 reserve TSAP FEh; fewer group addresses needed"))?;
+        let asap = u8::try_from(asap)
+            .map_err(|_| Error::DownloadConfig("an RT1/RT2 association table holds only one-octet object numbers"))?;
+        match &mut slots[usize::from(asap)] {
+            slot @ None => *slot = Some(tsap),
+            Some(_) => extras.push((tsap, asap)),
+        }
+    }
+
+    let mut rows = Vec::with_capacity(slot_count + extras.len());
+    for (asap, slot) in slots.into_iter().enumerate() {
+        let asap = u8::try_from(asap)
+            .map_err(|_| Error::DownloadConfig("an RT1/RT2 association table holds at most 255 associations"))?;
+        rows.push((slot.unwrap_or(0xFE), asap));
+    }
+    rows.extend(extras);
+    coding.blob(&rows)
+}
+
 // ============================================================================
 // System 7
 // ============================================================================
@@ -327,28 +384,27 @@ fn bcu2_group_object_table(rows: &[(ComObjectFlags, ComObjectType)]) -> Result<V
 const SYSTEM7_LAYOUT: ImageLayout = ImageLayout {
     placement: Placement::AbsoluteSegments,
     first_asap: 0,
-    address_table: rt8_address_table,
-    association_table: narrow_association_table,
+    address_table: system7_address_table,
+    association_table: system7_association_table,
+    association_count: CountWidth::U8,
     group_object_table: system7_group_object_table,
     overlay_group_object_table: Some(system7_overlay_group_object_table),
 };
 
-/// RT8: the device's own address rides in the table ahead of the
-/// group addresses.
-fn rt8_address_table(ia: IndividualAddress, group_addresses: &[GroupAddress]) -> Result<Vec<u8>> {
+/// In System 7's RT8-coded table, the device's own address precedes
+/// the group addresses.
+fn system7_address_table(ia: IndividualAddress, group_addresses: &[GroupAddress]) -> Result<Vec<u8>> {
     Addr8 { individual_address: ia }.blob(group_addresses)
 }
 
-/// RT2 and RT8 associations are one octet per identifier. The
-/// narrowing is a checked assertion, not a live branch: both address
-/// tables' one-octet caps fail compilation before a TSAP could exceed
-/// a `u8`, and ASAPs arrive as `u8` in the project already.
-fn narrow_association_table(associations: &[(u16, u16)]) -> Result<Vec<u8>> {
+/// The compact System 7 table contains only actual links. This is not the
+/// indexed RT1/RT2 build rule even though every row has the same two octets.
+fn system7_association_table(associations: &[(u16, u16)], _roster: &[u16]) -> Result<Vec<u8>> {
     let narrow =
         |v: u16| u8::try_from(v).map_err(|_| Error::DownloadConfig("an association identifier exceeds one octet"));
     let narrowed: Vec<(u8, u8)> =
         associations.iter().map(|&(tsap, asap)| Ok((narrow(tsap)?, narrow(asap)?))).collect::<Result<_>>()?;
-    Asso8.blob(&narrowed)
+    System7AssociationTableCoding.blob(&narrowed)
 }
 
 /// Overlay flags/type onto a vendor-supplied System 7 table (see
@@ -388,6 +444,7 @@ const SYSTEM_B_LAYOUT: ImageLayout = ImageLayout {
     first_asap: 1,
     address_table: system_b_address_table,
     association_table: system_b_association_table,
+    association_count: CountWidth::U16,
     group_object_table: system_b_group_object_table,
     // RT7 descriptors are flags + type only; nothing product-secret to
     // preserve, so a default-data table would be a plain synthesis
@@ -401,7 +458,7 @@ fn system_b_address_table(_ia: IndividualAddress, group_addresses: &[GroupAddres
     Addr7.blob(group_addresses)
 }
 
-fn system_b_association_table(associations: &[(u16, u16)]) -> Result<Vec<u8>> {
+fn system_b_association_table(associations: &[(u16, u16)], _roster: &[u16]) -> Result<Vec<u8>> {
     Asso6.blob(associations)
 }
 

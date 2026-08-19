@@ -52,12 +52,12 @@ pub trait System7ProductLayout {
 /// impl System7StackDefinition for MyDevice {}
 /// ```
 pub trait System7StackDefinition: StackDefinition<Mem = System7MemoryMap> + System7ProductLayout {
-    /// RT8 address table byte size: 1-octet length + 2-octet IA +
+    /// RT8-coded address table byte size: 1-octet length + 2-octet IA +
     /// 2 octets per group address.
     const ADT_SIZE: usize = 3 + Self::DEVICE.max_address_table_entries as usize * 2;
 
-    /// RT8 association table byte size: 1-octet count + 2 octets per
-    /// entry (TSAP u8 + ASAP u8).
+    /// System 7 association table byte size: 1-octet count + 2 octets
+    /// per entry (TSAP u8 + ASAP u8).
     const AST_SIZE: usize = 1 + Self::DEVICE.max_association_table_entries as usize * 2;
 
     /// Group object table byte size in the System 7 memory format ETS's

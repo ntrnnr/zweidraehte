@@ -9,6 +9,7 @@ use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::messages::apdu::load_control::{LoadState, RunEvent, RunState};
 use zweidraehte_proto::pid::{self, pdt};
 use zweidraehte_proto::tables::address::BCU_ADDRESS_TABLE_MUTE_LENGTH;
+use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -206,7 +207,7 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
         usize::from(eeprom.get(offsets::COMMS_TAB_PTR).copied().unwrap_or(0))
     }
 
-    const SENDING_ASSOC_INDEXED: bool = true;
+    const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::IndexedChecked;
 
     // RT2 group object table: [count:1][ram_flags_ptr:1] then
     // [data_ptr:1][config:1][type:1] per entry.

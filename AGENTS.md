@@ -543,9 +543,10 @@ Subdirectories:
     (`System7StackDefinition` + `System7ProductLayout` supertraits,
     `system_7_standard_stack!`, `System7DeviceState`,
     `System7MemoryMap`, `config.rs`'s `system7_stack_config!`). Differs
-    in the management model: RT8 tables (`AddrTab8`/`AssoTab8`, IA
-    inside the address-table blob at 4000h) plus the System 7 group object
-    table at a compile-time product address, fixed absolute memory map
+    in the management model: an RT8-coded address table (`AddrTab8`, with
+    the IA inside its blob at 4000h), the compact byte-coded association
+    table currently implemented by `AssoTab8`, and the System 7 group
+    object table at a compile-time product address, fixed absolute memory map
     with memory-mapped load controls (0104h/B6EAh), absolute-segment
     load procedures, 16 authorization levels, no Group Object Table
     interface object in the base roster (so AppProg sits at index 3),

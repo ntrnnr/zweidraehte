@@ -6,3 +6,4 @@
 //! devices can continue to expose one flat EEPROM image.
 
 pub mod address;
+pub mod association;

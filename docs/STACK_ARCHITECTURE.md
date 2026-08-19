@@ -892,12 +892,14 @@ plugged in through the macro's `resources:` and `augments:` slots, with
 genuinely differs is the management model, and it is worth knowing
 which pieces those are:
 
-- **Tables.** Realisation Type 8 throughout
-  ([`objects/tables/addr8.rs`](../crates/zweidraehte-device/src/objects/tables/addr8.rs),
-  [`asso8.rs`](../crates/zweidraehte-device/src/objects/tables/asso8.rs)):
-  1-octet counts, the individual address living *inside* the address
-  table blob at its fixed 4000h home, and 2-octet association
-  entries. The System 7 group object table
+- **Tables.** The address table uses the Realisation Type 8 coding
+  ([`objects/tables/addr8.rs`](../crates/zweidraehte-device/src/objects/tables/addr8.rs)):
+  its 1-octet length includes the individual address stored inside the
+  table blob at its fixed 4000h home. The association table uses the
+  same 1-octet count and 2-octet row shape defined for RT8
+  ([`asso8.rs`](../crates/zweidraehte-device/src/objects/tables/asso8.rs)),
+  but Profiles §4.5.1/§4.5.2 do not formally assign mask 0705 to either
+  linking-table realisation. The System 7 group object table
   ([`co_system7.rs`](../crates/zweidraehte-device/src/objects/tables/co_system7.rs))
   lives at a compile-time product address. The spec assigns it no
   realisation; ETS's external `GroupObjectTable_M112` formatter is the

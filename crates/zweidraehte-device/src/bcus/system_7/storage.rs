@@ -8,7 +8,7 @@
 //! Two deliberate differences from System B's `DeviceConfig`:
 //!
 //! - **No `individual_address` field.** On System 7 the IA lives inside
-//!   the RT8 address table (offset 1–2, see
+//!   the RT8-coded address table (offset 1–2, see
 //!   [`addr8`](crate::objects::tables::addr8)) and is persisted as part
 //!   of that blob — a separate field could diverge from what ETS
 //!   downloads.
@@ -61,8 +61,8 @@ impl<I, C> System7StateInit<I, C, ()> {
 /// # Generic Parameters
 ///
 /// The const generics are the actual byte sizes of each table:
-/// - `ADT_SIZE`: RT8 address table size (3 + MAX_ADDR * 2)
-/// - `AST_SIZE`: RT8 association table size (1 + MAX_ASSO * 2)
+/// - `ADT_SIZE`: RT8-coded address table size (3 + MAX_ADDR * 2)
+/// - `AST_SIZE`: System 7 association table size (1 + MAX_ASSO * 2)
 /// - `COT_SIZE`: group object table size in the System 7 memory format
 ///   (3 + (MAX_CO + 1) * 4)
 /// - `P`: Application parameters type
@@ -96,11 +96,11 @@ pub struct System7DeviceConfig<
     /// OptionReg (03/05/01 Resources §4.25), exposed at memory 0100h.
     pub option_reg: u8,
 
-    /// RT8 address table (fixed at 4000h; carries the device IA at
+    /// RT8-coded address table (fixed at 4000h; carries the device IA at
     /// offset 1–2).
     pub address_table: Table<AddrTab8Impl<ADT_SIZE>, AbsoluteAlloc>,
 
-    /// RT8 association table (located via `PID_TABLE_REFERENCE`).
+    /// System 7 association table (located via `PID_TABLE_REFERENCE`).
     pub association_table: Table<AssoTab8Impl<AST_SIZE>, AbsoluteAlloc>,
 
     /// Group object table (CO type + flags). Internal — System 7 exposes
@@ -166,8 +166,8 @@ impl<
 /// Returns `(adt_size, ast_size, cot_size)` for use as const generics.
 pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (usize, usize, usize) {
     (
-        3 + max_addr * 2,     // ADT RT8: 1-byte length + 2-byte IA + 2 bytes per GA
-        1 + max_asso * 2,     // AST RT8: 1-byte count + 2 bytes per entry
+        3 + max_addr * 2,     // RT8-coded ADT: 1-byte length + 2-byte IA + 2 bytes per GA
+        1 + max_asso * 2,     // System 7 AST: 1-byte count + 2 bytes per entry
         3 + (max_co + 1) * 4, // System 7 COT: count + RAM-flags ptr + 4 bytes per ASAP 0..=max
     )
 }

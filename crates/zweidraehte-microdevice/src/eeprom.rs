@@ -17,6 +17,7 @@ use core::marker::PhantomData;
 use zweidraehte_proto::{
     address::{GroupAddress, IndividualAddress},
     tables::address::BcuAddressTableView,
+    tables::association::BcuAssociationTableView,
 };
 
 use crate::family::MicroDeviceFamily;
@@ -106,18 +107,19 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         F::assoc_table_offset(self.eeprom, self.mgmt)
     }
 
+    fn association_table(&self) -> BcuAssociationTableView<'_> {
+        let data = self.eeprom.get(self.assoc_offset()..).unwrap_or_default();
+        BcuAssociationTableView::new(data)
+    }
+
     pub fn assoc_count(&self) -> u8 {
-        self.byte(self.assoc_offset())
+        u8::try_from(self.association_table().entry_count()).expect("one-octet count bounds the association table")
     }
 
     /// Iterate `(tsap, asap)` pairs in table order. Order matters: the
     /// first association of an ASAP is its sending association.
     pub fn associations(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
-        let base = self.assoc_offset();
-        (0..usize::from(self.assoc_count())).filter_map(move |i| {
-            let off = base + 1 + i * 2;
-            if off + 1 >= self.eeprom.len() { None } else { Some((self.eeprom[off], self.eeprom[off + 1])) }
-        })
+        self.association_table().associations().map(|association| (association.tsap, association.asap))
     }
 
     /// The sending association of an ASAP, resolved the family's way.
@@ -130,25 +132,13 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
     /// writes into the slot of an object with no group address; it is
     /// no sending association either.
     ///
-    /// RT8 *scans*: the table is sorted by TSAP, so the sending
-    /// association is the first entry naming the ASAP — the same rule
-    /// the full stack's `AssoTab8` applies.
+    /// System 7 *scans*: its compact table is sorted by TSAP, so the
+    /// sending association is the first entry naming the ASAP.
     ///
     /// Either way `None` means no association, which the transmit scan
     /// reports as idle-with-error.
     pub fn sending_tsap(&self, asap: u8) -> Option<u8> {
-        if !F::SENDING_ASSOC_INDEXED {
-            return self.associations().find(|&(_, a)| a == asap).map(|(tsap, _)| tsap);
-        }
-        if asap >= self.assoc_count() {
-            return None;
-        }
-        let off = self.assoc_offset() + 1 + usize::from(asap) * 2;
-        if off + 1 >= self.eeprom.len() {
-            return None;
-        }
-        let (tsap, slot_asap) = (self.eeprom[off], self.eeprom[off + 1]);
-        (slot_asap == asap && tsap != 0xFE).then_some(tsap)
+        self.association_table().sending_tsap(asap, F::SENDING_ASSOCIATION)
     }
 
     // ── Group object table ──────────────────────────────────────────
@@ -195,6 +185,7 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::families::bcu1::Bcu1Family;
     use crate::families::bcu2::Bcu2Family;
 
     /// A hand-laid BCU2 EEPROM: address table at 0116h with two GAs,
@@ -286,6 +277,22 @@ mod tests {
         assert_eq!(t.sending_tsap(2), None, "beyond the table");
     }
 
+    #[test]
+    fn rt1_uses_the_index_without_checking_the_stored_asap() {
+        // Resources §4.17.3.3.1 explicitly says RT1 does not check the
+        // ASAP in the indexed row; RT2 §4.17.4.3.1 explicitly does.
+        let mut image = image();
+        image[0x20] = 1;
+        image[0x21] = 2;
+        image[0x22] = 7;
+        let mgmt = ManagementState::new();
+
+        let rt1 = Tables::<Bcu1Family>::new(&image, &mgmt);
+        let rt2 = Tables::<Bcu2Family>::new(&image, &mgmt);
+        assert_eq!(rt1.sending_tsap(0), Some(2));
+        assert_eq!(rt2.sending_tsap(0), None);
+    }
+
     /// A hand-laid System 7 image (window 4000h..4400h): RT8 address
     /// table at offset 0, association table at offset 0x100 (found
     /// through machine 1's `table_ref`), System 7 group object table at
@@ -344,7 +351,7 @@ mod tests {
         assert_eq!(t.assoc_count(), 0);
         assert_eq!(t.sending_tsap(0), None);
 
-        // RT8 resolves the sending association by scan, not by slot:
+        // System 7 resolves the sending association by scan, not by slot:
         // a single entry linking ASAP 3 through TSAP 1 sits in slot 0
         // and still sends (the shape a one-link download writes).
         e[0x100] = 1;

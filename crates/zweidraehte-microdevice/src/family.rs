@@ -14,6 +14,7 @@ use heapless::Vec;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::memory::MemoryRegion;
 use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor};
+use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::transport::TlStyle;
 
 use crate::device::DeviceIdentity;
@@ -194,12 +195,11 @@ pub trait MicroDeviceFamily: 'static {
     /// EEPROM-array offset where the group object table starts.
     fn cot_table_offset(eeprom: &[u8], mgmt: &ManagementState) -> usize;
 
-    /// How the sending association resolves. RT2 (03/05/01
-    /// §4.17.4.3.1) indexes: the slot whose number equals the ASAP,
-    /// with TSAP FEh as the unused-slot sentinel. RT8 scans: the first
-    /// entry naming the ASAP — the table is sorted by TSAP, so slot
-    /// numbers correspond to nothing.
-    const SENDING_ASSOC_INDEXED: bool;
+    /// Realization-specific sending-association selection. RT1 and RT2
+    /// both index the slot whose number equals the ASAP, but only RT2
+    /// validates that the row names the requested ASAP. System 7's
+    /// compact table is searched instead.
+    const SENDING_ASSOCIATION: SendingAssociation;
 
     // ── Group object table coding ────────────────────────────────────
 

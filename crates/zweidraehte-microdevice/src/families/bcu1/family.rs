@@ -1,6 +1,7 @@
 //! The BCU1 instance of the family seam.
 
 use zweidraehte_proto::memory::MemoryRegion;
+use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
@@ -65,7 +66,7 @@ impl MicroDeviceFamily for Bcu1Family {
         usize::from(eeprom.get(offsets::COMMS_TAB_PTR).copied().unwrap_or(0))
     }
 
-    const SENDING_ASSOC_INDEXED: bool = true;
+    const SENDING_ASSOCIATION: SendingAssociation = SendingAssociation::Indexed;
 
     // RT1 group object table: [count:1][ram_flags_ptr:1] then
     // [data_ptr:1][config:1][type:1] per entry. (RT1's config bit 7 is

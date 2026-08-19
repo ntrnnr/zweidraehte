@@ -12,10 +12,11 @@
 /// Same input blocks as `knx_stack_config!`; differences in what comes
 /// out:
 ///
-/// - `AddrTab` / `AssoTab` are the RT8 types
-///   ([`AddrTab8`](crate::objects::tables::addr8::AddrTab8) /
-///   [`AssoTab8`](crate::objects::tables::asso8::AssoTab8)); `CoTab` is
-///   the System 7 memory format
+/// - `AddrTab` uses the RT8-coded
+///   [`AddrTab8`](crate::objects::tables::addr8::AddrTab8); `AssoTab`
+///   uses the compact byte-coded
+///   [`AssoTab8`](crate::objects::tables::asso8::AssoTab8) storage; and
+///   `CoTab` is the System 7 memory format
 ///   ([`System7ComObjectTable`](crate::objects::tables::System7ComObjectTable)) that ETS's
 ///   System 7 formatter writes. The table is indexed by ASAP, so
 ///   ASAPs must be contiguous (compile-time checked). Products number
@@ -25,11 +26,11 @@
 /// - The parsed `individual_address` is *also* baked into the address
 ///   table's IA slot — on System 7 that slot is the device's address
 ///   storage.
-/// - Group addresses must be listed in ascending order (RT8 mandates a
-///   sorted table; the runtime TSAP lookup is a binary search). `new()`
-///   asserts this at compile time.
+/// - Group addresses must be listed in ascending order (the RT8 coding
+///   mandates a sorted table; the runtime TSAP lookup is a binary
+///   search). `new()` asserts this at compile time.
 /// - `create_tables(ast_address, cot_address)` takes no address-table
-///   address: RT8 fixes it at 4000h.
+///   address: the System 7 layout fixes it at 4000h.
 /// - No `security:` arm — there is no Data Secure System 7 profile in
 ///   the stack yet.
 ///
@@ -96,7 +97,7 @@ macro_rules! system7_stack_config {
             /// 1 leaves entry 0 as a zeroed spare.
             pub const COT_SIZE: usize = 3 + (Self::MAX_ASAP + 1) * 4;
 
-            /// The fixed location of the RT8 address table.
+            /// The fixed location of the RT8-coded address table.
             pub const ADT_ADDRESS: u32 = 0x4000;
 
             pub const fn new() -> Self {
@@ -130,11 +131,11 @@ macro_rules! system7_stack_config {
                     ::zweidraehte_proto::address::IndividualAddress::new(area, line, device)
                 };
 
-                // Build the RT8 address table: [length][IA][GA...], with
+                // Build the RT8-coded address table: [length][IA][GA...], with
                 // the IA included in `length`.
                 assert!(
                     Self::NUM_GROUP_ADDRS < u8::MAX as usize,
-                    "RT8 length holds at most 254 group addresses"
+                    "RT8 coding holds at most 254 group addresses"
                 );
                 let mut addr8_data = [0u8; Self::ADDR8_SIZE];
                 addr8_data[0] = 1 + Self::NUM_GROUP_ADDRS as u8;
@@ -186,8 +187,8 @@ macro_rules! system7_stack_config {
                 )*
                 assert!(addr_idx == Self::ADDR8_SIZE);
 
-                // RT8 mandates ascending group addresses (the TSAP lookup
-                // is a binary search over them).
+                // The RT8 coding mandates ascending group addresses (the
+                // TSAP lookup is a binary search over them).
                 {
                     let mut i = 3 + 2;
                     while i < Self::ADDR8_SIZE {
@@ -198,7 +199,7 @@ macro_rules! system7_stack_config {
                     }
                 }
 
-                // Build the RT8 association table: [count][TSAP u8, ASAP u8...]
+                // Build the System 7 association table: [count][TSAP u8, ASAP u8...]
                 let mut asso8_data = [0u8; Self::ASSO8_SIZE];
                 asso8_data[0] = Self::NUM_ASSOCIATIONS as u8;
 
@@ -206,7 +207,7 @@ macro_rules! system7_stack_config {
                 $(
                     $(
                         assert!($assoc_tsap as u16 <= 0xFF && $assoc_asap as u16 <= 0xFF,
-                            "system7_stack_config!: RT8 caps TSAP/ASAP at 255");
+                            "system7_stack_config!: association TSAP/ASAP values must fit in one octet");
                         asso8_data[asso_idx] = $assoc_tsap as u8;
                         asso8_data[asso_idx + 1] = $assoc_asap as u8;
                         asso_idx += 2;

@@ -4,13 +4,15 @@
 //! The management model differs from System B in four load-bearing ways:
 //!
 //! 1. **Fixed absolute memory map.** User EEPROM spans 4000h–CFFFh, the
-//!    RT8 address table sits at exactly 4000h, the programming-mode byte
+//!    RT8-coded address table sits at exactly 4000h, the programming-mode byte
 //!    at 0060h, OptionReg at 0100h. ETS writes tables and parameters
 //!    with plain `A_Memory_Write`s to addresses baked into the product
 //!    database — there is no relative allocation.
-//! 2. **RT8 tables** ([`addr8`](crate::objects::tables::addr8),
-//!    [`asso8`](crate::objects::tables::asso8)) with 1-octet counts and
-//!    the device's individual address stored *inside* the address table.
+//! 2. **Compact tables**: an
+//!    [`addr8`](crate::objects::tables::addr8) address table and a
+//!    byte-coded [`asso8`](crate::objects::tables::asso8) association
+//!    table, both with 1-octet counts. The device's individual address
+//!    is stored *inside* the address table.
 //!    No Group Object Table interface object exists; GO data rides in
 //!    the application segment.
 //! 3. **Absolute-segment load controls**

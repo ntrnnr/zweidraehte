@@ -380,13 +380,7 @@ fn build_image(
                 "dynamic table management reserves TSAP FEh; fewer group addresses needed",
             ));
         }
-        None => {
-            if let Some(max) = product.association_table_max_entries
-                && project.links.len() > max as usize
-            {
-                return Err(Error::DownloadConfig("more associations than the product's association table holds"));
-            }
-        }
+        None => {}
         Some(_) => {}
     }
 
@@ -403,10 +397,13 @@ fn build_image(
         .collect();
 
     let address_table = (layout.address_table)(project.individual_address, &group_addresses)?;
-    let association_table = match dtm {
-        Some(_) => dtm_association_table(&associations, &product.com_object_numbers)?,
-        None => (layout.association_table)(&associations)?,
-    };
+    let association_table = (layout.association_table)(&associations, &product.com_object_numbers)?;
+    if dtm.is_none()
+        && let Some(max) = product.association_table_max_entries
+        && layout.association_count.read(&association_table).is_some_and(|count| count > usize::from(max))
+    {
+        return Err(Error::DownloadConfig("more associations than the product's association table holds"));
+    }
     let group_object_table = (layout.group_object_table)(&co_rows(product, layout.first_asap)?)?;
 
     match layout.placement {
@@ -417,62 +414,6 @@ fn build_image(
             place_absolute(image, layout, product, project, [address_table, association_table, group_object_table], dtm)
         }
     }
-}
-
-/// The association table a dynamic-table-management download writes,
-/// built to the RT1/RT2 rules of 03/05/01 §4.17.3.4.1 rather than
-/// through the narrow coder's (TSAP, ASAP) sort:
-///
-/// - slot `i` (the association whose number equals the ASAP) carries
-///   ASAP `i`'s **sending** TSAP — RT2 devices (§4.17.4.3.1) *index*
-///   this slot on a transmission request instead of scanning, so slot
-///   position is load-bearing, not cosmetic;
-/// - a slot whose ASAP has no group address carries the TSAP FEh
-///   unused-association sentinel ("Unused associations shall be
-///   indicated by a TSAP = FEh") — which is also what ETS's formatter
-///   emits (BCU1.log: `03 FE 00 FE 01 FE 02` for three unlinked
-///   objects);
-/// - an ASAP's further links become non-sending associations after the
-///   slot range, where §4.17.3.4.1 puts them.
-///
-/// The slot range spans ASAP 0 up to the *declared* roster's maximum —
-/// visibility does not shrink a BCU-era table, which is why
-/// `com_object_numbers` and not the configuration-substituted
-/// `com_objects` sizes it. `associations` must be in link order: the
-/// first link of an object is its sending association.
-fn dtm_association_table(associations: &[(u16, u16)], roster: &[u16]) -> Result<Vec<u8>> {
-    let slot_count = roster
-        .iter()
-        .chain(associations.iter().map(|(_, asap)| asap))
-        .max()
-        .map(|&max| usize::from(max) + 1)
-        .unwrap_or(0);
-
-    let mut slots: Vec<Option<u8>> = vec![None; slot_count];
-    let mut extras: Vec<(u8, u8)> = Vec::new();
-    for &(tsap, asap) in associations {
-        let tsap = u8::try_from(tsap).expect("TSAPs stay below FEh; checked before the table is built");
-        let asap = u8::try_from(asap)
-            .map_err(|_| Error::DownloadConfig("a BCU-era association table holds only one-octet object numbers"))?;
-        match &mut slots[usize::from(asap)] {
-            slot @ None => *slot = Some(tsap),
-            Some(_) => extras.push((tsap, asap)),
-        }
-    }
-
-    let count = u8::try_from(slot_count + extras.len())
-        .map_err(|_| Error::DownloadConfig("a BCU-era association table holds at most 255 associations"))?;
-    let mut blob = Vec::with_capacity(1 + 2 * usize::from(count));
-    blob.push(count);
-    for (asap, slot) in slots.iter().enumerate() {
-        blob.push(slot.unwrap_or(0xFE));
-        blob.push(asap as u8);
-    }
-    for (tsap, asap) in extras {
-        blob.push(tsap);
-        blob.push(asap);
-    }
-    Ok(blob)
 }
 
 /// The gapless group-object descriptor rows: row `i` describes ASAP
@@ -1224,9 +1165,9 @@ mod tests {
 
         let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
         project.links =
-            vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 3), com_object: 1 }, GroupLink {
+            vec![GroupLink { group_address: GroupAddress::from_three_level(2, 0, 3), com_object: 0 }, GroupLink {
                 group_address: GroupAddress::from_three_level(0, 0, 1),
-                com_object: 0,
+                com_object: 1,
             }];
         project.parameters = vec![ParameterValue { id: "M-00FA_A-0310-01-0000_P-1".to_string(), value: vec![0xEE] }];
 
@@ -1244,9 +1185,9 @@ mod tests {
         assert_eq!(bytes[21], 21, "the byte before the ADT keeps its vendor value");
         assert_eq!(bytes[29], 29, "the byte after the ADT keeps its vendor value");
 
-        // AST spliced at offset 60: TSAPs follow the sorted address
-        // order, ASAPs are the object numbers.
-        assert_eq!(&bytes[60..65], &[2, 1, 0, 2, 1]);
+        // AST spliced at offset 60: row n is ASAP n's sending
+        // association. This deliberately opposes TSAP sort order.
+        assert_eq!(&bytes[60..65], &[2, 2, 0, 1, 1]);
 
         // COT at offset 80: the vendor data there is a table the
         // firmware owns, so it is overlaid, not replaced — count and
@@ -1271,6 +1212,21 @@ mod tests {
         assert!(!c.instructions.iter().any(|i| matches!(i, Instruction::LsmEvent { .. })));
         assert!(c.instructions.contains(&Instruction::ReadIntoImage { address: 0x0116, length: 1 }));
         assert!(c.instructions.contains(&Instruction::WriteImage { address: 0x0119, length: 230, verify: true }));
+    }
+
+    #[test]
+    fn bcu1_capacity_counts_required_unused_sending_slots() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0012).expect("fixture");
+        let mask = db.mask(MaskVersion::Bcu1Tp1).expect("0012");
+        let mut product =
+            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        product.association_table_max_entries = Some(1);
+
+        // The product declares ASAPs 0 and 1. Even with no links, RT1
+        // requires two indexed FEh placeholder rows, so a one-row table
+        // cannot hold the application.
+        let project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        assert!(matches!(compile(&mask, &product, &project), Err(Error::DownloadConfig(_))));
     }
 
     /// A BCU1 program compiled for a BCU2 device (the DD0-selected
