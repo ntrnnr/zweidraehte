@@ -1,5 +1,6 @@
-//! BCU2 / System 2 (TP1, mask 0020h): family constants, fixed EEPROM
-//! offsets, and the product definition that bakes the boot image.
+//! BCU2 / System 2 (TP1, masks 0020h/0021h/0025h): family constants,
+//! fixed EEPROM offsets, and the product definition that bakes the
+//! boot image.
 
 pub mod device_def;
 pub mod family;

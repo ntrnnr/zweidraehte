@@ -1,41 +1,29 @@
-//! Baking a device definition into the default EEPROM image.
+//! Baking a BCU1 device definition into the default EEPROM image.
 //!
-//! One [`Bcu2DeviceDefinition`] describes a product — identity, table
+//! One [`Bcu1DeviceDefinition`] describes a product — identity, table
 //! capacities, group objects, factory links — and [`build_eeprom`]
-//! lays it down as the byte image the device boots from. The same
-//! definition drives the conformance DUT's product-file generator, so
-//! the firmware image and what ETS believes about the device cannot
-//! drift apart.
+//! lays it down as the 256-byte image the device boots from.
 //!
-//! The RT2 pointer bytes are single octets relative to 0100h, which
-//! confines all three tables to 0100h–01FFh — the same 256-byte
-//! neighborhood a real BCU2 keeps them in. [`build_eeprom`] panics at
-//! boot when a definition cannot fit, which is a compile-time error in
-//! practice since definitions are `const`.
+//! [`build_eeprom`]: Bcu1DeviceDefinition::build_eeprom
 
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
-use crate::families::bcu2::family::BCU2_EEPROM_SIZE;
-use crate::families::bcu2::offsets as bcu2_offsets;
+use super::family::{BCU1_EEPROM_SIZE, update_ee_exor};
+use super::offsets;
 
-/// One group object as the RT2 table stores it.
-#[derive(Debug, Clone, Copy)]
-pub struct Bcu2CoDescriptor {
-    /// Page-0 RAM address of the value.
-    pub data_ptr: u8,
-    /// Config octet (`ComObjectFlags` coding).
-    pub config: u8,
-    /// Type octet (`ComObjectType` coding).
-    pub value_type: u8,
-}
+/// One group object as the RT1 table stores it — the layout is RT2's
+/// 3-byte entry octet for octet (the client's `Cot1` coding forces
+/// config bit 7 on; the image stores whatever the definition says).
+pub type Bcu1CoDescriptor = crate::families::bcu2::Bcu2CoDescriptor;
 
-/// A BCU2 product definition.
+/// A BCU1 product definition.
 #[derive(Debug, Clone, Copy)]
-pub struct Bcu2DeviceDefinition {
-    /// Product manufacturer (ManData at 0101h, PID_MANUFACTURER_ID).
-    pub manufacturer_id: u16,
-    /// Application manufacturer + DevType + version (ApplicationID).
-    pub app_manufacturer_id: u16,
+pub struct Bcu1DeviceDefinition {
+    /// Application manufacturer code (Manufact at 0104h — one byte on
+    /// this mask).
+    pub app_manufacturer: u8,
+    /// Device type number (DevTyp at 0105h; non-zero marks the
+    /// application as present).
     pub device_type: u16,
     pub version: u8,
     pub pei_type: u8,
@@ -45,16 +33,17 @@ pub struct Bcu2DeviceDefinition {
     pub max_group_addresses: u8,
     /// Association table capacity in entries.
     pub max_associations: u8,
-    /// Page-0 RAM address of the first RAM-flags byte.
+    /// Page-0 RAM address of the first RAM-flags byte (the BCU1 user
+    /// RAM window is 00CEh–00DFh).
     pub ram_flags_ptr: u8,
-    pub comm_objects: &'static [Bcu2CoDescriptor],
+    pub comm_objects: &'static [Bcu1CoDescriptor],
     /// Factory-loaded group addresses (TSAPs 1.. in order).
     pub group_addresses: &'static [GroupAddress],
     /// Factory-loaded associations `(tsap, asap)`.
     pub associations: &'static [(u8, u8)],
 }
 
-impl Bcu2DeviceDefinition {
+impl Bcu1DeviceDefinition {
     /// EEPROM offset of the address table (fixed by the mask).
     pub const fn addr_table_offset(&self) -> usize {
         0x16
@@ -71,55 +60,46 @@ impl Bcu2DeviceDefinition {
         self.assoc_table_offset() + 1 + self.max_associations as usize * 2
     }
 
-    /// Build the boot EEPROM image for the HC05 masks (0020h/0021h),
-    /// which expose ManagementStyle as a memory cell at 0115h.
-    pub fn build_eeprom(&self) -> [u8; BCU2_EEPROM_SIZE] {
-        self.build_eeprom_for_mask(0x0020)
-    }
-
-    /// Build the boot EEPROM image for a specific BCU2 mask. The one
-    /// image delta between the siblings: mask 0025h (AN059) defines
-    /// ManagementStyle as the constant 2 in the master data instead of
-    /// a memory cell, so its image leaves 0115h blank.
-    pub fn build_eeprom_for_mask(&self, mask: u16) -> [u8; BCU2_EEPROM_SIZE] {
-        let mut e = [0u8; BCU2_EEPROM_SIZE];
+    /// Build the boot EEPROM image.
+    pub fn build_eeprom(&self) -> [u8; BCU1_EEPROM_SIZE] {
+        let mut e = [0u8; BCU1_EEPROM_SIZE];
 
         // ── Fixed header ────────────────────────────────────────────
         // OptionReg stays 00h raw: the inverted read presents FFh,
         // matching a factory-erased register with no protection bits.
-        e[bcu2_offsets::MAN_DATA..bcu2_offsets::MAN_DATA + 2].copy_from_slice(&self.manufacturer_id.to_be_bytes());
-        let app = bcu2_offsets::APPLICATION_ID;
-        e[app..app + 2].copy_from_slice(&self.app_manufacturer_id.to_be_bytes());
-        e[app + 2..app + 4].copy_from_slice(&self.device_type.to_be_bytes());
-        e[app + 4] = self.version;
-        e[bcu2_offsets::PEI_TYPE] = self.pei_type;
+        // ManData (0101h–0103h) stays zero — it is the BCU hardware's
+        // own manufacturing data, not the product's.
+        e[offsets::MANUFACT] = self.app_manufacturer;
+        e[offsets::DEV_TYP..offsets::DEV_TYP + 2].copy_from_slice(&self.device_type.to_be_bytes());
+        e[offsets::VERSION] = self.version;
+        // The whole EEPROM is checksummed. TODO: make CheckLim a
+        // definition field if a replicated product ever declares a
+        // narrower checked range.
+        e[offsets::CHECK_LIM] = 0xFF;
+        e[offsets::PEI_TYPE] = self.pei_type;
         // RunError all-clear (error bits are active-low).
-        e[0x0D] = 0xFF;
+        e[offsets::RUN_ERROR] = 0xFF;
         // Routing count constant 6 in bits 6..4, the universal default.
         e[0x0E] = 0x60;
         // Three BUSY and three NAK retransmissions.
         e[0x0F] = 0x33;
-        // ManagementStyle 48h: native BCU2 management, the value ETS
-        // reads from 0115h to rule out BCU1-compat mode. Mask 0025h
-        // has no such cell — its master data declares the style as a
-        // constant, and ETS never reads the address.
-        if mask != 0x0025 {
-            e[bcu2_offsets::MANAGEMENT_STYLE] = 0x48;
-        }
 
         // ── Table placement ─────────────────────────────────────────
         // Address table is fixed at 0116h; the other two follow their
-        // declared capacities. Pointer bytes are offsets from 0100h.
+        // declared capacities. Pointer bytes are offsets from 0100h;
+        // the association pointer's valid range is 19h–FEh, and
+        // everything must stop short of the EE_EXOR octet at 01FFh.
         let addr_table = self.addr_table_offset();
         let assoc_table = self.assoc_table_offset();
         let cot = self.cot_offset();
         let cot_end = cot + 2 + self.comm_objects.len() * 3;
-        assert!(cot_end <= 0x100, "RT2 tables must fit below 0200h (one-byte pointers)");
-        e[0x11] = assoc_table as u8;
-        e[0x12] = cot as u8;
+        assert!(assoc_table >= 0x19, "association table pointer must be 19h or above");
+        assert!(cot_end <= offsets::EE_EXOR, "BCU1 tables must stop short of the checksum octet at 01FFh");
+        e[offsets::ASSOC_TAB_PTR] = assoc_table as u8;
+        e[offsets::COMMS_TAB_PTR] = cot as u8;
 
         // ── Address table ───────────────────────────────────────────
-        // RT2 length counts the IA slot.
+        // RT1 length counts the IA slot.
         assert!(self.group_addresses.len() <= usize::from(self.max_group_addresses));
         e[addr_table] = 1 + self.group_addresses.len() as u8;
         e[addr_table + 1..addr_table + 3].copy_from_slice(self.individual_address.as_bytes());
@@ -146,6 +126,10 @@ impl Bcu2DeviceDefinition {
             e[off + 1] = co.config;
             e[off + 2] = co.value_type;
         }
+
+        // Seed EE_EXOR consistent with the image, the same way the
+        // runtime maintains it on every checked-range write.
+        update_ee_exor(&mut e);
 
         e
     }

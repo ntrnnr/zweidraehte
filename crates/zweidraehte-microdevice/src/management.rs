@@ -104,6 +104,11 @@ impl ManagementState {
     }
 
     pub fn reset_connection_auth<F: MicroDeviceFamily>(&mut self) {
+        // A family without A_Authorize (BCU1) has no levels to fall
+        // back to; the field is never consulted there.
+        if F::AUTH_LEVELS == 0 {
+            return;
+        }
         self.auth_level = (F::AUTH_LEVELS - 1) as u8;
     }
 
@@ -127,15 +132,21 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         payload: &[u8],
         _source: IndividualAddress,
     ) -> ServiceResult {
+        // A_Authorize/A_Key_Write and the property services are BCU2
+        // additions; a family predating them (BCU1) ignores the APCIs
+        // the way the mask firmware ignores anything it does not
+        // decode — the TL ACK still goes out, no reply follows.
+        let has_auth = F::AUTH_LEVELS > 0;
+        let has_properties = F::OBJECT_COUNT > 0;
         match base {
             apci::DEVICE_DESCRIPTOR_READ => self.device_descriptor_read(small6),
             apci::MEMORY_READ => self.memory_read(small6, payload),
             apci::MEMORY_WRITE => self.memory_write(small6, payload),
-            apci::AUTHORIZE_REQUEST => self.authorize(payload),
-            0x3D3 /* A_Key_Write */ => self.key_write(payload),
-            apci::PROPERTY_VALUE_READ => self.property_value_read(payload),
-            apci::PROPERTY_VALUE_WRITE => self.property_value_write(payload),
-            apci::PROPERTY_DESCRIPTION_READ => self.property_description_read(payload),
+            apci::AUTHORIZE_REQUEST if has_auth => self.authorize(payload),
+            0x3D3 /* A_Key_Write */ if has_auth => self.key_write(payload),
+            apci::PROPERTY_VALUE_READ if has_properties => self.property_value_read(payload),
+            apci::PROPERTY_VALUE_WRITE if has_properties => self.property_value_write(payload),
+            apci::PROPERTY_DESCRIPTION_READ if has_properties => self.property_description_read(payload),
             apci::RESTART => {
                 // Only the basic restart exists on these masks; the
                 // master-reset variant (escape bit in the low octet)

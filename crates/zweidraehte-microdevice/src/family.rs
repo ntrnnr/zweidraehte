@@ -5,9 +5,10 @@
 //! [`MicroDeviceFamily`]; the family owns the fixed memory map, the
 //! table wire codings, the load-state-machine path, the interface
 //! object roster, and the device descriptor. The instances live in
-//! [`crate::families`]: BCU2 today, a micro-System-7 family (masks
-//! 0705h/2705h/5705h, RT8/M112 tables, memory-mapped load controls,
-//! 16 authorization levels) slots in later without touching the core.
+//! [`crate::families`]: BCU2 (masks 0020h/0021h/0025h), micro-System-7
+//! (RT8/M112 tables, memory-mapped load controls, 16 authorization
+//! levels), and BCU1 (mask 0012h — no properties, no load state
+//! machines, no authorization).
 
 use heapless::Vec;
 use zweidraehte_proto::transport::TlStyle;
@@ -25,6 +26,10 @@ pub enum LsmPath {
     /// Records are written to a memory-mapped load-control window and
     /// the state is read back from status bytes (System 7, BIM M112).
     MemoryMapped { control_addr: u16, status_base: u16 },
+    /// The family has no load state machines at all: a download is a
+    /// plain `A_Memory_Write` sequence with client-side read-back
+    /// (BCU1).
+    None,
 }
 
 /// Compile-time description of one BCU-era management model.
@@ -49,7 +54,9 @@ pub trait MicroDeviceFamily: 'static {
     /// Transport layer style mandated by 06 Profiles §4.1.2 for this
     /// profile (Style 1 for BCU2 / System 2).
     const TL_STYLE: TlStyle;
-    /// Number of authorization levels (BCU2: 4, System 7: 16).
+    /// Number of authorization levels (BCU2: 4, System 7: 16). Zero
+    /// means the family predates `A_Authorize` entirely (BCU1): the
+    /// authorize and key-write services are then not answered at all.
     const AUTH_LEVELS: usize;
     /// Whether the device answers connectionless (unnumbered)
     /// device-oriented management. A BCU2 serves its management

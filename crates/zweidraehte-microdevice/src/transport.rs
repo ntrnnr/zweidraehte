@@ -1,8 +1,10 @@
 //! Transport layer: the proto state machine plus millisecond deadlines.
 //!
-//! The pure Style-1 state machine lives in
+//! The pure style-generic state machine lives in
 //! `zweidraehte_proto::transport` and knows nothing about time; this
-//! wrapper owns the single connection a BCU2 serves, translates the
+//! wrapper owns the single connection a BCU-era device serves (the
+//! family picks the style: Style 1 on BCU2, Style 2 on BCU1, Style 3
+//! on System 7), translates the
 //! machine's timer actions into `u32` millisecond deadlines, and hands
 //! [`TlAction`]s that involve frames back to the caller. The caller
 //! (the device runloop) compares deadlines against its `now_ms` on

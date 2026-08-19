@@ -8,27 +8,44 @@ use zweidraehte_proto::transport::TlStyle;
 use super::offsets;
 use crate::device::DeviceIdentity;
 use crate::family::{LsmPath, MicroDeviceFamily};
-use crate::frame::apci;
-use crate::management::{ManagementState, Reply, ServiceResult};
+use crate::management::{ManagementState, ServiceResult};
 
-/// BCU2 / System 2, TP1, mask version 0020h.
+/// BCU2 / System 2, TP1 — masks 0020h (the default), 0021h and 0025h.
 ///
 /// The concrete numbers are the mask 0020h resource map (09_04_01
 /// §5.1.2.12, mirrored in `BCU2_PLAN.md` and the client's `MV_0020`
-/// mask fixture).
-pub struct Bcu2Family;
+/// mask fixture). The three masks share the memory map, the RT2 table
+/// codings, the LSM roster and the procedures byte for byte; what
+/// separates them on the device side is the DD0 value and, for 0025h
+/// (AN059, the non-HC05 BCU2), the `PID_HARDWARE_TYPE` identity
+/// property plus the absence of the memory-mapped ManagementStyle
+/// byte (see [`super::device_def::Bcu2DeviceDefinition`]).
+pub struct Bcu2Family<const MASK: u16 = 0x0020>;
 
 /// The BCU2 EEPROM: 0100h..=04DFh. ETS sees 0100h–046Fh; the tail is
 /// reserved for system software but must still answer memory reads.
 pub const BCU2_EEPROM_SIZE: usize = 0x03E0;
 
-impl MicroDeviceFamily for Bcu2Family {
+impl<const MASK: u16> Bcu2Family<MASK> {
+    /// Evaluated wherever `DD0` is, so instantiating the family with a
+    /// mask that is not a BCU2 sibling fails at compile time instead
+    /// of quietly claiming BCU2 semantics for it.
+    const MASK_IS_BCU2: () = assert!(
+        MASK == 0x0020 || MASK == 0x0021 || MASK == 0x0025,
+        "Bcu2Family covers masks 0020h, 0021h and 0025h only",
+    );
+}
+
+impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     type EepromStore = [u8; BCU2_EEPROM_SIZE];
     fn blank_eeprom() -> Self::EepromStore {
         [0; BCU2_EEPROM_SIZE]
     }
 
-    const DD0: u16 = 0x0020;
+    const DD0: u16 = {
+        let () = Self::MASK_IS_BCU2;
+        MASK
+    };
     const TL_STYLE: TlStyle = TlStyle::Style1;
     const AUTH_LEVELS: usize = 4;
     const CONNECTIONLESS_MANAGEMENT: bool = false;
@@ -144,11 +161,17 @@ impl MicroDeviceFamily for Bcu2Family {
         obj: u8,
         prop_id: u16,
         eeprom: &[u8],
-        _identity: &DeviceIdentity,
+        identity: &DeviceIdentity,
         _mgmt: &ManagementState,
     ) -> Option<Vec<u8, 10>> {
         let mut v: Vec<u8, 10> = Vec::new();
         match (obj, prop_id) {
+            // Mask 0025h adds the HardwareConfig_Identical resources
+            // (PID 78) so ETS can guard hardware compatibility; the
+            // HC05 masks predate the property.
+            (0, pid::device::HARDWARE_TYPE) if MASK == 0x0025 => {
+                let _ = v.extend_from_slice(&identity.hardware_type);
+            }
             (0, pid::MANUFACTURER_ID) => {
                 let _ = v.extend_from_slice(&eeprom[offsets::MAN_DATA..offsets::MAN_DATA + 2]);
             }
@@ -173,15 +196,8 @@ impl MicroDeviceFamily for Bcu2Family {
         Some(v)
     }
 
-    /// A BCU2 exposes its analog channels through A_ADC_Read; this
-    /// stack has no analog hardware behind them, so every channel
-    /// converts to zero. The reply shape is what matters: clients use
-    /// the service as a liveness probe on the connection.
+    /// A BCU2 exposes its analog channels through `A_ADC_Read`.
     fn extra_service(base: u16, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
-        if base != apci::ADC_READ {
-            return None;
-        }
-        let read_count = payload.first().copied().unwrap_or(1);
-        Some(ServiceResult::Reply(Reply::new(apci::ADC_RESPONSE, small6, &[read_count, 0x00, 0x00])))
+        crate::families::adc_read_stub(base, small6, payload)
     }
 }

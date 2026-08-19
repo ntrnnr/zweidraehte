@@ -31,7 +31,8 @@
 //! state to sync back.
 //!
 //! The family seam ([`family::MicroDeviceFamily`]) keeps the core generic
-//! over the management model: BCU2 today, a micro-System-7 later.
+//! over the management model: BCU2 (masks 0020h/0021h/0025h),
+//! micro-System-7, and BCU1 (mask 0012h).
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
@@ -50,6 +51,7 @@ pub mod transport;
 pub mod snapshot;
 
 pub use device::{Microdevice, PollInput, PollOutput};
+pub use families::bcu1::{Bcu1DeviceDefinition, Bcu1Family};
 pub use families::bcu2::{Bcu2DeviceDefinition, Bcu2Family};
 pub use families::system7::{System7DeviceDefinition, System7Family};
 pub use family::MicroDeviceFamily;
