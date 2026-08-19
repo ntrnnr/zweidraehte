@@ -21,59 +21,35 @@
 //! indistinguishable from Style 1 for a device that only ever accepts
 //! connections.
 
-use std::collections::BTreeMap;
-
 use crate::tests::helpers::{comment, expect, expect_none, inject, inject_delay, trigger_write, wait_for_restart};
-use crate::{TestCase, TestSuite, TestVariable};
+use crate::{TestCase, TestSuite};
 
-fn create_test_variables() -> BTreeMap<String, TestVariable> {
-    let mut vars = BTreeMap::new();
-    vars.insert("EDI".to_string(), TestVariable::Bytes(vec![0xAF, 0xFE]));
-    vars.insert("BDUT".to_string(), TestVariable::Bytes(vec![0x10, 0x01]));
-    vars
-}
+use super::system7_contract;
 
 pub fn create_micro_system7_smoke_suite() -> TestSuite {
-    let vars = create_test_variables();
+    let vars = system7_contract::variables();
 
     let cases = vec![
         // ====================================================================
         // MS7-1: Device Descriptor Type 0 answers the System 7 mask
         // ====================================================================
-        TestCase::new("MS7-1 DD0 reads 0705h").with_steps(vec![
-            comment("The DUT identifies as System 7 TP1 (mask 0705h)"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            inject("BC #EDI #BDUT 61 43 00"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 63 43 40 07 05", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+        system7_contract::descriptor_type_0_case("MS7-1 DD0 reads 0705h"),
+        // ====================================================================
+        // MS7-1b: The compact profile also defines unsupported DD behavior
+        // ====================================================================
+        TestCase::new("MS7-1b Unsupported DD type answers 3Fh").with_steps(vec![
             comment("An unsupported descriptor type answers 3Fh, no data"),
-            inject("BC #EDI #BDUT 61 47 05"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
-            expect("BC #BDUT #EDI 61 47 7F", 400),
-            inject_delay("B0 #EDI #BDUT 60 C6", 200),
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            inject("BC #EDI #BDUT 61 43 05"),
+            expect("B0 #BDUT #EDI 60 C2", 0),
+            expect("BC #BDUT #EDI 61 43 7F", 400),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
         // ====================================================================
         // MS7-2: OptionReg is plain and lives at 0100h
         // ====================================================================
-        TestCase::new("MS7-2 OptionReg 0100h reads uninverted").with_steps(vec![
-            comment("Factory cell reads 00h — no BCU2-style inversion"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            inject("BC #EDI #BDUT 63 42 01 01 00"),
-            expect("B0 #BDUT #EDI 60 C2", 0),
-            expect("BC #BDUT #EDI 64 42 41 01 00 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 C2", 200),
-            comment("A write reads back as written"),
-            inject("BC #EDI #BDUT 64 46 81 01 00 55"),
-            expect("B0 #BDUT #EDI 60 C6", 0),
-            expect_none(300),
-            inject("BC #EDI #BDUT 63 4A 01 01 00"),
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            expect("BC #BDUT #EDI 64 46 41 01 00 55", 400),
-            inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
+        system7_contract::option_reg_case("MS7-2 OptionReg 0100h reads uninverted"),
         // ====================================================================
         // MS7-3: Sixteen-level authorization
         // ====================================================================
@@ -173,26 +149,7 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
         // ====================================================================
         // MS7-6: Programming mode via memory 0060h
         // ====================================================================
-        TestCase::new("MS7-6 Programming mode via memory 0060h").with_steps(vec![
-            comment("Bit 0 = mode, bit 7 = even parity over the octet"),
-            inject_delay("B0 #EDI #BDUT 60 80", 200),
-            inject("BC #EDI #BDUT 64 42 81 00 60 81"),
-            expect("B0 #BDUT #EDI 60 C2", 500),
-            comment("IndividualAddress_Read now answers"),
-            inject("BC #EDI 00 00 E1 01 00"),
-            expect("BC #BDUT 00 00 E1 01 40", 400),
-            comment("Bad parity (01h) is dropped: mode stays on"),
-            inject("BC #EDI #BDUT 64 46 81 00 60 01"),
-            expect("B0 #BDUT #EDI 60 C6", 500),
-            inject("BC #EDI 00 00 E1 01 00"),
-            expect("BC #BDUT 00 00 E1 01 40", 400),
-            comment("00h switches it off"),
-            inject("BC #EDI #BDUT 64 4A 81 00 60 00"),
-            expect("B0 #BDUT #EDI 60 CA", 500),
-            inject("BC #EDI 00 00 E1 01 00"),
-            expect_none(300),
-            inject_delay("B0 #EDI #BDUT 60 81", 200),
-        ]),
+        system7_contract::programming_mode_case("MS7-6 Programming mode via memory 0060h"),
         // ====================================================================
         // MS7-7: Run state machine — Stop terminates, never HALTED
         // ====================================================================
@@ -220,13 +177,11 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
         // ====================================================================
         // MS7-8: Group communication over the RT8/M112 tables
         // ====================================================================
-        TestCase::new("MS7-8 Group communication over RT8 tables").with_steps(vec![
-            comment("A group write to 1000h lands in GO0 (1 bit, all flags)"),
-            inject("BC #EDI 10 00 E1 00 81"),
-            expect_none(200),
-            comment("A group read of 1000h answers with the written value"),
-            inject("BC #EDI 10 00 E1 00 00"),
-            expect("BC #BDUT 10 00 E1 00 41", 400),
+        system7_contract::group_round_trip_case("MS7-8 Group communication over RT8 tables"),
+        // ====================================================================
+        // MS7-8b: Micro-DUT hooks beyond the bus-observable contract
+        // ====================================================================
+        TestCase::new("MS7-8b Group object fixture hooks").with_steps(vec![
             comment("GO1 (4 bit) answers short-form with its factory value"),
             inject("BC #EDI 10 01 E1 00 00"),
             expect("BC #BDUT 10 01 E1 00 40", 400),
