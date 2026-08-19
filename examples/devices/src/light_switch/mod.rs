@@ -33,6 +33,9 @@ pub mod comm_objs;
 pub mod easter_egg;
 pub mod params;
 
+#[cfg(feature = "micro")]
+pub mod micro;
+
 #[cfg(feature = "knxprod")]
 mod layout;
 #[cfg(feature = "knxprod")]
@@ -94,6 +97,12 @@ impl LightSwitchDevice {
     /// Hardware type / knxprod hardware serial for the Data Secure
     /// System 7 TP1 variant.
     pub const HARDWARE_TYPE_TP1_SYSTEM7_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0B];
+    /// Hardware type / knxprod hardware serial for the BCU2 (mask
+    /// 0020h) TP1 variant on the microdevice stack. The micro System 7
+    /// variant needs no entry of its own: it presents itself as the
+    /// [`HARDWARE_TYPE_TP1_SYSTEM7`](Self::HARDWARE_TYPE_TP1_SYSTEM7)
+    /// product, one `.knxprod` driving either firmware.
+    pub const HARDWARE_TYPE_TP1_BCU2: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0C];
     /// Application ID for the KNX/IP variant.
     pub const APPLICATION_ID_IP: u16 = 0x0300;
     /// Application ID for the TP1 variant. Distinct from the IP variant so
@@ -133,6 +142,12 @@ impl LightSwitchDevice {
     /// but a different application ID so both coexist in one catalogue,
     /// exactly as the System B pair does.
     pub const APPLICATION_ID_TP1_SYSTEM7_SECURE: u16 = 0x0307;
+    /// Application ID for the BCU2 (mask 0020h) TP1 variant on the
+    /// microdevice stack — a distinct mask, like the System 7 variant.
+    /// The micro System 7 firmware reuses
+    /// [`APPLICATION_ID_TP1_SYSTEM7`](Self::APPLICATION_ID_TP1_SYSTEM7):
+    /// same mask, same product, alternative implementation.
+    pub const APPLICATION_ID_TP1_BCU2: u16 = 0x0308;
     pub const APPLICATION_VERSION: u8 = 0x02;
     pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
     pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
@@ -254,6 +269,17 @@ impl LightSwitchDevice {
             Self::HARDWARE_TYPE_TP1_SYSTEM7_SECURE,
         )
     }
+
+    /// Build a device descriptor for the BCU2 TP1 variant (mask 0020h,
+    /// the microdevice stack).
+    ///
+    /// Same application logic and table capacities again; the download
+    /// model is the BCU-era one — RT2 tables behind one-byte pointer
+    /// cells in the 0100h EEPROM page, the mask template's
+    /// `DefaultProcedure`, memory-mapped everything.
+    pub const fn device_descriptor_bcu2_tp1() -> DeviceDescriptor {
+        Self::descriptor_for(MaskVersion::Other(0x0020), Self::APPLICATION_ID_TP1_BCU2, Self::HARDWARE_TYPE_TP1_BCU2)
+    }
 }
 
 /// Device descriptor for KNX/IP (mask version 57B0).
@@ -300,3 +326,8 @@ pub const DEVICE_DESCRIPTOR_TP1_SYSTEM7: DeviceDescriptor = LightSwitchDevice::d
 /// `stm32g0_tp1_system7_secure_light_switch` firmware.
 pub const DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE: DeviceDescriptor =
     LightSwitchDevice::device_descriptor_system7_secure_tp1();
+
+/// Device descriptor for the BCU2 TP1 variant (mask version 0020,
+/// application ID 0x0308). Pairs with the
+/// `stm32g0_tp1_bcu2_light_switch` firmware on the microdevice stack.
+pub const DEVICE_DESCRIPTOR_TP1_BCU2: DeviceDescriptor = LightSwitchDevice::device_descriptor_bcu2_tp1();

@@ -11,6 +11,7 @@ name = "devices"
 [dependencies]
 zweidraehte-device = { path = "../../crates/zweidraehte-device", default-features = false }
 zweidraehte-proto = { path = "../../crates/zweidraehte-proto", default-features = false }
+zweidraehte-microdevice = { path = "../../crates/zweidraehte-microdevice", optional = true }
 zweidraehte-util = { path = "../../crates/zweidraehte-util" }
 const-default = { workspace = true }
 zerocopy = { workspace = true }
@@ -24,6 +25,10 @@ embassy-time.workspace = true
 # `default-features = false` and stay no_std/lean.
 default = ["demos"]
 knxprod = ["dep:zweidraehte-knxprod"]
+# The microdevice (BCU-era) flavor of the shared definitions: the
+# canonical descriptor tables, the polled button/application logic, and
+# the EEPROM parameter accessors the micro firmware targets share.
+micro = ["dep:zweidraehte-microdevice"]
 defmt = ["zweidraehte-device/defmt", "zweidraehte-proto/defmt"]
 log = ["zweidraehte-device/log", "zweidraehte-proto/log"]
 # Host-side demo/replication device definitions (std only).

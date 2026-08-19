@@ -46,14 +46,18 @@ impl ConstDefault for DebounceTime {
 }
 
 impl DebounceTime {
-    pub const fn as_duration(self) -> embassy_time::Duration {
-        embassy_time::Duration::from_millis(match self {
+    pub const fn as_ms(self) -> u32 {
+        match self {
             Self::Ms20 => 20,
             Self::Ms50 => 50,
             Self::Ms80 => 80,
             Self::Ms100 => 100,
             Self::Ms150 => 150,
-        })
+        }
+    }
+
+    pub const fn as_duration(self) -> embassy_time::Duration {
+        embassy_time::Duration::from_millis(self.as_ms() as u64)
     }
 }
 
@@ -78,14 +82,18 @@ impl ConstDefault for LongPressTime {
 }
 
 impl LongPressTime {
-    pub const fn as_duration(self) -> embassy_time::Duration {
-        embassy_time::Duration::from_millis(match self {
+    pub const fn as_ms(self) -> u32 {
+        match self {
             Self::Ms300 => 300,
             Self::Ms500 => 500,
             Self::Ms800 => 800,
             Self::Ms1000 => 1000,
             Self::Ms1500 => 1500,
-        })
+        }
+    }
+
+    pub const fn as_duration(self) -> embassy_time::Duration {
+        embassy_time::Duration::from_millis(self.as_ms() as u64)
     }
 }
 
@@ -266,4 +274,39 @@ pub struct LightSwitchParams {
     /// Hidden in 1-function mode.
     #[ets(union, display = "Function")]
     pub button2_config: ButtonConfig,
+}
+
+/// The factory-default parameter bytes, exactly as they sit in device
+/// memory — the image a product database ships as segment data and a
+/// BCU-era device bakes into its boot EEPROM.
+///
+/// The transmute is sound because `#[ets_params]` guarantees a padding
+/// free `#[repr(C)]` layout (the same guarantee the System B memory
+/// map relies on when it lets ETS overwrite the struct byte by byte).
+pub const DEFAULT_PARAM_BYTES: [u8; core::mem::size_of::<LightSwitchParams>()] =
+    unsafe { core::mem::transmute(<LightSwitchParams as ConstDefault>::DEFAULT) };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pins the concrete wire layout of [`LightSwitchParams`]. The
+    /// product databases, the System B memory map and the micro
+    /// devices' EEPROM images all carry these bytes — if this test
+    /// fails, a macro or struct change silently re-laid the parameter
+    /// memory and every downloaded device would misread its
+    /// configuration.
+    #[test]
+    fn default_param_bytes_layout_is_pinned() {
+        assert_eq!(DEFAULT_PARAM_BYTES, [
+            DebounceTime::Ms50 as u8,
+            LongPressTime::Ms500 as u8,
+            ButtonsMode::TwoFunction as u8,
+            RockerDirection::Normal as u8,
+            0, // button1_config: Switch discriminant
+            SwitchAction::Toggle as u8,
+            0, // button2_config: Switch discriminant
+            SwitchAction::Toggle as u8,
+        ]);
+    }
 }
