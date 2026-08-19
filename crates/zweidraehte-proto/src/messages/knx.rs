@@ -250,17 +250,59 @@ pub fn decode_apci_code(buf: &[u8]) -> Option<ApciCode> {
     }
 
     let apci_u16 = u16::from_be_bytes([buf[MSG_APCI], buf[MSG_APCI + 1]]);
-    let apci_raw = ((apci_u16 & 0x03C0) >> 6) as u8;
+    Some(ApciCode::from_wire10(apci_u16 & 0x03FF))
+}
 
-    Some(if apci_raw == ApciCode::UserMessage.into() {
-        ApciCode::from(buf[MSG_APCI + 1] & 0xbf)
-    } else if apci_raw == ApciCode::Escape.into() {
-        ApciCode::from(buf[MSG_APCI + 1])
-    } else if apci_raw == 7 && ((buf[MSG_APCI + 1] & 0x3f) > 7) {
-        ApciCode::from(buf[MSG_APCI + 1] & 0x7f)
-    } else {
-        ApciCode::from(apci_raw)
-    })
+impl ApciCode {
+    /// Decode from the 10-bit APCI wire word (octet 6 bits 1..0 and
+    /// octet 7 of a TP1 standard frame, 03/03/07 §3.1).
+    ///
+    /// Short services carry their payload in the low 6 bits of the
+    /// word, so those bits are ignored here and stay available to the
+    /// caller; the user, escape and extended-property families spend
+    /// them on the service code instead.
+    pub fn from_wire10(apci10: u16) -> Self {
+        let apci_raw = ((apci10 & 0x03C0) >> 6) as u8;
+        let low_byte = (apci10 & 0xFF) as u8;
+
+        if apci_raw == Self::UserMessage.into() {
+            Self::from(low_byte & 0xbf)
+        } else if apci_raw == Self::Escape.into() {
+            Self::from(low_byte)
+        } else if apci_raw == 7 && ((low_byte & 0x3f) > 7) {
+            Self::from(low_byte & 0x7f)
+        } else {
+            Self::from(apci_raw)
+        }
+    }
+
+    /// The 10-bit APCI wire word for this code, before any payload.
+    ///
+    /// Short services leave their low 6 bits zero for the caller to OR
+    /// a `small6` payload into; the other families return the complete
+    /// word. The internal coding stores the wire family in the top two
+    /// bits of the code (see the enum's doc comment), which is what
+    /// makes this a four-way match.
+    ///
+    /// [`UserMessage`](Self::UserMessage) and [`Escape`](Self::Escape)
+    /// are family markers rather than services and do not round-trip
+    /// through [`from_wire10`](Self::from_wire10).
+    pub fn wire10_base(self) -> u16 {
+        let code: u8 = self.into();
+        match code >> 6 {
+            // Short codes: the code is bits 9..6, payload below.
+            0 => u16::from(code) << 6,
+            // Extended property services: apci_raw = 7, code in the
+            // low 7 bits of the second octet.
+            1 => 0x1C0 | u16::from(code),
+            // User services: apci_raw = UserMessage, code in the low
+            // 6 bits of the second octet.
+            2 => 0x2C0 | u16::from(code & 0x3F),
+            // Escaped services: apci_raw = Escape, code is the whole
+            // second octet.
+            _ => 0x300 | u16::from(code),
+        }
+    }
 }
 
 create_protocol_enum!(
@@ -456,6 +498,65 @@ create_protocol_enum!(
         _,              "Unknown control type 0x{:x}";
     }
 );
+
+impl Tpci {
+    /// The TPCI octet for this PDU (03/03/04 §2.3, TPCI coding).
+    ///
+    /// Data variants return only the TPCI bits — for a data TPDU the
+    /// low two bits of the octet belong to the APCI, so the caller ORs
+    /// the APCI word on top. Control variants return the complete
+    /// octet.
+    pub fn octet(self) -> u8 {
+        match self {
+            Tpci::DataBroadcast | Tpci::DataSystemBroadcast | Tpci::DataGroup | Tpci::DataIndividual => 0x00,
+            Tpci::DataConnected(seq) => 0x40 | ((seq & 0x0F) << 2),
+            Tpci::Connect => 0x80,
+            Tpci::Disconnect => 0x81,
+            Tpci::Ack(seq) => 0xC2 | ((seq & 0x0F) << 2),
+            Tpci::Nack(seq) => 0xC3 | ((seq & 0x0F) << 2),
+        }
+    }
+
+    /// Decode a raw TPCI octet (03/03/04 §2.3).
+    ///
+    /// All unnumbered-data variants share the on-wire octet 00h — the
+    /// distinction lives in the frame's destination address, so the
+    /// address type must be supplied. Data octets have their low two
+    /// bits ignored (they are APCI); control octets are matched
+    /// exactly. Returns `None` for the combinations the spec leaves
+    /// reserved: unnumbered data with any of bits 5..2 set, unnumbered
+    /// control other than `T_Connect`/`T_Disconnect`, and numbered
+    /// control other than `T_ACK`/`T_NAK`.
+    pub fn from_octet(octet: u8, addr_type: AddressType) -> Option<Tpci> {
+        let field = TpciField::new(octet);
+        match (field.dc(), field.n()) {
+            (DataControl::Data, Numbered::Unnumbered) => {
+                // Bits 5..2 are reserved in an unnumbered data TPCI.
+                if field.seqno() != 0 {
+                    return None;
+                }
+                match addr_type {
+                    AddressType::Broadcast => Some(Tpci::DataBroadcast),
+                    AddressType::SystemBroadcast => Some(Tpci::DataSystemBroadcast),
+                    AddressType::Group => Some(Tpci::DataGroup),
+                    AddressType::Individual => Some(Tpci::DataIndividual),
+                    AddressType::Other(_) => None,
+                }
+            }
+            (DataControl::Data, Numbered::Numbered) => Some(Tpci::DataConnected(field.seqno())),
+            (DataControl::Control, Numbered::Unnumbered) => match (field.seqno(), field.ctrl_type()) {
+                (0, ControlType::Connect) => Some(Tpci::Connect),
+                (0, ControlType::Disconnect) => Some(Tpci::Disconnect),
+                _ => None,
+            },
+            (DataControl::Control, Numbered::Numbered) => match field.ctrl_type() {
+                ControlType::ACK => Some(Tpci::Ack(field.seqno())),
+                ControlType::NACK => Some(Tpci::Nack(field.seqno())),
+                _ => None,
+            },
+        }
+    }
+}
 
 /// A KNX message TPCI field
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -1697,6 +1798,132 @@ mod tests {
                 read_code, *code,
                 "APCI code mismatch for {:?}. Bytes at APCI position: {:02x} {:02x}",
                 code, msg.buf[6], msg.buf[7]
+            );
+        }
+    }
+
+    #[test]
+    fn test_tpci_octet_round_trip() {
+        // Control PDUs carry the complete octet; the address type is
+        // irrelevant to them but required by the signature.
+        for (tpci, octet) in [
+            (Tpci::Connect, 0x80),
+            (Tpci::Disconnect, 0x81),
+            (Tpci::Ack(0), 0xC2),
+            (Tpci::Ack(5), 0xD6),
+            (Tpci::Nack(15), 0xFF),
+            (Tpci::DataConnected(3), 0x4C),
+        ] {
+            assert_eq!(tpci.octet(), octet, "{:?}", tpci);
+            assert_eq!(Tpci::from_octet(octet, AddressType::Individual), Some(tpci));
+        }
+
+        // Unnumbered data: octet 00h, shape decided by the address
+        // type; APCI bits in positions 1..0 must not disturb it.
+        assert_eq!(Tpci::from_octet(0x02, AddressType::Group), Some(Tpci::DataGroup));
+        assert_eq!(Tpci::from_octet(0x00, AddressType::Broadcast), Some(Tpci::DataBroadcast));
+
+        // Reserved combinations: unnumbered data with bits 5..2 set,
+        // unnumbered control beyond Connect/Disconnect.
+        assert_eq!(Tpci::from_octet(0x04, AddressType::Group), None);
+        assert_eq!(Tpci::from_octet(0x82, AddressType::Individual), None);
+    }
+
+    #[test]
+    fn test_apci_wire10_spot_values() {
+        // One representative per wire family, values straight from
+        // 03/03/07 §3 / AN163.
+        assert_eq!(ApciCode::MemoryRead.wire10_base(), 0x200);
+        assert_eq!(ApciCode::Restart.wire10_base(), 0x380);
+        assert_eq!(ApciCode::PropertyExtValueRead.wire10_base(), 0x1CC);
+        assert_eq!(ApciCode::MemoryExtendedWrite.wire10_base(), 0x1FB);
+        assert_eq!(ApciCode::UserMemoryRead.wire10_base(), 0x2C0);
+        assert_eq!(ApciCode::KeyWrite.wire10_base(), 0x3D3);
+        assert_eq!(ApciCode::SecureService.wire10_base(), 0x3F1);
+
+        assert_eq!(ApciCode::from_wire10(0x200), ApciCode::MemoryRead);
+        // A short service's payload bits must not disturb the decode.
+        assert_eq!(ApciCode::from_wire10(0x209), ApciCode::MemoryRead);
+        assert_eq!(ApciCode::from_wire10(0x3D3), ApciCode::KeyWrite);
+        assert_eq!(ApciCode::from_wire10(0x2C0), ApciCode::UserMemoryRead);
+        assert_eq!(ApciCode::from_wire10(0x1CC), ApciCode::PropertyExtValueRead);
+    }
+
+    #[test]
+    fn test_apci_wire10_round_trip() {
+        // Every named service must survive code → wire → code.
+        // UserMessage and Escape are family markers, not services
+        // (their wire words decode to the family's code-0 member), and
+        // Empty shares GroupValueRead's code — all three are excluded.
+        let services = [
+            ApciCode::GroupValueRead,
+            ApciCode::GroupValueResponse,
+            ApciCode::GroupValueWrite,
+            ApciCode::IndividualAddressWrite,
+            ApciCode::IndividualAddressRead,
+            ApciCode::IndividualAddressResponse,
+            ApciCode::AdcRead,
+            ApciCode::AdcResponse,
+            ApciCode::MemoryRead,
+            ApciCode::MemoryReadResponse,
+            ApciCode::MemoryWrite,
+            ApciCode::DeviceDescriptorRead,
+            ApciCode::DeviceDescriptorResponse,
+            ApciCode::Restart,
+            ApciCode::SystemNetworkParameterRead,
+            ApciCode::SystemNetworkParameterResponse,
+            ApciCode::PropertyExtValueRead,
+            ApciCode::PropertyExtValueResponse,
+            ApciCode::PropertyExtValueWriteCon,
+            ApciCode::PropertyExtValueWriteConRes,
+            ApciCode::PropertyExtValueWriteUnCon,
+            ApciCode::PropertyExtValueInfoReport,
+            ApciCode::PropertyExtDescriptionRead,
+            ApciCode::PropertyExtDescriptionResponse,
+            ApciCode::MemoryExtendedWrite,
+            ApciCode::MemoryExtendedWriteResponse,
+            ApciCode::MemoryExtendedRead,
+            ApciCode::MemoryExtendedReadResponse,
+            ApciCode::FunctionPropertyExtCommand,
+            ApciCode::FunctionPropertyExtStateRead,
+            ApciCode::FunctionPropertyExtStateResponse,
+            ApciCode::UserMemoryRead,
+            ApciCode::UserMemoryResponse,
+            ApciCode::UserMemoryWrite,
+            ApciCode::UserManufacturerInfoRead,
+            ApciCode::UserManufacturerInfoResponse,
+            ApciCode::FunctionPropertyCommand,
+            ApciCode::FunctionPropertyStateRead,
+            ApciCode::FunctionPropertyStateResponse,
+            ApciCode::MemoryBitWrite,
+            ApciCode::AuthorizeRequest,
+            ApciCode::AuthorizeResponse,
+            ApciCode::KeyWrite,
+            ApciCode::KeyResponse,
+            ApciCode::PropertyValueRead,
+            ApciCode::PropertyValueResponse,
+            ApciCode::PropertyValueWrite,
+            ApciCode::PropertyDescriptionRead,
+            ApciCode::PropertyDescriptionResponse,
+            ApciCode::NetworkParameterInfoReport,
+            ApciCode::IndividualAddressSerialNumberRead,
+            ApciCode::IndividualAddressSerialNumberResponse,
+            ApciCode::IndividualAddressSerialNumberWrite,
+            ApciCode::DomainAddressWrite,
+            ApciCode::DomainAddressRead,
+            ApciCode::DomainAddressResponse,
+            ApciCode::DomainAddressSerialNumberRead,
+            ApciCode::DomainAddressSerialNumberResponse,
+            ApciCode::DomainAddressSerialNumberWrite,
+            ApciCode::SecureService,
+        ];
+        for code in services {
+            assert_eq!(
+                ApciCode::from_wire10(code.wire10_base()),
+                code,
+                "wire10 round trip failed for {:?} (wire 0x{:03X})",
+                code,
+                code.wire10_base()
             );
         }
     }

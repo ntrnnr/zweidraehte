@@ -99,6 +99,17 @@
 
 use crate::messages::buffers::MessageBuffer;
 
+/// The control octet of a TP1 standard L_Data frame before its priority
+/// bits: FT = 1 (standard frame), r = 1 (not repeated), and the fixed
+/// one-bit at position 4 (03/02/02 §2.2.4.1). OR in `priority << 2`;
+/// clear bit 5 to mark a repetition.
+pub const TP1_STD_CTRL_BASE: u8 = 0xB0;
+
+/// Hop count 6 in bits 6..4 of a standard frame's octet 5 (the
+/// NPCI/length octet, 03/03/03 §2.2) — the value every BCU-era device
+/// transmits with.
+pub const NPCI_HOP_COUNT_6: u8 = 0x60;
+
 /// Calculate TP1 checksum for a message (excluding the checksum byte itself).
 ///
 /// Per KNX spec 03/02/02 §2.2.4.6, the check octet is a logical NOT XOR over
@@ -268,7 +279,7 @@ pub fn knx_to_tp1_bytes_no_checksum<const N: usize>(src: &[u8]) -> heapless::Vec
         // Standard frame: copy as-is, then rewrite bytes [0] and [5].
         out.extend_from_slice(src).expect("destination capacity too small for TP1 conversion");
         out[5] = (out[5] & 0xf0) | ((len - 7) as u8);
-        out[0] = (out[0] & 0x0c) | 0xb0;
+        out[0] = (out[0] & 0x0c) | TP1_STD_CTRL_BASE;
     } else {
         // Extended frame: insert the extended-control byte at position 1 and
         // shift the rest rightward. Output length is `len + 1`.

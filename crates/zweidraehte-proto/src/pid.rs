@@ -529,3 +529,39 @@ pub mod rf {
     /// (03/05/01 §4.15.9). Stored but not yet acted upon.
     pub const RF_RETRANSMITTER: u16 = 57;
 }
+
+/// Wire identifiers of the Property Data Types (PDT) that BCU-era
+/// property descriptions carry (03/05/01 §4.10, the type octet of
+/// `A_PropertyDescription_Response`). The same identifiers appear as
+/// the const parameter of the `PropertyData` aliases in
+/// [`crate::dpt`] (`PDT_Control`, `PDT_UnsignedInt`, …); these plain
+/// `u8` names exist for code that assembles the descriptor octet
+/// directly.
+pub mod pdt {
+    /// `PDT_CONTROL` — the write-triggers-action control types
+    /// (`PID_LOAD_STATE_CONTROL`, `PID_RUN_STATE_CONTROL`).
+    pub const CONTROL: u8 = 0x00;
+    /// `PDT_UNSIGNED_CHAR` — unsigned 8-bit integer.
+    pub const UNSIGNED_CHAR: u8 = 0x02;
+    /// `PDT_UNSIGNED_INT` — unsigned 16-bit integer, big-endian.
+    pub const UNSIGNED_INT: u8 = 0x04;
+    /// `PDT_UNSIGNED_LONG` — unsigned 32-bit integer, big-endian.
+    pub const UNSIGNED_LONG: u8 = 0x09;
+}
+
+/// Bits of `PID_DEVICE_CONTROL` (03/05/01 §4.2.14, Table 11). Bits
+/// 4..7 are reserved; the device resets the whole octet to 00h on
+/// start-up.
+pub mod device_control {
+    /// Bit 0: the user program stopped for an internal reason (e.g. a
+    /// wrong PEI type).
+    pub const USER_STOPPED: u8 = 0x01;
+    /// Bit 1: a frame has been received carrying the device's own
+    /// individual address as its source — an address duplication.
+    pub const ADDRESS_DUPLICATION: u8 = 0x02;
+    /// Bit 2: verify mode — memory-write services are answered with a
+    /// response echoing the written bytes.
+    pub const VERIFY_MODE: u8 = 0x04;
+    /// Bit 3: safe state on.
+    pub const SAFE_STATE: u8 = 0x08;
+}

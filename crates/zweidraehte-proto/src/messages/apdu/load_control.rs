@@ -218,6 +218,29 @@ impl AbsSegment {
             0x00, // reserved
         ]
     }
+
+    /// Parse a record body (without any event octet) — the inverse of
+    /// [`Self::write`].
+    ///
+    /// Requires the fields through `length`; the attribute octets are
+    /// optional and default to zero when a sender truncates the record
+    /// after the address information (real management clients have
+    /// been seen doing so, and a device only acts on type, start and
+    /// length anyway).
+    pub fn parse(body: &[u8]) -> Option<Self> {
+        let (&segment_type, rest) = body.split_first()?;
+        if rest.len() < 4 {
+            return None;
+        }
+        Some(Self {
+            segment_type: LoadSegment::from(segment_type),
+            start_address: u16::from_be_bytes([rest[0], rest[1]]),
+            length: u16::from_be_bytes([rest[2], rest[3]]),
+            access_attributes: rest.get(4).copied().unwrap_or(0),
+            memory_type: rest.get(5).copied().unwrap_or(0),
+            memory_attributes: rest.get(6).copied().unwrap_or(0),
+        })
+    }
 }
 
 /// An *AllocRelDataSeg* record body: the relative-data allocation
@@ -408,6 +431,17 @@ impl MemLoadControlRecord {
         ((machine as u8) << 4) | (u8::from(event) & 0x0F)
     }
 
+    /// Split a record's first octet into its machine number and load
+    /// event — the inverse of the tag every builder here writes.
+    ///
+    /// The machine comes back as the raw 4-bit number rather than an
+    /// [`LsmMachine`]: which numbers exist is a per-device fact (a
+    /// device may run more or fewer machines than the four the enum
+    /// names), so range checking is the caller's.
+    pub fn split_tag(tag: u8) -> (u8, LoadEvent) {
+        (tag >> 4, LoadEvent::from(tag & 0x0F))
+    }
+
     /// The memory-mapped record is always 0Bh octets — 03/05/02
     /// §3.31.2 writes `A_Memory_Write (addr = 0104h, length = 0Bh)`
     /// for every event, and real BIM M112 silicon latches the window
@@ -581,5 +615,28 @@ mod tests {
         let record = MemLoadControlRecord::abs_segment(LsmMachine::AssociationTable, &AbsSegment::eeprom(0x5000, 34));
         assert_eq!(record, [0x23, 0x00, 0x00, 0x50, 0x00, 0x00, 0x22, 0xFF, 0x03, 0x80, 0x00]);
         assert_eq!(record.len(), MemLoadControlRecord::RECORD_LEN, "the window write is always 0Bh octets");
+    }
+
+    #[test]
+    fn abs_segment_parse_round_trip() {
+        let segment = AbsSegment::eeprom(0x4000, 0x0123);
+        assert_eq!(AbsSegment::parse(&segment.write()), Some(segment));
+
+        // Truncated after the length: attributes default to zero.
+        let truncated = AbsSegment::parse(&segment.write()[..5]).expect("type + start + length are present");
+        assert_eq!(truncated.start_address, 0x4000);
+        assert_eq!(truncated.length, 0x0123);
+        assert_eq!(truncated.access_attributes, 0);
+
+        // Too short to carry the length.
+        assert_eq!(AbsSegment::parse(&segment.write()[..4]), None);
+    }
+
+    #[test]
+    fn mem_record_split_tag_round_trip() {
+        let record = MemLoadControlRecord::event(LsmMachine::ApplicationProgram, LoadEvent::StartLoading);
+        assert_eq!(MemLoadControlRecord::split_tag(record[0]), (3, LoadEvent::StartLoading));
+        // Machine numbers beyond the named four pass through raw.
+        assert_eq!(MemLoadControlRecord::split_tag(0x54), (5, LoadEvent::Unload));
     }
 }
