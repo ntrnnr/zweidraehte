@@ -31,6 +31,8 @@ impl MicroDeviceFamily for Bcu2Family {
     const DD0: u16 = 0x0020;
     const TL_STYLE: TlStyle = TlStyle::Style1;
     const AUTH_LEVELS: usize = 4;
+    const CONNECTIONLESS_MANAGEMENT: bool = false;
+    const PROGMODE_PROPERTY: bool = false;
     const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = 0x0100;

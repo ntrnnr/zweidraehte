@@ -37,28 +37,50 @@ pub const HARDWARE_TYPE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x17];
 /// Config octet with every flag: UE | TE | ROI off | WE | RE | CE,
 /// low transmission priority (Table 87 coding).
 const ALL_FLAGS_LOW_PRIO: u8 = 0xDF;
+/// The same plus the read-on-init flag. The micro stack has no
+/// read-on-init scan (SESSION.md tracks it), but the table data
+/// mirrors the full-fat fixture so the profiles stay congruent.
+const ALL_FLAGS_ROI_LOW_PRIO: u8 = 0xFF;
 
-/// The DUT's group objects, mirroring the BCU2 smoke fixture: value
-/// slots in page-0 user RAM (00C6h+), RAM flags at 00D0h.
+/// The DUT's group objects: the full-fat System 7 conformance roster
+/// (see `system7_stack::conformance_config`), carried onto the micro
+/// stack so the same EITT profile variables and GUID-anchored patches
+/// resolve. ASAPs 1..=7 with M112 slot 0 spare; value slots in page-0
+/// user RAM (00C6h+), RAM flags at 00D0h.
 ///
-/// - ASAP 0: 1-bit, all flags — the main test object
-/// - ASAP 1: 1-byte, all flags
-/// - ASAP 2: 3-byte, all flags (invalid-length material)
-/// - ASAP 3: 1-bit, transmit/read only — a status object
+/// - ASAP 1: GO0, 1-bit — the main test object
+/// - ASAP 2: GO1, 4-bit (short-format response material)
+/// - ASAP 3: GO2, 1-byte
+/// - ASAP 4: GO3, 1-byte, read-on-init
+/// - ASAP 5: GO4, 1-byte, read-on-init
+/// - ASAP 6: GO5, 1-byte — the network-layer long-format object
+/// - ASAP 7: GO6, 1-bit — the transport-layer object
 pub static COM_OBJECTS: &[System7CoDescriptor] = &[
+    System7CoDescriptor { data_ptr: 0x0000, config: 0x00, value_type: 0x00 }, // spare slot 0
     System7CoDescriptor { data_ptr: 0x00C6, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
-    System7CoDescriptor { data_ptr: 0x00C7, config: ALL_FLAGS_LOW_PRIO, value_type: 0x06 },
-    System7CoDescriptor { data_ptr: 0x00C8, config: ALL_FLAGS_LOW_PRIO, value_type: 0x08 },
-    System7CoDescriptor { data_ptr: 0x00CB, config: 0x4F, value_type: 0x00 },
+    System7CoDescriptor { data_ptr: 0x00C7, config: ALL_FLAGS_LOW_PRIO, value_type: 0x03 },
+    System7CoDescriptor { data_ptr: 0x00C8, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
+    System7CoDescriptor { data_ptr: 0x00C9, config: ALL_FLAGS_ROI_LOW_PRIO, value_type: 0x07 },
+    System7CoDescriptor { data_ptr: 0x00CA, config: ALL_FLAGS_ROI_LOW_PRIO, value_type: 0x07 },
+    System7CoDescriptor { data_ptr: 0x00CB, config: ALL_FLAGS_LOW_PRIO, value_type: 0x07 },
+    System7CoDescriptor { data_ptr: 0x00CC, config: ALL_FLAGS_LOW_PRIO, value_type: 0x00 },
 ];
 
-/// Factory group addresses, TSAPs 1..=4 in table order. Raw values
-/// 1000h.. (ascending, as RT8 mandates) so the suite templates can
-/// spell them as literal octets.
-static GROUP_ADDRESSES: &[GroupAddress] =
-    &[GroupAddress([0x10, 0x00]), GroupAddress([0x10, 0x01]), GroupAddress([0x10, 0x02]), GroupAddress([0x10, 0x03])];
+/// Factory group addresses, TSAPs 1..=7 in table order — ascending, as
+/// RT8 mandates, and identical to the full-fat fixture: 1/0/1 for the
+/// network layer, the group-object template's defaults 1000h..1005h,
+/// and 5/5/5 for the transport layer.
+static GROUP_ADDRESSES: &[GroupAddress] = &[
+    GroupAddress([0x08, 0x01]),
+    GroupAddress([0x10, 0x00]),
+    GroupAddress([0x10, 0x01]),
+    GroupAddress([0x10, 0x02]),
+    GroupAddress([0x10, 0x03]),
+    GroupAddress([0x10, 0x05]),
+    GroupAddress([0x2D, 0x05]),
+];
 
-static ASSOCIATIONS: &[(u8, u8)] = &[(1, 0), (2, 1), (3, 2), (4, 3)];
+static ASSOCIATIONS: &[(u8, u8)] = &[(1, 6), (2, 1), (3, 2), (4, 3), (5, 4), (6, 5), (7, 7)];
 
 pub fn definition() -> System7DeviceDefinition {
     System7DeviceDefinition {

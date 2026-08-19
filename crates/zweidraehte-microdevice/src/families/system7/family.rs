@@ -47,6 +47,8 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16> MicroDeviceFamily for System7
     const DD0: u16 = 0x0705;
     const TL_STYLE: TlStyle = TlStyle::Style3;
     const AUTH_LEVELS: usize = 16;
+    const CONNECTIONLESS_MANAGEMENT: bool = true;
+    const PROGMODE_PROPERTY: bool = true;
     const MAX_APDU: usize = 15;
 
     const EEPROM_BASE: u16 = offsets::ADT_ADDR;

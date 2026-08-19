@@ -189,8 +189,16 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             Tpci::ControlAck { nak: false, seq } => TlEvent::ReceivedAck { source, seq_no: seq },
             Tpci::ControlAck { nak: true, seq } => TlEvent::ReceivedNack { source, seq_no: seq },
             // Connectionless data to our individual address: a BCU2
-            // serves its management exclusively connection-oriented.
-            Tpci::Unnumbered | Tpci::Unknown => return,
+            // serves its management exclusively connection-oriented;
+            // System 7 answers device-oriented connectionless services
+            // (03/03/07 §3.1) with a connectionless reply.
+            Tpci::Unnumbered => {
+                if F::CONNECTIONLESS_MANAGEMENT {
+                    self.dispatch_connectionless(&view, source, out);
+                }
+                return;
+            }
+            Tpci::Unknown => return,
         };
 
         let outputs = self.tl.process(event, now_ms);
@@ -250,6 +258,34 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             ServiceResult::None => {}
             ServiceResult::Reply(reply) => {
                 self.send_reply(source, view.priority_bits(), reply.apci10, reply.small6, &reply.payload, now_ms, out);
+            }
+            ServiceResult::Restart => {
+                out.restart = true;
+            }
+        }
+    }
+
+    /// Handle a device-oriented connectionless management APDU: the
+    /// same service surface, the reply going out unnumbered rather
+    /// than through the transport connection. A connectionless
+    /// `A_Restart` still restarts.
+    fn dispatch_connectionless(&mut self, view: &FrameView<'_>, source: IndividualAddress, out: &mut PollOutput) {
+        let Some(apci10) = view.apci() else { return };
+        let (base, small6) = if apci10 >> 6 == 0x0F { (apci10, 0) } else { (apci10 & 0x3C0, (apci10 & 0x3F) as u8) };
+        match self.handle_service(base, small6, view.payload(), source) {
+            ServiceResult::None => {}
+            ServiceResult::Reply(reply) => {
+                let own = self.individual_address();
+                out.push(frame::data_frame(
+                    view.priority_bits(),
+                    own,
+                    source.0,
+                    false,
+                    frame::TPCI_UNNUMBERED,
+                    reply.apci10,
+                    reply.small6,
+                    &reply.payload,
+                ));
             }
             ServiceResult::Restart => {
                 out.restart = true;

@@ -348,6 +348,9 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             (0, pid::SERVICE_CONTROL) => {
                 let _ = v.extend_from_slice(&[0x00, 0x00]);
             }
+            (0, pid::device::PROGMODE) if F::PROGMODE_PROPERTY => {
+                let _ = v.push(u8::from(self.is_programming_mode()));
+            }
             (0, pid::FIRMWARE_REVISION) => {
                 let _ = v.push(1);
             }
@@ -397,6 +400,10 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 // (PEI abort, user program checks) have no equivalent
                 // here. TODO: honor the IndividualAddressWriteEnable
                 // bit once a client is seen driving it on mask 0020h.
+                true
+            }
+            (0, pid::device::PROGMODE) if F::PROGMODE_PROPERTY && data.len() == 1 => {
+                self.set_programming_mode(data[0] & 0x01 != 0);
                 true
             }
             (_, pid::LOAD_STATE_CONTROL) => {
@@ -481,18 +488,25 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
         return;
     }
     let Some(&event) = record.first() else { return };
+    // The transition table of 03/05/02 §3.28, the same shape the full
+    // stack's `next_state` implements. The notable non-transitions:
+    // unknown events are ignored (state unchanged, not Error), a
+    // LoadCompleted or segment record outside Loading falls flat
+    // rather than erroring — except a segment record against Loaded,
+    // which is the one combination the spec calls an error — and
+    // StartLoading does not resurrect an Error state.
     let lsm = &mut mgmt.lsm[machine];
     match LoadEvent::from(event) {
         LoadEvent::NoOp => {}
         LoadEvent::StartLoading => {
-            lsm.state = LoadState::Loading;
+            if lsm.state != LoadState::Err {
+                lsm.state = LoadState::Loading;
+            }
         }
         LoadEvent::LoadCompleted => {
             if lsm.state == LoadState::Loading {
                 lsm.state = LoadState::Loaded;
                 F::load_completed_side_effect(machine, eeprom, mgmt);
-            } else {
-                lsm.state = LoadState::Err;
             }
         }
         LoadEvent::Unload => {
@@ -504,8 +518,11 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
             mgmt.lsm[machine].table_ref = 0;
         }
         LoadEvent::AdditionalLoadControls => {
-            if lsm.state != LoadState::Loading {
+            if lsm.state == LoadState::Loaded {
                 lsm.state = LoadState::Err;
+                return;
+            }
+            if lsm.state != LoadState::Loading {
                 return;
             }
             let Some(&segment_type) = record.get(1) else { return };
@@ -544,7 +561,8 @@ pub(crate) fn dispatch_lsm_event<F: MicroDeviceFamily>(
                 _ => lsm.state = LoadState::Err,
             }
         }
-        _ => lsm.state = LoadState::Err,
+        // Unknown load events are ignored — state unchanged.
+        _ => {}
     }
 }
 

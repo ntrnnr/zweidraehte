@@ -1,0 +1,178 @@
+# Device profile for the TP1 micro-System-7 conformance DUT
+# (mask 0705h on the no-async `zweidraehte-microdevice` stack).
+#
+# Run every template it lists:
+#
+#   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
+#     cargo run --bin conformance-eitt -- \
+#       --profile conformance/profiles/tp1-micro-system7.toml
+#
+# The full-fat System 7 twin of this file is tp1-system7.toml; the DUT
+# fixture carries the same group-object roster and addresses, so the
+# shared variables and GUID-anchored patches resolve identically. This
+# profile lists only the templates the micro stack is currently in
+# reach of:
+#
+# - GroupObjects needs the fixture's shadow-object application
+#   behaviors (comm-flag mirrors, COT rewrite hooks) and read-on-init,
+#   which the micro stack defers (SESSION.md).
+# - Management's memory collections need the conformance test memory
+#   regions (accessible 0Fh block, read-only/write-only/level-guarded
+#   windows) and access-level enforcement — also deferred.
+#
+# The micro stack speaks standard frames only (MAX_APDU 15), so once
+# Management joins, its extended-frame conditionals flip the other way
+# from the full-fat profile: the "SFF only" cases run and the
+# MAX_APDU-gated ones become not applicable.
+
+medium = "tp"
+dut = "micro-system7"
+
+[addresses]
+# Must match conformance/src/dut/micro_system7_stack.rs: the DUT's
+# individual address is 1.0.1 (RT8 keeps it at ADT bytes 1-2) and the
+# tests address it as the BDUT.
+EDI = "AF FE"   # 10.15.254, the tool
+BDUT = "10 01"  # 1.0.1, the device under test
+
+[commands]
+# `@@`-family commands block for an operator, of which a headless run
+# has none. Everything else stays at the default `error`: an ignored
+# `@if-` or `@#` changes what runs.
+pause = "ignore"
+
+# ============================================================================
+# 8/3/3 — Network Layer
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-NetworkLayer.xml"
+
+# 3.1 checks the routing count on an answer, and the template's device
+# answers in the long form — its group object holds a whole octet. Ours
+# at the template's default address is one bit, which answers in the
+# short form and never matches. GO5 at 1/0/1 is the 8-bit object, at
+# the same address as on both full-fat DUTs.
+[template.variables]
+GO_ADDR = "08 01"
+
+# ============================================================================
+# 8/3/4 — Transport Layer
+# ============================================================================
+#
+# System 7 mandates TL Style 3 (06 Profiles v02.02.01 §4.1.2); the
+# micro stack runs the proto crate's Style 3 state machine, so the
+# style-choice patch carries over unchanged.
+
+[[template]]
+file = "KnxConformanceTestTemplate-TransportLayer.xml"
+patches = ["conformance/patches/common/transport-layer.toml"]
+
+# The template's SER_NUM default is the System B DUT's serial number;
+# the micro DUT answers with its own.
+[template.variables]
+SER_NUM = "FE ED 07 05 BE EF"
+
+# EITT plays two remote devices at once here, from two tool interfaces
+# it switches on and off around the cases that need the second one. We
+# drive a single mock link layer that models no L2 acknowledgement, so
+# there is nothing to switch: both tool addresses are always on the bus
+# and the source address in each telegram already says which of them is
+# speaking.
+[[template.command]]
+category = "interface"
+policy = "ignore"
+why = "one mock bus carries both tool addresses, so @if+/@if- have nothing to switch"
+
+[[template.not_applicable]]
+id = "6E6FDBCA-0912-40BA-A10A-97955BD1CE61"
+why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run"
+
+# ============================================================================
+# 8 TSS G — Load State Machines
+# ============================================================================
+#
+# Same absolute-allocation variables as the full-fat System 7 profile:
+# segment type 0Bh (Data Relative Allocation) is n/a for the System 7
+# masks, so the record becomes the family's mandatory AllocAbsDataSeg —
+# the DUT's association-table home 4100h, length 000Fh (the RT8 blob's
+# byte size for the fixture's seven associations), then the field
+# values ETS itself sends.
+
+[[template]]
+file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
+patches = ["conformance/patches/common/load-state-machines.toml"]
+
+[template.variables]
+LOAD_EVENT_SEGMENT_TYPE = "00"
+LOAD_EVENT_SEGMENT_CODING = "41 00 00 0F FF 03 80 00"
+LOAD_EVENT_03_START_ADDR = "41 00"
+
+[template.tl_sequence]
+recompute = true
+why = """
+this template's own sequence numbers are stale. 2.2.2 and 2.3.2 open \
+with the identical connect and request and then expect different \
+acknowledgements from it — 60 C2 and 60 C6 — so no reading of the \
+literals is self-consistent. EITT never reads them either: it computes \
+a sequence number for every management telegram before running the \
+sequence (manual 12.2.3.14). Same entry as the other profiles; the \
+staleness is the template's, not the device's.\
+"""
+
+[[template.not_applicable]]
+id = "2F319664-DCA2-4B15-96A6-03C5ED531C33"
+why = """
+2.6 denies a load-control write to an unauthorised connection, and the \
+micro stack does not enforce access levels yet — the deferral is \
+deliberate and crate-wide (SESSION.md tracks it, together with the \
+BCU2 suites that currently drive load state machines unauthorised and \
+would need authorising first). The full-fat System 7 profile runs this \
+case; it joins here when enforcement lands.\
+"""
+
+# ============================================================================
+# 8 TSS I — Run State Machines
+# ============================================================================
+
+[[template]]
+file = "KnxConformanceTestTemplate-RunStateMachines.xml"
+patches = ["conformance/patches/common/run-state-machines.toml"]
+
+# The template's default 04 is the Application Program object's index
+# on a System B roster, where the Group Object Table object occupies
+# index 3. System 7 has no Group Object Table object, so the
+# Application Program the template means sits at 3. Same entry as the
+# full-fat System 7 profile.
+[template.variables]
+TEST_OBJ_IDX = "03"
+
+[[template.not_applicable]]
+id = "97DB686D-39CF-4D28-B315-2E3851DD8AC3"
+why = """
+2.1 is an example, as its name says: it factory-resets the BDUT and then \
+writes an individual address by serial number, using a serial number and \
+an address the template invented. Its own comments say to adapt or \
+deactivate it ("Example for medium RF; please modify or deactivate telegram \
+accordingly", "BDUT specific: Possibly do further BDUT configuration"). Run \
+against us unmodified it wipes the address table, leaves the DUT at \
+15.15.255 and takes the other thirty cases with it. Our DUT starts \
+configured, so there is nothing here to adapt it to.\
+"""
+
+[[template.not_applicable]]
+id = "384257FA-38AF-4780-9231-D1EAEF52A087"
+why = """
+2.2.2 scopes itself out: "Only applicable for devices complying with \
+System 2/BCU2 profiles or mask versions 0300h and 2300h. For all other \
+system profiles, this test does not apply as the initial state can not be \
+provoked." We are System 7, mask 0705h. The preparation shows why: it \
+reaches the initial state — HALTED with the executable part loaded — by \
+sending RUNCONTROL_STOP and expecting RUNSTATE_HALTED, annotated "(only \
+mask 0300h or 2300h, otherwise RUNSTATE_TERMINATED)". 03/05/01 \
+§4.24.2.3.3 Table 97 footnote a says the same thing normatively, so for us \
+STOP against a loaded application is TERMINATED and the state this case \
+starts from is unreachable by construction. The RESTART transition it \
+would have tested is covered from every reachable state by 2.3.3, 2.4.3 \
+and 2.5.2.\
+"""

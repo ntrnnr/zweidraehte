@@ -119,7 +119,16 @@ impl<'a> FrameView<'a> {
     pub fn tpci(&self) -> Tpci {
         let octet = self.tpdu[0];
         match octet >> 6 {
-            0b00 => Tpci::Unnumbered,
+            // Unnumbered data carries zero in the sequence bits; a
+            // frame with 00xxxxb, x ≠ 0 is invalid TPCI coding the
+            // conformance suite expects dropped (transport layer 2.1).
+            0b00 => {
+                if octet & 0x3C == 0 {
+                    Tpci::Unnumbered
+                } else {
+                    Tpci::Unknown
+                }
+            }
             0b01 => Tpci::Numbered { seq: (octet >> 2) & 0x0F },
             0b10 => match octet {
                 0x80 => Tpci::Control { disconnect: false },

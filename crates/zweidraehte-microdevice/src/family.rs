@@ -51,6 +51,15 @@ pub trait MicroDeviceFamily: 'static {
     const TL_STYLE: TlStyle;
     /// Number of authorization levels (BCU2: 4, System 7: 16).
     const AUTH_LEVELS: usize;
+    /// Whether the device answers connectionless (unnumbered)
+    /// device-oriented management. A BCU2 serves its management
+    /// exclusively connection-oriented; System 7 also answers
+    /// connectionless property and descriptor reads.
+    const CONNECTIONLESS_MANAGEMENT: bool;
+    /// Whether programming mode is additionally exposed as
+    /// `PID_PROGMODE` on the device object (System 7; BCU2 predates
+    /// property-based management).
+    const PROGMODE_PROPERTY: bool;
     /// Maximum APDU length. BCU2 has no MaxApduLength resource, so the
     /// spec default of 15 octets applies.
     const MAX_APDU: usize;

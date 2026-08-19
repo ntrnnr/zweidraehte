@@ -732,10 +732,11 @@ fn scenario_micro_s7_full_download<'a>(
                 return Err(format!("ADT {adt:02X?}, expected [01 10 01 19 01]"));
             }
             // The M112 group object table at the product address:
-            // positional, so all four objects are present.
+            // positional over ASAPs 0..=7 (slot 0 spare), so the count
+            // covers all eight rows.
             let cot = conn.memory_read(0x4200, 3).await.map_err(|e| format!("COT read: {e}"))?;
-            if cot[0] != 4 {
-                return Err(format!("COT count {}, expected 4", cot[0]));
+            if cot[0] != 8 {
+                return Err(format!("COT count {}, expected 8", cot[0]));
             }
             Ok(())
         }

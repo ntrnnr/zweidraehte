@@ -36,20 +36,22 @@ fn device_descriptor() -> DeviceDescriptor {
     }
 }
 
-/// The DUT's group objects as ETS sees them: numbers 0..=3 (BIM M112
-/// products number from ASAP 0), sizes and flags mirroring the
-/// fixture's M112 config octets.
+/// The DUT's group objects as ETS sees them: the same seven-object
+/// roster the full-fat System 7 DUT's product declares (numbers 1..=7,
+/// BIM M112 slot 0 spare), so both products drive the same fixture
+/// shape.
 const COM_OBJECTS: &[EtsCommObjectDef] = &[
-    com_object(0, "GO0", 1, ALL_FLAGS),
-    com_object(1, "GO1", 8, ALL_FLAGS),
-    com_object(2, "GO2", 24, ALL_FLAGS),
-    com_object(3, "GO3", 1, STATUS_FLAGS),
+    com_object(1, "GO0", 1, ALL_FLAGS),
+    com_object(2, "GO1", 4, ALL_FLAGS),
+    com_object(3, "GO2", 8, ALL_FLAGS),
+    com_object(4, "GO3", 8, ALL_FLAGS),
+    com_object(5, "GO4", 8, ALL_FLAGS),
+    com_object(6, "GO5", 8, ALL_FLAGS),
+    com_object(7, "GO6", 1, ALL_FLAGS),
 ];
 
 /// `CE | TE | RE | WE | UE` — the fixture's all-flags objects.
 const ALL_FLAGS: u8 = 0b1101_1100;
-/// `CE | TE | RE` — the transmit/read-only status object (ASAP 3).
-const STATUS_FLAGS: u8 = 0b0100_1100;
 
 const fn com_object(index: u16, name: &'static str, size_bits: u8, flags: u8) -> EtsCommObjectDef {
     EtsCommObjectDef {

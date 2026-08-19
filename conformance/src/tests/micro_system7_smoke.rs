@@ -227,12 +227,12 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
             comment("A group read of 1000h answers with the written value"),
             inject("BC #EDI 10 00 E1 00 00"),
             expect("BC #BDUT 10 00 E1 00 41", 400),
-            comment("GO1 (1 byte) answers long-form with its factory value"),
+            comment("GO1 (4 bit) answers short-form with its factory value"),
             inject("BC #EDI 10 01 E1 00 00"),
-            expect("BC #BDUT 10 01 E2 00 40 00", 400),
-            comment("A transmit request on GO3 sends its value on 1003h"),
-            trigger_write(3),
-            expect("BC #BDUT 10 03 E1 00 80", 400),
+            expect("BC #BDUT 10 01 E1 00 40", 400),
+            comment("A transmit request on GO6 sends its value on 5/5/5"),
+            trigger_write(7),
+            expect("BC #BDUT 2D 05 E1 00 80", 400),
         ]),
         // ====================================================================
         // MS7-9: A_Restart
