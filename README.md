@@ -19,6 +19,20 @@ composition and monomorphized, no dynamic dispatch on the hot path, no
 runtime registries, and features a device doesn't use contribute zero
 code.
 
+There is also `zweidraehte-microdevice`, a separate and much smaller
+polling TP1 stack for fixed-map BCU-era hardware: one owner, a
+cooperative `poll()` loop, flat EEPROM-backed tables, and no executor,
+channels, or interface-object tower. It models BCU1, BCU2, and System 7
+families, and shares protocol vocabulary, table codecs, state-machine
+logic, ETS metadata, and application behaviour with the full stack while
+keeping a deliberately different runtime architecture.
+
+**Treat the micro stack as an experiment.** It exists because it was
+interesting to find out how small a KNX device can get and how much of
+the "generic" core really is generic. It is young, thinly tested
+compared to the full stack, and has no production use behind it. Build
+on it only if you are willing to debug it.
+
 Alongside the stack, the workspace contains an ETS product-definition
 DSL: devices declare their parameters, communication objects, and ETS
 UI pages in Rust macros, and a generator emits the matching
@@ -40,11 +54,15 @@ breakdown of what works, what needs testing, and what is missing.
 
 **Protocol stack**
 
+- Standard full-stack presets for System B TP1/RF/IP/IP-interface and
+  their secure variants, plus System 7 TP1 plain/secure. Normal firmware
+  implements the small `DeviceDefinition` input trait; advanced users can
+  still implement the low-level `StackDefinition` directly.
 - System B device profile (mask versions 07B0 TP1, 27B0 KNX-RF,
   57B0 KNX/IP); the TP1 + Data Secure core is validated by the
   in-repo conformance suite
 - System 7 device profile, TP1 only (mask version 0705, with Data
-  Secure as a composable profile module): RT8 tables, the fixed
+  Secure as a composable profile module): compact fixed-map tables, the fixed
   absolute memory map, memory-mapped load controls, 16 authorization
   levels, and the ETS `ProductProcedure` download. **For a new custom
   device you normally want System B** — see "Which profile for a
@@ -61,6 +79,9 @@ breakdown of what works, what needs testing, and what is missing.
   (embassy on embedded, std executors on Linux)
 - Unified storage layer: region-anchored flash/FRAM layouts with
   wear-levelling, plus JSON file backends for Linux hosts
+- Ultra-lightweight no-async TP1 stack for BCU1/BCU2 and fixed-map
+  System 7 devices, with EEPROM tables parsed in place and bounded
+  `heapless` outputs — **experimental**, see the note above
 
 **Tooling**
 
@@ -72,10 +93,13 @@ breakdown of what works, what needs testing, and what is missing.
 - KNX **client** library (`zweidraehte-client`) — a Falcon-style
   management client for Linux: KNX/IP tunneling and USB connectors,
   group traffic, connected/connectionless device management, KNX Data
-  Secure, and ETS-style **configuration download** for System 7 and
-  System B devices, driven the way ETS is — from `knx_master.xml` and
-  a product's `.knxprod`/MTXML. Verified against real hardware (an
-  MDT System 7 push button, over USB and tunneling)
+  Secure, and ETS-style **configuration download**, driven the way ETS
+  is — from `knx_master.xml` and a product's `.knxprod`/MTXML. Covers
+  the System B, System 7 (BIM M112), BCU2 and BCU1 management models,
+  including the BCU-era specifics: RT1/RT2 table codings, diffed EEPROM
+  writes, relocation under Dynamic Table Management, and the no-load-
+  state-machine direct path of mask 0012h. Verified against real
+  hardware (an MDT System 7 push button, over USB and tunneling)
 - **Device configuration tooling** on top of the client: declarative
   per-device **mods files** (TOML), `knx-dump` to generate their
   skeletons from a vendor product file, `knx-loader` to
@@ -90,7 +114,8 @@ breakdown of what works, what needs testing, and what is missing.
 - STM32G0: TP1 and KNX-RF light switches (plain and Data Secure),
   System 7 TP1 light switches (plain and Data Secure — same hardware
   and device definition as their System B siblings, different
-  management model), an RF retransmitter
+  management model), an RF retransmitter, and — on the experimental
+  micro stack — BCU2 and micro-System-7 polling light switches
 - RP2040: KNX/IP light switches over W5500 Ethernet (plain and IP
   Secure), WiFi (Pico W), TP1, and a KNX/IP↔TP1 interface (tunneling
   server bridging Ethernet to the TP1 bus)
@@ -105,7 +130,7 @@ breakdown of what works, what needs testing, and what is missing.
   binaries.
 - **KNX/IP core**: routing, discovery, device management,
   connectionless remote configuration.
-- **System 7 TP1 (0705h) incl. KNX Data Secure**: all eight vendor
+- **System 7 TP1 (0705h) incl. KNX Data Secure**: all seven vendor
   conformance templates (group objects, network layer, transport
   layer, load and run state machines, management, TSSJ data security)
   run against the System 7 DUTs as they do against the System B ones —
@@ -142,19 +167,33 @@ breakdown of what works, what needs testing, and what is missing.
   device management, and KNX Data Secure work over tunneling and USB.
   The ETS-style **configuration download** (unload → allocate → write
   tables and parameters → load → restart) runs end to end against both
-  the System 7 and System B conformance DUTs — the client generates
-  each DUT's product file, reads it back, downloads, and verifies the
-  device rewired — exercising both load-control paths. On real
-  hardware, exactly **one third-party device** has been configured
-  start to finish so far (an MDT BE-TAL5502.01 push button, System 7,
-  from its official vendor product file, over both USB and
-  tunneling); the wire details are pinned against the spec and ETS
-  traces of that device, so expect other products to surface
-  surprises. No automatic reconnection, sequential command channel,
-  no layered NL/TL/AL separation yet. Partial-download subtypes
-  (`grp`/`par`/`cfg`/`ap1`) and secure commissioning are not wired.
+  the System 7, System B and BCU2 conformance DUTs — the client
+  generates each DUT's product file, reads it back, downloads, and
+  verifies the device rewired — exercising all three load-control
+  paths. On real hardware, **three third-party devices** have been
+  configured start to finish so far: an MDT BE-TAL5502.01 push button
+  (System 7) over both USB and tunneling, a mask-0012h BCU1 device
+  over the direct no-LSM path, and a mask-0020h BCU2 device running
+  that same converted BCU1 program (the device-mask-aware path, with
+  mask-ROM fixups applied at compile time), including repeated
+  re-downloads onto a running application. Every wire detail is
+  pinned against the spec and ETS traces of those devices, so expect
+  other products to surface surprises — a native BCU2 product has not
+  met silicon yet. No automatic reconnection, sequential command
+  channel, no layered NL/TL/AL separation yet. Partial-download
+  subtypes (`grp`/`par`/`cfg`/`ap1`) and secure commissioning are not
+  wired.
 - **ip_interface link layer**: the composite KNX/IP↔TP1 bridge behind
   the IP-interface firmware — implemented, but untested so far.
+- **`zweidraehte-microdevice`** (experimental throughout): BCU2 and
+  micro-System-7 DUTs pass a smoke suite, the micro System 7 DUT shares
+  the full stack's bus-observable System 7 contracts and runs the vendor
+  network, transport, load-state and run-state templates, and the BCU2
+  DUT completes client download/unload scenarios. That is real coverage,
+  but far short of what the full stack gets: Group Objects and Management
+  templates are not in the micro EITT profile, BCU1 has crate-level tests
+  only (no DUT, no firmware), and nothing here has seen a bench or a
+  certification lab.
 
 ### Known gaps
 
@@ -184,12 +223,17 @@ breakdown of what works, what needs testing, and what is missing.
   network layer with filter tables, and no KNX/IP router acting as a
   backbone/line coupler.
 - **Profiles**: System B (07B0/27B0/57B0) and System 7 TP1 (0705,
-  incl. Data Secure) are implemented. System 7 exists on TP1 alone;
-  its RF (2705) and KNX/IP (5705) siblings are not built. No other
-  mask is implemented:
-  no couplers or routers (0912/091A/2920), no USB interface masks, and
-  the legacy families (BCU 1/2, System 300, old System 7 masks 0700/0701) are
-  deliberately out of scope.
+  incl. Data Secure) are implemented by the full stack. The micro stack
+  implements BCU1 0012h, BCU2 0020h/0021h/0025h, and System 7 0705h on
+  TP1; only BCU2 and micro-System-7 currently have reference firmware and
+  DUT coverage. System 7 RF/IP siblings, System 300, couplers/routers,
+  and USB interface masks are not implemented.
+- **Micro-stack maturity**: the micro-System-7 EITT profile does not yet
+  run Group Objects or Management, BCU1 has no DUT or firmware target,
+  and no micro target has been exercised on a real bus for long. Its
+  application-parameter adapter, like the full stack's writable typed
+  parameter table, also still relies on downloaded bytes containing
+  valid Rust enum discriminants.
 - **Embedded platform**: no reusable STM32 `Platform` impl, Pico W
   WiFi credentials lack a provisioning mechanism, TCP on the RP2040
   targets is stubbed.
@@ -199,19 +243,22 @@ breakdown of what works, what needs testing, and what is missing.
 ```
 crates/
   zweidraehte-proto/         Protocol types (messages, encoding, addresses, DPTs)
-  zweidraehte-device/        The device stack (layers, objects, BCUs, storage)
+  zweidraehte-device/        Full async-capable device stack (layers, BCUs, storage)
+  zweidraehte-microdevice/   Polling TP1 stack for BCU1/BCU2/System 7 (experimental)
   zweidraehte-device-macros/ Proc-macros (interface objects, service registry, extension state)
   zweidraehte-ets/           Proc-macros for ETS parameter/com-object definitions
+  zweidraehte-ets-model/     Stack-neutral ETS metadata emitted by those macros
   zweidraehte-knxprod/       MTXML / .knxprod generator + parser
   zweidraehte-client/        Management client (tunnel/USB, secure, download)
   zweidraehte-platform/      Platform abstraction (serial, sockets, Linux)
   zweidraehte-util/          Small embedded utilities
 
 examples/
-  devices/                   Device definitions + demo/generator binaries
+  devices/                   Stack-neutral device/application definitions
+  generators/                MTXML/.knxprod generator binaries
   support/                   Host-side demo support (JSON storage, mocks)
 
-conformance/                 KNX conformance test framework + runner
+conformance/                 Hand-written, vendor-EITT, and download runners
 
 tools/
   knxprod-tui/               TUI viewer/configurator for MTXML files (edits,
@@ -226,6 +273,7 @@ firmware/                    Embedded targets (separate cargo workspace)
   common/                    Chip-agnostic crates (incl. the SX1211 KNX-RF driver)
   stm32/                     STM32G0 devices + family HAL glue
   rp2040/                    Raspberry Pi Pico devices + family HAL glue
+  linux/                     Host-target KNX/IP device shells
 
 docs/                        Architecture and reference documentation
 ```
@@ -363,24 +411,20 @@ That's where the name comes from.
 
 **Is this affiliated with or certified by the KNX Association?**
 
-No. I am not a member of the KNX Association, and I have no access to the EITT
-(the official KNX conformance testing software) - the in-repo conformance
-suite is my own implementation of the published test specifications. In the
-long run I'd love to get my hands on the EITT and maybe become a member. To
-make this possible, I am open to consulting and other business proposals. If
-you are interested, please reach out!
+No. I am not a member of the KNX Association and the stack is not certified.
+The repository contains both hand-written transcriptions and a runner for
+licensed vendor EITT XML templates. Those templates are not redistributed;
+the current local template set runs against the System B and System 7 DUTs.
+Access to the test material and passing it in our harness are useful evidence,
+but neither is KNX Association certification.
 
 **Is this stack compliant with the KNX Standard?**
 
-Kind of — but not officially. Nobody has verified the stack's actual
-conformance yet (see the previous question). What exists is the in-repo
-conformance runner, which executes a substantial part of the test suites
-specified in the standard against the device implementations. A few test
-cases have been patched along the way, where the published test description
-is incorrect or doesn't apply to this specific implementation; those
-deviations are deliberate, not accidental. Treat "conformance-tested" in
-this README as "passes my reading of the published test specifications",
-not as a certification claim.
+Kind of — but not officially. The in-repo runners execute the hand-written
+suite and the licensed vendor EITT XML templates against separate DUT
+processes. Profiles document every not-applicable case and GUID-anchored
+harness patch. Treat "conformance-tested" in this README as "passes those
+suites in this harness", not as a certification claim.
 
 **Do you offer services around this stack?**
 
@@ -430,8 +474,8 @@ interface modules (TP1, RF, IP) is in the works, but not done yet.
 
 **System B**, unless something forces your hand. It is the profile this
 stack is built around: all three media (TP1, KNX-RF, KNX/IP), KNX Data
-Secure and KNX IP Secure, the deepest conformance coverage, and every
-demo and firmware target except one. A new device you design yourself
+Secure and KNX IP Secure, the broadest medium support, and the default
+full-stack presets. A new device you design yourself
 has no reason to be anything else — the mask a product declares is your
 choice as the manufacturer, and nothing in ETS rewards picking the
 older family.
@@ -441,9 +485,9 @@ the core honest about being BCU-agnostic — a second family flushed out
 the places where "generic" code had quietly grown System B assumptions
 — and to support devices that have to match an existing System 7
 installed base or toolchain. Reach for it when that constraint is real,
-knowing what you give up here: TP1 only, and less coverage than
-System B has. What you get is a genuinely different management model —
-RT8 tables, a fixed absolute memory map, absolute-segment load
+knowing what you give up here: TP1 only. The full System 7 DUT now runs
+the same vendor template set as System B. What you get is a genuinely
+different management model — compact fixed-map tables, a fixed absolute memory map, absolute-segment load
 procedures, 16 authorization levels — commissioned by ETS through the
 `ProductProcedure` download, with KNX Data Secure available as the
 same composable profile module System B uses.
@@ -451,11 +495,24 @@ same composable profile module System B uses.
 Practically, the two are the same amount of work to build a device on:
 the STM32G0 System 7 light switch and its System B sibling share their
 hardware shell and the identical `devices::light_switch` definition,
-and differ only in which family macro their `StackDefinition` uses. One
+and differ only in the selected preset (`system_b::Tp1<Definition>` or
+`system_7::Tp1<Definition, COT_ADDRESS>`; secure variants use
+`SecureTp1`). One
 detail leaks into device definitions: `#[ets(index = N)]` on
 communication objects is a 0-based logical index, and the object number
 ETS shows is `N` plus the family's start (System 7 numbers from 0,
 System B from 1), so a shared definition works on both.
+
+**`zweidraehte-microdevice`** is not a third profile so much as a side
+quest: an experiment in how small a KNX device gets when you drop the
+executor, the buffer pool and the interface-object tower, and let the
+EEPROM image *be* the tables. It covers BCU1, BCU2 and fixed-map System 7
+on TP1 standard frames only, and device code owns one `Microdevice<F>`
+and polls it directly. It is much less tested than the full stack, so
+pick it for actual BCU-era hardware or a genuinely brutal RAM/flash
+budget — and expect to get your hands dirty. Do not pick it merely as a
+smaller API for a new System B product; it models different hardware and
+management constraints.
 
 **Does it interoperate with ETS?**
 

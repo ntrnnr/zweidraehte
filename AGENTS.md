@@ -18,6 +18,13 @@ composable profile module) exists for devices that must match an
 existing System 7 installed base — and as the second family that keeps
 the "generic" core honest. Prefer System B unless asked otherwise.
 
+Off to the side sits `zweidraehte-microdevice`, a separate polling stack
+for BCU-era masks (BCU1 0012h, BCU2 0020h/0021h/0025h, System 7 0705h).
+It is **experimental and lightly tested** — a for-fun exploration of how
+small a KNX device can be, which incidentally keeps the shared protocol
+code honest about family assumptions. It is not the answer to "which
+stack should this new device use".
+
 We are also working on a product definition XML generator: device
 definitions in Rust macros (parameters, communication objects, dynamic
 ETS pages) from which we generate the MTXML/`.knxprod` files that ETS
@@ -26,9 +33,10 @@ database entry. See "Product definition generator" below.
 
 ## Conformance testing
 
-There are two runners. Both drive the same DUT child processes through
-the same engine (`conformance/src/engine.rs`); they differ only in
-where the test steps come from.
+There are three runners. The first two drive the same DUT child processes
+through `conformance/src/engine.rs` and differ only in where their telegram
+steps come from. The third drives the same DUT family through the real client
+download API rather than the step interpreter.
 
 - **`conformance-runner`** runs the hand-written Rust transcriptions in
   `conformance/src/tests/`. This is the complete suite — 556 tests
@@ -36,6 +44,9 @@ where the test steps come from.
 - **`conformance-eitt`** runs a vendor EITT XML template directly. The
   group-object, network-layer, transport-layer, load/run-state-machine,
   management and data-security templates work so far; see below.
+- **`conformance-configuration`** generates/loads product data through
+  `zweidraehte-client` and verifies complete configuration downloads for the
+  System B, full System 7, micro System 7, and BCU2 fixtures.
 
 Run the hand-written suite with `cargo run --bin conformance-runner`.
 Pass a test name, suite name, or a substring of either as the first
@@ -138,7 +149,7 @@ the patch was compensating for needs re-checking.
 The group-object, network-layer, transport-layer, load/run-state-machine,
 management and TSSJ data-security templates run today, and all 524
 lowered cases pass against the System B profile
-(`conformance/profiles/tp1-systemb.toml`). All eight also run against
+(`conformance/profiles/tp1-systemb.toml`). All seven also run against
 System 7 via `conformance/profiles/tp1-system7.toml` (525 cases, all
 passing): same template files, with the family differences expressed as
 profile variables (mask, serial, the EEPROM-based memory windows, the
@@ -149,6 +160,13 @@ sets. The six non-secure templates drive `conformance-dut-system7`; the
 TSSJ data-security one drives `conformance-dut-system7-secure`, which
 is the same fixture with Data Secure and the two extra augment-provided
 objects the secure profile requires.
+
+A third profile, `conformance/profiles/tp1-micro-system7.toml`, runs the
+same templates against the polling micro stack's 0705h DUT — but only
+four of them (network layer, transport layer, load and run state
+machines). Group Objects and Management are deliberately out of that
+profile for now; the file says why, per template. Treat it as partial
+coverage of an experimental stack, not as a second passing System 7.
 
 The data-security template is the only overlap with a hand-written
 suite rather than new device coverage; clearing it took harness
@@ -405,8 +423,8 @@ framework. `firmware/` holds the embedded targets in a separate workspace.
 ```
 crates/
   zweidraehte-proto/         Shared KNX protocol types (messages, encoding, addresses, DPTs)
-  zweidraehte-device/        KNX device stack (layers, objects, BCUs)
-  zweidraehte-microdevice/   Ultra-lightweight no-async BCU-era stack (BCU2, mask 0020h)
+  zweidraehte-device/        Full KNX device stack (layers, objects, BCUs)
+  zweidraehte-microdevice/   Polling TP1 stack (BCU1/BCU2/System 7) — experimental
   zweidraehte-device-macros/ Proc-macros for interface objects, service registries, extension state
   zweidraehte-platform/      Platform abstraction (serial, sockets, network)
   zweidraehte-ets/           Procedural macros for ETS parameter definitions
@@ -423,8 +441,8 @@ examples/
   support/                 Host-side demo/test support (JSON storage,
                            keyboard/mock-context utilities)
 
-conformance/               KNX conformance test framework + two runners
-                           (hand-written suites, and vendor EITT XML)
+conformance/               KNX conformance framework + three runners
+                           (hand-written, vendor EITT XML, client downloads)
 
 tools/
   knxprod-tui/             TUI viewer for MTXML files (edits values/links, exports mods)
@@ -467,6 +485,20 @@ Contains:
 - `pid.rs` - Standard interface-object Property IDs (the device crate re-exports this as `objects::interface::pid`)
 - `properties.rs` - Interface object property definitions and access traits
 - `error.rs` - Protocol error types
+- `memory.rs` - Pure memory-region access policy (does one read/write fit a
+  declared region, and is the legacy authorization sufficient) — the part
+  every memory map shares, without owning storage
+- `tables/` - Ownership-free views over the standardized table formats
+  (`address.rs`, `association.rs`, `com_object.rs`), shared by the full
+  stack's typed tables, the micro stack's flat EEPROM image, and the
+  client's table writer
+- `transport/` - The *pure* TL state machine (03/03/04 §5.4): the four
+  styles as static transition tables, the event/action vocabulary, and
+  `process_event`. No I/O, no timers — symmetric, so device stacks and the
+  management client share it
+- `crypto/` - KNX Data Secure / IP Secure primitives (AES-CCM, SCF,
+  session keys)
+- `usb_hid/` - KNX USB HID report framing
 - `encoding/` - Low-level encoding
   - `cemi.rs` - Common EMI format for KNX messages
   - `tp1.rs` - TP1 physical layer encoding
@@ -474,7 +506,13 @@ Contains:
   - `knx.rs` - KNX message structures and ServiceType
   - `builder.rs` - Message construction utilities
   - `buffers.rs` - Buffer management for messages
-  - `apdu/` - Application layer PDU types (property, memory, device, auth, restart)
+  - `apdu/` - Application layer PDU types (property, memory, device, auth,
+    restart, load control, GO diagnostics, network parameters, secure).
+    `load_control.rs` also carries the shared *pure* Realisation Type 1
+    load-state transition table (incl. the optional `Unloading` /
+    `LoadCompleting` wire states), so the full stack, the micro stack and
+    the Security IO agree on transitions while keeping their own storage
+    and side effects; property payload coding is shared the same way
   - `knxip/` - KNX/IP protocol messages (tunneling, discovery, routing, etc.)
 - `util/` - Utility functions
   - `crc.rs` - CRC calculations
@@ -486,10 +524,11 @@ Contains:
 
 Key modules:
 - `lib.rs` - Main stack entry point, defines core traits, re-exports proto modules
-- `definition.rs` - `StackDefinition` trait (central compile-time "bill of materials")
+- `profile.rs` - normal-device authoring surface: `DeviceDefinition`, `DeviceHooks`, `NoDeviceHooks`
+- `definition.rs` - low-level `StackDefinition` trait (resolved compile-time "bill of materials" and expert escape hatch)
 - `router.rs` - Synchronous `Layer` trait and compile-time dispatch-table router
 - `runner.rs` - Stack factory (`new()`) and router event loop
-- `composition.rs` - Layer-stack builders (`PlainDeviceBuilder`, `PlainIpDeviceBuilder`, `SecureDeviceBuilder`)
+- `composition.rs` - Layer-stack builders (`PlainDeviceBuilder`, `PlainIpDeviceBuilder`, `SecureDeviceBuilder`, `SecureIpDeviceBuilder`)
 - `context/` - Context-trait surface
   - `traits.rs` - Small single-responsibility context traits (buffer manager, APDU length, outbox, property service, address table, etc.)
   - `layer.rs` - `LayerContext<D>` (persistent shared runtime infrastructure, owned by `StackResources`)
@@ -537,79 +576,98 @@ Subdirectories:
     - `objects/` - `SystemBObjects` container
     - `storage.rs` - `DeviceConfig`, `ExtensionConfig`, `ExtensionState`, `Extension` vocabulary (and the `ExtensionState` derive re-export)
     - `memory_map.rs` - `SystemBMemoryMap`
-    - `definition.rs` - `SystemBStackDefinition` convenience supertrait; `system_b_standard_stack!` macro generating the always-identical half of a device's `StackDefinition` impl (optional `resources:` slot for `SecureResources` and `augments: { bundle, create }` slot for custom augment bundles — all firmware devices use it). `#[macro_export]`ed, so it is invoked as `zweidraehte_device::system_b_standard_stack!` (crate root), not via the `bcus::system_b` path
+    - `profiles.rs` - standard presets: `Tp1`, `Rf`, `Ip`, `IpInterface`, `SecureTp1`, `SecureRf`, `SecureRfRetransmitter`, `SecureIp`. They consume a small `DeviceDefinition` and own the correlated state, services, augments, interface objects, and layer builder
+    - `definition.rs` - `SystemBStackDefinition` convenience supertrait plus the `system_b_standard_stack!` macro that emits the always-identical half of a `StackDefinition` impl (`Mem`, table sizes, `memory_layout()`, `TL_STYLE`, `FIRST_ASAP`, factories; optional `resources:`/`augments:` slots). The presets are built on it; conformance DUTs and unusual compositions still implement `StackDefinition` directly. `#[macro_export]`ed, so it is invoked as `zweidraehte_device::system_b_standard_stack!`
   - `system_7/` - System 7 BCU implementation, TP1 mask 0705 only. Same
     shape as `system_b/`
     (`System7StackDefinition` + `System7ProductLayout` supertraits,
     `system_7_standard_stack!`, `System7DeviceState`,
     `System7MemoryMap`, `config.rs`'s `system7_stack_config!`). Differs
-    in the management model: an RT8-coded address table (`AddrTab8`, with
-    the IA inside its blob at 4000h), the compact byte-coded association
-    table currently implemented by `AssoTab8`, and the System 7 group
+    in the management model: a compact one-byte-length address table
+    (`AddrTab8`, with the IA inside its blob at 4000h), the compact
+    byte-coded association table implemented by `AssoTab8`, and the System 7 group
     object table at a compile-time product address, fixed absolute memory map
     with memory-mapped load controls (0104h/B6EAh), absolute-segment
     load procedures, 16 authorization levels, no Group Object Table
     interface object in the base roster (so AppProg sits at index 3),
     and communication objects numbered from 0
     (`StackDefinition::FIRST_ASAP`). KNX Data Secure composes onto it
-    through the family-neutral `crate::security` module
-    (`SecureStateFor7`/`SecureTp1StateFor7`, the `resources:` and
-    `augments:` slots of `system_7_standard_stack!`); a secure System 7
+    through the family-neutral `crate::security` module and the
+    `SecureTp1` preset; a secure System 7
     device additionally carries `GroupObjectTableAugment` because the
     GO Diagnostics module requires OT 9 (06 Profiles §9.2.1.1.1.1) and
     the base roster has none. The Security IO lands at index 5 (System
     B: 6).
     **New devices should use System B** — System 7 is for matching an
     existing System 7 installed base, and buys nothing otherwise.
+    Normal firmware selects `system_7::Tp1<C, COT_ADDRESS>` or
+    `system_7::SecureTp1<C, COT_ADDRESS>`; the const address is a product
+    layout fact that cannot be derived from the generic descriptor.
 
 #### 2b. Microdevice Crate (`crates/zweidraehte-microdevice`)
-**Purpose**: Ultra-lightweight, **no-async** device stack for the BCU-era
-management models — currently BCU2 (mask 0020h). A deliberate sibling to
+**Purpose**: Ultra-lightweight, **no-async** TP1 device stack for BCU-era
+management models — BCU1 0012h, BCU2 0020h/0021h/0025h, and System 7
+0705h.
+
+**Status: experimental.** This crate is an exploration — how small a KNX
+device gets without an executor, and how much of the "generic" core is
+genuinely family-neutral. It is young and thinly tested next to
+`zweidraehte-device`: BCU1 has crate-level tests only (no DUT, no
+firmware target), the micro System 7 EITT profile omits Group Objects and
+Management, and none of it has bench time. Do not present it as
+production-ready, do not let it dictate design in the full stack, and
+prefer fixing the full stack when the two disagree unless the micro side
+is demonstrably right. A deliberate sibling to
 `zweidraehte-device`, not a layer on it: no embassy, no channels, no buffer
 pool, no interface-object tower. One owner struct
 (`Microdevice<F: MicroDeviceFamily>`) with a cooperative
 `poll(PollInput, now_ms) -> PollOutput` runloop the main loop drives —
 frames in, frames out, timer ticks in between; interrupts stop at a byte
-ring outside the stack. ~19 KiB flash / ~1 KiB RAM on an STM32G0, vs
-~126 KiB / ~9 KiB for the System B embassy stack on the same chip.
+ring outside the stack. The current BCU2/System-7 light-switch targets are
+about 21–23 KiB `.text` and 1 KiB `.bss`, versus about 125–126 KiB `.text`
+and 9 KiB `.bss` for their full-stack siblings on the same MCU family.
 
 Key design points:
-- **The EEPROM bytes ARE the tables**: one flat image at 0100h; the RT2
-  address/association/group-object tables are parsed in place through the
-  pointer bytes on every lookup (`eeprom.rs`), so an `A_Memory_Write` is
-  live immediately — no shadow state, no sync-back, exactly like the mask
-  firmware on real silicon.
-- **Family seam** (`family.rs`, `MicroDeviceFamily`): DD0, TL style, auth
-  levels, memory windows, table codings (count semantics, COT widths), and
-  the LSM path (`Property` vs `MemoryMapped`) are family constants; the
-  core (runloop, group comm, TL/NL, management dispatch) is generic over
-  them. `Bcu2Family` is the first instance; a micro-System-7
-  (0705h/2705h/5705h incl. RF/IP link drivers) is the planned second.
+- **The EEPROM bytes ARE the tables**: each family owns one fixed-size flat
+  image. BCU1/2 pointer-based and System 7 fixed-address tables are parsed
+  in place on every lookup (`eeprom.rs`), so an `A_Memory_Write` is live
+  immediately — no shadow table copy or sync-back.
+- **Family seam** (`family.rs`, `MicroDeviceFamily`): DD0, TL style,
+  authorization model, memory windows and access policy, table codings,
+  interface-object property roster, and family load/run side effects. The
+  generic core owns the runloop, group communication, TL/NL, and management
+  dispatch. This remains deliberately compile-time and monomorphized; do not
+  grow a parallel public capability-trait tower.
 - Reuses `zweidraehte-proto`'s sync parts only: the TP1 standard-frame
   layout (`frame.rs` works on raw wire bytes — no `KnxMessageBuffer`),
-  the APDU / `LoadControlRecord` vocabulary, and the pure Style-1
-  transport SM (`transport.rs` adds u32-millisecond deadlines). Depends
-  on proto as-is — embassy stays in the dep graph but never in a code
-  path (SESSION.md tracks feature-gating it).
+  APDU/property/load-control vocabulary, pure load-state transitions,
+  table codecs, and the transport state machine (`transport.rs` adds
+  u32-millisecond deadlines). Native RF and KNX/IP frames are explicitly
+  outside this stack's current boundary.
 - App API is the classic BCU flag model (`co_flags.rs`): update /
   transmit-request bits in a RAM-flags array, values in page-0 RAM where
   the CO table's data pointers say.
-- `device_def.rs` bakes a `Bcu2DeviceDefinition` into the boot EEPROM
-  image; the conformance product generator (`dut/bcu2_product.rs`) emits
-  the matching MV-0020 product file from the same definition.
+- Family `device_def.rs` modules bake BCU2 and System 7 definitions into
+  boot EEPROM images. The light-switch definitions derive their table rows
+  from the same stack-neutral `#[ets_com_objects]` metadata used by the full
+  stack and product generator.
 - `link/tpuart.rs`: sync TPUART host-protocol driver (byte→frame
   assembly, immediate-ack decision, `U_L_Data*` transmission with echo /
   confirm tracking) for polling firmware; the conformance DUT feeds
   frames directly.
-- Feature `std` adds the postcard `MicroSnapshot` (conformance SHM
-  persistence). Validated three ways: `conformance-dut-bcu2` (a blocking
-  std main loop — no embassy anywhere in the process) under the
-  `bcu2_smoke` suite (`cargo run --bin conformance-runner BCU2`), the
-  `conformance-configuration` BCU2 scenarios (full MV-0020 client
-  download + unload), and the crate's own unit/integration tests.
-- Firmware target: `firmware/stm32/g0_tp1_bcu2_light_switch` — bare-metal
-  `cortex-m-rt` + `stm32-metapac`, polled UART, SysTick millis, no
-  embassy. Same board pinout as `g0_tp1_light_switch`.
+- Feature `std` adds the postcard `MicroSnapshot` used by the BCU2 and
+  micro-System-7 DUTs. BCU2 has smoke plus complete client download/unload
+  scenarios. Micro System 7 shares bus-observable smoke contracts with the
+  full stack and runs the vendor Network, Transport, Load State Machine, and
+  Run State Machine templates; Group Objects and Management remain outside
+  its EITT profile.
+- Firmware targets: `firmware/stm32/g0_tp1_bcu2_light_switch` and
+  `firmware/stm32/g0_tp1_micro_system7_light_switch` — bare-metal
+  `cortex-m-rt` + `stm32-metapac`, polled UART, SysTick milliseconds, no
+  embassy. Both use the shared light-switch product behavior.
+- **Known soundness constraint**: application parameter bytes are still read
+  into enum-bearing Rust types without validating every discriminant. Treat
+  fixing the shared wire representation as correctness work, not cleanup.
 
 #### 3. Platform Crate (`crates/zweidraehte-platform`)
 **Purpose**: Platform abstraction layer for different operating systems and hardware
@@ -725,6 +783,11 @@ Subdirectories:
     without an executor. Driven by the `bcu2_smoke` suite
     (`conformance-runner BCU2`) and the `conformance-configuration`
     BCU2 scenarios
+  - `micro_system7_stack.rs` / `micro_system7_product.rs` - mask 0705h
+    on the polling micro stack, including its fixed EEPROM image and
+    generated product. `bin/dut_micro_system7.rs` is also blocking and
+    executor-free; it is driven by the shared System 7 smoke contracts,
+    client download scenarios, and `tp1-micro-system7.toml`
   - `fixture_common.rs` - family-neutral fixture vocabulary: the
     conformance application's constants (`CONFORMANCE_DD2`,
     `TestParameters`), the certification object, the shm sequence
@@ -847,26 +910,37 @@ other two. Each is gated per module, not per item — `signing/master_data.rs`,
 
 Key modules:
 - `lib.rs` - Main library interface and documentation
-- `schema.rs` - Typed Rust structs matching KNX XSD schema
-  - ApplicationProgram, Hardware, Catalog structures
+- `schema/` - Typed Rust structs matching the KNX XSD, one module per
+  section (`core`, `parameters`, `param_refs`, `com_objects`,
+  `static_section`, `dynamic`, `modules`, `hardware`, `catalog`,
+  `project`, `languages`)
   - `load_procedures.rs` - the `LdCtrl*` load-control vocabulary, shared by MTXML `LoadProcedures` and the master-data `Procedures`
-  - All XML serialization types
+  - The deserializers also accept ETS **product-store XML**: CvNext writes
+    the `Static` vocabulary with compact element names (`APS`/`AP`/`St`/
+    `PT`/`CO`/`ADRT`/…), keeps full attribute names, and omits `xmlns` on
+    the root. That spelling is accepted through serde `alias`es (the ones a
+    real store grab actually uses — deliberately not guessed further);
+    serialization still emits full names, so generated MTXML is unchanged.
+    `FixupList` is parsed too: BCU-era programs are native code whose calls
+    into the mask ROM the tool patches per device
 - `runtime/` - reading parsed product data back
   - `parser.rs` - MTXML `ApplicationProgram` → typed `Knx` tree
   - `master_data.rs` - `knx_master.xml` → mask versions, resources, `Procedures`
   - `knxprod.rs` - `.knxprod` ZIP reader (feature `product-files`)
-- `generator.rs` - Main MTXML generation engine
-  - KnxprodBuilder - Unified builder API (preferred entry point)
-  - MtxmlGenerator - Creates ApplicationProgram XML (used internally by builder)
-  - HardwareGenerator - Hardware definitions (used internally by builder)
-  - CatalogGenerator - Product catalog XML (used internally by builder)
-  - Parameter reference generation
-  - Communication object mapping
-- `page_layout.rs` - ETS parameter page layout DSL
-  - EtsPageLayout trait
-  - PageStructure, PageBlock, PageItem
-  - Conditional visibility logic
-  - Parameter grouping and sections
+  - `model.rs` / `device.rs` / `device_info.rs` - the runtime device model:
+    parameter values, object bindings, condition evaluation and visibility
+  - `mods.rs` - the mods-file model (`apply_mods`, `mods_from_device`)
+  - `translations.rs`, `baggage.rs` - language selection and baggage files
+- `generator/` - MTXML generation
+  - `builder.rs` - `KnxprodBuilder`, the unified entry point
+  - `mtxml.rs`/`mtxml_impl.rs`, `hardware.rs`, `catalog.rs`,
+    `project_gen.rs`, `packaging.rs` - ApplicationProgram / Hardware /
+    Catalog / `.knxproj` emission, used through the builder
+- `definition/` - the authoring-side model
+  - `page_layout.rs` - ETS parameter page layout DSL (`EtsPageLayout`,
+    `PageStructure`, `PageBlock`, `PageItem`, conditional visibility,
+    including channel tabs gated by a `<choose>`)
+  - `module.rs` - reusable module definitions
 
 #### 6b. Client Library Crate (`crates/zweidraehte-client`)
 **Purpose**: PC-side KNX management client (the Falcon analogue) — the
@@ -901,8 +975,14 @@ Structure (sans-io core + thin tokio driver):
   management model — the embedded `ImageLayout` with placement, ASAP
   base and codings, plus the load-control path policy,
   authorize-on-connect, property surface, diffed memory writes
-  (BCU-era EEPROM), APDU default; supported
-  rows: Bcu1, Bcu2, BimM112, SystemB). The end-to-end
+  (BCU-era EEPROM), halt-the-application-first, APDU default; supported
+  rows: Bcu1, Bcu2, BimM112, SystemB), `mods.rs` (`resolve_mods`: a
+  configured runtime `Device` → the compile pipeline's inputs). BCU-era
+  downloads add three wrinkles worth knowing: tables are relocated under
+  Dynamic Table Management rather than allocated by an LSM, RT1/RT2
+  association tables follow the slot rule (built per DTM's own
+  placement), and mask 0012h has no load state machines at all, so its
+  whole download is a direct diffed memory-write sequence. The end-to-end
   test tier is `conformance-configuration` (see the conformance crate).
 
 #### 7. Device Definitions Crate (`examples/devices`, package `zweidraehte-devices`)
@@ -912,14 +992,21 @@ consumed by the firmware targets; the demo/replication definitions (feature
 `devices` so all consumers write `use devices::...`.
 
 Modules:
-- `light_switch/`, `ip_interface/` - no_std device definitions used by firmware
+- `light_switch/` - the shared 2-button light switch, split so both stacks
+  serve one product: `params.rs`, `comm_objs.rs`, `layout.rs`,
+  `translations.rs` and `behavior.rs` are stack-neutral (one
+  `#[ets_com_objects]` declaration, one normalized button/application
+  reducer), `full/` binds them to `zweidraehte-device`, `micro/` to
+  `zweidraehte-microdevice`
+- `ip_interface/` - no_std KNX/IP↔TP1 interface definition
 - `mdt_push_button_lite.rs` - MDT Push Button Lite 55 replication (feature `demos`)
 - `module_test_device.rs` - Module test device, 4-channel dimmer (feature `demos`)
 - `system_b_demo.rs` - Demo System B device (feature `demos`)
 
 Features: `full` gates the full-stack (embassy / `zweidraehte-device`)
-modules — `light_switch/{app,comm_objs,easter_egg}`, `ip_interface`, and
-`embassy-time`; `micro` gates `light_switch/micro` on
+modules — `light_switch/full/{app,easter_egg}`, `ip_interface`, the runtime
+half of `comm_objs`, and `embassy-time`; `micro` gates
+`light_switch/micro/{app,definition}` on
 `zweidraehte-microdevice`. `demos` (a **default feature**, implying
 `full`) adds the std demo/replication definitions so `cargo test -p
 zweidraehte-devices` covers them. Firmware consumers use
@@ -980,7 +1067,9 @@ device definition, System 7 management model; its Data Secure crossing is
 `stm32/g0_tp1_system7_secure_light_switch`. `stm32/g0_tp1_bcu2_light_switch`
 is the mask-0020h sibling on the `zweidraehte-microdevice` stack — bare
 metal `cortex-m-rt` + `stm32-metapac`, polled main loop, deliberately no
-embassy anywhere. `linux/` holds host-target
+embassy anywhere. `stm32/g0_tp1_micro_system7_light_switch` runs the same
+mask-0705h product and application through that polling stack, providing the
+full/micro behavioral comparison on identical hardware. `linux/` holds host-target
 device shells following the same `<medium>[_secure]_<role>` naming
 (package prefix `linux_`); these build with a plain `cargo build` in the
 project directory — no target override.
@@ -1010,12 +1099,14 @@ Notable devices:
 
 - `STACK_ARCHITECTURE.md` - Full reference for the device stack's design
   philosophy, core components, and the context-trait surface. Covers
-  `StackDefinition`, router + `Layer` trait, `LayerContext` vs.
+  the `DeviceDefinition` preset facade, low-level `StackDefinition`,
+  router + `Layer` trait, `LayerContext` vs.
   `StackContext`, `Config`/`State`/`Resources`/`StateInit` vocabulary,
-  extensions and augments, link layers, and a dispatch walk-through.
-  Read this first when touching stack internals.
-- `DEVICE_DEFINITION.md` - How to define a concrete device and wire it
-  into `main`.
+  extensions and augments, link layers, the separate micro-stack boundary,
+  and a dispatch walk-through. Read this first when touching stack internals.
+- `DEVICE_DEFINITION.md` - How to implement the small normal-device input
+  trait, select a standard preset, add `DeviceHooks`, and wire it into `main`;
+  direct `StackDefinition` is documented as the expert path.
 - `DSL_REFERENCE.md` - Comprehensive reference for the ETS DSL macros:
   - `#[derive(EtsParams)]` - Parameter struct definitions
   - `#[derive(EtsEnum)]` - Simple enum dropdowns
@@ -1023,12 +1114,16 @@ Notable devices:
   - `#[ets_com_objects]` - Communication object definitions
   - `ets_pages!` - Page layout macro for ETS UI structure
   - `define_module!` - Reusable module definitions for multi-channel devices
-  - Conditional visibility (`when`/`choose` blocks)
+  - Conditional visibility (`when`/`choose` blocks), including whole
+    channel tabs gated on a parameter
   - Text templates (`{{0}}`, `{{ArgName}}`)
+- `DEVICE_PROGRAMMING.md` - Configuring real devices with the client
+  tooling: mods files, addressing, the TUI workflow, `knx-loader`
+  load/unload/read, and what the download does on the wire.
 
 ### Architecture Layers
 
-NL, TL, and AL are **synchronous** `Layer` implementations dispatched by
+In the full stack, NL, TL, and AL are **synchronous** `Layer` implementations dispatched by
 a single async router loop via a compile-time dispatch table keyed on
 `ServiceType`. The link layer runs as a separate async task connected
 to the router via three channels (req/ind/conf). KNX/IP stacks insert
@@ -1052,7 +1147,9 @@ User code  ←─(ApplicationLayerService, ComObject events, restart)→  Applic
 ```
 
 See `docs/STACK_ARCHITECTURE.md` for the full component / context-trait
-reference.
+reference. The micro stack does not use this router/channel architecture;
+it owns a synchronous `Microdevice<F>::poll` loop and shares only pure
+protocol/application components.
 
 ### Crate Dependency Graph
 
@@ -1064,6 +1161,10 @@ zweidraehte-proto          (no_std, pure protocol types)
   │     ├── examples/support
   │     ├── tools/bus-tools
   │     └── firmware/*
+  ├── zweidraehte-microdevice (no_std, polling BCU-era stack; experimental)
+  │     ├── conformance/
+  │     ├── examples/devices
+  │     └── firmware/stm32/g0_tp1_{bcu2,micro_system7}_light_switch
   └── zweidraehte-client
 
 zweidraehte-ets            (proc-macro, no runtime deps; generated code
@@ -1114,7 +1215,17 @@ MTXML/KNXPROD Files
 - **Trait-Based Abstraction**: `Layer` trait for protocol layers, `ComObjects` trait for comm object access, `MemoryMap` trait for device memory, `LinkLayerBuilder` for pluggable link layers
 - **State / Augment split**: every extension pairs a plain runtime `*State` struct with a separate borrowing `*Augment<'a>` (the augment holds `&'a State`, so writes reach the state's authoritative `Cell`/`RefCell`). TP1, RF, IP all follow this one shape.
 - **Config derived from State**: `#[derive(ExtensionState)]` generates the persisted `*Config` mirror and the `from_config`/`to_config`/`on_erase` glue from the runtime state's `Cell`/`RefCell` fields — the state is the single source of truth.
-- **Macro-collapsed boilerplate**: `system_b_standard_stack!` generates the always-identical half of a device's `StackDefinition` impl; `forward_to_field!` generates trait-forwarding to a struct field. Both are opt-in; hand-writing still works.
+- **Preset-oriented authoring**: ordinary full-stack firmware implements
+  `DeviceDefinition` and selects a standard type such as
+  `system_b::Tp1<C>` or `system_b::SecureIp<C>`. The preset owns correlated
+  internals; direct `StackDefinition` remains the advanced escape hatch.
+- **Application hooks after profile hooks**: `DeviceHooks` contributes only
+  application-specific augments. `AugmentChain` appends them after the
+  mandatory medium/security profile augments without making firmware spell
+  the complete chain.
+- **Internal forwarding**: `forward_to_field!` and
+  `forward_device_state_traits!` generate mechanical state-trait delegation;
+  firmware should not use them as an authoring API.
 - **Platform Abstraction**: Platform crate abstracts OS-specific operations with features to enable/disable platform support
 - **no_std Compatible**: Core stack works in both no_std embedded and std Linux environments
 - **Proto/Device Split**: Pure protocol types in `zweidraehte-proto` can be shared with future client implementations without pulling in device stack logic
@@ -1129,11 +1240,13 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 
 ### Architecture
 
-**Parser (`crates/zweidraehte-knxprod/src/parser.rs`)**:
-- Uses existing schema.rs types (already have serde Deserialize)
+**Parser (`crates/zweidraehte-knxprod/src/runtime/parser.rs`)**:
+- Uses the `schema/` types (already have serde Deserialize)
 - Simple wrapper functions for parsing XML strings and files
+- Accepts vendor product-store XML as well as schema-conformant MTXML,
+  so converted BCU1/BCU2 and ETS6 products load
 
-**Device Model (`crates/zweidraehte-knxprod/src/model.rs`)**:
+**Device Model (`crates/zweidraehte-knxprod/src/runtime/model.rs`)**:
 - Runtime state: parameter values, object bindings, visibility
 - Condition evaluation engine for choose/when blocks
 - Visibility recomputation on parameter changes
@@ -1151,8 +1264,8 @@ Parse existing KNX ApplicationProgram MTXML files (like the MDT reference device
 - Form-based parameter editing
 
 ### Key Files
-- `crates/zweidraehte-knxprod/src/parser.rs` - XML parsing functions
-- `crates/zweidraehte-knxprod/src/model.rs` - Device model and condition evaluation
+- `crates/zweidraehte-knxprod/src/runtime/parser.rs` - XML parsing functions
+- `crates/zweidraehte-knxprod/src/runtime/model.rs` - Device model and condition evaluation
 - `tools/knxprod-tui/src/` - TUI application
 - `knxprod-html/src/` - HTML server (future)
 

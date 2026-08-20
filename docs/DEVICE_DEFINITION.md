@@ -14,8 +14,13 @@ A device definition brings together:
 4. **Extension** — medium-specific state + augmentation (IP config, retry count, etc.)
 5. **Link layer** — physical transport (TPUART, KNX/IP, USB)
 
-All of these are composed at compile time through the `StackDefinition`
-trait, which acts as the "bill of materials" for the device.
+Normal firmware supplies these independent choices through
+`DeviceDefinition` and selects a standard profile type such as
+`system_b::Tp1<MyDefinition>`. The preset implements the low-level
+`StackDefinition` bill of materials, including correlated state, services,
+interface objects, augments, and layer composition. Implement
+`StackDefinition` directly only when a standard preset cannot express the
+device.
 
 ## State Model
 
@@ -82,9 +87,12 @@ const AST_SIZE: usize = DEVICE_DESCRIPTOR.association_table_size();
 const COT_SIZE: usize = DEVICE_DESCRIPTOR.comm_object_table_size();
 ```
 
-### Type Aliases
+### Resolved State Types
 
-For convenience, type aliases fill in the extension state automatically.
+These aliases explain the concrete state selected by the low-level stack.
+Standard-preset users normally write
+`type State = <MyStack as StackDefinition>::State` rather than selecting one
+manually.
 
 **KNX/IP devices** — use `IpDeviceState` parameterized on a `FeatureSet`
 type (the same `F` used for the link layer builder). Tunneling capacity
@@ -569,18 +577,25 @@ vocabulary.
 KNX Data Secure and KNX IP Secure, and the deepest conformance
 coverage; everything below this line is written for it.
 
-The stack also implements **System 7 on TP1** (mask 0705h) *without*
-Data Secure. Choose it only when a device has to match an existing
-System 7 installed base or toolchain — the mask a product declares is
-the manufacturer's choice, and nothing in ETS rewards the older
-family. Building on it costs no extra effort (swap
-`system_b_standard_stack!` for `system_7_standard_stack!` plus its
-`cot_address:` slot, and `Tp1StateFor` for `Tp1StateFor7`; see
+The full stack also implements **System 7 on TP1** (mask 0705h), with
+Data Secure available through `system_7::SecureTp1`. Choose it only when
+a device has to match an existing System 7 installed base or toolchain —
+the mask a product declares is the manufacturer's choice, and nothing in
+ETS rewards the older family. Building on it costs no extra effort: select
+`system_7::Tp1<Definition, COT_ADDRESS>` instead of
+`system_b::Tp1<Definition>` (or the matching `SecureTp1` preset); see
 [`firmware/stm32/g0_tp1_system7_light_switch`](../firmware/stm32/g0_tp1_system7_light_switch/)
 next to its System B sibling, both running the same
-`devices::light_switch` definition), but you give up Data Secure, RF
-and KNX/IP. The family differences are catalogued in
+`devices::light_switch` definition. You give up RF and KNX/IP, not Data
+Secure. The family differences are catalogued in
 [`STACK_ARCHITECTURE.md` §3.11](STACK_ARCHITECTURE.md#311-bcus--system_b-and-system_7).
+
+`zweidraehte-microdevice` is a separate choice for fixed-map BCU1/BCU2 or
+very small System 7 TP1 targets. It does not consume `DeviceDefinition` or
+the presets below: firmware owns a `Microdevice<F>` and polls it directly.
+Use it for the hardware/runtime constraints it models, not merely as a
+shorter full-stack API — and note that it is **experimental**: much less
+tested than the full stack, with no production use behind it.
 
 One difference reaches the device definition either way:
 `#[ets(index = N)]` on a communication object is a **0-based logical
@@ -607,150 +622,128 @@ pub const DEVICE_DESCRIPTOR: DeviceDescriptor = DeviceDescriptor {
 ### Step 2: Parameters and Communication Objects
 
 ```rust
-#[derive(EtsParams, Clone, Default, Serialize, Deserialize)]
+#[ets_params]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct MyParams {
     #[ets(display = "Brightness")]
     pub brightness: u8,
 }
 
-#[derive(EtsComObjects)]
+#[ets_com_objects]
 pub struct MyComObjects {
     #[ets(index = 0, display = "Switch", function = "Switching", flags = C | W | T | U)]
-    pub switch: ComObject<DPT_Switch>,
+    pub switch: DPT_Switch,
 }
 ```
 
-### Step 3: State Type
+`#[ets_com_objects]` emits stack-neutral metadata and, for full-stack builds,
+the runtime container and typed `Index` enum. A micro product can derive its
+raw table rows from the same declaration instead of maintaining a second
+communication-object inventory.
 
-Choose the state type alias based on your medium. For KNX/IP devices,
-pass the same `FeatureSet` type used for the link layer builder —
-tunneling capacity and device capabilities are derived automatically.
-The `IpStateFor<D, Proto>` alias projects the table sizes directly from
-`D::DEVICE` so you do not need to state them by hand:
+### Step 3: `DeviceDefinition` and Preset
 
-```rust
-// KNX/IP routing device
-type MyState = IpStateFor<MyDevice, KnxIpDeviceUdp>;
-
-// KNX/IP tunneling interface with 4 slots
-type MyState = IpStateFor<MyDevice, KnxIpInterfaceUdp<4>>;
-
-// TP1 device
-type MyState = Tp1StateFor<MyDevice>;
-```
-
-The lower-level aliases that take explicit `ADT_SIZE`/`AST_SIZE`/`COT_SIZE`
-const generics (`Tp1SystemBDeviceState`, `IpDeviceState`, …) still exist for
-cases where you need explicit control, but the `*StateFor<D, …>` forms are
-preferred for new code.
-
-### Step 4: StackDefinition
-
-A standard System B device's `StackDefinition` impl is half device-specific
-bill-of-materials and half always-identical shell (the `StateInit`/`Mem`
-types, the one-line `create_state`, the `InterfaceObjects`/`Augments` GATs,
-and the two `create_*` method bodies — Rust can't inherit those from the
-`SystemBStackDefinition` supertrait). The `system_b_standard_stack!` macro
-generates the shell so you write only the BOM.
-
-For KNX/IP devices, `IpExtensionFor<F>` derives both the tunneling
-capacity and the PID 68 capabilities bitfield from the same `FeatureSet`
-type used for the link layer builder:
-
-**KNX/IP device:**
+Implement only the independent product/application/hardware choices, then
+select the profile as a type alias:
 
 ```rust
 #[derive(Debug, Clone, Copy)]
-struct MyDevice;
+pub struct MyDefinition;
 
-// IP link-layer bill of materials.
-impl KnxNetIpDefinition for MyDevice {
+impl DeviceDefinition for MyDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+
+    type Params = MyParams;
+    type ComObjects = MyComObjects;
+    type LinkLayer = TpUartLinkLayerBuilder<MyUartTx, MyUartRx>;
+    type Identity = FlashIdentityData;
+    type Storage = &'static DeviceStorage;
+}
+
+pub type MyDevice = zweidraehte_device::bcus::system_b::Tp1<MyDefinition>;
+type MyState = <MyDevice as StackDefinition>::State;
+```
+
+The state projection is useful for declaring a storage region, but firmware
+does not choose the state's internal generic parameters. The descriptor is
+the source of truth for table capacities; presets validate their derived
+const sizes during state construction.
+
+For KNX/IP, the definition also implements `KnxNetIpDefinition`, and the
+preset consumes the same feature set as the link-layer builder:
+
+```rust
+impl KnxNetIpDefinition for MyDefinition {
     type Transport = LinuxIpTransport;
     type Features = KnxIpDeviceUdp;
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack:              MyDevice,
-    device:             &DEVICE_DESCRIPTOR,
-    tl_style:           TlStyle::Style3,
-    params:             MyParams,
-    com_objects:        MyComObjects,
-    link_layer_builder: KnxNetIpBuilder<MyDevice>,
-    platform:           MyPlatform,
-    extension_state:    IpExtensionFor<KnxIpDeviceUdp>,
-    state:              MyState,
-    al_extensions:      (SystemBAlServices, DomainAddressService),
-    layer_builder:      PlainIpDeviceBuilder,
-}
+type MyDevice = zweidraehte_device::bcus::system_b::Ip<MyDefinition>;
 ```
 
-The macro generates the empty `impl SystemBStackDefinition for MyDevice {}`,
-the `type Mem`/`type StateInit` (deriving the config type automatically as
-`<MyState as HasDeviceConfig>::Config`), `fn create_state`
-(`MyState::from_init(init)`), the `InterfaceObjects`/`Augments` GATs, and the
-`create_interface_objects` / `create_augments` bodies. Note how `KnxIpDeviceUdp`
-appears in both `link_layer_builder` (via `KnxNetIpDefinition::Features`) and
-`extension_state` — the single source of truth for the device's IP feature
-set.
+The available System B preset types are:
 
-Three optional slots cover the common deviations:
+| Device | Preset |
+|---|---|
+| TP1 | `Tp1<C>` |
+| KNX-RF | `Rf<C>` |
+| KNX/IP device | `Ip<C>` |
+| KNX/IP-to-TP1 interface | `IpInterface<C>` |
+| Data Secure TP1 | `SecureTp1<C, P2P = NoP2p>` |
+| Data Secure RF | `SecureRf<C, P2P = NoP2p>` |
+| Data Secure RF retransmitter | `SecureRfRetransmitter<C, P2P = NoP2p>` |
+| KNX IP Secure + Data Secure | `SecureIp<C, P2P = NoP2p>` |
 
-- `resources: <type>` — construction-time resources threaded into
-  `StateInit` (e.g. `SecureResources<…>` carrying the FDSK);
-- `augments: { bundle: …, create: |state, platform, lctx| … }` — a custom
-  augment bundle (next subsection);
-- `extra { … }` — verbatim items pasted into the `impl StackDefinition`
-  block to override remaining defaults (`type Identity`, `type Rng`,
-  `type Mutex`, `const MAX_APDU_LENGTH`, …).
+System 7 provides `Tp1<C, COT_ADDRESS>` and
+`SecureTp1<C, COT_ADDRESS, P2P = NoP2p>`. The COT address is a product
+layout fact absent from `DeviceDescriptor`, so it remains explicit.
 
-**TP1 device:**
+### Step 4: Optional Device Hooks
 
-The same macro, with `extension_state: Tp1ExtensionState` and the TP1 link
-layer builder — the `Extension` trait abstracts the medium, so nothing else
-changes.
-
-**With extra augments (e.g., EasterEggAugment):**
-
-When the device chains extra augments alongside the medium extension, spell
-`D::Augments<'a>` as a `#[derive(ServiceRegistry)]` struct and hand it to
-`system_b_standard_stack!` through its `augments:` slot (`IpAugmentFor<'a,
-P, F>` derives the augment's const generics from the `FeatureSet`):
+Most devices use the default `NoDeviceHooks`. To add an application-specific
+interface-object augment, implement `DeviceHooks` and select it in the
+definition:
 
 ```rust
-#[derive(zweidraehte_device::service::ServiceRegistry)]
-pub struct MyDeviceAugments<'a> {
-    #[service(augment)] ip:     IpAugmentFor<'a, MyPlatform, KnxIpDeviceUdp>,
-    #[service(augment)] easter: EasterEggAugment,
+pub struct MyHooks;
+
+impl DeviceHooks for MyHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
+
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: MyDevice,
-    // ... bill of materials items ...
-    augments: {
-        bundle: MyDeviceAugments,
-        create: |state, platform, _lctx| MyDeviceAugments {
-            ip:     state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
-        },
-    },
+impl DeviceDefinition for MyDefinition {
+    // ...the Step 3 inputs...
+    type Hooks = MyHooks;
 }
 ```
 
-The macro emits `type Augments<'a> = MyDeviceAugments<'a>` and
-`create_augments()` from the slot; the `#[derive(ServiceRegistry)]` macro
-emits the `Augment<D>` impl for the bundle, which the IO container calls
-into for property dispatch and IO list contributions. A fully hand-written
-`impl StackDefinition` remains the path only for devices with a
-non-standard `InterfaceObjects` wrapper, a custom `Mem`, or a custom
-`StateInit` shape (the conformance DUTs do this for their
-`ConformanceMemoryMap`). See the "Augments" section above for the full
-story including `#[service(flatten)]` for nested composition.
+The preset always installs its required medium/security augments first and
+appends this bundle using `AugmentChain`. `DeviceHooks` therefore describes
+only what is unique to the application. For several hooks, return a
+`#[derive(ServiceRegistry)]` bundle; do not copy the preset's augment list.
+
+Hooks cannot add fields to persistent device state. A custom memory map,
+state shape, interface-object container, persisted extension, AL service
+set, or layer composition is the boundary for a custom preset or direct
+`StackDefinition`. That low-level API remains supported for advanced users
+and is used by conformance fixtures whose memory maps intentionally differ
+from production devices.
 
 ### Step 5: Startup
 
 The runner takes ownership of the stack resources, link-layer
 builder, the `D::StateInit` envelope, the platform, and the memory
-map — five arguments to `zweidraehte_device::new()`. The runtime
+map, plus the storage-capability bundle — six arguments to
+`zweidraehte_device::new()`. The runtime
 state is **not** built by the binary; the runner constructs it
 internally via `D::create_state(state_init)` so it can hand the
 freshly built state a reference to the `LayerContext` from birth (no
@@ -764,18 +757,16 @@ use zweidraehte_device::{
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // 1. Load device identity (factory-fixed: serial number, optional FDSK).
-    let identity = FileIdentity::load_or_provision("identity.json", SERIAL)?;
-
-    // 2. Open storage and load the persisted DeviceConfig (None on first boot).
-    let mut storage = JsonStorage::<MyState, _>::new("state.json", identity);
-    let loaded_config = storage.load_config()?;
+    // 1. Load factory identity, open the declared stores, and restore config.
+    let identity = load_identity();
+    let storage = STORAGE.init(DeviceStorage::new(Cfg::open(flash)?));
+    let loaded_config = storage.load_config();
 
     // 3. Build the StateInit envelope. The runner consumes it inside
     //    D::create_state. For System B, SystemBStateInit::new() handles
     //    the no-resources case (resources defaulted to ()).
     let state_init = SystemBStateInit::new(
-        StaticIdentity::new(*storage.identity().serial_number()),
+        identity,
         loaded_config,
     );
 
@@ -786,36 +777,28 @@ async fn main(spawner: Spawner) {
         "eth0", local_addr, control_endpoint, (),
     );
 
-    // 5. Allocate static stack resources.
+    // 5. Allocate static stack resources for the resolved preset type.
     const BUF_SZ: usize = zweidraehte_device::config::buffer_size_for_apdu(
         <MyDevice as StackDefinition>::MAX_APDU_LENGTH,
     );
     static RESOURCES: StaticCell<StackResources<MyDevice, BUF_SZ>> = StaticCell::new();
 
-    // 6. Create the stack. Six args, in this order. The last is the
-    //    device's storage handle (a `&'static` stores struct such as
-    //    `ConfigStorage`); only a stack with no storage at all
-    //    passes `()`.
+    // 6. Create the stack. The final argument must match
+    //    MyDefinition::Storage; only a stack with no storage passes `()`.
     let (stack, runner) = zweidraehte_device::new(
         RESOURCES.init(StackResources::new()),
         link_layer_builder,
         state_init,
         platform,
         MyDevice::memory_map(),
-        (),
+        storage,
     );
 
     // 7. Spawn the stack runner.
-    spawner.spawn(run_stack(runner)).unwrap();
+    spawner.spawn(run_stack(runner)).expect("stack runner spawns once");
 
-    // 8. Application loop — read/write COs via `stack`, persist on dirty.
-    loop {
-        if stack.state().is_dirty() {
-            storage.save(stack.state())?;
-            stack.state().clear_dirty();
-        }
-        // ... user logic ...
-    }
+    // 8. Let the shared storage task handle dirty saves and restart requests.
+    spawner.spawn(storage_task(stack)).expect("storage task spawns once");
 }
 ```
 
@@ -827,48 +810,29 @@ context the layers need is reached through `D::Augments<'a>` and
 
 ## Architecture Diagram
 
-```
-                    StackDefinition
-                    (compile-time bill of materials)
-                           |
-          +----------------+----------------+
-          |                |                |
-    DeviceDescriptor  Parameters    CommObjects
-          |
-          v
-    SystemBDeviceState<..., ES>
-     +-- individual_address
-     +-- tables (ADT, AST, COT, APP)
-     +-- extension_state: ES
-     |    +-- IpExtensionFor<F> (KNX/IP — N and CAPS from FeatureSet)
-     |    +-- Tp1ExtensionState (TP1 devices)
-     |    +-- () (test/mock only)
-     |
-     +-- Extension<Platform>::create_augment()
-     |    +-- IpAugment<'a, P, CAPS> (borrows config + platform)
-     |    +-- Tp1Augment<'a> (borrows the Tp1ExtensionState)
-     |    +-- () (no augment)
-     |
-     v
-    PersistedState -----> Storage Backend (JSON / Flash)
-     |
-     v
-    SystemBObjects<..., Augment>
-     +-- Device Object (index 0)
-     +-- Address Table Object (index 1)
-     +-- Association Table Object (index 2)
-     +-- Group Object Table Object (index 3)
-     +-- Application Program Object (index 4)
-     +-- PEI Program Object (index 5)
-     +-- [augment-provided objects] (index 6+)
-     |    +-- IP Parameter Object (from IpAugment)
-     |
-     v
-    Protocol Layers
-     +-- Application Layer
-     +-- Transport Layer
-     +-- Network Layer
-     +-- Link Layer (TPUART / KNX/IP / USB)
+```mermaid
+flowchart TB
+  DD["DeviceDefinition<br/>descriptor · params · COs · link · storage"]
+  Hooks["DeviceHooks<br/>application-only augments"]
+  Preset["Standard preset<br/>Tp1 · Rf · Ip · Secure…"]
+  SD["StackDefinition<br/>resolved compile-time bill of materials"]
+  State["SystemB/System7 DeviceState<br/>tables · application · extension state"]
+  ProfileAug["Mandatory profile augments<br/>medium · security · diagnostics"]
+  Chain["AugmentChain"]
+  IO["InterfaceObjects<br/>base roster + contributed objects/PIDs"]
+  Storage["Storage backend<br/>flash · FRAM · JSON"]
+  Layers["NL / TL / AL / link layer"]
+
+  DD --> Preset --> SD
+  Hooks --> DD
+  SD --> State
+  Preset --> ProfileAug --> Chain
+  Hooks --> Chain
+  Chain --> IO
+  State --> IO
+  State <--> Storage
+  SD --> Layers
+  IO --> Layers
 ```
 
 ## Writing a Custom Extension with Persistent State
@@ -965,7 +929,7 @@ impl Extension<()> for MyExtension {
 type MyState = SystemBDeviceState<ADT, AST, COT, MyDevice, MyExtension>;
 
 zweidraehte_device::system_b_standard_stack! {
-    stack: MyDevice, device: &DEVICE_DESCRIPTOR, tl_style: TlStyle::Style3,
+    stack: MyDevice, device: &DEVICE_DESCRIPTOR,
     params: Params, com_objects: MyComObjects,
     link_layer_builder: …, platform: (),
     extension_state: MyExtension, state: MyState,

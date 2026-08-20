@@ -7,14 +7,17 @@ the `linux/` shells build with a plain `cargo build`.
 
 ## Device identity assignments
 
-Every embedded target reads its identity — KNX serial number, and for
-secure devices the FDSK, and for Ethernet devices the MAC — from the
+Full-stack embedded targets read their identity — KNX serial number, and
+for secure devices the FDSK, and for Ethernet devices the MAC — from the
 `KNXP` flash record written by [`tools/knx-provision`](../tools/knx-provision)
-over SWD; the `linux/` shells read the same identity from a JSON file
+over SWD. The `linux/` shells read the same identity from a JSON file
 (`support::storage::FileIdentity`) instead, self-provisioned with the
-defaults below on first run. Each project's `README.md` carries the
-exact provisioning command; this table tracks the assignments so bench
-devices don't collide.
+defaults below on first run. The two micro-stack targets are experimental
+demonstrations on `zweidraehte-microdevice`; they bake fixed test
+identities into their firmware, are listed separately, and must not be
+treated as provisioned production devices.
+Each full-stack project's `README.md` carries the exact provisioning
+command; this table tracks the assignments so bench devices don't collide.
 
 The serial here is the **device serial** (`PID_SERIAL_NUMBER`, what ETS
 sees and RF frames carry). The per-variant knxprod *hardware* serials
@@ -42,6 +45,8 @@ devices below.
 | `rp2040/eth_ip_interface` | `pico_eth_ip_interface` | `00FA0000000B` | — | `0002FA00000B` |
 | `rp2040/wifi_light_switch` | `pico_wifi_light_switch` | `00FA0000000C` | — | — |
 | `rp2040/eth_secure_light_switch` | `pico_eth_secure_light_switch` | `00FA0000000D` | dev | `0002FA00000D` |
+| `stm32/g0_tp1_bcu2_light_switch` | `stm32g0_tp1_bcu2_light_switch` | `00FA00000308` (fixed) | — | — |
+| `stm32/g0_tp1_micro_system7_light_switch` | `stm32g0_tp1_micro_system7_light_switch` | `00FA00000306` (fixed) | — | — |
 
 Conventions and notes:
 
@@ -61,3 +66,5 @@ Conventions and notes:
   retransmitter re-provisioned with a distinct serial.
 - `stm32/g0_blink` and `rp2040/blink` are bring-up shells with no KNX
   identity.
+- The fixed micro identities are development defaults in `main.rs`, not
+  `KNXP` records. Change them before placing multiple copies on one line.

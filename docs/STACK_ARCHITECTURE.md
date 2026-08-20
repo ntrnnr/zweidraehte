@@ -15,15 +15,23 @@ Read this document when you are trying to understand *why* the stack
 is shaped the way it is, *which* extension point to reach for, or
 *what* a given context-trait bound actually requires.
 
+This document primarily describes the full `zweidraehte-device` runtime.
+`zweidraehte-microdevice` is a deliberate sibling — and an experimental
+one; see §2.4 — not a feature mode of the same owner: it uses one synchronous owner, a cooperative `poll()` loop, and
+flat EEPROM-backed tables. The runtimes share pure protocol vocabulary,
+state-machine logic, table codecs, ETS metadata, and application decisions;
+they do not share scheduling, buffers, interface-object ownership, or storage
+orchestration.
+
 ---
 
 ## 1. Design philosophy
 
 ### 1.1 Goals
 
-- Run the same core stack on embedded `no_std + no alloc` targets
+- Run the same full core stack on embedded `no_std + no alloc` targets
   (the `firmware/` subtree) and on embedded Linux userspace (the
-  `examples/devices` demo binaries).
+  `firmware/linux` shells).
 - Be generic over link medium (TP1, KNX/IP, USB, IP-interface,
   mock), over BCU style (System B and System 7 TP1 today; more
   later), and over per-device extensions (security, diagnostics,
@@ -34,11 +42,12 @@ is shaped the way it is, *which* extension point to reach for, or
 
 ### 1.2 Guiding technique: compile-time composition
 
-The stack is built through generics and trait bounds rather than
-runtime polymorphism. There is no `dyn` on hot paths. The single
-central type parameter `D: StackDefinition` threads through every
-generic function and every shared type. Monomorphization specialises
-each concrete device into the exact code it needs.
+The stack is built through generics and trait bounds rather than runtime
+polymorphism. There is no `dyn` on hot paths. Normal firmware supplies the
+independent inputs through `DeviceDefinition` and selects a preset such as
+`system_b::Tp1<C>`; that preset is the concrete `D: StackDefinition` threaded
+through every generic function and shared type. Monomorphization specialises
+each device into the exact code it needs.
 
 The router's dispatch table is not looked up at runtime from a
 registry — it is a `const [u8; 256]` array built at compile time from
@@ -52,13 +61,15 @@ single compile-time type with a known dispatch shape.
 
 ### 1.3 Three pillars
 
-1. **A single "bill of materials" trait.** `StackDefinition`
-   enumerates every choice a concrete device makes: descriptor,
-   state, link-layer builder, interface-object container, layer
-   composition strategy, memory map, application services,
-   identity. Everything else asks for `D: StackDefinition` and
-   drills through its associated types and constants. See
-   [`crates/zweidraehte-device/src/definition.rs`](../crates/zweidraehte-device/src/definition.rs).
+1. **A small authoring input and one resolved bill of materials.**
+   `DeviceDefinition` contains only product, application, hardware, storage,
+   and optional hook choices. A standard preset supplies the correlated
+   protocol state, services, interface objects, and layer builder, producing
+   one `StackDefinition`. Stack internals ask only for that resolved
+   `D: StackDefinition`. Advanced users can implement it directly for a
+   genuinely custom stack. See
+   [`profile.rs`](../crates/zweidraehte-device/src/profile.rs) and
+   [`definition.rs`](../crates/zweidraehte-device/src/definition.rs).
 
 2. **Small single-responsibility "context" traits.** A layer or
    augment depends on the narrow capability it actually uses —
@@ -183,7 +194,8 @@ main
  │    2. LayerContext::new(buffer_manager, storage)  (program-lifetime)
  │    3. D::create_state(state_init)        → D::State
  │    4. StackCore { state, platform, memory_map, &layer_context }
- │    5. D::create_interface_objects(state, platform, layer_ctx)
+ │    5. D::create_augments(state, platform, layer_ctx)
+ │    6. D::create_interface_objects(state, platform, layer_ctx, augments)
  │
  └─ Runner::run
       ├─ Build StackContext<'a, D>  (transient: &StackCore, &InterfaceObjects)
@@ -209,6 +221,43 @@ and unconnected management services (`device_descriptor_read`,
 the device stack but none of the device-side machinery described in
 this document.
 
+### 2.4 The micro-stack boundary
+
+**Status: experimental.** The micro stack started as a question — how
+small does a KNX device get without an executor, and how much of the
+"generic" core is actually family-neutral? The answers were useful (it
+did flush out System B assumptions in shared code, and it lands at
+roughly a sixth of the full stack's flash), but the crate is young and
+thinly tested next to `zweidraehte-device`, and nothing shipped on it.
+Read this section as a description of an experiment, not of a
+production runtime.
+
+`zweidraehte-microdevice` targets fixed-map TP1 devices where the full
+runtime's flexibility is the wrong cost model. One `Microdevice<F>` owns the
+family-sized EEPROM image, two bounded RAM windows, transport/management
+state, and authorization keys. Firmware feeds it either a complete TP1
+standard frame or a timer tick:
+
+```text
+UART ISR/ring -> TPUART frame assembler -> Microdevice<F>::poll(...)
+                                             |
+                                             +-> bounded outbound frames
+                                             +-> restart request
+```
+
+`MicroDeviceFamily` supplies the compile-time mask policy: memory windows and
+access, table formats/locations, property roster, transport style, and
+load/run side effects. Implemented families are BCU1 0012h, BCU2
+0020h/0021h/0025h, and System 7 0705h. Native RF and KNX/IP frames are outside
+this boundary; adding speculative medium abstraction would undermine the
+reason the crate exists.
+
+The shared layer stops at deterministic domain behavior: protocol values,
+property payload coding, load-state transitions, address/association/group-
+object codecs, normalized button events, and the light-switch reducer. The
+full stack retains its router, buffers, augments, and storage task; micro
+retains flat EEPROM ownership and its polling loop.
+
 ---
 
 ## 3. Core components
@@ -217,12 +266,41 @@ Each subsection gives the canonical file, the one-line purpose, the
 context traits the component *requires* from its environment, and the
 context traits it *provides*.
 
-### 3.1 `StackDefinition`
+### 3.1 `DeviceDefinition`, presets, and `StackDefinition`
 
-**File:** [`crates/zweidraehte-device/src/definition.rs`](../crates/zweidraehte-device/src/definition.rs)
+**Files:**
+[`crates/zweidraehte-device/src/profile.rs`](../crates/zweidraehte-device/src/profile.rs),
+[`crates/zweidraehte-device/src/definition.rs`](../crates/zweidraehte-device/src/definition.rs),
+[`bcus/system_b/profiles.rs`](../crates/zweidraehte-device/src/bcus/system_b/profiles.rs),
+[`bcus/system_7/profiles.rs`](../crates/zweidraehte-device/src/bcus/system_7/profiles.rs)
 
-The compile-time bill of materials. Every concrete device (binary)
-defines a zero-sized struct and implements `StackDefinition` for it.
+Normal firmware defines a zero-sized input type implementing
+`DeviceDefinition`, then selects a ready-made stack type. For example:
+
+```rust
+struct Product;
+
+impl DeviceDefinition for Product {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE;
+    type Params = Params;
+    type ComObjects = Objects;
+    type LinkLayer = TpUartLinkLayerBuilder<Tx, Rx>;
+    type Identity = FlashIdentityData;
+    type Storage = &'static DeviceStorage;
+}
+
+type Device = zweidraehte_device::bcus::system_b::Tp1<Product>;
+```
+
+`DeviceDefinition` deliberately excludes protocol internals. The selected
+preset owns the extension-state shape, mandatory augments and AL services,
+interface-object roster, memory map, state constructor, and layer builder.
+Available System B presets are `Tp1`, `Rf`, `Ip`, `IpInterface`, `SecureTp1`,
+`SecureRf`, `SecureRfRetransmitter`, and `SecureIp`; System 7 provides `Tp1`
+and `SecureTp1`, both with a product COT address const parameter.
+
+The resulting preset type implements `StackDefinition`, the complete
+compile-time bill of materials consumed by the runtime:
 
 | Item | Kind | Default | Purpose |
 |---|---|---|---|
@@ -230,13 +308,13 @@ defines a zero-sized struct and implements `StackDefinition` for it.
 | `MAX_APDU_LENGTH` | `u16` | `MAX_APDU_LENGTH_EXTENDED` (254) | Compile-time wire-APDU allocation ceiling. Runtime value may be lower. |
 | `DEVICE_DESCRIPTOR_TYPE2` | `Option<&'static [u8;14]>` | `None` | Extended device descriptor. |
 | `USER_MANUFACTURER_INFO` | `Option<&'static [u8;3]>` | `None` | Optional. |
-| `TL_STYLE` | `TlStyle` | — | TL state-machine style per 03/03/04 §5.4. |
+| `TL_STYLE` | `TlStyle` | — | TL state-machine style per 03/03/04 §5.4. Not a firmware choice: 06 Profiles §4.1.2 mandates it per family, so presets and the standard-stack macros emit it (Style 3 for System B). |
 | `Mutex` | `RawMutex` | `NoopRawMutex` | Inter-executor synchronisation. `CriticalSectionRawMutex` when user code and stack share preemption. |
 | `Rng` | `rng::Rng` | `NoRng` | Random-byte source for KNX Data Secure. Secure compositions require `Rng: SecureRng` (the default `NoRng` panics on use and is rejected at compile time by the `SecureDeviceBuilder` bound). |
 | `Platform` | — | `()` | IP platform (network config/query). |
 | `P` | `ConstDefault` | — | Application parameter struct. |
 | `CO` | `ComObjects` | — | Communication-object container. |
-| `LLB` | `LinkLayerBuilderBase + for<'a> LinkLayerBuilder<StackContext<'a, Self>>` | — | Link-layer builder. |
+| `LLB` | `LinkLayerBuilderBase` | — | Link-layer builder and preallocated resource type. Its context compatibility is checked by `LayerBuilder` when the complete stack is assembled. |
 | `ES` | — | — | Medium extension (state + augment). Unbounded at the definition; call sites require `Extension<Self::Platform>`. |
 | `State` | `CoreDeviceState<Self::CO>` | — | Unified runtime state + tables. |
 | `Identity` | `DeviceIdentity` | `StaticIdentity` | Factory identity. Use `StaticSecureIdentity` for Data Secure. |
@@ -245,7 +323,7 @@ defines a zero-sized struct and implements `StackDefinition` for it.
 | `InterfaceObjects<'a>` | `PropertyServiceHandler + HasDeviceObject` | — | Container of interface objects. |
 | `AlExtensions` | `ApciHandler<Self> + Default` | `()` | Extra AL APCI handlers. Composed by tupling — e.g. `(SystemBAlServices, DomainAddressService)`. |
 | `Augments<'a>` | `Augment<Self>` | `()` | Device-wide augment chain. See §3.12. |
-| `LayerBuilder` | `LayerStackBuilder<Self>` | — | Wires NL/TL/AL together. |
+| `LayerBuilder` | — | — | Wires NL/TL/AL together. `new()` requires it to implement `LayerStackBuilder<Self>` after the definition is complete, avoiding recursive preset bounds. |
 
 The built-in layer compositions use one incoming transport connection and no
 outgoing connections. Non-default capacities belong to an expert custom
@@ -259,11 +337,9 @@ device state with a matching `HasConnectionAuth` store; they are not
 The runner calls them in that order — augments are built first so the
 IO container can borrow `&'a Augments<'a>` for the stack's lifetime.
 
-**Convenience supertrait.** System B devices should implement the
-`SystemBStackDefinition` supertrait instead
-([`crates/zweidraehte-device/src/bcus/system_b/definition.rs`](../crates/zweidraehte-device/src/bcus/system_b/definition.rs)),
-which derives `ADT_SIZE`, `AST_SIZE`, `COT_SIZE`, `memory_layout()`
-and `memory_map()` from the descriptor so devices do not repeat them.
+`SystemBStackDefinition`, `System7StackDefinition`, and
+`System7ProductLayout` remain useful inside presets and custom low-level
+definitions. They are not the normal firmware authoring surface.
 
 **Provides:** the universal type parameter `D` that every other
 component takes as input.
@@ -785,10 +861,11 @@ map through `StackContext::memory_map()`.
 [`crates/zweidraehte-device/src/bcus/system_b/`](../crates/zweidraehte-device/src/bcus/system_b/)
 
 A complete pre-assembled implementation for mask versions `07B0`
-(TP1), `27B0` (KNX-RF) and `57B0` (KNX/IP). A device that wants to be
-System B implements the `SystemBStackDefinition` supertrait and gets
-most choices made for it. This is the family to build a new device
-on; the System 7 sibling below is documented after it.
+(TP1), `27B0` (KNX-RF) and `57B0` (KNX/IP). Normal firmware chooses a
+System B preset and implements `DeviceDefinition`; the preset implements
+`SystemBStackDefinition` and the low-level `StackDefinition`. This is the
+family to build a new device on; the System 7 sibling below is documented
+after it.
 
 Key pieces:
 
@@ -798,6 +875,13 @@ Key pieces:
   `memory_map()`. Also provides type aliases (`Tp1StateFor<D>`,
   `IpStateFor<D, Proto>`, `SecureTp1StateFor<D, P2P>`, etc.)
   that eliminate the repetition of `State` generic parameters.
+
+- **`profiles.rs` — standard stack presets.** `Tp1`, `Rf`, `Ip`, and
+  `IpInterface` cover the plain media; `SecureTp1`, `SecureRf`,
+  `SecureRfRetransmitter`, and `SecureIp` add the correct security state,
+  diagnostics, sequence-storage requirements, services, and layer wrappers.
+  A preset validates that the descriptor mask and table capacities match its
+  profile.
 
 - **`device_state/mod.rs` — `SystemBDeviceState<…>`.** The concrete
   `State` type. Implements `StackState`, `HasPersistence`,
@@ -833,49 +917,36 @@ Key pieces:
   call `Self::default_interface_objects(state, layer_ctx, augments)`
   on `SystemBStackDefinition` for the same wiring.
 
-#### `system_b_standard_stack!` — the standard `StackDefinition` impl
+#### Standard preset boundary
 
-Hand-writing `impl StackDefinition` repeats an always-identical
-System B shell (`Mem = SystemBMemoryMap`, table-size constants,
-`memory_layout()`, `StateInit` projection, the factory methods).
-The `system_b_standard_stack!` macro
-([`definition.rs`](../crates/zweidraehte-device/src/bcus/system_b/definition.rs),
-`#[macro_export]`ed at the crate root) emits both
-`impl SystemBStackDefinition` and `impl StackDefinition` from just the
-device-specific bill of materials:
+The presets remove correlated choices from firmware. Selecting
+`SecureRf<C>`, for example, determines the RF and secure extension state,
+mandatory domain-address and security services, GO diagnostics augment,
+secure layer builder, identity/storage bounds, and interface-object roster.
+Firmware supplies only the independent inputs:
 
-```rust
-zweidraehte_device::system_b_standard_stack! {
-    stack: MyDevice,
-    device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style3,
-    params: MyParams,
-    com_objects: MyComObjects,
-    link_layer_builder: TpUartLinkLayerBuilder<MyUartTx, MyUartRx>,
-    platform: (),
-    extension_state: Tp1ExtensionState,
-    state: Tp1StateFor<MyDevice>,
-    al_extensions: SystemBAlServices,
-    layer_builder: PlainDeviceBuilder,
-}
-```
+- descriptor, parameter block, and communication objects;
+- link-layer builder and platform;
+- identity, RNG, mutex, and storage capability bundle;
+- optional application-specific `DeviceHooks`.
 
-Optional slots:
+`DeviceHooks` returns an application augment bundle. The preset installs its
+mandatory profile augments first, then appends the device bundle through
+`AugmentChain`; firmware does not restate the complete chain. Direct
+`StackDefinition` remains the intentional expert path for custom memory maps,
+state shapes, interface-object containers, or layer compositions. The
+conformance DUTs use it because their fixture memory maps are deliberately
+non-standard.
 
-- `resources: <type>` — construction-time resources threaded into
-  `StateInit` (e.g. `SecureResources<…>` carrying the FDSK).
-- `augments: { bundle: MyAugments, create: |state, platform, lctx| … }`
-  — a custom augment bundle; the macro emits `type Augments<'a>` and
-  `create_augments()` from it. Without this slot the medium
-  extension's own augment is projected directly.
-- `extra { … }` — verbatim items pasted into the `impl` block to
-  override any remaining defaults (`type Identity`, `type Rng`,
-  `type Mutex`, `const MAX_APDU_LENGTH`, …).
-
-All firmware devices use the macro; a fully hand-written
-`impl StackDefinition` is only needed for a non-standard
-`InterfaceObjects` wrapper, custom `Mem`, or custom `StateInit`
-shape (the conformance DUTs do this for `ConformanceMemoryMap`).
+Between the two sits `system_b_standard_stack!` (and its
+`system_7_standard_stack!` twin), which emits the always-identical half of a
+`StackDefinition` impl — `Mem`, the table-size constants, `memory_layout()`,
+`TL_STYLE`, `FIRST_ASAP`, the `StateInit` projection, and the factory
+methods — from the device-specific bill of materials, with optional
+`resources:` and `augments:` slots. The presets are built on it, and it is
+still the right tool for a low-level stack that only needs *one* thing off
+the standard shape. It is not the normal firmware authoring surface: a
+device that fits a preset should use the preset.
 
 #### `system_7` — the second family
 
@@ -883,12 +954,11 @@ shape (the conformance DUTs do this for `ConformanceMemoryMap`).
 [`crates/zweidraehte-device/src/bcus/system_7/`](../crates/zweidraehte-device/src/bcus/system_7/)
 
 The same shape one family over, for mask version `0705` (TP1):
-`System7StackDefinition` + `System7ProductLayout` are the supertraits,
-`system_7_standard_stack!` the macro, `System7DeviceState` the state
-type, `System7MemoryMap` the map. KNX Data Secure composes onto it
-exactly as onto System B — the family-neutral `crate::security` module
-plugged in through the macro's `resources:` and `augments:` slots, with
-`SecureStateFor7`/`SecureTp1StateFor7` as the state aliases. What
+`System7StackDefinition` + `System7ProductLayout` are the low-level
+supertraits, `Tp1<C, COT_ADDRESS>` and `SecureTp1<C, COT_ADDRESS>` are the
+normal presets, `System7DeviceState` is the state type, and
+`System7MemoryMap` the map. KNX Data Secure composes onto it exactly as onto
+System B through the family-neutral `crate::security` module. What
 genuinely differs is the management model, and it is worth knowing
 which pieces those are:
 
@@ -962,6 +1032,13 @@ Each device's complete augment set lives behind the
 (`SystemBObjects`) borrows `&'a D::Augments<'a>` and routes every
 property hook through `Augment<D>`.
 
+For a standard preset, firmware does not construct that complete set.
+`DeviceDefinition::Hooks` names a `DeviceHooks` provider for only the
+application-specific bundle. The preset constructs its mandatory medium and
+security augments, then combines both with `AugmentChain`. The low-level forms
+below explain the resolved `StackDefinition` and remain relevant to custom
+presets and conformance fixtures.
+
 #### Extension trait surface
 
 ```
@@ -1011,7 +1088,7 @@ that you don't want to hand-write.
 | `SecureExtensionState<Inner, GRP, P2P, GO>` | wraps any inner | `SecureExtensionConfig<…>` | `SecureResources<Inner>` (generic over the inner `ExtensionState`; carries the FDSK) | `SecureAugmentBundle { inner, security }` (a `#[derive(ServiceRegistry)]` struct) | — (seq store comes from `D::Storage`) |
 | `OperationModeState` (runtime-only) | any | — (not persisted) | — | `DiagnosticsAugment<'a, GS = NoSecureGoSend>` | — |
 
-#### Composing augments on a device
+#### Composing augments in a low-level stack
 
 A device has three ways to spell its `D::Augments<'a>`:
 
@@ -1505,9 +1582,11 @@ debug counter, a vendor PID on the Device Object):
    also emits the corresponding `Augment<D>` impl, so the
    augment can be a field in any `#[derive(ServiceRegistry)]` struct
    without further work.
-3. Add it to your device's augment chain — either by extending an
-   existing `*Augments` struct with a new `#[service(augment)]`
-   field, or by writing your own struct that uses
+3. For a standard preset, implement `DeviceHooks` and return the augment (or
+   a `#[derive(ServiceRegistry)]` bundle of application augments); set that
+   provider as `DeviceDefinition::Hooks`. The preset appends it after its
+   mandatory profile hooks. In a low-level stack, add it directly to
+   `D::Augments<'a>` — either by extending an existing struct or by using
    `#[service(flatten)]` to pull in a base set:
 
    ```rust
@@ -1546,8 +1625,12 @@ augment — `RfExtensionState` + `RfAugment` is the template to copy.
    and `create_augment` returning `MyAugment { state: self, … }`. Pick
    `Platform` (`()` unless the augment needs platform state like IP) and
    `Resources` (`()` unless you need FDSK / SEQ storage).
-4. Set `type ES = MyExtensionState` in `StackDefinition` (or via
-   `system_b_standard_stack! { …, extension_state: MyExtensionState, … }`).
+4. Decide whether this belongs in a standard reusable profile or a one-off
+   custom stack. Standard presets intentionally own `D::ES`; changing its
+   persisted state shape requires a new preset/wrapper or a direct
+   `StackDefinition`, not `DeviceHooks` (which contributes behavior but no
+   storage fields). Set `type ES = MyExtensionState` in that low-level
+   definition.
 5. Set `type Augments<'a> = <Self::ES as Extension<Self::Platform>>::Augment<'a, Self>`
    if there are no extras, or define a per-device augment struct
    (see §7.1) that includes a `#[service(augment)]` field for

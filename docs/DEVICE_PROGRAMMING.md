@@ -25,16 +25,19 @@ the product defaults — parameter values, group-address links,
 com-object flag overrides, and the individual address. Everything
 structural comes from the product file and the master data.
 
-> **Tested hardware, so far: exactly one device.** The whole pipeline
-> has been validated end-to-end against an **MDT BE-TAL5502.01**
-> (Push Button Lite 55/63 2-fold, System 7 / mask 0705) over both USB
-> and KNX/IP tunneling — plus our own software DUTs in the
-> conformance tier. Every wire-level decision is pinned to the spec,
-> the certification templates, or ETS traces of that device, so other
-> System 7 products *should* work — but nothing else has met real
-> silicon yet, and System B has only ever been driven against our own
-> stack. Expect other devices to surface surprises; keep an ETS log
-> handy for comparison when they do.
+> **Tested hardware, so far: three devices.** The pipeline has been
+> validated end-to-end against an **MDT BE-TAL5502.01** (Push Button
+> Lite 55/63 2-fold, System 7 / mask 0705) over both USB and KNX/IP
+> tunneling, a **mask-0012h BCU1** device over the direct no-LSM
+> path, and a **mask-0020h BCU2** device carrying that same converted
+> BCU1 program — the device-mask-aware path, including repeated
+> re-downloads onto a running application — plus our own software
+> DUTs in the conformance tier. Every wire-level decision is pinned
+> to the spec, the certification templates, or ETS traces of those
+> devices, so comparable products *should* work — but a native BCU2
+> product has not met silicon yet, and System B has only ever been
+> driven against our own stack. Expect other devices to surface
+> surprises; keep an ETS log handy for comparison when they do.
 
 ## Prerequisites
 
@@ -44,7 +47,14 @@ structural comes from the product file and the master data.
   a mismatched product, exactly as ETS would. Vendor packages often
   contain one program per hardware variant; pick the one whose
   hardware type matches (an ETS log or a failed identity check tells
-  you the device's value).
+  you the device's value). Legacy BCU-era products often exist only
+  as `.vd3`/`.vd4` conversions, whose only XML form is a grab from
+  ETS's product store — not schema-conformant MTXML: the `Static`
+  section uses compact element names (`APS`, `AP`, `PT`, `CO`, …) and
+  the root omits `xmlns`. The parser accepts that spelling, so such a
+  grab loads directly. An "unknown element" error means the grab uses
+  a compact tag we have not seen yet — the alias list follows
+  evidence rather than guesswork, so it needs adding.
 - **Master data** (`knx_master.xml`). Resolved automatically: an
   explicit `--master-data` path, a `.knxprod`'s bundled copy, the
   `KNX_MASTER_DATA` env var, or the on-disk cache/download
@@ -339,6 +349,44 @@ The sequence, byte-compatible with an ETS trace of the same device:
 5. Restart. The device kills the connection instead of acknowledging —
    that is the success signal, not an error.
 6. After a boot grace, load states are read back.
+
+### BCU-era masks (BCU1 001xh, BCU2 002xh)
+
+Legacy devices are downloaded by **their own** mask, not the
+product's: the loader reads DD0 after connecting and accepts an older
+product when the device's `DownwardCompatibleMasks` lists it — the
+rule ETS follows, and the reason a BCU2 can run a converted BCU1
+program. The procedure, load-control path and authorization then come
+from the *device's* mask, while the table codings come from the
+*product's* family (an RT1 program stays RT1 whatever silicon runs
+it). `--device-mask <hex>` previews that compat compile offline.
+
+Four things differ from the System 7 flow above:
+
+1. **BCU1 has no load state machines at all.** Its download is a
+   direct memory-write sequence from the mask's own template — no
+   load records, no state polls — and `Connect` skips `A_Authorize`,
+   which is a BCU2 addition. BCU2 uses the property path with its
+   declared machines and the 03/05/02 §3.31.2 task records.
+2. **Writes are diffed.** The image is read back first and only
+   changed bytes are written, which is what makes a re-download onto
+   a live device cheap; the application is halted before the LSM
+   cycle so it cannot run against half-written tables.
+3. **Tables are relocated, not placed statically.** For converted
+   programs (`DynamicTableManagement="true"`) the association table
+   is packed immediately behind the actual-size address table and the
+   one-byte AssocTabPtr is repointed, with one placeholder slot per
+   unlinked group object — exactly as ETS's table formatter does.
+4. **Mask-ROM fixups are applied at compile time.** BCU-era programs
+   are native code calling mask-ROM entry points that sit at
+   different addresses per mask; each `Fixup` is resolved against the
+   mask actually being compiled for. On the product's own mask this
+   is an identity patch, on a downward-compatible host it is
+   load-bearing.
+
+Vendor products for these devices usually exist only as ETS
+product-store XML rather than schema-conformant MTXML; the parser
+accepts that spelling (see "Prerequisites").
 
 ## Troubleshooting
 
