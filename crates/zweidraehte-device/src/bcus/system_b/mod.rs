@@ -5,6 +5,7 @@
 //!
 //! - **57B0**: KNX/IP devices
 //! - **07B0**: TP1 devices (twisted pair)
+//! - **27B0**: KNX-RF devices
 //!
 //! # Architecture
 //!
@@ -52,6 +53,7 @@ mod device_state;
 mod extensions;
 mod memory_map;
 mod objects;
+mod profiles;
 mod storage;
 
 pub use definition::*;
@@ -60,6 +62,11 @@ pub use device_state::*;
 pub use extensions::*;
 pub use memory_map::*;
 pub use objects::*;
+#[cfg(feature = "ip-secure")]
+pub use profiles::SecureIp;
+#[cfg(feature = "knxip")]
+pub use profiles::{Ip, IpInterface};
+pub use profiles::{Rf, SecureRf, SecureRfRetransmitter, SecureTp1, Tp1};
 pub use storage::*;
 
 /// The standard AL service set under its System B name.

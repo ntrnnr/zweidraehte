@@ -38,10 +38,16 @@ pub struct Runner<'d, D: StackDefinition> {
     pub(crate) link_layer_resources: &'d mut <D::LLB as LinkLayerBuilderBase>::Resources,
 }
 
-impl<'d, D: StackDefinition> Runner<'d, D> {
+impl<'d, D> Runner<'d, D>
+where
+    D: StackDefinition,
+    D::LayerBuilder: LayerStackBuilder<D>,
+{
     /// Run the KNX stack.
     ///
-    /// You must call this in a background task, to process KNX messages.
+    /// You must call this in a background task to process KNX messages. This
+    /// is also the assembly boundary that verifies the selected layer builder
+    /// supports the definition's link layer and runtime context.
     pub async fn run(self) -> ! {
         // Run state machine initialization, DeviceControl sync, and lifecycle
         // events are handled by the DeviceModel via the registry's
@@ -224,14 +230,17 @@ impl<'d, D: StackDefinition> Runner<'d, D> {
 /// * `state_init` - Inputs for state construction (identity, persisted snapshot, etc.)
 /// * `platform` - Platform abstraction (IP config for KNX/IP, `()` for TP1)
 /// * `memory_map` - Memory map for A_Memory_Read/Write services
-pub fn new<D: StackDefinition + Copy, const BUF_SZ: usize, const NUM_BUFS: usize>(
+pub fn new<D: StackDefinition, const BUF_SZ: usize, const NUM_BUFS: usize>(
     resources: &'static mut StackResources<D, BUF_SZ, NUM_BUFS>,
     link_layer_builder: D::LLB,
     state_init: D::StateInit,
     platform: D::Platform,
     memory_map: D::Mem,
     storage: D::Storage,
-) -> (Stack<'static, D>, Runner<'static, D>) {
+) -> (Stack<'static, D>, Runner<'static, D>)
+where
+    D::LayerBuilder: LayerStackBuilder<D>,
+{
     // ================================================================
     // Step 1: Allocate buffers
     // ================================================================

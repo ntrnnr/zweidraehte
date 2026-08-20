@@ -242,6 +242,129 @@ pub trait Augment<D: StackDefinition> {
 /// as their `StackDefinition::Augments` without any custom type.
 impl<D: StackDefinition> Augment<D> for () {}
 
+/// Ordered pair of interface-object augments.
+///
+/// Standard profiles use this to install their mandatory medium/security
+/// augment before optional application hooks. Keeping the pair as a normal
+/// Rust type makes that ordering part of the resolved stack type instead of a
+/// macro convention.
+pub struct AugmentChain<A, B> {
+    first: A,
+    second: B,
+}
+
+impl<A, B> AugmentChain<A, B> {
+    /// Build a chain that consults `first` before `second`.
+    pub const fn new(first: A, second: B) -> Self {
+        Self { first, second }
+    }
+}
+
+impl<D, A, B> Augment<D> for AugmentChain<A, B>
+where
+    D: StackDefinition,
+    A: Augment<D>,
+    B: Augment<D>,
+{
+    fn property_descriptor(&self, object_type: InterfaceObjectType, prop_id: u16) -> Option<PropertyDescriptor> {
+        self.first
+            .property_descriptor(object_type, prop_id)
+            .or_else(|| self.second.property_descriptor(object_type, prop_id))
+    }
+
+    fn property_description_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        object_idx: u16,
+        lookup: PropertyLookup,
+    ) -> Option<Result<PropertyDescriptionResponse, PropertyError>> {
+        match lookup {
+            PropertyLookup::ByPid(_) => self
+                .first
+                .property_description_read(ctx, object_type, object_idx, lookup)
+                .or_else(|| self.second.property_description_read(ctx, object_type, object_idx, lookup)),
+            PropertyLookup::ByIndex(index) => {
+                let first_count = self.first.descriptor_count_for(object_type);
+                if index < first_count {
+                    self.first.property_description_read(ctx, object_type, object_idx, PropertyLookup::ByIndex(index))
+                } else {
+                    self.second.property_description_read(
+                        ctx,
+                        object_type,
+                        object_idx,
+                        PropertyLookup::ByIndex(index - first_count),
+                    )
+                }
+            }
+        }
+    }
+
+    fn property_value_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyReadRequest,
+        buf: &mut [u8],
+    ) -> Option<Result<usize, PropertyError>> {
+        if let result @ Some(_) = self.first.property_value_read(ctx, object_type, req, buf) {
+            result
+        } else {
+            self.second.property_value_read(ctx, object_type, req, buf)
+        }
+    }
+
+    fn property_value_write(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FullPropertyWriteRequest<'_>,
+    ) -> Option<Result<WriteResponse, PropertyError>> {
+        self.first
+            .property_value_write(ctx, object_type, req)
+            .or_else(|| self.second.property_value_write(ctx, object_type, req))
+    }
+
+    fn function_property_command(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.first
+            .function_property_command(ctx, object_type, req)
+            .or_else(|| self.second.function_property_command(ctx, object_type, req))
+    }
+
+    fn function_property_state_read(
+        &self,
+        ctx: &ServiceCtx<'_, D>,
+        object_type: InterfaceObjectType,
+        req: &FunctionPropertyRequest<'_>,
+    ) -> Option<FunctionPropertyResult> {
+        self.first
+            .function_property_state_read(ctx, object_type, req)
+            .or_else(|| self.second.function_property_state_read(ctx, object_type, req))
+    }
+
+    fn additional_object_count(&self) -> u16 {
+        self.first.additional_object_count() + self.second.additional_object_count()
+    }
+
+    fn additional_object_type_at(&self, index: u16) -> Option<InterfaceObjectType> {
+        let first_count = self.first.additional_object_count();
+        if index < first_count {
+            self.first.additional_object_type_at(index)
+        } else {
+            self.second.additional_object_type_at(index - first_count)
+        }
+    }
+
+    fn descriptor_count_for(&self, object_type: InterfaceObjectType) -> u16 {
+        self.first.descriptor_count_for(object_type) + self.second.descriptor_count_for(object_type)
+    }
+}
+
 /// Panic in debug builds if an augment contributes an interface object
 /// whose type a base object already provides.
 ///

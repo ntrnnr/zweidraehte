@@ -58,12 +58,13 @@ where
 /// [`LinkLayerBuilder<CTX>`] adds the ability to build and run the link layer
 /// with a specific runtime context.
 ///
-/// In [`StackDefinition`](crate::StackDefinition), the associated type `LLB`
-/// requires both:
+/// [`StackDefinition::LLB`](crate::StackDefinition::LLB) requires this base
+/// trait so resources can be allocated before a runtime context exists. The
+/// selected [`LayerStackBuilder`](crate::LayerStackBuilder) adds the matching
+/// context-specific bound when the stack is assembled by [`new`](crate::new):
 ///
 /// ```rust,ignore
-/// type LLB: LinkLayerBuilderBase
-///         + for<'a> LinkLayerBuilder<StackContext<'a, Self>>;
+/// D::LLB: for<'a> LinkLayerBuilder<StackContext<'a, D>>;
 /// ```
 pub trait LinkLayerBuilderBase: Sized {
     /// The resource type required by this link layer implementation.

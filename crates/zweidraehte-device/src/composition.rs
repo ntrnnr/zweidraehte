@@ -118,6 +118,7 @@ pub struct PlainDeviceBuilder;
 
 impl<D: StackDefinition> LayerStackBuilder<D> for PlainDeviceBuilder
 where
+    D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>>,
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
 {
     type Stack<'a>
@@ -346,6 +347,7 @@ pub struct SecureDeviceBuilder<P2P: P2pFeature = NoP2p> {
 
 impl<D: StackDefinition, P2P: P2pFeature> LayerStackBuilder<D> for SecureDeviceBuilder<P2P>
 where
+    D::LLB: for<'a> layers::LinkLayerBuilder<StackContext<'a, D>>,
     for<'a> <D::LLB as layers::LinkLayerBuilderBase>::LLEndpoints<'a>: Default,
     D::Storage: HasSeqStore,
     D::State: HasExtensionState,

@@ -13,8 +13,7 @@ use zerocopy::{Immutable, IntoBytes, KnownLayout};
 use zweidraehte_proto::device::DeviceDescriptor;
 
 use crate::{
-    LayerStackBuilder, config,
-    context::StackContext,
+    config,
     context::layer::LayerContext,
     layers,
     layers::transport::TlStyle,
@@ -235,7 +234,14 @@ pub trait StackDefinition: Copy + 'static {
     /// override the trait's default no-op methods.
     type CO: ComObjects + ComObjectBusHook;
 
-    type LLB: layers::LinkLayerBuilderBase + for<'a> layers::LinkLayerBuilder<StackContext<'a, Self>>;
+    /// Link-layer builder and its pre-allocated resource type.
+    ///
+    /// The context-specific [`LinkLayerBuilder`](layers::LinkLayerBuilder)
+    /// bound belongs to the selected [`LayerBuilder`](Self::LayerBuilder), not
+    /// here. Deferring that self-referential compatibility check until the
+    /// stack is assembled by [`new()`](crate::new) lets reusable generic stack
+    /// presets implement this trait without a trait-solver cycle.
+    type LLB: layers::LinkLayerBuilderBase;
 
     /// Medium extension state (persistence + interface-object augmentation).
     ///
@@ -454,5 +460,10 @@ pub trait StackDefinition: Copy + 'static {
     /// Use [`PlainDeviceBuilder`](crate::PlainDeviceBuilder) for standard
     /// `(NL, TL, AL)` stacks or [`PlainIpDeviceBuilder`](crate::PlainIpDeviceBuilder)
     /// for KNX/IP `(NL, CemiTL<TL>, AL)` stacks.
-    type LayerBuilder: LayerStackBuilder<Self>;
+    ///
+    /// This associated type intentionally has no eager bound. The stack factory
+    /// requires `Self::LayerBuilder: LayerStackBuilder<Self>`; at that point
+    /// `Self` is already a complete stack and the builder can validate its
+    /// link-layer/context compatibility without recursive trait resolution.
+    type LayerBuilder;
 }

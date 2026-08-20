@@ -9,9 +9,11 @@
 //! - [`SecureIpStorage`] — config + seq + mc_timer watermark (KNX IP Secure
 //!   routing)
 //!
-//! Each struct's type parameters are bounded by the store contracts, and each
-//! carries hand-written [`HasConfigStore`] / [`HasSeqStore`]
-//! / [`StorageHooks`] impls with exactly its combination's erase behavior.
+//! Each struct carries hand-written [`HasConfigStore`] / [`HasSeqStore`] /
+//! [`StorageHooks`] impls with exactly its combination's bounds and erase
+//! behavior. Bounds live on those capability impls rather than the container:
+//! asking for sequence access must not force the unrelated config backend to
+//! resolve.
 //! The generic storage task drives any handle through those bounds. The
 //! secure-builder gate is structural: [`ConfigStorage`] has no `HasSeqStore`
 //! impl, so composing a secure stack over it is a compile error.
@@ -328,11 +330,14 @@ impl<C: ConfigStoreBackend> StorageHooks for ConfigStorage<C> {
 
 /// The stores of a **KNX Data Secure** device: the config blob plus the
 /// sequence/SIAT store the secure layers replay-protect with.
-pub struct SecureStorage<C, S>
-where
-    C: ConfigStoreBackend,
-    S: SequenceNumberStorage + SiatAccess,
-{
+///
+/// The container deliberately has no declaration-level bounds. Each
+/// capability implementation constrains only the field it uses: in
+/// particular, [`HasSeqStore`] must not require `C: ConfigStoreBackend`.
+/// Config backends are commonly parameterized by `D::State`, while secure
+/// stack assembly proves `D::Storage: HasSeqStore`; coupling those unrelated
+/// checks creates a trait-solver cycle.
+pub struct SecureStorage<C, S> {
     /// The config-blob store, opened at the device's `CONFIG` placement.
     pub config: RefCell<C>,
     /// The sequence/SIAT store (flash `SiatStore` or FRAM-backed).
@@ -371,7 +376,6 @@ where
 
 impl<C, S> HasSeqStore for SecureStorage<C, S>
 where
-    C: ConfigStoreBackend,
     S: SequenceNumberStorage + SiatAccess,
 {
     type Seq = S;
@@ -382,7 +386,6 @@ where
 
 impl<C, S> StorageHooks for SecureStorage<C, S>
 where
-    C: ConfigStoreBackend,
     S: SequenceNumberStorage + SiatAccess,
 {
     fn erase(&self, code: EraseCode) {
@@ -393,12 +396,11 @@ where
 
 /// The stores of a **KNX IP Secure routing** device: config + seq plus the
 /// durable multicast-timer watermark (03/08/09 §2.2.4.2).
-pub struct SecureIpStorage<C, S, M>
-where
-    C: ConfigStoreBackend,
-    S: SequenceNumberStorage + SiatAccess,
-    M: McTimerStoreBackend,
-{
+///
+/// As on [`SecureStorage`], bounds live on the capability implementations so
+/// sequence access does not force resolution of the config or multicast-timer
+/// backends.
+pub struct SecureIpStorage<C, S, M> {
     /// The config-blob store, opened at the device's `CONFIG` placement.
     pub config: RefCell<C>,
     /// The sequence/SIAT store.
@@ -441,9 +443,7 @@ where
 
 impl<C, S, M> HasSeqStore for SecureIpStorage<C, S, M>
 where
-    C: ConfigStoreBackend,
     S: SequenceNumberStorage + SiatAccess,
-    M: McTimerStoreBackend,
 {
     type Seq = S;
     fn seq_store(&self) -> &RefCell<S> {
@@ -453,7 +453,6 @@ where
 
 impl<C, S, M> StorageHooks for SecureIpStorage<C, S, M>
 where
-    C: ConfigStoreBackend,
     S: SequenceNumberStorage + SiatAccess,
     M: McTimerStoreBackend,
 {

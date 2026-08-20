@@ -39,6 +39,9 @@ pub mod actor;
 mod definition;
 pub use definition::{NoParams, StackDefinition};
 
+mod profile;
+pub use profile::{DeviceDefinition, DeviceHooks, NoDeviceHooks};
+
 pub mod rng;
 pub use rng::{NoRng, Rng, SecureRng};
 
