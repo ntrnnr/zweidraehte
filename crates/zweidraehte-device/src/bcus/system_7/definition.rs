@@ -169,15 +169,15 @@ pub type SecureTp1StateFor7<D, const P2P: usize> = SecureStateFor7<D, super::ext
 /// [`system_b_standard_stack!`](crate::system_b_standard_stack): same
 /// slots, same semantics, but pinning the family types
 /// (`System7MemoryMap`, `System7StateInit`, `System7InterfaceObjectsFor`,
-/// `System7DeviceModel`). There is no `security:` story yet — a Data
-/// Secure System 7 profile (mask 5705h lineage) would add its own slot.
+/// `System7DeviceModel`). Security remains an explicit composition choice:
+/// secure devices supply the secure extension, resources, services, and
+/// builder through the existing slots.
 #[macro_export]
 macro_rules! system_7_standard_stack {
     (
         stack: $stack:ty,
         device: $device:expr,
         cot_address: $cot_address:expr,
-        tl_style: $tl_style:expr,
         params: $params:ty,
         com_objects: $com_objects:ty,
         link_layer_builder: $llb:ty,
@@ -203,7 +203,10 @@ macro_rules! system_7_standard_stack {
         impl $crate::StackDefinition for $stack {
             // ---- device-specific bill of materials -------------------------
             const DEVICE: &'static $crate::__macro_support::device::DeviceDescriptor = $device;
-            const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
+            // Profiles v02.02.01 §4.1.2 mandates Style 3 for the
+            // System 7 profile containing mask 0705h.
+            const TL_STYLE: $crate::layers::transport::TlStyle =
+                $crate::layers::transport::TlStyle::Style3;
             // System 7 numbers communication objects from 0; unlike RT7,
             // its group object table can represent ASAP 0.
             const FIRST_ASAP: u16 = 0;

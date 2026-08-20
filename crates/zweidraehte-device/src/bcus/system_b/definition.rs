@@ -398,7 +398,6 @@ pub type ExtensionAugmentFor<'a, D> =
 /// system_b_standard_stack! {
 ///     stack: DemoStack,
 ///     device: &DEVICE_DESCRIPTOR,
-///     tl_style: TlStyle::Style3,
 ///     params: DemoParams,
 ///     com_objects: comm_objs::DemoComObjects,
 ///     link_layer_builder: KnxNetIpBuilder<DemoStack>,
@@ -421,7 +420,6 @@ macro_rules! system_b_standard_stack {
     (
         stack: $stack:ty,
         device: $device:expr,
-        tl_style: $tl_style:expr,
         params: $params:ty,
         com_objects: $com_objects:ty,
         link_layer_builder: $llb:ty,
@@ -443,7 +441,9 @@ macro_rules! system_b_standard_stack {
         impl $crate::StackDefinition for $stack {
             // ---- device-specific bill of materials -------------------------
             const DEVICE: &'static $crate::__macro_support::device::DeviceDescriptor = $device;
-            const TL_STYLE: $crate::layers::transport::TlStyle = $tl_style;
+            // Profiles v02.02.01 §4.1.2 mandates Style 3 for System B.
+            const TL_STYLE: $crate::layers::transport::TlStyle =
+                $crate::layers::transport::TlStyle::Style3;
             // System B numbers communication objects from 1 — the
             // RealizationType-7 CO table cannot express ASAP 0.
             const FIRST_ASAP: u16 = 1;

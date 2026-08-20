@@ -133,7 +133,6 @@ pub struct Stm32G0LightSwitchAugments<'a> {
 zweidraehte_device::system_b_standard_stack! {
     stack: Stm32G0LightSwitch,
     device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,

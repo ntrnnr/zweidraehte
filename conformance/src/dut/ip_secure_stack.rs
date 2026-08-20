@@ -32,7 +32,6 @@ use zweidraehte_device::layers::application::services::{PropertyExtValueService,
 use zweidraehte_device::layers::linklayers::knxip::{
     KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureDeviceTcp,
 };
-use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
@@ -192,7 +191,6 @@ impl KnxNetIpDefinition for IpSecureDutStack {
 zweidraehte_device::system_b_standard_stack! {
     stack: IpSecureDutStack,
     device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style3,
     params: IpSecureDutParams,
     com_objects: IpSecureDutComObjects,
     link_layer_builder: KnxNetIpBuilder<IpSecureDutStack>,

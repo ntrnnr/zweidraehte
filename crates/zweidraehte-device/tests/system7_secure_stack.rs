@@ -27,7 +27,6 @@ use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, GroupObjectTableAug
 use zweidraehte_device::context::layer::LayerContext;
 use zweidraehte_device::layers::application::services::StandardSecureAlServices;
 use zweidraehte_device::layers::linklayers::mock::MockLinkLayerBuilder;
-use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::objects::comm::{
     ComObjectBusHook, ComObjectIndex, ComObjectInfo, ComObjectInfoMut, ComObjects,
 };
@@ -198,7 +197,6 @@ zweidraehte_device::system_7_standard_stack! {
     stack: S7SecureStack,
     device: &S7_SECURE_DEVICE,
     cot_address: 0x4200,
-    tl_style: TlStyle::Style3,
     params: NoDeviceParams,
     com_objects: NoCo,
     link_layer_builder: MockLinkLayerBuilder<1>,

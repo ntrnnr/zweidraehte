@@ -30,7 +30,6 @@ use zweidraehte_device::bcus::system_b::*;
 use zweidraehte_device::layers::linklayers::knxip::{
     KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureRoutingTcp,
 };
-use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::storage::SeqStorageFor;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
@@ -128,7 +127,6 @@ impl KnxNetIpDefinition for LinuxEthSecureLightSwitch {
 zweidraehte_device::system_b_standard_stack! {
     stack: LinuxEthSecureLightSwitch,
     device: &DEVICE_DESCRIPTOR_IP_SECURE,
-    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: KnxNetIpBuilder<LinuxEthSecureLightSwitch>,

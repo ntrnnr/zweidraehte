@@ -138,7 +138,6 @@ impl KnxNetIpDefinition for PicoIpInterface {
 zweidraehte_device::system_b_standard_stack! {
     stack: PicoIpInterface,
     device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style3,
     params: IpInterfaceParams,
     com_objects: IpInterfaceComObjects,
     link_layer_builder: IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, PicoIpInterface>,

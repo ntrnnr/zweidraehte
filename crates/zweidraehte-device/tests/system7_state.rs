@@ -536,7 +536,6 @@ mod macros {
         stack: MacroStack,
         device: &MACRO_DEVICE,
         cot_address: 0x4200,
-        tl_style: TlStyle::Style3,
         params: NoParams,
         com_objects: NoCo,
         link_layer_builder: MockLinkLayerBuilder<1>,

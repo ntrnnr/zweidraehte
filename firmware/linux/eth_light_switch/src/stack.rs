@@ -18,7 +18,6 @@ use devices::light_switch::{
 use zweidraehte_device::bcus::system_b::{Extension, IpAugmentFor, IpExtensionFor, IpStateFor};
 use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};
 use zweidraehte_device::layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceTcp};
-use zweidraehte_device::layers::transport::TlStyle;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::ConfigStorage;
@@ -68,7 +67,6 @@ impl KnxNetIpDefinition for LinuxEthLightSwitch {
 zweidraehte_device::system_b_standard_stack! {
     stack: LinuxEthLightSwitch,
     device: &DEVICE_DESCRIPTOR_IP,
-    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: KnxNetIpBuilder<LinuxEthLightSwitch>,

@@ -163,7 +163,6 @@ pub struct Stm32G0SecureAugments<'a> {
 zweidraehte_device::system_b_standard_stack! {
     stack: Stm32G0KnxRfSecure,
     device: &DEVICE_DESCRIPTOR,
-    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: KnxRfLinkLayerBuilder<Radio>,

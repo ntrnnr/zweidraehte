@@ -221,7 +221,6 @@ zweidraehte_device::system_7_standard_stack! {
     // Where the product database places the group object table — must
     // match `gen_light_switch_mtxml`'s System 7 "4200" segment.
     cot_address: 0x4200,
-    tl_style: TlStyle::Style3,
     params: LightSwitchParams,
     com_objects: LightSwitchComObjects,
     link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
