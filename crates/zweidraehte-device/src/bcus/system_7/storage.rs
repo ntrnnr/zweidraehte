@@ -64,7 +64,7 @@ impl<I, C> System7StateInit<I, C, ()> {
 /// - `ADT_SIZE`: RT8-coded address table size (3 + MAX_ADDR * 2)
 /// - `AST_SIZE`: System 7 association table size (1 + MAX_ASSO * 2)
 /// - `COT_SIZE`: group object table size in the System 7 memory format
-///   (3 + (MAX_CO + 1) * 4)
+///   (3 + MAX_CO * 4)
 /// - `P`: Application parameters type
 /// - `E`: Extension-specific persistent config
 ///
@@ -166,8 +166,8 @@ impl<
 /// Returns `(adt_size, ast_size, cot_size)` for use as const generics.
 pub const fn table_sizes(max_addr: usize, max_asso: usize, max_co: usize) -> (usize, usize, usize) {
     (
-        3 + max_addr * 2,     // RT8-coded ADT: 1-byte length + 2-byte IA + 2 bytes per GA
-        1 + max_asso * 2,     // System 7 AST: 1-byte count + 2 bytes per entry
-        3 + (max_co + 1) * 4, // System 7 COT: count + RAM-flags ptr + 4 bytes per ASAP 0..=max
+        3 + max_addr * 2, // RT8-coded ADT: 1-byte length + 2-byte IA + 2 bytes per GA
+        1 + max_asso * 2, // System 7 AST: 1-byte count + 2 bytes per entry
+        3 + max_co * 4,   // System 7 COT: count + RAM-flags ptr + one row per object
     )
 }

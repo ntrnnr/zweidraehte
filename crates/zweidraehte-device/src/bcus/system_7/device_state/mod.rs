@@ -61,7 +61,7 @@ pub const SYSTEM7_RAM_SIZE: usize = 256;
 ///
 /// - `ADT_SIZE`: RT8-coded address table size in bytes (3 + MAX_ADDR * 2)
 /// - `AST_SIZE`: System 7 association table size in bytes (1 + MAX_ASSO * 2)
-/// - `COT_SIZE`: group object table size in bytes (2 + MAX_CO * 2)
+/// - `COT_SIZE`: group object table size in bytes (3 + MAX_CO * 4)
 /// - `D`: Stack definition — provides `D::P` (parameters) and `D::CO`
 ///   (communication objects)
 /// - `ES`: Extension state (e.g.
