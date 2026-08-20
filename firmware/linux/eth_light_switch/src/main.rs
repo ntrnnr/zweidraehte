@@ -26,7 +26,7 @@ use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
     LightSwitchDevice,
-    app::{self, ButtonId, WaitForRelease},
+    full::{self as app, ButtonId},
 };
 use support::storage::{FileIdentity, JsonStorage};
 use support::util::{
@@ -78,20 +78,6 @@ async fn run_stack(runner: Runner<'static, LinuxEthLightSwitch>) {
 // Button emulation (keyboard via evdev)
 // ============================================================================
 
-/// Bridges [`EvdevButton::wait_for_release`] to the [`WaitForRelease`] trait
-/// the device application logic expects. The Linux twin of the RP2040's
-/// GPIO-backed `ReleaseWaiter`.
-struct ReleaseWaiter<'a> {
-    btn: &'a mut EvdevButton,
-    debounce: Duration,
-}
-
-impl WaitForRelease for ReleaseWaiter<'_> {
-    async fn wait_for_release(&mut self) {
-        self.btn.wait_for_release(self.debounce).await;
-    }
-}
-
 /// Button application task — the host twin of the RP2040 `app_task`.
 ///
 /// Reads emulated presses from the keyboard (key `1` = Button 1, key `2` =
@@ -103,8 +89,8 @@ impl WaitForRelease for ReleaseWaiter<'_> {
 async fn app_task(knx: Stack<'static, LinuxEthLightSwitch>, mut btn1: EvdevButton, mut btn2: EvdevButton) -> ! {
     // Per-button dimming direction, flipped on each long press so the user can
     // reverse direction.
-    let mut btn1_dim_up = true;
-    let mut btn2_dim_up = true;
+    let mut btn1_state = app::ButtonState::new();
+    let mut btn2_state = app::ButtonState::new();
 
     loop {
         if !knx.state().is_running() {
@@ -118,16 +104,14 @@ async fn app_task(knx: Stack<'static, LinuxEthLightSwitch>, mut btn1: EvdevButto
         let debounce = params.debounce_time.as_duration();
         let long_press = params.long_press_time.as_duration();
 
-        match select(btn1.wait_for_press(debounce, Some(long_press)), btn2.wait_for_press(debounce, Some(long_press)))
+        match select(btn1.wait_for_event(debounce, Some(long_press)), btn2.wait_for_event(debounce, Some(long_press)))
             .await
         {
             Either::First(event) => {
-                let mut waiter = ReleaseWaiter { btn: &mut btn1, debounce };
-                app::handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut btn1_dim_up).await;
+                app::handle_button_event(&knx, &params, event, ButtonId::Btn1, &mut btn1_state).await;
             }
             Either::Second(event) => {
-                let mut waiter = ReleaseWaiter { btn: &mut btn2, debounce };
-                app::handle_button_press(&knx, &params, event, ButtonId::Btn2, &mut waiter, &mut btn2_dim_up).await;
+                app::handle_button_event(&knx, &params, event, ButtonId::Btn2, &mut btn2_state).await;
             }
         }
     }
@@ -138,7 +122,7 @@ async fn app_task(knx: Stack<'static, LinuxEthLightSwitch>, mut btn1: EvdevButto
 const TERMINAL_SHORT_HOLD: Duration = Duration::from_millis(20);
 
 /// Terminal-fallback hold for a **long** press: comfortably over the default
-/// 500 ms long-press threshold so it classifies as [`ButtonEvent::LongPress`]
+/// 500 ms long-press threshold so it classifies as [`ButtonEvent::LongPressStart`]
 /// and then self-releases (dimming/blind-move runs for roughly this long).
 const TERMINAL_LONG_HOLD: Duration = Duration::from_millis(800);
 

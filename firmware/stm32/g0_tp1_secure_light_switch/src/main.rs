@@ -57,8 +57,6 @@ use embassy_stm32::{
 };
 use embassy_time::{Duration, Timer};
 use embedded_common::DebouncedButton;
-use embedded_hal::digital::InputPin;
-use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
 use stm32_common::flash_io::StmFlashIo;
@@ -71,9 +69,8 @@ use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
-    app::{self, ButtonEvent, ButtonId, WaitForRelease},
     comm_objs::{Index, LightSwitchComObjects},
-    easter_egg::EasterEggAugment,
+    full::{self as app, ButtonEvent, ButtonId, easter_egg::EasterEggAugment},
     params::{ButtonConfig, ButtonsMode, RockerDirection},
 };
 
@@ -322,7 +319,7 @@ async fn prog_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, prog_btn_pin: 
     let mut btn = DebouncedButton::new(prog_btn_pin);
     let debounce = Duration::from_millis(50);
     loop {
-        btn.wait_for_press(debounce, None).await;
+        btn.wait_for_event(debounce, None).await;
         let current = knx.state().is_programming_mode();
         knx.state().set_programming_mode(!current);
         info!("Programming mode: {}", !current);
@@ -343,10 +340,11 @@ async fn lifecycle_task(knx: Stack<'static, Stm32G0SecureLightSwitch>) -> ! {
 #[embassy_executor::task]
 async fn app_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, btn_pin: ExtiInput<'static>) -> ! {
     let mut btn = DebouncedButton::new(btn_pin);
-    let mut dim_up = true;
+    let mut button_state = app::ButtonState::new();
 
     loop {
         if !knx.state().is_running() {
+            DIM_RAMP.store(0, Ordering::Relaxed);
             Timer::after(Duration::from_millis(200)).await;
             continue;
         }
@@ -355,21 +353,16 @@ async fn app_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, btn_pin: ExtiIn
         let debounce = params.debounce_time.as_duration();
         let long_press = params.long_press_time.as_duration();
 
-        let event = btn.wait_for_press(debounce, Some(long_press)).await;
+        let event = btn.wait_for_event(debounce, Some(long_press)).await;
 
-        let dim_ramping =
-            event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
-        if dim_ramping {
-            let up = dim_direction_for_long_press(&params, ButtonId::Btn1, dim_up);
+        if event == ButtonEvent::LongPressStart && matches!(params.button1_config, ButtonConfig::Dimmer { .. }) {
+            let up = dim_direction_for_long_press(&params, ButtonId::Btn1, button_state.next_dim_up());
             DIM_RAMP.store(if up { 1 } else { -1 }, Ordering::Relaxed);
-        }
-
-        let mut waiter = ReleaseWaiter { btn: &mut btn, debounce };
-        app::handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut dim_up).await;
-
-        if dim_ramping {
+        } else if event == ButtonEvent::LongPressRelease {
             DIM_RAMP.store(0, Ordering::Relaxed);
         }
+
+        app::handle_button_event(&knx, &params, event, ButtonId::Btn1, &mut button_state).await;
     }
 }
 
@@ -413,17 +406,6 @@ async fn led_task(knx: Stack<'static, Stm32G0SecureLightSwitch>, mut pwm_ch: Sim
 
         pwm_ch.set_duty_cycle(duty);
         Timer::after(LED_TICK).await;
-    }
-}
-
-struct ReleaseWaiter<'a, P: InputPin + Wait> {
-    btn: &'a mut DebouncedButton<P>,
-    debounce: Duration,
-}
-
-impl<P: InputPin + Wait> WaitForRelease for ReleaseWaiter<'_, P> {
-    async fn wait_for_release(&mut self) {
-        self.btn.wait_for_release(self.debounce).await;
     }
 }
 

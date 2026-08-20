@@ -36,8 +36,6 @@ use embassy_stm32::{
 };
 use embassy_time::{Duration, Timer};
 use embedded_common::DebouncedButton;
-use embedded_hal::digital::InputPin;
-use embedded_hal_async::digital::Wait;
 use embedded_io_async::{Read as _, Write as _};
 use static_cell::StaticCell;
 use stm32_common::flash_io::StmFlashIo;
@@ -47,9 +45,8 @@ use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
-    app::{self, ButtonEvent, ButtonId, WaitForRelease},
     comm_objs::{Index, LightSwitchComObjects},
-    easter_egg::EasterEggAugment,
+    full::{self as app, ButtonEvent, ButtonId, easter_egg::EasterEggAugment},
     params::{ButtonConfig, ButtonsMode, RockerDirection},
 };
 
@@ -298,7 +295,7 @@ async fn prog_task(knx: Stack<'static, Stm32G0System7LightSwitch>, prog_btn_pin:
     let mut btn = DebouncedButton::new(prog_btn_pin);
     let debounce = Duration::from_millis(50);
     loop {
-        btn.wait_for_press(debounce, None).await;
+        btn.wait_for_event(debounce, None).await;
         let current = knx.state().is_programming_mode();
         knx.state().set_programming_mode(!current);
         info!("Programming mode: {}", !current);
@@ -326,15 +323,16 @@ async fn lifecycle_task(knx: Stack<'static, Stm32G0System7LightSwitch>) -> ! {
 /// Around each long-press in Dimmer mode we also poke `DIM_RAMP` so
 /// that `led_task` can mirror the dim direction with a smooth PWM
 /// ramp on the user LED. The direction we publish is the same one
-/// `app::handle_dimmer` will use — see the comment block on
+/// `app::handle_button_event` will use — see the comment block on
 /// `dim_direction_for_long_press`.
 #[embassy_executor::task]
 async fn app_task(knx: Stack<'static, Stm32G0System7LightSwitch>, btn_pin: ExtiInput<'static>) -> ! {
     let mut btn = DebouncedButton::new(btn_pin);
-    let mut dim_up = true;
+    let mut button_state = app::ButtonState::new();
 
     loop {
         if !knx.is_running() {
+            DIM_RAMP.store(0, Ordering::Relaxed);
             Timer::after(Duration::from_millis(200)).await;
             continue;
         }
@@ -343,35 +341,30 @@ async fn app_task(knx: Stack<'static, Stm32G0System7LightSwitch>, btn_pin: ExtiI
         let debounce = params.debounce_time.as_duration();
         let long_press = params.long_press_time.as_duration();
 
-        let event = btn.wait_for_press(debounce, Some(long_press)).await;
+        let event = btn.wait_for_event(debounce, Some(long_press)).await;
 
         // Decide whether to drive the dim-ramp signal **before** delegating
-        // to the framework helper, mirroring the direction logic in
-        // `app::handle_dimmer`. We deliberately don't try to flip
-        // `dim_up` ourselves — the helper does that — so the two stay
+        // to the application adapter, mirroring the shared behavior's
+        // direction logic. We deliberately don't try to flip
+        // `button_state` ourselves — the helper does that — so the two stay
         // in sync across consecutive long presses.
-        let dim_ramping =
-            event == ButtonEvent::LongPress && matches!(params.button1_config, ButtonConfig::Dimmer { .. });
-        if dim_ramping {
-            let up = dim_direction_for_long_press(&params, ButtonId::Btn1, dim_up);
+        if event == ButtonEvent::LongPressStart && matches!(params.button1_config, ButtonConfig::Dimmer { .. }) {
+            let up = dim_direction_for_long_press(&params, ButtonId::Btn1, button_state.next_dim_up());
             DIM_RAMP.store(if up { 1 } else { -1 }, Ordering::Relaxed);
-        }
-
-        let mut waiter = ReleaseWaiter { btn: &mut btn, debounce };
-        app::handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut dim_up).await;
-
-        if dim_ramping {
+        } else if event == ButtonEvent::LongPressRelease {
             DIM_RAMP.store(0, Ordering::Relaxed);
         }
+
+        app::handle_button_event(&knx, &params, event, ButtonId::Btn1, &mut button_state).await;
     }
 }
 
-/// Re-derive the dimming direction `app::handle_dimmer` is about to use.
+/// Re-derive the dimming direction `app::handle_button_event` is about to use.
 ///
 /// In 1-function (rocker) mode the direction is fixed by which physical
 /// button is wired and the configured rocker polarity. In 2-function
 /// mode the helper alternates direction across consecutive long
-/// presses and stores the next value in `dim_up` — so the value we see
+/// presses and stores the next value in `button_state` — so the value we see
 /// here is the one the helper will use on the **upcoming** press.
 fn dim_direction_for_long_press(params: &LightSwitchParams, button: ButtonId, dim_up: bool) -> bool {
     match params.buttons_mode {
@@ -421,17 +414,6 @@ async fn led_task(knx: Stack<'static, Stm32G0System7LightSwitch>, mut pwm_ch: Si
 
         pwm_ch.set_duty_cycle(duty);
         Timer::after(LED_TICK).await;
-    }
-}
-
-struct ReleaseWaiter<'a, P: InputPin + Wait> {
-    btn: &'a mut DebouncedButton<P>,
-    debounce: Duration,
-}
-
-impl<P: InputPin + Wait> WaitForRelease for ReleaseWaiter<'_, P> {
-    async fn wait_for_release(&mut self) {
-        self.btn.wait_for_release(self.debounce).await;
     }
 }
 

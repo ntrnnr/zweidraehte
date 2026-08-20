@@ -47,7 +47,7 @@ use zweidraehte_platform::LinuxSystem;
 
 use devices::light_switch::{
     LightSwitchDevice,
-    app::{self, ButtonId, WaitForRelease},
+    full::{self as app, ButtonId},
 };
 use support::storage::{FileSecureIdentity, JsonStorage, open_siat_store};
 use support::util::{
@@ -112,27 +112,14 @@ async fn run_stack(runner: Runner<'static, LinuxEthSecureLightSwitch>) {
 // Button emulation (keyboard via evdev)
 // ============================================================================
 
-/// Bridges [`EvdevButton::wait_for_release`] to the [`WaitForRelease`] trait
-/// the device application logic expects.
-struct ReleaseWaiter<'a> {
-    btn: &'a mut EvdevButton,
-    debounce: Duration,
-}
-
-impl WaitForRelease for ReleaseWaiter<'_> {
-    async fn wait_for_release(&mut self) {
-        self.btn.wait_for_release(self.debounce).await;
-    }
-}
-
 /// Button application task — identical to the plain target's, but the group
 /// telegrams it triggers are Data-Secure-encrypted once ETS has provisioned
 /// keys (the Secure Application Layer wraps them transparently). Buttons are
 /// inert until ETS downloads and starts the application (`is_running`).
 #[embassy_executor::task]
 async fn app_task(knx: Stack<'static, LinuxEthSecureLightSwitch>, mut btn1: EvdevButton, mut btn2: EvdevButton) -> ! {
-    let mut btn1_dim_up = true;
-    let mut btn2_dim_up = true;
+    let mut btn1_state = app::ButtonState::new();
+    let mut btn2_state = app::ButtonState::new();
 
     loop {
         if !knx.state().is_running() {
@@ -144,16 +131,14 @@ async fn app_task(knx: Stack<'static, LinuxEthSecureLightSwitch>, mut btn1: Evde
         let debounce = params.debounce_time.as_duration();
         let long_press = params.long_press_time.as_duration();
 
-        match select(btn1.wait_for_press(debounce, Some(long_press)), btn2.wait_for_press(debounce, Some(long_press)))
+        match select(btn1.wait_for_event(debounce, Some(long_press)), btn2.wait_for_event(debounce, Some(long_press)))
             .await
         {
             Either::First(event) => {
-                let mut waiter = ReleaseWaiter { btn: &mut btn1, debounce };
-                app::handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut btn1_dim_up).await;
+                app::handle_button_event(&knx, &params, event, ButtonId::Btn1, &mut btn1_state).await;
             }
             Either::Second(event) => {
-                let mut waiter = ReleaseWaiter { btn: &mut btn2, debounce };
-                app::handle_button_press(&knx, &params, event, ButtonId::Btn2, &mut waiter, &mut btn2_dim_up).await;
+                app::handle_button_event(&knx, &params, event, ButtonId::Btn2, &mut btn2_state).await;
             }
         }
     }

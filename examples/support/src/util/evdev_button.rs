@@ -1,19 +1,18 @@
 //! evdev-backed button emulation for host-target device shells.
 //!
 //! The light-switch application logic
-//! ([`devices::light_switch::app::handle_button_press`]) is platform-agnostic:
-//! it consumes [`ButtonEvent`]s and a [`WaitForRelease`] implementer, and every
-//! firmware target feeds it from a debounced GPIO button. On a Linux host there
-//! is no GPIO, so this module synthesises the same events from the keyboard via
-//! **evdev** (`/dev/input/event*`), mapping physical key **1 → Button 1** and
+//! ([`devices::light_switch::full::handle_button_event`]) is platform-agnostic:
+//! every firmware target feeds it the same [`ButtonEvent`] stream. On a Linux
+//! host there is no GPIO, so this module synthesises those events from the
+//! keyboard via **evdev** (`/dev/input/event*`), mapping physical key **1 → Button 1** and
 //! **key 2 → Button 2**.
 //!
 //! evdev is used rather than terminal raw-mode because it exposes true KEY_DOWN
 //! / KEY_UP transitions: a *tap* becomes a [`ButtonEvent::ShortPress`], a *hold*
-//! past the long-press threshold becomes a [`ButtonEvent::LongPress`] (still
-//! held), and [`EvdevButton::wait_for_release`] resolves on the key-up — so
-//! hold-to-dim and blind-move durations are actually controllable. A terminal
-//! reader has no key-release event and cannot do this.
+//! past the long-press threshold becomes a [`ButtonEvent::LongPressStart`]
+//! followed by [`ButtonEvent::LongPressRelease`] on key-up — so hold-to-dim and
+//! blind-move durations are actually controllable. A terminal reader has no
+//! key-release event and cannot do this.
 //!
 //! # Architecture
 //!
@@ -22,7 +21,7 @@
 //! not fit it. So a dedicated **OS thread** does the blocking reads and forwards
 //! each KEY_1 / KEY_2 edge into a per-button [`embassy_sync`] channel; the async
 //! [`EvdevButton`] awaits those edges and classifies them, mirroring the
-//! embedded `DebouncedButton` surface (`wait_for_press` / `wait_for_release`).
+//! embedded `DebouncedButton` event stream.
 //!
 //! # Permissions and capture
 //!
@@ -41,10 +40,10 @@ use embassy_time::{Duration, Timer};
 
 use evdev::{Device, EventSummary, KeyCode};
 
-pub use zweidraehte_util::input::{ButtonEvent, WaitForRelease};
+pub use zweidraehte_util::input::ButtonEvent;
 
 /// Which physical button an edge belongs to. Mirrors
-/// [`devices::light_switch::app::ButtonId`] but is defined here so the support
+/// [`devices::light_switch::full::ButtonId`] but is defined here so the support
 /// crate does not depend on the device definitions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvdevButtonId {
@@ -101,7 +100,7 @@ impl EvdevChannels {
     /// Emits a down edge, waits `hold`, then an up edge. With `hold` shorter
     /// than the app's long-press threshold this reads as a
     /// [`ButtonEvent::ShortPress`]; with `hold` longer it reads as a
-    /// [`ButtonEvent::LongPress`] whose release fires when the up lands — so a
+    /// [`ButtonEvent::LongPressStart`] whose release fires when the up lands — so a
     /// terminal keypress yields a bounded, self-releasing hold. Await it from an
     /// async context (e.g. spawn it) so the down/up gap is real wall-clock time.
     pub async fn inject_press(&self, button: EvdevButtonId, hold: Duration) {
@@ -271,11 +270,11 @@ pub fn spawn_evdev_reader(mut device: Device, channels: &'static EvdevChannels) 
 ///
 /// `released_first` is `true` when the key came up before the long-press
 /// threshold elapsed (→ [`ButtonEvent::ShortPress`]) and `false` when the
-/// threshold fired first with the key still held (→ [`ButtonEvent::LongPress`]).
+/// threshold fired first with the key still held (→ [`ButtonEvent::LongPressStart`]).
 /// Extracted as a pure function so the mapping is testable without driving a
 /// real timer.
 fn classify_press(released_first: bool) -> ButtonEvent {
-    if released_first { ButtonEvent::ShortPress } else { ButtonEvent::LongPress }
+    if released_first { ButtonEvent::ShortPress } else { ButtonEvent::LongPressStart }
 }
 
 // ============================================================================
@@ -286,24 +285,33 @@ fn classify_press(released_first: bool) -> ButtonEvent {
 ///
 /// Presents the same surface as the embedded `DebouncedButton`
 /// (`firmware/common/embedded-common`) so a Linux `app_task` mirrors the
-/// firmware one: [`wait_for_press`](Self::wait_for_press) classifies the next
-/// press as short/long, and [`wait_for_release`](Self::wait_for_release) awaits
-/// the key-up after a long press.
+/// firmware one: [`wait_for_event`](Self::wait_for_event) emits a short event
+/// or the start and release events of a long press.
 pub struct EvdevButton {
     edges: Receiver<'static, CriticalSectionRawMutex, bool, CHANNEL_DEPTH>,
+    pressed: bool,
+    long_active: bool,
 }
 
 impl EvdevButton {
     /// Build the two buttons wired to `channels`. Call once, after
     /// [`spawn_evdev_reader`] with the same `channels`.
     pub fn pair(channels: &'static EvdevChannels) -> (Self, Self) {
-        (Self { edges: channels.btn1.receiver() }, Self { edges: channels.btn2.receiver() })
+        (Self { edges: channels.btn1.receiver(), pressed: false, long_active: false }, Self {
+            edges: channels.btn2.receiver(),
+            pressed: false,
+            long_active: false,
+        })
     }
 
     /// Await the next key-down edge, discarding any stale key-up.
     async fn wait_for_down(&mut self) {
+        if self.pressed {
+            return;
+        }
         loop {
-            if self.edges.receive().await {
+            self.pressed = self.edges.receive().await;
+            if self.pressed {
                 return;
             }
         }
@@ -311,22 +319,32 @@ impl EvdevButton {
 
     /// Await the next key-up edge, discarding any stale key-down.
     async fn wait_for_up(&mut self) {
+        if !self.pressed {
+            return;
+        }
         loop {
-            if !self.edges.receive().await {
+            self.pressed = self.edges.receive().await;
+            if !self.pressed {
                 return;
             }
         }
     }
 
-    /// Wait for a press and classify it, mirroring
-    /// `DebouncedButton::wait_for_press`.
+    /// Wait for the next event, mirroring `DebouncedButton::wait_for_event`.
     ///
     /// Returns [`ButtonEvent::ShortPress`] if the key is released before
-    /// `long_press` elapses (or immediately, when `long_press` is `None`), and
-    /// [`ButtonEvent::LongPress`] — with the key still held — once the threshold
+    /// `long_press` elapses (or after release when `long_press` is `None`), and
+    /// [`ButtonEvent::LongPressStart`] — with the key still held — once the threshold
     /// passes. `debounce` is honoured for parity with the GPIO driver; the
     /// kernel already debounces key events, so it is a short settle only.
-    pub async fn wait_for_press(&mut self, debounce: Duration, long_press: Option<Duration>) -> ButtonEvent {
+    pub async fn wait_for_event(&mut self, debounce: Duration, long_press: Option<Duration>) -> ButtonEvent {
+        if self.long_active {
+            self.wait_for_up().await;
+            Timer::after(debounce).await;
+            self.long_active = false;
+            return ButtonEvent::LongPressRelease;
+        }
+
         self.wait_for_down().await;
         Timer::after(debounce).await;
 
@@ -343,13 +361,9 @@ impl EvdevButton {
             embassy_futures::select::select(self.wait_for_up(), Timer::after(long_press)).await,
             embassy_futures::select::Either::First(())
         );
-        classify_press(released_first)
-    }
-
-    /// Wait for the key-up after a [`ButtonEvent::LongPress`].
-    pub async fn wait_for_release(&mut self, debounce: Duration) {
-        self.wait_for_up().await;
-        Timer::after(debounce).await;
+        let event = classify_press(released_first);
+        self.long_active = event == ButtonEvent::LongPressStart;
+        event
     }
 }
 
@@ -367,7 +381,7 @@ mod tests {
     #[test]
     fn press_classification_maps_race_outcome() {
         assert_eq!(classify_press(true), ButtonEvent::ShortPress); // released first
-        assert_eq!(classify_press(false), ButtonEvent::LongPress); // threshold first
+        assert_eq!(classify_press(false), ButtonEvent::LongPressStart); // threshold first
     }
 
     // The reader routes each key's edges to its own button channel, so the two

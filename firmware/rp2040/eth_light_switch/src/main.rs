@@ -14,17 +14,14 @@ use embassy_rp::{
     spi::{Async, Config as SpiConfig, Spi},
 };
 use embassy_time::{Delay, Duration, Timer};
-use embedded_hal::digital::InputPin;
-use embedded_hal_async::digital::Wait;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams,
-    app::{self, ButtonId, WaitForRelease},
     comm_objs::LightSwitchComObjects,
-    easter_egg::EasterEggAugment,
+    full::{self as app, ButtonId, easter_egg::EasterEggAugment},
 };
 
 use zweidraehte_device::{
@@ -198,7 +195,7 @@ async fn prog_task(knx: Stack<'static, PicoEthLightSwitch>, prog_btn_pin: Input<
     loop {
         // Block until a real press — long press detection is not
         // needed here, any press toggles programming mode.
-        btn.wait_for_press(debounce, None).await;
+        btn.wait_for_event(debounce, None).await;
 
         let current = knx.state().is_programming_mode();
         knx.state().set_programming_mode(!current);
@@ -234,8 +231,8 @@ async fn app_task(knx: Stack<'static, PicoEthLightSwitch>, btn1_pin: Input<'stat
 
     // Per-button dimming direction state. Alternates between brighter
     // and darker on each long press so the user can reverse direction.
-    let mut btn1_dim_up = true;
-    let mut btn2_dim_up = true;
+    let mut btn1_state = app::ButtonState::new();
+    let mut btn2_state = app::ButtonState::new();
 
     loop {
         // Wait until the application has been loaded and started by ETS.
@@ -254,16 +251,14 @@ async fn app_task(knx: Stack<'static, PicoEthLightSwitch>, btn1_pin: Input<'stat
         let long_press = params.long_press_time.as_duration();
 
         // Race both buttons — whichever fires first gets processed.
-        match select(btn1.wait_for_press(debounce, Some(long_press)), btn2.wait_for_press(debounce, Some(long_press)))
+        match select(btn1.wait_for_event(debounce, Some(long_press)), btn2.wait_for_event(debounce, Some(long_press)))
             .await
         {
             Either::First(event) => {
-                let mut waiter = ReleaseWaiter { btn: &mut btn1, debounce };
-                app::handle_button_press(&knx, &params, event, ButtonId::Btn1, &mut waiter, &mut btn1_dim_up).await;
+                app::handle_button_event(&knx, &params, event, ButtonId::Btn1, &mut btn1_state).await;
             }
             Either::Second(event) => {
-                let mut waiter = ReleaseWaiter { btn: &mut btn2, debounce };
-                app::handle_button_press(&knx, &params, event, ButtonId::Btn2, &mut waiter, &mut btn2_dim_up).await;
+                app::handle_button_event(&knx, &params, event, ButtonId::Btn2, &mut btn2_state).await;
             }
         }
     }
@@ -279,23 +274,6 @@ mod dev_provisioning {
 }
 
 rp_common::rp_identity_loader!(plain, fdsk: None, mac: Some(dev_provisioning::DEV_MAC));
-
-// ================================================================================
-// Button Release Adapter
-// ================================================================================
-
-/// Bridges [`DebouncedButton::wait_for_release`] to the
-/// [`WaitForRelease`] trait expected by the device application logic.
-struct ReleaseWaiter<'a, P: InputPin + Wait> {
-    btn: &'a mut DebouncedButton<P>,
-    debounce: Duration,
-}
-
-impl<P: InputPin + Wait> WaitForRelease for ReleaseWaiter<'_, P> {
-    async fn wait_for_release(&mut self) {
-        self.btn.wait_for_release(self.debounce).await;
-    }
-}
 
 // ================================================================================
 // Entry point

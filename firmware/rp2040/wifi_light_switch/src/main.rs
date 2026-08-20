@@ -18,7 +18,7 @@ use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
 use devices::light_switch::{
-    self, LightSwitchDevice, LightSwitchParams, comm_objs::LightSwitchComObjects, easter_egg::EasterEggAugment,
+    self, LightSwitchDevice, LightSwitchParams, comm_objs::LightSwitchComObjects, full::easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::{
     bcus::system_b::{Extension, IpAugmentFor, IpExtensionFor, IpStateFor, SystemBStackDefinition, SystemBStateInit},

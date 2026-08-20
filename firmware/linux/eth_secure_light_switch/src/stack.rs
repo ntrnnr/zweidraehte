@@ -23,7 +23,8 @@
 //! target.
 
 use devices::light_switch::{
-    DEVICE_DESCRIPTOR_IP_SECURE, LightSwitchParams, comm_objs::LightSwitchComObjects, easter_egg::EasterEggAugment,
+    DEVICE_DESCRIPTOR_IP_SECURE, LightSwitchParams, comm_objs::LightSwitchComObjects,
+    full::easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::bcus::system_b::*;
 use zweidraehte_device::layers::linklayers::knxip::{

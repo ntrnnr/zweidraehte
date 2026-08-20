@@ -193,7 +193,7 @@ async fn prog_task(knx: Stack<'static, PicoIpInterface>, prog_btn_pin: Input<'st
     let debounce = Duration::from_millis(50);
 
     loop {
-        btn.wait_for_press(debounce, None).await;
+        btn.wait_for_event(debounce, None).await;
 
         let current = knx.state().is_programming_mode();
         knx.state().set_programming_mode(!current);

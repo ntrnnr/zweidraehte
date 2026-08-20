@@ -6,9 +6,10 @@
 //! control, or scene selection.
 //!
 //! This module contains the transport-agnostic device definition:
-//! parameters, communication objects, and ETS page layout. The
-//! transport-specific wiring (`StackDefinition`, state types, link layer)
-//! is provided by each binary crate.
+//! parameters, communication objects, ETS page layout, and shared behavior.
+//! `full` adapts those pieces to the composable stack while each firmware
+//! owns its `StackDefinition`; `micro` supplies the baked family definitions
+//! and polling adapter needed by BCU-era targets.
 //!
 //! # Usage
 //!
@@ -28,11 +29,11 @@
 //! }
 //! ```
 
-#[cfg(feature = "full")]
-pub mod app;
+#[cfg(any(feature = "full", feature = "micro"))]
+mod behavior;
 pub mod comm_objs;
 #[cfg(feature = "full")]
-pub mod easter_egg;
+pub mod full;
 pub mod params;
 
 #[cfg(feature = "micro")]

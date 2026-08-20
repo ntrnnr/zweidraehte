@@ -19,14 +19,15 @@ pub use zweidraehte_util::input::ButtonEvent;
 /// traits. Assumes active-low wiring (pressed = low).
 pub struct DebouncedButton<P: InputPin + Wait> {
     pin: P,
+    long_active: bool,
 }
 
 impl<P: InputPin + Wait> DebouncedButton<P> {
     pub fn new(pin: P) -> Self {
-        Self { pin }
+        Self { pin, long_active: false }
     }
 
-    /// Wait for the next debounced button press and classify it.
+    /// Wait for the next event in the classified button stream.
     ///
     /// 1. Waits for a falling edge (button pressed, active low).
     /// 2. Debounces by sleeping for `debounce` and re-checking that
@@ -34,15 +35,23 @@ impl<P: InputPin + Wait> DebouncedButton<P> {
     /// 3. If `long_press` is `Some`, races the rising edge (release)
     ///    against the long-press timeout:
     ///    - Released before timeout → [`ButtonEvent::ShortPress`]
-    ///    - Timeout while still held → [`ButtonEvent::LongPress`]
+    ///    - Timeout while still held → [`ButtonEvent::LongPressStart`]
     ///
     ///    If `long_press` is `None`, waits for release and always
     ///    returns [`ButtonEvent::ShortPress`].
     ///
-    /// After [`ButtonEvent::ShortPress`], the button has already been
-    /// released. After [`ButtonEvent::LongPress`], it is still held —
-    /// call [`wait_for_release`](Self::wait_for_release) when done.
-    pub async fn wait_for_press(&mut self, debounce: Duration, long_press: Option<Duration>) -> ButtonEvent {
+    /// A short press produces one [`ButtonEvent::ShortPress`]. A long press
+    /// produces [`ButtonEvent::LongPressStart`] at the threshold and
+    /// [`ButtonEvent::LongPressRelease`] on the next call after release. This
+    /// keeps the event contract independent of whether a caller polls a level
+    /// or awaits GPIO edges.
+    pub async fn wait_for_event(&mut self, debounce: Duration, long_press: Option<Duration>) -> ButtonEvent {
+        if self.long_active {
+            self.wait_for_debounced_release(debounce).await;
+            self.long_active = false;
+            return ButtonEvent::LongPressRelease;
+        }
+
         loop {
             // Wait for button to be pressed (falling edge).
             let _ = self.pin.wait_for_falling_edge().await;
@@ -57,8 +66,7 @@ impl<P: InputPin + Wait> DebouncedButton<P> {
             // Button is solidly pressed. Now classify: short vs long.
             let Some(long_press) = long_press else {
                 // No long-press detection — just wait for release.
-                let _ = self.pin.wait_for_rising_edge().await;
-                Timer::after(debounce).await;
+                self.wait_for_debounced_release(debounce).await;
                 return ButtonEvent::ShortPress;
             };
 
@@ -68,23 +76,32 @@ impl<P: InputPin + Wait> DebouncedButton<P> {
             match select(release, long_timeout).await {
                 Either::First(_) => {
                     // Released before the long-press threshold.
+                    self.wait_for_debounced_release(debounce).await;
                     return ButtonEvent::ShortPress;
                 }
                 Either::Second(_) => {
                     // Still held past the threshold.
-                    return ButtonEvent::LongPress;
+                    self.long_active = true;
+                    return ButtonEvent::LongPressStart;
                 }
             }
         }
     }
 
-    /// Wait for the button to be released after a long press.
+    /// Wait for a stable release without assuming its edge is still pending.
     ///
-    /// Waits for a rising edge and then debounces the release. Call
-    /// this after receiving [`ButtonEvent::LongPress`] and acting on
-    /// the long-press start event.
-    pub async fn wait_for_release(&mut self, debounce: Duration) {
-        let _ = self.pin.wait_for_rising_edge().await;
-        Timer::after(debounce).await;
+    /// The application may spend time handling `LongPressStart` before it asks
+    /// for the next event. Checking the level first prevents a release during
+    /// that work from being lost.
+    async fn wait_for_debounced_release(&mut self, debounce: Duration) {
+        loop {
+            if self.pin.is_low().unwrap_or(true) {
+                let _ = self.pin.wait_for_rising_edge().await;
+            }
+            Timer::after(debounce).await;
+            if self.pin.is_high().unwrap_or(false) {
+                return;
+            }
+        }
     }
 }

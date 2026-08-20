@@ -13,7 +13,7 @@
 //! `std::net` implementation.
 
 use devices::light_switch::{
-    DEVICE_DESCRIPTOR_IP, LightSwitchParams, comm_objs::LightSwitchComObjects, easter_egg::EasterEggAugment,
+    DEVICE_DESCRIPTOR_IP, LightSwitchParams, comm_objs::LightSwitchComObjects, full::easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::bcus::system_b::{Extension, IpAugmentFor, IpExtensionFor, IpStateFor};
 use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};

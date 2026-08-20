@@ -12,7 +12,7 @@
 //! augment-bundle struct, alongside the medium extension's augment.
 //!
 //! ```rust,ignore
-//! use devices::light_switch::easter_egg::EasterEggAugment;
+//! use devices::light_switch::full::easter_egg::EasterEggAugment;
 //!
 //! #[derive(zweidraehte_device::service::ServiceRegistry)]
 //! pub struct MyDeviceAugments<'a> {
