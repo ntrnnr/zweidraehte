@@ -1,8 +1,7 @@
 #![no_std]
 #![no_main]
-// `type PicoEthSecureState = SecureIpInterfaceStateFor<…>` expands to
-// const expressions over `SystemBStackDefinition::{ADT,AST,COT}_SIZE` —
-// the same flag `zweidraehte-device` already requires.
+// The standard secure IP preset derives table and link-layer capacities in
+// generic const expressions. Same flag `zweidraehte-device` already requires.
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
@@ -98,10 +97,6 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP_S
 /// control + routing.
 const UDP_POOL_SIZE: usize = 3;
 
-/// P2P key table capacity. Group-only device with no secure P2P traffic,
-/// so zero — matches the secure TP1 light switch (`P2P_SIZE = 0`).
-const P2P_SIZE: usize = 0;
-
 /// Security Individual Address Table capacity. Per 03/03/07 §5.3 the SIAT
 /// stores `LastValidSeqNr` for every non-tool secure sender — group
 /// senders included — so even a group-only device needs `SIAT > 0`.
@@ -116,15 +111,6 @@ const SIAT_SIZE: usize = 32;
 /// authorized sender, so the overflow / silent-drop path is unreachable.
 const SEQ_CACHE: usize = SIAT_SIZE;
 
-/// IP Secure password-hash table capacity. One slot for the management
-/// user, which backs the DAC / `SESSION_RESPONSE` path.
-const MAX_PW: usize = 1;
-
-/// IP Secure tunnelling-user table capacity. Zero — this device does no
-/// secure tunnelling (routing-only secure; tunnelling is optional for a
-/// KNX IP end device per 03/08/09 §2.5.1.1).
-const MAX_TU: usize = 0;
-
 /// Feature set: the `KnxIpSecureRoutingTcp` preset — KNX/IP routing +
 /// remote config + **IP Secure** + TCP, with no tunnelling. TCP is not
 /// optional for a secure device: 03/08/09 §2.5.1.1 makes Core **v02**
@@ -138,12 +124,15 @@ type SecureRoutingTcp = KnxIpSecureRoutingTcp<1>;
 /// the two singleton sequence counters (sending watermark + tool).
 const SEQ_RECORDS: usize = SEQ_CACHE + 2;
 
-/// Device state: System B tables + the Data-Secure wrapper around the IP
-/// **Secure** interface extension (PIDs 91–97). This is the
-/// `SecureExtensionState<IpSecureInterfaceExtension<...>, SEQ, ...>`
-/// composition realised through the `SecureIpInterfaceStateFor` alias.
-type PicoEthSecureState =
-    SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingTcp, P2P_SIZE, MAX_PW, MAX_TU>;
+#[derive(Clone, Copy)]
+pub struct PicoEthSecureLightSwitchDefinition;
+
+/// Standard combined KNX/IP Secure and Data Secure stack. Its defaults match
+/// this routing-only device's P2P/password/tunnel-user capacities: 0/1/0.
+pub type PicoEthSecureLightSwitch = SecureIp<PicoEthSecureLightSwitchDefinition>;
+
+/// Nominal state spelling for the state-parameterized config store.
+type PicoEthSecureState = SecureIpInterfaceStateFor<PicoEthSecureLightSwitch, SecureRoutingTcp, 0, 1, 0>;
 
 // ----------------------------------------------------------------------------
 // Storage layout — chips + auto-placed regions
@@ -171,9 +160,7 @@ type SeqRegion = FlashSiatRegion<{ 6 * SECTOR_SIZE }, SEQ_RECORDS, SEQ_CACHE, 25
 // `HasSeqStore`.
 use zweidraehte_device::bcus::system_b::IpSecureResources;
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::StandardSecureAlServices;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureIpStorage, StorageLayout, StoreOf};
 
@@ -189,38 +176,21 @@ impl StorageLayout for StorageMap {
 type DeviceStorage = SecureIpStorage<StoreOf<Cfg>, StoreOf<Seq>, StoreOf<Mct>>;
 
 // ----------------------------------------------------------------------------
-// StackDefinition
+// Standard stack inputs
 // ----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
-pub struct PicoEthSecureLightSwitch;
+pub struct PicoEthSecureHooks;
 
-/// Security augment type alias — produced by the secure extension for
-/// `PicoEthSecureLightSwitch`. It carries the Security IO (IOT 0x11) plus
-/// the IP medium + IP Secure objects.
-type SecAugment<'a> = SecureAugmentBundle<
-    'a,
-    <IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU> as Extension<EmbassyNetworkInfo>>::Augment<
-        'a,
-        PicoEthSecureLightSwitch,
-    >,
-    StoreOf<Seq>,
-    { <PicoEthSecureLightSwitch as SystemBStackDefinition>::ADT_ENTRIES },
-    P2P_SIZE,
-    { <PicoEthSecureLightSwitch as SystemBStackDefinition>::COT_ENTRIES },
->;
+impl DeviceHooks for PicoEthSecureHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
 
-/// Augment chain: KNX Data Secure augment (Security IO 0x11) + the IP
-/// medium / IP Secure augment, plus the Easter Egg demo augment. The
-/// secure augment bundles the IP augment internally (the secure extension
-/// wraps the IP Secure interface extension), so there is no separate
-/// `ip:` field as in the insecure `pico_eth_light_switch`.
-#[derive(ServiceRegistry)]
-pub struct PicoEthSecureAugments<'a> {
-    #[service(augment)]
-    sec: SecAugment<'a>,
-    #[service(augment)]
-    easter: EasterEggAugment,
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
 // IP-specific link-layer bill of materials. Routing-only device (no
@@ -229,7 +199,7 @@ pub struct PicoEthSecureAugments<'a> {
 // required by `SecureIpDeviceBuilder` (`NoRng` is rejected) and feeds the
 // Secure Application Layer's `S-A_Sync` challenges plus IP Secure session
 // nonces.
-impl KnxNetIpDefinition for PicoEthSecureLightSwitch {
+impl KnxNetIpDefinition for PicoEthSecureLightSwitchDefinition {
     type Transport = EmbassyIpTransportTcp<
         { <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS },
         { <Self as KnxNetIpDefinition>::MAX_TCP_STREAMS },
@@ -239,47 +209,17 @@ impl KnxNetIpDefinition for PicoEthSecureLightSwitch {
     const MAX_UDP_SOCKETS: usize = 3;
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: PicoEthSecureLightSwitch,
-    device: &DEVICE_DESCRIPTOR,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: KnxNetIpBuilder<PicoEthSecureLightSwitch>,
-    platform: EmbassyNetworkInfo,
-    // Data Secure wrapper around the IP Secure interface extension.
-    // `GRP`/`GO` are entry counts (one group key slot per address table
-    // entry, one flag byte per communication object), matching
-    // `SecureStateFor`'s invariant.
-    extension_state: SecureExtensionState<
-        IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>,
-        { Self::ADT_ENTRIES },
-        P2P_SIZE,
-        { Self::COT_ENTRIES },
-    >,
-    state: PicoEthSecureState,
-    al_extensions: StandardSecureAlServices,
-    layer_builder: SecureIpDeviceBuilder,
-    // The RAM sequence-number storage + the IP Secure FDSK seed are built
-    // in `main` and threaded through `StateInit`. `SecureResources::inner`
-    // is the IP Secure extension's own `IpSecureResources { fdsk }`.
-    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>>,
-    augments: {
-        bundle: PicoEthSecureAugments,
-        create: |state, platform, layer_ctx| PicoEthSecureAugments {
-            sec: state.extension_state().create_secure_augment(platform, layer_ctx),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        // Flash-backed identity carrying the FDSK.
-        type Identity = FlashSecureIdentityData;
-        // ROSC-seeded ChaCha20 CSPRNG (see `rp_common::rng`).
-        type Rng = RpCommonRng;
-        // The device's stores struct, wired onto the LayerContext so the
-        // secure layers pull the SIAT store out of it through
-        // `HasSeqStore`.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for PicoEthSecureLightSwitchDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+
+    type Rng = RpCommonRng;
+    type Platform = EmbassyNetworkInfo;
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = KnxNetIpBuilder<PicoEthSecureLightSwitch>;
+    type Identity = FlashSecureIdentityData;
+    type Storage = &'static DeviceStorage;
+    type Hooks = PicoEthSecureHooks;
 }
 
 // ================================================================================

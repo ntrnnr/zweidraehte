@@ -1,6 +1,5 @@
-// `type LightSwitchSecureState = SecureIpInterfaceStateFor<…>` expands to const
-// expressions over `SystemBStackDefinition::{ADT,AST,COT}_SIZE` — the same flag
-// `zweidraehte-device` already requires.
+// The standard secure IP preset derives table and link-layer capacities in
+// generic const expressions. Same flag `zweidraehte-device` already requires.
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
@@ -37,9 +36,7 @@ use embassy_time::Duration;
 use env_logger::Env;
 use static_cell::StaticCell;
 use std::net::SocketAddrV4;
-use zweidraehte_device::bcus::system_b::{
-    IpSecureResources, SecureResources, SystemBStackDefinition, SystemBStateInit,
-};
+use zweidraehte_device::bcus::system_b::{IpSecureResources, SecureResources, SystemBStateInit};
 use zweidraehte_device::layers::linklayers::knxip::KnxNetIpBuilder;
 use zweidraehte_device::prelude::*;
 use zweidraehte_device::storage::{HasConfigStore, NoSaveGuard, SecureDeviceIdentity, SecureStorage, StaticIdentity};

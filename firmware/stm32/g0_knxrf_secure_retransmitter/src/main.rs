@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
-// `type State = SecureRfRetransmitterStateFor<…>` expands to const expressions
-// over `SystemBStackDefinition::{ADT,AST,COT}_SIZE` — same flag the device crate uses.
+// The standard secure RF preset derives table capacities from the descriptor in
+// generic const expressions. Same flag `zweidraehte-device` already requires.
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
@@ -97,11 +97,6 @@ bind_interrupts!(struct Irqs {
 
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_RF_SECURE_RETRANSMITTER;
 
-/// P2P Key Table capacity — zero: this device does only tool access and secure
-/// group telegrams, no point-to-point secure links. (See the TP1 secure variant
-/// for the rationale.)
-const P2P_SIZE: usize = 0;
-
 /// SIAT capacity (Security Individual Address Table) — per 03/03/07 §5.3 it
 /// covers every non-tool secure sender, including group-only senders. Also sizes
 /// the FRAM peer slots in the packed SIAT layout.
@@ -110,10 +105,15 @@ const SIAT_SIZE: usize = 32;
 /// Concrete SX1211 transceiver: blocking SPI3 plus two GPIO chip-selects.
 type Radio = Sx1211Adapter<Spi<'static, Blocking, Master>, Output<'static>, Output<'static>>;
 
-// The RF medium extension is wrapped in `RfRetransmitterExtension`, so this
-// device is a KNX-RF DoA retransmitter (PID 57 / PID 74 + the repeating link
-// layer). The role defaults to *off* (PID 57 = false) until ETS enables it.
-type Stm32G0SecureState = SecureRfRetransmitterStateFor<Stm32G0KnxRfRetransmitter, P2P_SIZE>;
+pub struct Stm32G0KnxRfRetransmitterDefinition;
+
+/// Standard System B RF Data Secure retransmitter stack. The role defaults to
+/// off until ETS enables PID 57; the retransmitting link-layer policy is
+/// checked against the preset's retransmitter context at assembly.
+pub type Stm32G0KnxRfRetransmitter = SecureRfRetransmitter<Stm32G0KnxRfRetransmitterDefinition>;
+
+/// Nominal state spelling for the state-parameterized config store.
+type Stm32G0SecureState = SecureRfRetransmitterStateFor<Stm32G0KnxRfRetransmitter, 0>;
 
 // ----------------------------------------------------------------------------
 // Storage layout — config on internal flash, SIAT on the FRAM (two chips)
@@ -124,11 +124,7 @@ type Stm32G0SecureState = SecureRfRetransmitterStateFor<Stm32G0KnxRfRetransmitte
 // store type, and open() from the layout; the secure stack reaches the seq
 // store through `HasSeqStore`.
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::{
-    DomainAddressService, RfDomainAddressService, StandardSecureAlServices,
-};
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureStorage, StorageLayout, StoreOf};
 
@@ -144,82 +140,33 @@ impl StorageLayout for StorageMap {
 }
 type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Stm32G0KnxRfRetransmitter;
+pub struct Stm32G0KnxRfRetransmitterHooks;
 
-// Security + RF-medium augment produced by the secure RF extension. The
-// `SecureAugmentBundle` composes the inner `RfAugment` (RF Medium Object,
-// Type 19) with the `SecurityAugment` (Security IO, Type 0x11), so the RF
-// Domain Address property and the secure key tables both reach ETS.
-type SecAugment<'a> = SecureAugmentBundle<
-    'a,
-    <RfRetransmitterExtension as Extension<()>>::Augment<'a, Stm32G0KnxRfRetransmitter>,
-    StoreOf<Seq>,
-    { <Stm32G0KnxRfRetransmitter as SystemBStackDefinition>::ADT_ENTRIES },
-    P2P_SIZE,
-    { <Stm32G0KnxRfRetransmitter as SystemBStackDefinition>::COT_ENTRIES },
->;
+impl DeviceHooks for Stm32G0KnxRfRetransmitterHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
 
-/// Augment chain: the secure RF medium + security augment, the
-/// GO/operation-mode diagnostics augment, plus the demo Easter Egg
-/// augment. As a secure device it uses the `WithSecureGoSend` strategy
-/// so the secure GO-diagnostics send-paths are wired up.
-#[derive(ServiceRegistry)]
-pub struct Stm32G0SecureAugments<'a> {
-    #[service(augment)]
-    pub sec: SecAugment<'a>,
-    #[service(augment)]
-    pub diag: DiagnosticsAugment<'a, WithSecureGoSend>,
-    #[service(augment)]
-    pub easter: EasterEggAugment,
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: Stm32G0KnxRfRetransmitter,
-    device: &DEVICE_DESCRIPTOR,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    // The `RetransmitEnabled` policy makes this the repeating KNX-RF link
-    // layer; it only type-checks because `extension_state` composes the
-    // retransmitter extension (which provides `RfRetransmitterContext`).
-    link_layer_builder: KnxRfLinkLayerBuilder<Radio, RetransmitEnabled>,
-    platform: (),
-    // RF retransmitter extension + Data Secure wrapper. `GRP`/`GO` are
-    // entry counts (one group key slot per address table entry, one
-    // flag byte per communication object), matching `SecureStateFor`'s
-    // invariant.
-    extension_state: SecureRfRetransmitterExtensionState<{ Self::ADT_ENTRIES }, P2P_SIZE, { Self::COT_ENTRIES }>,
-    state: Stm32G0SecureState,
-    // Secure AL services plus the RF domain-address management services (the
-    // serial-number variant and the RF-only programming-mode broadcast variant).
-    al_extensions: (
-        StandardSecureAlServices,
-        DomainAddressService,
-        RfDomainAddressService,
-    ),
-    layer_builder: SecureDeviceBuilder,
-    resources: SecureResources<RfRetransmitterExtension>,
-    augments: {
-        bundle: Stm32G0SecureAugments,
-        create: |state, platform, layer_ctx| Stm32G0SecureAugments {
-            sec: state.extension_state().create_secure_augment(platform, layer_ctx),
-            diag: DiagnosticsAugment::<WithSecureGoSend>::new(&state.operation_mode),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        // The configured RF APDU ceiling: sizes the pool buffers and is what
-        // PID 56 reports (the device state inits the runtime limit to this).
-        // The 55-octet ceiling still leaves 42 octets of plaintext after the
-        // Data Secure envelope (OVERHEAD = 13). See `MAX_APDU_LENGTH_RF`.
-        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
-        type Identity = FlashSecureIdentityData;
-        type Rng = Stm32CommonRng;
-        // The device's stores struct, wired onto the LayerContext so the
-        // secure layers pull the FRAM SIAT store out of it through
-        // `HasSeqStore`.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for Stm32G0KnxRfRetransmitterDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    // The 55-octet ceiling leaves 42 octets of plaintext after the Data
+    // Secure envelope while keeping every pool buffer small.
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
+
+    type Rng = Stm32CommonRng;
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = KnxRfLinkLayerBuilder<Radio, RetransmitEnabled>;
+    type Identity = FlashSecureIdentityData;
+    type Storage = &'static DeviceStorage;
+    type Hooks = Stm32G0KnxRfRetransmitterHooks;
 }
 
 // ================================================================================

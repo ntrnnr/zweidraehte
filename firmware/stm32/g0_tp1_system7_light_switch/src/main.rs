@@ -95,7 +95,11 @@ bind_interrupts!(struct Irqs {
 
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1_SYSTEM7;
 
-type Stm32G0State = Tp1StateFor7<Stm32G0System7LightSwitch>;
+#[derive(Debug, Clone, Copy)]
+pub struct Stm32G0System7LightSwitchDefinition;
+
+pub type Stm32G0System7LightSwitch = Tp1<Stm32G0System7LightSwitchDefinition, 0x4200>;
+type Stm32G0State = <Stm32G0System7LightSwitch as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the StmFlash chip
@@ -105,9 +109,7 @@ type Stm32G0State = Tp1StateFor7<Stm32G0System7LightSwitch>;
 // chip, carrying this device's state as its payload. The `Placed` entry
 // derives its placement, store type, and open() from the layout.
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::StandardAlServices;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -119,50 +121,30 @@ impl StorageLayout for StorageMap {
 }
 type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Stm32G0System7LightSwitch;
+pub struct Stm32G0System7LightSwitchHooks;
 
-/// Augment chain for this device: the TP1 medium augment (which is
-/// just a borrow of the extension state) plus the demo Easter Egg
-/// augment. Derives `Augment<D>` from the
-/// `#[service(augment)]` field annotations — the runtime then routes
-/// every property hook through this struct's chain.
-#[derive(ServiceRegistry)]
-pub struct Stm32G0System7LightSwitchAugments<'a> {
-    #[service(augment)]
-    pub tp1: Tp1Augment<'a>,
-    #[service(augment)]
-    pub easter: EasterEggAugment,
+impl DeviceHooks for Stm32G0System7LightSwitchHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
+
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
-zweidraehte_device::system_7_standard_stack! {
-    stack: Stm32G0System7LightSwitch,
-    device: &DEVICE_DESCRIPTOR,
-    // Where the product database places the group object table — must
-    // match `gen_light_switch_mtxml`'s System 7 "4200" segment.
-    cot_address: 0x4200,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
-    platform: (),
-    extension_state: Tp1ExtensionState,
-    state: Stm32G0State,
-    al_extensions: StandardAlServices,
-    layer_builder: PlainDeviceBuilder,
-    augments: {
-        bundle: Stm32G0System7LightSwitchAugments,
-        create: |state, platform, _layer_ctx| Stm32G0System7LightSwitchAugments {
-            tp1: state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-        type Identity = FlashIdentityData;
-        // The storage handle rides on the stack; the storage task pulls the
-        // config store out of it.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for Stm32G0System7LightSwitchDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
+    type Identity = FlashIdentityData;
+    type Storage = &'static DeviceStorage;
+    type Hooks = Stm32G0System7LightSwitchHooks;
 }
 
 // ================================================================================

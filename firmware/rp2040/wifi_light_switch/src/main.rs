@@ -21,7 +21,7 @@ use devices::light_switch::{
     self, LightSwitchDevice, LightSwitchParams, comm_objs::LightSwitchComObjects, full::easter_egg::EasterEggAugment,
 };
 use zweidraehte_device::{
-    bcus::system_b::{Extension, IpAugmentFor, IpExtensionFor, IpStateFor, SystemBStackDefinition, SystemBStateInit},
+    bcus::system_b::{Ip, SystemBStateInit},
     layers::linklayers::knxip::{KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpDeviceUdp},
     prelude::*,
 };
@@ -36,6 +36,11 @@ use rp_common::{
 
 /// Device descriptor from the light switch device definition (KNX/IP variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PicoWLightSwitchDefinition;
+
+pub type PicoWLightSwitch = Ip<PicoWLightSwitchDefinition>;
 
 // ================================================================================
 // Capacity knobs
@@ -52,7 +57,7 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_IP;
 const UDP_POOL_SIZE: usize = 3;
 
 /// Device state combining System B tables with IP link-layer state.
-type PicoWState = IpStateFor<PicoWLightSwitch, KnxIpDeviceUdp>;
+type PicoWState = <PicoWLightSwitch as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the shared RpFlash chip
@@ -62,8 +67,6 @@ type PicoWState = IpStateFor<PicoWLightSwitch, KnxIpDeviceUdp>;
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
@@ -77,20 +80,21 @@ impl StorageLayout for StorageMap {
 type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
 // ----------------------------------------------------------------------------
-// StackDefinition
+// Standard stack inputs
 // ----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
-pub struct PicoWLightSwitch;
+pub struct PicoWHooks;
 
-/// Augment chain: KNXnet/IP medium augment plus the demo Easter Egg
-/// augment.
-#[derive(ServiceRegistry)]
-pub struct PicoWAugments<'a> {
-    #[service(augment)]
-    ip: IpAugmentFor<'a, EmbassyNetworkInfo, KnxIpDeviceUdp>,
-    #[service(augment)]
-    easter: EasterEggAugment,
+impl DeviceHooks for PicoWHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
+
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
 // IP-specific link-layer bill of materials. Routing-only UDP device,
@@ -99,39 +103,22 @@ pub struct PicoWAugments<'a> {
 // discovery + control + routing — one slot more than the trait default
 // of 2 because this device's routing multicast lives on a separate
 // socket from the System Setup discovery multicast.
-impl KnxNetIpDefinition for PicoWLightSwitch {
+impl KnxNetIpDefinition for PicoWLightSwitchDefinition {
     type Transport = EmbassyIpTransport<{ <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS }>;
     type Features = KnxIpDeviceUdp;
     const MAX_UDP_SOCKETS: usize = 3;
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: PicoWLightSwitch,
-    device: &DEVICE_DESCRIPTOR,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: KnxNetIpBuilder<PicoWLightSwitch>,
-    platform: EmbassyNetworkInfo,
-    extension_state: IpExtensionFor<KnxIpDeviceUdp>,
-    state: PicoWState,
-    al_extensions: (
-        StandardAlServices,
-        DomainAddressService,
-    ),
-    layer_builder: PlainIpDeviceBuilder,
-    augments: {
-        bundle: PicoWAugments,
-        create: |state, platform, _layer_ctx| PicoWAugments {
-            ip: state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        type Identity = rp_common::FlashIdentityData;
-        // The storage handle rides on the stack; the storage task pulls the
-        // config store out of it.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for PicoWLightSwitchDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+
+    type Platform = EmbassyNetworkInfo;
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = KnxNetIpBuilder<PicoWLightSwitch>;
+    type Identity = rp_common::FlashIdentityData;
+    type Storage = &'static DeviceStorage;
+    type Hooks = PicoWHooks;
 }
 
 // ================================================================================

@@ -73,7 +73,11 @@ const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_RF;
 /// Concrete SX1211 transceiver type: blocking SPI3 plus two GPIO chip-selects.
 type Radio = Sx1211Adapter<Spi<'static, Blocking, Master>, Output<'static>, Output<'static>>;
 
-type Stm32G0State = RfStateFor<Stm32G0KnxRf>;
+#[derive(Debug, Clone, Copy)]
+pub struct Stm32G0KnxRfDefinition;
+
+pub type Stm32G0KnxRf = Rf<Stm32G0KnxRfDefinition>;
+type Stm32G0State = <Stm32G0KnxRf as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the StmFlash chip
@@ -83,11 +87,7 @@ type Stm32G0State = RfStateFor<Stm32G0KnxRf>;
 // placement, store type, and open() from the layout — the store type is
 // never spelled out.
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::{
-    DomainAddressService, RfDomainAddressService, StandardAlServices,
-};
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
@@ -100,55 +100,32 @@ impl StorageLayout for StorageMap {
 }
 type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Stm32G0KnxRf;
+pub struct Stm32G0KnxRfHooks;
 
-/// Augment chain: the RF medium augment (RF Medium Object) plus the demo Easter
-/// Egg augment. The `#[service(augment)]` fields derive the `Augment<D>` chain.
-#[derive(ServiceRegistry)]
-pub struct Stm32G0KnxRfAugments<'a> {
-    #[service(augment)]
-    pub rf: RfAugment<'a>,
-    #[service(augment)]
-    pub easter: EasterEggAugment,
+impl DeviceHooks for Stm32G0KnxRfHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
+
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: Stm32G0KnxRf,
-    device: &DEVICE_DESCRIPTOR,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: KnxRfLinkLayerBuilder<Radio>,
-    platform: (),
-    extension_state: RfExtensionState,
-    state: Stm32G0State,
-    // RF devices add the domain-address management services ETS uses during
-    // configuration: the serial-number variant (`DomainAddressService`) and the
-    // programming-mode broadcast variant (`RfDomainAddressService`, RF-only).
-    al_extensions: (
-        StandardAlServices,
-        DomainAddressService,
-        RfDomainAddressService,
-    ),
-    layer_builder: PlainDeviceBuilder,
-    augments: {
-        bundle: Stm32G0KnxRfAugments,
-        create: |state, platform, _layer_ctx| Stm32G0KnxRfAugments {
-            rf: state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        // The configured RF APDU ceiling: sizes the pool buffers and is what
-        // PID 56 reports (the device state inits the runtime limit to this).
-        // Far below the extended-frame 254, saving ~200 B/buffer. See
-        // `MAX_APDU_LENGTH_RF`.
-        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
-        type Identity = FlashIdentityData;
-        // The storage handle rides on the stack; the storage task pulls the
-        // config store out of it.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for Stm32G0KnxRfDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    // This configured ceiling saves roughly 200 bytes per pool buffer while
+    // still covering the KNX-RF application payload.
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_RF;
+
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = KnxRfLinkLayerBuilder<Radio>;
+    type Identity = FlashIdentityData;
+    type Storage = &'static DeviceStorage;
+    type Hooks = Stm32G0KnxRfHooks;
 }
 
 // ================================================================================

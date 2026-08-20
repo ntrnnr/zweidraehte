@@ -59,13 +59,9 @@ bind_interrupts!(struct Irqs {
 // Device Definition
 // ================================================================================
 
-/// Device state: System B tables + IP link-layer state (additional IAs, IP config).
-///
-/// Uses `IpSystemBDeviceState` even though the mask is TP1 (07B0) — the state
-/// type is mask-agnostic. The IP link-layer state stores additional individual
-/// addresses for tunneling connections and IP configuration. Table sizes
-/// derive from `DEVICE_DESCRIPTOR` via the `SystemBStackDefinition`
-/// associated consts.
+// The standard IP-interface preset keeps the product's TP1 System B mask while
+// composing the IP Parameter Object, additional tunnelling addresses, and the
+// composite KNX/IP-to-TP1 link layer.
 
 // ================================================================================
 // Capacity knobs
@@ -87,7 +83,11 @@ bind_interrupts!(struct Irqs {
 /// default to `TUNNEL_CAPACITY`). One number, one place.
 const MAX_TUNNEL_CONNECTIONS: usize = 4;
 
-type IpIfState = IpInterfaceStateFor<PicoIpInterface, KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>>;
+#[derive(Debug, Clone, Copy)]
+pub struct PicoIpInterfaceDefinition;
+
+pub type PicoIpInterface = IpInterface<PicoIpInterfaceDefinition>;
+type IpIfState = <PicoIpInterface as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the shared RpFlash chip
@@ -97,7 +97,6 @@ type IpIfState = IpInterfaceStateFor<PicoIpInterface, KnxIpInterfaceTcp<MAX_TUNN
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::{DomainAddressService, StandardAlServices};
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
 use zweidraehte_device::storage::NoSaveGuard;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
@@ -112,22 +111,19 @@ impl StorageLayout for StorageMap {
 type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
 // ================================================================================
-// StackDefinition
+// Standard stack inputs
 // ================================================================================
 
 // The IP Interface needs both TPUART (bus) and KNX/IP (tunneling), so it
 // uses `IpInterfaceLinkLayerBuilder` instead of the standard single-medium
 // link layer builders.
 
-#[derive(Debug, Clone, Copy)]
-pub struct PicoIpInterface;
-
 // IP-specific link-layer bill of materials. `KnxIpInterfaceTcp<N>`
 // pins routing+remote-config+tunneling+TCP. Every numeric sizing knob
 // derives from `TUNNEL_CAPACITY = N` via the trait's defaults; only
 // `MAX_UDP_SOCKETS = 2` (one for the System Setup multicast, one for
 // unicast control on KNX_PORT) overrides the trait default.
-impl KnxNetIpDefinition for PicoIpInterface {
+impl KnxNetIpDefinition for PicoIpInterfaceDefinition {
     type Transport = EmbassyIpTransportTcp<
         { <Self as KnxNetIpDefinition>::MAX_UDP_SOCKETS },
         { <Self as KnxNetIpDefinition>::MAX_TCP_STREAMS },
@@ -135,27 +131,16 @@ impl KnxNetIpDefinition for PicoIpInterface {
     type Features = KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>;
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: PicoIpInterface,
-    device: &DEVICE_DESCRIPTOR,
-    params: IpInterfaceParams,
-    com_objects: IpInterfaceComObjects,
-    link_layer_builder: IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, PicoIpInterface>,
-    platform: EmbassyNetworkInfo,
-    extension_state: IpInterfaceExtensionFor<KnxIpInterfaceTcp<MAX_TUNNEL_CONNECTIONS>>,
-    state: IpIfState,
-    al_extensions: (
-        StandardAlServices,
-        DomainAddressService,
-    ),
-    layer_builder: PlainIpDeviceBuilder,
-    extra {
-        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-        type Identity = FlashIdentityData;
-        // The storage handle rides on the stack; the storage task pulls the
-        // config store out of it.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for PicoIpInterfaceDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+
+    type Platform = EmbassyNetworkInfo;
+    type Params = IpInterfaceParams;
+    type ComObjects = IpInterfaceComObjects;
+    type LinkLayer = IpInterfaceLinkLayerBuilder<DirectUartTx, DirectUartRx, PicoIpInterface>;
+    type Identity = FlashIdentityData;
+    type Storage = &'static DeviceStorage;
 }
 
 // ================================================================================

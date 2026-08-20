@@ -87,15 +87,9 @@ use zweidraehte_device::{
     bcus::system_7::*, config::MAX_APDU_LENGTH_EXTENDED, layers::linklayers::tpuart::TpUartLinkLayerBuilder, prelude::*,
 };
 
-// The diagnostics/OT-9 augments live in the System B module tree but
-// are family-neutral profile modules (§9.2); the security machinery is
-// family-neutral by construction.
-use zweidraehte_device::bcus::system_b::{DiagnosticsAugment, GroupObjectTableAugment, WithSecureGoSend};
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::StandardSecureAlServices;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::security::{SecureAugmentBundle, SecureExtensionState, SecureResources};
-use zweidraehte_device::service::ServiceRegistry;
+use zweidraehte_device::security::SecureResources;
 use zweidraehte_device::storage::{Placed, RegionSpec, SecureDeviceIdentity, SecureStorage, StorageLayout, StoreOf};
 
 // Under `provision-on-boot`, `build.rs` renders dev-default constants
@@ -137,13 +131,6 @@ bind_interrupts!(struct Irqs {
 
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE;
 
-/// P2P Key Table capacity. This device does not support point-to-point
-/// secure traffic — only tool access (Management) and secure group
-/// telegrams — so the P2P Key Table is compiled to zero width
-/// (§9.1.2.6.4 footnote c: only mandatory when P2P communication uses
-/// a key other than the Tool Key or the FDSK).
-const P2P_SIZE: usize = 0;
-
 /// SIAT capacity (Security Individual Address Table).
 ///
 /// Per 03/03/07 §5.3 the SIAT stores the Last Valid SeqNr for every
@@ -156,10 +143,30 @@ const P2P_SIZE: usize = 0;
 /// outside the power-cycle-volatile SIAT runtime state.
 const SIAT_SIZE: usize = 32;
 
-/// Runtime state alias — the secure TP1 System 7 state. The RNG that
-/// the Secure Application Layer consumes during `S-A_Sync` is plugged
-/// in via `type Rng = Stm32CommonRng;` on the stack definition below.
-type Stm32G0S7SecureState = SecureTp1StateFor7<Stm32G0S7SecureLightSwitch, P2P_SIZE>;
+pub struct Stm32G0S7SecureLightSwitchDefinition;
+
+/// Standard System 7 TP1 Data Secure stack. The COT address must remain in
+/// lock-step with the product database's `4200` segment.
+pub type Stm32G0S7SecureLightSwitch = SecureTp1<Stm32G0S7SecureLightSwitchDefinition, 0x4200>;
+
+/// Runtime state selected by the secure System 7 preset. This nominal spelling
+/// avoids projecting the state while defining the config store that persists it.
+//
+// The older `SecureTp1StateFor7` alias projects these sizes through
+// `System7StackDefinition`; using it here creates a rustc query cycle because
+// the config store is itself part of the definition being resolved.
+type Stm32G0S7SecureState = System7DeviceState<
+    { 3 + DEVICE_DESCRIPTOR.max_address_table_entries as usize * 2 },
+    { 1 + DEVICE_DESCRIPTOR.max_association_table_entries as usize * 2 },
+    { 3 + DEVICE_DESCRIPTOR.max_com_objects as usize * 4 },
+    Stm32G0S7SecureLightSwitch,
+    SecureExtensionState<
+        Tp1ExtensionState,
+        { DEVICE_DESCRIPTOR.max_address_table_entries as usize },
+        0,
+        { DEVICE_DESCRIPTOR.max_com_objects as usize },
+    >,
+>;
 
 // ----------------------------------------------------------------------------
 // Storage layout — config on internal flash, SIAT on the FRAM (two chips)
@@ -183,88 +190,31 @@ impl StorageLayout for StorageMap {
 }
 type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Stm32G0S7SecureLightSwitch;
+pub struct Stm32G0S7SecureLightSwitchHooks;
 
-// Security augment type alias — produced by the secure extension for
-// `Stm32G0S7SecureLightSwitch`. Same pattern as the System B secure
-// target, with the table capacities drawn from the System 7 definition.
-type SecAugment<'a> = SecureAugmentBundle<
-    'a,
-    Tp1Augment<'a>,
-    StoreOf<Seq>,
-    { <Stm32G0S7SecureLightSwitch as System7StackDefinition>::ADT_ENTRIES },
-    P2P_SIZE,
-    { <Stm32G0S7SecureLightSwitch as System7StackDefinition>::COT_ENTRIES },
->;
+impl DeviceHooks for Stm32G0S7SecureLightSwitchHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
 
-/// Augment chain: KNX Data Secure augment (drives Security IO 0x11,
-/// landing at index 5 — System 7 has no Group Object Table object in
-/// its base roster), the Group Object Table Object (Type 9) that hosts
-/// `PID_GO_DIAGNOSTICS`, the GO/operation-mode diagnostics augment with
-/// the secure send strategy, plus the demo Easter Egg augment.
-#[derive(ServiceRegistry)]
-pub struct Stm32G0S7SecureAugments<'a> {
-    #[service(augment)]
-    pub sec: SecAugment<'a>,
-    #[service(augment)]
-    pub go_table: GroupObjectTableAugment,
-    #[service(augment)]
-    pub diag: DiagnosticsAugment<'a, WithSecureGoSend>,
-    #[service(augment)]
-    pub easter: EasterEggAugment,
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
-zweidraehte_device::system_7_standard_stack! {
-    stack: Stm32G0S7SecureLightSwitch,
-    device: &DEVICE_DESCRIPTOR,
-    // Where the product database places the group object table — must
-    // match `gen_light_switch_mtxml`'s System 7 "4200" segment.
-    cot_address: 0x4200,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
-    platform: (),
-    // TP1 extension + Data Secure wrapper. `GRP`/`GO` are entry counts
-    // (one group key slot per address table entry, one flag byte per
-    // communication object), matching `SecureStateFor7`'s invariant.
-    extension_state: SecureExtensionState<
-        Tp1ExtensionState,
-        { Self::ADT_ENTRIES },
-        P2P_SIZE,
-        { Self::COT_ENTRIES },
-    >,
-    state: Stm32G0S7SecureState,
-    // §9.1.2.3.1 items 6-7 make the Extended Property services and
-    // `A_MemoryExtended_Read`/`_Write` mandatory for a Data Secure
-    // device, which is what this tuple adds over `StandardAlServices`.
-    al_extensions: StandardSecureAlServices,
-    layer_builder: SecureDeviceBuilder,
-    // The FRAM sequence-number storage is built in `main` and threaded
-    // through `StateInit` as a construction-time resource.
-    resources: SecureResources<Tp1ExtensionState>,
-    augments: {
-        bundle: Stm32G0S7SecureAugments,
-        create: |state, platform, layer_ctx| Stm32G0S7SecureAugments {
-            sec: state.extension_state().create_secure_augment(platform, layer_ctx),
-            go_table: GroupObjectTableAugment::new(),
-            diag: DiagnosticsAugment::<WithSecureGoSend>::new(&state.operation_mode),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-        // Flash-backed identity that carries the FDSK.
-        type Identity = FlashSecureIdentityData;
-        // Non-crypto PRNG (see `stm32_common::rng`) — plugs directly into
-        // the Secure Application Layer's `S-A_Sync` challenge/nonce
-        // generation, no state-type newtype needed.
-        type Rng = Stm32CommonRng;
-        // The device's stores struct, wired onto the LayerContext so the
-        // secure layers pull the FRAM SIAT store out of it through
-        // `HasSeqStore`.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for Stm32G0S7SecureLightSwitchDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+
+    type Rng = Stm32CommonRng;
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
+    type Identity = FlashSecureIdentityData;
+    type Storage = &'static DeviceStorage;
+    type Hooks = Stm32G0S7SecureLightSwitchHooks;
 }
 
 // ================================================================================

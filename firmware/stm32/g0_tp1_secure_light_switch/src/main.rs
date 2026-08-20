@@ -1,8 +1,7 @@
 #![no_std]
 #![no_main]
-// `type Stm32G0SecureState = SecureTp1StateFor<…>` expands to const
-// expressions over `SystemBStackDefinition::{ADT,AST,COT}_SIZE`.
-// Same flag `zweidraehte-device` already requires.
+// The standard secure preset derives table capacities from the descriptor in
+// generic const expressions. Same flag `zweidraehte-device` already requires.
 #![feature(generic_const_exprs)]
 #![allow(incomplete_features)]
 
@@ -121,14 +120,6 @@ bind_interrupts!(struct Irqs {
 
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1_SECURE;
 
-/// P2P Key Table capacity. This device does not support point-to-point
-/// secure traffic — only tool access (Management) and secure group
-/// telegrams — so the P2P Key Table is compiled to zero width.
-/// `SecureDeviceBuilder` already defaults to
-/// [`NoP2p`](zweidraehte_device::layers::secure_application::NoP2p),
-/// so the P2P sync handlers aren't stamped out either.
-const P2P_SIZE: usize = 0;
-
 /// SIAT capacity (Security Individual Address Table).
 ///
 /// Per 03/03/07 §5.3 the SIAT stores the Last Valid SeqNr for every
@@ -141,11 +132,15 @@ const P2P_SIZE: usize = 0;
 /// outside the power-cycle-volatile SIAT runtime state.
 const SIAT_SIZE: usize = 32;
 
-/// Runtime state alias — the vanilla secure TP1 state. The RNG that
-/// the Secure Application Layer consumes during `S-A_Sync` is plugged
-/// in via `type Rng = Stm32CommonRng;` on the stack definition below,
-/// so we don't need a newtype wrapper on the state type.
-type Stm32G0SecureState = SecureTp1StateFor<Stm32G0SecureLightSwitch, P2P_SIZE>;
+pub struct Stm32G0SecureLightSwitchDefinition;
+
+/// Standard System B TP1 Data Secure stack. The default profile omits P2P
+/// support and therefore matches this group-only device's zero-width key table.
+pub type Stm32G0SecureLightSwitch = SecureTp1<Stm32G0SecureLightSwitchDefinition>;
+
+/// Runtime state selected by the secure TP1 preset. The nominal alias avoids
+/// projecting the state while defining the config store that persists it.
+type Stm32G0SecureState = SecureTp1StateFor<Stm32G0SecureLightSwitch, 0>;
 
 // ----------------------------------------------------------------------------
 // Storage layout — config on internal flash, SIAT on the FRAM (two chips)
@@ -169,86 +164,38 @@ impl StorageLayout for StorageMap {
 }
 type DeviceStorage = SecureStorage<StoreOf<Cfg>, StoreOf<Seq>>;
 
-#[derive(Debug, Clone, Copy)]
-pub struct Stm32G0SecureLightSwitch;
+pub struct Stm32G0SecureLightSwitchHooks;
 
-// Security augment type alias — produced by the secure extension for
-// `Stm32G0SecureLightSwitch`. The conformance DUT uses the same
-// pattern; see `conformance/src/harness/secure_stack.rs:871`.
-type SecAugment<'a> = SecureAugmentBundle<
-    'a,
-    Tp1Augment<'a>,
-    StoreOf<Seq>,
-    { <Stm32G0SecureLightSwitch as SystemBStackDefinition>::ADT_ENTRIES },
-    P2P_SIZE,
-    { <Stm32G0SecureLightSwitch as SystemBStackDefinition>::COT_ENTRIES },
->;
+impl DeviceHooks for Stm32G0SecureLightSwitchHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
 
-/// Augment chain: KNX Data Secure augment (drives Security IO 0x11),
-/// the GO/operation-mode diagnostics augment, plus the demo Easter Egg
-/// augment. As a secure device it uses the `WithSecureGoSend` strategy
-/// so the secure GO-diagnostics send-paths are wired up.
-#[derive(ServiceRegistry)]
-pub struct Stm32G0SecureAugments<'a> {
-    #[service(augment)]
-    pub sec: SecAugment<'a>,
-    #[service(augment)]
-    pub diag: DiagnosticsAugment<'a, WithSecureGoSend>,
-    #[service(augment)]
-    pub easter: EasterEggAugment,
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: Stm32G0SecureLightSwitch,
-    device: &DEVICE_DESCRIPTOR,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
-    platform: (),
-    // TP1 extension + Data Secure wrapper. `GRP`/`GO` are entry counts
-    // (one group key slot per address table entry, one flag byte per
-    // communication object), matching `SecureStateFor`'s invariant.
-    extension_state: SecureTp1ExtensionState<{ Self::ADT_ENTRIES }, P2P_SIZE, { Self::COT_ENTRIES }>,
-    state: Stm32G0SecureState,
-    al_extensions: StandardSecureAlServices,
-    layer_builder: SecureDeviceBuilder,
-    // The FRAM sequence-number storage is built in `main` and threaded
-    // through `StateInit` as a construction-time resource.
-    resources: SecureResources<Tp1ExtensionState>,
-    // `sec` extends the interface-object list with the Security Object
-    // (IOT 0x11) that ETS uses to write group keys etc.; the property
-    // hook chain reaches all three augments via the macro-derived
-    // `Augment<D>` impl on `Stm32G0SecureAugments`.
-    augments: {
-        bundle: Stm32G0SecureAugments,
-        create: |state, platform, layer_ctx| Stm32G0SecureAugments {
-            sec: state.extension_state().create_secure_augment(platform, layer_ctx),
-            diag: DiagnosticsAugment::<WithSecureGoSend>::new(&state.operation_mode),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-        // Flash-backed identity that carries the FDSK.
-        type Identity = FlashSecureIdentityData;
-        // Non-crypto PRNG (see `stm32_common::rng`) — plugs directly into
-        // the Secure Application Layer's `S-A_Sync` challenge/nonce
-        // generation, no state-type newtype needed.
-        type Rng = Stm32CommonRng;
-        // The device's stores struct, wired onto the LayerContext so the
-        // secure layers pull the FRAM SIAT store out of it through
-        // `HasSeqStore`.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for Stm32G0SecureLightSwitchDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+
+    type Rng = Stm32CommonRng;
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
+    type Identity = FlashSecureIdentityData;
+    type Storage = &'static DeviceStorage;
+    type Hooks = Stm32G0SecureLightSwitchHooks;
 }
 
 // Import the full re-exported set from system_b so the ES alias
 // arguments above resolve. (`SecureResources`, `SecureDeviceIdentity`,
 // `SecureTp1ExtensionState`, etc. all live here.)
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::StandardSecureAlServices;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::SecureDeviceIdentity;
 
 // ================================================================================

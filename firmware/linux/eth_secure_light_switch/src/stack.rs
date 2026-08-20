@@ -31,31 +31,15 @@ use zweidraehte_device::layers::linklayers::knxip::{
     KnxNetIpBuilder, KnxNetIpDefinition, features::KnxIpSecureRoutingTcp,
 };
 use zweidraehte_device::prelude::*;
-use zweidraehte_device::storage::SeqStorageFor;
 use zweidraehte_platform::{LinuxIpPlatform, LinuxIpTransport};
 
 use support::storage::{FileSecureIdentity, JsonStorage, LinuxSiatStore};
 use support::util::GetrandomRng;
-use zweidraehte_device::layers::application::services::StandardSecureAlServices;
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::{SecureStorage, StaticIdentity};
 
 // ============================================================================
 // Capacity knobs
 // ============================================================================
-
-/// P2P key table capacity. Group-only device with no secure P2P traffic, so
-/// zero — matches the RP2040 secure light switch (`P2P_SIZE = 0`).
-const P2P_SIZE: usize = 0;
-
-/// IP Secure password-hash table capacity. One slot for the management user,
-/// which backs the DAC / `SESSION_RESPONSE` path.
-const MAX_PW: usize = 1;
-
-/// IP Secure tunnelling-user table capacity. Zero — this device does no secure
-/// tunnelling (routing-only secure; tunnelling is optional for a KNX IP end
-/// device per 03/08/09 §2.5.1.1).
-const MAX_TU: usize = 0;
 
 /// Feature set: the `KnxIpSecureRoutingTcp` preset — KNX/IP routing + remote
 /// config + **IP Secure** + TCP, without tunnelling. TCP is mandatory for a
@@ -64,11 +48,15 @@ const MAX_TU: usize = 0;
 /// TCP stream `MAX_TCP_STREAMS` defaults to for a tunnel-less device.
 type SecureRoutingTcp = KnxIpSecureRoutingTcp<1>;
 
-/// Device state: System B tables + the Data-Secure wrapper around the IP
-/// **Secure** interface extension (PIDs 91–97), realised through the
-/// `SecureIpInterfaceStateFor` alias.
-pub type LightSwitchSecureState =
-    SecureIpInterfaceStateFor<LinuxEthSecureLightSwitch, SecureRoutingTcp, P2P_SIZE, MAX_PW, MAX_TU>;
+#[derive(Clone, Copy)]
+pub struct LinuxEthSecureLightSwitchDefinition;
+
+/// Standard combined KNX/IP Secure and Data Secure stack. Its defaults match
+/// this routing-only device: no P2P key table, one password, no tunnel users.
+pub type LinuxEthSecureLightSwitch = SecureIp<LinuxEthSecureLightSwitchDefinition>;
+
+/// Nominal state spelling for the state-parameterized JSON config store.
+pub type LightSwitchSecureState = SecureIpInterfaceStateFor<LinuxEthSecureLightSwitch, SecureRoutingTcp, 0, 1, 0>;
 
 /// On-stack persistent storage: the JSON-file config backend plus the
 /// file-backed sequence/SIAT store, in the framework's [`SecureStorage`]
@@ -78,39 +66,21 @@ pub type LightSwitchSecureState =
 pub type LightSwitchSecureStorage = SecureStorage<JsonStorage<LightSwitchSecureState, StaticIdentity>, LinuxSiatStore>;
 
 // ============================================================================
-// StackDefinition
+// Standard stack inputs
 // ============================================================================
 
-#[derive(Debug, Clone, Copy)]
-pub struct LinuxEthSecureLightSwitch;
+pub struct LinuxEthSecureLightSwitchHooks;
 
-/// Security augment type alias — produced by the secure extension for
-/// `LinuxEthSecureLightSwitch`. It carries the Security IO (IOT 0x11) plus the
-/// IP medium + IP Secure objects. The `SEQ` slot is the stack's own sequence
-/// store, projected via `SeqStorageFor`.
-type SecAugment<'a> = SecureAugmentBundle<
-    'a,
-    <IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU> as Extension<LinuxIpPlatform>>::Augment<
-        'a,
-        LinuxEthSecureLightSwitch,
-    >,
-    SeqStorageFor<LinuxEthSecureLightSwitch>,
-    { <LinuxEthSecureLightSwitch as SystemBStackDefinition>::ADT_ENTRIES },
-    P2P_SIZE,
-    { <LinuxEthSecureLightSwitch as SystemBStackDefinition>::COT_ENTRIES },
->;
+impl DeviceHooks for LinuxEthSecureLightSwitchHooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
 
-/// Augment chain: KNX Data Secure augment (Security IO 0x11) + the IP medium /
-/// IP Secure augment, plus the Easter Egg demo augment. The secure augment
-/// bundles the IP augment internally (the secure extension wraps the IP Secure
-/// interface extension), so there is no separate `ip:` field as on the insecure
-/// target.
-#[derive(ServiceRegistry)]
-pub struct LightSwitchSecureAugments<'a> {
-    #[service(augment)]
-    sec: SecAugment<'a>,
-    #[service(augment)]
-    easter: EasterEggAugment,
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
 // IP-specific link-layer bill of materials. Routing-only device on UDP + TCP
@@ -118,54 +88,23 @@ pub struct LightSwitchSecureAugments<'a> {
 // `type Rng` is required by `SecureIpDeviceBuilder` (`NoRng` is rejected) and
 // feeds the Secure Application Layer's `S-A_Sync` challenges plus IP Secure
 // session nonces.
-impl KnxNetIpDefinition for LinuxEthSecureLightSwitch {
+impl KnxNetIpDefinition for LinuxEthSecureLightSwitchDefinition {
     type Transport = LinuxIpTransport;
     type Features = SecureRoutingTcp;
     type Rng = GetrandomRng;
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: LinuxEthSecureLightSwitch,
-    device: &DEVICE_DESCRIPTOR_IP_SECURE,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: KnxNetIpBuilder<LinuxEthSecureLightSwitch>,
-    platform: LinuxIpPlatform,
-    // Data Secure wrapper around the IP Secure interface extension. `GRP`/`GO`
-    // are entry counts (one group key slot per address table entry, one flag
-    // byte per communication object), matching `SecureIpInterfaceStateFor`'s
-    // invariant.
-    extension_state: SecureExtensionState<
-        IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>,
-        { Self::ADT_ENTRIES },
-        P2P_SIZE,
-        { Self::COT_ENTRIES },
-    >,
-    state: LightSwitchSecureState,
-    al_extensions: StandardSecureAlServices,
-    layer_builder: SecureIpDeviceBuilder,
-    // The IP Secure FDSK seed is built in `main` and threaded through
-    // `StateInit`. `SecureResources::inner` is the IP Secure extension's own
-    // `IpSecureResources { fdsk }`.
-    resources: SecureResources<IpSecureInterfaceExtensionFor<SecureRoutingTcp, MAX_PW, MAX_TU>>,
-    augments: {
-        bundle: LightSwitchSecureAugments,
-        create: |state, platform, layer_ctx| LightSwitchSecureAugments {
-            sec: state.extension_state().create_secure_augment(platform, layer_ctx),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        // File-backed secure identity: serial number + FDSK, provisioned to
-        // `secure_device_identity.json` on first run so the key is not baked
-        // into the binary.
-        type Identity = FileSecureIdentity;
-        // OS CSPRNG (getrandom).
-        type Rng = GetrandomRng;
-        // Config blob + the file-backed sequence/SIAT store, wired onto the
-        // LayerContext: the secure layers pull the SIAT store out through
-        // `HasSeqStore`, and the storage task the config through
-        // `HasConfigStore`.
-        type Storage = &'static LightSwitchSecureStorage;
-    },
+impl DeviceDefinition for LinuxEthSecureLightSwitchDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR_IP_SECURE;
+
+    type Rng = GetrandomRng;
+    type Platform = LinuxIpPlatform;
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = KnxNetIpBuilder<LinuxEthSecureLightSwitch>;
+    // File-backed secure identity: serial number + FDSK, provisioned on first
+    // run so the key is not baked into the binary.
+    type Identity = FileSecureIdentity;
+    type Storage = &'static LightSwitchSecureStorage;
+    type Hooks = LinuxEthSecureLightSwitchHooks;
 }

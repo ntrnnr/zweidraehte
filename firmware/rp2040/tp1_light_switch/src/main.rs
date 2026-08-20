@@ -56,9 +56,15 @@ bind_interrupts!(struct Irqs {
 /// Device descriptor from the light switch device definition (TP1 variant).
 const DEVICE_DESCRIPTOR: DeviceDescriptor = light_switch::DEVICE_DESCRIPTOR_TP1;
 
-/// Device state for TP1. Table sizes derive from `DEVICE_DESCRIPTOR`
-/// via the `SystemBStackDefinition` associated consts.
-type PicoTp1State = Tp1StateFor<PicoTp1LightSwitch>;
+/// Product and hardware inputs consumed by the standard TP1 stack.
+#[derive(Debug, Clone, Copy)]
+pub struct PicoTp1LightSwitchDefinition;
+
+/// Complete System B TP1 stack resolved from this device's inputs.
+pub type PicoTp1LightSwitch = Tp1<PicoTp1LightSwitchDefinition>;
+
+/// Device state resolved by the selected System B TP1 profile.
+type PicoTp1State = <PicoTp1LightSwitch as StackDefinition>::State;
 
 // ----------------------------------------------------------------------------
 // Storage layout — one config region on the shared RpFlash chip
@@ -68,9 +74,7 @@ type PicoTp1State = Tp1StateFor<PicoTp1LightSwitch>;
 // device's state as its payload. The `Placed` entry derives its placement,
 // store type, and open() from the layout.
 use zweidraehte_device::config::buffer_size_for_apdu;
-use zweidraehte_device::layers::application::services::StandardAlServices;
 use zweidraehte_device::lifecycle::lifecycle_event_logger;
-use zweidraehte_device::service::ServiceRegistry;
 use zweidraehte_device::storage::{ConfigStorage, Placed, RegionSpec, StorageLayout, StoreOf};
 
 // `pub`: the map reaches the public `StackDefinition` surface through
@@ -83,54 +87,38 @@ impl StorageLayout for StorageMap {
 type DeviceStorage = ConfigStorage<StoreOf<Cfg>>;
 
 // ----------------------------------------------------------------------------
-// StackDefinition
+// Standard stack inputs
 // ----------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
-pub struct PicoTp1LightSwitch;
+/// Application-specific additions to the profile's mandatory TP1 augment.
+pub struct PicoTp1Hooks;
 
-/// Augment chain: the TP1 medium augment (borrows the extension state)
-/// plus the demo Easter Egg augment. Derives `Augment<D>` from the field
-/// annotations.
-#[derive(ServiceRegistry)]
-pub struct PicoTp1Augments<'a> {
-    #[service(augment)]
-    tp1: Tp1Augment<'a>,
-    #[service(augment)]
-    easter: EasterEggAugment,
+impl DeviceHooks for PicoTp1Hooks {
+    type Augments<'a, D: StackDefinition> = EasterEggAugment;
+
+    fn create_augments<'a, D: StackDefinition>(
+        _state: &'a D::State,
+        _platform: &'a D::Platform,
+        _layer_ctx: &'a zweidraehte_device::context::layer::LayerContext<D>,
+    ) -> Self::Augments<'a, D> {
+        EasterEggAugment
+    }
 }
 
-zweidraehte_device::system_b_standard_stack! {
-    stack: PicoTp1LightSwitch,
-    device: &DEVICE_DESCRIPTOR,
-    params: LightSwitchParams,
-    com_objects: LightSwitchComObjects,
-    link_layer_builder: TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>,
-    platform: (),
-    extension_state: Tp1ExtensionState,
-    state: PicoTp1State,
-    al_extensions: StandardAlServices,
-    layer_builder: PlainDeviceBuilder,
-    augments: {
-        bundle: PicoTp1Augments,
-        create: |state, platform, _layer_ctx| PicoTp1Augments {
-            tp1: state.extension_state().create_augment::<Self>(platform),
-            easter: EasterEggAugment,
-        },
-    },
-    extra {
-        // The NCN5120 supports extended frames (248 bytes from its 256-byte
-        // buffer). Allocate compile-time buffers for the full extended range.
-        const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
-        // Everything runs on the same single-threaded executor, so
-        // NoopRawMutex (the `Mutex` default) is sufficient.
-        // CriticalSectionRawMutex would only be needed if the KNX stack
-        // ran on a separate InterruptExecutor.
-        type Identity = FlashIdentityData;
-        // The storage handle rides on the stack; the storage task pulls the
-        // config store out of it.
-        type Storage = &'static DeviceStorage;
-    },
+impl DeviceDefinition for PicoTp1LightSwitchDefinition {
+    const DEVICE: &'static DeviceDescriptor = &DEVICE_DESCRIPTOR;
+    // The NCN5120 supports extended frames (248 bytes from its 256-byte
+    // buffer). Allocate compile-time buffers for the full extended range.
+    const MAX_APDU_LENGTH: u16 = MAX_APDU_LENGTH_EXTENDED;
+
+    type Params = LightSwitchParams;
+    type ComObjects = LightSwitchComObjects;
+    type LinkLayer = TpUartLinkLayerBuilder<DirectUartTx, DirectUartRx>;
+    type Identity = FlashIdentityData;
+    // The storage handle rides on the stack; the storage task pulls the
+    // config store out of it.
+    type Storage = &'static DeviceStorage;
+    type Hooks = PicoTp1Hooks;
 }
 
 // ================================================================================
