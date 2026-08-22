@@ -1,8 +1,9 @@
 //! Generate MTXML / knxprod / knxproj from the light switch device definition.
 //!
 //! Produces a multi-device package containing KNX/IP, TP1 (TPUART),
-//! TP1 Data Secure, TP1 System 7 (plain and Data Secure), KNX-RF, and
-//! KNX-RF Data Secure variants of the same light switch. All share the
+//! TP1 Data Secure, BCU2 (plain and Data Secure), TP1 System 7 (plain and
+//! Data Secure), KNX-RF, and KNX-RF Data Secure variants of the same light
+//! switch. All share the
 //! same application logic, parameters, and page layout — they differ
 //! only in mask version (medium type), download model (System B
 //! relative vs. System 7 absolute segments), and whether Data Secure is
@@ -20,9 +21,9 @@ use const_default::ConstDefault;
 
 use devices::light_switch::{
     DEVICE_DESCRIPTOR_IP, DEVICE_DESCRIPTOR_IP_SECURE, DEVICE_DESCRIPTOR_RF, DEVICE_DESCRIPTOR_RF_SECURE,
-    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_BCU2, DEVICE_DESCRIPTOR_TP1_SECURE, DEVICE_DESCRIPTOR_TP1_SYSTEM7,
-    DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE, LightSwitchDevice, LightSwitchParams, comm_objs, micro,
-    params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
+    DEVICE_DESCRIPTOR_TP1, DEVICE_DESCRIPTOR_TP1_BCU2, DEVICE_DESCRIPTOR_TP1_BCU2_SECURE, DEVICE_DESCRIPTOR_TP1_SECURE,
+    DEVICE_DESCRIPTOR_TP1_SYSTEM7, DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE, LightSwitchDevice, LightSwitchParams,
+    comm_objs, micro, params::LIGHT_SWITCH_VIRTUAL_PARAMS, translations::LIGHT_SWITCH_TRANSLATIONS,
 };
 use zweidraehte_knxprod::definition::page_layout::EtsPageLayout;
 use zweidraehte_knxprod::signing::{KnxSchemaVersion, MasterDataSource};
@@ -94,6 +95,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bcu2_image = micro::bcu2_definition().build_eeprom();
     let bcu2_tables: &'static [u8] =
         Box::leak(bcu2_image[..micro::BCU2_PARAMS_IMAGE_OFFSET].to_vec().into_boxed_slice());
+    let bcu2_secure_image = micro::secure_bcu2_definition().build_eeprom_for_mask(0x0021);
+    let bcu2_secure_tables: &'static [u8] =
+        Box::leak(bcu2_secure_image[..micro::BCU2_PARAMS_IMAGE_OFFSET].to_vec().into_boxed_slice());
     let s7_micro_image = micro::LightSwitchS7Family::build_eeprom(&micro::system7_definition());
     let s7_micro_cot = &s7_micro_image[0x200..0x200 + 3 + LightSwitchDevice::MAX_COM_OBJECTS as usize * 4];
 
@@ -548,9 +552,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max_security_p2p_key_table_entries: None,
     };
 
-    // Build a multi-device package: nine application programs, ten
+    // The evidence-backed MV-0021 profile keeps the same compact RT2 table
+    // geometry as MV-0020, then composes the tool/group-only Data Secure
+    // module. The capacities come from the shared micro product definition so
+    // ETS cannot advertise more rows than the firmware owns.
+    let bcu2_secure_def = micro::secure_bcu2_definition();
+    let app_tp1_bcu2_secure = ApplicationProgramDef {
+        name: "LightSwitch2TPBCU2Secure",
+        device: &DEVICE_DESCRIPTOR_TP1_BCU2_SECURE,
+        params: LightSwitchParams::ETS_PARAMS_EXT,
+        virtual_params: Some(LIGHT_SWITCH_VIRTUAL_PARAMS),
+        param_defaults: param_bytes,
+        comm_objects: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECTS,
+        comm_object_refs: comm_objs::LightSwitchComObjects::ETS_COMM_OBJECT_REFS,
+        union_fields: Some(LightSwitchParams::ETS_UNIONS),
+        channel_name: "General",
+        absolute_segment_address: None,
+        bcu2_layout: Some(Bcu2MemoryLayout {
+            tables_address: 0x0100,
+            tables_data: bcu2_secure_tables,
+            addr_table_offset: bcu2_secure_def.addr_table_offset() as u32,
+            assoc_table_offset: bcu2_secure_def.assoc_table_offset() as u32,
+            cot_offset: bcu2_secure_def.cot_offset() as u32,
+            params_address: 0x0100 + micro::BCU2_PARAMS_IMAGE_OFFSET as u32,
+        }),
+        system7_layout: None,
+        application_hash: None,
+        non_reg_relevant_data_version: None,
+        replaces_versions: None,
+        application_data_hash: None,
+        page_layout: Some(LightSwitchDevice::page_layout()),
+        modules: None,
+        baggages: None,
+        translations: Some(LIGHT_SWITCH_TRANSLATIONS),
+        bus_interfaces: None,
+        additional_addresses_count: None,
+        ip_config: None,
+        is_secure_enabled: Some(true),
+        max_user_entries: None,
+        max_tunneling_user_entries: None,
+        max_security_individual_address_entries: Some(micro::BCU2_SECURE_SIAT_CAPACITY as u16),
+        max_security_group_key_table_entries: Some(micro::BCU2_SECURE_GROUP_KEY_CAPACITY as u16),
+        max_security_p2p_key_table_entries: Some(micro::BCU2_SECURE_P2P_KEY_CAPACITY as u16),
+    };
+
+    // Build a multi-device package: ten application programs, eleven
     // hardware definitions (IP, IP-Secure, TP1, TP1-Secure, TP1-BCU2,
-    // TP1-System7, TP1-System7-Secure, RF, RF-Secure,
+    // TP1-BCU2-Secure, TP1-System7, TP1-System7-Secure, RF, RF-Secure,
     // RF-Secure-Retransmitter), and a single catalog section with all
     // of them.
     let mut builder = KnxprodBuilder::new(LightSwitchDevice::MANUFACTURER_ID);
@@ -563,6 +611,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_tp1_system7_ref = builder.application_program(&app_tp1_system7);
     let app_tp1_system7_secure_ref = builder.application_program(&app_tp1_system7_secure);
     let app_tp1_bcu2_ref = builder.application_program(&app_tp1_bcu2);
+    let app_tp1_bcu2_secure_ref = builder.application_program(&app_tp1_bcu2_secure);
 
     let hw_ip_ref = builder.hardware(HardwareDef {
         serial_number: SERIAL_NUMBER_IP,
@@ -654,6 +703,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             visible_description: None,
         }],
         application_programs: vec![app_tp1_bcu2_ref],
+    });
+
+    let hw_tp1_bcu2_secure_ref = builder.hardware(HardwareDef {
+        serial_number: LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2_SECURE,
+        hardware_version: 1,
+        name: "2-Button Light Switch TP1 BCU2 Secure",
+        bus_current: Some(10),
+        is_ip_enabled: None,
+        is_rf_retransmitter: None,
+        rf_rx_capabilities: None,
+        rf_tx_capabilities: None,
+        products: vec![ProductDef {
+            name: "Light Switch 2-fold (TP1, BCU2, Secure)",
+            order_number: "LS-0002-TP-B2-SEC",
+            is_rail_mounted: false,
+            visible_description: None,
+        }],
+        application_programs: vec![app_tp1_bcu2_secure_ref],
     });
 
     let hw_tp1_system7_ref = builder.hardware(HardwareDef {
@@ -794,6 +861,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 application_program: app_tp1_bcu2_ref,
             },
             CatalogEntryDef {
+                name: "Light Switch 2-fold (TP1, BCU2, Secure)",
+                hardware: hw_tp1_bcu2_secure_ref,
+                product_order_number: "LS-0002-TP-B2-SEC",
+                application_program: app_tp1_bcu2_secure_ref,
+            },
+            CatalogEntryDef {
                 name: "Light Switch 2-fold (TP1, System 7)",
                 hardware: hw_tp1_system7_ref,
                 product_order_number: "LS-0002-TP-S7",
@@ -862,6 +935,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             hardware: hw_tp1_bcu2_ref,
             product_order_number: "LS-0002-TP-B2",
             application_program: app_tp1_bcu2_ref,
+        });
+        builder.device_instance(DeviceInstanceDef {
+            name: "2-Button Light Switch TP1 BCU2 Secure",
+            hardware: hw_tp1_bcu2_secure_ref,
+            product_order_number: "LS-0002-TP-B2-SEC",
+            application_program: app_tp1_bcu2_secure_ref,
         });
         builder.device_instance(DeviceInstanceDef {
             name: "2-Button Light Switch TP1 System 7",

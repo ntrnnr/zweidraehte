@@ -8,9 +8,11 @@
 //! ring outside this struct, and everything in here is plain
 //! `&mut self` code.
 //!
-//! The core accepts TP1 standard frames without their checksum. A
-//! byte-oriented TPUART driver assembles those frames outside the core;
-//! the conformance IPC adapter supplies the same layout directly.
+//! The core accepts TP1 wire frames without their checksum. Plain profiles
+//! select standard-frame capacity; the secure BCU2 profile also admits
+//! extended frames. A byte-oriented TPUART driver assembles those frames
+//! outside the core; the conformance IPC adapter supplies the same layout
+//! directly.
 //! Native RF and KNX/IP frame formats are outside this stack's scope.
 
 use core::marker::PhantomData;
@@ -60,7 +62,7 @@ pub struct DeviceIdentity {
 
 /// One input to [`Microdevice::poll`].
 pub enum PollInput<'a> {
-    /// A complete received frame, TP1 standard layout without checksum.
+    /// A complete received TP1 wire frame without checksum.
     Frame(&'a [u8]),
     /// A timer tick — call at least every few milliseconds so TL
     /// timeouts and pending transmissions make progress.

@@ -728,18 +728,37 @@ fn scenario_bcu2_secure_commission<'a>(
 
         let masks = mask_db()?;
         let mask = bcu2_secure_mask(&masks)?;
-        let product = ProductData::from_mtxml_str(&bcu2_product::generate_secure_mtxml()?)
-            .map_err(|e| format!("reading secure BCU2 product back: {e}"))?;
+        let product = ProductData::from_mtxml_str(&bcu2_light_switch_product::generate_secure_mtxml()?)
+            .map_err(|e| format!("reading secure BCU2 light-switch product back: {e}"))?;
 
         let mut project = ProjectConfig::new(dut_ia());
-        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 0 }];
+        // The light-switch primary object transmits; its status sibling
+        // receives. Link both to the same GA so the bidirectional secure test
+        // follows the real product flags instead of relying on the fixture's
+        // all-flags-enabled object zero.
+        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 0 }, GroupLink {
+            group_address: rewired_ga,
+            com_object: 1,
+        }];
         project.max_apdu = 40;
+        let param_id = |offset: u32| {
+            product
+                .parameters
+                .iter()
+                .find(|parameter| parameter.offset == offset)
+                .map(|parameter| parameter.id.clone())
+                .ok_or_else(|| format!("the secure product lacks a parameter at offset {offset}"))
+        };
+        project.parameters = vec![ParameterValue { id: param_id(0)?, value: vec![4] }, ParameterValue {
+            id: param_id(1)?,
+            value: vec![3],
+        }];
         project.security = Some(DownloadSecurityConfig {
             group_keys: vec![(rewired_ga, GROUP_KEY)],
             // The client itself is the secure group sender in the second
             // half of the scenario, so its IA must have a replay-counter row.
             siat: vec![(tester_ia(), 0)],
-            go_flags: vec![0x03, 0, 0, 0],
+            go_flags: vec![0x03, 0x03, 0, 0, 0, 0],
         });
 
         bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure download: {e}"))?;
@@ -760,7 +779,7 @@ fn scenario_bcu2_secure_commission<'a>(
             for (property, expected, name) in [
                 (pid::security::GROUP_KEY_TABLE, 1u16, "group-key table"),
                 (pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1u16, "SIAT"),
-                (pid::security::GO_SECURITY_FLAGS, 4u16, "GO security flags"),
+                (pid::security::GO_SECURITY_FLAGS, 6u16, "GO security flags"),
             ] {
                 let count = conn
                     .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, property, 0, 1)
@@ -783,20 +802,35 @@ fn scenario_bcu2_secure_commission<'a>(
                     mode.return_code, mode.data
                 ));
             }
+
+            // This is the shipping light-switch product rather than the
+            // four-object DUT fixture: its RT2 table and parameter block must
+            // survive the secure download and restart as well.
+            let cot = conn.memory_read(0x0146, 20).await.map_err(|e| format!("COT read: {e}"))?;
+            if cot[0] != 6 || cot[1] != 0xD0 {
+                return Err(format!("COT header {:02X?}, expected six objects at D0h", &cot[..2]));
+            }
+            let params = conn.memory_read(0x0200, 8).await.map_err(|e| format!("parameter read: {e}"))?;
+            if params != [4, 3, 1, 0, 0, 0, 0, 0] {
+                return Err(format!("parameters {params:02X?}, expected secure light-switch overrides"));
+            }
             Ok(())
         }
         .await;
         close_quietly(conn).await;
         checks?;
 
-        // Drive both directions. The secure client write changes GO0 to one;
-        // triggering the same object back proves the device accepted it and
-        // that its response used the commissioned group key and PID 61 level.
+        // Drive both directions. The secure client write updates the product's
+        // status input (GO1); triggering that object back proves the device
+        // accepted it and used the commissioned group key and PID 61 level.
         bus.group_write(rewired_ga, &[1], GroupValueEncoding::Short)
             .await
             .map_err(|e| format!("secure group write to DUT: {e}"))?;
+        // Group writes are connectionless: `group_write` confirms that the
+        // bridge emitted the frame, not that the DUT process has consumed it.
+        tokio::time::sleep(Duration::from_millis(50)).await;
         let mut events = bus.group_events();
-        control.trigger_group_write(0).await.map_err(|e| format!("secure group trigger: {e}"))?;
+        control.trigger_group_write(1).await.map_err(|e| format!("secure group trigger: {e}"))?;
         let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
             .await
             .map_err(|_| "no secure group telegram after trigger".to_string())?

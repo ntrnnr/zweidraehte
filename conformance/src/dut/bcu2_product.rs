@@ -200,6 +200,6 @@ mod tests {
         assert_eq!(product.max_security_individual_address_entries, Some(bcu2_secure_stack::SIAT_CAPACITY as u16));
         assert_eq!(product.max_security_group_key_table_entries, Some(bcu2_secure_stack::GROUP_KEY_CAPACITY as u16));
         assert_eq!(product.max_security_p2p_key_table_entries, Some(0));
-        assert_eq!(product.com_object_numbers.len(), bcu2_secure_stack::GROUP_OBJECT_CAPACITY);
+        assert_eq!(product.com_object_numbers.len(), bcu2_secure_stack::definition().comm_objects.len());
     }
 }

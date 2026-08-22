@@ -1,12 +1,12 @@
 //! Secure BCU2 (mask 0021h) micro-stack fixture.
 //!
-//! The security tables are deliberately small: this is a conformance and
-//! commissioning fixture, not an attempt to mimic the bench product's 64-key
-//! and 190-SIAT capacities. Product metadata is derived from these constants,
-//! so ETS-style input cannot promise more storage than the firmware owns.
+//! Its security capacities match the shipping secure BCU2 light switch. That
+//! lets the configuration runner download the real product rather than a
+//! reduced fixture whose MTXML promises a different device.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use devices::light_switch::micro;
 use zweidraehte_microdevice::SecureBcu2;
 use zweidraehte_microdevice::security::MicroSecurityResources;
 use zweidraehte_microdevice::snapshot::{MicroSnapshot, SecureMicroSnapshot};
@@ -15,10 +15,10 @@ use zweidraehte_proto::security::{SecurityConfig, SequenceNumberStorage, SiatAcc
 use super::bcu2_stack;
 use super::fixture_common::{SECURE_FDSK, secure_seq_store};
 
-pub const GROUP_KEY_CAPACITY: usize = 8;
-pub const SIAT_CAPACITY: usize = 8;
-pub const GROUP_OBJECT_CAPACITY: usize = 4;
-pub const P2P_KEY_CAPACITY: usize = 0;
+pub const GROUP_KEY_CAPACITY: usize = micro::BCU2_SECURE_GROUP_KEY_CAPACITY;
+pub const SIAT_CAPACITY: usize = micro::BCU2_SECURE_SIAT_CAPACITY;
+pub const GROUP_OBJECT_CAPACITY: usize = micro::BCU2_SECURE_GROUP_OBJECT_CAPACITY;
+pub const P2P_KEY_CAPACITY: usize = micro::BCU2_SECURE_P2P_KEY_CAPACITY;
 
 /// The micro module's handle onto the conformance harness's packed SHM store.
 ///
@@ -132,5 +132,5 @@ pub fn factory_snapshot() -> Snapshot {
     Snapshot { base, security, sequence: Bcu2SecureStore, fdsk: SECURE_FDSK }
 }
 
-const _: () = assert!(GROUP_OBJECT_CAPACITY == 4);
+const _: () = assert!(GROUP_OBJECT_CAPACITY >= 4);
 const _: () = assert!(SIAT_CAPACITY <= super::fixture_common::sec_table_sizes::SIAT);

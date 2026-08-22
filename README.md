@@ -181,8 +181,9 @@ breakdown of what works, what needs testing, and what is missing.
   other products to surface surprises — a native BCU2 product has not
   met silicon yet. No automatic reconnection, sequential command
   channel, no layered NL/TL/AL separation yet. Partial-download
-  subtypes (`grp`/`par`/`cfg`/`ap1`) and secure commissioning are not
-  wired.
+  subtypes (`grp`/`par`/`cfg`/`ap1`) are not wired. Secure BCU2 first
+  commissioning is covered by the configuration runner; broader secure
+  real-device download coverage is still missing.
 - **ip_interface link layer**: the composite KNX/IP↔TP1 bridge behind
   the IP-interface firmware — implemented, but untested so far.
 - **`zweidraehte-microdevice`** (experimental throughout): BCU2 and
@@ -225,8 +226,8 @@ breakdown of what works, what needs testing, and what is missing.
 - **Profiles**: System B (07B0/27B0/57B0) and System 7 TP1 (0705,
   incl. Data Secure) are implemented by the full stack. The micro stack
   implements BCU1 0012h, BCU2 0020h/0021h/0025h, and System 7 0705h on
-  TP1; only BCU2 and micro-System-7 currently have reference firmware and
-  DUT coverage. System 7 RF/IP siblings, System 300, couplers/routers,
+  TP1; plain and Data Secure BCU2 plus micro-System-7 have reference firmware
+  and DUT coverage. System 7 RF/IP siblings, System 300, couplers/routers,
   and USB interface masks are not implemented.
 - **Micro-stack maturity**: the micro-System-7 EITT profile does not yet
   run Group Objects or Management, BCU1 has no DUT or firmware target,
@@ -507,8 +508,10 @@ System B from 1), so a shared definition works on both.
 quest: an experiment in how small a KNX device gets when you drop the
 executor, the buffer pool and the interface-object tower, and let the
 EEPROM image *be* the tables. It covers BCU1, BCU2 and fixed-map System 7
-on TP1 standard frames only, and device code owns one `Microdevice<F>`
-and polls it directly. It is much less tested than the full stack, so
+on TP1; plain profiles remain standard-frame-only, while the evidence-backed
+secure BCU2 0021h profile opts into APDU-40 extended frames. Device code
+owns one `Microdevice<F>` and polls it directly. It is much less tested than
+the full stack, so
 pick it for actual BCU-era hardware or a genuinely brutal RAM/flash
 budget — and expect to get your hands dirty. Do not pick it merely as a
 smaller API for a new System B product; it models different hardware and

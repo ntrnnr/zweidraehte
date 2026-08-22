@@ -106,6 +106,9 @@ impl LightSwitchDevice {
     /// [`HARDWARE_TYPE_TP1_SYSTEM7`](Self::HARDWARE_TYPE_TP1_SYSTEM7)
     /// product, one `.knxprod` driving either firmware.
     pub const HARDWARE_TYPE_TP1_BCU2: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0C];
+    /// Hardware type / knxprod hardware serial for the Data Secure BCU2
+    /// (mask 0021h) variant on the microdevice stack.
+    pub const HARDWARE_TYPE_TP1_BCU2_SECURE: [u8; 6] = [0x00, 0xFA, 0x00, 0x00, 0x00, 0x0D];
     /// Application ID for the KNX/IP variant.
     pub const APPLICATION_ID_IP: u16 = 0x0300;
     /// Application ID for the TP1 variant. Distinct from the IP variant so
@@ -151,6 +154,8 @@ impl LightSwitchDevice {
     /// [`APPLICATION_ID_TP1_SYSTEM7`](Self::APPLICATION_ID_TP1_SYSTEM7):
     /// same mask, same product, alternative implementation.
     pub const APPLICATION_ID_TP1_BCU2: u16 = 0x0308;
+    /// Application ID for the Data Secure BCU2 (mask 0021h) variant.
+    pub const APPLICATION_ID_TP1_BCU2_SECURE: u16 = 0x0309;
     pub const APPLICATION_VERSION: u8 = 0x02;
     pub const MAX_ADDRESS_TABLE_ENTRIES: u16 = 10;
     pub const MAX_ASSOCIATION_TABLE_ENTRIES: u16 = 12;
@@ -283,6 +288,18 @@ impl LightSwitchDevice {
     pub const fn device_descriptor_bcu2_tp1() -> DeviceDescriptor {
         Self::descriptor_for(MaskVersion::Other(0x0020), Self::APPLICATION_ID_TP1_BCU2, Self::HARDWARE_TYPE_TP1_BCU2)
     }
+
+    /// Build a descriptor for the evidence-backed Data Secure BCU2 profile.
+    ///
+    /// Unlike System B, the BCU2 sibling mask is observable: secure firmware
+    /// reports 0021h and the plain firmware reports 0020h.
+    pub const fn device_descriptor_bcu2_secure_tp1() -> DeviceDescriptor {
+        Self::descriptor_for(
+            MaskVersion::Bcu2Tp1,
+            Self::APPLICATION_ID_TP1_BCU2_SECURE,
+            Self::HARDWARE_TYPE_TP1_BCU2_SECURE,
+        )
+    }
 }
 
 /// Device descriptor for KNX/IP (mask version 57B0).
@@ -334,3 +351,8 @@ pub const DEVICE_DESCRIPTOR_TP1_SYSTEM7_SECURE: DeviceDescriptor =
 /// application ID 0x0308). Pairs with the
 /// `stm32g0_tp1_bcu2_light_switch` firmware on the microdevice stack.
 pub const DEVICE_DESCRIPTOR_TP1_BCU2: DeviceDescriptor = LightSwitchDevice::device_descriptor_bcu2_tp1();
+
+/// Device descriptor for the Data Secure BCU2 TP1 variant (mask version
+/// 0021, application ID 0x0309). Pairs with the polling
+/// `stm32g0_tp1_bcu2_secure_light_switch` firmware.
+pub const DEVICE_DESCRIPTOR_TP1_BCU2_SECURE: DeviceDescriptor = LightSwitchDevice::device_descriptor_bcu2_secure_tp1();

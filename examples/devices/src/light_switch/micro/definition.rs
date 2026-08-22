@@ -36,6 +36,14 @@ pub(super) const CO_DESCRIPTORS_S7: [System7CoDescriptor; 6] = build_system7_des
 /// 0200h, clear of the RT2 table page below it.
 pub const BCU2_PARAMS_IMAGE_OFFSET: usize = 0x100;
 
+/// Data Secure table capacities shared by the MV-0021 firmware and product
+/// metadata. P2P is deliberately absent; the micro profile supports tool
+/// access and secure group communication only.
+pub const BCU2_SECURE_SIAT_CAPACITY: usize = 8;
+pub const BCU2_SECURE_GROUP_KEY_CAPACITY: usize = LightSwitchDevice::MAX_ADDRESS_TABLE_ENTRIES as usize;
+pub const BCU2_SECURE_GROUP_OBJECT_CAPACITY: usize = LightSwitchDevice::MAX_COM_OBJECTS as usize;
+pub const BCU2_SECURE_P2P_KEY_CAPACITY: usize = 0;
+
 /// The micro System 7 family: 1 KiB of user EEPROM from 4000h, with its group
 /// object table published at 4200h.
 pub type LightSwitchS7Family = System7Family<0x400, 0x4200>;
@@ -61,6 +69,17 @@ pub const fn bcu2_definition() -> Bcu2DeviceDefinition {
         associations: &[],
         app_params: Some((&DEFAULT_PARAM_BYTES, BCU2_PARAMS_IMAGE_OFFSET)),
     }
+}
+
+/// The Data Secure BCU2 (mask 0021h) light-switch definition.
+///
+/// Its EEPROM geometry and communication-object descriptors deliberately
+/// remain identical to the plain sibling; only the mask/application identity
+/// and the composed security module differ.
+pub const fn secure_bcu2_definition() -> Bcu2DeviceDefinition {
+    let mut definition = bcu2_definition();
+    definition.device_type = LightSwitchDevice::APPLICATION_ID_TP1_BCU2_SECURE;
+    definition
 }
 
 /// The micro System 7 definition. It deliberately shares identity and
