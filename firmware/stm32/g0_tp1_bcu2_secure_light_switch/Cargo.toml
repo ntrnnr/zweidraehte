@@ -1,0 +1,34 @@
+# Data Secure BCU2 light switch on the polling micro stack. Like the plain
+# sibling this target has no executor or HAL; only the PAC and blocking
+# peripheral adapters are linked.
+[package]
+edition = "2024"
+license.workspace = true
+name = "stm32g0_tp1_bcu2_secure_light_switch"
+version = "0.1.0"
+
+[dependencies]
+cortex-m = { workspace = true, features = ["critical-section-single-core"] }
+cortex-m-rt = { workspace = true }
+stm32-metapac = { version = "19", features = ["stm32g0b0re", "rt"] }
+
+defmt = { workspace = true }
+defmt-rtt = { workspace = true }
+panic-probe = { workspace = true, features = ["print-defmt"] }
+heapless = { workspace = true }
+embedded-hal = { workspace = true }
+postcard = { workspace = true }
+chacha20 = { version = "0.10.0", default-features = false, features = ["rng"] }
+
+fm25l16b = { path = "../../common/fm25l16b" }
+zweidraehte-microdevice = { path = "../../../crates/zweidraehte-microdevice", default-features = false, features = ["defmt"] }
+zweidraehte-proto = { path = "../../../crates/zweidraehte-proto", default-features = false, features = ["defmt"] }
+zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["micro"] }
+
+[build-dependencies]
+dev-provisioning-build = { path = "../../common/dev-provisioning-build" }
+
+[features]
+# Development convenience only. Production firmware refuses to boot unless
+# tools/knx-provision has written a valid per-device KNXP serial and FDSK.
+provision-on-boot = []

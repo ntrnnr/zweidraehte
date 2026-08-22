@@ -2840,6 +2840,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "stm32g0_tp1_bcu2_secure_light_switch"
+version = "0.1.0"
+dependencies = [
+ "chacha20",
+ "cortex-m",
+ "cortex-m-rt",
+ "defmt 1.0.1",
+ "defmt-rtt",
+ "dev-provisioning-build",
+ "embedded-hal 1.0.0",
+ "fm25l16b",
+ "heapless 0.9.2",
+ "panic-probe",
+ "postcard",
+ "stm32-metapac",
+ "zweidraehte-devices",
+ "zweidraehte-microdevice",
+ "zweidraehte-proto",
+]
+
+[[package]]
 name = "stm32g0_tp1_light_switch"
 version = "0.1.0"
 dependencies = [
