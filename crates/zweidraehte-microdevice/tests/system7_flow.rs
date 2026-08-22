@@ -4,17 +4,20 @@
 //! the way the bus would.
 
 mod common;
-use common::{CLIENT, DUT, apdu, connect, exchange};
+use common::{CLIENT, DUT, apdu, canonical, connect, exchange};
 
 use zweidraehte_microdevice::MemoryAccessPolicy;
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
-use zweidraehte_microdevice::frame::{ApciCode, FrameView, Tpci, data_frame};
+use zweidraehte_microdevice::frame::{
+    ApciCode, EXTENDED_FRAME, FrameView, MAX_FRAME, Tpci, data_frame, max_apdu, normalize, to_wire,
+};
 use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
-use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
+use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadState, RunState};
+use zweidraehte_proto::pid;
 
 /// The DUT product: 1 KiB of user EEPROM from 4000h, the group object
 /// table published at 4200h.
@@ -166,7 +169,7 @@ fn property_descriptions_and_values_share_one_roster() {
     let rsp = exchange(&mut dev, 4, ApciCode::PropertyDescriptionRead, 0, &[0, 56, 0], 0).expect("described");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x38, 0x07, 0x04, 0x40, 0x01, 0xF0]);
     let rsp = exchange(&mut dev, 5, ApciCode::PropertyValueRead, 0, &[0, 56, 0x10, 0x01], 0).expect("read");
-    assert_eq!(&apdu(&rsp)[6..], &MAX_APDU_LENGTH_TP1_STANDARD.to_be_bytes());
+    assert_eq!(&apdu(&rsp)[6..], &15u16.to_be_bytes());
 
     // Unknown PID lookup and an exhausted index scan both return the
     // zero-descriptor form, with the caller's lookup key preserved.
@@ -196,10 +199,11 @@ fn property_access_is_request_scoped() {
 
     // A_Authorize is connection-oriented. An unnumbered request neither
     // answers nor changes the level the next connection starts with.
-    let authorize = data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::AuthorizeRequest, 0, &[
-        0x00, 0xAA, 0xAA, 0xAA, 0xAA,
-    ]);
-    let out = dev.poll(PollInput::Frame(&authorize), 0);
+    let authorize =
+        data_frame::<MAX_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::AuthorizeRequest, 0, &[
+            0x00, 0xAA, 0xAA, 0xAA, 0xAA,
+        ]);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&authorize)), 0);
     assert!(out.frames.is_empty(), "connectionless authorize is ignored");
     assert_eq!(dev.mgmt.auth_level, 2);
 
@@ -210,12 +214,14 @@ fn property_access_is_request_scoped() {
 
     // A connectionless write uses the default-key level, not the active
     // connection's level 0, and is therefore denied with count zero.
-    let write = data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::PropertyValueWrite, 0, &[
-        0, 14, 0x10, 0x01, 0x04,
-    ]);
-    let out = dev.poll(PollInput::Frame(&write), 0);
+    let write =
+        data_frame::<MAX_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::PropertyValueWrite, 0, &[
+            0, 14, 0x10, 0x01, 0x04,
+        ]);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     assert_eq!(out.frames.len(), 1);
-    let view = FrameView::parse(&out.frames[0]).expect("parsable response");
+    let view_frame = canonical(&out.frames[0]);
+    let view = FrameView::parse(&view_frame).expect("parsable response");
     assert_eq!(view.tpci(), Some(Tpci::DataIndividual));
     assert_eq!(&apdu(&out.frames[0])[2..], &[0, 14, 0, 1]);
     assert_eq!(dev.mgmt.device_control, 0, "denied write has no side effect");
@@ -234,8 +240,10 @@ fn memory_access_is_region_and_connection_scoped() {
     // A_Memory services are connection-oriented even on System 7, whose
     // device-oriented property services also accept unnumbered requests.
     let unnumbered =
-        data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::MemoryRead, 1, &[0x45, 0x20]);
-    assert!(dev.poll(PollInput::Frame(&unnumbered), 0).frames.is_empty());
+        data_frame::<MAX_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::MemoryRead, 1, &[
+            0x45, 0x20,
+        ]);
+    assert!(dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&unnumbered)), 0).frames.is_empty());
 
     connect(&mut dev);
 
@@ -358,7 +366,7 @@ fn property_path_lsm_still_works() {
     assert_eq!(dev.eeprom_image()[0], 1, "only the IA slot remains in the table length");
     assert_eq!(dev.individual_address(), DUT, "the IA survives the unload");
 
-    let read = data_frame(
+    let read = data_frame::<MAX_FRAME>(
         0x0C,
         CLIENT,
         GroupAddress::from_three_level(1, 0, 2).0,
@@ -368,7 +376,7 @@ fn property_path_lsm_still_works() {
         0,
         &[],
     );
-    let out = dev.poll(PollInput::Frame(&read), 0);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
     assert!(out.frames.is_empty(), "a muted device answers no group reads");
 }
 
@@ -391,7 +399,7 @@ fn run_state_stop_terminates_instead_of_halting() {
     let rsp = exchange(&mut dev, 2, ApciCode::PropertyValueWrite, 0, &[3, 6, 0x10, 0x01, 0x02], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Terminated));
     assert!(!dev.is_running());
-    let read = data_frame(
+    let read = data_frame::<MAX_FRAME>(
         0x0C,
         CLIENT,
         GroupAddress::from_three_level(1, 0, 2).0,
@@ -401,7 +409,7 @@ fn run_state_stop_terminates_instead_of_halting() {
         0,
         &[],
     );
-    let out = dev.poll(PollInput::Frame(&read), 0);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
     assert!(out.frames.is_empty(), "a terminated application answers no group reads");
 
     // RUNCONTROL_RESTART revives it.
@@ -418,13 +426,21 @@ fn run_state_stop_terminates_instead_of_halting() {
 fn individual_address_write_lands_in_the_adt() {
     let mut dev = device();
     let new_ia = IndividualAddress::new(2, 3, 4);
-    let write =
-        data_frame(0x00, CLIENT, [0, 0], true, Tpci::DataGroup, ApciCode::IndividualAddressWrite, 0, new_ia.as_bytes());
-    dev.poll(PollInput::Frame(&write), 0);
+    let write = data_frame::<MAX_FRAME>(
+        0x00,
+        CLIENT,
+        [0, 0],
+        true,
+        Tpci::DataGroup,
+        ApciCode::IndividualAddressWrite,
+        0,
+        new_ia.as_bytes(),
+    );
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     assert_eq!(dev.individual_address(), DUT, "ignored outside programming mode");
 
     dev.set_programming_mode(true);
-    dev.poll(PollInput::Frame(&write), 0);
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     assert_eq!(dev.individual_address(), new_ia);
     // RT8 defines the IA as ADT bytes 1–2 (4001h–4002h).
     assert_eq!(&dev.eeprom_image()[1..3], new_ia.as_bytes());
@@ -435,7 +451,7 @@ fn rt8_group_communication() {
     let mut dev = device();
 
     // A bus write to 1/0/1 lands in ASAP 0's RAM slot.
-    let write = data_frame(
+    let write = data_frame::<MAX_FRAME>(
         0x0C,
         CLIENT,
         GroupAddress::from_three_level(1, 0, 1).0,
@@ -445,7 +461,7 @@ fn rt8_group_communication() {
         1,
         &[],
     );
-    dev.poll(PollInput::Frame(&write), 0);
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     let mut value = [0u8; 1];
     assert_eq!(dev.read_value(0, &mut value), 1);
     assert_eq!(value[0], 1);
@@ -455,7 +471,8 @@ fn rt8_group_communication() {
     dev.write_value(1, &[1]);
     dev.set_transmit_request(1);
     let out = dev.poll(PollInput::Timer, 10);
-    let tx = FrameView::parse(&out.frames[0]).expect("parsable");
+    let tx_frame = canonical(&out.frames[0]);
+    let tx = FrameView::parse(&tx_frame).expect("parsable");
     assert_eq!(tx.apci(), Some(ApciCode::GroupValueWrite.wire10_base() | 0x01));
     assert_eq!(tx.dest_group(), GroupAddress::from_three_level(1, 0, 2));
 }
@@ -478,4 +495,399 @@ fn snapshot_round_trip_preserves_option_reg() {
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);
     assert_eq!(restored.individual_address(), DUT);
     assert_eq!(restored.mgmt.auth_level, 2, "restored keys determine disconnected access");
+}
+
+/// Transport layer 2.5.1 verbatim: a T_Connect carrying appended octets,
+/// followed by a correct Device Descriptor Read, five times with a growing
+/// tail, then a T_Disconnect.
+///
+/// The EITT run hung here, so this pins the sequence as plain frames the
+/// device must survive without wedging.
+#[test]
+fn malformed_connects_with_appended_octets_do_not_wedge_the_device() {
+    let mut dev = device();
+    let injects: [&[u8]; 11] = [
+        &[0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x80, 0x11],
+        &[0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x43, 0x00],
+        &[0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x62, 0x80, 0x11, 0x22],
+        &[0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x47, 0x00],
+        &[0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x63, 0x80, 0x11, 0x22, 0x33],
+        &[0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x4B, 0x00],
+        &[0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x64, 0x80, 0x11, 0x22, 0x33, 0x44],
+        &[0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x4F, 0x00],
+        &[0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x65, 0x80, 0x11, 0x22, 0x33, 0x44, 0x55],
+        &[0xBC, 0xAF, 0xFE, 0x10, 0x01, 0x61, 0x53, 0x00],
+        &[0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x81],
+    ];
+    for (i, wire) in injects.iter().enumerate() {
+        let out = dev.poll(PollInput::Frame(wire), i as u32 * 40);
+        for frame in &out.frames {
+            assert!(frame.len() >= 7, "step {i} emitted a runt frame");
+        }
+    }
+}
+
+/// The extended-frame profile: a device sized for the 40-octet APDU a secure
+/// BCU2 advertises, driven over the same family as the plain one.
+///
+/// This is what stops the capacity parameters from being flexibility nobody
+/// has compiled — and it pins the two halves that have to agree, the length
+/// the device *advertises* and the length it can actually answer with.
+#[test]
+fn the_extended_profile_advertises_and_serves_a_long_apdu() {
+    let def = definition();
+    let mut dev: Microdevice<Fam, EXTENDED_FRAME> = Microdevice::new(Fam::build_eeprom(&def), identity(), 1);
+    for (machine, table_ref) in Fam::factory_table_refs(&def).into_iter().enumerate().take(3) {
+        dev.mgmt.lsm[machine].state = LoadState::Loaded;
+        dev.mgmt.lsm[machine].table_ref = table_ref;
+    }
+
+    // A connectionless Device Descriptor Read still travels as an ordinary
+    // standard frame: being able to send extended frames does not mean
+    // sending short ones that way.
+    let read = data_frame::<EXTENDED_FRAME>(
+        0x00,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataIndividual,
+        ApciCode::DeviceDescriptorRead,
+        0,
+        &[],
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&read)), 0);
+    assert_eq!(out.frames.len(), 1);
+    assert_ne!(out.frames[0][0] & 0x80, 0, "a short reply stays a standard frame");
+    let canonical = normalize::<EXTENDED_FRAME>(&out.frames[0]).expect("well-formed reply");
+    let view = FrameView::parse(&canonical).expect("parsable");
+    assert_eq!(view.payload(), &[0x07, 0x05], "mask 0705h");
+
+    // PID_MAX_APDULENGTH must report the profile's ceiling, because that is
+    // what a management client sizes its writes by.
+    let read = data_frame::<EXTENDED_FRAME>(
+        0x00,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataIndividual,
+        ApciCode::PropertyValueRead,
+        0,
+        &[0x00, pid::device::MAX_APDU_LENGTH as u8, 0x10, 0x01],
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&read)), 10);
+    let canonical = normalize::<EXTENDED_FRAME>(&out.frames[0]).expect("well-formed reply");
+    let view = FrameView::parse(&canonical).expect("parsable");
+    assert_eq!(&view.payload()[4..], &max_apdu(EXTENDED_FRAME).to_be_bytes(), "advertises the profile ceiling");
+
+    // And it can answer with one: a memory read longer than the standard
+    // APDU could ever carry, which has to leave as an extended frame.
+    // `A_Memory_Read` is connection-oriented, so open the connection first.
+    let connect =
+        [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Connect.octet()];
+    assert!(dev.poll(PollInput::Frame(&connect), 30).frames.is_empty(), "connect is accepted silently");
+
+    let long = 20u8;
+    let read = data_frame::<EXTENDED_FRAME>(
+        0x00,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataConnected(0),
+        ApciCode::MemoryRead,
+        long,
+        &[0x40, 0x00],
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&read)), 40);
+    assert_eq!(out.frames.len(), 2, "a T_ACK and the response");
+    assert_eq!(out.frames[1][0] & 0x80, 0, "a 20-octet memory read answers in an extended frame");
+    let canonical = normalize::<EXTENDED_FRAME>(&out.frames[1]).expect("well-formed reply");
+    let view = FrameView::parse(&canonical).expect("parsable");
+    assert_eq!(view.payload().len(), 2 + long as usize, "address plus the requested octets");
+}
+
+/// The same read against the plain profile is refused rather than truncated:
+/// 20 octets do not fit a 15-octet APDU, and answering with fewer would claim
+/// success for a different operation.
+#[test]
+fn the_plain_profile_refuses_a_read_longer_than_its_apdu() {
+    let mut dev = device();
+    let connect =
+        [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Connect.octet()];
+    assert!(dev.poll(PollInput::Frame(&connect), 0).frames.is_empty());
+
+    let read =
+        data_frame::<MAX_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataConnected(0), ApciCode::MemoryRead, 20, &[
+            0x40, 0x00,
+        ]);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 10);
+    assert_eq!(out.frames.len(), 2, "a T_ACK and the refusal");
+    let canonical = normalize::<MAX_FRAME>(&out.frames[1]).expect("well-formed");
+    let view = FrameView::parse(&canonical).expect("parsable");
+    assert_eq!(view.payload().len(), 2, "address echoed, count zero, no data");
+}
+
+// ============================================================================
+// Extended property services
+// ============================================================================
+//
+// These address an object by type plus one-based occurrence instead of by
+// index (03/03/07 §3.4.5.1), which is the only way to reach an object a
+// family keeps out of its indexed roster — the shape a secure BCU2 needs for
+// its Security Interface Object. Everything after the resolution is the
+// classic property path, so the strongest assertion available is that both
+// spellings of the same request return the same bytes.
+//
+// They belong to the extended profile: `A_PropertyExtDescription_Response` is
+// a fixed 16-octet APDU, so a standard-frame device could implement six of
+// the seven services §9.1.2.3.2 makes mandatory and not the seventh.
+
+type WideDevice = Microdevice<Fam, EXTENDED_FRAME>;
+
+fn wide_device() -> WideDevice {
+    let def = definition();
+    let mut dev: WideDevice = Microdevice::new(Fam::build_eeprom(&def), identity(), 1);
+    for (machine, table_ref) in Fam::factory_table_refs(&def).into_iter().enumerate().take(3) {
+        dev.mgmt.lsm[machine].state = LoadState::Loaded;
+        dev.mgmt.lsm[machine].table_ref = table_ref;
+    }
+    dev
+}
+
+/// `(object_instance | property_id)` packed into the three octets the
+/// extended services carry them in.
+fn pack_instance_pid(instance: u16, pid: u16) -> [u8; 3] {
+    [(instance >> 4) as u8, ((((instance & 0x0F) << 4) | (pid >> 8)) as u8), pid as u8]
+}
+
+fn ext_read_payload(object_type: u16, instance: u16, pid: u16, count: u8, start: u16) -> [u8; 8] {
+    let ot = object_type.to_be_bytes();
+    let ip = pack_instance_pid(instance, pid);
+    let st = start.to_be_bytes();
+    [ot[0], ot[1], ip[0], ip[1], ip[2], count, st[0], st[1]]
+}
+
+/// Drive one connectionless request against the plain profile and return the
+/// single reply's payload.
+fn connectionless(dev: &mut Microdevice<Fam>, apci: ApciCode, payload: &[u8], now: u32) -> Vec<u8> {
+    let req = data_frame::<MAX_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, apci, 0, payload);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&req)), now);
+    assert_eq!(out.frames.len(), 1, "expected exactly one reply");
+    let canonical = canonical(&out.frames[0]);
+    let view = FrameView::parse(&canonical).expect("parsable");
+    view.payload().to_vec()
+}
+
+/// The same, against the extended profile.
+fn connectionless_wide(dev: &mut WideDevice, apci: ApciCode, payload: &[u8], now: u32) -> Vec<u8> {
+    let req = data_frame::<EXTENDED_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, apci, 0, payload);
+    let out = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&req)), now);
+    assert_eq!(out.frames.len(), 1, "expected exactly one reply");
+    let canonical = normalize::<EXTENDED_FRAME>(&out.frames[0]).expect("well-formed");
+    let view = FrameView::parse(&canonical).expect("parsable");
+    view.payload().to_vec()
+}
+
+#[test]
+fn an_extended_read_returns_what_the_indexed_read_returns() {
+    let mut plain = device();
+    let mut wide = wide_device();
+    // PID_SERIAL_NUMBER on the Device Object, reached both ways.
+    let pid = pid::SERIAL_NUMBER;
+    let classic = connectionless(&mut plain, ApciCode::PropertyValueRead, &[0x00, pid as u8, 0x10, 0x01], 0);
+    let extended =
+        connectionless_wide(&mut wide, ApciCode::PropertyExtValueRead, &ext_read_payload(0, 1, pid, 1, 1), 0);
+    // Classic response: obj, pid, count|start, start, then data.
+    // Extended response: type(2), instance|pid(3), count, start(2), then data.
+    assert_eq!(&extended[8..], &classic[4..], "same property, same bytes");
+    assert!(!extended[8..].is_empty(), "the serial number is not empty");
+}
+
+#[test]
+fn an_extended_read_of_an_absent_object_type_is_an_address_error() {
+    let mut wide = wide_device();
+    // Object Type 17 is the Security Interface Object; this device has none.
+    let reply = connectionless_wide(
+        &mut wide,
+        ApciCode::PropertyExtValueRead,
+        &ext_read_payload(17, 1, pid::SERIAL_NUMBER, 1, 1),
+        0,
+    );
+    assert_eq!(reply[5], 0, "an error response carries count zero");
+    assert_eq!(reply[8], 0xFD, "E_ADDRESS_VOID");
+}
+
+#[test]
+fn occurrence_zero_never_resolves() {
+    let mut wide = wide_device();
+    let reply = connectionless_wide(
+        &mut wide,
+        ApciCode::PropertyExtValueRead,
+        &ext_read_payload(0, 0, pid::SERIAL_NUMBER, 1, 1),
+        0,
+    );
+    assert_eq!(reply[8], 0xFD, "instance 0 is not a valid occurrence");
+}
+
+#[test]
+fn an_extended_confirmed_write_answers_with_a_return_code() {
+    let mut wide = wide_device();
+    // PID_PROGMODE on the Device Object is writable; set programming mode on.
+    let mut payload = ext_read_payload(0, 1, pid::device::PROGMODE, 1, 1).to_vec();
+    payload.push(0x01);
+    let reply = connectionless_wide(&mut wide, ApciCode::PropertyExtValueWriteCon, &payload, 0);
+    assert_eq!(reply[8], 0x00, "E_SUCCESS");
+    assert!(wide.is_programming_mode(), "the write took effect");
+}
+
+/// A standard-frame profile does not implement the extended services at all,
+/// so it ignores them the way it ignores any APCI it does not decode — no
+/// reply, and no pretence of partial support.
+#[test]
+fn a_standard_profile_ignores_the_extended_services() {
+    let mut plain = device();
+    let req = data_frame::<MAX_FRAME>(
+        0x00,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataIndividual,
+        ApciCode::PropertyExtValueRead,
+        0,
+        &ext_read_payload(0, 1, pid::SERIAL_NUMBER, 1, 1),
+    );
+    let out = plain.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&req)), 0);
+    assert!(out.frames.is_empty());
+}
+
+/// `A_PropertyExtDescription_Response` is a fixed 23 canonical octets — a
+/// 16-octet APDU — which is the concrete reason the extended services and the
+/// extended APDU are one choice rather than two.
+#[test]
+fn an_extended_description_read_matches_the_indexed_one() {
+    let mut plain = device();
+    let mut wide = wide_device();
+
+    let pid = pid::SERIAL_NUMBER;
+    let classic = connectionless(&mut plain, ApciCode::PropertyDescriptionRead, &[0x00, pid as u8, 0x00], 0);
+    let ip = pack_instance_pid(1, pid);
+    let extended = connectionless_wide(
+        &mut wide,
+        ApciCode::PropertyExtDescriptionRead,
+        &[0x00, 0x00, ip[0], ip[1], ip[2], 0x00, 0x00],
+        0,
+    );
+
+    // The two encodings are not byte-comparable: the classic response packs
+    // the PDT's low nibble into the top of its 12-bit max-elements field
+    // (03/03/07 Figure 44), while the extended one keeps a plain 16-bit
+    // count. So compare the decoded fields.
+    //
+    // Classic payload: [obj, pid, prop_idx, W|PDT, max_hi, max_lo, access].
+    // Extended payload is frame-relative `MSG_APCI + 2`, so the descriptor
+    // fields land at 11 (W|PDT), 12..14 (max) and 14 (access).
+    assert_eq!(extended[11], classic[3], "writeable flag and PDT");
+    let classic_max = u16::from_be_bytes([classic[4], classic[5]]) & 0x0FFF;
+    let extended_max = u16::from_be_bytes([extended[12], extended[13]]);
+    assert_eq!(extended_max, classic_max, "max elements");
+    assert_eq!(extended[14], classic[6], "read and write access levels");
+}
+
+// ============================================================================
+// Extended memory services
+// ============================================================================
+//
+// Three address octets, a full-octet count, and an explicit return code
+// instead of the classic services' zero-count convention. This is the path an
+// ETS download to a secure device actually uses.
+
+fn ext_memory_payload(count: u8, address: u32, data: &[u8]) -> Vec<u8> {
+    let mut p = vec![count, (address >> 16) as u8, (address >> 8) as u8, address as u8];
+    p.extend_from_slice(data);
+    p
+}
+
+#[test]
+fn an_extended_memory_write_lands_and_reads_back() {
+    let mut wide = wide_device();
+    // 4400h is an open region in this fixture's memory policy.
+    let written = [0xDE, 0xAD, 0xBE, 0xEF];
+    let reply = connectionless_wide(
+        &mut wide,
+        ApciCode::MemoryExtendedWrite,
+        &ext_memory_payload(written.len() as u8, 0x43F0, &written),
+        0,
+    );
+    assert_eq!(reply[0], 0x00, "E_SUCCESS");
+    assert_eq!(&reply[1..4], &[0x00, 0x43, 0xF0], "the full address is echoed");
+
+    let reply = connectionless_wide(
+        &mut wide,
+        ApciCode::MemoryExtendedRead,
+        &ext_memory_payload(written.len() as u8, 0x43F0, &[]),
+        10,
+    );
+    assert_eq!(reply[0], 0x00, "E_SUCCESS");
+    assert_eq!(&reply[4..], &written, "reads back what was written");
+}
+
+#[test]
+fn an_extended_write_whose_count_lies_is_refused() {
+    let mut wide = wide_device();
+    // Declares five octets, carries one. Writing either length would be
+    // guessing which the sender meant.
+    let reply =
+        connectionless_wide(&mut wide, ApciCode::MemoryExtendedWrite, &ext_memory_payload(5, 0x43F0, &[0xAA]), 0);
+    assert_eq!(reply[0], 0xFE, "E_DATA_TYPE_CONFLICT");
+}
+
+#[test]
+fn an_address_beyond_the_families_space_is_refused_not_truncated() {
+    let mut wide = wide_device();
+    // 0x0143F0 truncates to 0x43F0 — a real, writable address. Dropping the
+    // top octet would write somewhere the client never named.
+    let reply =
+        connectionless_wide(&mut wide, ApciCode::MemoryExtendedWrite, &ext_memory_payload(1, 0x0143F0, &[0xAA]), 0);
+    assert_eq!(reply[0], 0xFD, "E_ADDRESS_VOID");
+
+    let readback =
+        connectionless_wide(&mut wide, ApciCode::MemoryExtendedRead, &ext_memory_payload(1, 0x43F0, &[]), 10);
+    assert_ne!(readback[4], 0xAA, "nothing was written at the truncated address");
+}
+
+#[test]
+fn an_extended_read_of_a_protected_region_is_denied() {
+    // The direction-protected windows live in the protected policy, so this
+    // one needs a wide device over that family rather than the standard one.
+    let mut dev: Microdevice<ProtectedFam, EXTENDED_FRAME> =
+        Microdevice::new(ProtectedFam::build_eeprom(&definition()), identity(), 1);
+    for (machine, table_ref) in ProtectedFam::factory_table_refs(&definition()).into_iter().enumerate().take(3) {
+        dev.mgmt.lsm[machine].state = LoadState::Loaded;
+        dev.mgmt.lsm[machine].table_ref = table_ref;
+    }
+    // 4510h is write-only there.
+    let req = data_frame::<EXTENDED_FRAME>(
+        0x00,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataIndividual,
+        ApciCode::MemoryExtendedRead,
+        0,
+        &ext_memory_payload(1, 0x4510, &[]),
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&req)), 0);
+    let canonical = normalize::<EXTENDED_FRAME>(&out.frames[0]).expect("well-formed");
+    let view = FrameView::parse(&canonical).expect("parsable");
+    assert_eq!(view.payload()[0], 0xFC, "E_ACCESS_DENIED");
+}
+
+#[test]
+fn an_unsupported_function_property_answers_rather_than_going_silent() {
+    let mut wide = wide_device();
+    // No object here serves a function property yet; the service still has
+    // to answer, with a response carrying no data.
+    let ip = pack_instance_pid(1, pid::device::PROGMODE);
+    let reply =
+        connectionless_wide(&mut wide, ApciCode::FunctionPropertyExtStateRead, &[0x00, 0x00, ip[0], ip[1], ip[2]], 0);
+    assert_eq!(reply.len(), 5, "type, instance|pid, and nothing else");
 }

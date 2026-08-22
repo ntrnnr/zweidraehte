@@ -1,6 +1,7 @@
 //! The BCU2 instance of the family seam.
 
 use heapless::Vec;
+use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
     DeviceControl, PDT_Generic04, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_PollGroupSettings, PDT_UnsignedChar,
     PDT_UnsignedInt, PropertyDataDefinition,
@@ -110,6 +111,17 @@ impl<const MASK: u16> Bcu2Family<MASK> {
                 PDT_Generic06::ID,
                 3,
                 PropertyBacking::HardwareType,
+            )),
+            // The APDU-40 secure 0021 profile exposes this at the next free
+            // device-object index. It must remain readable before a secure
+            // link is established so the management client can size that
+            // link's frames.
+            11 if MASK == 0x0021 => Some(PropertySpec::read_only_with_policy(
+                pid::device::MAX_APDU_LENGTH,
+                PDT_UnsignedInt::ID,
+                3,
+                AccessPolicy::OPEN,
+                PropertyBacking::MaxApduLength,
             )),
             _ => None,
         }
@@ -332,7 +344,7 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     }
 
     /// A BCU2 exposes its analog channels through `A_ADC_Read`.
-    fn extra_service(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
+    fn extra_service<const N: usize>(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult<N>> {
         crate::families::adc_read_stub(code, small6, payload)
     }
 }

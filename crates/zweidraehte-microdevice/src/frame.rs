@@ -1,26 +1,39 @@
-//! TP1 standard-frame view and builder.
+//! Canonical KNX frame view and builder, and the TP1 wire conversion
+//! either side of it.
 //!
-//! Every family supported by this stack speaks TP1 standard frames
-//! only. Its fixed 15-octet APDU ceiling fits that format, so extended
-//! frames are deliberately unsupported. That lets this stack work
-//! directly on the wire layout (minus the checksum octet, which the
-//! link driver owns):
+//! The core works on the workspace's **canonical** frame layout — the
+//! one `zweidraehte_proto::messages::knx` calls the internal format:
 //!
 //! ```text
-//! octet 0      control  (FT=1, repeat flag, priority)
+//! octet 0      control  (FT, repeat flag, priority)
 //! octet 1..=2  source individual address
 //! octet 3..=4  destination address
-//! octet 5      [AT:1][hop count:3][APDU length:4]
+//! octet 5      [AT:1][hop count:3][EFF:4]
 //! octet 6      TPCI (+ APCI bits 9..8 for data PDUs)
-//! octet 7      APCI bits 7..0 (present when length >= 1)
+//! octet 7      APCI bits 7..0 (present when an APDU follows)
 //! octet 8..    APDU payload
 //! ```
 //!
-//! The length nibble counts the octets *after* octet 6, so a frame is
-//! `7 + length` bytes. This is the same byte layout the rest of the
-//! workspace calls the "internal format" for standard frames, which is
-//! why the conformance harness's TP1-without-checksum injects can be
-//! fed in verbatim.
+//! On the TP1 wire a **standard** frame is the same layout with the APDU
+//! length in the low nibble of octet 5, and an **extended** frame spends
+//! an extra octet on the extended control field, pushing everything after
+//! it right by one. The two therefore disagree about where the TPCI is,
+//! which is why the boundary is explicit rather than implicit: the core
+//! never sees wire bytes. [`normalize`] converts and validates on the way
+//! in, [`to_wire`] converts on the way out, and the checksum stays the
+//! byte-oriented link driver's business at the very edge.
+//!
+//! Working canonically is what lets this stack reuse the workspace's
+//! frame and APDU codecs unchanged — including, once KNX Data Secure
+//! lands here, `messages::apdu::secure`, whose offsets are canonical.
+//!
+//! The standard-frame conversion is spelled here because it is a copy and
+//! a nibble mask, and because
+//! `zweidraehte_proto::encoding::tp1`'s generic helpers carry the
+//! extended-frame branch with them — around 550 bytes of flash in a
+//! BCU1/BCU2 image that has just *refused* an extended frame. The
+//! extended direction will call those helpers, in the profile that admits
+//! one; there is no second extended-frame layout in this crate.
 //!
 //! The protocol vocabulary — [`ApciCode`], [`Tpci`] and their wire
 //! codings — is the proto crate's; this module only owns the frame
@@ -28,25 +41,84 @@
 
 use heapless::Vec;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
-use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
-use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
+pub use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
+use zweidraehte_proto::encoding::tp1::{
+    NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE, knx_to_tp1_bytes_no_checksum, tp1_to_knx_bytes_no_checksum,
+};
 use zweidraehte_proto::messages::knx::AddressType;
 
 pub use zweidraehte_proto::messages::knx::{ApciCode, Tpci};
 
 pub(crate) const MAX_APDU_LENGTH: usize = MAX_APDU_LENGTH_TP1_STANDARD as usize;
-pub(crate) const MAX_APDU_PAYLOAD_LENGTH: usize = MAX_APDU_LENGTH - 1;
 
 /// Largest frame this stack emits or accepts: seven header octets plus the
 /// standard TP1 APDU limit.
+///
+/// This is the standard-frame profile's capacity; an extended-frame profile
+/// uses [`EXTENDED_FRAME`], which adds the octet the wire form spends on the
+/// extended control field.
 pub const MAX_FRAME: usize = 7 + MAX_APDU_LENGTH;
 
-/// One outbound frame.
-pub type FrameBuf = Vec<u8, MAX_FRAME>;
+/// The APDU ceiling a KNX Data Secure BCU2 advertises.
+///
+/// Not a round number by choice: it is what the bench MV-0021 device answers
+/// for `PID_MAX_APDULENGTH` (`0028`), and what ETS then negotiates down to
+/// ("DetermineMaxApduLengthToUse evaluates to 40 … restricted by
+/// ByTargetDevice"). Sizing to the protocol-wide 254 instead would cost a
+/// small MCU ten times the buffer for octets the peer will never send.
+pub const EXTENDED_APDU: u16 = 40;
 
-/// A parsed view over one standard frame (without checksum).
+/// Frame capacity for a profile at [`EXTENDED_APDU`]: seven header octets,
+/// the APDU, and one more for the extended control octet the wire form
+/// carries. Canonical frames leave that last octet unused.
+pub const EXTENDED_FRAME: usize = 7 + EXTENDED_APDU as usize + 1;
+
+/// Frame capacity for the APDU-40 Data Secure profile: the advertised
+/// plaintext capacity plus the S-A_Data envelope. Keeping this separate from
+/// [`EXTENDED_APDU`] prevents PID 56 from accidentally advertising the outer
+/// secure PDU size as application capacity.
+pub const SECURE_EXTENDED_FRAME: usize = EXTENDED_FRAME + zweidraehte_proto::messages::apdu::secure::OVERHEAD;
+
+/// Derive the APDU ceiling from the frame capacity.
+///
+/// One const generic instead of two: `FRAME_CAP` determines the APDU
+/// ceiling, not the other way around. Standard profiles have
+/// `cap = 7 + APDU`; extended ones add one for the wire's ECF octet.
+pub const fn max_apdu(frame_cap: usize) -> u16 {
+    if frame_cap > MAX_FRAME { (frame_cap - 8) as u16 } else { (frame_cap - 7) as u16 }
+}
+
+/// Whether a frame capacity admits extended frames.
+pub const fn is_extended(frame_cap: usize) -> bool {
+    max_apdu(frame_cap) > MAX_APDU_LENGTH_TP1_STANDARD
+}
+
+/// One frame in canonical layout, sized by the profile.
+///
+/// `N` is the profile's frame capacity: seven header octets plus its APDU
+/// ceiling, and for an extended-frame profile one more octet so the same
+/// width also holds the wire form. A plain BCU1/BCU2 build instantiates
+/// this at [`MAX_FRAME`] and pays nothing for a bigger profile elsewhere in
+/// the workspace.
+pub type FrameBuf<const N: usize = MAX_FRAME> = Vec<u8, N>;
+
+/// One frame in TP1 wire layout, without its checksum.
+///
+/// Deliberately the same width as [`FrameBuf`]. A standard frame is the
+/// same length either way; an extended frame is one octet longer on the
+/// wire, which its profile absorbs by sizing `N` for the wire form and
+/// leaving the canonical buffer one octet of slack. One width means one
+/// buffer type to thread through the stack.
+pub type WireBuf<const N: usize = MAX_FRAME> = Vec<u8, N>;
+
+/// A parsed view over one canonical frame.
 #[derive(Debug, Clone, Copy)]
 pub struct FrameView<'a> {
+    /// The whole canonical frame. The extended property and
+    /// function-property parsers in `zweidraehte_proto::messages::apdu`
+    /// index from `offsets::MSG_APCI`, so they need the frame, not the
+    /// payload slice.
+    pub frame: &'a [u8],
     pub control: u8,
     pub source: IndividualAddress,
     pub dest_raw: [u8; 2],
@@ -57,22 +129,19 @@ pub struct FrameView<'a> {
 }
 
 impl<'a> FrameView<'a> {
-    /// Parse a standard frame. Rejects extended frames (control bit 7
-    /// clear) — this stack does not understand them — and frames whose
-    /// length nibble disagrees with the byte count.
+    /// Parse a canonical frame — the output of [`normalize`], never raw
+    /// wire bytes.
+    ///
+    /// There is no length field to cross-check here: canonically the APDU
+    /// length *is* the buffer length. The wire's length octet is validated
+    /// against the byte count in [`normalize`], where it still exists.
     pub fn parse(frame: &'a [u8]) -> Option<Self> {
         if frame.len() < 7 {
             return None;
         }
         let control = frame[0];
-        if control & 0x80 == 0 {
-            return None;
-        }
-        let length = (frame[5] & 0x0F) as usize;
-        if frame.len() != 7 + length {
-            return None;
-        }
         Some(Self {
+            frame,
             control,
             source: IndividualAddress::from_bytes(&frame[1..3]),
             dest_raw: [frame[3], frame[4]],
@@ -133,29 +202,31 @@ impl<'a> FrameView<'a> {
 // Building
 // ============================================================================
 
-/// Build one standard frame. `tpci_octet` carries the TPCI bits; for a
-/// data PDU the APCI's top two bits are OR-ed in here and `apci_low`
-/// is octet 7. `payload` follows.
-fn build(
+/// Write the seven canonical header octets, up to and including the TPCI.
+///
+/// Canonically the header does not depend on the APDU — the length nibble
+/// that used to make it do so belongs to the wire form now — so callers can
+/// append their payload straight onto the returned buffer instead of
+/// building it separately and copying it in.
+fn header<const N: usize>(
     priority_bits: u8,
     source: IndividualAddress,
     dest: [u8; 2],
     is_group: bool,
     tpci_octet: u8,
-    apdu: &[u8],
-) -> FrameBuf {
+) -> FrameBuf<N> {
+    const { assert!(N >= 7, "a frame capacity must hold at least the header") };
     let mut frame = FrameBuf::new();
-    let length = apdu.len();
-    debug_assert!(length <= MAX_APDU_LENGTH, "APDU exceeds the standard-frame length nibble");
-    // The push cannot fail: 7 + length <= MAX_FRAME by the assert above.
+    // None of these can fail: the const assert above guarantees the room.
     let _ = frame.push(TP1_STD_CTRL_BASE | (priority_bits & 0x0C));
     let _ = frame.extend_from_slice(source.as_bytes());
     let _ = frame.extend_from_slice(&dest);
     let at = if is_group { 0x80 } else { 0x00 };
-    // Hop count 6 — the value every non-router device transmits with.
-    let _ = frame.push(at | NPCI_HOP_COUNT_6 | (length as u8));
+    // Hop count 6 — the value every non-router device transmits with. The
+    // low nibble stays clear: canonically it is the EFF field, and the
+    // length it carries on a standard wire frame is added by `to_wire`.
+    let _ = frame.push(at | NPCI_HOP_COUNT_6);
     let _ = frame.push(tpci_octet);
-    let _ = frame.extend_from_slice(apdu);
     frame
 }
 
@@ -165,7 +236,7 @@ fn build(
 // A frame is exactly these eight facts; a builder struct would spread
 // one wire layout over two types.
 #[allow(clippy::too_many_arguments)]
-pub fn data_frame(
+pub fn data_frame<const N: usize>(
     priority_bits: u8,
     source: IndividualAddress,
     dest: [u8; 2],
@@ -174,42 +245,134 @@ pub fn data_frame(
     apci: ApciCode,
     small_data: u8,
     payload: &[u8],
-) -> FrameBuf {
+) -> FrameBuf<N> {
     let apci10 = apci.wire10_base() | u16::from(small_data & 0x3F);
-    let tpci_octet = tpci.octet() | ((apci10 >> 8) as u8 & 0x03);
-    let mut apdu: Vec<u8, MAX_APDU_LENGTH> = Vec::new();
-    let _ = apdu.push(apci10 as u8);
-    let _ = apdu.extend_from_slice(payload);
-    build(priority_bits, source, dest, is_group, tpci_octet, &apdu)
+    let mut frame = header(priority_bits, source, dest, is_group, tpci.octet() | ((apci10 >> 8) as u8 & 0x03));
+    debug_assert!(8 + payload.len() <= N, "APDU exceeds the profile's frame capacity");
+    let _ = frame.push(apci10 as u8);
+    let _ = frame.extend_from_slice(payload);
+    frame
 }
 
 /// A T_ACK / T_NAK control frame.
-pub fn ack_frame(
+pub fn ack_frame<const N: usize>(
     priority_bits: u8,
     source: IndividualAddress,
     dest: IndividualAddress,
     nak: bool,
     seq: u8,
-) -> FrameBuf {
+) -> FrameBuf<N> {
     let tpci = if nak { Tpci::Nack(seq) } else { Tpci::Ack(seq) };
-    build(priority_bits, source, dest.0, false, tpci.octet(), &[])
+    header(priority_bits, source, dest.0, false, tpci.octet())
 }
 
 /// A T_Disconnect control frame.
-pub fn disconnect_frame(source: IndividualAddress, dest: IndividualAddress) -> FrameBuf {
+pub fn disconnect_frame<const N: usize>(source: IndividualAddress, dest: IndividualAddress) -> FrameBuf<N> {
     // Connection control PDUs travel at system priority.
-    build(0x00, source, dest.0, false, Tpci::Disconnect.octet(), &[])
+    header(0x00, source, dest.0, false, Tpci::Disconnect.octet())
+}
+
+// ============================================================================
+// The TP1 wire boundary
+// ============================================================================
+
+/// Convert one received TP1 frame (without checksum) to canonical layout,
+/// validating what only the wire form can express.
+///
+/// Returns `None` for a frame the core must not see:
+///
+/// - shorter than a frame can be;
+/// - a **standard** frame whose length octet disagrees with the byte count.
+///   That octet is the only redundancy TP1 gives us, and the conformance
+///   suite leans on it (transport layer 2.1 and 2.5 both inject frames whose
+///   declared length is a lie). Canonically it is gone, so it has to be
+///   checked here.
+///
+/// An **extended** frame is accepted only by a profile whose frame capacity
+/// needs one, and its length octet is validated the same way. A
+/// standard-only profile refuses it rather than truncating into buffers
+/// that were never sized for it.
+pub fn normalize<const N: usize>(wire: &[u8]) -> Option<FrameBuf<N>> {
+    if wire.len() < 7 {
+        return None;
+    }
+    // Frame type lives in the control octet, bit 7: set for standard.
+    if wire[0] & 0x80 == 0 {
+        // Extended. The frame capacity determines whether extended frames are
+        // accepted; a standard-only profile compiles this whole arm away rather
+        // proto helper it calls.
+        if !is_extended(N) {
+            return None;
+        }
+        // Extended layout: ctrl | ext_ctrl | src(2) | dst(2) | len | TPDU.
+        if wire.len() < 8 {
+            return None;
+        }
+        let length = wire[6] as usize;
+        if wire.len() != 8 + length || length > max_apdu(N) as usize {
+            return None;
+        }
+        // One octet shorter canonically, so the wire form is the binding
+        // capacity check.
+        if wire.len() > N + 1 {
+            return None;
+        }
+        return Some(tp1_to_knx_bytes_no_checksum::<N>(wire));
+    }
+    let length = (wire[5] & 0x0F) as usize;
+    if wire.len() != 7 + length {
+        return None;
+    }
+    if wire.len() > N {
+        return None;
+    }
+    let mut out = FrameBuf::new();
+    // Standard wire and canonical differ in exactly one nibble, so the
+    // conversion is a copy and a mask. `tp1_to_knx_bytes_no_checksum` says
+    // the same thing generically, but it also carries the extended-frame
+    // branch, and pulling that into a profile that has no extended frames
+    // costs a BCU1/BCU2 image real flash for code it can never reach.
+    let _ = out.extend_from_slice(wire);
+    out[5] &= 0xf0;
+    Some(out)
+}
+
+/// Convert one canonical frame to TP1 wire layout, without its checksum.
+///
+/// The checksum stays with the byte-oriented link driver: it is the one
+/// octet that depends on the whole frame having been assembled, and the
+/// TPUART host protocol appends it as part of transmission.
+pub fn to_wire<const N: usize>(frame: &[u8]) -> WireBuf<N> {
+    debug_assert!(frame.len() >= 7, "to_wire: frame too short (len={})", frame.len());
+    // Only a profile that admits extended frames can produce one, and only
+    // for an APDU the standard length nibble cannot express. Both halves of
+    // the condition are compile-time known for a standard-only profile, so
+    // it compiles down to the standard arm alone.
+    if is_extended(N) && frame.len() > MAX_FRAME {
+        return knx_to_tp1_bytes_no_checksum::<N>(frame);
+    }
+    let mut out = WireBuf::new();
+    let _ = out.extend_from_slice(frame);
+    // The length the wire carries is the APDU octet count — everything past
+    // the seven header octets — and the control octet keeps only its
+    // priority bits over the standard-frame base.
+    out[5] = (out[5] & 0xf0) | ((frame.len() - 7) as u8);
+    out[0] = (out[0] & 0x0c) | TP1_STD_CTRL_BASE;
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The wire bytes of a group write: 1.1.1 -> 1/0/1, low priority,
+    /// `A_GroupValue_Write` with value 1.
+    const GROUP_WRITE_WIRE: &[u8] = &[0xBC, 0x11, 0x01, 0x08, 0x01, 0xE1, 0x00, 0x81];
+
     #[test]
     fn parses_a_group_write() {
-        // 1.1.1 -> 1/0/1, low priority, A_GroupValue_Write, value 1.
-        let raw = [0xBC, 0x11, 0x01, 0x08, 0x01, 0xE1, 0x00, 0x81];
-        let view = FrameView::parse(&raw).expect("valid standard frame");
+        let canonical = normalize::<MAX_FRAME>(GROUP_WRITE_WIRE).expect("valid standard frame");
+        let view = FrameView::parse(&canonical).expect("parsable");
         assert!(view.is_group);
         assert_eq!(view.tpci(), Some(Tpci::DataGroup));
         assert_eq!(view.apci(), Some(ApciCode::GroupValueWrite.wire10_base() | 0x01));
@@ -219,27 +382,48 @@ mod tests {
 
     #[test]
     fn parses_connect_and_ack() {
-        let connect = [0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0x80];
-        let view = FrameView::parse(&connect).expect("valid control frame");
+        let connect = normalize::<MAX_FRAME>(&[0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0x80]).expect("valid control frame");
+        let view = FrameView::parse(&connect).expect("parsable");
         assert!(!view.is_group);
         assert_eq!(view.tpci(), Some(Tpci::Connect));
 
-        let ack = [0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0xC6];
-        let view = FrameView::parse(&ack).expect("valid ack frame");
+        let ack = normalize::<MAX_FRAME>(&[0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0xC6]).expect("valid ack frame");
+        let view = FrameView::parse(&ack).expect("parsable");
         assert_eq!(view.tpci(), Some(Tpci::Ack(1)));
     }
 
     #[test]
-    fn length_nibble_must_match() {
-        // Length says 2 but only one APDU octet follows.
-        let raw = [0xBC, 0x11, 0x01, 0x08, 0x01, 0xE2, 0x00, 0x81];
-        assert!(FrameView::parse(&raw).is_none());
+    fn normalize_rejects_a_lying_length_octet() {
+        // Length says 2 but only one APDU octet follows. Canonically there is
+        // no length field left to catch this, so `normalize` is the only place
+        // it can be caught — transport layer 2.1 and 2.5 depend on it.
+        assert!(normalize::<MAX_FRAME>(&[0xBC, 0x11, 0x01, 0x08, 0x01, 0xE2, 0x00, 0x81]).is_none());
+        // And the other direction: more octets than declared.
+        assert!(normalize::<MAX_FRAME>(&[0xBC, 0x11, 0x01, 0x08, 0x01, 0xE1, 0x00, 0x81, 0x99]).is_none());
+    }
+
+    #[test]
+    fn normalize_rejects_runts_and_extended_frames() {
+        assert!(normalize::<MAX_FRAME>(&[0xBC, 0x11, 0x01, 0x08]).is_none(), "shorter than a frame can be");
+        // Control bit 7 clear marks an extended frame; no profile here is
+        // sized for one yet, so it must be refused rather than truncated.
+        assert!(normalize::<MAX_FRAME>(&[0x3C, 0xE0, 0x11, 0x01, 0x08, 0x01, 0x01, 0x00, 0x81]).is_none());
+    }
+
+    #[test]
+    fn normalize_and_to_wire_are_inverse_for_standard_frames() {
+        let canonical = normalize::<MAX_FRAME>(GROUP_WRITE_WIRE).expect("valid standard frame");
+        // Canonically the length nibble is gone; the APDU length is the
+        // buffer length instead.
+        assert_eq!(canonical[5] & 0x0F, 0);
+        assert_eq!(canonical.len(), GROUP_WRITE_WIRE.len());
+        assert_eq!(&to_wire::<MAX_FRAME>(&canonical)[..], GROUP_WRITE_WIRE);
     }
 
     #[test]
     fn builds_a_numbered_memory_response() {
         // Device 1.1.10 answers a memory read: seq 2, 3 bytes @ 0116h.
-        let frame = data_frame(
+        let frame = data_frame::<MAX_FRAME>(
             0x00,
             IndividualAddress::new(1, 1, 10),
             IndividualAddress::new(0, 0, 1).0,
@@ -249,13 +433,18 @@ mod tests {
             3,
             &[0x01, 0x16, 0xAA, 0xBB, 0xCC],
         );
-        assert_eq!(frame.as_slice(), &[0xB0, 0x11, 0x0A, 0x00, 0x01, 0x66, 0x4A, 0x43, 0x01, 0x16, 0xAA, 0xBB, 0xCC]);
+        // The builder produces the canonical layout — length nibble clear …
+        assert_eq!(frame[5], 0x60);
+        // … and the wire conversion is what puts the length back on.
+        assert_eq!(to_wire::<MAX_FRAME>(&frame).as_slice(), &[
+            0xB0, 0x11, 0x0A, 0x00, 0x01, 0x66, 0x4A, 0x43, 0x01, 0x16, 0xAA, 0xBB, 0xCC
+        ]);
     }
 
     #[test]
     fn escaped_apci_lands_in_both_octets() {
         // A_PropertyValue_Response (3D6h): octet 6 low bits 11, octet 7 D6h.
-        let frame = data_frame(
+        let frame = data_frame::<MAX_FRAME>(
             0x00,
             IndividualAddress::new(1, 1, 10),
             IndividualAddress::new(0, 0, 1).0,
@@ -267,5 +456,65 @@ mod tests {
         );
         assert_eq!(frame[6], 0x43);
         assert_eq!(frame[7], 0xD6);
+    }
+
+    // ------------------------------------------------------------------
+    // Extended frames — only a profile that advertises a large APDU
+    // ------------------------------------------------------------------
+
+    /// A canonical frame with a 20-octet APDU: too long for the standard
+    /// length nibble, so the wire form must be extended.
+    fn long_canonical() -> FrameBuf<EXTENDED_FRAME> {
+        let mut f: FrameBuf<EXTENDED_FRAME> = FrameBuf::new();
+        f.extend_from_slice(&[0xBC, 0x11, 0x01, 0x08, 0x01, 0x60, 0x43]).expect("header fits");
+        for i in 0..20u8 {
+            f.push(i).expect("payload fits");
+        }
+        f
+    }
+
+    #[test]
+    fn a_long_apdu_goes_out_as_an_extended_frame() {
+        let canonical = long_canonical();
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        // Control bit 7 clear marks extended, and the frame grew by the
+        // extended control octet.
+        assert_eq!(wire[0] & 0x80, 0);
+        assert_eq!(wire.len(), canonical.len() + 1);
+        // Octet 6 carries the full length rather than a nibble.
+        assert_eq!(wire[6] as usize, canonical.len() - 7);
+    }
+
+    #[test]
+    fn extended_frames_round_trip_through_the_boundary() {
+        let canonical = long_canonical();
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        let back = normalize::<EXTENDED_FRAME>(&wire).expect("our own frame is well-formed");
+        // Octet 0's frame-type bits are the encoder's business; everything
+        // that carries meaning survives.
+        assert_eq!(&back[1..], &canonical[1..]);
+    }
+
+    #[test]
+    fn a_short_apdu_still_goes_out_standard_on_an_extended_profile() {
+        // A device that *can* send extended frames still sends short ones
+        // the ordinary way — anything else would be a wire regression for
+        // every peer on the line.
+        let canonical = normalize::<EXTENDED_FRAME>(GROUP_WRITE_WIRE).expect("valid");
+        let wire = to_wire::<EXTENDED_FRAME>(&canonical);
+        assert_eq!(&wire[..], GROUP_WRITE_WIRE);
+    }
+
+    #[test]
+    fn a_standard_only_profile_refuses_extended_frames() {
+        let wide = to_wire::<EXTENDED_FRAME>(&long_canonical());
+        assert!(normalize::<MAX_FRAME>(&wide).is_none());
+    }
+
+    #[test]
+    fn normalize_rejects_a_lying_extended_length_octet() {
+        let mut wire = to_wire::<EXTENDED_FRAME>(&long_canonical());
+        wire[6] = wire[6].wrapping_add(1);
+        assert!(normalize::<EXTENDED_FRAME>(&wire).is_none());
     }
 }

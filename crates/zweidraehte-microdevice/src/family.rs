@@ -84,23 +84,21 @@ pub struct PropertySpec {
 }
 
 impl PropertySpec {
-    /// Define a read-only property for the plaintext BCU-era management
-    /// model.
-    ///
-    /// The micro stack has no Data Secure property policy layer, so its
-    /// descriptors use [`AccessPolicy::OPEN`]. The regular property-
-    /// description service transmits the legacy read/write levels below.
+    /// Define a read-only property with the standard device-object policy.
     pub const fn read_only(pid: u16, pdt: u8, read_level: u8, backing: PropertyBacking) -> Self {
+        Self::read_only_with_policy(pid, pdt, read_level, AccessPolicy::READ_OPEN_WRITE_TOOL, backing)
+    }
+
+    /// Define a read-only property whose profile specifies another policy.
+    pub const fn read_only_with_policy(
+        pid: u16,
+        pdt: u8,
+        read_level: u8,
+        policy: AccessPolicy,
+        backing: PropertyBacking,
+    ) -> Self {
         Self {
-            descriptor: PropertyDescriptor::new(
-                pid,
-                pdt,
-                1,
-                PropertyAccess::ReadOnly,
-                read_level,
-                0,
-                AccessPolicy::OPEN,
-            ),
+            descriptor: PropertyDescriptor::new(pid, pdt, 1, PropertyAccess::ReadOnly, read_level, 0, policy),
             backing,
         }
     }
@@ -108,6 +106,18 @@ impl PropertySpec {
     /// Define a read-write property for the plaintext BCU-era management
     /// model.
     pub const fn read_write(pid: u16, pdt: u8, read_level: u8, write_level: u8, backing: PropertyBacking) -> Self {
+        Self::read_write_with_policy(pid, pdt, read_level, write_level, AccessPolicy::READ_OPEN_WRITE_TOOL, backing)
+    }
+
+    /// Define a read-write property whose profile specifies another policy.
+    pub const fn read_write_with_policy(
+        pid: u16,
+        pdt: u8,
+        read_level: u8,
+        write_level: u8,
+        policy: AccessPolicy,
+        backing: PropertyBacking,
+    ) -> Self {
         Self {
             descriptor: PropertyDescriptor::new(
                 pid,
@@ -116,7 +126,7 @@ impl PropertySpec {
                 PropertyAccess::ReadWrite,
                 read_level,
                 write_level,
-                AccessPolicy::OPEN,
+                policy,
             ),
             backing,
         }
@@ -154,6 +164,9 @@ pub trait MicroDeviceFamily: 'static {
     /// exclusively connection-oriented; System 7 also answers
     /// connectionless property and descriptor reads.
     const CONNECTIONLESS_MANAGEMENT: bool;
+    /// First wire ASAP represented by GO-security-flags element zero.
+    /// BCU-era micro tables and System 7 both number their first object 0.
+    const FIRST_ASAP: u16 = 0;
     // ── Memory windows ───────────────────────────────────────────────
 
     /// KNX address of EEPROM offset 0.
@@ -346,7 +359,10 @@ pub trait MicroDeviceFamily: 'static {
     // ── Family-specific services ─────────────────────────────────────
 
     /// Management APCIs outside the generic set (BCU2's `A_ADC_Read`).
-    fn extra_service(_code: ApciCode, _small6: u8, _payload: &[u8]) -> Option<ServiceResult> {
+    /// Generic over the profile's frame capacity so a family's extra
+    /// services build a reply of the same width as the rest of the stack —
+    /// the family itself has no opinion on frame size.
+    fn extra_service<const N: usize>(_code: ApciCode, _small6: u8, _payload: &[u8]) -> Option<ServiceResult<N>> {
         None
     }
 

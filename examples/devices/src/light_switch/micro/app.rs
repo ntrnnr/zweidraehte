@@ -3,6 +3,7 @@
 use zweidraehte_microdevice::co_flags;
 use zweidraehte_microdevice::device::Microdevice;
 use zweidraehte_microdevice::family::MicroDeviceFamily;
+use zweidraehte_microdevice::security::SecurityModule;
 use zweidraehte_util::input::{ButtonEvent, PolledButton};
 
 use super::super::behavior::{self, ButtonId, ButtonState, Decision};
@@ -50,9 +51,9 @@ impl LightSwitchMicroApp {
 
     /// Debounce both inputs and publish decisions from the shared behavior.
     /// Input is ignored while the downloaded application is not running.
-    pub fn poll<F: MicroDeviceFamily>(
+    pub fn poll<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
         &mut self,
-        stack: &mut Microdevice<F>,
+        stack: &mut Microdevice<F, N, SEC>,
         btn1_raw: bool,
         btn2_raw: bool,
         now_ms: u32,
@@ -73,7 +74,10 @@ impl LightSwitchMicroApp {
     }
 
     /// Consume a bus update of button 1's status object for a local indicator.
-    pub fn take_btn1_status_update<F: MicroDeviceFamily>(&mut self, stack: &mut Microdevice<F>) -> Option<bool> {
+    pub fn take_btn1_status_update<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
+        &mut self,
+        stack: &mut Microdevice<F, N, SEC>,
+    ) -> Option<bool> {
         let status = asap(Index::Btn1Status);
         if stack.object_flags(status) & co_flags::UPDATE == 0 {
             return None;
@@ -83,8 +87,8 @@ impl LightSwitchMicroApp {
     }
 }
 
-fn handle_event<F: MicroDeviceFamily>(
-    stack: &mut Microdevice<F>,
+fn handle_event<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
+    stack: &mut Microdevice<F, N, SEC>,
     params: &LightSwitchParams,
     event: ButtonEvent,
     button: ButtonId,
@@ -98,18 +102,28 @@ fn handle_event<F: MicroDeviceFamily>(
     apply_decision(stack, decision);
 }
 
-fn read_status<F: MicroDeviceFamily>(stack: &Microdevice<F>, status: u8) -> bool {
+fn read_status<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
+    stack: &Microdevice<F, N, SEC>,
+    status: u8,
+) -> bool {
     let mut buf = [0u8; 1];
     stack.read_value(status, &mut buf);
     buf[0] & 1 != 0
 }
 
-fn send<F: MicroDeviceFamily>(stack: &mut Microdevice<F>, asap: u8, value: u8) {
+fn send<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
+    stack: &mut Microdevice<F, N, SEC>,
+    asap: u8,
+    value: u8,
+) {
     stack.write_value(asap, &[value]);
     stack.set_transmit_request(asap);
 }
 
-fn apply_decision<F: MicroDeviceFamily>(stack: &mut Microdevice<F>, decision: Decision) {
+fn apply_decision<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
+    stack: &mut Microdevice<F, N, SEC>,
+    decision: Decision,
+) {
     if let Some(write) = decision.publish {
         send(stack, asap(write.object), write.value);
     }

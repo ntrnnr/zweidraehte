@@ -2,6 +2,7 @@
 
 use core::marker::PhantomData;
 
+use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
     DeviceControl, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
     PropertyDataDefinition,
@@ -74,7 +75,13 @@ const DEVICE_PROPERTIES: &[PropertySpec] = &[
     PropertySpec::read_write(pid::device::PROGMODE, ProgrammingMode::ID, 15, 15, PropertyBacking::ProgrammingMode),
     PropertySpec::read_only(pid::SERIAL_NUMBER, PDT_Generic06::ID, 15, PropertyBacking::SerialNumber),
     PropertySpec::read_only(pid::FIRMWARE_REVISION, PDT_UnsignedChar::ID, 15, PropertyBacking::FirmwareRevision),
-    PropertySpec::read_only(pid::device::MAX_APDU_LENGTH, PDT_UnsignedInt::ID, 15, PropertyBacking::MaxApduLength),
+    PropertySpec::read_only_with_policy(
+        pid::device::MAX_APDU_LENGTH,
+        PDT_UnsignedInt::ID,
+        15,
+        AccessPolicy::OPEN,
+        PropertyBacking::MaxApduLength,
+    ),
 ];
 
 const TABLE_PROPERTIES: &[PropertySpec] = &[

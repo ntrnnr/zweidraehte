@@ -196,7 +196,7 @@ fn main() -> ! {
                         uart_write_blocking(tpuart.pending_tx());
                         tpuart.clear_tx();
                     }
-                    if out.restart {
+                    if out.restart.is_some() {
                         defmt::info!("A_Restart — resetting");
                         cortex_m::peripheral::SCB::sys_reset();
                     }

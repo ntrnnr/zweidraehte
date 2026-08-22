@@ -15,7 +15,7 @@ use zweidraehte_proto::transport::{
     ActionBuffer, BasicConnection, ConnectionState, TlAction, TlEvent, TlStyle, process_event,
 };
 
-use crate::frame::FrameBuf;
+use crate::frame::{FrameBuf, MAX_FRAME};
 
 /// Device-side acknowledge timeout (03/03/04 §5.4, timer TACK).
 const ACK_TIMEOUT_MS: u32 = 3_000;
@@ -23,14 +23,17 @@ const ACK_TIMEOUT_MS: u32 = 3_000;
 const CONN_TIMEOUT_MS: u32 = 6_000;
 
 /// The single transport connection plus its timers and retransmit slot.
-pub struct TlState {
+///
+/// `N` is the profile's frame capacity — the retransmit slot holds a whole
+/// frame, so it is sized with the rest of them.
+pub struct TlState<const N: usize = MAX_FRAME> {
     style: TlStyle,
     conn: BasicConnection,
     ack_deadline: Option<u32>,
     conn_deadline: Option<u32>,
     /// The last numbered data frame we sent, kept for retransmission
     /// until the peer acknowledges it.
-    pending_tx: Option<FrameBuf>,
+    pending_tx: Option<FrameBuf<N>>,
     /// Time-scale divisor inherited from the conformance harness's
     /// fast mode (1 outside of it).
     time_divisor: u32,
@@ -70,7 +73,7 @@ pub enum TlOutput {
 /// transition emits an ack, an indication, and timer ops.
 pub type TlOutputs = heapless::Vec<TlOutput, 4>;
 
-impl TlState {
+impl<const N: usize> TlState<N> {
     pub fn new(style: TlStyle, time_divisor: u32) -> Self {
         Self {
             style,
@@ -91,11 +94,15 @@ impl TlState {
         self.conn.seq_no_send
     }
 
-    pub fn store_pending(&mut self, frame: FrameBuf) {
+    pub fn time_divisor(&self) -> u32 {
+        self.time_divisor
+    }
+
+    pub fn store_pending(&mut self, frame: FrameBuf<N>) {
         self.pending_tx = Some(frame);
     }
 
-    pub fn pending(&self) -> Option<&FrameBuf> {
+    pub fn pending(&self) -> Option<&FrameBuf<N>> {
         self.pending_tx.as_ref()
     }
 

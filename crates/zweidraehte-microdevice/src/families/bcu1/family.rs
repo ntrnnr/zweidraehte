@@ -125,7 +125,7 @@ impl MicroDeviceFamily for Bcu1Family {
 
     /// A BCU1 exposes its analog channels through `A_ADC_Read` just
     /// like BCU2 (the PEI hardware detection runs over them).
-    fn extra_service(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
+    fn extra_service<const N: usize>(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult<N>> {
         crate::families::adc_read_stub(code, small6, payload)
     }
 }

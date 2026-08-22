@@ -5,11 +5,11 @@
 //! way the bus would.
 
 mod common;
-use common::{CLIENT, DUT, apdu, connect, exchange};
+use common::{CLIENT, DUT, apdu, canonical, connect, exchange};
 
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::bcu1::{Bcu1CoDescriptor, Bcu1DeviceDefinition, Bcu1Family};
-use zweidraehte_microdevice::frame::{ApciCode, FrameView, Tpci, data_frame};
+use zweidraehte_microdevice::frame::{ApciCode, FrameView, MAX_FRAME, Tpci, data_frame, to_wire};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 
 static COS: &[Bcu1CoDescriptor] = &[
@@ -107,7 +107,7 @@ fn memory_write_lands_and_the_device_maintains_ee_exor() {
 fn address_table_length_1_mutes_group_traffic() {
     let mut dev = device();
 
-    let read = data_frame(
+    let read = data_frame::<MAX_FRAME>(
         0x0C,
         CLIENT,
         GroupAddress::from_three_level(1, 0, 2).0,
@@ -117,19 +117,19 @@ fn address_table_length_1_mutes_group_traffic() {
         0,
         &[],
     );
-    let out = dev.poll(PollInput::Frame(&read), 0);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
     assert!(!out.frames.is_empty(), "programmed device answers the group read");
 
     // The download mutes the device by writing GA-table length 1
     // ("IA only") at 0116h.
     connect(&mut dev);
     exchange(&mut dev, 0, ApciCode::MemoryWrite, 1, &[0x01, 0x16, 0x01], 0);
-    let out = dev.poll(PollInput::Frame(&read), 0);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
     assert!(out.frames.is_empty(), "length 1 accepts no group frames");
 
     // Restoring the length unmutes.
     exchange(&mut dev, 1, ApciCode::MemoryWrite, 1, &[0x01, 0x16, 0x03], 0);
-    let out = dev.poll(PollInput::Frame(&read), 0);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
     assert!(!out.frames.is_empty());
 }
 
@@ -138,7 +138,7 @@ fn group_write_updates_the_object_and_read_answers() {
     let mut dev = device();
 
     // A bus write to 1/0/1 lands in ASAP 0's RAM slot.
-    let write = data_frame(
+    let write = data_frame::<MAX_FRAME>(
         0x0C,
         CLIENT,
         GroupAddress::from_three_level(1, 0, 1).0,
@@ -148,7 +148,7 @@ fn group_write_updates_the_object_and_read_answers() {
         1,
         &[],
     );
-    dev.poll(PollInput::Frame(&write), 0);
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     let mut value = [0u8; 1];
     assert_eq!(dev.read_value(0, &mut value), 1);
     assert_eq!(value[0], 1);
@@ -156,7 +156,7 @@ fn group_write_updates_the_object_and_read_answers() {
 
     // A read of 1/0/2 answers with ASAP 1's value.
     dev.write_value(1, &[1]);
-    let read = data_frame(
+    let read = data_frame::<MAX_FRAME>(
         0x0C,
         CLIENT,
         GroupAddress::from_three_level(1, 0, 2).0,
@@ -166,8 +166,9 @@ fn group_write_updates_the_object_and_read_answers() {
         0,
         &[],
     );
-    let out = dev.poll(PollInput::Frame(&read), 0);
-    let rsp = FrameView::parse(&out.frames[0]).expect("parsable");
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
+    let rsp_frame = canonical(&out.frames[0]);
+    let rsp = FrameView::parse(&rsp_frame).expect("parsable");
     assert!(rsp.is_group);
     assert_eq!(rsp.dest_group(), GroupAddress::from_three_level(1, 0, 2));
     assert_eq!(rsp.apci(), Some(ApciCode::GroupValueResponse.wire10_base() | 0x01));
@@ -176,7 +177,8 @@ fn group_write_updates_the_object_and_read_answers() {
     // timer tick.
     dev.set_transmit_request(1);
     let out = dev.poll(PollInput::Timer, 10);
-    let tx = FrameView::parse(&out.frames[0]).expect("parsable");
+    let tx_frame = canonical(&out.frames[0]);
+    let tx = FrameView::parse(&tx_frame).expect("parsable");
     assert_eq!(tx.apci(), Some(ApciCode::GroupValueWrite.wire10_base() | 0x01));
     assert_eq!(tx.dest_group(), GroupAddress::from_three_level(1, 0, 2));
 }
@@ -185,7 +187,7 @@ fn group_write_updates_the_object_and_read_answers() {
 fn app_presence_and_run_error_gate_group_traffic() {
     let mut dev = device();
     assert!(dev.is_running());
-    let read = data_frame(
+    let read = data_frame::<MAX_FRAME>(
         0x0C,
         CLIENT,
         GroupAddress::from_three_level(1, 0, 2).0,
@@ -201,7 +203,7 @@ fn app_presence_and_run_error_gate_group_traffic() {
     connect(&mut dev);
     exchange(&mut dev, 0, ApciCode::MemoryWrite, 3, &[0x01, 0x05, 0x00, 0x00, 0x00], 0);
     assert!(!dev.is_running(), "DevTyp 0 un-marks the application");
-    let out = dev.poll(PollInput::Frame(&read), 0);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
     assert!(out.frames.is_empty(), "unloaded devices answer no group reads");
 
     // Restore DevTyp, halt via RunError instead.
@@ -209,7 +211,7 @@ fn app_presence_and_run_error_gate_group_traffic() {
     assert!(dev.is_running());
     exchange(&mut dev, 2, ApciCode::MemoryWrite, 1, &[0x01, 0x0D, 0x00], 0);
     assert!(!dev.is_running(), "RunError 00h halts the application");
-    let out = dev.poll(PollInput::Frame(&read), 0);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
     assert!(out.frames.is_empty(), "halted devices answer no group reads");
 }
 
@@ -217,10 +219,12 @@ fn app_presence_and_run_error_gate_group_traffic() {
 fn restart_is_signalled_after_the_ack() {
     let mut dev = device();
     connect(&mut dev);
-    let request = data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataConnected(0), ApciCode::Restart, 0, &[]);
-    let out = dev.poll(PollInput::Frame(&request), 0);
-    assert!(out.restart, "A_Restart must surface to the embedder");
-    let ack = FrameView::parse(&out.frames[0]).expect("parsable");
+    let request =
+        data_frame::<MAX_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataConnected(0), ApciCode::Restart, 0, &[]);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&request)), 0);
+    assert!(out.restart.is_some(), "A_Restart must surface to the embedder");
+    let ack_frame = canonical(&out.frames[0]);
+    let ack = FrameView::parse(&ack_frame).expect("parsable");
     assert_eq!(ack.tpci(), Some(Tpci::Ack(0)));
 }
 
@@ -228,19 +232,29 @@ fn restart_is_signalled_after_the_ack() {
 fn individual_address_write_needs_programming_mode() {
     let mut dev = device();
     let new_ia = IndividualAddress::new(2, 3, 4);
-    let write =
-        data_frame(0x00, CLIENT, [0, 0], true, Tpci::DataGroup, ApciCode::IndividualAddressWrite, 0, new_ia.as_bytes());
-    dev.poll(PollInput::Frame(&write), 0);
+    let write = data_frame::<MAX_FRAME>(
+        0x00,
+        CLIENT,
+        [0, 0],
+        true,
+        Tpci::DataGroup,
+        ApciCode::IndividualAddressWrite,
+        0,
+        new_ia.as_bytes(),
+    );
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     assert_eq!(dev.individual_address(), DUT, "ignored outside programming mode");
 
     dev.set_programming_mode(true);
-    dev.poll(PollInput::Frame(&write), 0);
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
     assert_eq!(dev.individual_address(), new_ia);
 
     // And the read answers with a broadcast response.
-    let read = data_frame(0x00, CLIENT, [0, 0], true, Tpci::DataGroup, ApciCode::IndividualAddressRead, 0, &[]);
-    let out = dev.poll(PollInput::Frame(&read), 0);
-    let rsp = FrameView::parse(&out.frames[0]).expect("parsable");
+    let read =
+        data_frame::<MAX_FRAME>(0x00, CLIENT, [0, 0], true, Tpci::DataGroup, ApciCode::IndividualAddressRead, 0, &[]);
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 0);
+    let rsp_frame = canonical(&out.frames[0]);
+    let rsp = FrameView::parse(&rsp_frame).expect("parsable");
     assert!(rsp.is_group);
     assert_eq!(rsp.source, new_ia);
     assert_eq!(rsp.apci(), Some(ApciCode::IndividualAddressResponse.wire10_base()));

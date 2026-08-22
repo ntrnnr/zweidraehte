@@ -9,7 +9,9 @@
 
 use zweidraehte_microdevice::device::{Microdevice, PollInput};
 use zweidraehte_microdevice::family::MicroDeviceFamily;
-use zweidraehte_microdevice::frame::{ApciCode, FrameBuf, FrameView, Tpci, data_frame};
+use zweidraehte_microdevice::frame::{
+    ApciCode, FrameBuf, FrameView, MAX_FRAME, Tpci, WireBuf, data_frame, normalize, to_wire,
+};
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 
@@ -24,7 +26,11 @@ fn control_frame(tpci: Tpci) -> [u8; 7] {
 }
 
 /// Drive one frame in and collect the response frames.
-pub fn step<F: MicroDeviceFamily>(dev: &mut Microdevice<F>, frame: &[u8], now: u32) -> Vec<FrameBuf> {
+///
+/// Both directions are TP1 wire bytes without the checksum — this helper
+/// stands in for a client on the bus, so it speaks what the bus carries,
+/// not the canonical layout the stack uses internally.
+pub fn step<F: MicroDeviceFamily>(dev: &mut Microdevice<F>, frame: &[u8], now: u32) -> Vec<WireBuf<MAX_FRAME>> {
     dev.poll(PollInput::Frame(frame), now).frames.into_iter().collect()
 }
 
@@ -47,14 +53,25 @@ pub fn exchange<F: MicroDeviceFamily>(
     payload: &[u8],
     now: u32,
 ) -> Option<Vec<u8>> {
-    let request = data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataConnected(seq), apci, small6, payload);
+    let request = to_wire::<MAX_FRAME>(&data_frame::<MAX_FRAME>(
+        0x00,
+        CLIENT,
+        DUT.0,
+        false,
+        Tpci::DataConnected(seq),
+        apci,
+        small6,
+        payload,
+    ));
     let replies = step(dev, &request, now);
     assert!(!replies.is_empty(), "expected at least a T_ACK");
-    let ack = FrameView::parse(&replies[0]).expect("parsable ack");
+    let ack_canonical = normalize::<MAX_FRAME>(&replies[0]).expect("ack is a well-formed frame");
+    let ack = FrameView::parse(&ack_canonical).expect("parsable ack");
     assert_eq!(ack.tpci(), Some(Tpci::Ack(seq)), "first reply is the T_ACK");
 
     let response = replies.get(1).map(|r| {
-        let view = FrameView::parse(r).expect("parsable response");
+        let canonical = normalize::<MAX_FRAME>(r).expect("response is a well-formed frame");
+        let view = FrameView::parse(&canonical).expect("parsable response");
         let Some(Tpci::DataConnected(rsp_seq)) = view.tpci() else {
             panic!("data response expected, got {:?}", view.tpci());
         };
@@ -70,4 +87,14 @@ pub fn exchange<F: MicroDeviceFamily>(
 /// The response's APDU bytes: octet 6 onward.
 pub fn apdu(frame: &[u8]) -> &[u8] {
     &frame[6..]
+}
+
+/// The canonical form of a frame the device put on the wire, for tests that
+/// want to inspect a reply rather than compare its octets.
+///
+/// Kept as a two-step (`FrameView::parse(&canonical(..))`) because the view
+/// borrows the buffer, and a helper returning the view would be borrowing a
+/// temporary.
+pub fn canonical(frame: &[u8]) -> FrameBuf<MAX_FRAME> {
+    normalize::<MAX_FRAME>(frame).expect("the device emitted a well-formed frame")
 }

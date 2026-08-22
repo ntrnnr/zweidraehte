@@ -39,12 +39,15 @@
 pub mod co_flags;
 pub mod device;
 pub mod eeprom;
+pub mod extended_services;
 pub mod families;
 pub mod family;
 pub mod frame;
 pub mod group_comm;
 pub mod link;
 pub mod management;
+pub mod sal;
+pub mod security;
 pub mod transport;
 
 #[cfg(feature = "std")]
@@ -55,6 +58,24 @@ pub use families::bcu1::{Bcu1DeviceDefinition, Bcu1Family};
 pub use families::bcu2::{Bcu2DeviceDefinition, Bcu2Family};
 pub use families::system7::{System7DeviceDefinition, System7Family};
 pub use family::{MemoryAccessPolicy, MicroDeviceFamily};
+pub use security::{DataSecure, MicroSecurityResources, NoSecurity, SecurityModule};
+
+/// Plain mask-0012 micro profile.
+pub type PlainBcu1 = Microdevice<Bcu1Family>;
+/// Plain BCU2 profile. The const parameter is restricted by `Bcu2Family` to
+/// the supported sibling masks 0020h, 0021h and 0025h.
+pub type PlainBcu2<const MASK: u16 = 0x0020> = Microdevice<Bcu2Family<MASK>>;
+/// Data Secure BCU2 profile. Deliberately fixed to mask 0021h: that is the
+/// only sibling for which the extended management and secure behavior are
+/// backed by hardware evidence.
+pub type SecureBcu2<S, const GROUP_KEYS: usize, const GROUP_OBJECTS: usize> =
+    Microdevice<Bcu2Family<0x0021>, { frame::SECURE_EXTENDED_FRAME }, DataSecure<S, GROUP_KEYS, GROUP_OBJECTS>>;
+/// Plain micro System 7 profile.
+pub type PlainSystem7<
+    const EEPROM_LEN: usize,
+    const COT_ADDR: u16,
+    P = families::system7::StandardSystem7MemoryPolicy<EEPROM_LEN>,
+> = Microdevice<System7Family<EEPROM_LEN, COT_ADDR, P>>;
 
 /// Crate-internal logging shim: `log` on the host, `defmt` on embedded,
 /// nothing when neither feature is enabled. Only `debug!` exists — this

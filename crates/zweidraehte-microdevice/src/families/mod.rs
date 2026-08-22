@@ -49,7 +49,7 @@ pub(crate) fn option_reg_write(addr: u16, value: u8, base: u16, offset: usize, e
 /// no analog hardware behind the service, so every channel converts to
 /// zero. The reply shape is what matters — clients use the service as
 /// a liveness probe on the connection.
-pub(crate) fn adc_read_stub(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult> {
+pub(crate) fn adc_read_stub<const N: usize>(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult<N>> {
     if code != ApciCode::AdcRead {
         return None;
     }

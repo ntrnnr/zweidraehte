@@ -12,7 +12,6 @@
 
 use heapless::Vec;
 use zweidraehte_proto::access::AccessContext;
-use zweidraehte_proto::config::MAX_APDU_LENGTH_TP1_STANDARD;
 use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
 use zweidraehte_proto::messages::apdu::load_control::{
     AbsSegment, LoadAction, LoadSegment, LoadState, load_control_transition,
@@ -20,24 +19,38 @@ use zweidraehte_proto::messages::apdu::load_control::{
 use zweidraehte_proto::messages::apdu::property::{
     PropertyDescriptionRead, PropertyDescriptionResponse as PropertyDescriptionApduResponse, PropertyValueHeader,
 };
+use zweidraehte_proto::messages::apdu::restart::EraseCode;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse as PropertyDescription;
 
 use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, SYSTEM_STATUS_ADDR};
 use crate::family::{MicroDeviceFamily, PropertyBacking};
-use crate::frame::{ApciCode, MAX_APDU_PAYLOAD_LENGTH};
+use crate::frame::{ApciCode, MAX_FRAME, is_extended};
+use crate::security::ScheduledRestart;
+use crate::security::SecurityModule;
 
-const MAX_MEMORY_DATA_LENGTH: u8 = (MAX_APDU_PAYLOAD_LENGTH - 2) as u8;
+/// How many data octets one `A_Memory_Read` response can carry at a given
+/// APDU ceiling: the APDU less its APCI octet and the two address octets.
+///
+/// Also clamped to the 6-bit count field the short-form service encodes it
+/// in, which an extended-frame profile would otherwise overrun.
+const fn max_memory_data_length(max_apdu: u16) -> u8 {
+    let by_apdu = (max_apdu as usize).saturating_sub(3);
+    if by_apdu > 0x3F { 0x3F } else { by_apdu as u8 }
+}
 
 /// One reply APDU. `small6` rides in the APCI low octet for the short
 /// services; the payload follows.
-pub struct Reply {
+pub struct Reply<const N: usize = MAX_FRAME> {
     pub apci: ApciCode,
     pub small6: u8,
-    pub payload: Vec<u8, MAX_APDU_PAYLOAD_LENGTH>,
+    /// Sized by the profile's frame capacity rather than its APDU ceiling:
+    /// a reply payload is always a strict subset of the frame that carries
+    /// it, and one width means one const to thread through the stack.
+    pub payload: Vec<u8, N>,
 }
 
-impl Reply {
+impl<const N: usize> Reply<N> {
     pub(crate) fn new(apci: ApciCode, small6: u8, payload: &[u8]) -> Self {
         let mut p = Vec::new();
         // Payloads are built in this module and never exceed the
@@ -47,11 +60,10 @@ impl Reply {
     }
 }
 
-pub enum ServiceResult {
+pub enum ServiceResult<const N: usize = MAX_FRAME> {
     None,
-    Reply(Reply),
-    /// `A_Restart` accepted: the embedder restarts the device after
-    /// flushing the output frames.
+    Reply(Reply<N>),
+    /// Basic restart (erase code 0): the embedder restarts after flushing.
     Restart,
 }
 
@@ -141,22 +153,41 @@ impl Default for ManagementState {
     }
 }
 
-impl<F: MicroDeviceFamily> Microdevice<F> {
+impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdevice<F, FRAME_CAP, SEC> {
     /// Dispatch one connection-oriented management APDU.
+    /// `frame` is the whole canonical frame. The classic services need only
+    /// `payload`, but the extended ones are parsed by
+    /// `zweidraehte_proto::messages::apdu::property_ext`, whose offsets are
+    /// frame-relative — reproducing them against `payload` would be a second
+    /// copy of a wire layout this crate deliberately does not own.
+    // The dispatch needs each fact independently; wrapping them would add a
+    // second request abstraction beside the S-AL context for no useful gain.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_service(
         &mut self,
         code: ApciCode,
         small6: u8,
         payload: &[u8],
+        frame: &[u8],
         access: AccessContext,
         connection_oriented: bool,
-    ) -> ServiceResult {
+        reply_context: &mut SEC::ReplyContext,
+    ) -> ServiceResult<FRAME_CAP> {
         // A_Authorize/A_Key_Write and the property services are BCU2
         // additions; a family predating them (BCU1) ignores the APCIs
         // the way the mask firmware ignores anything it does not
         // decode — the TL ACK still goes out, no reply follows.
         let has_auth = F::AUTH_LEVELS > 0;
         let has_properties = F::OBJECT_COUNT > 0;
+        // The extended services come with the extended APDU, not separately.
+        // 06 Profiles §9.1.2.3 makes both obligations of the same module, and
+        // the wire agrees: `A_PropertyExtDescription_Response` is a fixed 23
+        // canonical octets — a 16-octet APDU — so a standard-frame profile
+        // could implement six of the seven mandatory services and not the
+        // seventh. Deriving the choice from the frame capacity keeps a plain
+        // BCU1/BCU2 image free of code it could not use anyway; measured at
+        // ~1.7 KiB of .text on the G0 light switch.
+        let has_ext_services = has_properties && is_extended(Self::plaintext_frame_capacity());
         match code {
             ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6),
             ApciCode::MemoryRead if connection_oriented => self.memory_read(small6, payload, access),
@@ -169,12 +200,31 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
             ApciCode::PropertyValueRead if has_properties => self.property_value_read(payload, access),
             ApciCode::PropertyValueWrite if has_properties => self.property_value_write(payload, access),
             ApciCode::PropertyDescriptionRead if has_properties => self.property_description_read(payload),
-            ApciCode::Restart => {
-                // Only the basic restart exists on these masks; the
-                // master-reset variant (escape bit in the low octet)
-                // postdates them.
-                if small6 == 0 { ServiceResult::Restart } else { ServiceResult::None }
+            // Extended property services (06 Profiles §9.1.2.3.2, all `M`
+            // for the Data Secure profile module). They address an object by
+            // type and one-based occurrence rather than by index, which is
+            // the only way to reach an object a family keeps out of its
+            // indexed roster.
+            ApciCode::PropertyExtValueRead if has_ext_services => self.property_ext_value_read(frame, access),
+            ApciCode::PropertyExtValueWriteCon if has_ext_services => {
+                self.property_ext_value_write(frame, access, true)
             }
+            ApciCode::PropertyExtValueWriteUnCon if has_ext_services => {
+                self.property_ext_value_write(frame, access, false)
+            }
+            ApciCode::PropertyExtDescriptionRead if has_ext_services => self.property_ext_description_read(frame),
+            // Extended memory services (§9.1.2.3.3, `M`). These are what an
+            // ETS download to a secure device actually uses — the bench
+            // MV-0021 trace carries 361 of the write and no classic memory
+            // write at all.
+            ApciCode::MemoryExtendedRead if has_ext_services => self.memory_ext_read(frame, access),
+            ApciCode::MemoryExtendedWrite if has_ext_services => self.memory_ext_write(frame, access),
+            // Extended function properties (§9.1.2.3.2 items 6-7, `M`).
+            ApciCode::FunctionPropertyExtCommand if has_ext_services => self.function_property_ext(frame, true, access),
+            ApciCode::FunctionPropertyExtStateRead if has_ext_services => {
+                self.function_property_ext(frame, false, access)
+            }
+            ApciCode::Restart => self.handle_restart(small6, payload, frame, access, reply_context),
             _ => F::extra_service(code, small6, payload).unwrap_or(ServiceResult::None),
         }
     }
@@ -187,7 +237,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// dropped — a management client probing outside the windows gets
     /// the same experience real silicon gives it (whatever the data
     /// bus floats to), just deterministic.
-    fn mem_read_byte(&self, addr: u16) -> u8 {
+    pub(crate) fn mem_read_byte(&self, addr: u16) -> u8 {
         if let Some(value) = F::special_byte_read(addr, self.eeprom.as_ref(), &self.mgmt) {
             return value;
         }
@@ -203,7 +253,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         }
     }
 
-    fn mem_write_byte(&mut self, addr: u16, value: u8) {
+    pub(crate) fn mem_write_byte(&mut self, addr: u16, value: u8) {
         if F::special_byte_write(addr, value, self.eeprom.as_mut(), &mut self.mgmt) {
             return;
         }
@@ -229,22 +279,24 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         (off < F::EEPROM_SIZE).then_some(off)
     }
 
-    fn memory_response(address: &[u8], count: u8, bytes: &[u8]) -> ServiceResult {
-        let mut data: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
+    fn memory_response(address: &[u8], count: u8, bytes: &[u8]) -> ServiceResult<FRAME_CAP> {
+        let mut data: Vec<u8, FRAME_CAP> = Vec::new();
         let _ = data.extend_from_slice(address);
         let _ = data.extend_from_slice(bytes);
         ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, count, &data))
     }
 
-    fn memory_read(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult {
+    fn memory_read(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
         if payload.len() != 2 {
             return ServiceResult::None;
         }
         let addr = u16::from_be_bytes([payload[0], payload[1]]);
-        // The standard TP1 APDU caps a response at 12 data bytes. KNX error
-        // handling rejects an oversized request with count zero; silently
-        // truncating would claim success for a different operation.
-        if count > MAX_MEMORY_DATA_LENGTH
+        // The profile's APDU caps the response — 12 data bytes at the
+        // standard 15-octet ceiling. KNX error handling rejects an oversized
+        // request with count zero; silently truncating would claim success
+        // for a different operation.
+        if !SEC::memory_access_allowed(&self.sec, access)
+            || count > max_memory_data_length(Self::max_apdu_length())
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
                 addr,
@@ -256,14 +308,14 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         {
             return Self::memory_response(payload, 0, &[]);
         }
-        let mut data: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
+        let mut data: Vec<u8, FRAME_CAP> = Vec::new();
         for i in 0..count {
             let _ = data.push(self.mem_read_byte(addr.wrapping_add(u16::from(i))));
         }
         Self::memory_response(payload, count, &data)
     }
 
-    fn memory_write(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult {
+    fn memory_write(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
         if payload.len() < 2 {
             return ServiceResult::None;
         }
@@ -272,14 +324,16 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         if data.len() != usize::from(count) {
             return ServiceResult::None;
         }
-        if !memory_access_allowed(
-            F::MEMORY_REGIONS,
-            addr,
-            data.len(),
-            MemoryOperation::Write,
-            access.access_level,
-            F::AUTH_LEVELS as u8,
-        ) {
+        if !SEC::memory_access_allowed(&self.sec, access)
+            || !memory_access_allowed(
+                F::MEMORY_REGIONS,
+                addr,
+                data.len(),
+                MemoryOperation::Write,
+                access.access_level,
+                F::AUTH_LEVELS as u8,
+            )
+        {
             return if self.mgmt.verify_mode() {
                 Self::memory_response(&payload[..2], 0, &[])
             } else {
@@ -305,7 +359,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// with type 3Fh and no data.
     const DD_TYPE_UNSUPPORTED: u8 = 0x3F;
 
-    fn device_descriptor_read(&self, descriptor_type: u8) -> ServiceResult {
+    fn device_descriptor_read(&self, descriptor_type: u8) -> ServiceResult<FRAME_CAP> {
         if descriptor_type == 0 {
             return ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, 0, &F::DD0.to_be_bytes()));
         }
@@ -319,7 +373,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
     // ── Authorization ───────────────────────────────────────────────
 
-    fn authorize(&mut self, payload: &[u8]) -> ServiceResult {
+    fn authorize(&mut self, payload: &[u8]) -> ServiceResult<FRAME_CAP> {
         if payload.len() != 5 {
             return ServiceResult::None;
         }
@@ -329,7 +383,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         ServiceResult::Reply(Reply::new(ApciCode::AuthorizeResponse, 0, &[granted]))
     }
 
-    fn key_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
+    fn key_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
         if payload.len() != 5 {
             return ServiceResult::None;
         }
@@ -343,9 +397,111 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         ServiceResult::Reply(Reply::new(ApciCode::KeyResponse, 0, &[level]))
     }
 
+    // ── Restart services ────────────────────────────────────────────
+
+    fn handle_restart(
+        &mut self,
+        small6: u8,
+        _payload: &[u8],
+        frame: &[u8],
+        access: AccessContext,
+        reply_context: &mut SEC::ReplyContext,
+    ) -> ServiceResult<FRAME_CAP> {
+        use zweidraehte_proto::messages::apdu::restart::RestartError;
+        use zweidraehte_proto::messages::knx::offsets;
+
+        // The plain profiles implement only the original basic restart. Keep
+        // the complete access-policy and erase-code matrix out of those
+        // images rather than asking the optimizer to rediscover that every
+        // secure policy input is absent.
+        if !SEC::ENABLED {
+            return if small6 & 0x01 == 0 { ServiceResult::Restart } else { ServiceResult::None };
+        }
+
+        // Secure basic restart: no erase and no response, but it still has a
+        // Data Secure access policy.
+        if small6 & 0x01 == 0 {
+            let allowed = zweidraehte_proto::security::restart_access_policy(0)
+                .can_write(&access, SEC::security_mode_enabled(&self.sec));
+            return if allowed { ServiceResult::Restart } else { ServiceResult::None };
+        }
+
+        // Master reset: parse the erase code from the frame.
+        if frame.len() < offsets::MSG_APCI + 4 {
+            return ServiceResult::None;
+        }
+        let erase_code = frame[offsets::MSG_APCI + 2];
+        let code = EraseCode::from(erase_code);
+
+        if frame[offsets::MSG_APCI + 3] != 0 {
+            let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::InvalidChannel.into(), 0x00, 0x00]);
+            return ServiceResult::Reply(reply);
+        }
+
+        let security_on = SEC::security_mode_enabled(&self.sec);
+        let policy = zweidraehte_proto::security::restart_access_policy(erase_code);
+        let required_level = zweidraehte_proto::security::restart_required_level(erase_code);
+        if !policy.can_write(&access, security_on) || !access.has_level(required_level) {
+            let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::AccessDenied.into(), 0x00, 0x00]);
+            return ServiceResult::Reply(reply);
+        }
+
+        let (error, restart) = match code {
+            EraseCode::Confirmed => {
+                (RestartError::NoError, Some(ScheduledRestart { erase_code, wipe_individual_address: None }))
+            }
+            EraseCode::FactoryReset => {
+                if SEC::factory_reset(&mut self.sec, reply_context, code) {
+                    (RestartError::NoError, Some(ScheduledRestart { erase_code, wipe_individual_address: Some(true) }))
+                } else {
+                    (RestartError::AccessDenied, None)
+                }
+            }
+            EraseCode::FactoryResetKeepIA => {
+                if SEC::factory_reset(&mut self.sec, reply_context, code) {
+                    (RestartError::NoError, Some(ScheduledRestart { erase_code, wipe_individual_address: Some(false) }))
+                } else {
+                    (RestartError::AccessDenied, None)
+                }
+            }
+            // 03h/04h: `X` for secure devices (§9.1.2.5.1).
+            EraseCode::ResetIA | EraseCode::ResetAP => (RestartError::UnsupportedEraseCode, None),
+            _ => (RestartError::UnsupportedEraseCode, None),
+        };
+
+        // A_Restart_Response: the APCI low octet is 0xA1, built by the
+        // frame builder as Restart's base (0x80) | small6. 0x21 & 0x3F
+        // gives 0x21, which ORed with 0x80 = 0xA1.
+        let reply = Reply::new(ApciCode::Restart, 0x21, &[error.into(), 0x00, 0x00]);
+
+        if let Some(restart) = restart {
+            SEC::schedule_restart(&mut self.sec, restart);
+        }
+        ServiceResult::Reply(reply)
+    }
+
+    /// Apply application and identity side effects after the factory-reset
+    /// response has been protected under the old address and Tool Key.
+    pub(crate) fn apply_factory_reset(&mut self, wipe_ia: bool) {
+        use zweidraehte_proto::messages::apdu::load_control::LoadState;
+
+        for machine in 0..F::LSM_COUNT {
+            F::unload_side_effect(machine, self.eeprom.as_mut(), &mut self.mgmt);
+            self.mgmt.lsm[machine].state = LoadState::Unloaded;
+            self.mgmt.lsm[machine].table_ref = 0;
+        }
+
+        if wipe_ia {
+            let base = F::ia_eeprom_offset();
+            self.eeprom.as_mut()[base..base + 2].copy_from_slice(&[0xFF, 0xFF]);
+        }
+
+        self.mgmt.reset_connection_auth::<F>();
+    }
+
     // ── Property services ───────────────────────────────────────────
 
-    fn property_value_read(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
+    fn property_value_read(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
         let Some(header) = PropertyValueHeader::parse_payload(payload) else {
             return ServiceResult::None;
         };
@@ -360,7 +516,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         }
     }
 
-    fn property_value_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult {
+    fn property_value_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
         let Some(header) = PropertyValueHeader::parse_payload(payload) else {
             return ServiceResult::None;
         };
@@ -388,9 +544,21 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
     /// these masks are all single-element, so anything beyond
     /// `start <= 1, count <= 1` is out of range. Reading element 0
     /// returns the element count (1) as a 16-bit value, per 03/03/07.
-    fn property_read(&self, obj: u8, prop_id: u8, count: u8, start: u16, access: AccessContext) -> Option<Vec<u8, 10>> {
+    pub(crate) fn property_read(
+        &self,
+        obj: u8,
+        prop_id: u8,
+        count: u8,
+        start: u16,
+        access: AccessContext,
+    ) -> Option<Vec<u8, 10>> {
         let (_, spec) = F::property_spec_by_id(obj, u16::from(prop_id))?;
-        if !spec.descriptor.can_read(access) {
+        let allowed = if SEC::ENABLED {
+            spec.descriptor.can_read_secure(&access, SEC::security_mode_enabled(&self.sec))
+        } else {
+            spec.descriptor.can_read(access)
+        };
+        if !allowed {
             return None;
         }
         if start == 0 {
@@ -430,7 +598,11 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
                 let _ = v.extend_from_slice(&self.identity.hardware_type);
             }
             PropertyBacking::MaxApduLength => {
-                let _ = v.extend_from_slice(&MAX_APDU_LENGTH_TP1_STANDARD.to_be_bytes());
+                // The profile's wire ceiling, not the family's: a secure BCU2
+                // answers 40 here over the same family a plain one answers 15
+                // with (03/05/01 §4.3.7 — this is a wire-level value, and a
+                // management client sizes its writes by it).
+                let _ = v.extend_from_slice(&Self::max_apdu_length().to_be_bytes());
             }
             PropertyBacking::LoadState => {
                 let machine = self.lsm_index(obj)?;
@@ -457,7 +629,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         Some(v)
     }
 
-    fn property_write(
+    pub(crate) fn property_write(
         &mut self,
         obj: u8,
         prop_id: u8,
@@ -472,7 +644,12 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
         let Some((_, spec)) = F::property_spec_by_id(obj, u16::from(prop_id)) else {
             return false;
         };
-        if !spec.descriptor.can_write(access) {
+        let allowed = if SEC::ENABLED {
+            spec.descriptor.can_write_secure(&access, SEC::security_mode_enabled(&self.sec))
+        } else {
+            spec.descriptor.can_write(access)
+        };
+        if !allowed {
             return false;
         }
         match spec.backing {
@@ -519,7 +696,7 @@ impl<F: MicroDeviceFamily> Microdevice<F> {
 
     // ── Property descriptions ───────────────────────────────────────
 
-    fn property_description_read(&self, payload: &[u8]) -> ServiceResult {
+    fn property_description_read(&self, payload: &[u8]) -> ServiceResult<FRAME_CAP> {
         if payload.len() != PropertyDescriptionRead::PAYLOAD_LEN {
             return ServiceResult::None;
         }
@@ -628,8 +805,8 @@ fn ram2_offset<F: MicroDeviceFamily>(addr: u16) -> Option<usize> {
 
 /// Build the APCI-stripped payload shared by positive and negative regular
 /// property responses. `count == 0` is the standard negative response.
-fn property_value_response(header: PropertyValueHeader, count: u16, data: &[u8]) -> ServiceResult {
-    let mut payload: Vec<u8, MAX_APDU_PAYLOAD_LENGTH> = Vec::new();
+fn property_value_response<const N: usize>(header: PropertyValueHeader, count: u16, data: &[u8]) -> ServiceResult<N> {
+    let mut payload: Vec<u8, N> = Vec::new();
     payload
         .extend_from_slice(&PropertyValueHeader::encode_payload(
             header.object_idx as u8,

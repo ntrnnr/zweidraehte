@@ -4,8 +4,9 @@
 //! Speaks the TPUART-2/NCN51xx host protocol subset a BCU2-class
 //! device needs:
 //!
-//! - reception of standard L_Data frames with checksum verification
-//!   and the immediate-acknowledge decision (`U_AckInformation`)
+//! - reception of standard and profile-enabled extended L_Data frames
+//!   with checksum verification and the immediate-acknowledge decision
+//!   (`U_AckInformation`)
 //! - transmission as `U_L_DataStart/Continue/End`-wrapped octet pairs,
 //!   echo verification, and the `L_Data.confirm` byte
 //! - `U_Reset.request` / `Reset.indication` bring-up
@@ -20,10 +21,14 @@
 use heapless::Vec;
 use zweidraehte_proto::encoding::tp1::calculate_tp1_checksum;
 
-use crate::link::RxBuf;
+use crate::frame;
 
-/// Longest wire frame we accept: a standard frame plus checksum.
-const MAX_WIRE: usize = 23;
+/// Standard frame plus checksum. This default keeps a plain profile's buffers
+/// at the BCU-era limit; extended profiles opt into larger const parameters.
+pub const STANDARD_WIRE_CAPACITY: usize = frame::MAX_FRAME + 1;
+
+/// Two host-protocol octets are queued for each frame octet.
+pub const STANDARD_TX_CAPACITY: usize = STANDARD_WIRE_CAPACITY * 2;
 
 /// Host→TPUART service codes.
 const U_RESET_REQUEST: u8 = 0x01;
@@ -40,7 +45,9 @@ const ACK_ADDRESSED: u8 = 0x01;
 // service code.
 /// Control-field pattern of a standard L_Data frame: `10x1 xx00`.
 const LDATA_CLASSIFIER_MASK: u8 = 0xD3;
-const LDATA_CLASSIFIER_VALUE: u8 = 0x90;
+const LDATA_STANDARD_CLASSIFIER: u8 = 0x90;
+/// Control-field pattern of an extended L_Data frame: `00x1 xx00`.
+const LDATA_EXTENDED_CLASSIFIER: u8 = 0x10;
 /// Reset.indication — the chip completed a reset and is ready.
 const RESET_INDICATION: u8 = 0x03;
 /// L_Data.confirm: `x000 1011`, bit 7 carries success.
@@ -58,30 +65,30 @@ const RX_GAP_MS: u32 = 5;
 const TX_TIMEOUT_MS: u32 = 100;
 
 /// What one received byte produced.
-pub enum TpUartEvent {
+pub enum TpUartEvent<const WIRE_CAP: usize = STANDARD_WIRE_CAPACITY> {
     None,
     /// The chip announced a reset (power-up or `U_Reset.request` done).
     ResetIndication,
     /// A complete, checksum-valid frame addressed to us or not — the
     /// caller's stack does its own address filtering anyway.
-    Frame(RxBuf),
+    Frame(Vec<u8, WIRE_CAP>),
     /// The pending transmission was confirmed by the chip.
     TxConfirmed {
         positive: bool,
     },
 }
 
-enum RxState {
+enum RxState<const WIRE_CAP: usize> {
     Idle,
-    Receiving { buf: Vec<u8, MAX_WIRE>, expected: usize, last_byte_ms: u32, acked: bool },
+    Receiving { buf: Vec<u8, WIRE_CAP>, expected: usize, last_byte_ms: u32, acked: bool },
 }
 
-enum TxState {
+enum TxState<const WIRE_CAP: usize> {
     Idle,
     /// Waiting for our own frame to echo back octet by octet, then the
     /// confirm byte.
     AwaitingEcho {
-        frame: Vec<u8, MAX_WIRE>,
+        frame: Vec<u8, WIRE_CAP>,
         echoed: usize,
         started_ms: u32,
     },
@@ -90,21 +97,40 @@ enum TxState {
     },
 }
 
-/// The driver. `A` is the immediate-ack decision: given the six
-/// header octets of an incoming frame, should the chip acknowledge it
-/// on the bus? (For a device: destination matches the IA, or the
-/// group address is in the address table.)
-pub struct TpUart<A: Fn(&[u8]) -> bool> {
-    rx: RxState,
-    tx: TxState,
+/// The driver. `A` is the immediate-ack decision: given the raw wire header
+/// through its length octet, should the chip acknowledge it on the bus? For a
+/// device that means the destination matches its IA, or the group address is
+/// in its address table. The destination starts at octet 3 in a standard
+/// frame and octet 4 in an extended frame.
+///
+/// `WIRE_CAP` includes the checksum. `TX_CAP` is normally twice that because
+/// every transmitted octet is preceded by a TPUART selector. Both defaults
+/// are exact standard-frame bounds, so extended-frame storage only exists in
+/// a profile that asks for it.
+pub struct TpUart<
+    A: Fn(&[u8]) -> bool,
+    const WIRE_CAP: usize = STANDARD_WIRE_CAPACITY,
+    const TX_CAP: usize = STANDARD_TX_CAPACITY,
+> {
+    rx: RxState<WIRE_CAP>,
+    tx: TxState<WIRE_CAP>,
     /// Bytes the caller must write to the UART. Drained by
     /// [`Self::pending_tx`].
-    tx_queue: Vec<u8, 64>,
+    tx_queue: Vec<u8, TX_CAP>,
     ack_filter: A,
 }
 
 impl<A: Fn(&[u8]) -> bool> TpUart<A> {
     pub fn new(ack_filter: A) -> Self {
+        Self::new_sized(ack_filter)
+    }
+}
+
+impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A, WIRE_CAP, TX_CAP> {
+    /// Construct a driver with explicitly selected profile capacities.
+    pub fn new_sized(ack_filter: A) -> Self {
+        const { assert!(WIRE_CAP >= STANDARD_WIRE_CAPACITY, "wire buffer must hold a standard frame") };
+        const { assert!(TX_CAP >= WIRE_CAP * 2, "TX buffer must hold selector/data pairs") };
         let mut this = Self { rx: RxState::Idle, tx: TxState::Idle, tx_queue: Vec::new(), ack_filter };
         let _ = this.tx_queue.push(U_RESET_REQUEST);
         this
@@ -128,10 +154,10 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
     /// Queue one TP1 frame (without checksum) for transmission,
     /// wrapped in the `U_L_DataStart/Continue/End` octet pairs.
     pub fn send_frame(&mut self, frame: &[u8], now_ms: u32) -> bool {
-        if !self.ready_to_send() || frame.len() + 1 > MAX_WIRE {
+        if !self.ready_to_send() || frame.len() + 1 > WIRE_CAP {
             return false;
         }
-        let mut wire: Vec<u8, MAX_WIRE> = Vec::new();
+        let mut wire: Vec<u8, WIRE_CAP> = Vec::new();
         let _ = wire.extend_from_slice(frame);
         let _ = wire.push(calculate_tp1_checksum(frame));
         for (i, &byte) in wire.iter().enumerate() {
@@ -152,7 +178,7 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
     /// Call periodically with no byte: abandons stuck receptions and
     /// times out lost transmissions. Returns a synthetic negative
     /// confirm when a transmission died.
-    pub fn poll_timer(&mut self, now_ms: u32) -> TpUartEvent {
+    pub fn poll_timer(&mut self, now_ms: u32) -> TpUartEvent<WIRE_CAP> {
         if let RxState::Receiving { last_byte_ms, .. } = &self.rx
             && now_ms.wrapping_sub(*last_byte_ms) > RX_GAP_MS
         {
@@ -170,7 +196,7 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
     }
 
     /// Feed one byte received from the UART.
-    pub fn push_byte(&mut self, byte: u8, now_ms: u32) -> TpUartEvent {
+    pub fn push_byte(&mut self, byte: u8, now_ms: u32) -> TpUartEvent<WIRE_CAP> {
         // While a transmission is on the wire, the chip echoes our own
         // octets back; they must not be mistaken for a new reception.
         if let TxState::AwaitingEcho { frame, echoed, started_ms } = &mut self.tx
@@ -197,10 +223,14 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
                 *last_byte_ms = now_ms;
                 let _ = buf.push(byte);
 
-                // Once the length octet is in, the total is known.
-                if buf.len() == 6 {
-                    *expected = 7 + usize::from(buf[5] & 0x0F) + 1;
-                    if *expected > MAX_WIRE {
+                // The standard header carries its length at octet 5; an
+                // extended frame inserts its ECF at octet 1 and carries an
+                // eight-bit length at octet 6.
+                let extended = WIRE_CAP > STANDARD_WIRE_CAPACITY && buf[0] & 0x80 == 0;
+                let header_len = if extended { 7 } else { 6 };
+                if buf.len() == header_len {
+                    *expected = if extended { 8 + usize::from(buf[6]) + 1 } else { 7 + usize::from(buf[5] & 0x0F) + 1 };
+                    if *expected > WIRE_CAP {
                         self.rx = RxState::Idle;
                         return TpUartEvent::None;
                     }
@@ -214,13 +244,11 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
                 }
 
                 if buf.len() >= 6 && buf.len() == *expected {
-                    let complete = core::mem::replace(buf, Vec::new());
+                    let mut complete = core::mem::replace(buf, Vec::new());
                     self.rx = RxState::Idle;
-                    let (frame, wire_checksum) = complete.split_at(complete.len() - 1);
-                    if wire_checksum[0] == calculate_tp1_checksum(frame) {
-                        let mut out = RxBuf::new();
-                        let _ = out.extend_from_slice(frame);
-                        return TpUartEvent::Frame(out);
+                    let wire_checksum = complete.pop().expect("complete frame has checksum");
+                    if wire_checksum == calculate_tp1_checksum(&complete) {
+                        return TpUartEvent::Frame(complete);
                     }
                 }
                 TpUartEvent::None
@@ -228,8 +256,11 @@ impl<A: Fn(&[u8]) -> bool> TpUart<A> {
         }
     }
 
-    fn classify_first_byte(&mut self, byte: u8, now_ms: u32) -> TpUartEvent {
-        if byte & LDATA_CLASSIFIER_MASK == LDATA_CLASSIFIER_VALUE {
+    fn classify_first_byte(&mut self, byte: u8, now_ms: u32) -> TpUartEvent<WIRE_CAP> {
+        let classifier = byte & LDATA_CLASSIFIER_MASK;
+        if classifier == LDATA_STANDARD_CLASSIFIER
+            || (WIRE_CAP > STANDARD_WIRE_CAPACITY && classifier == LDATA_EXTENDED_CLASSIFIER)
+        {
             let mut buf = Vec::new();
             let _ = buf.push(byte);
             self.rx = RxState::Receiving { buf, expected: usize::MAX, last_byte_ms: now_ms, acked: false };
@@ -313,5 +344,38 @@ mod tests {
             panic!("positive confirm expected");
         };
         assert!(d.ready_to_send());
+    }
+
+    #[test]
+    fn extended_frames_use_profile_sized_receive_and_transmit_buffers() {
+        const WIRE_CAP: usize = frame::SECURE_EXTENDED_FRAME + 1;
+        const TX_CAP: usize = WIRE_CAP * 2;
+
+        let mut d: TpUart<_, WIRE_CAP, TX_CAP> =
+            TpUart::new_sized(|header: &[u8]| header[0] & 0x80 == 0 && header[4] == 0x10 && header[5] == 0x01);
+        d.clear_tx();
+
+        // Extended wire layout: ctrl, ECF, source, destination, length,
+        // TPCI/APCI and twenty payload octets, followed by the checksum.
+        let mut wire: Vec<u8, WIRE_CAP> = Vec::new();
+        wire.extend_from_slice(&[0x3C, 0x60, 0xAF, 0xFE, 0x10, 0x01, 0x14, 0x00]).expect("header fits");
+        wire.extend_from_slice(&[0xCC; 20]).expect("payload fits");
+        let checksum = calculate_tp1_checksum(&wire);
+
+        let mut received = None;
+        for (i, byte) in wire.iter().copied().chain(core::iter::once(checksum)).enumerate() {
+            match d.push_byte(byte, i as u32) {
+                TpUartEvent::Frame(frame) => received = Some(frame),
+                TpUartEvent::None => {}
+                _ => panic!("unexpected event"),
+            }
+        }
+        assert_eq!(received.expect("complete frame").as_slice(), wire.as_slice());
+        assert_eq!(d.pending_tx(), &[U_ACK_INFORMATION | ACK_ADDRESSED]);
+
+        d.clear_tx();
+        assert!(d.send_frame(&wire, 100));
+        assert_eq!(d.pending_tx().len(), (wire.len() + 1) * 2);
+        assert_eq!(d.pending_tx()[d.pending_tx().len() - 2], U_L_DATA_END | wire.len() as u8);
     }
 }

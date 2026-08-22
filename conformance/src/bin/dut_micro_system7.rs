@@ -86,8 +86,8 @@ fn handle_command(msg: RunnerMessage, device: &mut Dut, socket: &mut UnixStream,
             let out = device.poll(PollInput::Frame(&data), now_ms);
             let restart = out.restart;
             finish_step(socket, seq, out);
-            if restart {
-                exit_with(device, socket, shm, ExitReason::Restart { erase_code: 0 });
+            if let Some(erase_code) = restart {
+                exit_with(device, socket, shm, ExitReason::Restart { erase_code });
             }
         }
         RunnerMessage::SetProgrammingMode { seq, enabled } => {
