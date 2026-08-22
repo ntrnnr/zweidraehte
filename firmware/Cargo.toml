@@ -4,6 +4,7 @@ resolver = "2"
 members = [
     "common/dev-provisioning-build",
     "common/embedded-common",
+    "common/fm25l16b",
     "common/knxrf",
     "linux/eth_light_switch",
     "linux/eth_secure_light_switch",

@@ -1,0 +1,15 @@
+[package]
+name = "fm25l16b"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+# Minimal, HAL-agnostic driver shared by the async/full and polling/micro
+# STM32 targets. Keeping it separate prevents the micro firmware from pulling
+# the embassy-based `stm32-common` crate into its dependency graph.
+[dependencies]
+embedded-hal = { workspace = true }
+defmt = { workspace = true, optional = true }
+
+[features]
+defmt = ["dep:defmt"]

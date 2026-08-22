@@ -40,6 +40,7 @@ heapless = { workspace = true }
 # the StmFlashStorage alias is built on, plus the wear-levelled / verbatim KV
 # backends used by other STM32 firmware).
 embedded-common = { path = "../../common/embedded-common" }
+fm25l16b = { path = "../../common/fm25l16b", features = ["defmt"] }
 
 # KNX stack and platform traits
 zweidraehte-device = { path = "../../../crates/zweidraehte-device", default-features = false, features = ["defmt"] }

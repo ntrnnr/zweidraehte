@@ -9,11 +9,9 @@
 //!   flash, with the KNX serial number derived from the STM32's
 //!   factory-programmed UID. Plain and Data Secure identity record
 //!   shapes are both supported.
-//! - `fram` — `Fm25l16b` blocking driver for the Infineon FM25L16B
-//!   2 KiB SPI FRAM.
 //! - `fram_seq` — the `Fram` chip descriptor and `FramRegion` `ByteIo`
-//!   handle the storage layer's FRAM regions open over. Suitable for
-//!   production: write-through on every update, unlimited endurance.
+//!   handle over the shared `fm25l16b` driver's FRAM regions. Suitable
+//!   for production: write-through on every update, unlimited endurance.
 //! - `rng` — `Stm32CommonRng`, a *non-cryptographic* PRNG seeded
 //!   from the STM32 factory UID plus boot-time ticks. Plugs into
 //!   [`StackDefinition::Rng`][sd] on secure firmware.
@@ -25,7 +23,6 @@
 //! [sd]: zweidraehte_device::StackDefinition::Rng
 
 pub mod flash_io;
-pub mod fram;
 pub mod fram_seq;
 pub mod prov_storage;
 pub mod rng;
@@ -35,7 +32,7 @@ pub mod sx1211_adapter;
 pub mod uart;
 
 pub use flash_io::StmFlashIo;
-pub use fram::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
+pub use fm25l16b::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
 pub use fram_seq::{Fram, FramRegion, StmFramCs, StmFramSpi, StmSiatRegion};
 #[cfg(feature = "provision-on-boot")]
 pub use prov_storage::synthesize_and_write;

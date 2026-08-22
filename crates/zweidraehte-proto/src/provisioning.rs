@@ -29,7 +29,7 @@
 //! Readout-protection is a separate production step (STM32 RDP option
 //! bytes); see `SESSION.md`.
 
-use zweidraehte_proto::util::crc::{crc32, fdsk_crc4};
+use crate::util::crc::{crc32, fdsk_crc4};
 
 // ================================================================================
 // Constants

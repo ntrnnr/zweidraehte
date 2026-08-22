@@ -108,7 +108,14 @@ pub mod memory;
 pub mod objects;
 pub mod persist;
 pub mod prelude;
-pub mod provisioning;
+/// Factory-provisioning record codec.
+///
+/// The allocation-free wire format is shared with small device stacks through
+/// `zweidraehte-proto`; this re-export preserves the established full-stack
+/// API path.
+pub mod provisioning {
+    pub use zweidraehte_proto::provisioning::*;
+}
 pub mod restart;
 pub mod router;
 pub mod security;

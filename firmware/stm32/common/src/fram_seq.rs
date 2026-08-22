@@ -7,7 +7,7 @@
 //! ([`packed_seq`](zweidraehte_device::storage::backends::packed_seq), the
 //! byte-medium watermark); this module supplies only the *medium*: the
 //! [`Fram`] chip descriptor and the [`FramRegion`] `ByteIo` handle over the
-//! FM25L16B SPI driver (see [`super::fram`]).
+//! shared FM25L16B SPI driver (see [`fm25l16b`]).
 //!
 //! A secure device declares its FRAM regions like any others —
 //!
@@ -27,7 +27,7 @@ use embedded_hal::spi::SpiBus;
 use zweidraehte_device::storage::backends::ByteIo;
 use zweidraehte_device::storage::region::{Chip, FramSiatRegion};
 
-use crate::fram::{Fm25l16b, FramError};
+use fm25l16b::{CAPACITY as FRAM_CAPACITY, Fm25l16b, FramError};
 
 /// An [`ByteIo`] over the FM25L16B FRAM — a `Copy` handle over the shared
 /// driver cell, the [`Fram`] chip's `Io`.
@@ -73,12 +73,12 @@ where
     // the capacity debug_asserts make an out-of-range offset loud before the
     // truncating cast could wrap it.
     fn read_at(&self, off: u32, buf: &mut [u8]) -> Result<(), Self::Error> {
-        debug_assert!(off as usize + buf.len() <= crate::fram::CAPACITY as usize, "FRAM read past capacity");
+        debug_assert!(off as usize + buf.len() <= FRAM_CAPACITY as usize, "FRAM read past capacity");
         self.fram.borrow_mut().read(off as u16, buf)
     }
 
     fn write_at(&mut self, off: u32, data: &[u8]) -> Result<(), Self::Error> {
-        debug_assert!(off as usize + data.len() <= crate::fram::CAPACITY as usize, "FRAM write past capacity");
+        debug_assert!(off as usize + data.len() <= FRAM_CAPACITY as usize, "FRAM write past capacity");
         self.fram.borrow_mut().write(off as u16, data)
     }
 }
@@ -91,7 +91,7 @@ where
 /// room for a future second write-in-place region (e.g. a
 /// [`FramMcTimerRegion`](zweidraehte_device::storage::region::FramMcTimerRegion))
 /// on the same chip.
-pub type StmSiatRegion<const SLOTS: usize> = FramSiatRegion<{ crate::fram::CAPACITY as usize }, SLOTS>;
+pub type StmSiatRegion<const SLOTS: usize> = FramSiatRegion<{ FRAM_CAPACITY as usize }, SLOTS>;
 
 // ================================================================================
 // The shared FRAM wiring — concrete bus/CS types
@@ -124,7 +124,7 @@ pub struct Fram<BUS: 'static, CS: 'static>(PhantomData<(BUS, CS)>);
 impl<BUS, CS> Chip for Fram<BUS, CS> {
     const TAG: u32 = 1;
     const BASE: u32 = 0;
-    const CAPACITY: u32 = crate::fram::CAPACITY as u32;
+    const CAPACITY: u32 = FRAM_CAPACITY as u32;
     // Byte-writable medium — no erase granule. This is what makes a
     // write-in-place placement valid here (and an append-log placement a
     // compile error).

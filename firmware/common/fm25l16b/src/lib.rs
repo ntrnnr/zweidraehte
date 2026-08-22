@@ -2,8 +2,9 @@
 //!
 //! 2 KiB byte-addressable FRAM, no write cycle time, unlimited
 //! endurance. Used to persist KNX Data Secure sequence numbers across
-//! power cycles so replay protection survives reboots (see
-//! [`FramRegion`](super::fram_seq::FramRegion)).
+//! power cycles so replay protection survives reboots. Medium-specific
+//! storage adapters live in their firmware crates; this crate owns only the
+//! three-command SPI protocol.
 //!
 //! The driver is deliberately minimal: WREN / READ / WRITE only. The
 //! chip's protection registers (BP0/BP1/WPEN) default to "no
@@ -38,6 +39,8 @@
 //! SPI mode 0 (CPOL=0, CPHA=0). Max clock 20 MHz; 4 MHz gives plenty
 //! of margin and keeps the blocking-SPI cost of a ~20-byte write at
 //! well under 100 µs.
+
+#![no_std]
 
 use embedded_hal::digital::OutputPin;
 use embedded_hal::spi::SpiBus;
@@ -76,6 +79,7 @@ pub enum FramError<E> {
     Cs,
 }
 
+#[cfg(feature = "defmt")]
 impl<E> defmt::Format for FramError<E>
 where
     E: defmt::Format,
