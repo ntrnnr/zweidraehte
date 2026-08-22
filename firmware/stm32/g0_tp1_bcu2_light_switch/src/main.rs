@@ -50,6 +50,9 @@ use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::bcu2::Bcu2Family;
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
+use zweidraehte_util::input::{ButtonEvent, PolledButton};
+
+const PROGRAMMING_BUTTON_DEBOUNCE_MS: u32 = 50;
 
 // ============================================================================
 // Milliseconds via SysTick
@@ -178,7 +181,7 @@ fn main() -> ! {
 
     defmt::info!("BCU2 micro stack up, IA {}", stack.individual_address().0);
 
-    let mut prog_button_last = false;
+    let mut programming_button = PolledButton::new();
     let mut last_tick = 0u32;
 
     loop {
@@ -240,12 +243,12 @@ fn main() -> ! {
             set_led(GPIOC, 12, on);
         }
 
-        let prog_button = button_pressed(GPIOD, 2);
-        if prog_button && !prog_button_last {
+        if programming_button.poll(button_pressed(GPIOD, 2), now, PROGRAMMING_BUTTON_DEBOUNCE_MS, u32::MAX)
+            == Some(ButtonEvent::ShortPress)
+        {
             let enabled = !stack.is_programming_mode();
             stack.set_programming_mode(enabled);
         }
-        prog_button_last = prog_button;
         set_led(GPIOB, 8, stack.is_programming_mode());
     }
 }

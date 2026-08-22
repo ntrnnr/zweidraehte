@@ -38,6 +38,7 @@ use zweidraehte_microdevice::SecureBcu2;
 use zweidraehte_microdevice::device::{DeviceIdentity, PollInput, PollOutput};
 use zweidraehte_microdevice::frame::SECURE_EXTENDED_FRAME;
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
+use zweidraehte_util::input::{ButtonEvent, PolledButton};
 
 use fram_store::FramStore;
 
@@ -50,6 +51,7 @@ pub type Device = SecureBcu2<FramStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACIT
 const FRAME_CAPACITY: usize = SECURE_EXTENDED_FRAME;
 const WIRE_CAPACITY: usize = FRAME_CAPACITY + 1;
 const TX_CAPACITY: usize = WIRE_CAPACITY * 2;
+const PROGRAMMING_BUTTON_DEBOUNCE_MS: u32 = 50;
 type PendingFrames = Deque<Vec<u8, FRAME_CAPACITY>, 8>;
 
 // ============================================================================
@@ -206,7 +208,7 @@ fn main() -> ! {
     // once the driver is validated on a multi-device bench.
     let mut pending = PendingFrames::new();
     let mut restart_pending = false;
-    let mut prog_button_last = false;
+    let mut programming_button = PolledButton::new();
     let mut last_tick = 0u32;
 
     defmt::info!("secure BCU2 micro stack up, IA {}", stack.individual_address().0);
@@ -249,11 +251,11 @@ fn main() -> ! {
                 set_led(GPIOC, 12, on);
             }
 
-            let prog_button = button_pressed(GPIOD, 2);
-            if prog_button && !prog_button_last {
+            if programming_button.poll(button_pressed(GPIOD, 2), now, PROGRAMMING_BUTTON_DEBOUNCE_MS, u32::MAX)
+                == Some(ButtonEvent::ShortPress)
+            {
                 stack.set_programming_mode(!stack.is_programming_mode());
             }
-            prog_button_last = prog_button;
             set_led(GPIOB, 8, stack.is_programming_mode());
         }
 

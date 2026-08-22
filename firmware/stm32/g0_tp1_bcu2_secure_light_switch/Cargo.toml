@@ -24,6 +24,7 @@ fm25l16b = { path = "../../common/fm25l16b" }
 zweidraehte-microdevice = { path = "../../../crates/zweidraehte-microdevice", default-features = false, features = ["defmt"] }
 zweidraehte-proto = { path = "../../../crates/zweidraehte-proto", default-features = false, features = ["defmt"] }
 zweidraehte-devices = { path = "../../../examples/devices", default-features = false, features = ["micro"] }
+zweidraehte-util = { version = "0.1.0", path = "../../../crates/zweidraehte-util" }
 
 [build-dependencies]
 dev-provisioning-build = { path = "../../common/dev-provisioning-build" }

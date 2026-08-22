@@ -2837,6 +2837,7 @@ dependencies = [
  "zweidraehte-devices",
  "zweidraehte-microdevice",
  "zweidraehte-proto",
+ "zweidraehte-util",
 ]
 
 [[package]]
@@ -2858,6 +2859,7 @@ dependencies = [
  "zweidraehte-devices",
  "zweidraehte-microdevice",
  "zweidraehte-proto",
+ "zweidraehte-util",
 ]
 
 [[package]]
