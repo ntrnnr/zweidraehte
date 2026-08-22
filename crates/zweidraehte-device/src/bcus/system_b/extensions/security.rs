@@ -11,8 +11,8 @@
 //! `bcus::system_b::…` keeps naming the whole Data Secure surface.
 
 pub use crate::security::{
-    SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources, SecurityAugment,
-    SecurityExtensionConfig, SecurityFailuresLog, SecurityState, SecurityTable,
+    SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources, SecurityAugment, SecurityConfig,
+    SecurityFailuresLog, SecurityState, SecurityTable,
 };
 
 use super::{RfExtensionState, RfRetransmitterExtension, Tp1ExtensionState};

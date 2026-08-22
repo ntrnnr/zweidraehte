@@ -32,5 +32,5 @@ pub mod security;
 pub use security::{
     SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources, SecureRfExtensionState,
     SecureRfRetransmitterExtensionState, SecureTp1DeviceState, SecureTp1ExtensionState, SecurityAugment,
-    SecurityExtensionConfig, SecurityFailuresLog, SecurityState, SecurityTable,
+    SecurityConfig, SecurityFailuresLog, SecurityState, SecurityTable,
 };

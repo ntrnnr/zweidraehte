@@ -34,6 +34,7 @@ use zweidraehte_proto::messages::{
     builder::MessageBuilder,
     knx::{ApciCode, DestinationAddress, KnxMessageBuffer, Priority, ServiceType, offsets},
 };
+use zweidraehte_proto::security::{self, SeqVerdict, policy};
 
 use crate::logging::{debug, warn};
 use crate::objects::tables::{AddressTable, LoadState};
@@ -65,21 +66,12 @@ pub enum SecureResult {
 // ============================================================================
 // Sequence number helpers
 // ============================================================================
+//
+// The 6-octet ⇄ u64 codec is the KNX wire format, so it comes from
+// `zweidraehte_proto::security` rather than being spelled a second time here.
+// Aliased to the names this module and `p2p_security` already use.
 
-/// Convert a 6-byte big-endian sequence number to u64.
-pub(super) fn seq_to_u64(seq: &[u8; 6]) -> u64 {
-    let mut full = [0u8; 8];
-    full[2..8].copy_from_slice(seq);
-    u64::from_be_bytes(full)
-}
-
-/// Convert a u64 to a 6-byte big-endian sequence number.
-pub(super) fn u64_to_seq(val: u64) -> [u8; 6] {
-    let full = val.to_be_bytes();
-    let mut seq = [0u8; 6];
-    seq.copy_from_slice(&full[2..8]);
-    seq
-}
+pub(super) use zweidraehte_proto::security::{seq6_to_u64 as seq_to_u64, u64_to_seq6 as u64_to_seq};
 
 // ============================================================================
 // Pending sync state — tracks an outgoing S-A_Sync.req awaiting response
@@ -209,24 +201,15 @@ where
         let security_state = self.inner.state().extension_state();
         let ast = self.inner.state().ast().borrow();
 
-        for asap in ast.asaps_for_tsap(tsap) {
-            // The GO flags table is indexed by 0-based position. The ASAP
-            // from the association table is the wire communication-object
-            // number, whose base is the family's (`FIRST_ASAP`: 1 on
-            // System B, 0 on System 7's group object table) — subtracting it gives
-            // the table slot.
-            let go_index = asap.saturating_sub(D::FIRST_ASAP);
-            if let Some(go_flag) = security_state.go_security_flags_for(go_index) {
-                let required = go_flag & 0x03;
-                if required != received_security_bits {
-                    return false;
-                }
-            }
-            // If no GO flag entry exists for this ASAP, the GO has no
-            // security requirement — accept any security level.
-        }
-
-        true
+        // The association table yields wire communication-object numbers;
+        // `go_flag_slot` converts each to its position in the positional flag
+        // table, and `go_flags_accept` applies the exact-match rule to all of
+        // them at once (an object the table does not cover has no requirement).
+        policy::go_flags_accept(
+            ast.asaps_for_tsap(tsap)
+                .map(|asap| security_state.go_security_flags_for(asap.saturating_sub(D::FIRST_ASAP))),
+            received_security_bits,
+        )
     }
 
     /// Check GO security flags for a plain (non-secure) group frame.
@@ -426,14 +409,12 @@ where
         // Per KNX spec 03/05/01 §6.3.6-8: if the Security IO load state
         // is not "Loaded", security tables (P2P keys, group keys, SIAT) must
         // not be evaluated. Tool Key is independent of load state.
-        if !scf.tool_access {
-            if security_state.security_load_state() != LoadState::Loaded {
-                warn!(
-                    "S-AL: security tables not loaded (state={:?}), dropping non-tool frame",
-                    security_state.security_load_state()
-                );
-                return SecureResult::Dropped;
-            }
+        if !scf.tool_access && security_state.security_load_state() != LoadState::Loaded {
+            warn!(
+                "S-AL: security tables not loaded (state={:?}), dropping non-tool frame",
+                security_state.security_load_state()
+            );
+            return SecureResult::Dropped;
         }
 
         // Per AN158 §2.2.1.5.3.2: tool key access on group communication
@@ -537,7 +518,6 @@ where
         // Note: SeqNr == 0 was already rejected as an early optimization
         // before MAC verification.
         {
-            let seq_nr_val = seq_to_u64(&seq_nr);
             let mut storage = self.seq_storage.borrow_mut();
             let stored = if scf.tool_access {
                 storage.load_tool_receiving_seq().ok().flatten()
@@ -546,51 +526,57 @@ where
                 // their individual address (src), not the group address.
                 storage.load_receiving_seq(src).ok().flatten()
             };
-            let stored_val = stored.map(|s| seq_to_u64(&s)).unwrap_or(0);
 
-            if seq_nr_val > stored_val {
-                // Accept: update stored to the received value.  A save failure
-                // is logged but does not cause the frame to be dropped — the
-                // MAC already verified, so the plaintext is genuine; discarding
-                // it would break the session.  The worst-case consequence is
-                // that the same SeqNr can be replayed until storage recovers.
-                if scf.tool_access {
-                    if let Err(_e) = storage.save_tool_receiving_seq(&seq_nr) {
-                        warn!("S-AL: failed to persist tool receiving SeqNr from {:#06X}", src);
-                    }
-                } else {
-                    if let Err(_e) = storage.save_receiving_seq(src, &seq_nr) {
-                        warn!("S-AL: failed to persist receiving SeqNr from {:#06X}", src);
+            match security::check_receiving_seq(&seq_nr, stored) {
+                SeqVerdict::Accept => {
+                    // A save failure is logged but does not cause the frame to be
+                    // dropped — the MAC already verified, so the plaintext is
+                    // genuine; discarding it would break the session. The
+                    // worst-case consequence is that the same SeqNr can be
+                    // replayed until storage recovers.
+                    let saved = if scf.tool_access {
+                        storage.save_tool_receiving_seq(&seq_nr)
+                    } else {
+                        storage.save_receiving_seq(src, &seq_nr)
+                    };
+                    if saved.is_err() {
+                        warn!("S-AL: failed to persist receiving SeqNr from {:#06X} (tool={})", src, scf.tool_access);
                     }
                 }
-            } else if seq_nr_val == stored_val {
-                // Retransmission: ignore silently (no failure log per spec).
-                // Logged at debug so an otherwise-invisible drop is diagnosable
-                // (e.g. a tool replaying a SeqNr the device already consumed).
-                debug!(
-                    "S-AL: dropping retransmission from {:#06X} (tool={}): SeqNr {} == stored {}",
-                    src, scf.tool_access, seq_nr_val, stored_val
-                );
-                return SecureResult::Dropped;
-            } else {
-                // Replay: ignore, log SeqNr failure.
-                // The S-AL shall not block further messages from this sender.
-                // Surface the rejection: `log_security_failure_and_maybe_report`
-                // only updates the security-state counter, so without this the
-                // drop is invisible — a tool stuck on a stale SeqNr (e.g. one
-                // behind the value a prior tool/ETS session left in the shared
-                // `tool_receiving_seq`) otherwise looks like an unexplained hang.
-                warn!(
-                    "S-AL: replay rejected from {:#06X} (tool={}): SeqNr {} < stored {}; tool must S-A_Sync_Req",
-                    src, scf.tool_access, seq_nr_val, stored_val
-                );
-                // Drop the seq-storage borrow before the helper call — the
-                // helper doesn't touch seq storage today, but releasing
-                // the outer `RefCell::borrow_mut` guard here keeps the
-                // invariant that only one cell is held across the call.
-                drop(storage);
-                self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
-                return SecureResult::Dropped;
+                SeqVerdict::Retransmission => {
+                    // Ignore silently (no failure log per spec). Logged at debug
+                    // so an otherwise-invisible drop is diagnosable (e.g. a tool
+                    // replaying a SeqNr the device already consumed).
+                    debug!(
+                        "S-AL: dropping retransmission from {:#06X} (tool={}): SeqNr {} == stored",
+                        src,
+                        scf.tool_access,
+                        security::seq6_to_u64(&seq_nr)
+                    );
+                    return SecureResult::Dropped;
+                }
+                SeqVerdict::Replay | SeqVerdict::Invalid => {
+                    // The S-AL shall not block further messages from this sender.
+                    // Surface the rejection: `log_security_failure_and_maybe_report`
+                    // only updates the security-state counter, so without this the
+                    // drop is invisible — a tool stuck on a stale SeqNr (e.g. one
+                    // behind the value a prior tool/ETS session left in the shared
+                    // `tool_receiving_seq`) otherwise looks like an unexplained hang.
+                    warn!(
+                        "S-AL: replay rejected from {:#06X} (tool={}): SeqNr {} < stored {}; tool must S-A_Sync_Req",
+                        src,
+                        scf.tool_access,
+                        security::seq6_to_u64(&seq_nr),
+                        stored.map(|s| security::seq6_to_u64(&s)).unwrap_or(0)
+                    );
+                    // Drop the seq-storage borrow before the helper call — the
+                    // helper doesn't touch seq storage today, but releasing
+                    // the outer `RefCell::borrow_mut` guard here keeps the
+                    // invariant that only one cell is held across the call.
+                    drop(storage);
+                    self.log_security_failure_and_maybe_report(SecurityFailureType::SeqNrError, src, &[]);
+                    return SecureResult::Dropped;
+                }
             }
         }
 

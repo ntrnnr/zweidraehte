@@ -43,6 +43,8 @@ use zweidraehte_proto::messages::{
 use crate::logging::{debug, warn};
 
 use super::p2p_feature::{P2pFeature, WithP2p};
+use zweidraehte_proto::security::DEFAULT_SENDING;
+
 use super::{PendingSyncState, SecureApplicationLayer, SecureResult, seq_to_u64, u64_to_seq};
 
 // ========================================================================
@@ -330,7 +332,7 @@ where
     // Step 8: SeqNr_remote = device's own single Sequence Number Sending (the
     // one value used on every Secure Link). Do NOT increment — spec says sync
     // does not alter SeqNoSending.
-    let seq_nr_remote = storage.load_sending_seq().unwrap_or(super::outgoing::INITIAL_SENDING_SEQ);
+    let seq_nr_remote = storage.load_sending_seq().unwrap_or(DEFAULT_SENDING);
     drop(storage);
 
     debug!(
@@ -558,7 +560,7 @@ where
     let seq_local_val = seq_to_u64(&seq_nr_local);
     if seq_local_val > 0 {
         let mut storage = sal.seq_storage.borrow_mut();
-        let current_val = seq_to_u64(&storage.load_sending_seq().unwrap_or(super::outgoing::INITIAL_SENDING_SEQ));
+        let current_val = seq_to_u64(&storage.load_sending_seq().unwrap_or(DEFAULT_SENDING));
         if seq_local_val > current_val {
             if let Err(_e) = storage.save_sending_seq(&seq_nr_local) {
                 warn!("S-AL: failed to persist sending SeqNr (sync_res) from {:#06X}", src);
@@ -629,7 +631,7 @@ where
 
     // Step 2: Get current sending sequence number (don't increment for sync).
     let storage = sal.seq_storage.borrow();
-    let seq_nr_local = storage.load_sending_seq().unwrap_or(super::outgoing::INITIAL_SENDING_SEQ);
+    let seq_nr_local = storage.load_sending_seq().unwrap_or(DEFAULT_SENDING);
     drop(storage);
 
     // Step 3: Generate random challenge.

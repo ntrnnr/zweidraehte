@@ -165,19 +165,7 @@ const fn required_access_level(apci: ApciCode) -> Option<u8> {
 /// same 3FF/00C policy as every other master-reset variant; conformance
 /// test M-2.9.6 requires at least the open security-OFF half.
 pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
-    match erase_code {
-        0x00 | 0x01 => AccessPolicy::READ_OPEN_WRITE_TOOL, // 3FF / 0CC
-        // Factory-reset variants: everyone when Security Mode is OFF, Tool
-        // only when ON. (TOOL_ONLY — 00C/00C — would wrongly deny plain
-        // callers with security OFF; conformance M-2.9.x exercises exactly
-        // that path.)
-        0x02 | 0x04..=0x07 => AccessPolicy::OPEN_OFF_TOOL_ON, // 3FF / 00C
-        0x03 => AccessPolicy::OPEN_OFF_DENY_ON,               // 3FF / 000
-        // Unknown erase codes are rejected as UnsupportedEraseCode by the
-        // restart handler before any reset runs; the conservative policy here
-        // is defence in depth only.
-        _ => AccessPolicy::TOOL_ONLY,
-    }
+    zweidraehte_proto::security::restart_access_policy(erase_code)
 }
 
 /// Get the required legacy access level for a restart erase code.
@@ -185,11 +173,7 @@ pub const fn restart_access_policy(erase_code: u8) -> AccessPolicy {
 /// This provides backward compatibility for devices without Data Secure.
 /// The level check is a simplified version of the full access policy.
 pub const fn restart_required_level(erase_code: u8) -> u8 {
-    match erase_code {
-        0x00 | 0x01 => 3, // Basic/confirmed restart: anyone
-        // All master-reset variants (0x02..=0x07, incl. 0x04 ResetAP): level 0.
-        _ => 0,
-    }
+    zweidraehte_proto::security::restart_required_level(erase_code)
 }
 
 #[cfg(test)]

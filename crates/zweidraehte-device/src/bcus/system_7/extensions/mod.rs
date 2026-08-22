@@ -11,6 +11,6 @@
 
 pub use crate::bcus::system_b::{Tp1Augment, Tp1ExtensionConfig, Tp1ExtensionState};
 pub use crate::security::{
-    SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources, SecurityAugment,
-    SecurityExtensionConfig, SecurityFailuresLog, SecurityState, SecurityTable,
+    SecureAugmentBundle, SecureExtensionConfig, SecureExtensionState, SecureResources, SecurityAugment, SecurityConfig,
+    SecurityFailuresLog, SecurityState, SecurityTable,
 };

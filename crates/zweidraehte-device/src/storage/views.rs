@@ -311,41 +311,10 @@ impl<S: KeyValueStore, const N: usize, const K: u64> SiatStore<S, N, K> {
 // SiatAccess — the index/membership surface the PID 54 property path needs
 // ============================================================================
 
-/// The SIAT operations the Security augment uses that are *not* part of
-/// [`SequenceNumberStorage`]: by-index array access (PID 54 property service),
-/// the element count, and membership/clear.
-///
-/// Implemented by [`SiatStore`]. The augment is generic over
-/// `SEQ: SequenceNumberStorage + SiatAccess`, so the SIAT lives entirely in the
-/// store — there is no separate config-blob copy. Backends themselves implement
-/// only [`KeyValueStore`]; this surface is provided once by the view.
-pub trait SiatAccess {
-    type Error;
-
-    /// Number of SIAT entries (PID 54 element-count read at index 0).
-    fn siat_count(&self) -> u16;
-    /// The 1-based `IA_Index` of `ia`, or `None` if it is not in the SIAT — the
-    /// join key into the Point-to-point Key Table (03/05/01 §6.3.8.4).
-    fn siat_index_of(&self, ia: u16) -> Option<u16>;
-    /// Whether `ia` is in the SIAT. Named separately from
-    /// [`siat_index_of`](Self::siat_index_of) because the S-AL answers a bare
-    /// membership failure with a different security-failure code than a missing
-    /// key.
-    fn siat_contains(&self, ia: u16) -> bool {
-        self.siat_index_of(ia).is_some()
-    }
-    /// Entry at 0-based `idx` in array order (PID 54 entry read).
-    fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])>;
-    /// Provision the element at 0-based `idx` (PID 54 entry write). Positional:
-    /// the element the writer named is the one replaced, because its position
-    /// is the `IA_Index` the P2P key table joins on — see
-    /// [`SiatStore::write_entry`].
-    fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error>;
-    /// Set the SIAT element count (PID 54 write at index 0; 0 clears).
-    fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error>;
-    /// Remove all entries (factory reset).
-    fn siat_clear(&mut self) -> Result<(), Self::Error>;
-}
+// The trait itself is `zweidraehte_proto::security::SiatAccess` — the SIAT is
+// a KNX resource, not a storage-backend concept — and is re-exported here
+// because this is the module that implements it.
+pub use zweidraehte_proto::security::SiatAccess;
 
 impl<S: KeyValueStore, const N: usize, const K: u64> SiatAccess for SiatStore<S, N, K> {
     type Error = S::Error;

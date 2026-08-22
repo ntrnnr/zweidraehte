@@ -106,6 +106,34 @@ impl PropertyExtValueHeader {
     }
 }
 
+/// Writer for extended property value requests.
+///
+/// Read requests pass an empty `data` slice; confirmed and unconfirmed writes
+/// carry the property elements after the common header.
+pub struct PropertyExtValueRequest;
+
+impl PropertyExtValueRequest {
+    pub fn write(
+        buf: &mut [u8],
+        object_type: u16,
+        object_instance: u16,
+        prop_id: u16,
+        count: u8,
+        start_idx: u16,
+        data: &[u8],
+    ) {
+        PropertyExtValueHeader::write_header(buf, object_type, object_instance, prop_id, count, start_idx);
+        if !data.is_empty() {
+            let start = offsets::MSG_APCI + 10;
+            buf[start..start + data.len()].copy_from_slice(data);
+        }
+    }
+
+    pub const fn msg_len(data_len: usize) -> usize {
+        offsets::MSG_APCI + 10 + data_len
+    }
+}
+
 /// Split the three-byte `instance[11:0] | property_id[11:0]` packing
 /// into its two 12-bit fields (spec 03_03_07 §3.4.3.2).
 fn unpack_instance_and_pid(b4: u8, b5: u8, b6: u8) -> (u16, u16) {
@@ -323,6 +351,23 @@ impl FunctionPropertyExtHeader {
     }
 }
 
+/// Writer for an extended function-property command or state read.
+pub struct FunctionPropertyExtRequest;
+
+impl FunctionPropertyExtRequest {
+    pub fn write(buf: &mut [u8], object_type: u16, object_instance: u16, prop_id: u16, service_data: &[u8]) {
+        FunctionPropertyExtHeader::write_header(buf, object_type, object_instance, prop_id);
+        if !service_data.is_empty() {
+            let start = offsets::MSG_APCI + 7;
+            buf[start..start + service_data.len()].copy_from_slice(service_data);
+        }
+    }
+
+    pub const fn msg_len(data_len: usize) -> usize {
+        offsets::MSG_APCI + 7 + data_len
+    }
+}
+
 /// Writer for `A_FunctionPropertyExtState_Response`.
 pub struct FunctionPropertyExtResponse;
 
@@ -499,9 +544,7 @@ impl PropertyExtDescriptionResponse {
         // numbers, writeable, PDT, max_nr_of_elem and access. The last
         // of those is the final octet of the PDU, so the range runs to
         // `+16` inclusive.
-        for i in (base + 9)..=(base + 16) {
-            buf[i] = 0;
-        }
+        buf[base + 9..=base + 16].fill(0);
     }
 }
 
@@ -536,6 +579,20 @@ mod tests {
         assert_eq!(hdr.count, 1);
         assert_eq!(hdr.start_idx, 42);
         assert_eq!(&hdr.data(&buf)[..2], &[0xAB, 0xCD]);
+    }
+
+    #[test]
+    fn request_writer_matches_security_io_layout() {
+        let mut buf = [0u8; PropertyExtValueRequest::msg_len(2)];
+        PropertyExtValueRequest::write(&mut buf, 0x0011, 1, 56, 1, 1, &[0xAA, 0x55]);
+        assert_eq!(&buf[offsets::MSG_APCI + 2..], &[0x00, 0x11, 0x00, 0x10, 0x38, 0x01, 0x00, 0x01, 0xAA, 0x55]);
+    }
+
+    #[test]
+    fn function_request_writer_uses_the_same_type_instance_packing() {
+        let mut buf = [0u8; FunctionPropertyExtRequest::msg_len(2)];
+        FunctionPropertyExtRequest::write(&mut buf, 0x0011, 1, 51, &[0, 1]);
+        assert_eq!(&buf[offsets::MSG_APCI + 2..], &[0x00, 0x11, 0x00, 0x10, 0x33, 0x00, 0x01]);
     }
 
     /// Reference decode: raw bytes `00 10 0C` (as seen in the conformance
@@ -709,8 +766,8 @@ mod tests {
         // before the writeable/PDT octet — omitting them shifted every
         // field after by four octets, which is what the EITT
         // data-security template's 3.8.1.3 caught.
-        for i in (base + 9)..=(base + 12) {
-            assert_eq!(buf[i], 0, "DPT octet {i} should be zero");
+        for (offset, byte) in buf[base + 9..=base + 12].iter().enumerate() {
+            assert_eq!(*byte, 0, "DPT octet {} should be zero", base + 9 + offset);
         }
         // writeable | pdt[5:0].
         assert_eq!(buf[base + 13], 0x80 | 0x17);
@@ -736,8 +793,8 @@ mod tests {
         assert_eq!(buf[base + 7], 0x50);
         assert_eq!(buf[base + 8], 0xAB);
         // Descriptor fields zeroed.
-        for i in (base + 9)..(base + 16) {
-            assert_eq!(buf[i], 0, "descriptor byte {} non-zero on error", i);
+        for (offset, byte) in buf[base + 9..base + 16].iter().enumerate() {
+            assert_eq!(*byte, 0, "descriptor byte {} non-zero on error", base + 9 + offset);
         }
     }
 

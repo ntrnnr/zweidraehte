@@ -293,6 +293,54 @@ pub fn knx_to_tp1_bytes_no_checksum<const N: usize>(src: &[u8]) -> heapless::Vec
     out
 }
 
+/// Convert TP1-like bytes (no checksum) to internal KNX format into a
+/// fixed-capacity `heapless::Vec`.
+///
+/// The mirror of [`knx_to_tp1_bytes_no_checksum`], and the direction a
+/// synchronous stack needs on ingress: it owns the wire bytes borrowed from a
+/// link driver and has to land them in a buffer it can mutate in place —
+/// KNX Data Secure authenticates and decrypts the frame where it lies.
+///
+/// Standard frames keep their length (`N >= src.len()`); extended frames lose
+/// the extended-control octet, so `N >= src.len() - 1` suffices. Panics if the
+/// destination is too small.
+pub fn tp1_to_knx_bytes_no_checksum<const N: usize>(src: &[u8]) -> heapless::Vec<u8, N> {
+    let len = src.len();
+    let mut out: heapless::Vec<u8, N> = heapless::Vec::new();
+
+    // A TP1 standard frame is at minimum 7 octets; an extended frame spends one
+    // more on the extended control field. Either way, fewer than 7 cannot carry
+    // a canonical message, and the extended path would read past the end.
+    debug_assert!(len >= 7, "tp1_to_knx_bytes_no_checksum: message too short (len={})", len);
+    if len < 7 {
+        return out;
+    }
+
+    if (src[0] & 0x80) == 0 {
+        // Extended frame: `ctrl | ext_ctrl | src(2) | dst(2) | len | payload`.
+        // Drop the extended-control octet by copying everything after it, then
+        // put it at the canonical NPDU position — which is where the wire's
+        // length octet landed, and the canonical format derives length from
+        // the buffer instead.
+        debug_assert!(len >= 8, "tp1_to_knx_bytes_no_checksum: extended frame too short (len={})", len);
+        if len < 8 {
+            return out;
+        }
+        let ext_ctrl = src[1];
+        out.push(src[0]).expect("destination capacity too small for TP1 conversion");
+        out.extend_from_slice(&src[2..]).expect("destination capacity too small for TP1 conversion");
+        out[5] = ext_ctrl;
+    } else {
+        // Standard frame: identical layout, except the low nibble of octet 5
+        // carries the length. The canonical format has no length field there
+        // (the EFF bits it overlaps cannot be set on a standard frame).
+        out.extend_from_slice(src).expect("destination capacity too small for TP1 conversion");
+        out[5] &= 0xf0;
+    }
+
+    out
+}
+
 /// Convert internal KNX bytes to TP1-like format (no checksum) into a `Vec<u8>`.
 #[cfg(feature = "alloc")]
 pub fn knx_to_tp1_vec_no_checksum(src: &[u8]) -> alloc::vec::Vec<u8> {
@@ -710,6 +758,72 @@ mod tests {
             assert_eq!(result.len(), 12, "NPDU 0x{:02X}: becomes extended frame", npdu_val);
             assert_eq!(result[0], 0x3C, "NPDU 0x{:02X}: extended control field", npdu_val);
             assert_eq!(result[6], 0x03, "NPDU 0x{:02X}: Length = 3", npdu_val);
+        }
+    }
+
+    // ========================================================================
+    // tp1_to_knx_bytes_no_checksum — the heapless ingress direction
+    // ========================================================================
+    //
+    // The `MessageBuffer`-generic `tp1_to_knx_message_no_checksum` is the
+    // obviously-correct oracle: these assert the byte-slice variant agrees with
+    // it rather than re-deriving the layout a second time.
+
+    /// A canonical message whose NPDU EFF nibble is zero — encodes as standard.
+    const CANONICAL_STD: &[u8] = &[0xBC, 0x11, 0x22, 0x11, 0x01, 0xE0, 0x43, 0xD2, 0x00, 0x51];
+    /// A canonical message with EFF bits set — encodes as extended.
+    const CANONICAL_EXT: &[u8] = &[0x1C, 0x11, 0x22, 0x11, 0x01, 0xE5, 0x43, 0xD2, 0x00, 0x51];
+
+    #[test]
+    fn tp1_to_knx_bytes_matches_the_message_buffer_variant() {
+        for canonical in [CANONICAL_STD, CANONICAL_EXT] {
+            let wire = knx_to_tp1_bytes_no_checksum::<32>(canonical);
+            let expected = tp1_to_knx_message_no_checksum(TestBuffer::new(&wire));
+            let actual = tp1_to_knx_bytes_no_checksum::<32>(&wire);
+            assert_eq!(&actual[..], &expected[..]);
+        }
+    }
+
+    #[test]
+    fn tp1_round_trip_is_stable_on_the_wire() {
+        // Normalise-then-denormalise is the micro stack's actual cycle, and it
+        // has to be a fixed point. The canonical→wire→canonical direction is
+        // deliberately *not* the identity: `knx_to_tp1_*` rewrites the control
+        // octet's frame-type bits (0x1C → 0x3C for extended), keeping only the
+        // priority bits, so the frame type is decided by the encoder rather
+        // than carried through.
+        for canonical in [CANONICAL_STD, CANONICAL_EXT] {
+            let wire = knx_to_tp1_bytes_no_checksum::<32>(canonical);
+            let back = tp1_to_knx_bytes_no_checksum::<32>(&wire);
+            let again = knx_to_tp1_bytes_no_checksum::<32>(&back);
+            assert_eq!(&again[..], &wire[..]);
+            // Everything after the control octet does survive untouched.
+            assert_eq!(&back[1..], &canonical[1..]);
+        }
+    }
+
+    #[test]
+    fn tp1_to_knx_bytes_distinguishes_the_two_frame_types() {
+        let std_wire = knx_to_tp1_bytes_no_checksum::<32>(CANONICAL_STD);
+        let ext_wire = knx_to_tp1_bytes_no_checksum::<32>(CANONICAL_EXT);
+        // The extended encoding spends one more octet on the wire; converting
+        // back has to give both the same canonical length again.
+        assert_eq!(ext_wire.len(), std_wire.len() + 1);
+        assert_eq!(tp1_to_knx_bytes_no_checksum::<32>(&std_wire).len(), CANONICAL_STD.len());
+        assert_eq!(tp1_to_knx_bytes_no_checksum::<32>(&ext_wire).len(), CANONICAL_EXT.len());
+    }
+
+    #[test]
+    fn tp1_to_knx_bytes_rejects_short_input() {
+        // Release behaviour for a truncated frame is an empty result rather
+        // than an out-of-bounds read; debug builds assert first, so this only
+        // runs meaningfully in release.
+        #[cfg(not(debug_assertions))]
+        {
+            assert!(tp1_to_knx_bytes_no_checksum::<32>(&[0xBC, 0x11, 0x22]).is_empty());
+            // Seven octets is enough for a standard frame but one short for an
+            // extended one, whose control byte has bit 7 clear.
+            assert!(tp1_to_knx_bytes_no_checksum::<32>(&[0x3C, 0xE0, 0x11, 0x22, 0x11, 0x01, 0x03]).is_empty());
         }
     }
 }

@@ -57,18 +57,13 @@ pub use augment::SecurityAugment;
 pub(crate) use augment::{read_table_with_count_probe, write_security_table};
 use zweidraehte_proto::messages::knx::RequiredSecurity;
 
-use core::cell::{Cell, RefCell};
-
 use serde::{Deserialize, Serialize};
 
 use crate::HasSecurityMode;
 use crate::StackDefinition;
 use crate::extension::{Extension, ExtensionConfig, ExtensionState};
-use crate::logging::debug;
 use crate::objects::comm::HasGoSecurityView;
-use crate::objects::interface::{
-    HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter, PropertyError,
-};
+use crate::objects::interface::{HasDomainAddress, HasMaxRetryCount, HasRfDomainAddress, HasRfRetransmitter};
 use crate::objects::tables::LoadState;
 use crate::restart::EraseCode;
 use crate::state::{HasSecurityState, SecurityFailureEntry, SecurityFailureType};
@@ -76,673 +71,31 @@ use crate::storage::SequenceNumberStorage;
 use crate::storage::views::SiatAccess;
 
 // ============================================================================
-// SecurityTable — const-generic fixed-capacity table
+// Shared Data Secure core
 // ============================================================================
-
-/// Fixed-capacity table for security data (group keys, GO security flags).
-///
-/// Each entry is `ENTRY_SIZE` bytes. Up to `N` entries can be stored.
-/// This type is `no_alloc`-compatible — all storage is inline.
-///
-/// Written by ETS during configuration (via the load state machine),
-/// read by the S-AL at runtime for key lookup and GO flag checks.
-///
-/// # Key redaction
-///
-/// The `Debug` impl prints entry counts only and never the raw entry bytes
-/// to prevent AES key material from appearing in logs. The `Serialize` and
-/// `Deserialize` impls are unaffected — persistence requires real bytes.
-#[serde_with::serde_as]
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SecurityTable<const N: usize, const ENTRY_SIZE: usize> {
-    /// Entry data. Only entries `0..count` are valid.
-    #[serde_as(as = "[[_; ENTRY_SIZE]; N]")]
-    pub(crate) data: [[u8; ENTRY_SIZE]; N],
-    count: u16,
-}
-
-impl<const N: usize, const ENTRY_SIZE: usize> core::fmt::Debug for SecurityTable<N, ENTRY_SIZE> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // Entry data is never shown — it may contain AES key material.
-        f.debug_struct("SecurityTable")
-            .field("capacity", &N)
-            .field("entry_size", &ENTRY_SIZE)
-            .field("count", &self.count)
-            .field("data", &"[REDACTED]")
-            .finish()
-    }
-}
-
-impl<const N: usize, const ENTRY_SIZE: usize> Default for SecurityTable<N, ENTRY_SIZE> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<const N: usize, const ENTRY_SIZE: usize> SecurityTable<N, ENTRY_SIZE> {
-    /// Create an empty table.
-    pub const fn new() -> Self {
-        Self { data: [[0u8; ENTRY_SIZE]; N], count: 0 }
-    }
-
-    /// Create a table from pre-built entry data and a count.
-    ///
-    /// Useful for compile-time construction in `knx_stack_config!`.
-    /// Entries `0..count` are considered valid; the rest are zero-filled.
-    pub const fn from_entries(data: [[u8; ENTRY_SIZE]; N], count: u16) -> Self {
-        Self { data, count }
-    }
-
-    /// Current number of entries.
-    pub fn count(&self) -> u16 {
-        self.count
-    }
-
-    /// Get entry at 0-based index, or `None` if out of range.
-    pub fn get(&self, index: u16) -> Option<&[u8; ENTRY_SIZE]> {
-        if index < self.count { Some(&self.data[index as usize]) } else { None }
-    }
-
-    /// Read a range of entries into a byte buffer.
-    ///
-    /// `start` is 0-based. Returns the number of bytes written, or an
-    /// error if `start` is out of range or `buf` is too small.
-    pub fn read_entries(&self, start: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
-        if start >= self.count {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-        let end = ((start + count) as usize).min(self.count as usize);
-        let actual = end - start as usize;
-        let byte_count = actual * ENTRY_SIZE;
-        if buf.len() < byte_count {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        for (i, idx) in (start as usize..end).enumerate() {
-            let offset = i * ENTRY_SIZE;
-            buf[offset..offset + ENTRY_SIZE].copy_from_slice(&self.data[idx]);
-        }
-        Ok(byte_count)
-    }
-
-    /// Write entries from a byte buffer, replacing existing data.
-    ///
-    /// `start` is 0-based. `data` must be a multiple of `ENTRY_SIZE`.
-    /// Validates that the write stays within table capacity and that
-    /// the data length is aligned to the entry size.
-    pub fn write_entries(&mut self, start: u16, data: &[u8]) -> Result<(), PropertyError> {
-        if data.is_empty() {
-            return Ok(()); // Nothing to write.
-        }
-        if data.len() % ENTRY_SIZE != 0 {
-            return Err(PropertyError::TypeMismatch);
-        }
-        let entry_count = data.len() / ENTRY_SIZE;
-        let end = start as usize + entry_count;
-        if end > N {
-            return Err(PropertyError::InvalidStartIndex);
-        }
-        for i in 0..entry_count {
-            let src_offset = i * ENTRY_SIZE;
-            self.data[start as usize + i].copy_from_slice(&data[src_offset..src_offset + ENTRY_SIZE]);
-        }
-        // Update count if we wrote past the current end.
-        if end as u16 > self.count {
-            self.count = end as u16;
-        }
-        Ok(())
-    }
-
-    /// Clear all entries (reset count to 0).
-    ///
-    /// Also zeroes the backing storage: entries hold key material, and
-    /// the full `data` array — not just the active prefix — is what the
-    /// persisted config serializes. Stale keys must not survive a clear.
-    pub fn clear(&mut self) {
-        self.data = [[0u8; ENTRY_SIZE]; N];
-        self.count = 0;
-    }
-
-    /// Set the element count directly (for load state machine use).
-    ///
-    /// Zeroes any entries dropped by a shrinking count — same key-material
-    /// rationale as [`clear()`](Self::clear): the serialized config carries
-    /// the whole `data` array, so truncated entries must not leak old keys
-    /// into storage.
-    pub fn set_count(&mut self, count: u16) {
-        let count = count.min(N as u16);
-        for entry in self.data[count as usize..].iter_mut() {
-            *entry = [0u8; ENTRY_SIZE];
-        }
-        self.count = count;
-    }
-
-    /// View active entries as a flat byte slice.
-    ///
-    /// Returns `count * ENTRY_SIZE` bytes covering entries `0..count`.
-    pub fn as_flat_bytes(&self) -> &[u8] {
-        self.data[..self.count as usize].as_flattened()
-    }
-}
-
-// SecurityTable serialization is handled by SecurityExtensionConfig,
-// which stores the table data inline as fixed arrays. The SecurityState
-// runtime type uses RefCell<SecurityTable<N, ES>> for interior mutability.
-
-// ============================================================================
-// Persisted Config
-// ============================================================================
-
-/// Persisted security extension configuration.
-///
-/// Contains scalar fields, security tables (P2P keys, group keys, GO
-/// flags), and the security failures log. Tables persist across
-/// Confirmed and Basic restarts per spec (03/05/01 §6.3.6-§6.3.15).
-///
-/// Sequence numbers are stored separately via [`SequenceNumberStorage`]
-/// due to their high write frequency.
-///
-/// # Key redaction
-///
-/// The `Debug` impl omits the `tool_key` bytes and delegates table display
-/// to `SecurityTable`'s redacted `Debug` impl. `Serialize`/`Deserialize`
-/// are unaffected.
-///
-/// [`SequenceNumberStorage`]: crate::storage::SequenceNumberStorage
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SecurityExtensionConfig<const GRP: usize, const P2P: usize, const GO: usize> {
-    #[serde(default)]
-    pub security_mode_enabled: bool,
-    #[serde(default = "default_tool_key")]
-    pub tool_key: [u8; 16],
-    #[serde(default = "default_load_state")]
-    pub load_state: LoadState,
-    /// Security failures log — spec (03/05/01 §6.3.9.2) requires it to
-    /// be saved at power-down and restored at power-up.
-    #[serde(default)]
-    pub failures_log: SecurityFailuresLog,
-    /// Group key table: GA_Index(2) + Key(16) = 18 bytes per entry.
-    #[serde(default)]
-    pub grp_keys: SecurityTable<GRP, 18>,
-    /// P2P key table: IA_Index(2) + Key(16) + Roles(2) = 20 bytes per entry.
-    ///
-    /// Sized by `P2P`. Independent of `SIAT`: the P2P Key Table only
-    /// carries an entry when this device has a secure P2P link with
-    /// the partner (03/05/01 §6.3.6 NOTE 98); the SIAT by contrast
-    /// carries every secure-sender IA — group senders included.
-    #[serde(default)]
-    pub p2p_keys: SecurityTable<P2P, 20>,
-    /// GO security flags: 1 byte per group object.
-    #[serde(default)]
-    pub go_flags: SecurityTable<GO, 1>,
-    /// PID_SECURITY_REPORT (57). Persisted: 03/05/01 §6.3.11's master-reset
-    /// table leaves it untouched by a Confirmed Restart, so it has to
-    /// survive one — and a power cycle with it.
-    #[serde(default)]
-    pub security_report: u8,
-    /// PID_SECURITY_REPORT_CONTROL (58). Persisted for the same reason
-    /// (§6.3.12: "01h Confirmed Restart — not influenced: the value shall
-    /// not change").
-    #[serde(default)]
-    pub security_report_enabled: bool,
-}
-
-impl<const GRP: usize, const P2P: usize, const GO: usize> core::fmt::Debug for SecurityExtensionConfig<GRP, P2P, GO> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // The tool_key field is AES-128 key material — never print raw bytes.
-        f.debug_struct("SecurityExtensionConfig")
-            .field("security_mode_enabled", &self.security_mode_enabled)
-            .field("tool_key", &"[REDACTED]")
-            .field("load_state", &self.load_state)
-            .field("failures_log", &self.failures_log)
-            .field("grp_keys", &self.grp_keys)
-            .field("p2p_keys", &self.p2p_keys)
-            .field("go_flags", &self.go_flags)
-            .finish()
-    }
-}
-
-// These exist as functions (not consts) because `#[serde(default = "…")]`
-// can only name a function path.
-fn default_tool_key() -> [u8; 16] {
-    [0u8; 16]
-}
-
-fn default_load_state() -> LoadState {
-    LoadState::Unloaded
-}
-
-impl<const GRP: usize, const P2P: usize, const GO: usize> Default for SecurityExtensionConfig<GRP, P2P, GO> {
-    fn default() -> Self {
-        Self {
-            security_mode_enabled: false,
-            tool_key: [0u8; 16],
-            load_state: LoadState::Unloaded,
-            failures_log: SecurityFailuresLog::default(),
-            grp_keys: SecurityTable::new(),
-            p2p_keys: SecurityTable::new(),
-            go_flags: SecurityTable::new(),
-            security_report: 0,
-            security_report_enabled: false,
-        }
-    }
-}
-
-impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig for SecurityExtensionConfig<GRP, P2P, GO> {}
-
-// ============================================================================
-// Runtime State
-// ============================================================================
-
-/// Runtime security state with interior mutability.
-///
-/// Holds security mode, tool key, load state, the group-key, P2P-key, and
-/// GO-security-flag tables. Table data is behind `RefCell` for interior
-/// mutability during property writes.
-///
-/// The `from_config`/`to_config` glue is hand-written rather than using
-/// `#[derive(ExtensionState)]` because `SecurityState` is not itself an
-/// `ExtensionState` — it is embedded inside [`SecureExtensionState`], which is
-/// the top-level extension the derive applies to (and which seeds the FDSK in
-/// its own `from_config`).
-pub struct SecurityState<const GRP: usize, const P2P: usize, const GO: usize> {
-    security_mode_enabled: Cell<bool>,
-    /// Active tool key. The KNX spec defines this as the negotiated key
-    /// for the current MaC↔BDUT session. On a fresh device or after a
-    /// factory reset it equals the FDSK supplied by `DeviceIdentity`;
-    /// `SystemBDeviceState::new` and `SystemBDeviceState::factory_reset`
-    /// seed it from `identity.fdsk()`. Once the MaC writes
-    /// `PID_TOOL_KEY` the negotiated value lives here exclusively.
-    tool_key: Cell<[u8; 16]>,
-    load_state: Cell<LoadState>,
-    /// Group key table: GA_index(2) + key(16) = 18 bytes per entry.
-    grp_keys: RefCell<SecurityTable<GRP, 18>>,
-    /// P2P key table: IA_index(2) + key(16) + role(2) = 20 bytes per entry.
-    p2p_keys: RefCell<SecurityTable<P2P, 20>>,
-    /// GO security flags: 1 byte per group object.
-    go_flags: RefCell<SecurityTable<GO, 1>>,
-    /// Security failures log — counters and recent failure entries.
-    failures_log: RefCell<SecurityFailuresLog>,
-    /// PID_SECURITY_REPORT (57): 1-byte security status bitfield.
-    security_report: Cell<u8>,
-    /// PID_SECURITY_REPORT_CONTROL (58): whether security reporting is enabled.
-    security_report_enabled: Cell<bool>,
-}
-
-// ============================================================================
-// Security Failures Log
-// ============================================================================
-
-/// Security failures log with 4 × 16-bit counters and a ring buffer
-/// of recent failure entries.
-///
-/// Accessed via Function Property on PID 55:
-/// - **StateRead(id=0, info=0)**: Returns 4 × 2-byte BE counters (8 bytes).
-/// - **StateRead(id=1, info=N)**: Returns the Nth most recent 12-byte entry.
-/// - **Command(id=0, info=0)**: Clears all counters and entries.
-///
-/// Counter layout (4 counters, each 16-bit big-endian):
-/// - \[0\] SCF errors (type 0)
-/// - \[1\] Crypto/MAC errors (type 1)
-/// - \[2\] Sequence number errors (type 2)
-/// - \[3\] Access + Role errors (types 3 and 4)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SecurityFailuresLog {
-    /// 4 × 16-bit failure counters (saturating at 0xFFFF).
-    counters: [u16; 4],
-    /// Ring buffer of recent failure entries.
-    entries: [SecurityFailureEntry; 8],
-    /// Write index into the ring buffer.
-    write_idx: u8,
-    /// Number of entries stored (capped at 8).
-    count: u8,
-}
-
-impl Default for SecurityFailuresLog {
-    fn default() -> Self {
-        Self { counters: [0; 4], entries: [SecurityFailureEntry::default(); 8], write_idx: 0, count: 0 }
-    }
-}
-
-impl SecurityFailureType {
-    /// Map a failure type to its counter index (0–3).
-    ///
-    /// Types 0–2 map 1:1 to their respective counters. Types 3 (Role)
-    /// and 4 (Access) both map to counter 3.
-    fn counter_index(self) -> Option<usize> {
-        match self as u8 {
-            0..=2 => Some(self as usize),
-            3 | 4 => Some(3),
-            _ => None,
-        }
-    }
-}
-
-impl SecurityFailuresLog {
-    /// Record a security failure.
-    ///
-    /// `frame_fragment` should be the first 9 bytes of the offending
-    /// secure frame (zero-padded if shorter). These are stored in the
-    /// entry for diagnostic purposes.
-    pub fn log_failure(&mut self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
-        // Increment the 16-bit counter for this failure type (saturating).
-        if let Some(idx) = failure_type.counter_index() {
-            self.counters[idx] = self.counters[idx].saturating_add(1);
-        }
-
-        // Build the 9-byte fragment (zero-padded if input is shorter).
-        let mut frag = [0u8; 9];
-        let copy_len = frame_fragment.len().min(9);
-        frag[..copy_len].copy_from_slice(&frame_fragment[..copy_len]);
-
-        // Add to ring buffer.
-        let entry = SecurityFailureEntry { source_addr, frame_fragment: frag, failure_type: failure_type as u8 };
-        self.entries[self.write_idx as usize] = entry;
-        self.write_idx = (self.write_idx + 1) % 8;
-        if self.count < 8 {
-            self.count += 1;
-        }
-    }
-
-    /// Get the 4 × 16-bit failure counters.
-    pub fn counters(&self) -> &[u16; 4] {
-        &self.counters
-    }
-
-    /// Serialize counters as 8 bytes (4 × big-endian u16).
-    pub fn counters_as_bytes(&self) -> [u8; 8] {
-        let mut buf = [0u8; 8];
-        for (i, &c) in self.counters.iter().enumerate() {
-            buf[i * 2..i * 2 + 2].copy_from_slice(&c.to_be_bytes());
-        }
-        buf
-    }
-
-    /// Get a failure entry by reverse index (0 = most recent).
-    pub fn get_by_index(&self, index: u8) -> Option<&SecurityFailureEntry> {
-        if index >= self.count {
-            return None;
-        }
-        // Most recent is at (write_idx - 1), second most recent at (write_idx - 2), etc.
-        let actual = (self.write_idx as i16 - 1 - index as i16).rem_euclid(8) as usize;
-        Some(&self.entries[actual])
-    }
-
-    /// Clear all counters and entries.
-    pub fn clear(&mut self) {
-        self.counters = [0; 4];
-        self.count = 0;
-        self.write_idx = 0;
-    }
-
-    /// Overwrite the four 16-bit counters directly. Used by the
-    /// manufacturer-specific test PID (203) so the conformance suite can
-    /// set them to a known value (typically FFFFh) before provoking
-    /// errors to verify the saturating-add behaviour of `log_failure`.
-    pub fn set_counters(&mut self, counters: [u16; 4]) {
-        self.counters = counters;
-    }
-}
-
-impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P, GO> {
-    /// Whether the device's Security Mode is currently enabled.
-    pub fn security_mode_enabled(&self) -> bool {
-        self.security_mode_enabled.get()
-    }
-
-    /// Set the security mode.
-    pub fn set_security_mode_enabled(&self, enabled: bool) {
-        self.security_mode_enabled.set(enabled);
-    }
-
-    /// Get the current load state.
-    pub fn load_state(&self) -> LoadState {
-        self.load_state.get()
-    }
-
-    /// Set the load state.
-    pub fn set_load_state(&self, state: LoadState) {
-        self.load_state.set(state);
-    }
-
-    /// Get the tool key.
-    pub fn tool_key(&self) -> [u8; 16] {
-        self.tool_key.get()
-    }
-
-    /// Set the tool key (write-only property, PID 56).
-    pub fn set_tool_key(&self, key: [u8; 16]) {
-        // First two and last two bytes make the change visible in the log
-        // without leaking the full key. "was_empty=true" would only fire on
-        // a device that hasn't been through `from_config` (never happens
-        // in production) — on a fresh-boot device the tool_key is
-        // pre-seeded to FDSK by the config path.
-        #[allow(unused_variables)]
-        let old = self.tool_key.get();
-        #[allow(unused_variables)]
-        let old_zero = old == [0u8; 16];
-        debug!(
-            "Security: set_tool_key old[0..2]={:02x}{:02x} new[0..2]={:02x}{:02x} old_was_zero={}",
-            old[0], old[1], key[0], key[1], old_zero
-        );
-        self.tool_key.set(key);
-    }
-
-    /// Get a reference to the group key table.
-    pub fn grp_keys(&self) -> &RefCell<SecurityTable<GRP, 18>> {
-        &self.grp_keys
-    }
-
-    /// Get a reference to the P2P key table.
-    pub fn p2p_keys(&self) -> &RefCell<SecurityTable<P2P, 20>> {
-        &self.p2p_keys
-    }
-
-    /// Get a reference to the GO security flags table.
-    pub fn go_flags(&self) -> &RefCell<SecurityTable<GO, 1>> {
-        &self.go_flags
-    }
-
-    /// Look up a group key by 1-based group address table index.
-    ///
-    /// Uses binary search — the spec (03/05/01 §6.3.7.2) requires the
-    /// table to be sorted by GA_Index ascending, and §6.3.7.3 requires
-    /// the MaC (ETS) to maintain this order.
-    ///
-    /// Returns the 16-byte key if found, or `None` if the index is
-    /// not in the group key table.
-    pub fn group_key_for_index(&self, ga_index: u16) -> Option<[u8; 16]> {
-        let table = self.grp_keys.borrow();
-        let count = table.count() as usize;
-
-        // Binary search over sorted entries.
-        let mut lo = 0usize;
-        let mut hi = count;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let entry = &table.data[mid];
-            let stored_index = u16::from_be_bytes([entry[0], entry[1]]);
-            match stored_index.cmp(&ga_index) {
-                core::cmp::Ordering::Equal => {
-                    let mut key = [0u8; 16];
-                    key.copy_from_slice(&entry[2..18]);
-                    return Some(key);
-                }
-                core::cmp::Ordering::Less => lo = mid + 1,
-                core::cmp::Ordering::Greater => hi = mid,
-            }
-        }
-        None
-    }
-
-    /// Look up a P2P key by 1-based Security Individual Address Table index.
-    ///
-    /// Each entry is 20 bytes: IA_Index(2) + Key(16) + Roles(2), where the
-    /// leading field identifies the communication partner *by its position in
-    /// the SIAT* rather than by its address (03/05/01 §6.3.6.2). The caller
-    /// resolves the peer IA to that index through the SIAT first.
-    ///
-    /// Uses binary search — §6.3.6.2 requires the table sorted by IA_Index
-    /// ascending and §6.3.6.3 makes the MaC (ETS) maintain that order, exactly
-    /// as for the group key table above.
-    ///
-    /// Returns the 16-byte key and the role bitmask (R0-R15), or `None` if the
-    /// index has no key entry — which per NOTE 98 is the normal state for a
-    /// partner we only share group communication with.
-    pub fn p2p_key_for_index(&self, ia_index: u16) -> Option<([u8; 16], u16)> {
-        let table = self.p2p_keys.borrow();
-        let count = table.count() as usize;
-
-        let mut lo = 0usize;
-        let mut hi = count;
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let entry = &table.data[mid];
-            let stored_index = u16::from_be_bytes([entry[0], entry[1]]);
-            match stored_index.cmp(&ia_index) {
-                core::cmp::Ordering::Equal => {
-                    let mut key = [0u8; 16];
-                    key.copy_from_slice(&entry[2..18]);
-                    let roles = u16::from_be_bytes([entry[18], entry[19]]);
-                    return Some((key, roles));
-                }
-                core::cmp::Ordering::Less => lo = mid + 1,
-                core::cmp::Ordering::Greater => hi = mid,
-            }
-        }
-        None
-    }
-
-    /// Get a reference to the security failures log.
-    pub fn failures_log(&self) -> &RefCell<SecurityFailuresLog> {
-        &self.failures_log
-    }
-
-    /// Look up GO security flags by 0-based group object index.
-    pub fn go_security_flags_for(&self, go_index: u16) -> Option<u8> {
-        let table = self.go_flags.borrow();
-        table.get(go_index).map(|entry| entry[0])
-    }
-
-    /// Get the security report value (PID 57).
-    pub fn security_report(&self) -> u8 {
-        self.security_report.get()
-    }
-
-    /// Set the security report value (PID 57).
-    pub fn set_security_report(&self, value: u8) {
-        self.security_report.set(value);
-    }
-
-    /// Whether security reporting is enabled (PID 58).
-    pub fn security_report_enabled(&self) -> bool {
-        self.security_report_enabled.get()
-    }
-
-    /// Enable or disable security reporting (PID 58).
-    pub fn set_security_report_enabled(&self, enabled: bool) {
-        self.security_report_enabled.set(enabled);
-    }
-
-    /// Clear PID_SECURITY_REPORT (57) alone.
-    ///
-    /// ResetLinks (06h) clears the report but leaves the control alone:
-    /// 03/05/01 §6.3.11's master-reset table says "KNX default: cleared"
-    /// for the report, while §6.3.12's says "not influenced: no change"
-    /// for the control. The two tables agree only on the three full
-    /// resets, which go through [`clear_security_report`](Self::clear_security_report).
-    pub fn clear_security_report_only(&self) {
-        self.security_report.set(0);
-    }
-
-    /// Clear PID_SECURITY_REPORT (57) and PID_SECURITY_REPORT_CONTROL (58).
-    ///
-    /// Per spec 03/05/01 §6.3.11 and §6.3.12, erase codes 02h and 07h and
-    /// a local reset clear the report and set the control to "Disabled".
-    /// Neither is influenced by a Confirmed Restart (01h), which is why
-    /// both are persisted rather than rebuilt at boot.
-    pub fn clear_security_report(&self) {
-        self.security_report.set(0);
-        self.security_report_enabled.set(false);
-    }
-
-    /// Reset all security state to factory defaults except the active
-    /// tool key, which the caller is expected to seed from
-    /// `DeviceIdentity::fdsk()` (per spec 03/05/01 §6.1.4 the tool key
-    /// reverts to the FDSK on factory reset). `SystemBDeviceState::
-    /// factory_reset` drives this and the FDSK-write together so the
-    /// state never ends up with a wiped tool key but no FDSK applied.
-    pub fn factory_reset(&self) {
-        self.security_mode_enabled.set(false);
-        self.tool_key.set([0u8; 16]);
-        self.load_state.set(LoadState::Unloaded);
-        // Clear all security key tables together (03/05/01 §6.3.4 groups P2P
-        // keys, group keys, and the SIAT as the security tables). The SIAT
-        // lives in the sequence store and is cleared on its own erase path.
-        self.grp_keys.borrow_mut().clear();
-        self.p2p_keys.borrow_mut().clear();
-        self.go_flags.borrow_mut().clear();
-        self.failures_log.borrow_mut().clear();
-        self.clear_security_report();
-    }
-}
-
-// Inherent construction / conversion methods.
 //
-// `SecurityState` is never used as a top-level `ExtensionState` — it is
-// always nested inside `SecureExtensionState`, and `HasSecurityState` is
-// implemented on that wrapper directly (forwarding to the inherent
-// methods below). Keeping these as inherent methods — rather than a
-// trait `impl` on `SecurityState` itself — avoids pulling the trait
-// machinery (including `Resources`) into a type that doesn't need it,
-// and avoids maintaining two parallel `HasSecurityState` impls.
-impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P, GO> {
-    pub fn from_config(config: SecurityExtensionConfig<GRP, P2P, GO>) -> Self {
-        Self {
-            security_mode_enabled: Cell::new(config.security_mode_enabled),
-            tool_key: Cell::new(config.tool_key),
-            load_state: Cell::new(config.load_state),
-            grp_keys: RefCell::new(config.grp_keys),
-            p2p_keys: RefCell::new(config.p2p_keys),
-            go_flags: RefCell::new(config.go_flags),
-            failures_log: RefCell::new(config.failures_log),
-            security_report: Cell::new(config.security_report),
-            security_report_enabled: Cell::new(config.security_report_enabled),
-        }
-    }
+// The tables, the persisted configuration, the runtime state and the failures
+// log are `zweidraehte_proto::security`: KNX Data Security is a profile module
+// composed onto a base profile, so none of it is System B's, System 7's, or
+// even this crate's. What stays here is the part that *is* device-stack
+// vocabulary — how the security state participates in this crate's extension
+// persistence model, and how it answers the capability traits the object
+// dispatch layer bounds on.
+//
+// Re-exported rather than merely imported so the established
+// `bcus::system_b::…` / `crate::security::…` paths keep resolving.
 
-    pub fn to_config(&self) -> SecurityExtensionConfig<GRP, P2P, GO> {
-        SecurityExtensionConfig {
-            security_mode_enabled: self.security_mode_enabled.get(),
-            tool_key: self.tool_key.get(),
-            // FDSK is identity, not persisted state — it gets re-injected
-            // from `DeviceIdentity` on every device construction.
-            load_state: self.load_state.get(),
-            failures_log: self.failures_log.borrow().clone(),
-            grp_keys: self.grp_keys.borrow().clone(),
-            p2p_keys: self.p2p_keys.borrow().clone(),
-            go_flags: self.go_flags.borrow().clone(),
-            security_report: self.security_report.get(),
-            security_report_enabled: self.security_report_enabled.get(),
-        }
-    }
+pub use zweidraehte_proto::security::{SecurityConfig, SecurityFailuresLog, SecurityState, SecurityTable};
 
-    /// Revert the active tool key to the FDSK.
-    ///
-    /// Called from `SystemBDeviceState::factory_reset` after the erase
-    /// pass has zeroed the key. Spec 03/05/01 §6.1.4 mandates that the
-    /// FDSK becomes the active tool key again after a factory reset.
-    pub fn reset_tool_key_to_fdsk(&self, fdsk: [u8; 16]) {
-        self.tool_key.set(fdsk);
-    }
-}
+impl<const GRP: usize, const P2P: usize, const GO: usize> ExtensionConfig for SecurityConfig<GRP, P2P, GO> {}
 
 impl<const GRP: usize, const P2P: usize, const GO: usize> HasSecurityMode for SecurityState<GRP, P2P, GO> {
     fn security_mode_enabled(&self) -> bool {
-        self.security_mode_enabled.get()
+        SecurityState::security_mode_enabled(self)
     }
 
     fn log_access_denied(&self, source_addr: u16) {
-        self.failures_log.borrow_mut().log_failure(SecurityFailureType::AccessError, source_addr, &[]);
+        self.failures_log().borrow_mut().log_failure(SecurityFailureType::AccessError, source_addr, &[]);
     }
 
     fn has_group_key(&self, tsap: u16) -> bool {
@@ -930,7 +283,7 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
     }
 
     fn log_security_failure(&self, failure_type: SecurityFailureType, source_addr: u16, frame_fragment: &[u8]) {
-        self.security.failures_log.borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
+        self.security.failures_log().borrow_mut().log_failure(failure_type, source_addr, frame_fragment);
         let prev = self.security.security_report();
         self.security.set_security_report(prev | 0x01);
     }
@@ -944,15 +297,15 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
     }
 
     fn failure_counters(&self) -> [u8; 8] {
-        self.security.failures_log.borrow().counters_as_bytes()
+        self.security.failures_log().borrow().counters_as_bytes()
     }
 
     fn failure_entry(&self, index: u8) -> Option<SecurityFailureEntry> {
-        self.security.failures_log.borrow().get_by_index(index).copied()
+        self.security.failures_log().borrow().get_by_index(index).copied()
     }
 
     fn clear_failure_log(&self) {
-        self.security.failures_log.borrow_mut().clear();
+        self.security.failures_log().borrow_mut().clear();
     }
 }
 
@@ -1038,14 +391,14 @@ pub struct SecureExtensionConfig<InnerConfig: ExtensionConfig, const GRP: usize,
     /// Medium-specific persisted config.
     pub inner: InnerConfig,
     /// Security persisted config.
-    pub security: SecurityExtensionConfig<GRP, P2P, GO>,
+    pub security: SecurityConfig<GRP, P2P, GO>,
 }
 
 impl<InnerConfig: ExtensionConfig, const GRP: usize, const P2P: usize, const GO: usize> Default
     for SecureExtensionConfig<InnerConfig, GRP, P2P, GO>
 {
     fn default() -> Self {
-        Self { inner: InnerConfig::default(), security: SecurityExtensionConfig::default() }
+        Self { inner: InnerConfig::default(), security: SecurityConfig::default() }
     }
 }
 
@@ -1253,7 +606,7 @@ impl<Inner: ExtensionState, const GRP: usize, const P2P: usize, const GO: usize>
 /// [`knx_stack_config!`](crate::knx_stack_config) — the Data Secure
 /// constants and the `create_security_config()` constructor.
 ///
-/// Lives next to [`SecurityExtensionConfig`] / [`SecurityTable`] so the
+/// Lives next to [`SecurityConfig`] / [`SecurityTable`] so the
 /// generic config macro does not name Data Secure types; it only
 /// delegates here. Invoked by `knx_stack_config!`, not by device code.
 #[macro_export]
@@ -1306,12 +659,12 @@ macro_rules! secure_stack_config {
             /// most one key per group address (`NUM_GROUP_ADDRS`), the GO
             /// flags table one byte per communication object
             /// (`NUM_COMM_OBJECTS`).
-            pub fn create_security_config() -> $crate::security::SecurityExtensionConfig<
+            pub fn create_security_config() -> $crate::security::SecurityConfig<
                 { Self::NUM_GROUP_ADDRS },
                 { Self::P2P_CAPACITY },
                 { Self::NUM_COMM_OBJECTS },
             > {
-                use $crate::security::{SecurityExtensionConfig, SecurityTable};
+                use $crate::security::{SecurityConfig, SecurityTable};
 
                 let tool_key = $crate::config::parse_hex_key::<16>($tool_key_hex);
 
@@ -1351,7 +704,7 @@ macro_rules! secure_stack_config {
                 // so that all GOs have an entry (defaulting to 0x00 = plain).
                 let go_flags = SecurityTable::from_entries(go_data, Self::NUM_COMM_OBJECTS as u16);
 
-                SecurityExtensionConfig {
+                SecurityConfig {
                     security_mode_enabled: false,
                     tool_key,
                     load_state: $crate::objects::tables::LoadState::Unloaded,
@@ -1368,49 +721,4 @@ macro_rules! secure_stack_config {
             }
         }
     };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::SecurityTable;
-
-    /// Truncating via `set_count` must zero the dropped entries — the
-    /// persisted config serializes the whole backing array, so stale
-    /// key material above the count would otherwise reach storage.
-    #[test]
-    fn set_count_zeroes_truncated_entries() {
-        let mut table: SecurityTable<4, 18> = SecurityTable::new();
-        let key_a = [0xAA; 18];
-        let key_b = [0xBB; 18];
-        let mut data = [0u8; 36];
-        data[..18].copy_from_slice(&key_a);
-        data[18..].copy_from_slice(&key_b);
-        table.write_entries(0, &data).expect("two entries fit in a 4-slot table");
-        assert_eq!(table.count(), 2);
-
-        table.set_count(1);
-        assert_eq!(table.count(), 1);
-        assert_eq!(table.get(0), Some(&key_a));
-        // The dropped entry must be gone from the backing array, not
-        // just hidden behind the count.
-        assert_eq!(table.data[1], [0u8; 18]);
-    }
-
-    /// `clear` must zero the whole backing array, same rationale.
-    #[test]
-    fn clear_zeroes_backing_array() {
-        let mut table: SecurityTable<2, 18> = SecurityTable::new();
-        table.write_entries(0, &[0xCC; 18]).expect("one entry fits");
-        table.clear();
-        assert_eq!(table.count(), 0);
-        assert_eq!(table.data, [[0u8; 18]; 2]);
-    }
-
-    /// `set_count` clamps to capacity and zeroing stays in bounds.
-    #[test]
-    fn set_count_clamps_to_capacity() {
-        let mut table: SecurityTable<2, 8> = SecurityTable::new();
-        table.set_count(100);
-        assert_eq!(table.count(), 2);
-    }
 }

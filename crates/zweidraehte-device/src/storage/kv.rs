@@ -88,41 +88,12 @@ pub trait KeyValueStore {
 // ============================================================================
 // Seq <-> u64 helpers (6-octet big-endian, the KNX wire format)
 // ============================================================================
+//
+// The codec and the spec's fixed sequence values are
+// `zweidraehte_proto::security`: they describe the wire, not this crate's
+// storage, and the polling stack needs the same answers. Re-exported so the
+// backends and views that grew up against `storage::kv::…` keep resolving.
 
-/// Decode a 6-octet big-endian sequence number to `u64`.
-pub fn seq6_to_u64(seq: &[u8; 6]) -> u64 {
-    u64::from_be_bytes([0, 0, seq[0], seq[1], seq[2], seq[3], seq[4], seq[5]])
-}
-
-/// Encode the low 48 bits of `val` as a 6-octet big-endian sequence number.
-pub fn u64_to_seq6(val: u64) -> [u8; 6] {
-    let b = val.to_be_bytes();
-    [b[2], b[3], b[4], b[5], b[6], b[7]]
-}
-
-/// Largest value a 6-octet sequence number can carry (`2^48 - 1`).
-pub const SEQ6_MAX: u64 = 0xFFFF_FFFF_FFFF;
-
-/// Spec-default sending sequence number on a fresh device.
-///
-/// The secure AL treats `[0,0,0,0,0,1]` as "no history"; remotes reject seq 0,
-/// and ETS reconciles via `S-A_Sync`.
-pub const DEFAULT_SENDING: [u8; 6] = [0, 0, 0, 0, 0, 1];
-
-/// Near-exhaustion threshold for the 6-byte (48-bit) sending SeqNr:
-/// `FF 00 00 00 00 00`. A factory reset re-initialises the counter only at or
-/// above this value (03/05/01 §6.1.4 + AN194) — below it the counter is
-/// preserved, since receivers have already seen those values and would reject
-/// a lower re-init as a replay.
-pub const SEQ_EXHAUSTION_THRESHOLD: u64 = 0xFF_0000_0000_00;
-
-/// Re-init target after a near-exhaustion factory reset.
-///
-/// 03/03/07 §5.3.1 requires the re-initialised value to sit "at least 20
-/// and at maximum FFFFh higher than the preceding initial value": ours is
-/// [`DEFAULT_SENDING`]'s 1, so 21. A fixed target technically shortchanges
-/// a *second* re-init in the same device life, but reaching one would mean
-/// counting from 21 back up to the 2^48-order threshold — the spec's own
-/// NOTE 33 blesses implementation-specific schemes, and storing a
-/// re-init generation to add 20 each time buys nothing real.
-pub const SEQ_REINIT_VALUE: [u8; 6] = [0x00, 0x00, 0x00, 0x00, 0x00, 0x15];
+pub use zweidraehte_proto::security::{
+    DEFAULT_SENDING, SEQ_EXHAUSTION_THRESHOLD, SEQ_REINIT_VALUE, SEQ6_MAX, seq6_to_u64, u64_to_seq6,
+};

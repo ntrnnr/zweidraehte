@@ -713,54 +713,28 @@ impl<'a, SEQ: SequenceNumberStorage + SiatAccess, const GRP: usize, const P2P: u
 /// `start_idx == 0` returns the current entry count as a 2-byte big-endian
 /// value (the "count probe"); `start_idx >= 1` reads `count` entries
 /// starting at the 0-based offset `start_idx - 1`.
+///
+/// The one-based addressing and the count probe are the table's own semantics
+/// (`SecurityTable::read_elements`); this adapts a property request to them.
 pub(crate) fn read_table_with_count_probe<const N: usize, const ES: usize>(
     table: &SecurityTable<N, ES>,
     req: &FullPropertyReadRequest,
     buf: &mut [u8],
 ) -> Result<usize, PropertyError> {
-    if req.start_idx == 0 {
-        if buf.len() < 2 {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        buf[..2].copy_from_slice(&table.count().to_be_bytes());
-        Ok(2)
-    } else {
-        let start = (req.start_idx - 1) as u16;
-        table.read_entries(start, req.count as u16, buf)
-    }
+    table.read_elements(req.start_idx, req.count as u16, buf)
 }
 
 /// Write to a SecurityTable, handling element-count writes (start_idx=0)
 /// vs data writes (start_idx>0).
 ///
 /// Element-count writes expect exactly 2 bytes (u16 BE new count).
-/// Setting count to 0 clears the table.
+/// Setting count to 0 clears the table; a non-zero count pre-allocates so the
+/// entry writes that follow at `start_idx > 0` land in the valid range.
 pub(crate) fn write_security_table<const N: usize, const ES: usize>(
     table: &mut SecurityTable<N, ES>,
     req: &FullPropertyWriteRequest<'_>,
 ) -> Result<WriteResponse, PropertyError> {
-    if req.start_idx == 0 {
-        // Element count write.
-        if req.data.len() < 2 {
-            return Err(PropertyError::BufferTooSmall);
-        }
-        let new_count = u16::from_be_bytes([req.data[0], req.data[1]]);
-        if new_count == 0 {
-            table.clear();
-        } else {
-            // Pre-allocate: set the count so subsequent entry writes at
-            // start_idx > 0 land within the valid range. The actual entry
-            // data is written via separate requests with start_idx > 0.
-            table.set_count(new_count);
-        }
-        Ok(WriteResponse::Echo)
-    } else {
-        let start = req.start_idx.saturating_sub(1);
-        match table.write_entries(start, req.data) {
-            Ok(()) => Ok(WriteResponse::Echo),
-            Err(e) => Err(e),
-        }
-    }
+    table.write_elements(req.start_idx, req.data).map(|()| WriteResponse::Echo)
 }
 
 /// PID 54 read against the live SIAT in the sequence store, using the same

@@ -22,55 +22,30 @@ use zweidraehte_proto::messages::{
     knx::{KnxMessageBuffer, ServiceType, offsets},
 };
 
+use zweidraehte_proto::security::{self, SequenceNumberStorage};
+
 use crate::logging::warn;
 use crate::objects::tables::AddressTable;
-use crate::storage::SequenceNumberStorage;
 
 // ============================================================================
 // Sending sequence number reservation
 // ============================================================================
 
-/// Default initial Sequence Number Sending on fresh storage (spec §5.3.1: any
-/// value 1..255, must be non-zero — SeqNr 0 is ignored by the remote S-AL).
-pub(crate) const INITIAL_SENDING_SEQ: [u8; 6] = [0, 0, 0, 0, 0, 1];
-
-// The 6-octet ⇄ u64 sequence-number conversions live with the store
-// ([`crate::storage::views`]) — the SIAT is the single source of truth for sequence
-// state, so its codec is the one canonical copy.
-use crate::storage::kv::{seq6_to_u64, u64_to_seq6};
-
 /// Reserve and persist the next sending sequence number.
 ///
-/// Returns the *current* value of the device's single Sequence Number Sending
-/// (to place in the outgoing frame) and persists the incremented value. The
-/// `tool_access` distinction does **not** apply to the sending counter (spec
-/// §5.x: one counter for all outgoing communication); it is kept in the
-/// signature only for call-site clarity. Returns `None` on 48-bit overflow —
-/// per spec the device must stop sending secure frames once the counter saturates.
+/// The rule itself — persist the increment before handing the current value
+/// out, refuse once the 48-bit counter saturates — is
+/// [`zweidraehte_proto::security::reserve_next_seq_nr`]. This wrapper only
+/// takes the `RefCell` borrow the S-AL holds its store behind.
+///
+/// The `tool_access` distinction does **not** apply to the sending counter
+/// (03/03/07 §5.3: one counter for all outgoing communication); it is kept in
+/// the signature for call-site clarity.
 pub(crate) fn reserve_next_seq_nr<SEQ: SequenceNumberStorage>(
     seq_storage: &RefCell<SEQ>,
     _tool_access: bool,
 ) -> Option<[u8; 6]> {
-    let mut storage = seq_storage.borrow_mut();
-    let seq = storage.load_sending_seq().unwrap_or(INITIAL_SENDING_SEQ);
-    let val = seq6_to_u64(&seq);
-
-    // 48-bit overflow guard.
-    if val >= 0xFFFF_FFFF_FFFF {
-        return None;
-    }
-
-    // Increment the single counter and persist it.  A save failure here is
-    // unexpected (storage corruption or a full flash sector) — warn and abort
-    // the send rather than emitting a frame whose sequence number has not been
-    // durably stored. The caller treats `None` as an abort and suppresses the
-    // outgoing frame.
-    if let Err(_e) = storage.save_sending_seq(&u64_to_seq6(val + 1)) {
-        warn!("S-AL: failed to persist sending SeqNr; aborting secure frame");
-        return None;
-    }
-
-    Some(seq)
+    security::reserve_next_seq_nr(&mut *seq_storage.borrow_mut())
 }
 
 /// Inputs for [`wrap_outgoing`].

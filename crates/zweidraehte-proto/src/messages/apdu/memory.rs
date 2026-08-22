@@ -4,6 +4,7 @@
 //! APCI code in byte 1. The write functions preserve the APCI high bits while
 //! setting the count in the low bits.
 
+use crate::messages::apdu::property_ext::PropertyReturnCode;
 use crate::messages::knx::offsets;
 
 // ============================================================================
@@ -445,5 +446,158 @@ mod tests {
         buf2[offsets::MSG_APCI + 2] = 3;
         assert!(MemoryBitWrite::parse(&buf2).is_none()); // needs 17, only 14
         assert!(MemoryBitWrite::parse(&buf).is_none());
+    }
+}
+
+// ============================================================================
+// A_MemoryExtended_Read / _Write (03/03/07 §3.4.9)
+// ============================================================================
+//
+// The extended memory services widen the address to three octets and the
+// count to a full octet, and — unlike the classic services — answer with an
+// explicit return code rather than signalling failure by a zero count. They
+// are `M` for the KNX Data Security profile module (06 Profiles §9.1.2.3.3),
+// and are what an ETS download to a secure device actually uses: the bench
+// MV-0021 trace carries 361 `A_MemoryExtended_Write` and no classic memory
+// write at all.
+
+/// Parsed `A_MemoryExtended_Read` / `A_MemoryExtended_Write` request.
+///
+/// ```text
+/// [0-1]: APCI
+/// [2]:   number of octets
+/// [3-5]: address (3 octets, big-endian)
+/// [6+]:  data (write only)
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryExtendedAccess<'a> {
+    pub count: u8,
+    pub address: u32,
+    /// Empty for a read request.
+    pub data: &'a [u8],
+}
+
+impl<'a> MemoryExtendedAccess<'a> {
+    /// Minimum message length: APCI, count and the three address octets.
+    pub const MIN_MSG_LEN: usize = offsets::MSG_APCI + 6;
+
+    pub fn parse(buf: &'a [u8]) -> Option<Self> {
+        if buf.len() < Self::MIN_MSG_LEN {
+            return None;
+        }
+        let base = offsets::MSG_APCI;
+        Some(Self {
+            count: buf[base + 2],
+            address: (u32::from(buf[base + 3]) << 16) | (u32::from(buf[base + 4]) << 8) | u32::from(buf[base + 5]),
+            data: &buf[base + 6..],
+        })
+    }
+
+    /// Whether the declared count matches the data actually carried.
+    ///
+    /// Only meaningful for a write; a read carries no data.
+    pub fn is_write_length_consistent(&self) -> bool {
+        self.data.len() == self.count as usize
+    }
+
+    /// Write a read or write request. Reads carry an empty `data` slice and
+    /// provide their requested count separately; writes use `data.len()` as
+    /// the count.
+    pub fn write(buf: &mut [u8], count: u8, address: u32, data: &[u8]) {
+        let base = offsets::MSG_APCI;
+        buf[base + 2] = count;
+        buf[base + 3] = (address >> 16) as u8;
+        buf[base + 4] = (address >> 8) as u8;
+        buf[base + 5] = address as u8;
+        if !data.is_empty() {
+            buf[base + 6..base + 6 + data.len()].copy_from_slice(data);
+        }
+    }
+
+    pub const fn msg_len(data_len: usize) -> usize {
+        offsets::MSG_APCI + 6 + data_len
+    }
+}
+
+/// Parsed result of an extended-memory response.
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryExtendedResult<'a> {
+    pub return_code: PropertyReturnCode,
+    pub address: u32,
+    pub data: &'a [u8],
+}
+
+/// Writer for `A_MemoryExtended_ReadResponse` / `_WriteResponse`.
+///
+/// ```text
+/// [0-1]: APCI
+/// [2]:   return code
+/// [3-5]: address (echoed)
+/// [6+]:  data (read response only)
+/// ```
+pub struct MemoryExtendedResponse;
+
+impl MemoryExtendedResponse {
+    /// Message length for a response carrying `data_len` octets. A write
+    /// response carries none.
+    pub const fn msg_len(data_len: usize) -> usize {
+        offsets::MSG_APCI + 6 + data_len
+    }
+
+    /// Length of a response with no data — every write response, and any
+    /// read that failed.
+    pub const EMPTY_MSG_LEN: usize = Self::msg_len(0);
+
+    pub fn write(buf: &mut [u8], return_code: PropertyReturnCode, address: u32, data: &[u8]) {
+        let base = offsets::MSG_APCI;
+        buf[base + 2] = return_code.into();
+        buf[base + 3] = (address >> 16) as u8;
+        buf[base + 4] = (address >> 8) as u8;
+        buf[base + 5] = address as u8;
+        if !data.is_empty() {
+            buf[base + 6..base + 6 + data.len()].copy_from_slice(data);
+        }
+    }
+
+    pub fn parse(buf: &[u8]) -> Option<MemoryExtendedResult<'_>> {
+        if buf.len() < Self::EMPTY_MSG_LEN {
+            return None;
+        }
+        let base = offsets::MSG_APCI;
+        Some(MemoryExtendedResult {
+            return_code: PropertyReturnCode::from(buf[base + 2]),
+            address: (u32::from(buf[base + 3]) << 16) | (u32::from(buf[base + 4]) << 8) | u32::from(buf[base + 5]),
+            data: &buf[base + 6..],
+        })
+    }
+}
+
+#[cfg(test)]
+mod extended_tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_three_octet_address() {
+        // APCI(2) + count + 0x004000 + two data octets.
+        let buf = [0u8, 0, 0, 0, 0, 0, 0x01, 0xFB, 0x02, 0x00, 0x40, 0x00, 0xAA, 0xBB];
+        let req = MemoryExtendedAccess::parse(&buf).expect("well-formed");
+        assert_eq!(req.count, 2);
+        assert_eq!(req.address, 0x004000);
+        assert_eq!(req.data, &[0xAA, 0xBB]);
+        assert!(req.is_write_length_consistent());
+    }
+
+    #[test]
+    fn a_count_that_disagrees_with_the_data_is_caught() {
+        let buf = [0u8, 0, 0, 0, 0, 0, 0x01, 0xFB, 0x05, 0x00, 0x40, 0x00, 0xAA];
+        let req = MemoryExtendedAccess::parse(&buf).expect("well-formed header");
+        assert!(!req.is_write_length_consistent(), "declared 5, carries 1");
+    }
+
+    #[test]
+    fn a_response_echoes_the_full_address() {
+        let mut buf = [0u8; MemoryExtendedResponse::msg_len(2)];
+        MemoryExtendedResponse::write(&mut buf, PropertyReturnCode::Success, 0x123456, &[0xDE, 0xAD]);
+        assert_eq!(&buf[offsets::MSG_APCI + 2..], &[0x00, 0x12, 0x34, 0x56, 0xDE, 0xAD]);
     }
 }

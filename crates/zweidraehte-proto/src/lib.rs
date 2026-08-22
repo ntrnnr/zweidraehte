@@ -38,6 +38,7 @@ pub mod memory;
 pub mod messages;
 pub mod pid;
 pub mod properties;
+pub mod security;
 pub mod tables;
 pub mod transport;
 #[cfg(feature = "usb-hid")]

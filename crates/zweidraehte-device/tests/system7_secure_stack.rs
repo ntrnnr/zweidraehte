@@ -35,7 +35,7 @@ use zweidraehte_device::service::{Augment, ServiceRegistry};
 use zweidraehte_device::storage::kv::KeyValueStore;
 use zweidraehte_device::storage::views::SiatStore;
 use zweidraehte_device::storage::{ConfigStoreBackend, HasDeviceConfig, SecureStorage, StaticSecureIdentity};
-use zweidraehte_device::{HasSecurityState, SecureDeviceBuilder, StackDefinition};
+use zweidraehte_device::{SecureDeviceBuilder, StackDefinition};
 use zweidraehte_proto::device::{DeviceDescriptor, MaskVersion};
 use zweidraehte_proto::dpt::InterfaceObjectType;
 
@@ -347,8 +347,8 @@ fn the_secure_object_roster_puts_security_at_index_five() {
 /// preserve it.
 mod erase_codes {
     use super::*;
+    use zweidraehte_device::StackState;
     use zweidraehte_device::restart::EraseCode;
-    use zweidraehte_device::{HasPersistence, StackState};
     use zweidraehte_proto::address::IndividualAddress;
 
     const TOOL_KEY: [u8; 16] = [0x11; 16];

@@ -12,7 +12,6 @@ use crate::objects::{
     tables::{HasAddressTable, HasApplication, HasAssociationTable, HasCommunicationObjectTable, LoadState},
 };
 use crate::storage::DeviceIdentity;
-use serde::{Deserialize, Serialize};
 use zweidraehte_proto::access::{AccessContext, HasConnectionAuth};
 use zweidraehte_proto::address::IndividualAddress;
 
@@ -460,59 +459,17 @@ impl<T, CO> CoreDeviceState<CO> for T where
 // KNX Data Secure — generic security-state surface
 // ============================================================================
 //
-// These types are pure protocol/runtime vocabulary (failure categories per
-// KNX 03/05/01 and the key/flag lookup surface the Secure Application Layer
-// needs). They live here, alongside the other generic capability traits, so
-// the generic S-AL and the composition builders depend on `crate::state`
-// rather than reaching into the System B BCU. `bcus::system_b` re-exports
-// them for backwards compatibility and implements `HasSecurityState` for its
-// `SecureExtensionState`.
-
-/// Security failure type indices per KNX spec.
-///
-/// The failures log maintains 4 × 16-bit counters. Types 0–2 each map
-/// to their own counter; types 3 and 4 both increment counter 3 (the
-/// "access & role" counter). The type value is also stored in the per-entry
-/// ring buffer so that individual failures can be distinguished.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-/// `#[non_exhaustive]`: every construction/match site is inside this crate,
-/// where the attribute has no effect — so in-crate exhaustiveness checking
-/// is preserved while downstream crates stay insulated from new variants.
-#[non_exhaustive]
-pub enum SecurityFailureType {
-    /// Invalid SCF field (unsupported algorithm, reserved bits set).
-    ScfError = 0,
-    /// MAC verification failed (wrong key or tampered message).
-    CryptoError = 1,
-    /// Sequence number check failed (replay or out-of-order).
-    SeqNrError = 2,
-    /// Sender not found in Security Individual Address Table.
-    RoleError = 3,
-    /// Access denied by access policy after successful verification.
-    AccessError = 4,
-}
-
-/// A single failure log entry recording a security event.
-///
-/// Each entry stores the source address of the offending device, the first
-/// 9 bytes of the offending frame (for diagnostic purposes), and the
-/// failure type code (see [`SecurityFailureType`]).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-pub struct SecurityFailureEntry {
-    /// Source individual address of the offending message.
-    pub source_addr: u16,
-    /// First 9 bytes of the offending frame (zero-padded if shorter).
-    pub frame_fragment: [u8; 9],
-    /// Failure type code (discriminant of [`SecurityFailureType`]).
-    pub failure_type: u8,
-}
-
-impl Default for SecurityFailureEntry {
-    fn default() -> Self {
-        Self { source_addr: 0, frame_fragment: [0; 9], failure_type: 0 }
-    }
-}
+// The key/flag lookup surface the Secure Application Layer needs lives here,
+// alongside the other generic capability traits, so the generic S-AL and the
+// composition builders depend on `crate::state` rather than reaching into the
+// System B BCU. `bcus::system_b` re-exports it and implements
+// `HasSecurityState` for its `SecureExtensionState`.
+//
+// The failure categories and their per-entry record are the spec's own
+// vocabulary (03/05/01 §6.3.9) and are shared with the polling stack and the
+// management client, so they come from `zweidraehte_proto::security`.
+// Re-exported here so `crate::state::…` and the `bcus::*` roots keep resolving.
+pub use zweidraehte_proto::security::{SecurityFailureEntry, SecurityFailureType};
 
 /// Provides access to security keys and flags without exposing the
 /// const-generic table sizes. The S-AL layer requires this trait on
