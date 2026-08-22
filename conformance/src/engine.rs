@@ -1295,6 +1295,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         DutMode::System7 => "System 7 (conformance-dut-system7)",
         DutMode::System7Secure => "System 7 secure (conformance-dut-system7-secure)",
         DutMode::Bcu2 => "BCU2 (conformance-dut-bcu2)",
+        DutMode::Bcu2Secure => "secure BCU2 (conformance-dut-bcu2-secure)",
         DutMode::MicroSystem7 => "micro System 7 (conformance-dut-micro-system7)",
     });
 
@@ -1322,7 +1323,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         }
         summary.suites += 1;
 
-        if suite.use_secure_dut && !prev_was_secure && opts.dut_mode == DutMode::SystemBSecure {
+        if suite.requires_security_context && !prev_was_secure && opts.dut_mode == DutMode::SystemBSecure {
             println!("🔁 Resetting DUT before first secure suite (clean seqnr + volatile state)");
             harness.kill().await;
             harness.reset_shared_memory();
@@ -1330,7 +1331,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
             harness.discard_unsolicited();
             persistent_sec_ctx = None;
         }
-        prev_was_secure = suite.use_secure_dut;
+        prev_was_secure = suite.requires_security_context;
 
         println!("====================================================================");
         println!("Suite: {}", suite.name);
@@ -1341,7 +1342,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         }
         println!();
 
-        let mut sec_ctx = if suite.use_secure_dut {
+        let mut sec_ctx = if suite.requires_security_context {
             let mut ctx =
                 persistent_sec_ctx.take().unwrap_or_else(crate::tests::security::variables::create_security_context);
             ctx.table_seq_nr = 1;

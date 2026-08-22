@@ -78,7 +78,7 @@ async fn main(spawner: Spawner) {
     let (shm_fd, socket_fd) = dut_common::parse_args("conformance-dut-system7-secure");
 
     set_primary_socket_fd(socket_fd);
-    dut_common::init_ipc_logger(socket_fd, dut_common::log_level_from_env());
+    dut_common::init_ipc_logger(dut_common::log_level_from_env());
 
     // SAFETY: parent passed us a valid SHM fd.
     let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");

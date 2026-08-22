@@ -25,9 +25,9 @@
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
-use zweidraehte_microdevice::families::bcu2::Bcu2CoDescriptor;
+use zweidraehte_microdevice::families::bcu2::{BCU2_EEPROM_SIZE, Bcu2CoDescriptor};
 
-use super::bcu2_stack;
+use super::{bcu2_secure_stack, bcu2_stack};
 
 /// The ETS-visible EEPROM window a BCU2 product's segment covers.
 const SEGMENT_ADDRESS: usize = 0x0100;
@@ -35,20 +35,78 @@ const SEGMENT_SIZE: usize = 0x0370;
 
 /// Generate the DUT's application program as MTXML.
 pub fn generate_mtxml() -> Result<String, String> {
-    let def = bcu2_stack::definition();
-    let image = def.build_eeprom();
+    generate(ProductVariant::Plain)
+}
+
+/// Generate the mask-0021 secure DUT's application program as MTXML.
+pub fn generate_secure_mtxml() -> Result<String, String> {
+    generate(ProductVariant::Secure)
+}
+
+#[derive(Clone, Copy)]
+enum ProductVariant {
+    Plain,
+    Secure,
+}
+
+impl ProductVariant {
+    fn definition(self) -> zweidraehte_microdevice::Bcu2DeviceDefinition {
+        match self {
+            Self::Plain => bcu2_stack::definition(),
+            Self::Secure => bcu2_secure_stack::definition(),
+        }
+    }
+
+    fn program_id(self) -> &'static str {
+        match self {
+            Self::Plain => "M-00FA_A-0B20-01-0000",
+            Self::Secure => "M-00FA_A-0B21-01-0000",
+        }
+    }
+
+    fn program_attributes(self) -> Result<String, String> {
+        match self {
+            Self::Plain => {
+                Ok("ApplicationNumber=\"2848\" MaskVersion=\"MV-0020\" Name=\"BCU2 Conformance DUT\"".to_string())
+            }
+            Self::Secure => {
+                ensure_secure_capacities(&self.definition())?;
+                Ok(format!(
+                    "ApplicationNumber=\"2849\" MaskVersion=\"MV-0021\" Name=\"Secure BCU2 Conformance DUT\" IsSecureEnabled=\"true\" MaxSecurityIndividualAddressEntries=\"{}\" MaxSecurityGroupKeyTableEntries=\"{}\" MaxSecurityP2PKeyTableEntries=\"{}\"",
+                    bcu2_secure_stack::SIAT_CAPACITY,
+                    bcu2_secure_stack::GROUP_KEY_CAPACITY,
+                    bcu2_secure_stack::P2P_KEY_CAPACITY,
+                ))
+            }
+        }
+    }
+
+    fn eeprom(self) -> [u8; BCU2_EEPROM_SIZE] {
+        let definition = self.definition();
+        match self {
+            Self::Plain => definition.build_eeprom(),
+            Self::Secure => definition.build_eeprom_for_mask(0x0021),
+        }
+    }
+}
+
+fn generate(variant: ProductVariant) -> Result<String, String> {
+    let def = variant.definition();
+    let program_attributes = variant.program_attributes()?;
+    let image = variant.eeprom();
     let data = BASE64.encode(&image[..SEGMENT_SIZE]);
 
-    let seg_id = "M-00FA_A-0B20-01-0000_AS-0100";
+    let program_id = variant.program_id();
+    let seg_id = format!("{program_id}_AS-0100");
     let mut com_objects = String::new();
     for (number, co) in def.comm_objects.iter().enumerate() {
-        com_objects.push_str(&com_object_xml(number, co));
+        com_objects.push_str(&com_object_xml(program_id, number, co));
     }
 
     Ok(format!(
         r#"<KNX xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" CreatedBy="zweidraehte-conformance" ToolVersion="0.1.0" xmlns="http://knx.org/xml/project/20">
   <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
-    <ApplicationProgram Id="M-00FA_A-0B20-01-0000" ApplicationNumber="2848" ApplicationVersion="1" ProgramType="ApplicationProgram" MaskVersion="MV-0020" Name="BCU2 Conformance DUT" LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="true" Linkable="false">
+    <ApplicationProgram Id="{program_id}" {program_attributes} ApplicationVersion="1" ProgramType="ApplicationProgram" LoadProcedureStyle="DefaultProcedure" PeiType="0" DefaultLanguage="en-US" DynamicTableManagement="true" Linkable="false">
       <Static>
         <Code>
           <AbsoluteSegment Id="{seg_id}" Address="{address}" Size="{size}" MemoryType="EEPROM"><Data>{data}</Data></AbsoluteSegment>
@@ -63,6 +121,8 @@ pub fn generate_mtxml() -> Result<String, String> {
   </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#,
         seg_id = seg_id,
+        program_id = program_id,
+        program_attributes = program_attributes,
         address = SEGMENT_ADDRESS,
         size = SEGMENT_SIZE,
         data = data,
@@ -75,10 +135,33 @@ pub fn generate_mtxml() -> Result<String, String> {
     ))
 }
 
+/// Catch fixture/product drift where the XML advertises tables the concrete
+/// secure profile cannot hold. P2P is intentionally zero on both sides.
+fn ensure_secure_capacities(def: &zweidraehte_microdevice::Bcu2DeviceDefinition) -> Result<(), String> {
+    let go_count = def.comm_objects.len();
+    if go_count > bcu2_secure_stack::GROUP_OBJECT_CAPACITY {
+        return Err(format!(
+            "secure product declares {go_count} group objects, firmware holds {}",
+            bcu2_secure_stack::GROUP_OBJECT_CAPACITY
+        ));
+    }
+    if bcu2_secure_stack::P2P_KEY_CAPACITY != 0 {
+        return Err("secure BCU2 fixture must remain tool-access-only (P2P capacity zero)".to_string());
+    }
+    if bcu2_secure_stack::SIAT_CAPACITY > super::fixture_common::sec_table_sizes::SIAT {
+        return Err(format!(
+            "secure product advertises {} SIAT rows, persistent store holds {}",
+            bcu2_secure_stack::SIAT_CAPACITY,
+            super::fixture_common::sec_table_sizes::SIAT,
+        ));
+    }
+    Ok(())
+}
+
 /// One `<ComObject>` element, its flags spelled from the RT2 config
 /// octet so the overlay the client compiles reproduces the DUT's own
 /// table bytes.
-fn com_object_xml(number: usize, co: &Bcu2CoDescriptor) -> String {
+fn com_object_xml(program_id: &str, number: usize, co: &Bcu2CoDescriptor) -> String {
     let flag = |mask: u8| if co.config & mask != 0 { "Enabled" } else { "Disabled" };
     let object_size = match co.value_type {
         0x00 => "1 Bit",
@@ -87,7 +170,8 @@ fn com_object_xml(number: usize, co: &Bcu2CoDescriptor) -> String {
         other => panic!("extend com_object_xml for value type {other:#04X}"),
     };
     format!(
-        "          <ComObject Id=\"M-00FA_A-0B20-01-0000_O-{number}\" Name=\"GO{number}\" Text=\"GO{number}\" Number=\"{number}\" FunctionText=\"conformance\" ObjectSize=\"{object_size}\" ReadFlag=\"{read}\" WriteFlag=\"{write}\" CommunicationFlag=\"{comm}\" TransmitFlag=\"{transmit}\" UpdateFlag=\"{update}\" ReadOnInitFlag=\"{roi}\" />\n",
+        "          <ComObject Id=\"{program_id}_O-{number}\" Name=\"GO{number}\" Text=\"GO{number}\" Number=\"{number}\" FunctionText=\"conformance\" ObjectSize=\"{object_size}\" ReadFlag=\"{read}\" WriteFlag=\"{write}\" CommunicationFlag=\"{comm}\" TransmitFlag=\"{transmit}\" UpdateFlag=\"{update}\" ReadOnInitFlag=\"{roi}\" />\n",
+        program_id = program_id,
         number = number,
         object_size = object_size,
         read = flag(0x08),
@@ -97,4 +181,25 @@ fn com_object_xml(number: usize, co: &Bcu2CoDescriptor) -> String {
         update = flag(0x80),
         roi = flag(0x20),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use zweidraehte_client::download::ProductData;
+    use zweidraehte_proto::device::MaskVersion;
+
+    use super::*;
+
+    #[test]
+    fn secure_product_matches_the_micro_profile_capacities() {
+        let xml = generate_secure_mtxml().expect("secure fixture generates");
+        let product = ProductData::from_mtxml_str(&xml).expect("secure fixture parses");
+
+        assert_eq!(product.mask_version, Some(MaskVersion::Bcu2Tp1));
+        assert!(product.is_secure_enabled);
+        assert_eq!(product.max_security_individual_address_entries, Some(bcu2_secure_stack::SIAT_CAPACITY as u16));
+        assert_eq!(product.max_security_group_key_table_entries, Some(bcu2_secure_stack::GROUP_KEY_CAPACITY as u16));
+        assert_eq!(product.max_security_p2p_key_table_entries, Some(0));
+        assert_eq!(product.com_object_numbers.len(), bcu2_secure_stack::GROUP_OBJECT_CAPACITY);
+    }
 }

@@ -18,7 +18,7 @@
 //!                 IPC-connected testing.
 //!   --non-secure  Run against the plain (`conformance-dut-systemb`) DUT and SKIP
 //!                 any suite that requires the secure stack
-//!                 (`TestSuite::use_secure_dut == true`).
+//!                 (`TestSuite::requires_security_context == true`).
 //!   filter        Optional filters (case-insensitive substring match)
 //!
 //! A filter matching a suite's name runs that suite in full; a filter
@@ -45,6 +45,59 @@ use zweidraehte_conformance::engine::{
 use zweidraehte_conformance::harness::DutMode;
 use zweidraehte_conformance::logger;
 use zweidraehte_conformance::tests;
+use zweidraehte_conformance::{SuiteDut, TestSuite};
+
+fn only_requires(suites: &[TestSuite], dut: SuiteDut) -> bool {
+    !suites.is_empty() && suites.iter().all(|suite| suite.dut == Some(dut))
+}
+
+fn remove_dut(suites: &mut Vec<TestSuite>, dut: SuiteDut) -> usize {
+    let before = suites.len();
+    suites.retain(|suite| suite.dut != Some(dut));
+    before - suites.len()
+}
+
+fn report_separate_dut(count: usize, filters: &[String], label: &str, command: &str) {
+    if count == 0 {
+        return;
+    }
+    if filters.is_empty() {
+        println!("ℹ️  {count} {label} suite(s) run separately: conformance-runner {command:?}");
+    } else {
+        println!("⚠️  Skipped {count} {label} suite(s) — mixed-DUT runs are not supported");
+    }
+}
+
+/// Choose the one child process this run can drive and remove suites for all
+/// other processes. A broad family filter deliberately prefers the plain DUT
+/// after dropping its secure sibling; an exact secure selection reaches the
+/// first/all branch before anything is removed.
+fn select_dut_mode(suites: &mut Vec<TestSuite>, filters: &[String], default: DutMode) -> DutMode {
+    if only_requires(suites, SuiteDut::Bcu2Secure) {
+        return DutMode::Bcu2Secure;
+    }
+    report_separate_dut(remove_dut(suites, SuiteDut::Bcu2Secure), filters, "secure BCU2", "B2S-");
+
+    if only_requires(suites, SuiteDut::Bcu2) {
+        return DutMode::Bcu2;
+    }
+    if only_requires(suites, SuiteDut::MicroSystem7) {
+        return DutMode::MicroSystem7;
+    }
+    if only_requires(suites, SuiteDut::System7Secure) {
+        return DutMode::System7Secure;
+    }
+
+    report_separate_dut(remove_dut(suites, SuiteDut::Bcu2), filters, "BCU2", "B2-");
+    report_separate_dut(remove_dut(suites, SuiteDut::MicroSystem7), filters, "micro-System-7", "Micro System7");
+    report_separate_dut(remove_dut(suites, SuiteDut::System7Secure), filters, "System 7 secure", "S7S");
+
+    if only_requires(suites, SuiteDut::System7) {
+        return DutMode::System7;
+    }
+    report_separate_dut(remove_dut(suites, SuiteDut::System7), filters, "System 7", "System 7");
+    default
+}
 
 // ============================================================================
 // Entry Point
@@ -57,7 +110,7 @@ async fn main() {
     let realtime = args.iter().any(|a| a == "--realtime");
     let non_secure = args.iter().any(|a| a == "--non-secure");
     let time_divisor: u64 = if realtime { 1 } else { DEFAULT_TIME_DIVISOR };
-    let dut_mode = if non_secure { DutMode::SystemB } else { DutMode::SystemBSecure };
+    let default_dut_mode = if non_secure { DutMode::SystemB } else { DutMode::SystemBSecure };
 
     // Export the divisor so the DUT child scales its TL timers to match.
     // SAFETY: single-threaded before any child is spawned.
@@ -164,6 +217,7 @@ async fn main() {
         tests::system7_smoke::create_system7_smoke_suite(),
         tests::system7_secure_smoke::create_system7_secure_smoke_suite(),
         tests::bcu2_smoke::create_bcu2_smoke_suite(),
+        tests::bcu2_secure_smoke::create_bcu2_secure_smoke_suite(),
         tests::micro_system7_smoke::create_micro_system7_smoke_suite(),
     ];
 
@@ -199,72 +253,11 @@ async fn main() {
     let mut suites: Vec<_> =
         all_suites.into_iter().filter(|s| select_suite(s, &filters) != SuiteSelection::None).collect();
 
-    // The System 7 suites need their own DUT binaries, and a run drives
-    // exactly one binary. Resolution order: a pure System 7 *secure*
-    // selection runs that DUT; otherwise the secure suite is dropped
-    // first — so the filter "system 7", which matches both smoke
-    // suites by name, still runs the plain System 7 ones — and a
-    // then-pure System 7 selection runs the plain System 7 DUT.
-    // Anything mixed beyond that falls back to the System B DUTs with
-    // the System 7 suites dropped.
-    let dut_mode = if !suites.is_empty() && suites.iter().all(|s| s.use_bcu2_dut) {
-        DutMode::Bcu2
-    } else if !suites.is_empty() && suites.iter().all(|s| s.use_micro_system7_dut) {
-        DutMode::MicroSystem7
-    } else if !suites.is_empty() && suites.iter().all(|s| s.use_system7_secure_dut) {
-        DutMode::System7Secure
-    } else {
-        let before = suites.len();
-        suites.retain(|s| !s.use_bcu2_dut);
-        let skipped_bcu2 = before - suites.len();
-        if skipped_bcu2 > 0 {
-            if filters.is_empty() {
-                println!("ℹ️  {} BCU2 suite(s) run separately: conformance-runner \"BCU2\"", skipped_bcu2);
-            } else {
-                println!("⚠️  Skipped {} BCU2 suite(s) — mixed-DUT runs are not supported", skipped_bcu2);
-            }
-        }
-        let before = suites.len();
-        suites.retain(|s| !s.use_micro_system7_dut);
-        let skipped_micro7 = before - suites.len();
-        if skipped_micro7 > 0 {
-            if filters.is_empty() {
-                println!(
-                    "ℹ️  {} micro-System-7 suite(s) run separately: conformance-runner \"Micro System7\"",
-                    skipped_micro7
-                );
-            } else {
-                println!("⚠️  Skipped {} micro-System-7 suite(s) — mixed-DUT runs are not supported", skipped_micro7);
-            }
-        }
-        let before = suites.len();
-        suites.retain(|s| !s.use_system7_secure_dut);
-        let skipped_secure = before - suites.len();
-        if skipped_secure > 0 && !filters.is_empty() {
-            println!("⚠️  Skipped {} System 7 secure suite(s): conformance-runner \"S7S\"", skipped_secure);
-        }
-
-        if !suites.is_empty() && suites.iter().all(|s| s.use_system7_dut) {
-            DutMode::System7
-        } else {
-            let before = suites.len();
-            suites.retain(|s| !s.use_system7_dut);
-            let skipped = before - suites.len();
-            if (skipped > 0 || skipped_secure > 0) && filters.is_empty() {
-                println!(
-                    "ℹ️  {} System 7 suite(s) run separately: conformance-runner \"System 7\" / \"S7S\"",
-                    skipped + skipped_secure
-                );
-            } else if skipped > 0 {
-                println!("⚠️  Skipped {} System 7 suite(s) — mixed-DUT runs are not supported", skipped);
-            }
-            dut_mode
-        }
-    };
+    let dut_mode = select_dut_mode(&mut suites, &filters, default_dut_mode);
 
     if dut_mode == DutMode::SystemB {
         let before = suites.len();
-        suites.retain(|s| !s.use_secure_dut);
+        suites.retain(|s| !s.requires_security_context);
         let skipped = before - suites.len();
         if skipped > 0 {
             println!("⚠️  Skipped {} secure-only suite(s) because --non-secure is active", skipped);

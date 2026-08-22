@@ -745,6 +745,20 @@ impl TestCase {
 // Test Suite
 // ============================================================================
 
+/// A DUT binary required by a suite instead of the runner's default System B
+/// choice.
+///
+/// This is deliberately one enum rather than one boolean per binary: a suite
+/// cannot meaningfully require two different DUT processes at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SuiteDut {
+    System7,
+    System7Secure,
+    Bcu2,
+    Bcu2Secure,
+    MicroSystem7,
+}
+
 /// A collection of related test cases with their variables
 #[derive(Debug, Clone)]
 pub struct TestSuite {
@@ -755,19 +769,10 @@ pub struct TestSuite {
     pub cases: Vec<TestCase>,
     /// Optional teardown steps that run once after all test cases in the suite
     pub teardown: Vec<TestStep>,
-    /// Whether this suite requires the secure DUT (`conformance-dut-systemb-secure`).
-    pub use_secure_dut: bool,
-    /// Whether this suite requires the System 7 DUT (`conformance-dut-system7`).
-    pub use_system7_dut: bool,
-    /// Whether this suite requires the System 7 secure DUT
-    /// (`conformance-dut-system7-secure`).
-    pub use_system7_secure_dut: bool,
-    /// Whether this suite requires the BCU2 DUT
-    /// (`conformance-dut-bcu2`, the no-async micro stack).
-    pub use_bcu2_dut: bool,
-    /// Whether this suite requires the micro-System-7 DUT
-    /// (`conformance-dut-micro-system7`, the no-async micro stack).
-    pub use_micro_system7_dut: bool,
+    /// Whether secure test steps need their per-suite keys and counters.
+    pub requires_security_context: bool,
+    /// A non-default DUT process this suite must run against.
+    pub dut: Option<SuiteDut>,
 }
 
 impl TestSuite {
@@ -778,11 +783,8 @@ impl TestSuite {
             preparation: Vec::new(),
             cases: Vec::new(),
             teardown: Vec::new(),
-            use_secure_dut: false,
-            use_system7_dut: false,
-            use_system7_secure_dut: false,
-            use_bcu2_dut: false,
-            use_micro_system7_dut: false,
+            requires_security_context: false,
+            dut: None,
         }
     }
 
@@ -802,35 +804,42 @@ impl TestSuite {
     }
 
     pub fn secure(mut self) -> Self {
-        self.use_secure_dut = true;
+        self.requires_security_context = true;
         self
     }
 
     /// Run this suite against the System 7 DUT.
     pub fn system7(mut self) -> Self {
-        self.use_system7_dut = true;
+        self.dut = Some(SuiteDut::System7);
         self
     }
 
     /// Run this suite against the System 7 **secure** DUT. Also marks
     /// the suite secure: the engine's security context (keys, sequence
-    /// numbers) exists for `use_secure_dut` suites, and every secure
+    /// numbers) exists for secure suites, and every secure
     /// step needs it regardless of which secure binary answers.
     pub fn system7_secure(mut self) -> Self {
-        self.use_system7_secure_dut = true;
-        self.use_secure_dut = true;
+        self.dut = Some(SuiteDut::System7Secure);
+        self.requires_security_context = true;
         self
     }
 
     /// Run this suite against the BCU2 DUT.
     pub fn bcu2(mut self) -> Self {
-        self.use_bcu2_dut = true;
+        self.dut = Some(SuiteDut::Bcu2);
+        self
+    }
+
+    /// Run this suite against the BCU2 Data Secure DUT.
+    pub fn bcu2_secure(mut self) -> Self {
+        self.dut = Some(SuiteDut::Bcu2Secure);
+        self.requires_security_context = true;
         self
     }
 
     /// Run this suite against the micro-System-7 DUT.
     pub fn micro_system7(mut self) -> Self {
-        self.use_micro_system7_dut = true;
+        self.dut = Some(SuiteDut::MicroSystem7);
         self
     }
 }

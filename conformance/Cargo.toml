@@ -169,6 +169,13 @@ name = "conformance-dut-bcu2"
 path = "src/bin/dut_bcu2.rs"
 required-features = ["dut"]
 
+# Mask 0021h: the same blocking micro stack with the Data Secure profile
+# module and the extended-frame capacity it requires.
+[[bin]]
+name = "conformance-dut-bcu2-secure"
+path = "src/bin/dut_bcu2_secure.rs"
+required-features = ["dut"]
+
 # The micro-System-7 DUT: the same micro stack instantiated for mask
 # 0705h (TL Style 3, RT8/M112 tables, both load-control paths).
 [[bin]]

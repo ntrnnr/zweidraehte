@@ -75,7 +75,6 @@ use super::fixture_common::{
 // ASAPs are identical under `FIRST_ASAP = 0`.
 
 pub mod comm_objs {
-    use zweidraehte_device::objects::comm::ComObject;
     use zweidraehte_ets_model::ets_com_objects;
     use zweidraehte_proto::dpt::{DPT_Colour_RGB, DPT_Switch, DPT_Value_1_Ucount};
 

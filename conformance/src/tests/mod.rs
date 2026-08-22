@@ -4,6 +4,7 @@
 
 pub mod helpers;
 
+pub mod bcu2_secure_smoke;
 pub mod bcu2_smoke;
 pub mod group_objects;
 pub mod ip_secure;

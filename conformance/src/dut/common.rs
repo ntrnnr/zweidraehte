@@ -20,8 +20,9 @@
 //! drain — we just write `Exiting`, `shutdown(SHUT_WR)` + `exit(0)`.
 
 use std::cell::UnsafeCell;
+use std::collections::VecDeque;
 use std::os::unix::io::RawFd;
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::Channel;
@@ -33,7 +34,6 @@ use zweidraehte_device::storage::{HasConfigStore, StorageHooks};
 use zweidraehte_device::{Stack, StackDefinition, SyncOptions, restart::EraseCode};
 
 use crate::dut::link::IpcCommand;
-use crate::ipc::framing;
 use crate::ipc::protocol::{DutMessage, ExitReason};
 use crate::ipc::shm::SharedMemory;
 
@@ -84,22 +84,39 @@ pub fn parse_args(binary_name: &str) -> (RawFd, RawFd) {
 // IPC logger
 // ============================================================================
 //
-// `log::*` can fire from any context (including blocking sync code
-// deep in the stack), so the logger uses a blocking write on its own
-// dup'd fd instead of going through the async link layer. The logger
-// encodes each record as a postcard `DutMessage::Log`.
+// `log::*` can fire from any context — including synchronous code deep
+// inside the stack, from whichever task happens to be running. So the logger
+// does not write to the socket at all: it *enqueues*, and whichever code
+// owns the socket drains the queue before its next protocol frame.
+//
+// The obvious design — a dup'd fd and one blocking write per record — is
+// what this replaces, and it was wrong in a way that took two stalled
+// conformance runs to pin down. Its comment argued that a single `write()`
+// below `PIPE_BUF` is atomic, which is true, and concluded that a log record
+// therefore cannot land inside a protocol frame, which does not follow:
+// `framing::write_frame_async` awaits `writable()` *between partial writes*,
+// so the async link layer is routinely suspended midway through a frame.
+// A log record written from another task at that moment splits it, and the
+// parent's length-prefixed decoder never recovers — it either decodes
+// garbage or waits forever for a `StepComplete` it can no longer parse.
+//
+// Enqueuing removes the race by construction rather than narrowing it:
+// there is exactly one writer, and the logger performs no I/O and never
+// yields.
 
-/// Blocking writer handle for the DUT's IPC logger.
+/// Records waiting for the socket owner to flush them.
 ///
-/// Shares the same socket fd as the async link layer's primary
-/// socket (via `dup`). Frames written through this handle use
-/// [`framing::write_frame_blocking`], which concatenates the header
-/// and payload into a single buffer so one kernel `write()` covers
-/// the whole frame. On a Unix socketpair with < PIPE_BUF (4 KiB) and
-/// ample send-buffer space, that single write is atomic — log
-/// entries can't interleave bytes into a postcard frame the async
-/// link layer is midway through sending.
-static LOG_SOCKET: OnceLock<Mutex<std::os::unix::net::UnixStream>> = OnceLock::new();
+/// Bounded so a runaway log loop cannot exhaust memory; overflow drops the
+/// *oldest* record, because the newest are the ones describing whatever is
+/// going wrong right now.
+static LOG_QUEUE: Mutex<VecDeque<DutMessage>> = Mutex::new(VecDeque::new());
+
+/// How many records the queue holds before it starts dropping.
+const LOG_QUEUE_CAPACITY: usize = 512;
+
+/// Records dropped since the last drain, reported once when it resumes so a
+/// gap in the transcript is never silent.
+static LOG_DROPPED: Mutex<usize> = Mutex::new(0);
 
 struct IpcLogger {
     level: log::LevelFilter,
@@ -114,33 +131,50 @@ impl log::Log for IpcLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        let Some(socket_mutex) = LOG_SOCKET.get() else { return };
-        let Ok(mut socket) = socket_mutex.lock() else { return };
-
         let msg = DutMessage::Log {
             level: record.level() as u8,
             target: record.target().to_string(),
             message: format!("{}", record.args()),
         };
-        // Best-effort — parent may have closed its end during
-        // shutdown. Silently drop on error.
-        let _ = framing::write_msg_blocking(&mut socket, &msg);
+        let Ok(mut queue) = LOG_QUEUE.lock() else { return };
+        if queue.len() >= LOG_QUEUE_CAPACITY {
+            queue.pop_front();
+            if let Ok(mut dropped) = LOG_DROPPED.lock() {
+                *dropped += 1;
+            }
+        }
+        queue.push_back(msg);
     }
 
     fn flush(&self) {}
 }
 
-/// Initialize the IPC-forwarding logger. Call exactly once, after
-/// registering the primary socket fd with
-/// [`crate::dut::link::set_primary_socket_fd`].
-pub fn init_ipc_logger(socket_fd: RawFd, level: log::LevelFilter) {
-    use std::os::unix::io::FromRawFd;
-    // Dup the fd so the logger has its own handle that it can write
-    // to without racing with the async link layer. The dup shares the
-    // kernel-side send buffer with the original.
-    let dup_fd = nix::unistd::dup(socket_fd).expect("dup socket fd for logger");
-    let stream = unsafe { std::os::unix::net::UnixStream::from_raw_fd(dup_fd) };
-    LOG_SOCKET.set(Mutex::new(stream)).ok();
+/// Take everything the logger has queued, oldest first.
+///
+/// Call this immediately before writing a protocol frame — that keeps a
+/// step's log records ahead of the `StepComplete` that ends it, so the
+/// parent attributes them to the right step.
+pub fn drain_logs() -> Vec<DutMessage> {
+    let mut out = Vec::new();
+    if let Ok(mut dropped) = LOG_DROPPED.lock()
+        && *dropped > 0
+    {
+        out.push(DutMessage::Log {
+            level: log::Level::Warn as u8,
+            target: "dut::common".to_string(),
+            message: format!("{} log records dropped: the DUT out-logged the drain", *dropped),
+        });
+        *dropped = 0;
+    }
+    if let Ok(mut queue) = LOG_QUEUE.lock() {
+        out.extend(queue.drain(..));
+    }
+    out
+}
+
+/// Initialize the IPC-forwarding logger. Records are queued for the socket
+/// owner to flush; see [`drain_logs`].
+pub fn init_ipc_logger(level: log::LevelFilter) {
     log::set_boxed_logger(Box::new(IpcLogger { level })).expect("set logger");
     log::set_max_level(level);
 }

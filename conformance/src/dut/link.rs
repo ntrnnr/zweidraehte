@@ -43,6 +43,21 @@ use zweidraehte_proto::messages::builder::{ConfirmationMessage, IndicationMessag
 use zweidraehte_proto::messages::knx::*;
 
 use crate::ipc::framing::{read_msg_async, write_msg_async};
+
+use super::common::drain_logs;
+
+/// Write one protocol frame, flushing any queued log records ahead of it.
+///
+/// This is the DUT's only writer. The logger deliberately does not touch the
+/// socket — `write_msg_async` yields between partial writes, so a second
+/// writer can split a frame and desynchronise the parent's decoder. Draining
+/// here also keeps a step's records ahead of the `StepComplete` that ends it.
+async fn send_msg(socket: &Async<UnixStream>, msg: &DutMessage) -> io::Result<()> {
+    for record in drain_logs() {
+        write_msg_async(socket, &record).await?;
+    }
+    write_msg_async(socket, msg).await
+}
 use crate::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 
 /// Maximum number of outbox frames a single router tick can produce
@@ -253,7 +268,7 @@ impl<'a> IpcLinkLayer<'a> {
     async fn process(&mut self, mut req_rx: impl Inbox<RequestMessage<Buffer<'static>>>) -> ! {
         // Lifecycle step 1: tell the runner we're alive. The runner
         // transitions from `Spawning` to `WaitingRoi` on receipt.
-        if let Err(e) = write_msg_async(&self.socket, &DutMessage::Ready).await {
+        if let Err(e) = send_msg(&self.socket, &DutMessage::Ready).await {
             log::error!("IPC LL failed to send Ready: {}", e);
             std::process::exit(1);
         }
@@ -282,9 +297,7 @@ impl<'a> IpcLinkLayer<'a> {
                     let frame = self.capture_and_confirm(msg).await;
                     let frame_seq = self.unsolicited_seq;
                     self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
-                    if let Err(e) =
-                        write_msg_async(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await
-                    {
+                    if let Err(e) = send_msg(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await {
                         log::error!("IPC LL: failed to write UnsolicitedFrame: {}", e);
                     }
                 }
@@ -342,9 +355,7 @@ impl<'a> IpcLinkLayer<'a> {
                     let frame = self.capture_and_confirm(msg).await;
                     let frame_seq = self.unsolicited_seq;
                     self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
-                    if let Err(e) =
-                        write_msg_async(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await
-                    {
+                    if let Err(e) = send_msg(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await {
                         log::error!("IPC LL: failed to write ROI frame: {}", e);
                     }
                 }
@@ -365,12 +376,12 @@ impl<'a> IpcLinkLayer<'a> {
             let frame = self.capture_and_confirm(msg).await;
             let frame_seq = self.unsolicited_seq;
             self.unsolicited_seq = self.unsolicited_seq.wrapping_add(1);
-            if let Err(e) = write_msg_async(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await {
+            if let Err(e) = send_msg(&self.socket, &DutMessage::UnsolicitedFrame { frame_seq, frame }).await {
                 log::error!("IPC LL: failed to write trailing ROI frame: {}", e);
             }
         }
 
-        if let Err(e) = write_msg_async(&self.socket, &DutMessage::RoiComplete).await {
+        if let Err(e) = send_msg(&self.socket, &DutMessage::RoiComplete).await {
             log::error!("IPC LL: failed to send RoiComplete: {}", e);
         }
     }
@@ -520,7 +531,7 @@ impl<'a> IpcLinkLayer<'a> {
         // the DutMessage serde derive. Postcard serialises both the
         // same way on the wire; this is just ergonomics for the enum.
         let frames: Vec<CapturedFrame> = frames.into_iter().collect();
-        if let Err(e) = write_msg_async(&self.socket, &DutMessage::StepComplete { seq, frames }).await {
+        if let Err(e) = send_msg(&self.socket, &DutMessage::StepComplete { seq, frames }).await {
             log::error!("IPC LL: failed to write StepComplete(seq={}): {}", seq, e);
         }
         // If a lifecycle handler raised `pending_exit` before this
@@ -531,7 +542,7 @@ impl<'a> IpcLinkLayer<'a> {
         // the runner's `read_until_step_complete` post-StepComplete
         // poll always finds `Exiting` waiting.
         if let Some(reason) = pending_exit_take() {
-            if let Err(e) = write_msg_async(&self.socket, &DutMessage::Exiting { reason }).await {
+            if let Err(e) = send_msg(&self.socket, &DutMessage::Exiting { reason }).await {
                 log::error!("IPC LL: failed to write Exiting: {}", e);
             }
         }
@@ -566,7 +577,7 @@ impl<'a> IpcLinkLayer<'a> {
                 return;
             }
         };
-        if let Err(e) = write_msg_async(&self.socket, &DutMessage::Exiting { reason }).await {
+        if let Err(e) = send_msg(&self.socket, &DutMessage::Exiting { reason }).await {
             log::error!("IPC LL: failed to write Exiting: {}", e);
         }
         BARRIER.step_settled.signal(());

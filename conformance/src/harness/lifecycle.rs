@@ -98,6 +98,9 @@ pub enum DutMode {
     /// `conformance-dut-bcu2` — BCU2 family (mask 0020h), the
     /// no-async `zweidraehte-microdevice` stack.
     Bcu2,
+    /// `conformance-dut-bcu2-secure` — mask 0021h with the micro Data
+    /// Secure profile and APDU-40 extended frames.
+    Bcu2Secure,
     /// `conformance-dut-micro-system7` — System 7 family (mask 0705h),
     /// the no-async `zweidraehte-microdevice` stack.
     MicroSystem7,
@@ -111,6 +114,7 @@ impl DutMode {
             Self::System7 => "conformance-dut-system7",
             Self::System7Secure => "conformance-dut-system7-secure",
             Self::Bcu2 => "conformance-dut-bcu2",
+            Self::Bcu2Secure => "conformance-dut-bcu2-secure",
             Self::MicroSystem7 => "conformance-dut-micro-system7",
         }
     }
@@ -651,8 +655,11 @@ impl ChildLifecycle {
                     return Err(io::Error::new(io::ErrorKind::InvalidData, "expected Ready"));
                 }
                 Ok(None) => {
-                    self.mark_dead();
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "child exited before Ready"));
+                    let status = self.mark_dead();
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        format!("child exited before Ready ({status:?})"),
+                    ));
                 }
                 Err(e) => {
                     self.mark_dead();
@@ -702,12 +709,10 @@ impl ChildLifecycle {
         }
     }
 
-    fn mark_dead(&mut self) {
+    fn mark_dead(&mut self) -> Option<std::process::ExitStatus> {
         match std::mem::replace(&mut self.state, LifecycleState::Dead) {
-            LifecycleState::Running { mut child, .. } | LifecycleState::Exiting { mut child, .. } => {
-                let _ = child.wait();
-            }
-            LifecycleState::Dead => {}
+            LifecycleState::Running { mut child, .. } | LifecycleState::Exiting { mut child, .. } => child.wait().ok(),
+            LifecycleState::Dead => None,
         }
     }
 

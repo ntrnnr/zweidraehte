@@ -12,7 +12,9 @@ use std::os::unix::io::FromRawFd;
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use zweidraehte_conformance::dut::common::{init_ipc_logger, load_or_seed_snapshot, log_level_from_env, parse_args};
+use zweidraehte_conformance::dut::common::{
+    drain_logs, init_ipc_logger, load_or_seed_snapshot, log_level_from_env, parse_args,
+};
 use zweidraehte_conformance::dut::micro_system7_stack::{self, MicroSystem7DutFamily};
 use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blocking};
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
@@ -30,7 +32,7 @@ fn main() {
     let (shm_fd, socket_fd) = parse_args("conformance-dut-micro-system7");
     // SAFETY: the fd numbers come from our parent's spawn contract.
     let mut shm = unsafe { SharedMemory::from_raw_fd(shm_fd) }.expect("map shared memory");
-    init_ipc_logger(socket_fd, log_level_from_env());
+    init_ipc_logger(log_level_from_env());
 
     let time_divisor: u32 = std::env::var("KNX_TIME_DIVISOR").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
 
@@ -150,6 +152,14 @@ fn exit_with(device: &Dut, socket: &mut UnixStream, shm: &mut SharedMemory, reas
 }
 
 fn send(socket: &mut UnixStream, msg: &DutMessage) {
+    // Flush whatever the logger queued first: it never writes to the socket
+    // itself, so that a log record can never land inside a protocol frame.
+    // Doing it here also keeps a step's records ahead of its `StepComplete`.
+    for record in drain_logs() {
+        if write_msg_blocking(socket, &record).is_err() {
+            std::process::exit(0);
+        }
+    }
     if let Err(e) = write_msg_blocking(socket, msg) {
         // The parent closed on us mid-write; nothing to clean up.
         log::debug!("IPC write failed: {e}");

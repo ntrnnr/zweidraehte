@@ -32,15 +32,17 @@ use std::time::Duration;
 use log::LevelFilter;
 
 use zweidraehte_client::download::{
-    DeviceImage, Downloader, GroupLink, Instruction, LoadControlPath, MaskDb, MemoryResources, ParameterValue,
-    ProcedureKind, ProductData, ProjectConfig, assemble, compile,
+    DeviceImage, Downloader, GroupLink, Instruction, LoadControlPath, LsmTarget, MaskDb, MemoryResources,
+    ParameterValue, ProcedureKind, ProductData, ProjectConfig, SecurityConfig as DownloadSecurityConfig, assemble,
+    compile,
 };
 use zweidraehte_client::{
-    ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, IndividualAddress, KnxBus,
-    MachineRef, MaskVersion,
+    ConnectorInfo, DeviceConnection, Error as ClientError, GroupAddress, GroupService, GroupValueEncoding,
+    IndividualAddress, KnxBus, MachineRef, MaskVersion, SecurityEntry,
 };
+use zweidraehte_conformance::dut::fixture_common::SECURE_FDSK;
 use zweidraehte_conformance::dut::{
-    bcu2_light_switch_product, bcu2_product, micro_system7_product, system_b_product, system7_product,
+    bcu2_light_switch_product, bcu2_product, bcu2_stack, micro_system7_product, system_b_product, system7_product,
 };
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
@@ -140,6 +142,10 @@ async fn main() -> ExitCode {
             ("BCU2 light-switch product download with parameters", scenario_bcu2_light_switch_download),
             ("BCU2 unload-all invalidates the tables", scenario_bcu2_unload_all),
         ]),
+        ("Secure BCU2 (mask 0021)", DutMode::Bcu2Secure, &[(
+            "secure BCU2 first commission and group traffic",
+            scenario_bcu2_secure_commission,
+        )]),
         ("Micro System 7 (mask 0705, micro stack)", DutMode::MicroSystem7, &[
             ("micro-S7 descriptor smoke read", scenario_micro_s7_descriptor),
             ("micro-S7 programming-mode individual addressing", scenario_micro_s7_programming_mode_addressing),
@@ -388,11 +394,10 @@ fn scenario_system7_oversized_segment<'a>(
             let mut downloader = Downloader::new(&mut conn, resources, 254);
             // 255 bytes into a 17-byte address table: the allocation
             // must be rejected and throw the machine into Error.
-            let doomed =
-                [Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::StartLoading }, Instruction::AbsSegment {
-                    lsm: 1.into(),
-                    segment: AbsSegment::eeprom(0x4000, 255),
-                }];
+            let doomed = [
+                Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::StartLoading },
+                Instruction::AbsSegment { lsm: LsmTarget::Index(1), segment: AbsSegment::eeprom(0x4000, 255) },
+            ];
             match downloader.run(&doomed, &DeviceImage::new()).await {
                 Err(ClientError::LoadState {
                     machine: MachineRef::Machine(LsmMachine::AddressTable),
@@ -405,7 +410,10 @@ fn scenario_system7_oversized_segment<'a>(
             // state.
             let mut downloader = Downloader::new(&mut conn, resources, 254);
             downloader
-                .run(&[Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload }], &DeviceImage::new())
+                .run(
+                    &[Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::Unload }],
+                    &DeviceImage::new(),
+                )
                 .await
                 .map_err(|e| format!("recovery unload: {e}"))?;
             Ok(())
@@ -437,6 +445,10 @@ fn bcu2_dut_product() -> Result<ProductData, String> {
 
 fn bcu2_mask(masks: &MaskDb) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
     masks.mask(MaskVersion::Other(0x0020)).ok_or_else(|| "the master data does not describe MV-0020".to_string())
+}
+
+fn bcu2_secure_mask(masks: &MaskDb) -> Result<zweidraehte_client::download::MaskData<'_>, String> {
+    masks.mask(MaskVersion::Other(0x0021)).ok_or_else(|| "the master data does not describe MV-0021".to_string())
 }
 
 fn scenario_bcu2_descriptor<'a>(
@@ -681,6 +693,125 @@ fn scenario_bcu2_unload_all<'a>(
     })
 }
 
+fn scenario_bcu2_secure_commission<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        const TOOL_KEY: [u8; 16] = [0x22; 16];
+        const GROUP_KEY: [u8; 16] = [0x33; 16];
+        const SECURITY_IO: u16 = 0x0011;
+        const SECURITY_OCCURRENCE: u16 = 1;
+
+        let rewired_ga = GroupAddress::from_three_level(3, 1, 1);
+        bus.set_device_security(dut_ia(), SecurityEntry::secure_with_fdsk(SECURE_FDSK, bcu2_stack::SERIAL_NUMBER))
+            .await
+            .map_err(|e| format!("install FDSK: {e}"))?;
+
+        // First contact authenticates under the FDSK. The confirmation to
+        // PID_TOOL_KEY is already protected by TOOL_KEY, which exercises the
+        // client's mid-request channel rotation rather than merely changing a
+        // keyring between connections.
+        let mut first = bus.connect_device(dut_ia()).await.map_err(|e| format!("FDSK sync: {e}"))?;
+        let descriptor = first.device_descriptor_read(0).await.map_err(|e| format!("secure descriptor: {e}"))?;
+        if descriptor != [0x00, 0x21] {
+            close_quietly(first).await;
+            return Err(format!("descriptor {descriptor:02X?}, expected mask 0021"));
+        }
+        first.write_tool_key(TOOL_KEY).await.map_err(|e| format!("tool-key rotation: {e}"))?;
+        close_quietly(first).await;
+
+        // The device rate-limits sync responses to one per second. This is a
+        // protocol window, not harness slack: the application download opens
+        // a fresh secure connection under the newly persisted key.
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+        let masks = mask_db()?;
+        let mask = bcu2_secure_mask(&masks)?;
+        let product = ProductData::from_mtxml_str(&bcu2_product::generate_secure_mtxml()?)
+            .map_err(|e| format!("reading secure BCU2 product back: {e}"))?;
+
+        let mut project = ProjectConfig::new(dut_ia());
+        project.links = vec![GroupLink { group_address: rewired_ga, com_object: 0 }];
+        project.max_apdu = 40;
+        project.security = Some(DownloadSecurityConfig {
+            group_keys: vec![(rewired_ga, GROUP_KEY)],
+            // The client itself is the secure group sender in the second
+            // half of the scenario, so its IA must have a replay-counter row.
+            siat: vec![(tester_ia(), 0)],
+            go_flags: vec![0x03, 0, 0, 0],
+        });
+
+        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure download: {e}"))?;
+        bus.set_group_key(rewired_ga, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;
+
+        // The restart at the end of the download must preserve the Tool Key,
+        // the loaded Security IO, its tables and enabled Security Mode.
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("post-download sync: {e}"))?;
+        let checks = async {
+            let load_state = conn
+                .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::LOAD_STATE_CONTROL, 1, 1)
+                .await
+                .map_err(|e| format!("Security IO load state: {e}"))?;
+            if load_state != [u8::from(LoadState::Loaded)] {
+                return Err(format!("Security IO state {load_state:02X?}, expected Loaded"));
+            }
+
+            for (property, expected, name) in [
+                (pid::security::GROUP_KEY_TABLE, 1u16, "group-key table"),
+                (pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1u16, "SIAT"),
+                (pid::security::GO_SECURITY_FLAGS, 4u16, "GO security flags"),
+            ] {
+                let count = conn
+                    .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, property, 0, 1)
+                    .await
+                    .map_err(|e| format!("{name} count: {e}"))?;
+                if count != expected.to_be_bytes() {
+                    return Err(format!("{name} count {count:02X?}, expected {expected}"));
+                }
+            }
+
+            let mode = conn
+                .function_property_ext_state_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::security::SECURITY_MODE, &[
+                    0, 0,
+                ])
+                .await
+                .map_err(|e| format!("Security Mode: {e}"))?;
+            if mode.return_code != 0 || mode.data != [0, 1] {
+                return Err(format!(
+                    "Security Mode response code {:02X}, data {:02X?}; expected enabled",
+                    mode.return_code, mode.data
+                ));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        checks?;
+
+        // Drive both directions. The secure client write changes GO0 to one;
+        // triggering the same object back proves the device accepted it and
+        // that its response used the commissioned group key and PID 61 level.
+        bus.group_write(rewired_ga, &[1], GroupValueEncoding::Short)
+            .await
+            .map_err(|e| format!("secure group write to DUT: {e}"))?;
+        let mut events = bus.group_events();
+        control.trigger_group_write(0).await.map_err(|e| format!("secure group trigger: {e}"))?;
+        let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .map_err(|_| "no secure group telegram after trigger".to_string())?
+            .map_err(|e| format!("group events: {e}"))?;
+        if telegram.group != rewired_ga
+            || telegram.service != GroupService::Write
+            || telegram.data != [1]
+            || !telegram.secured
+        {
+            return Err(format!("unexpected post-commission group telegram: {telegram:?}"));
+        }
+        Ok(())
+    })
+}
+
 // ============================================================================
 // Micro System 7 scenarios
 // ============================================================================
@@ -882,11 +1013,10 @@ fn scenario_micro_s7_oversized_segment<'a>(
             let mut downloader = Downloader::new(&mut conn, resources, 15);
             // 4 KiB into a 1 KiB backing: the allocation must be
             // rejected and throw the machine into Error.
-            let doomed =
-                [Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::StartLoading }, Instruction::AbsSegment {
-                    lsm: 1.into(),
-                    segment: AbsSegment::eeprom(0x4000, 0x1000),
-                }];
+            let doomed = [
+                Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::StartLoading },
+                Instruction::AbsSegment { lsm: LsmTarget::Index(1), segment: AbsSegment::eeprom(0x4000, 0x1000) },
+            ];
             match downloader.run(&doomed, &DeviceImage::new()).await {
                 Err(ClientError::LoadState {
                     machine: MachineRef::Machine(LsmMachine::AddressTable),
@@ -899,7 +1029,10 @@ fn scenario_micro_s7_oversized_segment<'a>(
             // state.
             let mut downloader = Downloader::new(&mut conn, resources, 15);
             downloader
-                .run(&[Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload }], &DeviceImage::new())
+                .run(
+                    &[Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::Unload }],
+                    &DeviceImage::new(),
+                )
                 .await
                 .map_err(|e| format!("recovery unload: {e}"))?;
             Ok(())
@@ -1101,11 +1234,10 @@ fn scenario_system_b_oversized_segment<'a>(
         let result = async {
             // A 64 KiB address table into an arena of a few hundred
             // bytes: the allocation must be refused.
-            let doomed =
-                [Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::StartLoading }, Instruction::RelSegment {
-                    lsm: 1.into(),
-                    segment: RelSegment::new(0xFFFF),
-                }];
+            let doomed = [
+                Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::StartLoading },
+                Instruction::RelSegment { lsm: LsmTarget::Index(1), segment: RelSegment::new(0xFFFF) },
+            ];
             let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 254);
             match downloader.run(&doomed, &DeviceImage::new()).await {
                 Err(ClientError::LoadState { machine: MachineRef::Object(1), state: LoadState::Err, .. }) => {}
@@ -1115,7 +1247,10 @@ fn scenario_system_b_oversized_segment<'a>(
             // state.
             let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 254);
             downloader
-                .run(&[Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload }], &DeviceImage::new())
+                .run(
+                    &[Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::Unload }],
+                    &DeviceImage::new(),
+                )
                 .await
                 .map_err(|e| format!("recovery unload: {e}"))?;
             Ok(())

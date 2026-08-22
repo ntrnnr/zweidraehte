@@ -662,6 +662,10 @@ const _: () = assert!(region_len(16) <= 256);
 /// Set by `dut_secure.rs` before stack creation.
 static SEQ_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
 
+/// Process-global pointer to the initialized store. Kept as an address so the
+/// `OnceLock` remains `Sync`; access is single-threaded in every DUT child.
+static SECURE_STORAGE_PTR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
 /// The DUT's hand-written stores struct — the conformance twin of the
 /// stores structs (`SecureStorage` etc.) on real devices. Holds only
 /// the shared-memory SIAT store; the DUT's config persistence goes through
@@ -745,7 +749,24 @@ impl<S: ConformanceStack> StorageHooks for DutSecureStorage<S> {
 pub fn init_secure_storage() -> &'static ConformanceSecureStorage {
     static STORAGE: static_cell::StaticCell<ConformanceSecureStorage> = static_cell::StaticCell::new();
     let seq = SiatStore::boot(create_seq_storage()).expect("shm seq store boot is infallible");
-    &*STORAGE.init(ConformanceSecureStorage { seq: core::cell::RefCell::new(seq) })
+    let storage = &*STORAGE.init(ConformanceSecureStorage { seq: core::cell::RefCell::new(seq) });
+    SECURE_STORAGE_PTR
+        .set(storage as *const ConformanceSecureStorage as usize)
+        .expect("secure storage initialized once");
+    storage
+}
+
+/// The process-global sequence store installed by [`init_secure_storage`].
+///
+/// The full stack receives this store through its `HasSeqStore` handle. The
+/// polling micro DUT has no resource graph, so its zero-sized adapter uses
+/// this accessor instead. Both paths still exercise the same packed
+/// shared-memory backend and the same full-reset tail clearing.
+pub fn secure_seq_store() -> &'static core::cell::RefCell<ShmSiatStore> {
+    let ptr = *SECURE_STORAGE_PTR.get().expect("init_secure_storage() must run before stack creation");
+    // SAFETY: `init_secure_storage` places the value in a process-lifetime
+    // `StaticCell`; the child process owns the SHM mapping for the same life.
+    unsafe { &(*(ptr as *const ConformanceSecureStorage)).seq }
 }
 
 /// Build the shared-memory sequence storage from the pointer installed
