@@ -26,13 +26,15 @@ use std::collections::BTreeMap;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 use zweidraehte_proto::messages::apdu::load_control::LoadEvent;
+use zweidraehte_proto::pid;
+use zweidraehte_proto::security::{SEQ6_MAX, u64_to_seq6};
 
 use zweidraehte_knxprod::schema::LoadControl;
 
 use super::assemble::{ProcedureKind, assemble_controls};
 use super::image::DeviceImage;
-use super::interpreter::{DownloadTarget, Downloader, LoadControlPath};
-use super::ir::{Instruction, controls_to_instructions};
+use super::interpreter::{DownloadTarget, Downloader, LoadControlPath, MemoryService};
+use super::ir::{Instruction, LsmTarget, controls_to_instructions};
 use super::mask::{LsmModel, MachineRole, MaskData};
 use super::model::{DownloadModel, ImageLayout, Placement};
 use super::product::{ParameterLocation, ProductData};
@@ -59,6 +61,20 @@ pub struct ParameterValue {
     pub value: Vec<u8>,
 }
 
+/// Installation-specific KNX Data Secure tables.
+///
+/// Group-key addresses are resolved to the exact sorted address-table indices
+/// produced for this download; SIAT rows and GO flags are positional on the
+/// device, so the compiler sorts and validates them before emitting writes.
+#[derive(Debug, Clone, Default)]
+pub struct SecurityConfig {
+    pub group_keys: Vec<(GroupAddress, [u8; 16])>,
+    pub siat: Vec<(IndividualAddress, u64)>,
+    /// One flag octet per zero-based group-object slot: 00 plain, 01
+    /// authentication only, 03 authentication plus confidentiality.
+    pub go_flags: Vec<u8>,
+}
+
 /// What this installation wants of one device.
 #[derive(Debug, Clone)]
 pub struct ProjectConfig {
@@ -71,6 +87,8 @@ pub struct ProjectConfig {
     pub links: Vec<GroupLink>,
     /// Parameter values overriding the product defaults.
     pub parameters: Vec<ParameterValue>,
+    /// Security tables to commission for a secure product.
+    pub security: Option<SecurityConfig>,
     /// The *device's* maximum APDU length, bounding `A_Memory_Write`
     /// chunks. 15 (the TP1 standard frame) is right for every System 7
     /// device; raise it only for targets known to accept extended
@@ -80,7 +98,7 @@ pub struct ProjectConfig {
 
 impl ProjectConfig {
     pub fn new(individual_address: IndividualAddress) -> Self {
-        Self { individual_address, links: Vec::new(), parameters: Vec::new(), max_apdu: 15 }
+        Self { individual_address, links: Vec::new(), parameters: Vec::new(), security: None, max_apdu: 15 }
     }
 }
 
@@ -96,6 +114,7 @@ pub struct CompiledDownload {
     pub image: DeviceImage,
     pub instructions: Vec<Instruction>,
     path: LoadControlPath,
+    memory_service: MemoryService,
     /// From the model row: whether `Connect` authorizes (everything
     /// but BCU1).
     authorize: bool,
@@ -116,7 +135,8 @@ impl CompiledDownload {
     /// the chunk size. The procedure ends in a restart, so the caller
     /// reconnects afterwards.
     pub async fn execute<T: DownloadTarget>(&self, target: &mut T, max_apdu: u16) -> Result<()> {
-        let mut downloader = Downloader::with_path(target, self.path, max_apdu);
+        let mut downloader =
+            Downloader::with_path(target, self.path, max_apdu).with_memory_service(self.memory_service, max_apdu);
         if !self.authorize {
             downloader = downloader.without_authorize();
         }
@@ -147,6 +167,7 @@ impl CompiledDownload {
 pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConfig) -> Result<CompiledDownload> {
     let model = download_model(mask)?;
     let path = (model.load_control)(mask)?;
+    let memory_service = (model.memory_service)(product);
 
     // The image half follows the (device-selected) mask too — even
     // for a BCU1 program carried by a downward-compatible BCU2. The
@@ -190,16 +211,174 @@ pub fn compile(mask: &MaskData<'_>, product: &ProductData, project: &ProjectConf
             if v.name == "EnableSegmentWrite" && v.value == "false")
     });
     let assembled = controls_to_instructions(&controls, product.task_identity)?;
+    let assembled = if model.management_model == "Bcu2" {
+        omit_legacy_bcu2_object_table_announcement(assembled)
+    } else {
+        assembled
+    };
     let instructions = resolve_relative_steps(assembled, &image);
     let instructions = if implicit_writes { insert_image_writes(instructions, &image) } else { instructions };
     let instructions = if model.halt_app_first { halt_application_first(instructions, mask)? } else { instructions };
+    let instructions = inject_security_phase(instructions, product, project)?;
 
     Ok(CompiledDownload {
         image,
         instructions,
         path,
+        memory_service,
         authorize: model.authorize_on_connect,
         diff_writes: model.diff_writes,
+    })
+}
+
+/// BCU2's trailing `LdCtrlTaskSegment LsmIdx="5"` is not a PEI load
+/// machine record. ETS 6.4 removes it as a legacy object-table address
+/// announcement before executing the procedure (bench MV-0021 trace); sending
+/// it to indexed object 5 invents an object the four-object BCU2 roster does
+/// not have.
+fn omit_legacy_bcu2_object_table_announcement(instructions: Vec<Instruction>) -> Vec<Instruction> {
+    instructions
+        .into_iter()
+        .filter(|instruction| !matches!(instruction, Instruction::TaskSegment { lsm: LsmTarget::Index(5), .. }))
+        .collect()
+}
+
+/// Append the family-neutral Security IO load phase before the procedure
+/// disconnects or restarts. OT 17 is deliberately addressed by type: secure
+/// BCU2 does not publish it in its four-object indexed roster.
+fn inject_security_phase(
+    instructions: Vec<Instruction>,
+    product: &ProductData,
+    project: &ProjectConfig,
+) -> Result<Vec<Instruction>> {
+    let security = match (&project.security, product.is_secure_enabled) {
+        (None, false) => return Ok(instructions),
+        (Some(_), false) => {
+            return Err(Error::DownloadConfig("security configuration supplied for a non-secure product"));
+        }
+        (None, true) => return Err(Error::DownloadConfig("secure product has no security configuration")),
+        (Some(security), true) => security,
+    };
+
+    let group_key_capacity = product
+        .max_security_group_key_table_entries
+        .ok_or_else(|| Error::ProductData("secure product declares no group-key table capacity".to_string()))?;
+    let siat_capacity = product
+        .max_security_individual_address_entries
+        .ok_or_else(|| Error::ProductData("secure product declares no SIAT capacity".to_string()))?;
+    if security.group_keys.len() > usize::from(group_key_capacity) {
+        return Err(Error::DownloadConfig("security configuration exceeds the product's group-key capacity"));
+    }
+    if security.siat.len() > usize::from(siat_capacity) {
+        return Err(Error::DownloadConfig("security configuration exceeds the product's SIAT capacity"));
+    }
+    if security.go_flags.iter().any(|flag| !matches!(flag, 0 | 1 | 3)) {
+        return Err(Error::DownloadConfig("GO security flags contain an unsupported protection coding"));
+    }
+
+    let mut group_addresses: Vec<GroupAddress> = project.links.iter().map(|link| link.group_address).collect();
+    group_addresses.sort_unstable();
+    group_addresses.dedup();
+
+    let mut group_rows = Vec::with_capacity(security.group_keys.len());
+    for (address, key) in &security.group_keys {
+        let index = group_addresses
+            .binary_search(address)
+            .map_err(|_| Error::DownloadConfig("a security group key has no address-table entry"))?
+            + 1;
+        let index = u16::try_from(index).map_err(|_| Error::DownloadConfig("group-key index exceeds 16 bits"))?;
+        group_rows.push((index, *key));
+    }
+    group_rows.sort_unstable_by_key(|(index, _)| *index);
+    if group_rows.windows(2).any(|rows| rows[0].0 == rows[1].0) {
+        return Err(Error::DownloadConfig("security configuration repeats a group key"));
+    }
+
+    let mut siat = security.siat.clone();
+    siat.sort_unstable_by_key(|(address, _)| *address);
+    if siat.windows(2).any(|rows| rows[0].0 == rows[1].0) {
+        return Err(Error::DownloadConfig("security configuration repeats a SIAT address"));
+    }
+    if siat.iter().any(|(_, sequence)| *sequence > SEQ6_MAX) {
+        return Err(Error::DownloadConfig("SIAT sequence number exceeds 48 bits"));
+    }
+
+    const SECURITY_IO: u16 = 0x0011;
+    const OCCURRENCE: u16 = 1;
+    let target = LsmTarget::ObjectType { object_type: SECURITY_IO, occurrence: OCCURRENCE };
+    let mut phase = Vec::new();
+    phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::Unload });
+    phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::StartLoading });
+
+    push_table_count(&mut phase, pid::security::GROUP_KEY_TABLE, group_rows.len())?;
+    for (element, (index, key)) in group_rows.into_iter().enumerate() {
+        let mut data = Vec::with_capacity(18);
+        data.extend_from_slice(&index.to_be_bytes());
+        data.extend_from_slice(&key);
+        phase.push(ext_write(pid::security::GROUP_KEY_TABLE, element + 1, data)?);
+    }
+
+    push_table_count(&mut phase, pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, siat.len())?;
+    for (element, (address, sequence)) in siat.into_iter().enumerate() {
+        let mut data = Vec::with_capacity(8);
+        data.extend_from_slice(&u16::from_be_bytes(address.0).to_be_bytes());
+        data.extend_from_slice(&u64_to_seq6(sequence));
+        phase.push(ext_write(pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, element + 1, data)?);
+    }
+
+    push_table_count(&mut phase, pid::security::GO_SECURITY_FLAGS, security.go_flags.len())?;
+    for (element, flag) in security.go_flags.iter().copied().enumerate() {
+        phase.push(ext_write(pid::security::GO_SECURITY_FLAGS, element + 1, vec![flag])?);
+    }
+
+    phase.push(Instruction::LsmEvent { lsm: target, event: LoadEvent::LoadCompleted });
+    // Enabling Security Mode after the tables are loaded matches our
+    // conformance fixtures and avoids tightening application-memory policy
+    // halfway through the download.
+    phase.push(Instruction::FunctionPropertyExt {
+        object_type: SECURITY_IO,
+        occurrence: OCCURRENCE,
+        prop_id: pid::security::SECURITY_MODE,
+        service_id: 0,
+        service_info: 1,
+    });
+
+    let insertion = instructions
+        .iter()
+        .position(|instruction| matches!(instruction, Instruction::Disconnect | Instruction::Restart))
+        .unwrap_or(instructions.len());
+    let mut result = Vec::with_capacity(instructions.len() + phase.len());
+    result.extend_from_slice(&instructions[..insertion]);
+    result.extend(phase);
+    result.extend_from_slice(&instructions[insertion..]);
+    Ok(result)
+}
+
+fn push_table_count(instructions: &mut Vec<Instruction>, prop_id: u16, count: usize) -> Result<()> {
+    let count = u16::try_from(count).map_err(|_| Error::DownloadConfig("security table count exceeds 16 bits"))?;
+    instructions.push(Instruction::WritePropertyExt {
+        object_type: 0x0011,
+        occurrence: 1,
+        prop_id,
+        start_idx: 0,
+        count: 1,
+        data: count.to_be_bytes().to_vec(),
+        verify: false,
+    });
+    Ok(())
+}
+
+fn ext_write(prop_id: u16, element: usize, data: Vec<u8>) -> Result<Instruction> {
+    let start_idx =
+        u16::try_from(element).map_err(|_| Error::DownloadConfig("security table index exceeds 16 bits"))?;
+    Ok(Instruction::WritePropertyExt {
+        object_type: 0x0011,
+        occurrence: 1,
+        prop_id,
+        start_idx,
+        count: 1,
+        data,
+        verify: false,
     })
 }
 
@@ -319,15 +498,14 @@ fn resolve_relative_steps(instructions: Vec<Instruction>, image: &DeviceImage) -
     instructions
         .into_iter()
         .filter_map(|instruction| match instruction {
-            Instruction::RelSegment { lsm, mut segment } => match image.relative(lsm) {
-                Some(bytes) => {
+            Instruction::RelSegment { lsm, mut segment } => match lsm {
+                LsmTarget::Index(index) if image.relative(index).is_some() => {
+                    let bytes = image.relative(index).expect("checked above");
                     segment.requested_memory_size = segment.requested_memory_size.max(bytes.len() as u32);
                     Some(Instruction::RelSegment { lsm, segment })
                 }
-                // Nothing to hold: drop a zero-size request, but honour
-                // one the product sized deliberately.
-                None if segment.requested_memory_size == 0 => None,
-                None => Some(Instruction::RelSegment { lsm, segment }),
+                LsmTarget::Index(_) if segment.requested_memory_size == 0 => None,
+                LsmTarget::Index(_) | LsmTarget::ObjectType { .. } => Some(Instruction::RelSegment { lsm, segment }),
             },
             Instruction::WriteRelImage { obj_idx, .. } if image.relative(obj_idx).is_none() => None,
             other => Some(other),
@@ -850,7 +1028,7 @@ fn patch_one_parameter(bytes: &mut [u8], location: &ParameterLocation, value: &P
 /// no inline data, System B's `LdCtrlWriteRelMem`) are untouched —
 /// those already became `WriteImage` instructions during conversion.
 fn insert_image_writes(instructions: Vec<Instruction>, image: &DeviceImage) -> Vec<Instruction> {
-    let mut pending: Vec<(u8, u16, u16)> = Vec::new();
+    let mut pending: Vec<(LsmTarget, u16, u16)> = Vec::new();
     let mut out = Vec::with_capacity(instructions.len());
 
     for instruction in instructions {
@@ -1263,7 +1441,7 @@ mod tests {
 
         // The MV-0020 template's machinery is all there…
         assert!(c.instructions.iter().any(|i| matches!(i, Instruction::LsmEvent { .. })));
-        assert!(c.instructions.iter().any(|i| matches!(i, Instruction::TaskPointers { lsm: 3, .. })));
+        assert!(c.instructions.iter().any(|i| matches!(i, Instruction::TaskPointers { lsm: LsmTarget::Index(3), .. })));
         assert!(c.instructions.iter().any(|i| matches!(i, Instruction::TaskControl2 { callback: 20609, .. })));
 
         // …and no implicit write landed inside the Loading window: the
@@ -1271,7 +1449,9 @@ mod tests {
         let completed = c
             .instructions
             .iter()
-            .position(|i| matches!(i, Instruction::LsmEvent { lsm: 3, event: LoadEvent::LoadCompleted }))
+            .position(|i| {
+                matches!(i, Instruction::LsmEvent { lsm: LsmTarget::Index(3), event: LoadEvent::LoadCompleted })
+            })
             .expect("LoadCompleted 3");
         let first_write = c
             .instructions
@@ -1293,6 +1473,115 @@ mod tests {
         // 0D6Ch into nowhere otherwise (the crash the ETS trace's
         // ApplyFixupsTask exists to prevent).
         assert_eq!(&bytes[239..241], &[0x50, 0x63]);
+    }
+
+    #[test]
+    fn secure_bcu2_uses_extended_memory_and_loads_security_by_type() {
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0020).expect("fixture");
+        let mask = db.mask(MaskVersion::Other(0x0020)).expect("0020");
+        let mut product =
+            ProductData::from_mtxml_str(crate::download::product::tests::BCU1_MTXML).expect("fixture parses");
+        product.is_secure_enabled = true;
+        product.max_security_group_key_table_entries = Some(2);
+        product.max_security_individual_address_entries = Some(2);
+        product.max_security_p2p_key_table_entries = Some(0);
+
+        let ga_low = GroupAddress::from_three_level(0, 0, 1);
+        let ga_high = GroupAddress::from_three_level(2, 0, 3);
+        let mut project = ProjectConfig::new(IndividualAddress::new(1, 1, 42));
+        // Deliberately unsorted: the key table must use the compiled ADT's
+        // sorted, one-based indices rather than declaration order.
+        project.links = vec![GroupLink { group_address: ga_high, com_object: 1 }, GroupLink {
+            group_address: ga_low,
+            com_object: 0,
+        }];
+        project.max_apdu = 40;
+        project.security = Some(SecurityConfig {
+            group_keys: vec![(ga_high, [0xA5; 16]), (ga_low, [0x5A; 16])],
+            siat: vec![(IndividualAddress::new(1, 2, 3), 0x0102_0304_0506)],
+            go_flags: vec![3, 1],
+        });
+
+        let compiled = compile(&mask, &product, &project).expect("secure download compiles");
+        assert_eq!(compiled.memory_service, MemoryService::Extended);
+        assert!(
+            !compiled.instructions.iter().any(|instruction| {
+                matches!(instruction, Instruction::TaskSegment { lsm: LsmTarget::Index(5), .. })
+            })
+        );
+
+        let target = LsmTarget::ObjectType { object_type: 0x0011, occurrence: 1 };
+        let security_start = compiled
+            .instructions
+            .iter()
+            .position(|instruction| {
+                matches!(instruction, Instruction::LsmEvent { lsm, event: LoadEvent::Unload } if *lsm == target)
+            })
+            .expect("Security IO unload");
+        let restart = compiled
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction, Instruction::Restart))
+            .expect("restart");
+        assert!(security_start < restart);
+
+        let phase = &compiled.instructions[security_start..restart];
+        assert!(matches!(phase[0], Instruction::LsmEvent { lsm, event: LoadEvent::Unload } if lsm == target));
+        assert!(matches!(phase[1], Instruction::LsmEvent { lsm, event: LoadEvent::StartLoading } if lsm == target));
+        let key_rows: Vec<&Vec<u8>> = phase
+            .iter()
+            .filter_map(|instruction| match instruction {
+                Instruction::WritePropertyExt {
+                    prop_id: pid::security::GROUP_KEY_TABLE, start_idx: 1.., data, ..
+                } => Some(data),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(key_rows.len(), 2);
+        assert_eq!(&key_rows[0][..2], &[0, 1], "lower GA has ADT index 1");
+        assert_eq!(&key_rows[0][2..], &[0x5A; 16]);
+        assert_eq!(&key_rows[1][..2], &[0, 2], "higher GA has ADT index 2");
+        assert_eq!(&key_rows[1][2..], &[0xA5; 16]);
+
+        assert!(phase.iter().any(|instruction| {
+            matches!(instruction, Instruction::WritePropertyExt {
+                prop_id: pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+                start_idx: 1,
+                data,
+                ..
+            } if data == &[0x12, 0x03, 1, 2, 3, 4, 5, 6])
+        }));
+        assert!(matches!(
+            phase[phase.len() - 2],
+            Instruction::LsmEvent { lsm, event: LoadEvent::LoadCompleted } if lsm == target
+        ));
+        assert!(matches!(
+            phase.last(),
+            Some(Instruction::FunctionPropertyExt {
+                object_type: 0x0011,
+                occurrence: 1,
+                prop_id: pid::security::SECURITY_MODE,
+                service_id: 0,
+                service_info: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn secure_table_capacities_are_enforced_before_assembly() {
+        let mut product = product();
+        product.is_secure_enabled = true;
+        product.max_security_group_key_table_entries = Some(0);
+        product.max_security_individual_address_entries = Some(0);
+        let mut project = project();
+        project.security = Some(SecurityConfig {
+            group_keys: vec![(project.links[0].group_address, [0x11; 16])],
+            ..Default::default()
+        });
+
+        let db = MaskDb::from_str(crate::download::mask::fixtures::MV_0705).expect("fixture");
+        let mask = db.mask(MaskVersion::System7Tp1).expect("0705");
+        assert!(matches!(compile(&mask, &product, &project), Err(Error::DownloadConfig(_))));
     }
 
     /// The BCU1 fixture with `DynamicTableManagement="true"` — the

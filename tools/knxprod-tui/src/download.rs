@@ -15,8 +15,8 @@ use std::time::Duration;
 use zweidraehte_client::IndividualAddress;
 use zweidraehte_client::cli::BusTarget;
 use zweidraehte_client::download::{
-    DownloadEvent, DownloadModel, Downloader, Instruction, LoadControlPath, LoadEvent, MaskDb, ProductData, compile,
-    resolve_mods, select_download_mask,
+    DownloadEvent, DownloadModel, Downloader, Instruction, LoadControlPath, LoadEvent, LsmTarget, MaskDb, ProductData,
+    compile, resolve_mods, select_download_mask,
 };
 use zweidraehte_knxprod::runtime::Device;
 use zweidraehte_knxprod::runtime::mods::{DeviceMods, apply_mods};
@@ -154,7 +154,7 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     // Loaded once the device is back up.
     stage("Waiting for the device to restart");
     tokio::time::sleep(Duration::from_secs(3)).await;
-    let completed: Vec<u8> = compiled
+    let completed: Vec<LsmTarget> = compiled
         .instructions
         .iter()
         .filter_map(|i| match i {
@@ -166,25 +166,34 @@ async fn run(job: DownloadJob, tx: &Sender<DownloadMsg>) -> Result<String, Strin
     stage("Reading load states back");
     let mut connection = bus.connect_device(job.ia).await.map_err(|e| format!("verification reconnect: {e}"))?;
     let mut states = Vec::new();
-    for machine in &completed {
-        let state = match compiled.path() {
-            LoadControlPath::Property => connection
-                .property_read(*machine, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
-                .await
-                .map(|bytes| bytes.first().copied().unwrap_or(0xFF)),
-            LoadControlPath::Memory(resources) => connection
-                .memory_read(resources.load_status_addr + u16::from(machine - 1), 1)
-                .await
-                .map(|bytes| bytes.first().copied().unwrap_or(0xFF)),
+    for &machine in &completed {
+        let bytes = match (compiled.path(), machine) {
+            (LoadControlPath::Property, LsmTarget::Index(index)) => {
+                connection.property_read(index, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1).await
+            }
+            (LoadControlPath::Property, LsmTarget::ObjectType { object_type, occurrence }) => {
+                connection
+                    .property_ext_read(object_type, occurrence, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
+                    .await
+            }
+            (LoadControlPath::Memory(resources), LsmTarget::Index(index)) => {
+                let Some(offset) = index.checked_sub(1) else {
+                    return Err("load state machine zero is invalid".to_string());
+                };
+                connection.memory_read(resources.load_status_addr + u16::from(offset), 1).await
+            }
+            (LoadControlPath::Memory(_), LsmTarget::ObjectType { .. }) => {
+                return Err(format!("memory-mapped load control cannot address {machine}"));
+            }
             // A direct-path procedure contains no LoadCompleted
             // events, so `completed` is empty and this loop body
             // never runs.
-            LoadControlPath::Direct => {
+            (LoadControlPath::Direct, _) => {
                 Err(zweidraehte_client::Error::UnsupportedInstruction("no load states on the direct path"))
             }
         }
         .map_err(|e| format!("reading machine {machine}'s state: {e}"))?;
-        states.push((*machine, state));
+        states.push((machine, bytes.first().copied().unwrap_or(0xFF)));
     }
     let _ = connection.close().await;
     let _ = bus.disconnect().await;

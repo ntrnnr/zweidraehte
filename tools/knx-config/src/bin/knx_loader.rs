@@ -29,8 +29,8 @@ use clap::{Parser, Subcommand};
 use knx_config::load;
 use zweidraehte_client::cli::{BusTarget, OptionalTargetArgs, parse_ia};
 use zweidraehte_client::download::{
-    DeviceImage, DownloadModel, Downloader, LoadControlPath, MaskData, MaskDb, ProcedureKind, ProductData, assemble,
-    compile, load_control_path, resolve_mods, select_download_mask,
+    DeviceImage, DownloadModel, Downloader, LoadControlPath, LsmTarget, MaskData, MaskDb, ProcedureKind, ProductData,
+    assemble, compile, load_control_path, resolve_mods, select_download_mask,
 };
 use zweidraehte_client::{IndividualAddress, KnxBus, MaskVersion};
 use zweidraehte_knxprod::runtime::Device;
@@ -485,7 +485,7 @@ async fn run_load(
     // them. Only the machines the procedure completed must report
     // Loaded — a product without a PEI program leaves machine 4
     // Unloaded, and that is correct, not a failure.
-    let completed: std::collections::BTreeSet<u8> = compiled
+    let completed: std::collections::BTreeSet<LsmTarget> = compiled
         .instructions
         .iter()
         .filter_map(|i| match i {
@@ -499,14 +499,11 @@ async fn run_load(
     if compiled.path() == LoadControlPath::Direct {
         println!("Load states: none — this mask has no load state machines");
     } else {
-        let states = read_load_states(&bus, ia, compiled.path(), mask.lsm_model().machines.len()).await?;
-        let rendered: Vec<String> = states.iter().map(|s| format!("{s:02X}")).collect();
-        println!("Load states: [{}] (01 = Loaded)", rendered.join(" "));
-        for (index, state) in states.iter().enumerate() {
-            let machine = index as u8 + 1;
-            if completed.contains(&machine) && *state != 0x01 {
-                bail!("load state machine {machine} reports {state:#04X}, expected Loaded (01)");
-            }
+        let states = read_completed_load_states(&bus, ia, compiled.path(), &completed).await?;
+        let rendered: Vec<String> = states.iter().map(|(target, state)| format!("{target}={state:02X}")).collect();
+        println!("Load states: [{}] (01 = Loaded)", rendered.join(", "));
+        if let Some((target, state)) = states.iter().find(|(_, state)| *state != 0x01) {
+            bail!("load state machine {target} reports {state:#04X}, expected Loaded (01)");
         }
     }
 
@@ -642,18 +639,47 @@ async fn run_read(
     result.map(|()| println!("Done — compare against a `load --dump-blobs` run of the same configuration."))
 }
 
-/// Read the per-machine load states after a download (the connection
-/// is fresh — the procedure ended in a restart).
-async fn read_load_states(
+/// Read only the machines whose procedures reached `LoadCompleted`.
+/// Profile modules may have no object index, so their state uses the same
+/// object-type/occurrence address that drove the load machine.
+async fn read_completed_load_states(
     bus: &KnxBus,
     ia: IndividualAddress,
     path: LoadControlPath,
-    machines: usize,
-) -> Result<Vec<u8>> {
+    completed: &std::collections::BTreeSet<LsmTarget>,
+) -> Result<Vec<(LsmTarget, u8)>> {
     let mut connection = bus.connect_device(ia).await.context("while attempting to reconnect for verification")?;
-    let states = read_states_on(&mut connection, path, machines).await;
+    let result = async {
+        let mut states = Vec::with_capacity(completed.len());
+        for &target in completed {
+            let bytes = match (path, target) {
+                (LoadControlPath::Property, LsmTarget::Index(index)) => connection
+                    .property_read(index, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
+                    .await
+                    .with_context(|| format!("while attempting to read machine {target}'s load state"))?,
+                (LoadControlPath::Property, LsmTarget::ObjectType { object_type, occurrence }) => connection
+                    .property_ext_read(object_type, occurrence, zweidraehte_client::pid::LOAD_STATE_CONTROL, 1, 1)
+                    .await
+                    .with_context(|| format!("while attempting to read {target}'s load state"))?,
+                (LoadControlPath::Memory(resources), LsmTarget::Index(index)) => {
+                    let offset = index.checked_sub(1).context("while attempting to address load machine zero")?;
+                    connection
+                        .memory_read(resources.load_status_addr + u16::from(offset), 1)
+                        .await
+                        .with_context(|| format!("while attempting to read machine {target}'s load state"))?
+                }
+                (LoadControlPath::Memory(_), LsmTarget::ObjectType { .. }) => {
+                    bail!("memory-mapped load control cannot address {target}")
+                }
+                (LoadControlPath::Direct, _) => bail!("direct downloads have no load state machines"),
+            };
+            states.push((target, bytes.first().copied().unwrap_or(0xFF)));
+        }
+        Ok(states)
+    }
+    .await;
     let _ = connection.close().await;
-    states
+    result
 }
 
 /// One state byte per machine, on whichever path drives this mask:

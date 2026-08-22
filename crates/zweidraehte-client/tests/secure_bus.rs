@@ -21,6 +21,9 @@ use zweidraehte_client::{
 use zweidraehte_proto::crypto::ccm;
 use zweidraehte_proto::encoding::cemi::CemiMessageCode;
 use zweidraehte_proto::messages::apdu::property::PropertyValueResponse;
+use zweidraehte_proto::messages::apdu::property_ext::{
+    PropertyExtValueHeader, PropertyExtValueWriteConRes, PropertyReturnCode,
+};
 use zweidraehte_proto::messages::apdu::secure::{self, SyncReqRef};
 use zweidraehte_proto::messages::knx::{ApciCode, KnxMessageBuffer, Tpci};
 
@@ -142,6 +145,10 @@ fn secure_bus(entry: SecurityEntry) -> (KnxBus, MockBus, SharedSeqStore) {
 /// Answer a verified sync request: advertise the device's next sending
 /// seq (`seq_remote`) and its expectation of the tool (`seq_local`).
 fn build_sync_res(challenge: &[u8; 6], seq_remote: u64, seq_local: u64) -> Vec<u8> {
+    build_sync_res_with_key(&FDSK, challenge, seq_remote, seq_local)
+}
+
+fn build_sync_res_with_key(key: &[u8; 16], challenge: &[u8; 6], seq_remote: u64, seq_local: u64) -> Vec<u8> {
     let random: [u8; 6] = [0xAA; 6];
     let mut cxr = [0u8; 6];
     for i in 0..6 {
@@ -155,7 +162,7 @@ fn build_sync_res(challenge: &[u8; 6], seq_remote: u64, seq_local: u64) -> Vec<u
     let mut payload = [0u8; 12];
     payload[0..6].copy_from_slice(&seq_to_bytes(seq_remote));
     payload[6..12].copy_from_slice(&seq_to_bytes(seq_local));
-    let mac = ccm::encrypt_and_mac_sync_res(&FDSK, &random, src, dst, 0x00, 0x03F1, scf_byte, &mut payload);
+    let mac = ccm::encrypt_and_mac_sync_res(key, &random, src, dst, 0x00, 0x03F1, scf_byte, &mut payload);
 
     let mut buf = vec![0u8; secure::sync::FRAME_LEN];
     let mac_offset = secure::build_sync_response(
@@ -180,6 +187,15 @@ fn build_sync_res(challenge: &[u8; 6], seq_remote: u64, seq_local: u64) -> Vec<u
 /// counters (`seq_remote` = its sending counter, `seq_local` = what it
 /// expects from the tool).
 async fn accept_secure_connect(bus: &mut MockBus, seq_remote: u64, seq_local: u64) -> SecureChannel {
+    accept_secure_connect_with_key(bus, FDSK, seq_remote, seq_local).await
+}
+
+async fn accept_secure_connect_with_key(
+    bus: &mut MockBus,
+    key: [u8; 16],
+    seq_remote: u64,
+    seq_local: u64,
+) -> SecureChannel {
     let connect = bus.recv().await;
     assert_eq!(KnxMessageBuffer::from_buffer(connect.as_slice()).get_tpci(), Some(Tpci::Connect));
     bus.confirm(&connect);
@@ -193,13 +209,13 @@ async fn accept_secure_connect(bus: &mut MockBus, seq_remote: u64, seq_local: u6
     challenge.copy_from_slice(req.challenge());
     let ctx = req.ccm_context();
     let mac = req.mac();
-    ccm::verify_and_decrypt_sync_req(&FDSK, &ctx, req.scf_byte(), &serial, &mut challenge, &mac)
-        .expect("sync request verifies under the FDSK");
+    ccm::verify_and_decrypt_sync_req(&key, &ctx, req.scf_byte(), &serial, &mut challenge, &mac)
+        .expect("sync request verifies under the active key");
 
-    bus.indicate(&build_sync_res(&challenge, seq_remote, seq_local));
+    bus.indicate(&build_sync_res_with_key(&key, &challenge, seq_remote, seq_local));
 
     // The device tracks the tool's traffic with the mirrored counters.
-    SecureChannel::new(FDSK, SERIAL, seq_remote, seq_local)
+    SecureChannel::new(key, SERIAL, seq_remote, seq_local)
 }
 
 // ============================================================================
@@ -247,6 +263,68 @@ async fn secure_connect_and_property_read_roundtrip() {
     // consumed the advertised tool seq 50 → next is 51.
     assert_eq!(store.load_table_seq(&SERIAL), 101);
     assert_eq!(store.load_tool_seq(&SERIAL), 51);
+}
+
+#[tokio::test(start_paused = true)]
+async fn tool_key_write_uses_old_key_for_request_and_new_key_for_response_and_reconnect() {
+    const NEW_KEY: [u8; 16] = [0x5A; 16];
+    let (bus, mut mock, _) = secure_bus(SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+    let device = tokio::spawn(async move {
+        let mut old_channel = accept_secure_connect(&mut mock, 100, 50).await;
+
+        let request = mock.recv().await;
+        let (plain, next_tool_seq) = old_channel.unwrap(&request).expect("tool-key write uses the FDSK");
+        let request_header = PropertyExtValueHeader::parse(&plain).expect("extended write header");
+        assert_eq!(KnxMessageBuffer::from_buffer(plain.as_slice()).get_apci_code(), ApciCode::PropertyExtValueWriteCon);
+        assert_eq!(
+            (request_header.object_type, request_header.object_instance, request_header.prop_id),
+            (0x0011, 1, zweidraehte_proto::pid::security::TOOL_KEY)
+        );
+        assert_eq!(request_header.data(&plain), NEW_KEY);
+        bus_ack(&mock, 0);
+
+        // The request changed the device's key. Preserve the two synced
+        // counters while replacing only the cipher key, then answer under it.
+        let mut new_channel = SecureChannel::new(NEW_KEY, SERIAL, old_channel.peek_tool_seq(), next_tool_seq);
+        let mut response = frames::build_individual_frame(
+            device_ia(),
+            client_ia(),
+            Tpci::DataConnected(0),
+            ApciCode::PropertyExtValueWriteConRes,
+            PropertyExtValueWriteConRes::MSG_LEN,
+            |buf| {
+                PropertyExtValueWriteConRes::write_success(
+                    buf,
+                    0x0011,
+                    1,
+                    zweidraehte_proto::pid::security::TOOL_KEY,
+                    1,
+                    1,
+                    PropertyReturnCode::Success,
+                )
+            },
+        );
+        frames::set_connected_seq(&mut response, 0);
+        let (wrapped, _) = new_channel.wrap(u16::from_be_bytes(device_ia().0), &response);
+        mock.indicate(&wrapped);
+
+        // Closing and reconnecting proves the bus task committed NEW_KEY to
+        // its keyring rather than changing only the live channel.
+        let response_ack = mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(response_ack.as_slice()).get_tpci(), Some(Tpci::Ack(0)));
+        let disconnect = mock.recv().await;
+        assert_eq!(KnxMessageBuffer::from_buffer(disconnect.as_slice()).get_tpci(), Some(Tpci::Disconnect));
+        accept_secure_connect_with_key(&mut mock, NEW_KEY, 101, 51).await;
+        mock
+    });
+
+    let mut connection = bus.connect_device(device_ia()).await.expect("FDSK connect succeeds");
+    connection.write_tool_key(NEW_KEY).await.expect("new-key confirmation authenticates");
+    connection.close().await.expect("first connection closes");
+    bus.connect_device(device_ia()).await.expect("reconnect syncs under committed tool key");
+
+    drop(device.await.expect("mock device runs to completion"));
 }
 
 fn bus_ack(mock: &MockBus, seq: u8) {

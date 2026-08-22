@@ -128,6 +128,13 @@ pub struct ProductData {
     /// the program element's own attributes (the load-procedure XML
     /// does not repeat them).
     pub task_identity: super::ir::TaskIdentity,
+    /// Whether the application declares KNX Data Secure commissioning.
+    pub is_secure_enabled: bool,
+    /// Product-declared Security IO capacities. The compile step checks the
+    /// project configuration against these before emitting table writes.
+    pub max_security_individual_address_entries: Option<u16>,
+    pub max_security_group_key_table_entries: Option<u16>,
+    pub max_security_p2p_key_table_entries: Option<u16>,
     pub segments: Vec<Segment>,
     /// The product's load procedures: one complete `ProductProcedure`
     /// for System 7, or `MergeId`-tagged fragments for System B.
@@ -235,6 +242,10 @@ impl ProductData {
             mask_version: parse_mask_version(&program.mask_version),
             load_procedure_style: LoadProcedureStyle::from_mtxml(&program.load_procedure_style),
             task_identity: extract_task_identity(program),
+            is_secure_enabled: program.is_secure_enabled.unwrap_or(false),
+            max_security_individual_address_entries: program.max_security_individual_address_entries,
+            max_security_group_key_table_entries: program.max_security_group_key_table_entries,
+            max_security_p2p_key_table_entries: program.max_security_p2p_key_table_entries,
             segments,
             load_procedures: program
                 .static_section
@@ -615,6 +626,22 @@ pub(crate) mod tests {
         assert_eq!(p.id, "M-00FA_A-0306-02-0000");
         assert_eq!(p.mask_version, Some(MaskVersion::System7Tp1));
         assert_eq!(p.load_procedure_style, LoadProcedureStyle::Product);
+    }
+
+    #[test]
+    fn extracts_data_secure_capacities() {
+        let xml = SYSTEM7_MTXML.replace(
+            "Linkable=\"false\"",
+            "Linkable=\"false\" IsSecureEnabled=\"true\" \
+             MaxSecurityIndividualAddressEntries=\"190\" \
+             MaxSecurityGroupKeyTableEntries=\"64\" \
+             MaxSecurityP2PKeyTableEntries=\"0\"",
+        );
+        let p = ProductData::from_mtxml_str(&xml).expect("secure attributes parse");
+        assert!(p.is_secure_enabled);
+        assert_eq!(p.max_security_individual_address_entries, Some(190));
+        assert_eq!(p.max_security_group_key_table_entries, Some(64));
+        assert_eq!(p.max_security_p2p_key_table_entries, Some(0));
     }
 
     #[test]

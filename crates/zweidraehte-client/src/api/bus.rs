@@ -246,6 +246,18 @@ impl KnxBus {
         rx.await.map_err(|_| Error::WorkerGone)
     }
 
+    /// Register or replace the Data Secure key for a group address.
+    ///
+    /// Subsequent outgoing group telegrams are protected with this key.
+    /// Incoming secure telegrams are authenticated with it, while plaintext
+    /// traffic on the same address is rejected as a downgrade.
+    pub async fn set_group_key(&self, group: GroupAddress, key: [u8; 16]) -> Result<()> {
+        let (tx, rx) = oneshot::channel();
+        let ga = u16::from_be_bytes(group.0);
+        self.cmd_tx.send(BusCommand::SetGroupKey { ga, key, tx }).await.map_err(|_| Error::WorkerGone)?;
+        rx.await.map_err(|_| Error::WorkerGone)
+    }
+
     // ========================================================================
     // Lifecycle
     // ========================================================================

@@ -388,10 +388,11 @@ fn scenario_system7_oversized_segment<'a>(
             let mut downloader = Downloader::new(&mut conn, resources, 254);
             // 255 bytes into a 17-byte address table: the allocation
             // must be rejected and throw the machine into Error.
-            let doomed = [Instruction::LsmEvent { lsm: 1, event: LoadEvent::StartLoading }, Instruction::AbsSegment {
-                lsm: 1,
-                segment: AbsSegment::eeprom(0x4000, 255),
-            }];
+            let doomed =
+                [Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::StartLoading }, Instruction::AbsSegment {
+                    lsm: 1.into(),
+                    segment: AbsSegment::eeprom(0x4000, 255),
+                }];
             match downloader.run(&doomed, &DeviceImage::new()).await {
                 Err(ClientError::LoadState {
                     machine: MachineRef::Machine(LsmMachine::AddressTable),
@@ -404,7 +405,7 @@ fn scenario_system7_oversized_segment<'a>(
             // state.
             let mut downloader = Downloader::new(&mut conn, resources, 254);
             downloader
-                .run(&[Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload }], &DeviceImage::new())
+                .run(&[Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload }], &DeviceImage::new())
                 .await
                 .map_err(|e| format!("recovery unload: {e}"))?;
             Ok(())
@@ -881,10 +882,11 @@ fn scenario_micro_s7_oversized_segment<'a>(
             let mut downloader = Downloader::new(&mut conn, resources, 15);
             // 4 KiB into a 1 KiB backing: the allocation must be
             // rejected and throw the machine into Error.
-            let doomed = [Instruction::LsmEvent { lsm: 1, event: LoadEvent::StartLoading }, Instruction::AbsSegment {
-                lsm: 1,
-                segment: AbsSegment::eeprom(0x4000, 0x1000),
-            }];
+            let doomed =
+                [Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::StartLoading }, Instruction::AbsSegment {
+                    lsm: 1.into(),
+                    segment: AbsSegment::eeprom(0x4000, 0x1000),
+                }];
             match downloader.run(&doomed, &DeviceImage::new()).await {
                 Err(ClientError::LoadState {
                     machine: MachineRef::Machine(LsmMachine::AddressTable),
@@ -897,7 +899,7 @@ fn scenario_micro_s7_oversized_segment<'a>(
             // state.
             let mut downloader = Downloader::new(&mut conn, resources, 15);
             downloader
-                .run(&[Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload }], &DeviceImage::new())
+                .run(&[Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload }], &DeviceImage::new())
                 .await
                 .map_err(|e| format!("recovery unload: {e}"))?;
             Ok(())
@@ -1099,10 +1101,11 @@ fn scenario_system_b_oversized_segment<'a>(
         let result = async {
             // A 64 KiB address table into an arena of a few hundred
             // bytes: the allocation must be refused.
-            let doomed = [Instruction::LsmEvent { lsm: 1, event: LoadEvent::StartLoading }, Instruction::RelSegment {
-                lsm: 1,
-                segment: RelSegment::new(0xFFFF),
-            }];
+            let doomed =
+                [Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::StartLoading }, Instruction::RelSegment {
+                    lsm: 1.into(),
+                    segment: RelSegment::new(0xFFFF),
+                }];
             let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 254);
             match downloader.run(&doomed, &DeviceImage::new()).await {
                 Err(ClientError::LoadState { machine: MachineRef::Object(1), state: LoadState::Err, .. }) => {}
@@ -1112,7 +1115,7 @@ fn scenario_system_b_oversized_segment<'a>(
             // state.
             let mut downloader = Downloader::with_path(&mut conn, LoadControlPath::Property, 254);
             downloader
-                .run(&[Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload }], &DeviceImage::new())
+                .run(&[Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload }], &DeviceImage::new())
                 .await
                 .map_err(|e| format!("recovery unload: {e}"))?;
             Ok(())

@@ -117,6 +117,8 @@ pub enum MachineRef {
     /// An interface object driven over `PID_LOAD_STATE_CONTROL`
     /// (System B).
     Object(u8),
+    /// A profile-module object absent from the indexed roster.
+    ObjectType { object_type: u16, occurrence: u16 },
 }
 
 impl core::fmt::Display for MachineRef {
@@ -124,6 +126,9 @@ impl core::fmt::Display for MachineRef {
         match self {
             Self::Machine(machine) => write!(f, "the {machine}"),
             Self::Object(idx) => write!(f, "interface object {idx}"),
+            Self::ObjectType { object_type, occurrence } => {
+                write!(f, "interface object type {object_type:#06X}, occurrence {occurrence}")
+            }
         }
     }
 }

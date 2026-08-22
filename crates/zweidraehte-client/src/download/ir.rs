@@ -6,22 +6,40 @@
 //! product `LoadProcedures`) all compile down to this; the
 //! [`Downloader`](super::Downloader) only ever sees IR.
 //!
-//! Load state machines are addressed by their **index**, not by the
-//! four-variant `LsmMachine`: System B has five (1 = address table,
-//! 2 = association table, 3 = group object table, 4 = application
-//! program, 5 = PEI program), and on that family the index is also the
-//! interface-object index the property path writes to. The
-//! memory-mapped path narrows the index to `LsmMachine` when it packs
-//! the record nibble, and rejects anything outside 1–4 there.
+//! Load state machines retain the address form their procedure used.
+//! Classic machines use an interface-object index; profile modules can
+//! exist only in the extended `(object type, occurrence)` address space.
+//! The memory-mapped path accepts only the indexed form and narrows it to
+//! `LsmMachine` when it packs the record nibble.
 
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadEvent, RelSegment};
 
-/// A load state machine, by index.
-///
-/// On System B this is also the interface object index carrying
-/// `PID_LOAD_STATE_CONTROL`; on System 7 it is the nibble in the
-/// memory-mapped record.
-pub type LsmIndex = u8;
+/// The protocol address of a load state machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LsmTarget {
+    /// An indexed interface object. On the legacy memory path this is also
+    /// the load-machine nibble.
+    Index(u8),
+    /// An extended interface object reached by type and one-based occurrence.
+    ObjectType { object_type: u16, occurrence: u16 },
+}
+
+impl From<u8> for LsmTarget {
+    fn from(value: u8) -> Self {
+        Self::Index(value)
+    }
+}
+
+impl core::fmt::Display for LsmTarget {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Index(index) => write!(f, "{index}"),
+            Self::ObjectType { object_type, occurrence } => {
+                write!(f, "object type {object_type:#06X}, occurrence {occurrence}")
+            }
+        }
+    }
+}
 
 /// The application identity a task-segment record announces:
 /// `[manufacturer:2][application number:2][version:1]` plus the PEI
@@ -50,14 +68,14 @@ pub enum Instruction {
     /// Drive a load state machine: `StartLoading`, `LoadCompleted`,
     /// `Unload` (`LdCtrlLoad` / `LdCtrlLoadCompleted` /
     /// `LdCtrlUnload`). The engine verifies the resulting state.
-    LsmEvent { lsm: LsmIndex, event: LoadEvent },
+    LsmEvent { lsm: LsmTarget, event: LoadEvent },
     /// Allocate an absolute segment on a machine in `Loading`
     /// (`LdCtrlAbsSegment` → the §3.31.3 AllocAbsDataSeg record).
-    AbsSegment { lsm: LsmIndex, segment: AbsSegment },
+    AbsSegment { lsm: LsmTarget, segment: AbsSegment },
     /// Allocate a relative segment (`LdCtrlRelSegment`, System B): the
     /// client asks for a size, the device picks the address and reports
     /// it through `PID_TABLE_REFERENCE`.
-    RelSegment { lsm: LsmIndex, segment: RelSegment },
+    RelSegment { lsm: LsmTarget, segment: RelSegment },
     /// Announce the task segment (`LdCtrlTaskSegment`). The record
     /// carries the application's identity — the XML holds only the
     /// address, and ETS stamps in PEI type and ApplicationID from the
@@ -65,7 +83,7 @@ pub enum Instruction {
     /// `03 02 4000 00 0083009515`), so the IR carries them resolved.
     /// System 7 devices accept the record without acting on it; ETS
     /// sends it, so faithful procedures include it.
-    TaskSegment { lsm: LsmIndex, address: u16, pei_type: u8, application_id: [u8; 5] },
+    TaskSegment { lsm: LsmTarget, address: u16, pei_type: u8, application_id: [u8; 5] },
     /// Write `length` bytes from the assembled device image at
     /// `address` — the explicit form of ETS's implicit data phase, and
     /// the lowering of a mask template's `LdCtrlWriteMem` without
@@ -93,18 +111,32 @@ pub enum Instruction {
     LoadImageProperty { obj_idx: u8, prop_id: u16 },
     /// Write a property value (`LdCtrlWriteProp` with inline data).
     WriteProperty { obj_idx: u8, prop_id: u16, data: Vec<u8>, verify: bool },
+    /// Confirmed AN163 property write addressed by object type and
+    /// occurrence. Synthesized security configuration uses this for the
+    /// Security IO tables.
+    WritePropertyExt {
+        object_type: u16,
+        occurrence: u16,
+        prop_id: u16,
+        start_idx: u16,
+        count: u16,
+        data: Vec<u8>,
+        verify: bool,
+    },
+    /// Extended function-property command addressed by type/occurrence.
+    FunctionPropertyExt { object_type: u16, occurrence: u16, prop_id: u16, service_id: u8, service_info: u8 },
     /// The BCU2 application's entry points (`LdCtrlTaskPtr` → the
     /// §3.31.2 TaskPtr record, segment type 3). Like
     /// [`Self::TaskSegment`], an informational record: it does not
     /// transition the machine, so the engine sends it without a state
     /// poll.
-    TaskPointers { lsm: LsmIndex, init_ptr: u16, save_ptr: u16, serial_ptr: u16 },
+    TaskPointers { lsm: LsmTarget, init_ptr: u16, save_ptr: u16, serial_ptr: u16 },
     /// The BCU2 application's interface-object list (`LdCtrlTaskCtrl1`
     /// → TaskCtrl1 record, segment type 4).
-    TaskControl1 { lsm: LsmIndex, address: u16, count: u8 },
+    TaskControl1 { lsm: LsmTarget, address: u16, count: u8 },
     /// The BCU2 group-object callback and table pointers
     /// (`LdCtrlTaskCtrl2` → TaskCtrl2 record, segment type 5).
-    TaskControl2 { lsm: LsmIndex, callback: u16, address: u16, seg0: u16, seg1: u16 },
+    TaskControl2 { lsm: LsmTarget, callback: u16, address: u16, seg0: u16, seg1: u16 },
     /// Basic restart (`LdCtrlRestart`); the device reboots and the
     /// transport connection dies with it.
     Restart,
@@ -160,6 +192,12 @@ impl Instruction {
                 format!("Read back object {obj_idx}'s property {prop_id}")
             }
             Self::WriteProperty { obj_idx, prop_id, .. } => format!("Write object {obj_idx}'s property {prop_id}"),
+            Self::WritePropertyExt { object_type, occurrence, prop_id, .. } => {
+                format!("Write type {object_type:#06X}/{occurrence} property {prop_id}")
+            }
+            Self::FunctionPropertyExt { object_type, occurrence, prop_id, .. } => {
+                format!("Command type {object_type:#06X}/{occurrence} property {prop_id}")
+            }
             Self::TaskPointers { lsm, .. } => format!("Announce task pointers (machine {lsm})"),
             Self::TaskControl1 { lsm, .. } => format!("Announce task control block 1 (machine {lsm})"),
             Self::TaskControl2 { lsm, .. } => format!("Announce task control block 2 (machine {lsm})"),
@@ -176,7 +214,7 @@ impl Instruction {
 
 mod convert {
     use super::Instruction;
-    use super::LsmIndex;
+    use super::LsmTarget;
     use super::TaskIdentity;
     use crate::error::{Error, Result};
     use zweidraehte_knxprod::schema as ld;
@@ -201,15 +239,22 @@ mod convert {
         controls.iter().filter_map(|control| convert_control(control, task).transpose()).collect()
     }
 
-    /// A load state machine must be named by index; the
-    /// `ObjType`+`Occurrence` form the master data also permits would
-    /// need an object-type lookup on the live device.
-    fn lsm(lsm_idx: Option<u8>) -> Result<LsmIndex> {
-        lsm_idx.ok_or(Error::UnsupportedInstruction("load state machine addressed by object type, not by index"))
+    /// Preserve exactly one of the two address forms admitted by the schema.
+    fn lsm(lsm_idx: Option<u8>, object_type: Option<u16>, occurrence: Option<u8>) -> Result<LsmTarget> {
+        match (lsm_idx, object_type, occurrence) {
+            (Some(index), None, None) => Ok(LsmTarget::Index(index)),
+            (None, Some(object_type), Some(occurrence)) if occurrence != 0 => {
+                Ok(LsmTarget::ObjectType { object_type, occurrence: u16::from(occurrence) })
+            }
+            (None, Some(_), Some(0)) => Err(Error::Parse("load state machine occurrence must be one-based")),
+            (None, Some(_), None) => Err(Error::Parse("load state machine object type has no occurrence")),
+            (None, None, _) => Err(Error::Parse("load state machine has no address")),
+            _ => Err(Error::Parse("load state machine mixes index and object-type addressing")),
+        }
     }
 
     fn hex_bytes(s: &str) -> Result<Vec<u8>> {
-        if s.len() % 2 != 0 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
+        if !s.len().is_multiple_of(2) || !s.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(Error::Parse("InlineData is not an even-length hex string"));
         }
         Ok(s.as_bytes()
@@ -228,13 +273,18 @@ mod convert {
             C::LdCtrlDisconnect(_) => Instruction::Disconnect,
             C::LdCtrlRestart(_) => Instruction::Restart,
             C::LdCtrlDelay(d) => Instruction::Delay { milliseconds: d.milli_seconds },
-            C::LdCtrlLoad(l) => Instruction::LsmEvent { lsm: lsm(l.lsm_idx)?, event: LoadEvent::StartLoading },
-            C::LdCtrlLoadCompleted(l) => {
-                Instruction::LsmEvent { lsm: lsm(l.lsm_idx)?, event: LoadEvent::LoadCompleted }
+            C::LdCtrlLoad(l) => {
+                Instruction::LsmEvent { lsm: lsm(l.lsm_idx, l.obj_type, l.occurrence)?, event: LoadEvent::StartLoading }
             }
-            C::LdCtrlUnload(l) => Instruction::LsmEvent { lsm: lsm(l.lsm_idx)?, event: LoadEvent::Unload },
+            C::LdCtrlLoadCompleted(l) => Instruction::LsmEvent {
+                lsm: lsm(l.lsm_idx, l.obj_type, l.occurrence)?,
+                event: LoadEvent::LoadCompleted,
+            },
+            C::LdCtrlUnload(l) => {
+                Instruction::LsmEvent { lsm: lsm(l.lsm_idx, l.obj_type, l.occurrence)?, event: LoadEvent::Unload }
+            }
             C::LdCtrlAbsSegment(s) => Instruction::AbsSegment {
-                lsm: s.lsm_idx,
+                lsm: s.lsm_idx.into(),
                 segment: AbsSegment {
                     segment_type: LoadSegment::from(s.seg_type),
                     start_address: s.address,
@@ -245,7 +295,7 @@ mod convert {
                 },
             },
             C::LdCtrlTaskSegment(t) => Instruction::TaskSegment {
-                lsm: t.lsm_idx,
+                lsm: t.lsm_idx.into(),
                 address: t.address,
                 pei_type: task.pei_type,
                 application_id: task.application_id,
@@ -298,7 +348,7 @@ mod convert {
                 }
             }
             C::LdCtrlRelSegment(r) => Instruction::RelSegment {
-                lsm: lsm(r.lsm_idx)?,
+                lsm: lsm(r.lsm_idx, r.obj_type, r.occurrence)?,
                 segment: RelSegment { requested_memory_size: r.size, mode: r.mode, fill: r.fill },
             },
             C::LdCtrlWriteRelMem(w) => {
@@ -337,18 +387,18 @@ mod convert {
                 return Err(Error::UnsupportedInstruction("line-coupler filter tables not supported"));
             }
             C::LdCtrlTaskPtr(t) => Instruction::TaskPointers {
-                lsm: t.lsm_idx,
+                lsm: t.lsm_idx.into(),
                 init_ptr: t.init_ptr,
                 save_ptr: t.save_ptr,
                 serial_ptr: t.serial_ptr,
             },
             C::LdCtrlTaskCtrl1(t) => Instruction::TaskControl1 {
-                lsm: t.lsm_idx,
+                lsm: t.lsm_idx.into(),
                 address: t.address,
                 count: u8::try_from(t.count).map_err(|_| Error::Parse("TaskCtrl1 count beyond one octet"))?,
             },
             C::LdCtrlTaskCtrl2(t) => Instruction::TaskControl2 {
-                lsm: t.lsm_idx,
+                lsm: t.lsm_idx.into(),
                 callback: t.callback,
                 address: t.address,
                 seg0: t.seg0,
@@ -375,10 +425,10 @@ mod convert {
                 .expect("every element is convertible");
             assert_eq!(instructions, vec![
                 Instruction::Connect,
-                Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload },
-                Instruction::LsmEvent { lsm: 2, event: LoadEvent::Unload },
-                Instruction::LsmEvent { lsm: 3, event: LoadEvent::Unload },
-                Instruction::LsmEvent { lsm: 4, event: LoadEvent::Unload },
+                Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload },
+                Instruction::LsmEvent { lsm: 2.into(), event: LoadEvent::Unload },
+                Instruction::LsmEvent { lsm: 3.into(), event: LoadEvent::Unload },
+                Instruction::LsmEvent { lsm: 4.into(), event: LoadEvent::Unload },
                 Instruction::Disconnect,
             ]);
         }
@@ -450,9 +500,9 @@ mod convert {
             ];
             let instructions = controls_to_instructions(&controls, Default::default()).expect("task records convert");
             assert_eq!(instructions, vec![
-                Instruction::TaskPointers { lsm: 3, init_ptr: 284, save_ptr: 285, serial_ptr: 0 },
-                Instruction::TaskControl1 { lsm: 3, address: 0, count: 0 },
-                Instruction::TaskControl2 { lsm: 3, callback: 20609, address: 282, seg0: 208, seg1: 208 },
+                Instruction::TaskPointers { lsm: 3.into(), init_ptr: 284, save_ptr: 285, serial_ptr: 0 },
+                Instruction::TaskControl1 { lsm: 3.into(), address: 0, count: 0 },
+                Instruction::TaskControl2 { lsm: 3.into(), callback: 20609, address: 282, seg0: 208, seg1: 208 },
             ]);
         }
 
@@ -469,7 +519,7 @@ mod convert {
             assert_eq!(
                 convert_control(&rel, Default::default()).expect("converts"),
                 Some(Instruction::RelSegment {
-                    lsm: 3,
+                    lsm: 3.into(),
                     segment: RelSegment { requested_memory_size: 8192, mode: 0, fill: 0 },
                 })
             );
@@ -499,16 +549,32 @@ mod convert {
             );
         }
 
-        /// A machine named by object type rather than index still has
-        /// nowhere to go — the IR carries indexes.
+        /// Secure profiles address their Security IO by object type because
+        /// it need not appear in the device's indexed object roster.
         #[test]
-        fn object_type_addressing_is_rejected_typed() {
+        fn object_type_addressing_is_preserved() {
             let control = ld::LoadControl::LdCtrlUnload(ld::LdCtrlUnload {
                 lsm_idx: None,
-                obj_type: Some(6),
+                obj_type: Some(17),
                 occurrence: Some(1),
             });
-            assert!(matches!(convert_control(&control, Default::default()), Err(Error::UnsupportedInstruction(_))));
+            assert_eq!(
+                convert_control(&control, Default::default()).expect("converts"),
+                Some(Instruction::LsmEvent {
+                    lsm: LsmTarget::ObjectType { object_type: 17, occurrence: 1 },
+                    event: LoadEvent::Unload,
+                })
+            );
+        }
+
+        #[test]
+        fn mixed_lsm_addressing_is_rejected() {
+            let control = ld::LoadControl::LdCtrlUnload(ld::LdCtrlUnload {
+                lsm_idx: Some(5),
+                obj_type: Some(17),
+                occurrence: Some(1),
+            });
+            assert!(matches!(convert_control(&control, Default::default()), Err(Error::Parse(_))));
         }
 
         /// Merge points must be resolved at assembly time; reaching the

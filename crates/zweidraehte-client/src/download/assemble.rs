@@ -164,10 +164,10 @@ mod tests {
         let instructions = assemble(&mask, &product, ProcedureKind::UnloadAll).expect("assembles");
         assert_eq!(instructions, vec![
             Instruction::Connect,
-            Instruction::LsmEvent { lsm: 1, event: LoadEvent::Unload },
-            Instruction::LsmEvent { lsm: 2, event: LoadEvent::Unload },
-            Instruction::LsmEvent { lsm: 3, event: LoadEvent::Unload },
-            Instruction::LsmEvent { lsm: 4, event: LoadEvent::Unload },
+            Instruction::LsmEvent { lsm: 1.into(), event: LoadEvent::Unload },
+            Instruction::LsmEvent { lsm: 2.into(), event: LoadEvent::Unload },
+            Instruction::LsmEvent { lsm: 3.into(), event: LoadEvent::Unload },
+            Instruction::LsmEvent { lsm: 4.into(), event: LoadEvent::Unload },
             Instruction::Disconnect,
         ]);
     }

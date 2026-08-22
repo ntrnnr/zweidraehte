@@ -19,8 +19,9 @@
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::com_object::{ComObjectFlags, ComObjectType};
 
-use super::interpreter::LoadControlPath;
+use super::interpreter::{LoadControlPath, MemoryService};
 use super::mask::{LsmRealization, MaskData};
+use super::product::ProductData;
 use super::table_coding::{
     Addr1, Addr2, Addr7, Addr8, Asso1, Asso2, Asso6, Co7, ComObjectEntry, ComObjectEntry2, Cot1, Cot2, CountWidth,
     System7AssociationTableCoding, System7ComObjectTableCoding, TableCoding,
@@ -44,6 +45,9 @@ pub struct DownloadModel {
     /// may overrule them where real System 7 silicon does or where
     /// there is nothing to declare (BCU1).
     pub load_control: fn(&MaskData<'_>) -> Result<LoadControlPath>,
+    /// Which memory service carries the image. BCU2 selects the extended,
+    /// confirmed service only for a product that declares Data Secure.
+    pub memory_service: fn(&ProductData) -> MemoryService,
     /// Whether the `Connect` step issues `A_Authorize`. BCU1 has no
     /// access levels — the service itself is a BCU2 addition — so
     /// sending it there is undefined; every other family gates
@@ -100,6 +104,7 @@ const MODELS: [DownloadModel; 4] = [
         // Mask 001xh has no load state machines at all — the whole
         // download is a direct memory-write sequence.
         load_control: direct_path,
+        memory_service: classic_memory,
         authorize_on_connect: false,
         has_properties: false,
         diff_writes: true,
@@ -113,6 +118,7 @@ const MODELS: [DownloadModel; 4] = [
         // Property-mapped machines 1–3 (addr/assoc/app), declared in
         // the mask's resources.
         load_control: declared_path,
+        memory_service: bcu2_memory,
         authorize_on_connect: true,
         has_properties: true,
         diff_writes: true,
@@ -123,6 +129,7 @@ const MODELS: [DownloadModel; 4] = [
         management_model: "BimM112",
         layout: SYSTEM7_LAYOUT,
         load_control: forced_property_path,
+        memory_service: classic_memory,
         authorize_on_connect: true,
         has_properties: true,
         diff_writes: false,
@@ -133,6 +140,7 @@ const MODELS: [DownloadModel; 4] = [
         management_model: "SystemB",
         layout: SYSTEM_B_LAYOUT,
         load_control: declared_path,
+        memory_service: classic_memory,
         authorize_on_connect: true,
         has_properties: true,
         diff_writes: false,
@@ -140,6 +148,14 @@ const MODELS: [DownloadModel; 4] = [
         default_max_apdu: 15,
     },
 ];
+
+fn classic_memory(_product: &ProductData) -> MemoryService {
+    MemoryService::Classic
+}
+
+fn bcu2_memory(product: &ProductData) -> MemoryService {
+    if product.is_secure_enabled { MemoryService::Extended } else { MemoryService::Classic }
+}
 
 // ============================================================================
 // Load-control path policies

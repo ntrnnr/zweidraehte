@@ -73,10 +73,16 @@ pub enum BusCommand {
         expected_apci: Option<ApciCode>,
         tx: oneshot::Sender<Result<Vec<u8>>>,
     },
+    /// The one connected request whose response changes encryption keys.
+    /// The request is wrapped with the current key; immediately after it is
+    /// sent, the live channel switches to `new_key` for the response.
+    TlToolKeyWrite { frame: Vec<u8>, expected_apci: ApciCode, new_key: [u8; 16], tx: oneshot::Sender<Result<Vec<u8>>> },
     /// Close the transport connection.
     TlClose { tx: oneshot::Sender<Result<()>> },
     /// Register or replace a device's Data Secure keyring entry.
     SetDeviceSecurity { ia: IndividualAddress, entry: SecurityEntry, tx: oneshot::Sender<()> },
+    /// Register or replace the Data Secure key for one group address.
+    SetGroupKey { ga: u16, key: [u8; 16], tx: oneshot::Sender<()> },
     /// Tear the bus connection down and end the task.
     Shutdown { tx: oneshot::Sender<Result<()>> },
 }
@@ -116,6 +122,10 @@ enum Pending {
         /// T_ACK itself.
         response_deadline: Option<Instant>,
         expects_response: bool,
+        /// Present only while `PID_TOOL_KEY` is changing. Receipt of a
+        /// matching frame proves that the device accepted the new key,
+        /// because only that key can authenticate the response.
+        tool_key_rotation: Option<[u8; 16]>,
         tx: oneshot::Sender<Result<Vec<u8>>>,
     },
 }
@@ -306,34 +316,29 @@ impl<C: KnxConnector> BusTask<C> {
                 self.execute_tl(result, None).await?;
             }
 
-            BusCommand::TlRequest { mut frame, expects_response, expected_apci, tx } => {
-                if self.tl.is_closed() {
-                    let _ = tx.send(Err(Error::TransportClosed));
+            BusCommand::TlRequest { frame, expects_response, expected_apci, tx } => {
+                self.start_tl_request(frame, expects_response, expected_apci, None, tx).await?;
+            }
+
+            BusCommand::TlToolKeyWrite { frame, expected_apci, new_key, tx } => {
+                if self.tl_security.is_none() {
+                    let _ = tx.send(Err(Error::SecurityMissingKey));
                     return Ok(());
                 }
-                let dest = self.tl.remote();
-                frames::set_connected_seq(&mut frame, self.tl.send_seq());
-                // Wrap once, here — SendData and every Retransmit then
-                // send identical bytes.
-                if let Some(sec) = self.tl_security.as_mut() {
-                    let src = u16::from_be_bytes(self.info.assigned_address.0);
-                    let (wrapped, new_tool_seq) = sec.wrap(src, &frame);
-                    self.tl_pending_tool_seq = Some(new_tool_seq);
-                    frame = wrapped;
-                }
-                self.tl_pending_frame = Some(frame);
-                self.pending = Some(Pending::TlRequest {
-                    matcher: ResponseMatcher { source: Some(dest), apci: expected_apci },
-                    response_deadline: None,
-                    expects_response,
-                    tx,
-                });
-                let result = self.tl.feed(TlEvent::RequestData { dest });
-                self.execute_tl(result, None).await?;
+                self.start_tl_request(frame, true, Some(expected_apci), Some(new_key), tx).await?;
+                // `start_tl_request` has completed the connector send before
+                // returning. No receive can interleave in this actor loop, so
+                // the channel is now ready for the new-key response.
+                self.tl_security.as_mut().expect("secure channel checked above").rotate_key(new_key);
             }
 
             BusCommand::SetDeviceSecurity { ia, entry, tx } => {
                 self.security.set_device_security(ia, entry);
+                let _ = tx.send(());
+            }
+
+            BusCommand::SetGroupKey { ga, key, tx } => {
+                self.security.set_group_key(ga, key);
                 let _ = tx.send(());
             }
 
@@ -359,6 +364,41 @@ impl<C: KnxConnector> BusTask<C> {
 
             BusCommand::Shutdown { .. } => unreachable!("handled in run()"),
         }
+        Ok(())
+    }
+
+    async fn start_tl_request(
+        &mut self,
+        mut frame: Vec<u8>,
+        expects_response: bool,
+        expected_apci: Option<ApciCode>,
+        tool_key_rotation: Option<[u8; 16]>,
+        tx: oneshot::Sender<Result<Vec<u8>>>,
+    ) -> Result<()> {
+        if self.tl.is_closed() {
+            let _ = tx.send(Err(Error::TransportClosed));
+            return Ok(());
+        }
+        let dest = self.tl.remote();
+        frames::set_connected_seq(&mut frame, self.tl.send_seq());
+        // Wrap once, here — SendData and every Retransmit then
+        // send identical bytes.
+        if let Some(sec) = self.tl_security.as_mut() {
+            let src = u16::from_be_bytes(self.info.assigned_address.0);
+            let (wrapped, new_tool_seq) = sec.wrap(src, &frame);
+            self.tl_pending_tool_seq = Some(new_tool_seq);
+            frame = wrapped;
+        }
+        self.tl_pending_frame = Some(frame);
+        self.pending = Some(Pending::TlRequest {
+            matcher: ResponseMatcher { source: Some(dest), apci: expected_apci },
+            response_deadline: None,
+            expects_response,
+            tool_key_rotation,
+            tx,
+        });
+        let result = self.tl.feed(TlEvent::RequestData { dest });
+        self.execute_tl(result, None).await?;
         Ok(())
     }
 
@@ -553,11 +593,20 @@ impl<C: KnxConnector> BusTask<C> {
                 }
                 self.pending = Some(Pending::Scan { matcher, deadline, collected, tx });
             }
-            Some(Pending::TlRequest { matcher, response_deadline, expects_response, tx }) => {
+            Some(Pending::TlRequest { matcher, response_deadline, expects_response, tool_key_rotation, tx }) => {
                 if expects_response && matcher.matches(internal) {
+                    if let Some(new_key) = tool_key_rotation {
+                        self.security.commit_tool_key(self.tl.remote(), new_key);
+                    }
                     let _ = tx.send(Ok(internal.to_vec()));
                 } else {
-                    self.pending = Some(Pending::TlRequest { matcher, response_deadline, expects_response, tx });
+                    self.pending = Some(Pending::TlRequest {
+                        matcher,
+                        response_deadline,
+                        expects_response,
+                        tool_key_rotation,
+                        tx,
+                    });
                 }
             }
             other => self.pending = other,
@@ -671,7 +720,9 @@ impl<C: KnxConnector> BusTask<C> {
                     {
                         self.security.save_tool_seq(&serial, seq);
                     }
-                    if let Some(Pending::TlRequest { matcher, expects_response, tx, .. }) = self.pending.take() {
+                    if let Some(Pending::TlRequest { matcher, expects_response, tool_key_rotation, tx, .. }) =
+                        self.pending.take()
+                    {
                         if !success {
                             let _ = tx.send(Err(Error::NegativeConfirmation));
                         } else if expects_response {
@@ -680,6 +731,7 @@ impl<C: KnxConnector> BusTask<C> {
                                 matcher,
                                 response_deadline: Some(Instant::now() + RESPONSE_TIMEOUT),
                                 expects_response,
+                                tool_key_rotation,
                                 tx,
                             });
                         } else {
@@ -941,11 +993,17 @@ impl<C: KnxConnector> BusTask<C> {
                     self.pending = Some(Pending::Scan { matcher, deadline, collected, tx });
                 }
             }
-            Some(Pending::TlRequest { matcher, response_deadline, expects_response, tx }) => {
+            Some(Pending::TlRequest { matcher, response_deadline, expects_response, tool_key_rotation, tx }) => {
                 if response_deadline.is_some_and(|d| now >= d) {
                     let _ = tx.send(Err(Error::Timeout));
                 } else {
-                    self.pending = Some(Pending::TlRequest { matcher, response_deadline, expects_response, tx });
+                    self.pending = Some(Pending::TlRequest {
+                        matcher,
+                        response_deadline,
+                        expects_response,
+                        tool_key_rotation,
+                        tx,
+                    });
                 }
             }
             other => self.pending = other,

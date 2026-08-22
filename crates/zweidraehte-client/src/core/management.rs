@@ -71,11 +71,18 @@ pub fn expected_response_apci(request: ApciCode) -> Option<ApciCode> {
     match request {
         ApciCode::DeviceDescriptorRead => Some(ApciCode::DeviceDescriptorResponse),
         ApciCode::PropertyValueRead | ApciCode::PropertyValueWrite => Some(ApciCode::PropertyValueResponse),
+        ApciCode::PropertyExtValueRead => Some(ApciCode::PropertyExtValueResponse),
+        ApciCode::PropertyExtValueWriteCon => Some(ApciCode::PropertyExtValueWriteConRes),
         ApciCode::PropertyDescriptionRead => Some(ApciCode::PropertyDescriptionResponse),
         ApciCode::FunctionPropertyCommand | ApciCode::FunctionPropertyStateRead => {
             Some(ApciCode::FunctionPropertyStateResponse)
         }
+        ApciCode::FunctionPropertyExtCommand | ApciCode::FunctionPropertyExtStateRead => {
+            Some(ApciCode::FunctionPropertyExtStateResponse)
+        }
         ApciCode::MemoryRead => Some(ApciCode::MemoryReadResponse),
+        ApciCode::MemoryExtendedRead => Some(ApciCode::MemoryExtendedReadResponse),
+        ApciCode::MemoryExtendedWrite => Some(ApciCode::MemoryExtendedWriteResponse),
         ApciCode::AuthorizeRequest => Some(ApciCode::AuthorizeResponse),
         ApciCode::IndividualAddressRead => Some(ApciCode::IndividualAddressResponse),
         ApciCode::IndividualAddressSerialNumberRead => Some(ApciCode::IndividualAddressSerialNumberResponse),

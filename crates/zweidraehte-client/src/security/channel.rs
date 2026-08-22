@@ -70,6 +70,16 @@ impl SecureChannel {
         &self.key
     }
 
+    /// Change the key without disturbing either sequence counter.
+    ///
+    /// This exists solely for `PID_TOOL_KEY`: a device authenticates the
+    /// write with its old key but encrypts the confirmed response with the
+    /// newly written key. The bus task invokes this after sending that one
+    /// request and before receiving its response.
+    pub(crate) fn rotate_key(&mut self, key: [u8; 16]) {
+        self.key = key;
+    }
+
     /// Current `tool_seq` without consuming it — the value an
     /// S-A_Sync_Req advertises as SeqNr_local (the sync service carries
     /// "next valid SeqNr", 03/03/07 §5.3.2).
@@ -345,6 +355,14 @@ mod tests {
         assert_eq!(secure, c1_1_secure_frame());
         assert_eq!(new_tool_seq, 5);
         assert_eq!(ch.peek_tool_seq(), 5);
+    }
+
+    #[test]
+    fn key_rotation_preserves_sequence_state() {
+        let mut ch = SecureChannel::new(TOOL_KEY, SERIAL, 4, 9);
+        ch.rotate_key([0x55; 16]);
+        assert_eq!(ch.key(), &[0x55; 16]);
+        assert_eq!(ch.peek_tool_seq(), 4);
     }
 
     #[test]

@@ -117,6 +117,16 @@ impl SecurityStore {
         self.entries.insert(ia, entry);
     }
 
+    /// Commit a tool-key rotation after its response authenticated under the
+    /// new key. Keep the FDSK so a caller can still recover after a factory
+    /// reset.
+    pub(crate) fn commit_tool_key(&mut self, ia: IndividualAddress, tool_key: [u8; 16]) {
+        if let Some(entry) = self.entries.get_mut(&ia) {
+            entry.mode = DeviceSecurityMode::Secure;
+            entry.tool_key = Some(tool_key);
+        }
+    }
+
     pub fn get_entry(&self, ia: IndividualAddress) -> Option<&SecurityEntry> {
         self.entries.get(&ia)
     }
@@ -293,6 +303,20 @@ mod tests {
         store.set_device_security(ia(), entry);
         let ch = store.make_channel(ia()).expect("keyed entry").expect("secure mode");
         assert_eq!(ch.key(), &KEY);
+    }
+
+    #[test]
+    fn committing_tool_key_preserves_factory_key_and_serial() {
+        let mut store = SecurityStore::new();
+        store.set_device_security(ia(), SecurityEntry::secure_with_fdsk(FDSK, SERIAL));
+
+        store.commit_tool_key(ia(), KEY);
+
+        let entry = store.get_entry(ia()).expect("entry survives rotation");
+        assert_eq!(entry.tool_key, Some(KEY));
+        assert_eq!(entry.fdsk, Some(FDSK));
+        assert_eq!(entry.serial, Some(SERIAL));
+        assert_eq!(entry.mode, DeviceSecurityMode::Secure);
     }
 
     #[test]
