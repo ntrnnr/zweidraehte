@@ -32,12 +32,14 @@
 //! run on; the UART is polled (a byte lasts ~570 µs at 19200 baud and
 //! the loop is far faster, with the G0's RX FIFO as slack on top).
 //!
-//! TODO: EEPROM persistence — the image currently lives in RAM only,
-//! so a power cycle forgets its configuration. The flash sector
-//! store used by the embassy targets wants a sync sibling first.
+//! ETS configuration is restored from a CRC-protected internal-flash
+//! page and rewritten only at the restart boundary after TPUART output
+//! has been confirmed.
 
 #![no_std]
 #![no_main]
+
+mod config;
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -45,14 +47,19 @@ use cortex_m_rt::{entry, exception};
 use defmt_rtt as _;
 use devices::light_switch::LightSwitchDevice;
 use devices::light_switch::micro::{self, LightSwitchMicroApp};
+use heapless::{Deque, Vec};
 use panic_probe as _;
 use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
-use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
+use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput, PollOutput};
 use zweidraehte_microdevice::families::bcu2::Bcu2Family;
+use zweidraehte_microdevice::frame::MAX_FRAME;
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
 use zweidraehte_util::input::{ButtonEvent, PolledButton};
 
+type Device = Microdevice<Bcu2Family>;
+
 const PROGRAMMING_BUTTON_DEBOUNCE_MS: u32 = 50;
+type PendingFrames = Deque<Vec<u8, MAX_FRAME>, 8>;
 
 // ============================================================================
 // Milliseconds via SysTick
@@ -137,6 +144,7 @@ fn uart_write_blocking(bytes: &[u8]) {
         while !USART1.isr().read().txe() {}
         USART1.tdr().write(|w| w.set_dr(u16::from(b)));
     }
+    while !USART1.isr().read().tc() {}
 }
 
 fn set_led(port: pac::gpio::Gpio, pin: usize, on: bool) {
@@ -145,6 +153,34 @@ fn set_led(port: pac::gpio::Gpio, pin: usize, on: bool) {
 
 fn button_pressed(port: pac::gpio::Gpio, pin: usize) -> bool {
     port.idr().read().idr(pin) == pac::gpio::vals::Idr::LOW
+}
+
+fn queue_output(output: PollOutput, pending: &mut PendingFrames, restart: &mut bool) {
+    for frame in output.frames {
+        if pending.push_back(frame).is_err() {
+            defmt::warn!("stack output queue full, frame dropped");
+        }
+    }
+    *restart |= output.restart.is_some();
+}
+
+fn flush_tpuart<A: Fn(&[u8]) -> bool>(tpuart: &mut TpUart<A>, pending: &mut PendingFrames, now: u32) {
+    // Reset requests and immediate ACK bytes are independent of an L_Data
+    // transmission, so drain them before starting another queued frame.
+    if !tpuart.pending_tx().is_empty() {
+        uart_write_blocking(tpuart.pending_tx());
+        tpuart.clear_tx();
+    }
+    if tpuart.ready_to_send()
+        && let Some(frame) = pending.pop_front()
+    {
+        if tpuart.send_frame(&frame, now) {
+            uart_write_blocking(tpuart.pending_tx());
+            tpuart.clear_tx();
+        } else {
+            defmt::warn!("TPUART refused queued frame");
+        }
+    }
 }
 
 // ============================================================================
@@ -168,7 +204,8 @@ fn main() -> ! {
         order_info: [0; 10],
         hardware_type: LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2,
     };
-    let mut stack: Microdevice<Bcu2Family> = Microdevice::new(micro::bcu2_definition().build_eeprom(), identity, 1);
+    let restored = config::load(micro::bcu2_definition().build_eeprom());
+    let mut stack = restored.into_device(identity);
     let mut app = LightSwitchMicroApp::new(micro::BCU2_PARAMS_IMAGE_OFFSET);
 
     // The TPUART acks frames for our IA and for group addresses the
@@ -178,6 +215,8 @@ fn main() -> ! {
     // TODO: replace the ack-everything filter with an address check
     // once the driver is validated on the bench — over-acking is
     // harmless on a single-DUT test bus but wrong on a real line.
+    let mut pending = PendingFrames::new();
+    let mut restart_pending = false;
 
     defmt::info!("BCU2 micro stack up, IA {}", stack.individual_address().0);
 
@@ -190,20 +229,11 @@ fn main() -> ! {
         // ── Bus reception ───────────────────────────────────────────
         while let Some(byte) = uart_read() {
             match tpuart.push_byte(byte, now) {
-                TpUartEvent::Frame(frame) => {
-                    let out = stack.poll(PollInput::Frame(&frame), now);
-                    for f in &out.frames {
-                        if !tpuart.send_frame(f, now) {
-                            defmt::warn!("TX queue full, frame dropped");
-                        }
-                        uart_write_blocking(tpuart.pending_tx());
-                        tpuart.clear_tx();
-                    }
-                    if out.restart.is_some() {
-                        defmt::info!("A_Restart — resetting");
-                        cortex_m::peripheral::SCB::sys_reset();
-                    }
+                TpUartEvent::Frame(frame) if !restart_pending => {
+                    let output = stack.poll(PollInput::Frame(&frame), now);
+                    queue_output(output, &mut pending, &mut restart_pending);
                 }
+                TpUartEvent::Frame(_) => {}
                 TpUartEvent::ResetIndication => defmt::info!("TPUART reset.ind"),
                 TpUartEvent::TxConfirmed { positive } => {
                     if !positive {
@@ -212,11 +242,7 @@ fn main() -> ! {
                 }
                 TpUartEvent::None => {}
             }
-            // Immediate-ack bytes the driver queued mid-frame.
-            if !tpuart.pending_tx().is_empty() {
-                uart_write_blocking(tpuart.pending_tx());
-                tpuart.clear_tx();
-            }
+            flush_tpuart(&mut tpuart, &mut pending, now);
         }
 
         // ── Timers, once per millisecond ────────────────────────────
@@ -225,30 +251,38 @@ fn main() -> ! {
             if let TpUartEvent::TxConfirmed { positive: false } = tpuart.poll_timer(now) {
                 defmt::warn!("transmission timed out");
             }
-            let out = stack.poll(PollInput::Timer, now);
-            for f in &out.frames {
-                if tpuart.send_frame(f, now) {
-                    uart_write_blocking(tpuart.pending_tx());
-                    tpuart.clear_tx();
-                }
+            if !restart_pending {
+                let output = stack.poll(PollInput::Timer, now);
+                queue_output(output, &mut pending, &mut restart_pending);
             }
         }
 
-        // ── Application: the shared light-switch behavior ───────────
-        // PC11 is button 1; the board has no second button. The user
-        // LED mirrors button 1's status object — the actuator feedback
-        // in Switch/Dimmer configurations.
-        app.poll(&mut stack, button_pressed(GPIOC, 11), false, now);
-        if let Some(on) = app.take_btn1_status_update(&mut stack) {
-            set_led(GPIOC, 12, on);
+        if !restart_pending {
+            // ── Application: the shared light-switch behavior ───────
+            // PC11 is button 1; the board has no second button. The user
+            // LED mirrors button 1's status object — actuator feedback in
+            // Switch/Dimmer configurations.
+            app.poll(&mut stack, button_pressed(GPIOC, 11), false, now);
+            if let Some(on) = app.take_btn1_status_update(&mut stack) {
+                set_led(GPIOC, 12, on);
+            }
+
+            if programming_button.poll(button_pressed(GPIOD, 2), now, PROGRAMMING_BUTTON_DEBOUNCE_MS, u32::MAX)
+                == Some(ButtonEvent::ShortPress)
+            {
+                let enabled = !stack.is_programming_mode();
+                stack.set_programming_mode(enabled);
+            }
+            set_led(GPIOB, 8, stack.is_programming_mode());
         }
 
-        if programming_button.poll(button_pressed(GPIOD, 2), now, PROGRAMMING_BUTTON_DEBOUNCE_MS, u32::MAX)
-            == Some(ButtonEvent::ShortPress)
-        {
-            let enabled = !stack.is_programming_mode();
-            stack.set_programming_mode(enabled);
+        flush_tpuart(&mut tpuart, &mut pending, now);
+        if restart_pending && pending.is_empty() && tpuart.ready_to_send() {
+            defmt::info!("A_Restart — persisting config");
+            if config::save(&stack).is_err() {
+                panic!("BCU2 config persistence failed");
+            }
+            cortex_m::peripheral::SCB::sys_reset();
         }
-        set_led(GPIOB, 8, stack.is_programming_mode());
     }
 }
