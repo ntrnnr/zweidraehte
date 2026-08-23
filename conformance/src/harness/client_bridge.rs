@@ -84,6 +84,11 @@ enum BridgeCmd {
         erase_code: u8,
         done: oneshot::Sender<io::Result<()>>,
     },
+    /// Reboot the persisted image without replacing either configuration or
+    /// sequence state, as on a power interruption.
+    PowerCycle {
+        done: oneshot::Sender<io::Result<()>>,
+    },
     /// Make the DUT transmit a GroupValue_Write on the given ASAP.
     TriggerGroupWrite {
         asap: u16,
@@ -133,6 +138,10 @@ impl DutControl {
 
     pub async fn master_reset(&self, erase_code: u8) -> io::Result<()> {
         self.command(|done| BridgeCmd::MasterReset { erase_code, done }).await
+    }
+
+    pub async fn power_cycle(&self) -> io::Result<()> {
+        self.command(|done| BridgeCmd::PowerCycle { done }).await
     }
 
     pub async fn trigger_group_write(&self, asap: u16) -> io::Result<()> {
@@ -213,6 +222,14 @@ async fn pump(mut lifecycle: ChildLifecycle, mut cmd_rx: mpsc::Receiver<BridgeCm
             Some(BridgeCmd::MasterReset { erase_code, done }) => {
                 let result = async {
                     lifecycle.step_exiting(RunnerMessage::MasterReset { erase_code }, Duration::from_secs(2)).await?;
+                    lifecycle.auto_respawn_if_dead(false).await
+                }
+                .await;
+                let _ = done.send(result);
+            }
+            Some(BridgeCmd::PowerCycle { done }) => {
+                let result = async {
+                    lifecycle.step_exiting(RunnerMessage::PowerCycle, Duration::from_secs(2)).await?;
                     lifecycle.auto_respawn_if_dead(false).await
                 }
                 .await;

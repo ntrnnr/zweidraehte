@@ -169,7 +169,10 @@ async fn main() -> ExitCode {
             ("micro-S7 secure composition plain download", scenario_micro_s7_secure_plain_download),
             ("micro-S7 secure composition plain unload", scenario_micro_s7_secure_plain_unload),
             ("micro-S7 secure composition oversized allocation fails typed", scenario_micro_s7_secure_plain_oversized),
-            ("micro-S7 secure first commission and group traffic", scenario_micro_s7_secure_commission),
+            (
+                "micro-S7 secure commission, power cycle, re-download and group traffic",
+                scenario_micro_s7_secure_commission,
+            ),
         ]),
         ("System B (mask 07B0)", DutMode::SystemB, &[
             ("system B descriptor smoke read", scenario_system_b_descriptor),
@@ -1314,6 +1317,36 @@ fn scenario_micro_s7_secure_commission<'a>(
             || !telegram.secured
         {
             return Err(format!("unexpected post-commission group telegram: {telegram:?}"));
+        }
+
+        // Reboot the persisted split, then make the application download a
+        // second time. A counter reset or a lost loaded/run state would make
+        // the following button telegram disappear or be rejected as a replay.
+        control.power_cycle().await.map_err(|e| format!("power cycle before re-download: {e}"))?;
+        bus.configure_device(&mask, &product, &project)
+            .await
+            .map_err(|e| format!("secure System 7 re-download: {e}"))?;
+
+        // Communication-object values are RAM and intentionally do not
+        // survive the power cycle. Re-seed the fixture value before asking it
+        // to transmit; the persistence assertion is about the tables and
+        // replay counter, not volatile application data.
+        bus.group_write(group, &[0x5A], GroupValueEncoding::Full)
+            .await
+            .map_err(|e| format!("secure group write after re-download: {e}"))?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut events = bus.group_events();
+        control.trigger_group_write(3).await.map_err(|e| format!("post-re-download secure group trigger: {e}"))?;
+        let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .map_err(|_| "no secure group telegram after power cycle and re-download".to_string())?
+            .map_err(|e| format!("group events after re-download: {e}"))?;
+        if telegram.group != group
+            || telegram.service != GroupService::Write
+            || telegram.data != [0x5A]
+            || !telegram.secured
+        {
+            return Err(format!("unexpected post-re-download group telegram: {telegram:?}"));
         }
         Ok(())
     })
