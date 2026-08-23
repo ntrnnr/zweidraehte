@@ -40,7 +40,6 @@ impl MicroDeviceFamily for Bcu1Family {
     /// BCU1 predates `A_Authorize`; zero levels switches the service
     /// off entirely.
     const AUTH_LEVELS: usize = 0;
-    const CONNECTIONLESS_MANAGEMENT: bool = false;
 
     const EEPROM_BASE: u16 = 0x0100;
     const EEPROM_SIZE: usize = BCU1_EEPROM_SIZE;

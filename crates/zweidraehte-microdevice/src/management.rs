@@ -5,7 +5,7 @@
 //! Everything here answers exactly the request sequence a management
 //! client sends during a download — the shape is pinned by the MV-0020
 //! `Load/all` procedure (the client's mask fixture) and the hardware
-//! trace in `BCU2_PLAN.md`: connect, read ManagementStyle, authorize,
+//! trace in `BCU2_PLAN.md`: connect, read the 0115h compatibility probe,
 //! read DD0, drive the three load state machines through
 //! `PID_LOAD_STATE_CONTROL`, then verify-mode memory writes over
 //! 0100h–046Fh, RunError clear, restart.
@@ -189,7 +189,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // ~1.7 KiB of .text on the G0 light switch.
         let has_ext_services = has_properties && is_extended(Self::plaintext_frame_capacity());
         match code {
-            ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6),
+            ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6, access),
             ApciCode::MemoryRead if connection_oriented => self.memory_read(small6, payload, access),
             ApciCode::MemoryWrite if connection_oriented => self.memory_write(small6, payload, access),
             // Authorization belongs to a transport connection. In
@@ -359,9 +359,20 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// with type 3Fh and no data.
     const DD_TYPE_UNSUPPORTED: u8 = 0x3F;
 
-    fn device_descriptor_read(&self, descriptor_type: u8) -> ServiceResult<FRAME_CAP> {
+    fn device_descriptor_read(&self, descriptor_type: u8, access: AccessContext) -> ServiceResult<FRAME_CAP> {
         if descriptor_type == 0 {
-            return ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, 0, &F::DD0.to_be_bytes()));
+            // Security Mode deliberately hides the mask from an unsecured
+            // probe. ETS treats FFFFh as the signal to install the Tool Key,
+            // synchronize and repeat DD0 securely. Returning the real mask
+            // here makes it continue down the plaintext download path.
+            let dd0 = if SEC::security_mode_enabled(&self.sec)
+                && access.security != zweidraehte_proto::access::SecurityMode::AuthConf
+            {
+                0xFFFF
+            } else {
+                F::DD0
+            };
+            return ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, 0, &dd0.to_be_bytes()));
         }
         if descriptor_type == 2
             && let Some(dd2) = F::device_descriptor2(self.eeprom.as_ref(), &self.identity, &self.mgmt)

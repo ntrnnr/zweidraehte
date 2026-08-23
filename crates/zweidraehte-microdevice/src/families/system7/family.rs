@@ -125,7 +125,8 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     const DD0: u16 = 0x0705;
     const TL_STYLE: TlStyle = TlStyle::Style3;
     const AUTH_LEVELS: usize = 16;
-    const CONNECTIONLESS_MANAGEMENT: bool = true;
+    const CONNECTIONLESS_PROPERTIES: bool = true;
+    const CONNECTIONLESS_DEVICE_DESCRIPTOR: bool = true;
 
     const EEPROM_BASE: u16 = offsets::ADT_ADDR;
     const EEPROM_SIZE: usize = EEPROM_LEN;

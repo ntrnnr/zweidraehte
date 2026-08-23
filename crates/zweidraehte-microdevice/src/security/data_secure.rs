@@ -11,7 +11,7 @@ use zweidraehte_proto::dpt::{
     PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_Generic16,
     PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
 };
-use zweidraehte_proto::messages::apdu::load_control::{LoadAction, load_control_transition};
+use zweidraehte_proto::messages::apdu::load_control::{LoadAction, LoadState, load_control_transition};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
 use zweidraehte_proto::messages::apdu::secure::{self, SecureApduMut, SecureApduRef, SyncReqRef};
@@ -232,13 +232,9 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
     scf_byte: u8,
     source: u16,
     fragment: &[u8],
+    response_tpci: u8,
 ) -> SalResult<Option<ReplySecurity>> {
-    // This compact stack serves the commissioning-tool sync path only. A
-    // connected sync response would have to re-enter the TL to acquire its
-    // outgoing sequence number; ETS uses unnumbered individual or broadcast
-    // sync, so reject connected requests instead of authenticating a response
-    // with the request's TPCI.
-    if buf[6] & 0xC0 != 0 || !scf.tool_access || !scf.confidentiality {
+    if !scf.tool_access || !scf.confidentiality {
         log_failure(state, SecurityFailureType::AccessError, source, fragment);
         return SalResult::Dropped;
     }
@@ -323,14 +319,13 @@ fn process_sync_request<S: MicroSecurityResources, const GRP: usize, const GO: u
     let destination = if is_broadcast { 0 } else { source };
     let control = buf[0];
     let npdu = buf[5];
-    let tpci_high = buf[6];
     let mac_offset = secure::build_sync_response(
         buf,
         control,
         own_ia,
         destination,
         npdu,
-        tpci_high,
+        response_tpci,
         response_scf,
         &challenge_xor_random,
         &response_remote,
@@ -471,6 +466,7 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
         serial_number: [u8; 6],
         time_divisor: u32,
         group_key_index: Option<u16>,
+        response_tpci: u8,
     ) -> SalResult<Self::ReplyContext> {
         if *len < 8 {
             return SalResult::Passthrough;
@@ -516,6 +512,7 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
                 scf_byte,
                 src,
                 &fragment,
+                response_tpci,
             );
         }
         if scf.service != SecureServiceType::Data {
@@ -610,7 +607,12 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
         access.source_addr = src;
         SalResult::Decrypted(RequestContext {
             access,
-            reply: Some(ReplySecurity { security, tool_access: scf.tool_access, key: ReplyKey::Live }),
+            reply: Some(ReplySecurity {
+                security,
+                tool_access: scf.tool_access,
+                system_broadcast: scf.system_broadcast,
+                key: ReplyKey::Live,
+            }),
         })
     }
 
@@ -643,7 +645,7 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
         };
         let scf_byte = SecurityControlField {
             service: SecureServiceType::Data,
-            system_broadcast: false,
+            system_broadcast: reply.system_broadcast,
             confidentiality: reply.security == SecurityMode::AuthConf,
             tool_access: reply.tool_access,
         }
@@ -766,6 +768,17 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
     }
 
     fn property_write(state: &mut Self::State, prop_id: u16, count: u8, start: u16, data: &[u8]) -> PropertyReturnCode {
+        // PDT_CONTROL is reachable through both the legacy data-property
+        // path and the preferred extended function-property path. Keep the
+        // transition and its unload side effects in one place so the two
+        // services cannot publish different Security IO states.
+        if prop_id == pid::LOAD_STATE_CONTROL {
+            if start != 1 {
+                return PropertyReturnCode::AddressVoid;
+            }
+            return Self::write_load_control(state, data);
+        }
+
         let sec = &state.security;
         match prop_id {
             pid::security::GROUP_KEY_TABLE => {
@@ -860,34 +873,6 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
                     PropertyReturnCode::MemoryError
                 }
             }
-            // PID_LOAD_STATE_CONTROL carries a load *event*, never a
-            // state. Writing a state directly would let a client declare
-            // the object `Loaded` without loading anything, and the
-            // security tables are evaluated only in `Loaded` (03/05/01
-            // §6.3.6-8) — that would be a way to arm them empty.
-            pid::LOAD_STATE_CONTROL => {
-                let Some(&event) = data.first() else {
-                    return PropertyReturnCode::DataTypeConflict;
-                };
-                let (next, action) = load_control_transition(sec.load_state(), event.into());
-                if action == LoadAction::Unload {
-                    // Unloading empties the tables the S-AL would otherwise
-                    // evaluate. Clear the durable SIAT first so a storage
-                    // failure cannot publish an Unloaded state while leaving
-                    // a live replay window behind. It deliberately does *not*
-                    // touch the tool key: a device whose Security IO has just
-                    // been unloaded must stay reachable by the tool that
-                    // unloaded it, and §6.1.4 gives the tool key its own reset
-                    // path through the erase codes.
-                    if state.seq.siat_clear().is_err() {
-                        return PropertyReturnCode::MemoryError;
-                    }
-                    sec.grp_keys().borrow_mut().clear();
-                    sec.go_flags().borrow_mut().clear();
-                }
-                sec.set_load_state(next);
-                PropertyReturnCode::Success
-            }
             _ => PropertyReturnCode::AddressVoid,
         }
     }
@@ -908,10 +893,14 @@ fn adapt_answer<const N: usize>(answer: FunctionPropertyAnswer) -> FunctionResul
 
 impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> DataSecure<S, GRP, GO> {
     pub(crate) fn handle_function_command<const N: usize>(
-        state: &DataSecureState<S, GRP, GO>,
+        state: &mut DataSecureState<S, GRP, GO>,
         prop_id: u16,
         data: &[u8],
     ) -> Option<FunctionResult<N>> {
+        if prop_id == pid::LOAD_STATE_CONTROL {
+            let code = Self::write_load_control(state, data);
+            return Some(Self::load_state_result(code, state.security.load_state()));
+        }
         state.security.function_command(prop_id, data).map(adapt_answer)
     }
 
@@ -920,6 +909,44 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Dat
         prop_id: u16,
         data: &[u8],
     ) -> Option<FunctionResult<N>> {
+        if prop_id == pid::LOAD_STATE_CONTROL {
+            return Some(Self::load_state_result(PropertyReturnCode::Success, state.security.load_state()));
+        }
         state.security.function_state_read(prop_id, data).map(adapt_answer)
+    }
+
+    /// Apply one Security IO load-control record.
+    ///
+    /// The record's first octet is the load event; its remaining nine octets
+    /// are event-specific information (03/05/01 §4.2.5). This Security IO
+    /// uses no allocation records, so only the event is consumed.
+    fn write_load_control(state: &mut DataSecureState<S, GRP, GO>, data: &[u8]) -> PropertyReturnCode {
+        let Some(&event) = data.first() else {
+            return PropertyReturnCode::DataTypeConflict;
+        };
+        let sec = &state.security;
+        let (next, action) = load_control_transition(sec.load_state(), event.into());
+        if action == LoadAction::Unload {
+            // Unloading empties the tables the S-AL would otherwise
+            // evaluate. Clear the durable SIAT first so a storage failure
+            // cannot publish an Unloaded state while leaving a live replay
+            // window behind. It deliberately does *not* touch the tool key:
+            // the tool that unloaded the object must remain able to reach it.
+            if state.seq.siat_clear().is_err() {
+                return PropertyReturnCode::MemoryError;
+            }
+            sec.grp_keys().borrow_mut().clear();
+            sec.go_flags().borrow_mut().clear();
+        }
+        sec.set_load_state(next);
+        PropertyReturnCode::Success
+    }
+
+    /// PDT_CONTROL responses always carry the current one-octet state, even
+    /// when the requested transition failed (03/05/01 §4.2.5).
+    fn load_state_result<const N: usize>(code: PropertyReturnCode, state: LoadState) -> FunctionResult<N> {
+        let mut data = Vec::new();
+        data.push(state.into()).expect("a function response fits one load-state octet");
+        FunctionResult { code, data }
     }
 }

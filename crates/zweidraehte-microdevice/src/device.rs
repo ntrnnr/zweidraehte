@@ -20,6 +20,13 @@ use core::marker::PhantomData;
 use zweidraehte_proto::access::AccessContext;
 use zweidraehte_proto::address::IndividualAddress;
 use zweidraehte_proto::memory::memory_regions_valid;
+use zweidraehte_proto::messages::apdu::device::{
+    IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite,
+};
+use zweidraehte_proto::messages::apdu::system_network_parameter::{
+    SystemNetworkParameterRead, SystemNetworkParameterResponse,
+};
+use zweidraehte_proto::pid;
 use zweidraehte_proto::transport::TlEvent;
 
 use crate::co_flags;
@@ -294,7 +301,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             Some(Tpci::Ack(seq)) => TlEvent::ReceivedAck { source, seq_no: seq },
             Some(Tpci::Nack(seq)) => TlEvent::ReceivedNack { source, seq_no: seq },
             Some(Tpci::DataIndividual) => {
-                if F::CONNECTIONLESS_MANAGEMENT {
+                if F::CONNECTIONLESS_PROPERTIES || F::CONNECTIONLESS_DEVICE_DESCRIPTOR {
                     self.dispatch_plain_connectionless(view, source, out);
                 }
                 return;
@@ -329,10 +336,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             Some(Tpci::DataConnected(seq)) => TlEvent::ReceivedData { source, seq_no: seq },
             Some(Tpci::Ack(seq)) => TlEvent::ReceivedAck { source, seq_no: seq },
             Some(Tpci::Nack(seq)) => TlEvent::ReceivedNack { source, seq_no: seq },
-            // Connectionless data to our individual address: a BCU2
-            // serves its management exclusively connection-oriented;
-            // System 7 answers device-oriented connectionless services
-            // (03/03/07 §3.1) with a connectionless reply.
+            // Connectionless secure requests enter the S-AL directly here;
+            // connection-oriented sync uses the numbered path above. After
+            // the S-AL admits ordinary data, the service filter applies the
+            // base profile's more precise connectionless obligations.
             Some(Tpci::DataIndividual) => {
                 self.dispatch_connectionless_frame(frame, source, now_ms, out);
                 return;
@@ -458,6 +465,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     ) {
         let Some(apci10) = view.apci() else { return };
         let (code, small6) = Self::split_apci(apci10);
+        if !Self::connectionless_service_supported(code) {
+            return;
+        }
         let access = AccessContext::new(self.mgmt.default_access_level::<F>());
         let mut reply_context = SEC::plain_reply_context();
         match self.handle_service(code, small6, view.payload(), view.frame, access, false, &mut reply_context) {
@@ -492,6 +502,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         now_ms: u32,
         group_key_index: Option<u16>,
         plain_access: AccessContext,
+        response_tpci: u8,
+        reply_destination: Option<IndividualAddress>,
         out: &mut PollOutput<FRAME_CAP>,
     ) -> Option<RequestContext<SEC::ReplyContext>> {
         if !SEC::ENABLED {
@@ -513,6 +525,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             self.identity.serial_number,
             self.tl.time_divisor(),
             group_key_index,
+            response_tpci,
         ) {
             crate::security::SalResult::Passthrough => {
                 frame.truncate(original_len);
@@ -532,7 +545,19 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             }
             crate::security::SalResult::Response { len } => {
                 frame.truncate(len);
-                out.push(frame.clone());
+                if let Some(dest) = reply_destination {
+                    // Let the TL own the connected response exactly like an
+                    // ordinary management reply: this advances its outgoing
+                    // sequence, starts TACK, and retains the encrypted frame
+                    // byte-for-byte for retransmission.
+                    if let Some(seq) = self.tl.begin_send(dest, now_ms) {
+                        debug_assert_eq!(frame[6] & 0xFC, Tpci::DataConnected(seq).octet());
+                        self.tl.store_pending(frame.clone());
+                        out.push(frame.clone());
+                    }
+                } else {
+                    out.push(frame.clone());
+                }
                 None
             }
         }
@@ -557,7 +582,18 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         out: &mut PollOutput<FRAME_CAP>,
     ) {
         let plain_access = AccessContext::new(self.mgmt.auth_level);
-        let Some(mut request) = self.admit_incoming(frame, now_ms, None, plain_access, out) else { return };
+        // S-A_Sync_Res uses the request's communication mode (03/03/07
+        // §5.3.2), but a connected response carries the device's next TL
+        // sequence. CCM needs that TPCI before the TL sees the response.
+        if !self.tl.can_send() {
+            return;
+        }
+        let response_tpci = Tpci::DataConnected(self.tl.send_seq()).octet();
+        let Some(mut request) =
+            self.admit_incoming(frame, now_ms, None, plain_access, response_tpci, Some(source), out)
+        else {
+            return;
+        };
         let Some(view) = FrameView::parse(frame) else { return };
         let Some(apci10) = view.apci() else { return };
         let (code, small6) = Self::split_apci(apci10);
@@ -601,13 +637,17 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         out: &mut PollOutput<FRAME_CAP>,
     ) {
         let plain_access = AccessContext::new(self.mgmt.default_access_level::<F>());
-        let Some(mut request) = self.admit_incoming(frame, now_ms, None, plain_access, out) else { return };
-        if request.access.security == zweidraehte_proto::access::SecurityMode::Plain && !F::CONNECTIONLESS_MANAGEMENT {
+        let Some(mut request) =
+            self.admit_incoming(frame, now_ms, None, plain_access, Tpci::DataIndividual.octet(), None, out)
+        else {
             return;
-        }
+        };
         let Some(view) = FrameView::parse(frame) else { return };
         let Some(apci10) = view.apci() else { return };
         let (code, small6) = Self::split_apci(apci10);
+        if !Self::connectionless_service_supported(code) {
+            return;
+        }
         // Connectionless plaintext requests are not part of the active
         // transport connection. `plain_access` above gives them the profile's
         // default-key level, never a connected client's authorization.
@@ -635,6 +675,40 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.apply_factory_reset(wipe_ia);
             }
             out.restart = Some(restart.erase_code);
+        }
+    }
+
+    /// Whether one management service is defined on point-to-point
+    /// connectionless transport for this composition.
+    ///
+    /// BCU2 Property procedures are connectionless-capable, but its classic
+    /// direct-memory procedure is explicitly `RCo`. A composed Data Secure
+    /// module additionally accepts connectionless DD0: this is an optional
+    /// base-profile extension used by ETS's secure bootstrap and observed on
+    /// the reference MV-0021 device, not a semantic of mask 0021h itself.
+    fn connectionless_service_supported(code: ApciCode) -> bool {
+        match code {
+            ApciCode::DeviceDescriptorRead => F::CONNECTIONLESS_DEVICE_DESCRIPTOR || SEC::ENABLED,
+            ApciCode::PropertyValueRead | ApciCode::PropertyValueWrite | ApciCode::PropertyDescriptionRead => {
+                F::CONNECTIONLESS_PROPERTIES
+            }
+            // Extended management comes with an extended plaintext frame
+            // budget. The secure BCU2 composition has that budget, while a
+            // standard-frame BCU2 image folds these branches away; the gate
+            // also preserves the plain extended System 7 test profile.
+            ApciCode::PropertyExtValueRead
+            | ApciCode::PropertyExtValueWriteCon
+            | ApciCode::PropertyExtValueWriteUnCon
+            | ApciCode::PropertyExtDescriptionRead
+            | ApciCode::MemoryExtendedRead
+            | ApciCode::MemoryExtendedWrite
+            | ApciCode::FunctionPropertyExtCommand
+            | ApciCode::FunctionPropertyExtStateRead => frame::is_extended(Self::plaintext_frame_capacity()),
+            // The base profiles make connectionless restart optional. The
+            // micro stack only pays for it where a secure composition needs
+            // Master Reset over the same unnumbered management channel.
+            ApciCode::Restart => SEC::ENABLED,
+            _ => false,
         }
     }
 
@@ -678,38 +752,162 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         out: &mut PollOutput<FRAME_CAP>,
     ) {
         let own = self.individual_address();
-        let outputs = self.tl.process(TlEvent::RequestData { dest }, now_ms);
-        for output in outputs {
-            if let TlOutput::SendData { dest, seq } = output {
-                let mut frame: FrameBuf<FRAME_CAP> = frame::data_frame(
-                    priority_bits,
-                    own,
-                    dest.0,
-                    false,
-                    Tpci::DataConnected(seq),
-                    apci,
-                    small6,
-                    payload,
-                );
-                // The TL sequence number is part of the inner TPCI and is
-                // therefore added before the secure module protects it.
-                // `NoSecurity` receives `()` and this call inlines to nothing.
-                if !SEC::protect_reply(&mut self.sec, reply_context, &mut frame) {
-                    return;
-                }
-                self.tl.store_pending(frame.clone());
-                out.push(frame);
-            }
+        if !self.tl.can_send() {
+            return;
         }
+        let seq = self.tl.send_seq();
+        let mut frame: FrameBuf<FRAME_CAP> =
+            frame::data_frame(priority_bits, own, dest.0, false, Tpci::DataConnected(seq), apci, small6, payload);
+        // The TL sequence number is part of the inner TPCI and is therefore
+        // added before the secure module protects it. Build the complete
+        // frame before moving the TL to OPEN_WAIT, so a failed secure wrap
+        // leaves the connection able to serve the next request.
+        if !SEC::protect_reply(&mut self.sec, reply_context, &mut frame) {
+            return;
+        }
+        let Some(actual_seq) = self.tl.begin_send(dest, now_ms) else {
+            return;
+        };
+        debug_assert_eq!(actual_seq, seq);
+        self.tl.store_pending(frame.clone());
+        out.push(frame);
     }
 
     // ── Broadcast services (programming mode) ───────────────────────
+
+    /// Serve the serial-number addressing pair shared by the plain and
+    /// secure broadcast paths. The secure caller supplies the request's
+    /// reply context, so the response is protected exactly like the request;
+    /// `NoSecurity` folds that step away in a plain BCU2 image.
+    fn handle_serial_number_broadcast(
+        &mut self,
+        view: FrameView<'_>,
+        access: AccessContext,
+        reply_context: SEC::ReplyContext,
+        out: &mut PollOutput<FRAME_CAP>,
+    ) -> bool {
+        if !F::SERIAL_NUMBER_ADDRESSING {
+            return false;
+        }
+
+        let Some(apci10) = view.apci() else { return false };
+        match ApciCode::from_wire10(apci10) {
+            ApciCode::IndividualAddressSerialNumberRead => {
+                let Some(serial) = IndividualAddressSerialNumberRead::serial_number(view.frame) else {
+                    return true;
+                };
+                if serial != self.identity.serial_number {
+                    return true;
+                }
+
+                // The response carries the six-octet serial followed by four
+                // reserved/domain-address octets. The source IA is the value
+                // the requester is trying to verify.
+                let mut response: FrameBuf<FRAME_CAP> = frame::data_frame(
+                    view.priority_bits(),
+                    self.individual_address(),
+                    [0, 0],
+                    true,
+                    Tpci::DataBroadcast,
+                    ApciCode::IndividualAddressSerialNumberResponse,
+                    0,
+                    &[0; 10],
+                );
+                IndividualAddressSerialNumberResponse::write_serial(
+                    response.as_mut_slice(),
+                    &self.identity.serial_number,
+                );
+                if SEC::protect_reply(&mut self.sec, reply_context, &mut response) {
+                    out.push(response);
+                }
+                true
+            }
+            ApciCode::IndividualAddressSerialNumberWrite => {
+                if !zweidraehte_proto::access::AccessPolicy::OPEN_OFF_TOOL_ON
+                    .can_write(&access, SEC::security_mode_enabled(&self.sec))
+                {
+                    return true;
+                }
+                let Some(serial) = IndividualAddressSerialNumberWrite::serial_number(view.frame) else {
+                    return true;
+                };
+                let Some(address) = IndividualAddressSerialNumberWrite::address_bytes(view.frame) else {
+                    return true;
+                };
+                if serial == self.identity.serial_number {
+                    let base = F::ia_eeprom_offset();
+                    self.eeprom.as_mut()[base..base + 2].copy_from_slice(address);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Answer ETS's programming-mode serial-number scan.
+    ///
+    /// Secure commissioning uses the system-broadcast procedure from
+    /// 03/05/02 §2.20.1.3 rather than the legacy
+    /// `A_IndividualAddress_Read`: Device Object, PID_SERIAL_NUMBER and
+    /// operand 01h. Keep it behind the secure composition constant so a
+    /// plain BCU2 image does not carry the additional APCI and codec path.
+    fn handle_programming_mode_serial_scan(
+        &mut self,
+        view: FrameView<'_>,
+        reply_context: SEC::ReplyContext,
+        out: &mut PollOutput<FRAME_CAP>,
+    ) -> bool {
+        if !SEC::ENABLED || view.apci() != Some(ApciCode::SystemNetworkParameterRead.wire10_base()) {
+            return false;
+        }
+
+        let Some(request) = SystemNetworkParameterRead::parse(view.frame) else {
+            return true;
+        };
+        if request.object_type != 0
+            || request.pid != pid::SERIAL_NUMBER
+            || request.operand != 0x01
+            || !self.is_programming_mode()
+        {
+            return true;
+        }
+
+        // object_type(2) + PID/reserved(2) + operand(1) + serial(6).
+        let mut response: FrameBuf<FRAME_CAP> = frame::data_frame(
+            view.priority_bits(),
+            self.individual_address(),
+            [0, 0],
+            true,
+            Tpci::DataSystemBroadcast,
+            ApciCode::SystemNetworkParameterResponse,
+            0,
+            &[0; 11],
+        );
+        SystemNetworkParameterResponse::write(
+            response.as_mut_slice(),
+            0,
+            pid::SERIAL_NUMBER,
+            0x01,
+            &self.identity.serial_number,
+        );
+        if SEC::protect_reply(&mut self.sec, reply_context, &mut response) {
+            out.push(response);
+        }
+        true
+    }
 
     fn handle_plain_broadcast(&mut self, view: FrameView<'_>, out: &mut PollOutput<FRAME_CAP>) {
         if view.tpci() != Some(Tpci::DataBroadcast) {
             return;
         }
         let Some(apci10) = view.apci() else { return };
+        let access = AccessContext::new(self.mgmt.default_access_level::<F>());
+        if self.handle_serial_number_broadcast(view, access, SEC::plain_reply_context(), out) {
+            return;
+        }
+        if self.handle_programming_mode_serial_scan(view, SEC::plain_reply_context(), out) {
+            return;
+        }
         match ApciCode::from_wire10(apci10) {
             ApciCode::IndividualAddressWrite => {
                 let payload = view.payload();
@@ -737,24 +935,23 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     fn dispatch_broadcast(&mut self, frame: &mut FrameBuf<FRAME_CAP>, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
         let plain_access = AccessContext::new(self.mgmt.default_access_level::<F>());
-        let Some(request) = self.admit_incoming(frame, now_ms, None, plain_access, out) else { return };
+        let Some(request) =
+            self.admit_incoming(frame, now_ms, None, plain_access, Tpci::DataBroadcast.octet(), None, out)
+        else {
+            return;
+        };
         let Some(view) = FrameView::parse(frame) else { return };
         if view.tpci() != Some(Tpci::DataBroadcast) {
             return;
         }
         let Some(apci10) = view.apci() else { return };
+        if self.handle_serial_number_broadcast(view, request.access, request.reply, out) {
+            return;
+        }
+        if self.handle_programming_mode_serial_scan(view, request.reply, out) {
+            return;
+        }
         match ApciCode::from_wire10(apci10) {
-            ApciCode::IndividualAddressSerialNumberWrite => {
-                let payload = view.payload();
-                if zweidraehte_proto::access::AccessPolicy::OPEN_OFF_TOOL_ON
-                    .can_write(&request.access, SEC::security_mode_enabled(&self.sec))
-                    && payload.len() == 8
-                    && payload[..6] == self.identity.serial_number
-                {
-                    let base = F::ia_eeprom_offset();
-                    self.eeprom.as_mut()[base..base + 2].copy_from_slice(&payload[6..]);
-                }
-            }
             ApciCode::IndividualAddressWrite => {
                 if request.access.security != zweidraehte_proto::access::SecurityMode::Plain {
                     return;
@@ -789,7 +986,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let Some(outer) = FrameView::parse(frame) else { return };
         let Some(tsap) = self.tables().tsap_of(outer.dest_group()) else { return };
         let plain_access = AccessContext::new(self.mgmt.default_access_level::<F>());
-        let Some(request) = self.admit_incoming(frame, now_ms, Some(u16::from(tsap)), plain_access, out) else {
+        let Some(request) =
+            self.admit_incoming(frame, now_ms, Some(u16::from(tsap)), plain_access, Tpci::DataGroup.octet(), None, out)
+        else {
             return;
         };
         let Some(view) = FrameView::parse(frame) else { return };

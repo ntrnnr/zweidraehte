@@ -191,7 +191,13 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     };
     const TL_STYLE: TlStyle = TlStyle::Style1;
     const AUTH_LEVELS: usize = 4;
-    const CONNECTIONLESS_MANAGEMENT: bool = false;
+    // Property procedures may use either point-to-point mode on every BCU2
+    // (03/05/02 §§3.25--3.28). Device Descriptor and direct memory access
+    // remain connection-oriented in the base profile (06 Profiles §§4.2.1,
+    // 4.3); Data Secure adds only the narrow DD bootstrap handled by the
+    // module-aware dispatcher.
+    const CONNECTIONLESS_PROPERTIES: bool = true;
+    const SERIAL_NUMBER_ADDRESSING: bool = true;
 
     const EEPROM_BASE: u16 = 0x0100;
     const EEPROM_SIZE: usize = BCU2_EEPROM_SIZE;

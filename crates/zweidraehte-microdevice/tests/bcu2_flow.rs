@@ -197,6 +197,51 @@ fn individual_address_write_needs_programming_mode() {
 }
 
 #[test]
+fn serial_number_address_write_is_verified_by_read() {
+    let mut dev = device();
+    let serial = [0, 0x83, 0, 0, 0, 1];
+    let new_ia = IndividualAddress::new(15, 15, 255);
+
+    // ETS includes the four reserved octets after the serial and IA. A
+    // shortened test telegram would miss the actual Falcon wire shape.
+    let mut write_payload = serial.to_vec();
+    write_payload.extend_from_slice(new_ia.as_bytes());
+    write_payload.extend_from_slice(&[0; 4]);
+    let write = data_frame::<MAX_FRAME>(
+        0,
+        CLIENT,
+        [0, 0],
+        true,
+        Tpci::DataBroadcast,
+        ApciCode::IndividualAddressSerialNumberWrite,
+        0,
+        &write_payload,
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
+    assert!(out.frames.is_empty(), "the write has no application response");
+    assert_eq!(dev.individual_address(), new_ia);
+
+    let read = data_frame::<MAX_FRAME>(
+        0,
+        CLIENT,
+        [0, 0],
+        true,
+        Tpci::DataBroadcast,
+        ApciCode::IndividualAddressSerialNumberRead,
+        0,
+        &serial,
+    );
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&read)), 1);
+    let response = canonical(&out.frames[0]);
+    let response = FrameView::parse(&response).expect("serial response");
+    assert_eq!(response.source, new_ia);
+    assert_eq!(response.dest_raw, [0, 0]);
+    assert_eq!(response.apci(), Some(ApciCode::IndividualAddressSerialNumberResponse.wire10_base()));
+    assert_eq!(&response.payload()[..6], &serial);
+    assert_eq!(&response.payload()[6..], &[0; 4]);
+}
+
+#[test]
 fn group_write_updates_the_object_and_read_answers() {
     let mut dev = device();
 
@@ -400,12 +445,17 @@ fn ext_payload(object_type: u16, instance: u16, pid: u16, count: u8, start: u16,
     p
 }
 
-/// BCU2 serves its management connection-oriented only
-/// (`CONNECTIONLESS_MANAGEMENT = false`), so every exchange here opens a
-/// transport connection first and sends numbered data. That the *secure*
-/// profile must additionally serve connectionless and broadcast traffic —
-/// ETS commissions over `Sec_req -> Broadcast` — is a separate obligation,
-/// and one the security module brings with it rather than the base family.
+fn function_ext_payload(object_type: u16, instance: u16, pid: u16, data: &[u8]) -> Vec<u8> {
+    let ot = object_type.to_be_bytes();
+    let mut p = vec![ot[0], ot[1], (instance >> 4) as u8, (((instance & 0x0F) << 4) | (pid >> 8)) as u8, pid as u8];
+    p.extend_from_slice(data);
+    p
+}
+
+/// Most BCU2 management exchanges remain connection-oriented. Property
+/// procedures may also be connectionless, and the secure composition adds
+/// the DD0 bootstrap observed in ETS; these helpers exercise the numbered
+/// path independently.
 fn tl_connect(dev: &mut SecureBcu2) {
     let connect =
         [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Connect.octet()];
@@ -635,6 +685,19 @@ fn data_secure_device() -> SecureDev {
     dev
 }
 
+fn plain_connectionless(
+    dev: &mut SecureDev,
+    apci: ApciCode,
+    small6: u8,
+    payload: &[u8],
+    now: u32,
+) -> FrameBuf<EXTENDED_FRAME> {
+    let request = data_frame::<EXTENDED_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, apci, small6, payload);
+    let output = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&request)), now);
+    assert_eq!(output.frames.len(), 1, "connectionless request gets one reply");
+    normalize::<EXTENDED_FRAME>(&output.frames[0]).expect("well-formed connectionless reply")
+}
+
 fn sec_exchange(dev: &mut SecureDev, apci: ApciCode, payload: &[u8], seq: u8, now: u32) -> Vec<u8> {
     let request_key = dev.security_state().security.tool_key();
     let security_seq = zweidraehte_proto::security::u64_to_seq6(u64::from(now.max(1)));
@@ -666,6 +729,77 @@ fn plain_sec_exchange(dev: &mut SecureDev, apci: ApciCode, payload: &[u8], seq: 
         [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Ack(rsp_seq).octet()];
     assert!(dev.poll(PollInput::Frame(&ack), now + 1).frames.is_empty());
     reply
+}
+
+#[test]
+fn mv0021_bootstrap_selects_plain_or_secure_management() {
+    const {
+        assert!(Bcu2Family::<0x0020>::CONNECTIONLESS_PROPERTIES);
+        assert!(Bcu2Family::<0x0021>::CONNECTIONLESS_PROPERTIES);
+        assert!(!Bcu2Family::<0x0020>::CONNECTIONLESS_DEVICE_DESCRIPTOR);
+        assert!(!Bcu2Family::<0x0021>::CONNECTIONLESS_DEVICE_DESCRIPTOR);
+    }
+
+    let mut dev = data_secure_device();
+
+    // The secure composition implements the optional connectionless DD0
+    // extension ETS uses. PID 56 is a normal Property procedure and is
+    // connectionless-capable on every BCU2 mask.
+    let reply = plain_connectionless(&mut dev, ApciCode::DeviceDescriptorRead, 0, &[], 1);
+    let view = FrameView::parse(&reply).expect("DD0 response parses");
+    assert_eq!(view.tpci(), Some(Tpci::DataIndividual));
+    assert_eq!(view.payload(), &[0x00, 0x21]);
+
+    let reply = plain_connectionless(&mut dev, ApciCode::PropertyValueRead, 0, &[0, 56, 0x10, 0x01], 2);
+    let view = FrameView::parse(&reply).expect("PID_MAX_APDULENGTH response parses");
+    assert_eq!(view.payload(), &[0, 56, 0x10, 0x01, 0x00, 0x28]);
+
+    let memory =
+        data_frame::<EXTENDED_FRAME>(0x00, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::MemoryRead, 1, &[
+            0x01, 0x15,
+        ]);
+    assert!(
+        dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&memory)), 3).frames.is_empty(),
+        "classic direct memory access is connection-oriented"
+    );
+
+    // Once Security Mode is on, FFFFh tells ETS to synchronize and retry
+    // under the Tool Key. The APDU-length bootstrap remains public.
+    dev.security_state().security.set_security_mode_enabled(true);
+    let reply = plain_connectionless(&mut dev, ApciCode::DeviceDescriptorRead, 0, &[], 4);
+    assert_eq!(FrameView::parse(&reply).expect("masked DD0 parses").payload(), &[0xFF, 0xFF]);
+
+    let reply = plain_connectionless(&mut dev, ApciCode::PropertyValueRead, 0, &[0, 56, 0x10, 0x01], 5);
+    assert_eq!(FrameView::parse(&reply).expect("public PID_MAX_APDULENGTH parses").payload(), &[
+        0, 56, 0x10, 0x01, 0x00, 0x28
+    ]);
+
+    let output = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&memory)), 6);
+    assert!(output.frames.is_empty(), "connectionless classic memory remains unavailable");
+
+    // 03/04/01 §6.2.6.3.5 assigns DD0 access policy 3FF/0CC: while
+    // Security Mode is on, authentication without confidentiality is denied
+    // just like plain access and therefore also returns FFFFh (TSSJ 3.7.2.6).
+    let request = secure_connectionless_tool_frame_with_confidentiality(
+        ApciCode::DeviceDescriptorRead,
+        0,
+        &[],
+        &FDSK,
+        &[0, 0, 0, 0, 0, 7],
+        false,
+    );
+    let output = dev.poll(PollInput::Frame(&request), 7);
+    assert_eq!(output.frames.len(), 1, "auth-only connectionless DD0 gets one response");
+    let response = unwrap_secure_response(&output.frames[0], &FDSK);
+    assert_eq!(FrameView::parse(&response).expect("auth-only DD0 response parses").payload(), &[0xFF, 0xFF]);
+
+    let request = secure_connectionless_tool_frame(ApciCode::DeviceDescriptorRead, 0, &[], &FDSK, &[0, 0, 0, 0, 0, 8]);
+    let output = dev.poll(PollInput::Frame(&request), 8);
+    assert_eq!(output.frames.len(), 1, "secure connectionless DD0 gets one response");
+    let response = unwrap_secure_response(&output.frames[0], &FDSK);
+    let view = FrameView::parse(&response).expect("secure DD0 response parses");
+    assert_eq!(view.tpci(), Some(Tpci::DataIndividual));
+    assert_eq!(view.payload(), &[0x00, 0x21], "secure management sees the real mask");
 }
 
 fn sec_connect(dev: &mut SecureDev) {
@@ -923,14 +1057,19 @@ fn the_load_machine_cycles_and_unload_empties_the_tables() {
         sec_exchange(&mut dev, ApciCode::PropertyExtValueRead, &ext_payload(SECURITY_IO, 1, 5, 1, 1, &[]), 4, 50);
     assert_eq!(reply[8], u8::from(LoadState::Loaded), "loaded");
 
-    // Unload empties the tables …
-    sec_exchange(
+    // ETS uses the mandatory extended-function path for PDT_CONTROL. Its
+    // ten-octet write must answer with both E_SUCCESS and the resulting
+    // one-octet state; omitting that state makes Falcon reject the APDU.
+    let reply = sec_exchange(
         &mut dev,
-        ApciCode::PropertyExtValueWriteCon,
-        &ext_payload(SECURITY_IO, 1, 5, 1, 1, &[LoadEvent::Unload.into()]),
+        ApciCode::FunctionPropertyExtCommand,
+        &function_ext_payload(SECURITY_IO, 1, 5, &LoadControlRecord::event(LoadEvent::Unload)),
         5,
         60,
     );
+    assert_eq!(&reply[5..], &[0x00, u8::from(LoadState::Unloaded)]);
+
+    // Unload empties the tables …
     let reply =
         sec_exchange(&mut dev, ApciCode::PropertyExtValueRead, &ext_payload(SECURITY_IO, 1, 53, 1, 0, &[]), 6, 70);
     assert_eq!(&reply[8..], &[0x00, 0x00], "the group keys are gone");
@@ -942,6 +1081,41 @@ fn the_load_machine_cycles_and_unload_empties_the_tables() {
     let reply =
         sec_exchange(&mut dev, ApciCode::PropertyExtValueWriteCon, &ext_payload(SECURITY_IO, 1, 56, 1, 1, &key), 7, 80);
     assert_eq!(reply[8], 0x00, "the tool key is still writable after an unload");
+}
+
+#[test]
+fn siat_rows_extend_the_table_after_ets_clears_its_count() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    // ETS replaces an array by clearing element zero and then streaming the
+    // new rows. The first entry write therefore has to grow a zero-length
+    // SIAT; it is not an overwrite of an already allocated element.
+    let reply = sec_exchange(
+        &mut dev,
+        ApciCode::PropertyExtValueWriteCon,
+        &ext_payload(SECURITY_IO, 1, 54, 1, 0, &[0, 0]),
+        0,
+        10,
+    );
+    assert_eq!(reply[8], 0x00, "count-zero clear succeeds");
+
+    let rows = [
+        0x00, 0x02, 0, 0, 0, 0, 0, 0, // 0.0.2, initial sequence zero
+        0x10, 0x32, 0, 0, 0, 0, 0, 9, // 1.0.50
+    ];
+    let reply = sec_exchange(
+        &mut dev,
+        ApciCode::PropertyExtValueWriteCon,
+        &ext_payload(SECURITY_IO, 1, 54, 2, 1, &rows),
+        1,
+        20,
+    );
+
+    assert_eq!(reply[8], 0x00, "the first replacement chunk succeeds");
+    assert_eq!(dev.security_state().seq.siat_count(), 2);
+    assert_eq!(dev.security_state().seq.siat_read_entry(0), Some((0x0002, [0; 6])));
+    assert_eq!(dev.security_state().seq.siat_read_entry(1), Some((0x1032, [0, 0, 0, 0, 0, 9])));
 }
 
 #[test]
@@ -1129,6 +1303,27 @@ fn secure_tool_frame(
     secure_individual_frame(apci, small6, payload, key, seq_nr, tl_seq, true)
 }
 
+fn secure_connectionless_tool_frame(
+    apci: ApciCode,
+    small6: u8,
+    payload: &[u8],
+    key: &[u8; 16],
+    seq_nr: &[u8; 6],
+) -> Vec<u8> {
+    secure_connectionless_tool_frame_with_confidentiality(apci, small6, payload, key, seq_nr, true)
+}
+
+fn secure_connectionless_tool_frame_with_confidentiality(
+    apci: ApciCode,
+    small6: u8,
+    payload: &[u8],
+    key: &[u8; 16],
+    seq_nr: &[u8; 6],
+    confidentiality: bool,
+) -> Vec<u8> {
+    secure_individual_frame_with_tpci(apci, small6, payload, key, seq_nr, Tpci::DataIndividual, true, confidentiality)
+}
+
 fn secure_individual_frame(
     apci: ApciCode,
     small6: u8,
@@ -1138,10 +1333,34 @@ fn secure_individual_frame(
     tl_seq: u8,
     tool_access: bool,
 ) -> Vec<u8> {
-    let plain: FrameBuf<EXTENDED_FRAME> =
-        data_frame(0x00, CLIENT, DUT.0, false, Tpci::DataConnected(tl_seq), apci, small6, payload);
+    secure_individual_frame_with_tpci(
+        apci,
+        small6,
+        payload,
+        key,
+        seq_nr,
+        Tpci::DataConnected(tl_seq),
+        tool_access,
+        true,
+    )
+}
+
+// Each field independently changes the S-A_Data wire image; bundling them
+// would make this test builder harder to compare with the specification.
+#[allow(clippy::too_many_arguments)]
+fn secure_individual_frame_with_tpci(
+    apci: ApciCode,
+    small6: u8,
+    payload: &[u8],
+    key: &[u8; 16],
+    seq_nr: &[u8; 6],
+    tpci: Tpci,
+    tool_access: bool,
+    confidentiality: bool,
+) -> Vec<u8> {
+    let plain: FrameBuf<EXTENDED_FRAME> = data_frame(0x00, CLIENT, DUT.0, false, tpci, apci, small6, payload);
     let plain_len = plain.len();
-    let scf_byte: u8 = if tool_access { 0x80 } else { 0x00 } | 0x10; // SAI=01(A+C), service=data
+    let scf_byte: u8 = (if tool_access { 0x80 } else { 0x00 }) | (if confidentiality { 0x10 } else { 0x00 }); // SAI=01, service=data
 
     let mut frame = Vec::from(plain.as_slice());
     frame.resize(plain_len + secure::OVERHEAD, 0);
@@ -1150,12 +1369,20 @@ fn secure_individual_frame(
     let src = u16::from_be_bytes(CLIENT.0);
     let ccm_ctx = secure::SecureApduRef::parse(&frame).expect("valid").ccm_context(src);
 
-    let mac = ccm::encrypt_and_mac(key, &ccm_ctx, scf_byte, &mut frame[layout.payload_start..layout.payload_end]);
+    let mac = if confidentiality {
+        ccm::encrypt_and_mac(key, &ccm_ctx, scf_byte, &mut frame[layout.payload_start..layout.payload_end])
+    } else {
+        ccm::compute_mac_auth_only(key, &ccm_ctx, scf_byte, &frame[layout.payload_start..layout.payload_end])
+    };
     frame[layout.mac_start..layout.mac_start + 4].copy_from_slice(&mac);
     to_wire::<EXTENDED_FRAME>(&frame).to_vec()
 }
 
 fn unwrap_secure_response(frame: &[u8], key: &[u8; 16]) -> FrameBuf<EXTENDED_FRAME> {
+    unwrap_secure_response_from(frame, key, DUT)
+}
+
+fn unwrap_secure_response_from(frame: &[u8], key: &[u8; 16], source: IndividualAddress) -> FrameBuf<EXTENDED_FRAME> {
     let mut canonical = normalize::<EXTENDED_FRAME>(frame).expect("well-formed secure response");
     let (scf_byte, scf, mac, context) = {
         let secure_ref = secure::SecureApduRef::parse(&canonical).expect("secure response");
@@ -1163,7 +1390,7 @@ fn unwrap_secure_response(frame: &[u8], key: &[u8; 16]) -> FrameBuf<EXTENDED_FRA
             secure_ref.scf_byte(),
             secure_ref.scf().expect("valid SCF"),
             secure_ref.mac(),
-            secure_ref.ccm_context(u16::from_be_bytes(DUT.0)),
+            secure_ref.ccm_context(u16::from_be_bytes(source.0)),
         )
     };
     let mut secure_mut = secure::SecureApduMut::parse(&mut canonical).expect("secure response");
@@ -1313,7 +1540,12 @@ fn spontaneous_non_tool_individual_protection_is_refused_without_side_effects() 
     let mut frame: FrameBuf<SECURE_EXTENDED_FRAME> =
         data_frame(0, DUT, CLIENT.0, false, Tpci::DataIndividual, ApciCode::PropertyExtValueResponse, 0, &[]);
     let plaintext = frame.clone();
-    let reply = Some(ReplySecurity { security: SecurityMode::AuthConf, tool_access: false, key: ReplyKey::Live });
+    let reply = Some(ReplySecurity {
+        security: SecurityMode::AuthConf,
+        tool_access: false,
+        system_broadcast: false,
+        key: ReplyKey::Live,
+    });
 
     assert!(!<DataSecure<RamSeqStore, 8, 4> as SecurityModule>::protect_reply(
         dev.security_state_mut(),
@@ -1322,6 +1554,47 @@ fn spontaneous_non_tool_individual_protection_is_refused_without_side_effects() 
     ));
     assert_eq!(frame, plaintext, "refusal leaves the caller's frame untouched");
     assert_eq!(dev.security_state().seq.load_sending_seq().expect("RAM store reads"), before_sequence);
+}
+
+/// System-broadcast is part of the secure communication mode, not merely
+/// the outer KNX destination. A response must retain the request's SBC bit or
+/// ETS authenticates it with a different CCM context and discards it.
+#[test]
+fn secure_reply_preserves_the_system_broadcast_mode() {
+    use zweidraehte_microdevice::DataSecure;
+    use zweidraehte_microdevice::sal::{ReplyKey, ReplySecurity};
+    use zweidraehte_proto::access::SecurityMode;
+
+    let mut dev = data_secure_device();
+    let mut frame: FrameBuf<SECURE_EXTENDED_FRAME> = data_frame(
+        0,
+        DUT,
+        [0, 0],
+        true,
+        Tpci::DataSystemBroadcast,
+        ApciCode::SystemNetworkParameterResponse,
+        0,
+        &[0; 11],
+    );
+    let reply = Some(ReplySecurity {
+        security: SecurityMode::AuthConf,
+        tool_access: true,
+        system_broadcast: true,
+        key: ReplyKey::Live,
+    });
+
+    assert!(<DataSecure<RamSeqStore, 8, 4> as SecurityModule>::protect_reply(
+        dev.security_state_mut(),
+        reply,
+        &mut frame,
+    ));
+    assert!(
+        secure::SecureApduRef::parse(&frame)
+            .expect("secure response parses")
+            .scf()
+            .expect("valid SCF")
+            .system_broadcast
+    );
 }
 
 /// The response to a secure request is itself encrypted, and a retransmit
@@ -1517,6 +1790,25 @@ fn receiving_sequence_persistence_precedes_property_side_effects() {
 }
 
 #[test]
+fn failed_response_protection_does_not_wedge_the_transport() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+    let payload = ext_payload(SECURITY_IO, 1, 1, 1, 1, &[]);
+
+    dev.security_state_mut().seq.fail_sending_load = true;
+    let first = secure_tool_frame(ApciCode::PropertyExtValueRead, 0, &payload, &FDSK, &[0, 0, 0, 0, 0, 1], 0);
+    let out = dev.poll(PollInput::Frame(&first), 10);
+    assert_eq!(out.frames.len(), 1, "the accepted request gets T_ACK, but no unprotected response");
+
+    dev.security_state_mut().seq.fail_sending_load = false;
+    let second = secure_tool_frame(ApciCode::PropertyExtValueRead, 0, &payload, &FDSK, &[0, 0, 0, 0, 0, 2], 1);
+    let out = dev.poll(PollInput::Frame(&second), 20);
+    assert_eq!(out.frames.len(), 2, "the failed wrap left the connection ready for the next request");
+    let response = unwrap_secure_response(&out.frames[1], &FDSK);
+    assert_eq!(FrameView::parse(&response).expect("response").tpci(), Some(Tpci::DataConnected(0)));
+}
+
+#[test]
 fn a_request_without_a_reply_cannot_secure_the_next_plain_response() {
     let mut dev = data_secure_device();
     sec_connect(&mut dev);
@@ -1568,14 +1860,28 @@ fn secure_broadcast_tool_frame(apci: ApciCode, payload: &[u8], key: &[u8; 16], s
 #[test]
 fn secure_broadcast_can_assign_the_matching_serial_number() {
     let mut dev = data_secure_device();
+    let serial = stub_identity().serial_number;
     let new_ia = IndividualAddress::new(2, 3, 4);
-    let mut payload = stub_identity().serial_number.to_vec();
+    let mut payload = serial.to_vec();
     payload.extend_from_slice(new_ia.as_bytes());
+    payload.extend_from_slice(&[0; 4]);
     let request =
         secure_broadcast_tool_frame(ApciCode::IndividualAddressSerialNumberWrite, &payload, &FDSK, &[0, 0, 0, 0, 0, 1]);
     let out = dev.poll(PollInput::Frame(&request), 10);
     assert!(out.frames.is_empty());
     assert_eq!(dev.individual_address(), new_ia);
+
+    let read =
+        secure_broadcast_tool_frame(ApciCode::IndividualAddressSerialNumberRead, &serial, &FDSK, &[0, 0, 0, 0, 0, 2]);
+    let out = dev.poll(PollInput::Frame(&read), 20);
+    assert_eq!(out.frames.len(), 1, "the secure read gets one secure broadcast response");
+    let response = unwrap_secure_response_from(&out.frames[0], &FDSK, new_ia);
+    let response = FrameView::parse(&response).expect("decrypted serial response");
+    assert_eq!(response.source, new_ia);
+    assert_eq!(response.dest_raw, [0, 0]);
+    assert_eq!(response.apci(), Some(ApciCode::IndividualAddressSerialNumberResponse.wire10_base()));
+    assert_eq!(&response.payload()[..6], &serial);
+    assert_eq!(&response.payload()[6..], &[0; 4]);
 }
 
 fn sync_request(serial_number: [u8; 6], sequence: [u8; 6], challenge: [u8; 6]) -> Vec<u8> {
@@ -1608,6 +1914,33 @@ fn sync_request_with_access(
         &context,
         scf,
         &serial_number,
+        &mut frame[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6],
+    );
+    frame[mac_offset..mac_offset + secure::MAC_LEN].copy_from_slice(&mac);
+    to_wire::<EXTENDED_FRAME>(&frame).to_vec()
+}
+
+fn connected_sync_request(sequence: [u8; 6], challenge: [u8; 6], tl_seq: u8) -> Vec<u8> {
+    let scf = 0x92; // Tool + A+C, S-A_Sync_Req without SBC.
+    let mut frame = [0u8; secure::sync::FRAME_LEN];
+    let mac_offset = secure::build_sync_request(
+        &mut frame,
+        TP1_STD_CTRL_BASE,
+        u16::from_be_bytes(CLIENT.0),
+        u16::from_be_bytes(DUT.0),
+        NPCI_HOP_COUNT_6,
+        Tpci::DataConnected(tl_seq).octet(),
+        scf,
+        &sequence,
+        &[0; 6],
+        &challenge,
+    );
+    let context = secure::SyncReqRef::parse(&frame).expect("sync request").ccm_context();
+    let mac = ccm::encrypt_and_mac_sync_req(
+        &FDSK,
+        &context,
+        scf,
+        &[0; 6],
         &mut frame[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6],
     );
     frame[mac_offset..mac_offset + secure::MAC_LEN].copy_from_slice(&mac);
@@ -1661,6 +1994,61 @@ fn broadcast_sync_reconciles_sequences_and_is_rate_limited() {
     let second = sync_request(stub_identity().serial_number, [0, 0, 0, 0, 0, 6], challenge);
     assert!(dev.poll(PollInput::Frame(&second), 20).frames.is_empty(), "one-second rate limit");
     assert_eq!(dev.poll(PollInput::Frame(&second), 1_011).frames.len(), 1, "accepted after the window");
+}
+
+#[test]
+fn connected_sync_uses_the_devices_transport_sequence_and_retransmit_slot() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    // Advance only the request direction. ETS can legitimately send a sync
+    // after an unconfirmed request, so the two TL sequence numbers need not
+    // match even though ordinary request/response traffic keeps them aligned.
+    let unconfirmed = secure_tool_frame(
+        ApciCode::PropertyExtValueWriteUnCon,
+        0,
+        &ext_payload(SECURITY_IO, 1, 58, 1, 1, &[1]),
+        &FDSK,
+        &[0, 0, 0, 0, 0, 1],
+        0,
+    );
+    assert_eq!(dev.poll(PollInput::Frame(&unconfirmed), 10).frames.len(), 1, "unconfirmed request gets only T_ACK");
+
+    let challenge = [1, 2, 3, 4, 5, 6];
+    let request = connected_sync_request([0, 0, 0, 0, 0, 5], challenge, 1);
+    let out = dev.poll(PollInput::Frame(&request), 20);
+    assert_eq!(out.frames.len(), 2, "connected sync gets T_ACK and S-A_Sync_Res");
+
+    let response = normalize::<EXTENDED_FRAME>(&out.frames[1]).expect("sync response");
+    let view = FrameView::parse(&response).expect("sync response frame");
+    assert_eq!(view.tpci(), Some(Tpci::DataConnected(0)), "the response uses the device's independent TL sequence");
+    let sync = secure::SyncResRef::parse(&response).expect("sync response");
+    let xor = sync.challenge_xor_random();
+    let mut random = [0u8; 6];
+    for i in 0..6 {
+        random[i] = challenge[i] ^ xor[i];
+    }
+    let mut payload = sync.payload_enc();
+    ccm::verify_and_decrypt_sync_res(
+        &FDSK,
+        &random,
+        sync.src(),
+        sync.dst(),
+        sync.addr_type(),
+        sync.tpci_apci(),
+        sync.scf_byte(),
+        &mut payload,
+        &sync.mac(),
+    )
+    .expect("connected sync response authenticates");
+    assert_eq!(&payload[..6], &DEFAULT_SENDING);
+    assert_eq!(&payload[6..], &[0, 0, 0, 0, 0, 5]);
+
+    let nack =
+        [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Nack(0).octet()];
+    let retransmit = dev.poll(PollInput::Frame(&nack), 21);
+    assert_eq!(retransmit.frames.len(), 1);
+    assert_eq!(retransmit.frames[0], out.frames[1], "the TL retains the protected sync response");
 }
 
 #[test]

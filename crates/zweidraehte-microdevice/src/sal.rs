@@ -16,6 +16,9 @@ use zweidraehte_proto::access::{AccessContext, SecurityMode};
 pub struct ReplySecurity {
     pub security: SecurityMode,
     pub tool_access: bool,
+    /// Preserve the request's system-broadcast communication mode in the
+    /// response SCF instead of silently downgrading it to ordinary broadcast.
+    pub system_broadcast: bool,
     pub key: ReplyKey,
 }
 

@@ -137,7 +137,9 @@ pub trait SiatAccess {
     fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])>;
     /// Provision the element at 0-based `idx` (PID 54 entry write). Positional:
     /// the element the writer named is the one replaced, because its position
-    /// is the `IA_Index` the P2P key table joins on.
+    /// is the `IA_Index` the P2P key table joins on. Writing at or beyond the
+    /// current count extends the table through `idx`, filling any gap with
+    /// zero entries; ETS clears the count before streaming replacement rows.
     fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error>;
     /// Set the SIAT element count (PID 54 write at index 0; 0 clears).
     fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error>;

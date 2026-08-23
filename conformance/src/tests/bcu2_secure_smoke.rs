@@ -41,7 +41,18 @@ pub fn create_bcu2_secure_smoke_suite() -> TestSuite {
             inject_sync_req_tool("#EDI", "#BDUT_ADDR", "TK1", 0, CHALLENGE),
             expect_sync_res_tool("TK1", CHALLENGE, None, None, TIMEOUT),
         ]),
-        TestCase::new("B2S-4 wrong key, sequence zero, and replay are dropped").with_steps(vec![
+        TestCase::new("B2S-4 ETS programming-mode serial scan is answered").with_steps(vec![
+            comment("Programming mode off: the system-network-parameter scan stays silent"),
+            set_programming_mode(false),
+            inject("AC #EDI 00 00 E6 01 C8 00 00 00 B0 01"),
+            expect_none(1500),
+            comment("Programming mode on: answer with the provisioned serial number"),
+            set_programming_mode(true),
+            inject("AC #EDI 00 00 E6 01 C8 00 00 00 B0 01"),
+            expect("BC #BDUT_ADDR 00 00 EC 01 C9 00 00 00 B0 01 #SER_NUM", 1500),
+            set_programming_mode(false),
+        ]),
+        TestCase::new("B2S-5 wrong key, sequence zero, and replay are dropped").with_steps(vec![
             comment("A frame protected by an unknown key fails authentication"),
             inject_secure_ac_wrongkey(READ_SECURITY_IO_TYPE),
             expect_none(TIMEOUT),

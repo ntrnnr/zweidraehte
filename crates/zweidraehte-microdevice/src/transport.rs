@@ -112,6 +112,22 @@ impl<const N: usize> TlState<N> {
         self.conn.state == ConnectionState::OpenIdle
     }
 
+    /// Start one outgoing numbered-data exchange and return its sequence.
+    ///
+    /// Keeping the action-vector walk here gives ordinary AL replies and
+    /// prebuilt S-AL sync responses one transport entry point. Callers must
+    /// have the complete frame ready first: once this succeeds the TL is in
+    /// `OPEN_WAIT` and expects that frame to be installed with
+    /// [`Self::store_pending`].
+    pub fn begin_send(&mut self, dest: IndividualAddress, now_ms: u32) -> Option<u8> {
+        for output in self.process(TlEvent::RequestData { dest }, now_ms) {
+            if let TlOutput::SendData { seq, .. } = output {
+                return Some(seq);
+            }
+        }
+        None
+    }
+
     /// Drop all connection state (restart, master reset).
     pub fn reset(&mut self) {
         self.conn.reset();

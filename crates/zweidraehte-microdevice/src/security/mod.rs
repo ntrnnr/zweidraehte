@@ -149,7 +149,9 @@ pub trait SecurityModule: 'static {
     /// Try to unwrap a secure frame in place, returning how to proceed.
     ///
     /// `buf[..len]` is the canonical frame. On success the buffer holds the
-    /// decrypted plaintext and `len` is shortened. Default: not a secure
+    /// decrypted plaintext and `len` is shortened. `response_tpci` is the
+    /// outgoing TPCI already selected by the core; sync responses need it
+    /// before CCM authenticates their TPCI/APCI field. Default: not a secure
     /// module, every frame passes through.
     // These are the independent facts at the S-AL boundary. A request struct
     // would merely move the argument list and make the plain module heavier.
@@ -163,6 +165,7 @@ pub trait SecurityModule: 'static {
         _serial_number: [u8; 6],
         _time_divisor: u32,
         _group_key_index: Option<u16>,
+        _response_tpci: u8,
     ) -> SalResult<Self::ReplyContext> {
         SalResult::Passthrough
     }
@@ -206,7 +209,7 @@ pub trait SecurityModule: 'static {
     ///
     /// The legacy memory-region level remains a separate mandatory check.
     fn memory_access_allowed(state: &Self::State, access: AccessContext) -> bool {
-        !Self::security_mode_enabled(state) || access.security != zweidraehte_proto::access::SecurityMode::Plain
+        !Self::security_mode_enabled(state) || access.security == zweidraehte_proto::access::SecurityMode::AuthConf
     }
 
     /// Required security bits for a zero-based group-object slot.

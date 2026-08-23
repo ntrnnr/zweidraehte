@@ -159,11 +159,21 @@ pub trait MicroDeviceFamily: 'static {
     /// means the family predates `A_Authorize` entirely (BCU1): the
     /// authorize and key-write services are then not answered at all.
     const AUTH_LEVELS: usize;
-    /// Whether the device answers connectionless (unnumbered)
-    /// device-oriented management. A BCU2 serves its management
-    /// exclusively connection-oriented; System 7 also answers
-    /// connectionless property and descriptor reads.
-    const CONNECTIONLESS_MANAGEMENT: bool;
+    /// Whether classic Property services are available over point-to-point
+    /// connectionless transport.
+    ///
+    /// This is deliberately separate from the Device Descriptor service:
+    /// 06 Profiles v02.02.01 §4.3 makes the latter unavailable on the base
+    /// BCU2/System 2 profile, while 03/05/02 §§3.25--3.28 permit Property
+    /// procedures in either connection-oriented or connectionless mode.
+    const CONNECTIONLESS_PROPERTIES: bool = false;
+    /// Whether the base profile exposes `A_DeviceDescriptor_Read` over
+    /// point-to-point connectionless transport (06 Profiles §4.3 row 2).
+    const CONNECTIONLESS_DEVICE_DESCRIPTOR: bool = false;
+    /// Whether the profile supports broadcast individual-address lookup and
+    /// assignment by KNX serial number. Keeping this a family constant lets
+    /// BCU1 omit the service and its response encoder entirely.
+    const SERIAL_NUMBER_ADDRESSING: bool = false;
     /// First wire ASAP represented by GO-security-flags element zero.
     /// BCU-era micro tables and System 7 both number their first object 0.
     const FIRST_ASAP: u16 = 0;
