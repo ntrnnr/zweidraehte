@@ -57,7 +57,6 @@ pub struct RestoredConfig {
     auth_keys: [[u8; 4]; AUTH_LEVELS],
     lsm_states: [u8; LSM_COUNT],
     table_refs: [u16; LSM_COUNT],
-    device_control: u8,
     option_reg: u8,
     pub security: StoredSecurity,
 }
@@ -69,7 +68,6 @@ impl RestoredConfig {
             auth_keys: [[0xFF; 4]; AUTH_LEVELS],
             lsm_states: [u8::from(LoadState::Unloaded); LSM_COUNT],
             table_refs: [0; LSM_COUNT],
-            device_control: 0,
             option_reg: 0,
             security: StoredSecurity { tool_key: fdsk, ..StoredSecurity::default() },
         }
@@ -83,7 +81,6 @@ impl RestoredConfig {
             lsm.state = LoadState::try_from(self.lsm_states[i]).unwrap_or(LoadState::Unloaded);
             lsm.table_ref = self.table_refs[i];
         }
-        device.mgmt.device_control = self.device_control;
         device.mgmt.option_reg = self.option_reg;
         device.mgmt.reset_connection_auth::<Bcu2Family<0x0021>>();
         device
@@ -165,7 +162,9 @@ fn parse_config(page: &[u8]) -> Option<RestoredConfig> {
         let bytes = take(page, &mut cursor, 2)?;
         *reference = u16::from_le_bytes([bytes[0], bytes[1]]);
     }
-    let device_control = *take(page, &mut cursor, 1)?.first()?;
+    // Keep the byte in the version-1 record layout, but ignore values from
+    // older firmware: PID_DEVICE_CONTROL is reset to zero at startup.
+    let _device_control = *take(page, &mut cursor, 1)?.first()?;
     let option_reg = *take(page, &mut cursor, 1)?.first()?;
     let sec_len_bytes = take(page, &mut cursor, 2)?;
     let sec_len = usize::from(u16::from_le_bytes([sec_len_bytes[0], sec_len_bytes[1]]));
@@ -174,7 +173,7 @@ fn parse_config(page: &[u8]) -> Option<RestoredConfig> {
     }
     let security = postcard::from_bytes(take(page, &mut cursor, sec_len)?).ok()?;
 
-    Some(RestoredConfig { eeprom, auth_keys, lsm_states, table_refs, device_control, option_reg, security })
+    Some(RestoredConfig { eeprom, auth_keys, lsm_states, table_refs, option_reg, security })
 }
 
 pub fn save(device: &Device) -> Result<(), ConfigError> {
@@ -193,7 +192,7 @@ pub fn save(device: &Device) -> Result<(), ConfigError> {
     for lsm in &device.mgmt.lsm {
         put(&mut page, &mut cursor, &lsm.table_ref.to_le_bytes())?;
     }
-    put(&mut page, &mut cursor, &[device.mgmt.device_control, device.mgmt.option_reg])?;
+    put(&mut page, &mut cursor, &[0, device.mgmt.option_reg])?;
 
     let sec_len_pos = cursor;
     cursor += 2;
