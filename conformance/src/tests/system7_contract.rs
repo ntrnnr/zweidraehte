@@ -32,7 +32,7 @@ pub(super) fn property_roster_case(name: &'static str) -> TestCase {
     TestCase::new(name).with_steps(vec![
         comment("DeviceControl has the same PID, index, PDT, and access levels"),
         inject("BC #EDI #BDUT 64 03 D8 00 0E 00"),
-        expect("BC #BDUT #EDI 68 03 D9 00 0E 01 B3 30 01 F1", 400),
+        expect("BC #BDUT #EDI 68 03 D9 00 0E 01 B3 30 01 33", 400),
         comment("The descriptor and value lookup name the same property"),
         inject("BC #EDI #BDUT 65 03 D5 00 0E 10 01"),
         expect("BC #BDUT #EDI 66 03 D6 00 0E 10 01 00", 400),

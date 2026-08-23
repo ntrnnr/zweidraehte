@@ -7,20 +7,20 @@
 //! array-property helpers assume the System B tables' 2-octet count
 //! prefix, while the compact System 7 tables use a single octet.
 //!
-//! Access levels per the 0705h column of Annex A.2.4/A.2.5: reads at 15
-//! ("everyone" in the 16-level model), the load state machine writable
-//! from level 2.
+//! Access levels per the 0705h column of Annex A.2.4/A.2.5: both reads and
+//! writes use controller level 3. The mask's free runtime level remains 15.
 
 use core::cell::RefCell;
 use core::marker::PhantomData;
 
-use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
 use zweidraehte_proto::dpt::{
     InterfaceObjectType, PDT_Control, PDT_Generic08, PDT_UnsignedChar, PDT_UnsignedInt, PDT_UnsignedLong,
     PropertyDataDefinition,
 };
-use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor, PropertyError};
+use zweidraehte_proto::properties::{PropertyAccess, PropertyDescriptor, PropertyDescriptorSpec, PropertyError};
 
+use super::super::SYSTEM7_MAX_ACCESS_LEVELS;
 use crate::objects::interface::{
     InterfaceObject, PropertyRead, PropertyReadRequest, PropertyWriteRequest, TableObjectSpec, WriteResponse, pid,
 };
@@ -41,58 +41,59 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> System7TableObject<'a, T, S
         Self { table, _spec: PhantomData }
     }
 
-    /// Raw numbers rather than audiences, for the same reason as the
-    /// System B twin (`objects::interface::TableInterfaceObject`): this
-    /// table is built only by System 7, so there is no profile left to
-    /// resolve against. The 15s are the 16-level model's "everyone".
+    /// Resolve the named audiences into the 16-level values MV-0705 puts
+    /// on the wire. Keeping the unresolved descriptors here prevents a
+    /// literal Annex-A `3` from being confused with unrestricted runtime
+    /// access, which is level 15 on System 7.
     fn property_descriptors() -> [PropertyDescriptor; 5] {
         [
-            PropertyDescriptor::new(
+            PropertyDescriptorSpec::new(
                 pid::OBJECT_TYPE,
                 PDT_UnsignedInt::ID,
                 1,
                 PropertyAccess::ReadOnly,
-                15,
-                0,
+                AccessLevel::Controller,
+                AccessLevel::SystemManufacturer,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::new(
+            PropertyDescriptorSpec::new(
                 pid::LOAD_STATE_CONTROL,
                 PDT_Control::ID,
                 1,
                 PropertyAccess::ReadWrite,
-                15,
-                2,
+                AccessLevel::Controller,
+                AccessLevel::Controller,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::new(
+            PropertyDescriptorSpec::new(
                 pid::TABLE_REFERENCE,
                 PDT_UnsignedLong::ID,
                 1,
-                PropertyAccess::ReadOnly,
-                15,
-                0,
+                PropertyAccess::ReadWrite,
+                AccessLevel::Controller,
+                AccessLevel::Controller,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::new(
+            PropertyDescriptorSpec::new(
                 pid::MCB_TABLE,
                 PDT_Generic08::ID,
                 1,
                 PropertyAccess::ReadOnly,
-                15,
-                0,
+                AccessLevel::Controller,
+                AccessLevel::SystemManufacturer,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
-            PropertyDescriptor::new(
+            PropertyDescriptorSpec::new(
                 pid::ERROR_CODE,
                 PDT_UnsignedChar::ID,
                 1,
                 PropertyAccess::ReadOnly,
-                15,
-                0,
+                AccessLevel::Controller,
+                AccessLevel::SystemManufacturer,
                 AccessPolicy::READ_OPEN_WRITE_TOOL,
             ),
         ]
+        .map(|descriptor| descriptor.for_levels(SYSTEM7_MAX_ACCESS_LEVELS as u8))
     }
 }
 
@@ -131,14 +132,17 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for System7
 
     fn write_property(&mut self, req: PropertyWriteRequest<'_>) -> Result<WriteResponse, PropertyError> {
         match req.pid {
-            pid::OBJECT_TYPE | pid::TABLE_REFERENCE | pid::MCB_TABLE | pid::ERROR_CODE => {
-                Err(PropertyError::WriteNotAllowed)
-            }
+            pid::OBJECT_TYPE | pid::MCB_TABLE | pid::ERROR_CODE => Err(PropertyError::WriteNotAllowed),
             pid::LOAD_STATE_CONTROL => {
                 // The absolute-segment records carry their own addresses;
                 // no allocation address to hand in.
                 self.table.borrow_mut().write_lsm(req.data, None);
                 Ok(WriteResponse::byte(self.table.borrow().read_lsm()[0]))
+            }
+            pid::TABLE_REFERENCE => {
+                let bytes: [u8; 4] = req.data.try_into().map_err(|_| PropertyError::InvalidElementCount)?;
+                self.table.borrow_mut().set_table_reference(u32::from_be_bytes(bytes));
+                Ok(WriteResponse::Echo)
             }
             _ => Err(PropertyError::InvalidPropertyId),
         }
@@ -150,6 +154,44 @@ impl<'a, T: HasLoadStateMachine, S: TableObjectSpec> InterfaceObject for System7
                 Ok(1)
             }
             _ => Err(PropertyError::InvalidPropertyId),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::objects::interface::AddressTableSpec;
+    use crate::objects::tables::addr8::AddrTab8;
+
+    #[test]
+    fn mv0705_table_reference_is_writable_at_controller_level() {
+        let table = RefCell::new(AddrTab8::<4>::new());
+        let mut object = System7TableObject::<_, AddressTableSpec>::new(&table);
+
+        let (_, descriptor) = object.property_descriptor_by_id(pid::TABLE_REFERENCE).expect("property exists");
+        assert_eq!(descriptor.access, PropertyAccess::ReadWrite);
+        assert_eq!(descriptor.read_level, 3);
+        assert_eq!(descriptor.write_level, 3);
+
+        object
+            .write_property(PropertyWriteRequest {
+                pid: pid::TABLE_REFERENCE,
+                start_idx: 1,
+                data: &[0x00, 0x00, 0x44, 0x00],
+            })
+            .expect("four-byte reference is accepted");
+        assert_eq!(table.borrow().table_reference(), 0x4400);
+    }
+
+    #[test]
+    fn mv0705_table_properties_resolve_controller_as_level_three() {
+        let table = RefCell::new(AddrTab8::<4>::new());
+        let object = System7TableObject::<_, AddressTableSpec>::new(&table);
+
+        for pid in [pid::OBJECT_TYPE, pid::LOAD_STATE_CONTROL, pid::TABLE_REFERENCE, pid::MCB_TABLE, pid::ERROR_CODE] {
+            let (_, descriptor) = object.property_descriptor_by_id(pid).expect("property exists");
+            assert_eq!(descriptor.read_level, 3, "PID {pid}");
         }
     }
 }

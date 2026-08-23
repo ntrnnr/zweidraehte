@@ -11,11 +11,10 @@
 //!   download path share one storage, as on real System 7 hardware.
 //! - **16 access levels**: keys for levels 0–14, level 15 is free
 //!   access (06 Profiles v02.02.01 §4.2 row 12).
-//! - **Application Program 2 instead of a PEI program** at interface
-//!   object index 4. It fills `HasPeiApplication`'s structural role (a
-//!   second load/run state machine) — the wire-visible object type is
-//!   decided by the interface-object container, not by this trait
-//!   choice.
+//! - **An optional Interface Program** at interface object index 4. It
+//!   fills `HasPeiApplication`'s structural role (a second load/run state
+//!   machine) — the wire-visible object type is decided by the
+//!   interface-object container, not by this trait choice.
 //! - **A RAM window** backing the profile's "resources from 0700h"
 //!   region, served via `A_Memory_*` by the System 7 memory map.
 
@@ -121,14 +120,15 @@ pub struct System7DeviceState<
     /// Application program (interface object index 3).
     pub app: RefCell<Application<D::P, AbsoluteAlloc>>,
 
-    /// Application Program 2 (interface object index 4). Same object
-    /// type as the application, no parameters of its own.
+    /// Optional Interface Program (interface object index 4), with no
+    /// parameters of its own. The field retains its historical name for
+    /// configuration-format compatibility.
     pub app2: RefCell<Application<(), AbsoluteAlloc>>,
 
     /// Application program version (written by ETS).
     pub program_version: RefCell<[u8; 5]>,
 
-    /// Application Program 2 version (written by ETS).
+    /// Interface Program version (written by ETS).
     pub program2_version: RefCell<[u8; 5]>,
 
     // ========================================================================
@@ -651,9 +651,8 @@ impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: Sta
     }
 }
 
-// Application Program 2 fills the "second program object" role the trait
-// models; System 7 has no PEI. The interface-object container presents
-// it as an ApplicationProgram object at index 4.
+// The Interface Program fills the PEI-program role the shared trait models;
+// the interface-object container presents its required object type 4.
 impl<const ADT_SIZE: usize, const AST_SIZE: usize, const COT_SIZE: usize, D: StackDefinition, ES: ExtensionState>
     HasPeiApplication for System7DeviceState<ADT_SIZE, AST_SIZE, COT_SIZE, D, ES>
 {

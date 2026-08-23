@@ -165,6 +165,10 @@ pub trait HasLoadStateMachine: TableMemory {
     /// device's memory manager during allocation.
     fn table_reference(&self) -> u32;
 
+    /// Set the virtual base address surfaced through
+    /// `PID_TABLE_REFERENCE`.
+    fn set_table_reference(&mut self, reference: u32);
+
     /// Last load error code, surfaced via PID_ERROR_CODE (PID 28).
     ///
     /// Encoded as DPT_ErrorClass_System (20.011); see [`LoadError`] for the
@@ -639,6 +643,10 @@ impl<T: TableMemory, P: LoadControlPolicy> HasLoadStateMachine for Table<T, P> {
         self.table_reference
     }
 
+    fn set_table_reference(&mut self, reference: u32) {
+        self.table_reference = reference;
+    }
+
     fn last_error_code(&self) -> u8 {
         // Mirror the LSM Err state. The field is set on entry to Err and
         // cleared on every transition out, so a stale code never leaks.
@@ -897,6 +905,10 @@ impl<T: HasLoadStateMachine> HasLoadStateMachine for RunnableApplication<T> {
 
     fn table_reference(&self) -> u32 {
         self.table.table_reference()
+    }
+
+    fn set_table_reference(&mut self, reference: u32) {
+        self.table.set_table_reference(reference);
     }
 
     fn last_error_code(&self) -> u8 {

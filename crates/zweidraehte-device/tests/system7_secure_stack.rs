@@ -291,7 +291,7 @@ fn security_mode_is_off_out_of_the_factory() {
 #[test]
 fn the_secure_object_roster_puts_security_at_index_five() {
     use static_cell::StaticCell;
-    use zweidraehte_device::objects::interface::PropertyServiceHandler;
+    use zweidraehte_device::objects::interface::{PropertyServiceHandler, pid};
     use zweidraehte_proto::messages::buffers::{BufferManager, DynBufferManager};
 
     static BUFFERS: StaticCell<[[u8; 64]; 4]> = StaticCell::new();
@@ -324,6 +324,13 @@ fn the_secure_object_roster_puts_security_at_index_five() {
     assert_eq!(objects.object_type_at(6), Some(InterfaceObjectType::GroupObjectTable));
     assert_eq!(objects.object_type_at(7), None);
     assert_eq!(objects.object_count(), 7);
+
+    // Profiles §9.1.2.6.2 strengthens the base MV-0705 property's
+    // access from 3/3 to 3/2 when the Security module is composed.
+    let progmode = objects
+        .property_description_read(0, pid::device::PROGMODE, 0)
+        .expect("the secure profile requires Programming Mode");
+    assert_eq!((progmode.read_level, progmode.write_level), (3, 2));
 }
 
 // ============================================================================

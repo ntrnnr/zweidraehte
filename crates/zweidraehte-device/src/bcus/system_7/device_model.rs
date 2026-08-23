@@ -1,8 +1,8 @@
 //! System 7 device model.
 //!
 //! System 7's lifecycle side effects are the standard ones —
-//! [`StandardDeviceModel`] already handles the second program object
-//! (Application Program 2) through the [`RunTarget::Pei`] role its
+//! [`StandardDeviceModel`] already handles the optional Interface Program
+//! through the [`RunTarget::Pei`] role its
 //! interface object and the memory map's load-control window both use.
 //!
 //! [`RunTarget::Pei`]: crate::device_model::RunTarget::Pei

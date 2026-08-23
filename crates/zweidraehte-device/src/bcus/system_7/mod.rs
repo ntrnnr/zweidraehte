@@ -25,7 +25,8 @@
 //!    instead of System B's 4.
 //!
 //! Interface objects sit at fixed indexes 0–4: Device, Address Table,
-//! Association Table, Application Program, Application Program 2.
+//! Association Table, Application Program, and the optional Interface
+//! Program implemented by this composition.
 
 mod config;
 mod definition;

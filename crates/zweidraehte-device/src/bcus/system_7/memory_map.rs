@@ -11,7 +11,7 @@
 //!                  (03/05/02 §3.31.2 DMP_LoadStateMachineWrite_RCo_Mem)
 //! 0700h..07FFh     RAM window ("resources from 0700h")
 //! 4000h..          RT8-coded group address table (fixed at 4000h)
-//! B6EAh..B6EDh     load-state bytes: ADT / AST / APP / APP2
+//! B6EAh..B6EDh     load-state bytes: ADT / AST / APP / Interface Program
 //! product const    group object table (`System7ProductLayout::COT_ADDRESS` —
 //!                  no location resource exists for it)
 //! dynamic          association table and application segment, each
@@ -21,7 +21,7 @@
 //! The load-control record at 0104h packs the target state machine and
 //! the event into its first octet (`[machine:4][event:4]`, machines
 //! 1 = address table, 2 = association table, 3 = application program,
-//! 4 = PEI program / Application Program 2 — 03/05/02 §3.31); the
+//! 4 = Interface Program / PEI program — 03/05/02 §3.31); the
 //! remaining octets are the same segment records the property-based
 //! path carries, so both paths funnel into the same
 //! [`AbsoluteAlloc`](crate::objects::tables::AbsoluteAlloc)-flavoured

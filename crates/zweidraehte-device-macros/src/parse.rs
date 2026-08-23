@@ -109,6 +109,12 @@ pub(crate) struct ObjectAttrs {
     /// either profile, so it keeps its levels symbolic and the device
     /// resolves them.
     pub levels: Option<Expr>,
+
+    /// Audience used for the generated mandatory `PID_OBJECT_TYPE`.
+    /// Defaults to `Runtime`; mask-specific objects such as MV-0705 use
+    /// `Controller` because Annex A assigns the property numeric level 3
+    /// even though the profile's unauthorised runtime level is 15.
+    pub object_type_rl: Option<LevelAttr>,
 }
 
 impl ObjectAttrs {
@@ -121,6 +127,7 @@ impl ObjectAttrs {
         let mut additional_objects: Vec<Expr> = Vec::new();
         let mut extra_where: Option<TokenStream> = None;
         let mut levels: Option<Expr> = None;
+        let mut object_type_rl: Option<LevelAttr> = None;
 
         let parser = syn::meta::parser(|meta| {
             if meta.path.is_ident("object_type") {
@@ -135,6 +142,9 @@ impl ObjectAttrs {
             } else if meta.path.is_ident("levels") {
                 levels = Some(meta.value()?.parse()?);
                 Ok(())
+            } else if meta.path.is_ident("object_type_rl") {
+                object_type_rl = Some(LevelAttr::parse(meta.value()?.parse()?)?);
+                Ok(())
             } else if meta.path.is_ident("where_bounds") {
                 // Parenthesised raw token group — the macro emits these
                 // verbatim into the augment impl's `where` clause.
@@ -146,13 +156,13 @@ impl ObjectAttrs {
                 Err(meta.error(
                     "unknown attribute — expected `object_type`, \
                      `target_objects = [...]`, `additional_objects = [...]`, \
-                     `levels = ...`, or `where_bounds(...)`",
+                     `levels = ...`, `object_type_rl = ...`, or `where_bounds(...)`",
                 ))
             }
         });
         syn::parse::Parser::parse2(parser, args)?;
 
-        Ok(Self { object_type, target_objects, additional_objects, extra_where, levels })
+        Ok(Self { object_type, target_objects, additional_objects, extra_where, levels, object_type_rl })
     }
 }
 

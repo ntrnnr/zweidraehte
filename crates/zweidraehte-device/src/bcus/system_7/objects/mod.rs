@@ -7,10 +7,10 @@
 //! - Index 1: Address Table Object (Type 1)
 //! - Index 2: Association Table Object (Type 2)
 //! - Index 3: Application Program Object (Type 3)
-//! - Index 4: Application Program 2 Object (Type 4)
+//! - Index 4: optional Interface Program Object (Type 4)
 //!
-//! No Group Object Table object — System 7 has none — and augments can
-//! contribute additional objects at indexes 5+, same as on System B.
+//! This composition omits the optional Group Object Table object. Augments
+//! can contribute additional objects at indexes 5+, same as on System B.
 //!
 //! The dispatch below mirrors `SystemBObjects`' (`bcus/system_b/objects`)
 //! semantics: container-served `PID_IO_LIST`, augment interception before
@@ -162,6 +162,29 @@ where
         )
     }
 
+    /// Data Security strengthens the base profile's optional Programming
+    /// Mode property from `3/3` to the mandatory `3/2` in Profiles
+    /// §9.1.2.6.2. Derive that profile-module choice from the composed
+    /// object roster so plain System 7 retains the Annex A.2.3 descriptor.
+    fn has_security_interface(&self) -> bool {
+        (0..self.augments.additional_object_count())
+            .any(|index| self.augments.additional_object_type_at(index) == Some(InterfaceObjectType::Security))
+    }
+
+    fn apply_profile_descriptor(&self, object_idx: u16, mut descriptor: PropertyDescriptor) -> PropertyDescriptor {
+        if object_idx == 0 && descriptor.pid == pid::device::PROGMODE && self.has_security_interface() {
+            descriptor.write_level = 2;
+        }
+        descriptor
+    }
+
+    fn apply_profile_description(&self, mut response: PropertyDescriptionResponse) -> PropertyDescriptionResponse {
+        if response.object_idx == 0 && response.prop_id == pid::device::PROGMODE && self.has_security_interface() {
+            response.write_level = 2;
+        }
+        response
+    }
+
     fn read_io_list(&self, start_idx: u16, count: u16, buf: &mut [u8]) -> Result<usize, PropertyError> {
         let total = self.io_list_len() as usize;
 
@@ -206,7 +229,7 @@ where
             return Some(self.io_list_descriptor());
         }
 
-        match obj_idx {
+        let descriptor = match obj_idx {
             0 => self.device.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             1 => self.address_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
             2 => self.association_table.borrow().property_descriptor_by_id(prop_id).map(|(_, d)| d),
@@ -216,7 +239,9 @@ where
                 let obj_type = self.object_type_for(obj_idx)?;
                 self.augments.property_descriptor(obj_type, prop_id)
             }
-        }
+        };
+
+        descriptor.map(|descriptor| self.apply_profile_descriptor(obj_idx, descriptor))
     }
 
     fn base_property_count(&self, object_idx: u16) -> u16 {
@@ -336,7 +361,8 @@ where
             3 => self.application_program.borrow().property_description(object_idx, prop_id, prop_idx),
             4 => self.application_program_2.borrow().property_description(object_idx, prop_id, prop_idx),
             _ => unreachable!("augment objects handled above"),
-        };
+        }
+        .map(|response| self.apply_profile_description(response));
 
         if base_result.is_ok() || prop_id != 0 {
             return base_result;

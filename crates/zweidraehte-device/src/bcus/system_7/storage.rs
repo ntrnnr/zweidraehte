@@ -111,14 +111,15 @@ pub struct System7DeviceConfig<
     /// Application program data (interface object index 3).
     pub application: Application<P, AbsoluteAlloc>,
 
-    /// Application Program 2 (interface object index 4). Carries no
-    /// device parameters of its own.
+    /// Optional Interface Program (interface object index 4). Carries no
+    /// device parameters of its own. The field retains its historical name
+    /// for configuration-format compatibility.
     pub application2: Application<(), AbsoluteAlloc>,
 
     /// Application program version (set by ETS during programming).
     pub program_version: [u8; 5],
 
-    /// Application Program 2 version (set by ETS during programming).
+    /// Interface Program version (set by ETS during programming).
     pub program2_version: [u8; 5],
 
     /// Extension-specific persistent configuration.

@@ -428,8 +428,8 @@ mod objects {
         let augments = S7TestStack::create_augments(&state, &(), &lctx);
         let objects = S7TestStack::create_interface_objects(&state, &(), &lctx, &augments);
 
-        // Roster: exactly the five fixed-index objects, AppProg2 as
-        // InterfaceProgram (Type 4) at index 4.
+        // Roster: the four mandatory objects plus the optional Interface
+        // Program (Type 4) at index 4.
         assert_eq!(objects.object_count(), 5);
         assert_eq!(objects.object_type_at(0), Some(InterfaceObjectType::Device));
         assert_eq!(objects.object_type_at(1), Some(InterfaceObjectType::AddressTable));
@@ -444,16 +444,42 @@ mod objects {
             pid: pid::device::DEVICE_DESCRIPTOR,
             start_idx: 1,
             count: 1,
-            ctx: AccessContext::new(15),
+            ctx: AccessContext::new(0),
         };
         let mut buf = [0u8; 4];
         let len = objects.property_value_read(&read, &mut buf).expect("device descriptor readable");
         assert_eq!(&buf[..len], &0x0705u16.to_be_bytes());
 
-        // Descriptors carry the 16-level access model: everyone = 15.
+        for object in 0..=4 {
+            let desc = objects.property_description_read(object, pid::OBJECT_TYPE, 0).expect("object type described");
+            assert_eq!(desc.read_level, 3);
+        }
+
+        // Annex A expresses MV-0705's 3/3 as controller access on both
+        // sides. Runtime remains the distinct free level 15.
         let desc = objects.property_description_read(0, pid::DEVICE_CONTROL, 0).expect("device control described");
-        assert_eq!(desc.read_level, 15);
-        assert_eq!(desc.write_level, 1);
+        assert_eq!(desc.read_level, 3);
+        assert_eq!(desc.write_level, 3);
+        for property in [pid::device::PROGMODE, pid::device::ROUTING_COUNT] {
+            let desc = objects.property_description_read(0, property, 0).expect("optional property described");
+            assert_eq!(desc.read_level, 3);
+            assert_eq!(desc.write_level, 3);
+        }
+
+        for property in [pid::SERIAL_NUMBER, pid::MANUFACTURER_ID, pid::device::HARDWARE_TYPE] {
+            let desc = objects.property_description_read(0, property, 0).expect("identity property described");
+            assert_eq!(desc.read_level, 3);
+        }
+        for object in [1, 2] {
+            for property in [pid::LOAD_STATE_CONTROL, pid::TABLE_REFERENCE] {
+                let desc = objects.property_description_read(object, property, 0).expect("table property described");
+                assert_eq!((desc.read_level, desc.write_level), (3, 3));
+            }
+        }
+        for property in [pid::LOAD_STATE_CONTROL, pid::RUN_STATE_CONTROL, pid::PROGRAM_VERSION, pid::PEI_TYPE] {
+            let desc = objects.property_description_read(3, property, 0).expect("application property described");
+            assert_eq!(desc.read_level, 3);
+        }
 
         // Index 3 and index 4 drive independent load state machines.
         let write = |idx: u16, data: &[u8]| {
@@ -476,8 +502,7 @@ mod objects {
         assert_eq!(state.app.borrow().read_lsm(), [LoadState::Loading.into()]);
         assert_eq!(state.app2.borrow().read_lsm(), [LoadState::Loaded.into()]);
 
-        // A level-15 caller may read everywhere but not drive the LSM
-        // (write level 2 on the table objects).
+        // A free level-15 caller cannot drive the level-3 table LSM.
         let req = FullPropertyWriteRequest {
             object_idx: 1,
             pid: pid::LOAD_STATE_CONTROL,

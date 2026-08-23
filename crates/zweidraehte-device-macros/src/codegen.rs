@@ -79,6 +79,13 @@ pub(crate) fn gen_object(
         Some(e) => quote! { ((#e) as u8) },
         None => quote! { 4u8 },
     };
+    let object_type_rl = match &obj_attrs.object_type_rl {
+        Some(level) => {
+            let ident = &level.0;
+            quote! { ::zweidraehte_proto::access::AccessLevel::#ident }
+        }
+        None => quote! { ::zweidraehte_proto::access::AccessLevel::Runtime },
+    };
     let descriptor_entries = property_props.iter().map(|p| descriptor_for(p, &object_type_expr, &levels));
 
     let read_arms = property_props.iter().map(|p| read_arm(p));
@@ -101,8 +108,9 @@ pub(crate) fn gen_object(
             pub const PROPERTY_DESCRIPTORS: &'static [
                 ::zweidraehte_proto::properties::PropertyDescriptor
             ] = &[
-                // OBJECT_TYPE (PID 1) — always first, ReadOnly, readable
-                // at runtime and not writable, policy READ_OPEN_WRITE_TOOL.
+                // OBJECT_TYPE (PID 1) — always first and ReadOnly. Its
+                // audience defaults to Runtime but a mask-specific object
+                // can override it at the struct level.
                 // Mandated by the KNX spec for every interface object.
                 ::zweidraehte_proto::properties::PropertyDescriptor::new(
                     ::zweidraehte_device::objects::interface::pid::OBJECT_TYPE,
@@ -110,7 +118,7 @@ pub(crate) fn gen_object(
                         as ::zweidraehte_proto::dpt::PropertyDataDefinition>::ID,
                     1,
                     ::zweidraehte_proto::properties::PropertyAccess::ReadOnly,
-                    ::zweidraehte_proto::access::AccessLevel::Runtime.for_levels(#levels),
+                    (#object_type_rl).for_levels(#levels),
                     ::zweidraehte_proto::access::AccessLevel::SystemManufacturer.for_levels(#levels),
                     ::zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL,
                 ),
