@@ -70,6 +70,12 @@ pub struct Patch {
     /// both endpoints remain stable GUID anchors and are validated.
     #[serde(default)]
     pub skip_range: Option<SkipRange>,
+    /// Run this Telegram exactly as written, but do not let it advance
+    /// EITT's recomputed transport sequence. Used when the device drops a
+    /// frame before TL while the template also describes an alternative in
+    /// which the same frame reaches TL.
+    #[serde(default)]
+    pub without_tl_sequence: Option<String>,
     /// Why. Printed with the applied-patch report.
     pub why: String,
     /// Steps to insert. Required by `after` / `before` / `replace`.
@@ -87,6 +93,7 @@ impl Patch {
             (self.skip.as_deref(), Anchor::Skip),
             (self.skip_case.as_deref(), Anchor::SkipCase),
             (self.skip_range.as_ref().map(|range| range.from.as_str()), Anchor::SkipRange),
+            (self.without_tl_sequence.as_deref(), Anchor::WithoutTlSequence),
         ];
         let mut found = candidates.iter().filter_map(|(id, kind)| id.map(|i| (i, *kind)));
         let first = found.next().ok_or_else(|| PatchError::NoAnchor(self.why.clone()))?;
@@ -123,6 +130,7 @@ pub enum Anchor {
     Skip,
     SkipCase,
     SkipRange,
+    WithoutTlSequence,
 }
 
 /// A step a patch can insert.
@@ -286,7 +294,7 @@ impl PatchSet {
 pub enum PatchError {
     Io(String, std::io::Error),
     Parse(String, Box<toml::de::Error>),
-    /// A patch names none of `after`/`before`/`replace`/`skip`/`skip_case`.
+    /// A patch names no supported anchor operation.
     NoAnchor(String),
     /// A patch names more than one anchor.
     MultipleAnchors(String),
@@ -315,7 +323,11 @@ impl std::fmt::Display for PatchError {
             Self::Io(p, e) => write!(f, "could not read the patch set {p}: {e}"),
             Self::Parse(p, e) => write!(f, "could not parse the patch set {p}: {e}"),
             Self::NoAnchor(why) => {
-                write!(f, "the patch {why:?} names no anchor (after/before/replace/skip/skip_case/skip_range)")
+                write!(
+                    f,
+                    "the patch {why:?} names no anchor \
+                     (after/before/replace/skip/skip_case/skip_range/without_tl_sequence)"
+                )
             }
             Self::MultipleAnchors(why) => write!(f, "the patch {why:?} names more than one anchor"),
             Self::EmptyInsert(why) => write!(f, "the patch {why:?} inserts nothing"),
@@ -362,16 +374,22 @@ why = "not reachable on TP1"
 [[patch]]
 skip_range = { from = "AAAAAAAA-0000-0000-0000-000000000000", through = "BBBBBBBB-0000-0000-0000-000000000000" }
 why = "subsection belongs to another profile"
+
+[[patch]]
+without_tl_sequence = "CCCCCCCC-0000-0000-0000-000000000000"
+why = "the bounded receiver drops this frame before TL"
+insert = [{ expect_none = 1000 }]
 "#;
 
     #[test]
     fn a_patch_set_round_trips() {
         let set: PatchSet = toml::from_str(SAMPLE).expect("parse");
-        assert_eq!(set.patches.len(), 4);
+        assert_eq!(set.patches.len(), 5);
         assert_eq!(set.patches[0].anchor().expect("anchor").1, Anchor::After);
         assert_eq!(set.patches[1].anchor().expect("anchor").1, Anchor::Before);
         assert_eq!(set.patches[2].anchor().expect("anchor").1, Anchor::Skip);
         assert_eq!(set.patches[3].anchor().expect("anchor").1, Anchor::SkipRange);
+        assert_eq!(set.patches[4].anchor().expect("anchor").1, Anchor::WithoutTlSequence);
     }
 
     #[test]

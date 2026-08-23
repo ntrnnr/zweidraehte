@@ -314,7 +314,11 @@ pub fn lower(
             // downstream, so both variants take the same marker here.
             use crate::eitt::profile::Dut;
             let lowered = match profile.dut {
-                Dut::SystemBSecure | Dut::System7Secure | Dut::Bcu2Secure | Dut::MicroSystem7Secure => lowered.secure(),
+                Dut::SystemBSecure
+                | Dut::System7Secure
+                | Dut::Bcu2Secure
+                | Dut::Bcu2SecureBase
+                | Dut::MicroSystem7Secure => lowered.secure(),
                 Dut::Bcu1 | Dut::SystemB | Dut::System7 | Dut::Bcu2 | Dut::MicroSystem7 => lowered,
             };
             suites.push(lowered);
@@ -523,12 +527,13 @@ fn lower_sequence(
                     *report.ignored_preparations.entry(what.to_string()).or_default() += 1;
                 }
                 SequenceItem::Telegram(t) => {
+                    let without_tl_sequence = has(Anchor::WithoutTlSequence).is_some();
                     let ctx = TelegramCtx {
                         case_name,
                         profile,
                         vars,
                         joinable: anchored.is_empty(),
-                        tl_sequence: tl_sequence.as_mut(),
+                        tl_sequence: if without_tl_sequence { None } else { tl_sequence.as_mut() },
                         sync: &mut sync,
                     };
                     lower_telegram(t, ctx, report, &mut block, &mut steps)?;
@@ -538,6 +543,11 @@ fn lower_sequence(
 
         if let Some((patch, _)) = has(Anchor::After) {
             report.applied_patches.push(patch.why.clone());
+            steps.extend(patch.insert.iter().map(|s| s.to_step()));
+        }
+        if let Some((patch, _)) = has(Anchor::WithoutTlSequence) {
+            flush_block(&mut block, &mut steps);
+            report.applied_patches.push(format!("excluded a frame from TL sequence recomputation — {}", patch.why));
             steps.extend(patch.insert.iter().map(|s| s.to_step()));
         }
     }

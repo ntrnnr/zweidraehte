@@ -179,6 +179,7 @@ async fn run() -> ExitCode {
                 skipped_collections: Vec::new(),
                 patches: Vec::new(),
                 not_applicable: Vec::new(),
+                applicable: Vec::new(),
                 commands: Vec::new(),
                 variables: Default::default(),
                 tl_sequence: None,

@@ -106,6 +106,13 @@ Two things we commit, neither containing vendor test content:
   referenced by file name, never by path, so the committed profile
   works on any machine.
 
+  A device variant may `extends = "relative-profile.toml"`. Ordinary tables
+  merge, scalar and ordinary array values replace, and `[[template]]` entries
+  merge by `file`. `[[template.applicable]]` re-enables one inherited
+  `not_applicable` case and requires a reason. Use this for a composition such
+  as secure BCU2 that shares a base family but adds capabilities; do not copy
+  the whole base profile.
+
   A `[[template]]` entry also carries the exceptions that hold for one
   template and not the others, each with its own mandatory reason:
   `[template.variables]` (the network-layer and transport-layer
@@ -129,7 +136,9 @@ Two things we commit, neither containing vendor test content:
   A patch that `replace`s a telegram still lets it advance the
   TL-sequence recomputation — the frame happens either way, and
   dropping it from the bookkeeping mis-numbers everything after it in
-  the same connection.
+  the same connection. `without_tl_sequence` sends the original
+  anchored telegram but does not advance the counters; use it only
+  when the DUT drops that frame before TL.
   The first level owns the implementation under test. `full/common/`
   means common only to the full-stack System B and System 7 fixtures;
   family directories hold narrower adaptations. Micro profiles own

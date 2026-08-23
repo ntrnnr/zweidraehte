@@ -18,6 +18,7 @@
 //! the profile.
 //!
 //! ```toml
+//! extends = "tp1-bcu2.toml" # optional, relative to this profile
 //! medium = "tp"
 //! dut = "systemb"
 //!
@@ -43,7 +44,7 @@
 //! `$EITT_TEMPLATES`, or `--templates-dir` when that is given.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -151,6 +152,11 @@ pub struct TemplateRef {
     /// Cases in *this* template that do not apply to this device.
     #[serde(default)]
     pub not_applicable: Vec<NotApplicable>,
+    /// Cases inherited as not applicable which this profile variant does
+    /// support. This is primarily for a composition with a larger frame
+    /// budget reusing the base family profile.
+    #[serde(default)]
+    pub applicable: Vec<ApplicableOverride>,
     /// Variable overrides for this template only.
     ///
     /// Templates reuse variable names for different things: `GO_ADDR`
@@ -279,6 +285,11 @@ pub enum Dut {
     /// in profile TOML.
     #[serde(rename = "bcu2-secure")]
     Bcu2Secure,
+    /// `conformance-dut-bcu2-secure-base` — the same secure composition
+    /// with the ordinary BCU2 application. Spelled `bcu2-secure-base` in
+    /// profile TOML.
+    #[serde(rename = "bcu2-secure-base")]
+    Bcu2SecureBase,
     /// `conformance-dut-micro-system7` — System 7 family on the
     /// no-async micro stack. Spelled `micro-system7` in profile TOML.
     #[serde(rename = "micro-system7")]
@@ -299,6 +310,7 @@ impl From<Dut> for DutMode {
             Dut::System7Secure => DutMode::System7Secure,
             Dut::Bcu2 => DutMode::Bcu2,
             Dut::Bcu2Secure => DutMode::Bcu2Secure,
+            Dut::Bcu2SecureBase => DutMode::Bcu2SecureBase,
             Dut::MicroSystem7 => DutMode::MicroSystem7,
             Dut::MicroSystem7Secure => DutMode::MicroSystem7Secure,
         }
@@ -313,6 +325,16 @@ pub struct NotApplicable {
     pub id: String,
     /// Why it does not apply. Required — an unexplained skip is
     /// indistinguishable from a bug.
+    pub why: String,
+}
+
+/// An inherited exclusion which a more capable profile variant re-enables.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApplicableOverride {
+    /// TestCase GUID inherited through `extends`.
+    pub id: String,
+    /// Which capability makes the case applicable to this variant.
     pub why: String,
 }
 
@@ -392,8 +414,11 @@ impl Profile {
     /// Load from a TOML file.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ProfileError> {
         let path = path.as_ref();
-        let text = std::fs::read_to_string(path).map_err(|e| ProfileError::Io(path.display().to_string(), e))?;
-        toml::from_str(&text).map_err(|e| ProfileError::Parse(path.display().to_string(), Box::new(e)))
+        let value = load_profile_value(path, &mut Vec::new())?;
+        let profile: Self =
+            value.try_into().map_err(|e| ProfileError::Parse(path.display().to_string(), Box::new(e)))?;
+        profile.validate_applicable_overrides(path)?;
+        Ok(profile)
     }
 
     /// Whether a telegram tagged with `medium` runs under this profile.
@@ -419,6 +444,10 @@ impl Profile {
     pub fn for_template(&self, template: &TemplateRef) -> Self {
         let mut scoped = self.clone();
         scoped.not_applicable.extend(template.not_applicable.iter().cloned());
+        for applicable in &template.applicable {
+            scoped.not_applicable.retain(|entry| !entry.id.eq_ignore_ascii_case(&applicable.id));
+            scoped.applied_overrides.push(format!("case {} is applicable — {}", applicable.id, applicable.why));
+        }
         scoped.collections.clone_from(&template.collections);
         scoped.skipped_collections.clone_from(&template.skipped_collections);
         if let Some(dut) = template.dut {
@@ -478,6 +507,153 @@ impl Profile {
             }
         }
     }
+
+    fn validate_applicable_overrides(&self, path: &Path) -> Result<(), ProfileError> {
+        for template in &self.templates {
+            for applicable in &template.applicable {
+                let inherited = self
+                    .not_applicable
+                    .iter()
+                    .chain(template.not_applicable.iter())
+                    .any(|entry| entry.id.eq_ignore_ascii_case(&applicable.id));
+                if !inherited {
+                    return Err(ProfileError::Inheritance(
+                        path.display().to_string(),
+                        format!(
+                            "template {} marks case {} applicable, but no inherited exclusion has that ID",
+                            template.file, applicable.id
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Recursively load one profile and merge its child overrides over the base.
+///
+/// Ordinary TOML tables merge by key and scalar/array values replace their
+/// parent. The one domain-specific rule is `[[template]]`: entries merge by
+/// their `file`, so a derived profile can replace one patch list or variable
+/// without copying every other template and exception in the family profile.
+fn load_profile_value(path: &Path, stack: &mut Vec<PathBuf>) -> Result<toml::Value, ProfileError> {
+    let canonical = path.canonicalize().map_err(|e| ProfileError::Io(path.display().to_string(), e))?;
+    if stack.contains(&canonical) {
+        let mut cycle = stack.iter().map(|entry| entry.display().to_string()).collect::<Vec<_>>();
+        cycle.push(canonical.display().to_string());
+        return Err(ProfileError::Inheritance(
+            path.display().to_string(),
+            format!("inheritance cycle: {}", cycle.join(" -> ")),
+        ));
+    }
+    stack.push(canonical);
+
+    let text = std::fs::read_to_string(path).map_err(|e| ProfileError::Io(path.display().to_string(), e))?;
+    let mut child: toml::Value =
+        toml::from_str(&text).map_err(|e| ProfileError::Parse(path.display().to_string(), Box::new(e)))?;
+    let extends = child
+        .as_table_mut()
+        .ok_or_else(|| ProfileError::Inheritance(path.display().to_string(), "profile root is not a table".into()))?
+        .remove("extends");
+
+    let result = if let Some(extends) = extends {
+        let parent_name = extends.as_str().ok_or_else(|| {
+            ProfileError::Inheritance(path.display().to_string(), "`extends` must be a relative profile path".into())
+        })?;
+        if !Path::new(parent_name).is_relative() {
+            return Err(ProfileError::Inheritance(
+                path.display().to_string(),
+                "`extends` must be a relative profile path".into(),
+            ));
+        }
+        let parent_path = path.parent().unwrap_or_else(|| Path::new(".")).join(parent_name);
+        let mut parent = load_profile_value(&parent_path, stack)?;
+        merge_profile_values(&mut parent, child, true);
+        parent
+    } else {
+        child
+    };
+
+    stack.pop();
+    Ok(result)
+}
+
+fn merge_profile_values(parent: &mut toml::Value, child: toml::Value, root: bool) {
+    match (parent, child) {
+        (toml::Value::Table(parent), toml::Value::Table(child)) => {
+            for (key, child_value) in child {
+                match parent.get_mut(&key) {
+                    Some(parent_value) if root && key == "template" => {
+                        merge_template_arrays(parent_value, child_value);
+                    }
+                    Some(parent_value) if key == "not_applicable" => {
+                        merge_keyed_arrays(parent_value, child_value, "id");
+                    }
+                    Some(parent_value) => merge_profile_values(parent_value, child_value, false),
+                    None => {
+                        parent.insert(key, child_value);
+                    }
+                }
+            }
+        }
+        (parent, child) => *parent = child,
+    }
+}
+
+fn merge_keyed_arrays(parent: &mut toml::Value, child: toml::Value, key: &str) {
+    let child = match child {
+        toml::Value::Array(child) => child,
+        child => {
+            *parent = child;
+            return;
+        }
+    };
+    let Some(parent) = parent.as_array_mut() else {
+        *parent = toml::Value::Array(child);
+        return;
+    };
+    for child_entry in child {
+        let identity = child_entry.get(key).and_then(toml::Value::as_str);
+        let existing = identity.and_then(|identity| {
+            parent.iter_mut().find(|entry| {
+                entry
+                    .get(key)
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|candidate| candidate.eq_ignore_ascii_case(identity))
+            })
+        });
+        if let Some(existing) = existing {
+            *existing = child_entry;
+        } else {
+            parent.push(child_entry);
+        }
+    }
+}
+
+fn merge_template_arrays(parent: &mut toml::Value, child: toml::Value) {
+    let child = match child {
+        toml::Value::Array(child) => child,
+        child => {
+            *parent = child;
+            return;
+        }
+    };
+    let Some(parent) = parent.as_array_mut() else {
+        *parent = toml::Value::Array(child);
+        return;
+    };
+    for child_template in child {
+        let file = child_template.get("file").and_then(toml::Value::as_str);
+        let existing = file.and_then(|file| {
+            parent.iter_mut().find(|entry| entry.get("file").and_then(toml::Value::as_str) == Some(file))
+        });
+        if let Some(existing) = existing {
+            merge_profile_values(existing, child_template, false);
+        } else {
+            parent.push(child_template);
+        }
+    }
 }
 
 /// Failure to load a profile.
@@ -485,6 +661,8 @@ impl Profile {
 pub enum ProfileError {
     Io(String, std::io::Error),
     Parse(String, Box<toml::de::Error>),
+    /// A derived profile has an invalid parent or override.
+    Inheritance(String, String),
     /// A template was named but there is nowhere to look for it.
     NoTemplatesDir(String),
 }
@@ -494,6 +672,7 @@ impl std::fmt::Display for ProfileError {
         match self {
             Self::Io(p, e) => write!(f, "could not read the profile {p}: {e}"),
             Self::Parse(p, e) => write!(f, "could not parse the profile {p}: {e}"),
+            Self::Inheritance(p, e) => write!(f, "could not inherit the profile {p}: {e}"),
             Self::NoTemplatesDir(file) => write!(
                 f,
                 "the profile asks for the template {file}, but neither --templates-dir nor \
@@ -510,6 +689,20 @@ impl std::error::Error for ProfileError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temp_profile_dir(label: &str) -> PathBuf {
+        let unique = format!(
+            "zweidraehte-profile-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time follows the Unix epoch")
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir(&dir).expect("create isolated profile directory");
+        dir
+    }
 
     #[test]
     fn a_minimal_profile_gets_safe_defaults() {
@@ -530,6 +723,7 @@ mod tests {
         for (name, expected) in [
             ("bcu2", DutMode::Bcu2),
             ("bcu2-secure", DutMode::Bcu2Secure),
+            ("bcu2-secure-base", DutMode::Bcu2SecureBase),
             ("micro-system7", DutMode::MicroSystem7),
             ("micro-system7-secure", DutMode::MicroSystem7Secure),
         ] {
@@ -615,6 +809,90 @@ mod tests {
         let scoped = p.for_template(&p.templates[0]);
         assert!(scoped.accepts_collection(Some("anything")));
         assert!(scoped.accepts_collection(None));
+    }
+
+    #[test]
+    fn a_derived_profile_overrides_one_template_without_copying_the_others() {
+        let dir = temp_profile_dir("inheritance");
+        std::fs::write(
+            dir.join("base.toml"),
+            r#"
+                dut = "bcu2"
+
+                [[template]]
+                file = "Management.xml"
+                patches = ["plain.toml"]
+                [template.variables]
+                DD0_RESPONSE = "00 20"
+                [[template.not_applicable]]
+                id = "EFF"
+                why = "the base profile has standard frames"
+
+                [[template]]
+                file = "Transport.xml"
+            "#,
+        )
+        .expect("write base profile");
+        std::fs::write(
+            dir.join("secure.toml"),
+            r#"
+                extends = "base.toml"
+                dut = "bcu2-secure-base"
+
+                [[template]]
+                file = "Management.xml"
+                patches = ["secure.toml"]
+                [template.variables]
+                DD0_RESPONSE = "00 21"
+                [[template.applicable]]
+                id = "EFF"
+                why = "the secure composition has extended frames"
+            "#,
+        )
+        .expect("write derived profile");
+
+        let profile = Profile::load(dir.join("secure.toml")).expect("load derived profile");
+        assert_eq!(profile.dut, Dut::Bcu2SecureBase);
+        assert_eq!(profile.templates.len(), 2, "the untouched transport template is inherited");
+        let management = &profile.templates[0];
+        assert_eq!(management.patches, ["secure.toml"]);
+        assert_eq!(management.variables["DD0_RESPONSE"], "00 21");
+        assert!(profile.for_template(management).not_applicable_reason(Some("EFF")).is_none());
+
+        std::fs::remove_dir_all(dir).expect("remove isolated profile directory");
+    }
+
+    #[test]
+    fn an_applicable_override_must_name_an_inherited_exclusion() {
+        let dir = temp_profile_dir("applicable");
+        std::fs::write(dir.join("base.toml"), "[[template]]\nfile = \"Management.xml\"\n").expect("write base profile");
+        std::fs::write(
+            dir.join("derived.toml"),
+            r#"
+                extends = "base.toml"
+                [[template]]
+                file = "Management.xml"
+                [[template.applicable]]
+                id = "NOT-IN-BASE"
+                why = "would otherwise hide a profile typo"
+            "#,
+        )
+        .expect("write derived profile");
+
+        let error = Profile::load(dir.join("derived.toml")).expect_err("unknown exclusion must fail");
+        assert!(error.to_string().contains("no inherited exclusion"), "{error}");
+        std::fs::remove_dir_all(dir).expect("remove isolated profile directory");
+    }
+
+    #[test]
+    fn profile_inheritance_cycles_are_rejected() {
+        let dir = temp_profile_dir("cycle");
+        std::fs::write(dir.join("a.toml"), "extends = \"b.toml\"\n").expect("write first profile");
+        std::fs::write(dir.join("b.toml"), "extends = \"a.toml\"\n").expect("write second profile");
+
+        let error = Profile::load(dir.join("a.toml")).expect_err("cycle must fail");
+        assert!(error.to_string().contains("inheritance cycle"), "{error}");
+        std::fs::remove_dir_all(dir).expect("remove isolated profile directory");
     }
 
     #[test]
