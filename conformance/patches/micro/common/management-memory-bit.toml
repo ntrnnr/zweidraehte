@@ -1,0 +1,37 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# The MemoryBit collection calculates every read-back from a 0Fh factory
+# pattern. The preceding direct-memory collection overwrites the same fixture
+# window, while the micro DUT snapshots do not include volatile RAM/RAM2.
+# Reboot to clear Verify Mode, then establish the collection's declared
+# pattern over an isolated connection so its own TL sequence still starts at
+# zero. Five standard writes cover every offset the collection addresses.
+[[patch]]
+before = "C60961FB-1070-478A-966A-438A0AFC74F9"
+why = "2.10.1: restore the declared 0Fh memory pattern after collection 2.6-2.7 and clear inherited Verify Mode"
+insert = [
+  { full_reset = 2000 },
+  { inject = { data = "B0 #EDI #BDUT 60 80", delay_ms = 200 } },
+  { inject = { data = "BC #EDI #BDUT 6F 42 8C #MEMPOS 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F" } },
+  { expect = { data = "B0 #BDUT #EDI 60 C2", timeout_ms = 1000 } },
+  { inject = { data = "BC #EDI #BDUT 6F 46 8C #MEMPOS+12 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F" } },
+  { expect = { data = "B0 #BDUT #EDI 60 C6", timeout_ms = 1000 } },
+  { inject = { data = "BC #EDI #BDUT 6F 4A 8C #MEMPOS+24 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F" } },
+  { expect = { data = "B0 #BDUT #EDI 60 CA", timeout_ms = 1000 } },
+  { inject = { data = "BC #EDI #BDUT 6F 4E 8C #MEMPOS+36 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F" } },
+  { expect = { data = "B0 #BDUT #EDI 60 CE", timeout_ms = 1000 } },
+  { inject = { data = "BC #EDI #BDUT 6F 52 8C #MEMPOS+48 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F 0F" } },
+  { expect = { data = "B0 #BDUT #EDI 60 D2", timeout_ms = 1000 } },
+  { inject = { data = "BC #EDI #BDUT 64 56 81 #MEMPOS_LASTACCESS 0F" } },
+  { expect = { data = "B0 #BDUT #EDI 60 D6", timeout_ms = 1000 } },
+  { inject = { data = "B0 #EDI #BDUT 60 81", delay_ms = 200 } },
+]
+
+# The UserMemory collection is another independently configured bench state.
+# In one continuous run it otherwise inherits the 0Fh pattern established
+# above, including the byte which the partly protected read deliberately does
+# not overwrite. Restore the DUT before the collection performs its own setup.
+[[patch]]
+before = "91F06E9C-1EF7-4DF2-BDD3-AC38D65241F6"
+why = "2.31.0: restore factory memory after the MemoryBit collection deliberately seeds the same window with 0Fh"
+insert = [{ full_reset = 2000 }]

@@ -1,0 +1,28 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# The direct-bus harness does not emulate EITT's optional source-address
+# rewriting. After 2.16.1 assigns 1002h, the DUT correctly answers from 1002h.
+[[patch]]
+replace = "18005AC9-CEDF-43D4-B4A7-8E3B8F8A4AAC"
+why = "2.16.1: the serial-number read-back originates at the newly assigned 1002h individual address"
+insert = [
+  { expect = { data = "BC 10 02 00 00 EB 03 DD #BDUT_SERIAL_NUMBER 00 00 00 00", timeout_ms = 1000 } },
+]
+
+# The XML only narrates silence in these negative server cases. Make it part
+# of the verdict so accepting a wrong serial or reacting to a response PDU
+# cannot pass vacuously.
+[[patch]]
+after = "D226635D-AEBE-42CA-9236-D8FF8A2CFE6D"
+why = "2.17.1: a read carrying the wrong serial number must remain unanswered"
+insert = [{ expect_none = 1000 }]
+
+[[patch]]
+after = "D2A96C85-2A08-4A69-8350-8F96388D802E"
+why = "2.17.2: an incoming response carrying the wrong serial number must remain unanswered"
+insert = [{ expect_none = 1000 }]
+
+[[patch]]
+after = "9252C0DA-E868-4A64-83A2-7475684D3C63"
+why = "2.17.4: an incoming response carrying the correct serial number must still remain unanswered"
+insert = [{ expect_none = 1000 }]

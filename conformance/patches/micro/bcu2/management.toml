@@ -1,0 +1,18 @@
+template = "KnxConformanceTestTemplate-Management"
+
+[[patch]]
+replace = "E7888E82-4216-4038-8DF0-370E0216E092"
+why = "2.5.3: the BCU2 fixture implements no optional DD2 and answers with descriptor type 3Fh"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 61 43 7F", timeout_ms = 1000 } },
+]
+
+# RAM2 starts cleared, whereas the template reference fixture starts erased.
+# The boundary case is about rejecting the straddling write, not the erased
+# state of the untouched last byte.
+[[patch]]
+replace = "1D21BA4E-2234-4F06-9E5B-B38808B37E94"
+why = "2.32.2: BCU2 RAM2 is cleared rather than erased, so its untouched last accessible octet is 00h"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 65 42 C1 01 #MEM_ACCESSIBLE_END 00", timeout_ms = 1000 } },
+]

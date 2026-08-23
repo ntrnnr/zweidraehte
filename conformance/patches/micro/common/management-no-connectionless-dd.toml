@@ -1,0 +1,22 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# The illegal-APCI case ends with a connectionless DD0 read as a liveness
+# probe. Profiles without that optional service still have mandatory connected
+# DD0, so retain the illegal-APCI matrix and change only its final probe.
+[[patch]]
+replace = "E4D8520D-7461-439B-9987-5D5B6D5616E0"
+why = "2.20 final liveness check: this profile supports connected DD0, not the template's optional connectionless form"
+insert = [
+  { inject = { data = "B0 #EDI #BDUT 60 80", delay_ms = 200 } },
+  { inject = { data = "BC #EDI #BDUT 61 43 00" } },
+]
+
+[[patch]]
+replace = "BC2C8669-C6B8-4160-9FD7-D442090B03B1"
+why = "2.20 final liveness check: complete the mandatory connected DD0 exchange"
+insert = [
+  { expect = { data = "B0 #BDUT #EDI 60 C2", timeout_ms = 1000 } },
+  { expect = { data = "BC #BDUT #EDI 63 43 40 #DD0_RESPONSE.0 #DD0_RESPONSE.1", timeout_ms = 1000 } },
+  { inject = { data = "B0 #EDI #BDUT 60 C2", delay_ms = 200 } },
+  { inject = { data = "B0 #EDI #BDUT 60 81", delay_ms = 200 } },
+]

@@ -9,9 +9,12 @@
 //! DUT and the generated product file (`bcu2_product`) are built from.
 
 use zweidraehte_microdevice::device::DeviceIdentity;
-use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
+use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition, Bcu2Family};
+use zweidraehte_microdevice::family::MemoryAccessPolicy;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
+use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 
 /// The BDUT address every hand-written suite uses (1.0.1).
@@ -21,6 +24,36 @@ pub fn dut_ia() -> IndividualAddress {
 
 /// The suite convention serial (`#BDUT_SERIAL_NUMBER`).
 pub const SERIAL_NUMBER: [u8; 6] = [0xFE, 0xED, 0xBA, 0xBE, 0xCA, 0xFE];
+
+/// Certification-only legacy authorization windows.
+///
+/// A product chooses its own protected areas through the same zero-sized
+/// policy parameter. Keeping the EITT fixture here exercises the BCU2
+/// authorization server without putting invented certification addresses or
+/// branches into normal firmware.
+pub struct Bcu2ConformanceMemoryPolicy;
+
+impl MemoryAccessPolicy for Bcu2ConformanceMemoryPolicy {
+    const REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(0x0000, 0x0100),
+        MemoryRegion::open(0x0100, 0x0220),
+        MemoryRegion::new(
+            0x0320,
+            0x00E0,
+            MemoryPermission::Level(AccessLevel::Configuration),
+            MemoryPermission::Level(AccessLevel::Configuration),
+        ),
+        MemoryRegion::new(
+            0x0400,
+            0x00E0,
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+        ),
+        MemoryRegion::open(0x0900, 0x00D0),
+    ];
+}
+
+pub type Family = Bcu2Family<0x0020, Bcu2ConformanceMemoryPolicy>;
 
 /// Config octet with every flag: UE | TE | ROI off | WE | RE | CE,
 /// low transmission priority.
@@ -91,13 +124,12 @@ pub fn factory_snapshot() -> MicroSnapshot {
 #[cfg(test)]
 mod tests {
     use zweidraehte_microdevice::device::PollInput;
-    use zweidraehte_microdevice::families::bcu2::Bcu2Family;
 
     use super::*;
 
     #[test]
     fn malformed_transport_control_does_not_close_the_connection() {
-        let mut device = factory_snapshot().restore::<Bcu2Family>(identity(), 1);
+        let mut device = factory_snapshot().restore::<Family>(identity(), 1);
 
         let connect = [0xB0, 0xAF, 0xFE, 0x10, 0x01, 0x60, 0x80];
         assert!(device.poll(PollInput::Frame(&connect), 0).frames.is_empty());

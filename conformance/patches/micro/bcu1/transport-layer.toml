@@ -25,3 +25,58 @@ why = "2.2 cleanup: the harness programming-mode operation has no KNX Property r
 [[patch]]
 skip = "cd705378-3e74-4747-b13f-4370af91b9ce"
 why = "2.3: mask 0012h does not implement the optional connectionless Device Descriptor response"
+
+# The template's active branches are not consistently the Style-2 branches.
+# Keep the cases and replace only their wire assertion with the transition
+# selected by 03/03/04 §5.4.2, which 06 Profiles §4.1.2 mandates for BCU1.
+
+[[patch]]
+replace = "85401CAC-0986-4AFE-9703-8773AFE32302"
+why = "6.2.2.1: Style 2 E01 in OPEN_IDLE is A0, so a connect from another source is ignored"
+insert = [{ expect_none = 1000 }]
+
+[[patch]]
+replace = "49C91DA4-455D-449B-AB73-87F334F7C915"
+why = "6.2.2.2: Style 2 E01 in OPEN_WAIT is A0; the pending response is retransmitted only on TACK"
+insert = [{ expect_none = 1000 }]
+
+# Sequence 13 needs an AL service that answers in order to provoke E15 while
+# OPEN_WAIT. The template hard-codes a Property write, but BCU1 has no
+# Interface Objects. Direct memory access is mandatory on BCU1, so use a
+# one-byte read from its mandatory user EEPROM window instead.
+[[patch]]
+replace = "3B2BC8B7-5B5B-4BC8-9E35-A2F6D5060991"
+why = "6.3.1.2: replace the unavailable Property service with mandatory BCU1 direct-memory access to provoke E15"
+insert = [{ inject = { data = "BC #IFACE_A_ADDR #BDUT_ADDR 63 46 01 01 19" } }]
+
+[[patch]]
+replace = "F97A6274-E52F-448E-BE5D-BA19313FE1A1"
+why = "6.3.1.2: the queued BCU1 service now answers with A_Memory_Response"
+insert = [{ expect = { data = "BC #BDUT_ADDR #IFACE_A_ADDR 64 46 41 01 19 ??", timeout_ms = 500 } }]
+
+[[patch]]
+replace = "F1D35CC7-146A-4DF8-A151-132A3D267BDB"
+why = "6.3.1.2: first TACK retransmission of the queued BCU1 memory response"
+insert = [{ expect = { data = "BC #BDUT_ADDR #IFACE_A_ADDR 64 46 41 01 19 ??", timeout_ms = 3200 } }]
+
+[[patch]]
+replace = "4BAFA07E-EE96-49C4-A11D-065861013488"
+why = "6.3.1.2: second TACK retransmission of the queued BCU1 memory response"
+insert = [{ expect = { data = "BC #BDUT_ADDR #IFACE_A_ADDR 64 46 41 01 19 ??", timeout_ms = 3200 } }]
+
+[[patch]]
+replace = "BDED1945-6DC2-4340-8AF9-6C7E92FEABDD"
+why = "6.3.1.2: final TACK retransmission of the queued BCU1 memory response"
+insert = [{ expect = { data = "BC #BDUT_ADDR #IFACE_A_ADDR 64 46 41 01 19 ??", timeout_ms = 3200 } }]
+
+[[patch]]
+replace = "62A76FBA-FDA9-44D1-8BF2-FD06D2089566"
+why = "6.4.2.2: Style 2 E09 in OPEN_WAIT is A0, so the response repeats after the 3 second TACK rather than the template's general timeout"
+insert = [
+  { expect = { data = "B0 #BDUT_ADDR #IFACE_A_ADDR 63 43 40 ?? ??", timeout_ms = 3200 } },
+]
+
+[[patch]]
+replace = "0D01DA78-2D63-4970-AE5D-475C5CD8CF7E"
+why = "6.4.5.1: Style 2 E12 in OPEN_IDLE is A0, so an otherwise correct T_NAK is ignored when no data is pending"
+insert = [{ expect_none = 1000 }]

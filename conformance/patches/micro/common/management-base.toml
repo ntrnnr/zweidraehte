@@ -1,0 +1,101 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# The template toggles programming mode through a custom PID 36 property that
+# belongs to its sample application rather than to a mask-defined object.
+# Micro DUT fixtures expose the same physical resource through harness control.
+
+[[patch]]
+replace = "19C60DB1-8BE6-447A-BADA-92EA606BB0F5"
+why = "2.3.3 setup: set the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = true }]
+[[patch]]
+skip = "65BEE22C-C44F-410C-8F7C-D4B2C19C28BC"
+why = "2.3.3 setup: DUT control has no KNX Property response"
+[[patch]]
+replace = "1C8BAB22-009A-4306-9A09-2EAFA74FB463"
+why = "2.3.3 cleanup: clear the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = false }]
+[[patch]]
+skip = "8EEFC9C9-A826-43AC-B410-AC2C2DECCDE5"
+why = "2.3.3 cleanup: DUT control has no KNX Property response"
+
+[[patch]]
+replace = "E85BC68D-3685-4B8A-AA88-33EF99323E85"
+why = "2.3.4 setup: set the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = true }]
+[[patch]]
+skip = "D7FB18C9-C697-4456-A4CE-2C5032D8D10D"
+why = "2.3.4 setup: DUT control has no KNX Property response"
+[[patch]]
+replace = "5819948D-F45E-40D4-9C9A-EA1A61FA5176"
+why = "2.3.4 cleanup: clear the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = false }]
+[[patch]]
+skip = "B56AA035-D598-4587-AA77-209B42F3BD48"
+why = "2.3.4 cleanup: DUT control has no KNX Property response"
+
+[[patch]]
+replace = "4E4FC22A-6DD5-4B8B-8B2E-8CAA8314D134"
+why = "2.4.1 verification setup: set the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = true }]
+[[patch]]
+skip = "4B6D0967-4F5A-4091-A115-67AFA4467140"
+why = "2.4.1 verification setup: DUT control has no KNX Property response"
+[[patch]]
+replace = "27B9F1DF-808F-4810-B05E-A307AF8F8497"
+why = "2.4.1 cleanup: clear the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = false }]
+[[patch]]
+skip = "25CC3B57-CFEB-4DE3-BC36-C6D8EBADA2D0"
+why = "2.4.1 cleanup: DUT control has no KNX Property response"
+
+[[patch]]
+replace = "F4E342E6-E653-44D6-A8D3-11678791B09A"
+why = "2.4.2 setup: set the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = true }]
+[[patch]]
+skip = "B4293602-F74D-4ED1-959B-77B10002073E"
+why = "2.4.2 setup: DUT control has no KNX Property response"
+[[patch]]
+replace = "FB1983A4-94B7-4126-8C0B-806B25E9AFD8"
+why = "2.4.2 cleanup: clear the micro DUT's programming-mode resource through fixture control"
+insert = [{ set_programming_mode = false }]
+[[patch]]
+skip = "444B0030-6385-4064-91AA-EE004145AC86"
+why = "2.4.2 cleanup: DUT control has no KNX Property response"
+
+# The XML narrates silence in these four negative cases but contains no OUT
+# step, so make the verdict executable.
+[[patch]]
+after = "4B86644C-01A8-46BD-9080-07473CD35916"
+why = "2.3.1: programming-mode-off IA read must remain unanswered"
+insert = [{ expect_none = 1000 }]
+[[patch]]
+after = "A55C75E9-3BF6-44FA-8172-2F58CBC71879"
+why = "2.3.2: an incoming IA response must remain unanswered"
+insert = [{ expect_none = 1000 }]
+[[patch]]
+after = "9597767F-F873-444C-B78A-AD20C054D0EC"
+why = "2.3.4: an incoming IA response must remain unanswered even in programming mode"
+insert = [{ expect_none = 1000 }]
+[[patch]]
+after = "3736D63C-C9C5-49CF-B0C8-CE0ADCF33A61"
+why = "2.4.1: programming-mode-off IA write must remain unanswered and have no effect"
+insert = [{ expect_none = 1000 }]
+
+# The restart case assumes an application-specific Property for controlling
+# and reading programming mode. Exercise the same observable resource through
+# the fixture control before restart and the mandatory broadcast IA service
+# after the DUT has rebooted.
+[[patch]]
+before = "7F505353-E5E2-4197-A332-15DA4F50389B"
+why = "2.9.1 setup: make programming-mode reset observable without the template application's custom Property"
+insert = [{ set_programming_mode = true }]
+[[patch]]
+replace = "3cfcfdf1-eb9d-497f-a502-f06189aa58b0"
+why = "2.9.1 verification: probe programming mode with the standard broadcast IA service after restart"
+insert = [{ inject = { data = "BC #EDI 00 00 E1 00 00" } }]
+[[patch]]
+replace = "2b5446b4-80cc-4487-8c17-163c8953046a"
+why = "2.9.1 verification: a rebooted device with programming mode off must not answer the IA probe"
+insert = [{ expect_none = 1000 }]

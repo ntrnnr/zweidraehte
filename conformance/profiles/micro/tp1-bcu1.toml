@@ -1,8 +1,9 @@
 # Minimal TP1 BCU1/System-1 profile (mask 0012h) on the polling stack.
 #
 # BCU1 has no Interface Objects, Property services or load/run state
-# machines. Network and Transport are the two vendor templates whose fixture
-# requirements fit the device without inventing newer-profile resources.
+# machines. The profile therefore selects only collections that can describe
+# the mask's actual service surface; every omitted Management collection is
+# accounted for below rather than silently inheriting a newer-profile fixture.
 
 medium = "tp"
 dut = "bcu1"
@@ -33,11 +34,8 @@ patches = ["conformance/patches/micro/bcu1/transport-layer.toml"]
 collections = [
   "2 General Transport Layer Tests",
   "4 Testing of Timing Requirements",
+  "6 Testing of Transport Layer State Machine",
 ]
-
-[[template.skipped_collection]]
-name = "6 Testing of Transport Layer State Machine"
-why = "the initial BCU1 profile is deliberately a smoke profile; complete Style-2 state-machine coverage remains tracked because the micro wrapper does not yet retain an E15 response queued while OPEN_WAIT"
 
 [template.variables]
 SER_NUM = "FE ED 00 12 BE EF"
@@ -51,3 +49,293 @@ why = "one mock bus carries both tool addresses, so @if+/@if- have nothing to sw
 [[template.not_applicable]]
 id = "6E6FDBCA-0912-40BA-A10A-97955BD1CE61"
 why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run"
+
+# 8/3/7 — the BCU1-shaped AIL and Management service surface. Collections
+# belonging only to newer profiles or optional features are accounted for
+# explicitly below.
+[[template]]
+file = "KnxConformanceTestTemplate-Management.xml"
+patches = [
+  "conformance/patches/micro/common/management-base.toml",
+  "conformance/patches/micro/common/management-no-connectionless-dd.toml",
+  "conformance/patches/micro/common/management-memory-bit.toml",
+  "conformance/patches/micro/bcu1/management.toml",
+]
+collections = [
+  "2.3 - 2.4 Individual Address",
+  "2.5 Device Descriptor",
+  "2.6 - 2.7 Memory Access",
+  "2.8 ADC",
+  "2.9 Restart",
+  "2.10 MemoryBit Access",
+  "2.20 Illegal APCI",
+  "2.31 - 2.33 User Memory Access",
+]
+
+[template.variables]
+# Keep the 15-byte seed above the BCU1 object's RAM slots. The boundary at
+# 00FFh is real even though EEPROM follows at 0100h: the service validates
+# one declared memory region and must reject an operation spanning two.
+MEM_ACCESSIBLE_START = "00 E0"
+MEM_ACCESSIBLE_END = "00 FF"
+MEM_PROTECTED_START = "02 00"
+DD0_RESPONSE = "00 12"
+# The 63-byte preparation block fits in otherwise unused page-0 RAM. The
+# boundary case starts at 00FFh and must be rejected atomically because an
+# operation may not span the RAM and EEPROM regions.
+MEMPOS = "00 80"
+MEMPOS_LASTACCESS = "00 FF"
+MEMPOS_PROTECTED = "02 00"
+
+[template.tl_sequence]
+recompute = true
+why = "EITT recomputes connected management sequence numbers before running a sequence (manual 12.2.3.14); the literals in this template are stale"
+
+[[template.not_applicable]]
+id = "9A53BCAD-72C5-4E66-BC0F-4B8179F0B2A1"
+why = "2.5.2 is connectionless; 06 Profiles §4.3 marks connectionless Device Descriptor unsupported on BCU1"
+[[template.not_applicable]]
+id = "5837178A-82EB-4BF1-A4A9-3C36F2FA0AC6"
+why = "2.5.4 is connectionless; 06 Profiles §4.3 marks connectionless Device Descriptor unsupported on BCU1"
+[[template.not_applicable]]
+id = "42F5B9D7-3992-41A1-8955-8CBD90AE09CE"
+why = "2.5.6 is connectionless; 06 Profiles §4.3 marks connectionless Device Descriptor unsupported on BCU1"
+
+[[template.not_applicable]]
+id = "125FDD41-65D6-496D-B20F-EE15A8C31FDD"
+why = "2.6.6 requires an extended response; mask 0012h is a standard-frame profile"
+[[template.not_applicable]]
+id = "60178AF4-0215-49A6-8FAF-5086FF3733D8"
+why = "2.6.7 is the MAX_APDU_LENGTH-below-66 branch for extended-frame devices and expects its count-zero response in EFF; BCU1 is SFF-only and runs 2.6.5 instead"
+[[template.not_applicable]]
+id = "7409B2E1-0CB0-4A02-9FDF-74D2A48ABA68"
+why = "2.6.8 sends an extended request; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "453D3028-286F-4039-84F7-D2F173014F37"
+why = "2.6.9 sends and expects extended frames; mask 0012h does not support them"
+[[template.not_applicable]]
+id = "1BF06A17-262F-4B23-AB94-5BC1FA8FCDC0"
+why = "2.6.10 applies only when MAX_APDU_LENGTH is at least 66; BCU1 advertises 15"
+
+[[template.not_applicable]]
+id = "3C1B9A63-2953-4B1D-8C58-57F2D4814145"
+why = "2.7.4 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "65D17F81-E8F4-4C0B-BE40-194693BBE76A"
+why = "2.7.5 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "93F9B4FC-7D4C-4686-9284-ED2C9E2F30C1"
+why = "2.7.6 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "C4C49EAD-3AC5-4A3B-886F-A3F284E7FE8A"
+why = "2.7.7 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+
+[[template.not_applicable]]
+id = "A74445F0-100A-4804-A5CD-1CBA715019D7"
+why = "2.7.8 sends and expects extended frames; mask 0012h supports neither"
+[[template.not_applicable]]
+id = "B0B5D6A9-81A8-4F5A-95B6-047FC83CE030"
+why = "2.7.9 sends an extended write; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "7B32A143-B03A-4393-B88B-314AA67D0CD7"
+why = "2.7.10 sends an extended write and applies only below MAX_APDU_LENGTH 66; BCU1 supports the latter but not extended frames"
+[[template.not_applicable]]
+id = "CFB5BEF5-7C53-4192-B992-B67E1A75839A"
+why = "2.7.11 sends extended malformed writes; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "AD87F043-9F34-4D4F-9C42-50745C1A6D3A"
+why = "2.7.12 requires extended frames and MAX_APDU_LENGTH at least 66; BCU1 has neither"
+[[template.not_applicable]]
+id = "3CA86236-C150-4E49-9B00-E50747163082"
+why = "2.7.13 sends and expects extended frames; mask 0012h supports neither"
+[[template.not_applicable]]
+id = "ED4B1736-98A4-4D09-A28A-01C5A561016C"
+why = "2.7.14 sends an extended write; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "F41CB375-5B93-47D2-B14D-CB697FBBE3D7"
+why = "2.7.15 sends an extended write; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "0908E70E-49C9-43AF-8BAB-E9246C14BCF9"
+why = "2.7.16 sends extended malformed writes; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "8784BD49-3441-4287-9A65-0908E5E70C2D"
+why = "2.7.17 sends extended malformed writes; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "D37A86FB-A074-42B9-8B4E-18CDED99F51A"
+why = "2.7.18 requires extended frames and MAX_APDU_LENGTH at least 66; BCU1 has neither"
+[[template.not_applicable]]
+id = "4F081E10-6FDD-45EE-AFD9-61B503A4D908"
+why = "2.7.19 requires extended frames and MAX_APDU_LENGTH at least 66; BCU1 has neither"
+
+# 06 Profiles §4.2 makes only connection-oriented Basic Restart mandatory on
+# BCU1. Every other case in the collection is explicitly optional and this
+# composition implements none of those master/connectionless variants.
+[[template.not_applicable]]
+id = "43AB4ADE-F409-4E5A-8523-335B60940CC4"
+why = "2.9.2 is the optional connectionless Basic Restart; BCU1 implements the mandatory connected form only"
+[[template.not_applicable]]
+id = "FED5C426-E168-449D-B0C2-11DEF81B56AB"
+why = "2.9.3 is an optional connectionless Master Reset not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "C5F2B3F9-6312-4E47-9B8B-57D8D42A53F2"
+why = "2.9.3a is an optional connected Master Reset not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "9F22E4EA-3140-4727-8594-EBC2F0AC102E"
+why = "2.9.4 is an optional connectionless Factory Reset not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "F7180B04-F4C7-4846-B600-AD820D24138B"
+why = "2.9.4a is an optional connected Factory Reset not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "0D0BDA7B-B079-4A9A-AABB-50DEDFBA60BC"
+why = "2.9.5 is an optional connectionless ResetIA not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "14497082-3CD4-4E7E-AAE8-2405A513F8DD"
+why = "2.9.5a is an optional connected ResetIA not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "95CAE20A-2D3F-4515-8573-1E6FA46D79A0"
+why = "2.9.6 is an optional connectionless ResetAP not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "28112B9D-239D-4130-BF02-5F3834755154"
+why = "2.9.6a is an optional connected ResetAP not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "03AD5744-2294-48D0-8171-E20B4E8199A2"
+why = "2.9.7 is an optional connectionless ResetParam not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "9AE837B8-94AB-40D1-B796-06639A60DC15"
+why = "2.9.7a is an optional connected ResetParam not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "18ED9FD6-891D-4CDB-8B67-AA6F062A350B"
+why = "2.9.8 is an optional connectionless ResetLinks not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "A574BCCE-51D2-4F1C-A9C5-A177490D1659"
+why = "2.9.8a is an optional connected ResetLinks not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "F586774A-07D3-4D7A-9E69-8B874404A063"
+why = "2.9.9 is an optional connectionless Factory Reset without IA not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "952267FE-21E5-481B-8EFC-AF98AC37BB98"
+why = "2.9.9a is an optional connected Factory Reset without IA not implemented by this BCU1 composition"
+[[template.not_applicable]]
+id = "E61133C5-53AD-4CD4-AD0D-033153A5886E"
+why = "2.9.10 tests error handling for the optional connectionless Master Reset service, which is absent"
+[[template.not_applicable]]
+id = "F549CCB9-3C16-4641-BE75-98A28B4AD32F"
+why = "2.9.10a tests error handling for the optional connected Master Reset service, which is absent"
+[[template.not_applicable]]
+id = "D7D75FB9-4AB9-427C-BF5E-680FBDEFB9B2"
+why = "2.9.11 tests authorization of the optional Master Reset service; BCU1 implements neither feature"
+[[template.not_applicable]]
+id = "96CAA255-CCC7-41F2-A010-73D77601BF61"
+why = "2.9.12 tests channel validation for the optional connectionless Master Reset service, which is absent"
+[[template.not_applicable]]
+id = "DB210693-08FB-4449-9C1D-76F3F43C625F"
+why = "2.9.12a tests channel validation for the optional connected Master Reset service, which is absent"
+
+[[template.not_applicable]]
+id = "4C6E4F4B-2A80-4D34-91ED-706FE89FC522"
+why = "2.31.5 requires the response in an extended frame; mask 0012h is a standard-frame profile"
+[[template.not_applicable]]
+id = "76887E41-4EDC-4297-83D2-563F64A7747F"
+why = "2.31.6 requires a count-zero response in an extended frame; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "F56F58E8-8666-4032-84C9-16413603F375"
+why = "2.31.7 sends its request as an extended frame; mask 0012h does not support extended frames"
+[[template.not_applicable]]
+id = "CD9F4F1A-74F8-43AB-980F-A543389A92D7"
+why = "2.31.8 sends and expects extended frames; mask 0012h does not support them"
+
+[[template.not_applicable]]
+id = "F2BEEDDF-C76B-4422-AA8B-4397F7E58D40"
+why = "2.32.4 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "E7F2B6F1-0C5E-4BE1-9B9B-A2A2E6C3BA5A"
+why = "2.32.5 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "C1F90ECB-24DF-4374-91F8-01A0D100DE4D"
+why = "2.32.6 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "756BF34D-047E-4368-8EC9-4398C9E6DAC5"
+why = "2.32.12 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+
+[[template.not_applicable]]
+id = "21884007-B0DD-4D75-9780-E85B5C6F3EAA"
+why = "2.32.7 sends an extended write; mask 0012h is a standard-frame profile"
+[[template.not_applicable]]
+id = "FC264342-D90B-463D-BD78-8FE3CE8E609E"
+why = "2.32.8 sends an extended write; mask 0012h is a standard-frame profile"
+[[template.not_applicable]]
+id = "C0BEA8A5-DAC0-48ED-BF38-47FA60051574"
+why = "2.32.9 sends an extended write; mask 0012h is a standard-frame profile"
+[[template.not_applicable]]
+id = "FD15A3BE-36C6-4658-8B18-E6C9C0B44308"
+why = "2.32.10 sends an extended write; mask 0012h is a standard-frame profile"
+[[template.not_applicable]]
+id = "2D805C32-EB0B-40D6-95EC-B1A4EEA1C2B8"
+why = "2.32.11 sends an extended write; mask 0012h is a standard-frame profile"
+[[template.not_applicable]]
+id = "C9B422B9-27EE-426B-A252-F209FE9E8879"
+why = "2.32.13 requires Verify Mode and extended frames; BCU1 supports neither"
+[[template.not_applicable]]
+id = "42ECA7DA-AF11-4E5F-ADAD-32E8F5D818C2"
+why = "2.32.14 requires Verify Mode and sends an extended write; BCU1 supports neither"
+[[template.not_applicable]]
+id = "332EA8BC-338E-42B7-8ABF-4D7439C38646"
+why = "2.32.15 requires Verify Mode and sends an extended write; BCU1 supports neither"
+[[template.not_applicable]]
+id = "3BC42C72-95AA-4549-BF6A-B5C8E0A2016C"
+why = "2.32.16 requires Verify Mode and includes an extended malformed write; BCU1 supports neither"
+[[template.not_applicable]]
+id = "0795F3D4-8D17-4A7A-B971-878C8684257E"
+why = "2.32.17 requires Verify Mode and sends an extended write; BCU1 supports neither"
+
+[[template.not_applicable]]
+id = "04402B21-B387-421C-A54B-47361742D27E"
+why = "2.10.4 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "6230A290-21FF-4D3C-8036-8DA14A65CAC1"
+why = "2.10.5 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "ABC156DA-7180-4CC9-BEF4-F70D3A06EB86"
+why = "2.10.6 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.not_applicable]]
+id = "887D654A-E012-4280-B73E-CE27E6D09D02"
+why = "2.10.7 requires Verify Mode; 06 Profiles §4.2 marks it absent for BCU1"
+[[template.skipped_collection]]
+name = "2.11 Authorization"
+why = "authorization is optional for BCU1 and this implementation does not provide it"
+[[template.skipped_collection]]
+name = "2.12 Key Access"
+why = "key access accompanies optional BCU1 authorization and is not implemented"
+[[template.skipped_collection]]
+name = "2.13 to 2.15 Property Access"
+why = "BCU1 has no Interface Objects or property services"
+[[template.skipped_collection]]
+name = "2.16 - 2.17 Individual Address Serial Number"
+why = "06 Profiles §4.4 does not require KNX serial-number addressing for BCU1"
+[[template.skipped_collection]]
+name = "2.18 Network Parameter Access"
+why = "the BCU1 profile declares no network parameters"
+[[template.skipped_collection]]
+name = "2.22 to 2.24 Routing Table Access"
+why = "routing-table and router-memory services do not apply to a BCU1 end device"
+[[template.skipped_collection]]
+name = "2.25 Service Information Indication"
+why = "the collection contains no executable telegrams and says the removed A_ServiceInformation_Indication service is forbidden for new implementations"
+[[template.skipped_collection]]
+name = "2.27-2.29 Domain Address Access"
+why = "domain addresses apply to open media, not TP1"
+[[template.skipped_collection]]
+name = "2.30 Domain Address Selective"
+why = "selective domain-address access applies to open media, not TP1"
+[[template.skipped_collection]]
+name = "2.33 User Manufacturer Info Access"
+why = "06 Profiles §4.3 does not require application identification for BCU1"
+[[template.skipped_collection]]
+name = "2.34 Domain Address Serial Number Access (RF only)"
+why = "the collection is RF-only"
+[[template.skipped_collection]]
+name = "Test of structure of Address Table"
+why = "the vendor collection is marked 'to be defined' and contains no test cases"
+[[template.skipped_collection]]
+name = "Test of structure of Association Table"
+why = "the collection requires an operator-configured application fixture and interactive verdict"

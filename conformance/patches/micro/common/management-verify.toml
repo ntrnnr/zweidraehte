@@ -1,0 +1,41 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# Resources §4.2.14.7 requires Verify Mode to clear when its TL connection
+# closes. The MemoryBit template differs from its Memory and UserMemory
+# collections: only 2.10.4 assumes Verify Mode leaked from an earlier
+# collection, and 2.10.5-7 assume it leaked across their own disconnects.
+# Enable it connectionlessly after each case has opened its TL connection;
+# this neither consumes a connected sequence number nor violates the rule
+# that a connection must exist while Verify Mode is enabled.
+
+[[patch]]
+before = "D88CD205-2F54-489A-ADD2-4A947667EE76"
+why = "2.10.4: enable connection-scoped Verify Mode instead of inheriting it from a connection the template already closed"
+insert = [
+  { inject = { data = "BC #EDI #BDUT 66 03 D7 00 0E 10 01 04" } },
+  { expect = { data = "BC #BDUT #EDI 66 03 D6 00 0E 10 01 04", timeout_ms = 1000 } },
+]
+
+[[patch]]
+before = "16D69DBD-852B-49EC-93B5-4B641519673D"
+why = "2.10.5: re-enable Verify Mode after 2.10.4 closed its transport connection"
+insert = [
+  { inject = { data = "BC #EDI #BDUT 66 03 D7 00 0E 10 01 04" } },
+  { expect = { data = "BC #BDUT #EDI 66 03 D6 00 0E 10 01 04", timeout_ms = 1000 } },
+]
+
+[[patch]]
+before = "67EF2EAE-777F-4AA3-86C8-388598416DEA"
+why = "2.10.6: re-enable Verify Mode after 2.10.5 closed its transport connection"
+insert = [
+  { inject = { data = "BC #EDI #BDUT 66 03 D7 00 0E 10 01 04" } },
+  { expect = { data = "BC #BDUT #EDI 66 03 D6 00 0E 10 01 04", timeout_ms = 1000 } },
+]
+
+[[patch]]
+before = "2FA599F6-D417-4BDE-9E98-CC5A3007E60F"
+why = "2.10.7: re-enable Verify Mode after 2.10.6 closed its transport connection"
+insert = [
+  { inject = { data = "BC #EDI #BDUT 66 03 D7 00 0E 10 01 04" } },
+  { expect = { data = "BC #BDUT #EDI 66 03 D6 00 0E 10 01 04", timeout_ms = 1000 } },
+]

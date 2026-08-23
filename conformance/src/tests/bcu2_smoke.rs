@@ -129,13 +129,12 @@ pub fn create_bcu2_smoke_suite() -> TestSuite {
             expect("B0 #BDUT #EDI 60 C6", 0),
             expect("BC #BDUT #EDI 64 46 41 01 D0 42", 400),
             inject_delay("B0 #EDI #BDUT 60 C6", 200),
-            comment("Verify off: the same write draws only the T_ACK"),
-            inject("BC #EDI #BDUT 66 4B D7 00 0E 10 01 00"),
-            expect("B0 #BDUT #EDI 60 CA", 0),
-            expect("BC #BDUT #EDI 66 4B D6 00 0E 10 01 00", 400),
-            inject_delay("B0 #EDI #BDUT 60 CA", 200),
-            inject("BC #EDI #BDUT 64 4E 81 01 D0 00"),
-            expect("B0 #BDUT #EDI 60 CE", 0),
+            comment("Closing the TL connection must clear Verify Mode"),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            comment("After reconnecting, the same write draws only the T_ACK"),
+            inject("BC #EDI #BDUT 64 42 81 01 D0 00"),
+            expect("B0 #BDUT #EDI 60 C2", 0),
             expect_none(300),
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
@@ -180,9 +179,28 @@ pub fn create_bcu2_smoke_suite() -> TestSuite {
             expect("BC #BDUT 10 03 E1 00 80", 400),
         ]),
         // ====================================================================
-        // B2-8: A_Restart
+        // B2-8: Detection of our own Individual Address on the bus
         // ====================================================================
-        TestCase::new("B2-8 A_Restart is acknowledged and restarts").with_steps(vec![
+        TestCase::new("B2-8 Own source address latches Device Control").with_steps(vec![
+            comment("Volume 6 Profiles 2.3.2: seeing our IA as a source latches bit 1"),
+            inject("BC #BDUT 10 00 E1 00 81"),
+            expect_none(200),
+            inject_delay("B0 #EDI #BDUT 60 80", 200),
+            inject("BC #EDI #BDUT 65 43 D5 00 0E 10 01"),
+            expect("B0 #BDUT #EDI 60 C2", 0),
+            expect("BC #BDUT #EDI 66 43 D6 00 0E 10 01 02", 400),
+            inject_delay("B0 #EDI #BDUT 60 C2", 200),
+            comment("A management client may clear the latched value by writing zero"),
+            inject("BC #EDI #BDUT 66 47 D7 00 0E 10 01 00"),
+            expect("B0 #BDUT #EDI 60 C6", 0),
+            expect("BC #BDUT #EDI 66 47 D6 00 0E 10 01 00", 400),
+            inject_delay("B0 #EDI #BDUT 60 C6", 200),
+            inject_delay("B0 #EDI #BDUT 60 81", 200),
+        ]),
+        // ====================================================================
+        // B2-9: A_Restart
+        // ====================================================================
+        TestCase::new("B2-9 A_Restart is acknowledged and restarts").with_steps(vec![
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 61 43 80"),
             expect("B0 #BDUT #EDI 60 C2", 400),

@@ -1,0 +1,34 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# DD2 is optional for mask 0705h and the compact fixture omits it.
+[[patch]]
+replace = "E7888E82-4216-4038-8DF0-370E0216E092"
+why = "2.5.3: the micro System 7 fixture implements no optional DD2 and answers with descriptor type 3Fh"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 61 43 7F", timeout_ms = 1000 } },
+]
+
+[[patch]]
+replace = "7A12B89B-6E4F-408D-9EB6-DA6A1D1AD802"
+why = "2.5.4: connectionless DD2 reports the same unsupported descriptor type as the connected service"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 61 03 7F", timeout_ms = 1000 } },
+]
+
+# The conformance EEPROM image is zero-initialized. The case is about the
+# rejected write straddling the end of the mapped 4000h..7FFFh window.
+[[patch]]
+replace = "1D21BA4E-2234-4F06-9E5B-B38808B37E94"
+why = "2.32.2: the micro System 7 EEPROM fixture starts cleared, so its untouched last accessible octet is 00h"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 65 42 C1 01 #MEM_ACCESSIBLE_END 00", timeout_ms = 1000 } },
+]
+
+# An invalid key returns the free authorization level. System 7 has sixteen
+# levels and therefore returns 0Fh, not the four-level template's 03h.
+[[patch]]
+replace = "C11B1154-363B-471D-9BD8-755314221B0C"
+why = "2.11.2: an illegal key falls to System 7's free level 15"
+insert = [
+  { expect = { data = "BC #BDUT #EDI 62 43 D2 0F", timeout_ms = 1000 } },
+]

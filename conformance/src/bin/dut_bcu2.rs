@@ -31,7 +31,7 @@ use zweidraehte_conformance::ipc::framing::{read_msg_blocking, write_msg_blockin
 use zweidraehte_conformance::ipc::protocol::{CapturedFrame, DutMessage, ExitReason, RunnerMessage};
 use zweidraehte_conformance::ipc::shm::SharedMemory;
 use zweidraehte_microdevice::device::{Microdevice, PollInput, PollOutput};
-use zweidraehte_microdevice::families::bcu2::{Bcu2Family, offsets};
+use zweidraehte_microdevice::families::bcu2::offsets;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
 
 /// `ServiceType::L_Data_Req` — the service every outgoing DUT frame
@@ -48,7 +48,7 @@ fn main() {
     let time_divisor: u32 = std::env::var("KNX_TIME_DIVISOR").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
 
     let snapshot = load_or_seed_snapshot(&mut shm, bcu2_stack::factory_snapshot);
-    let mut device: Microdevice<Bcu2Family> = snapshot.restore(bcu2_stack::identity(), time_divisor);
+    let mut device: Microdevice<bcu2_stack::Family> = snapshot.restore(bcu2_stack::identity(), time_divisor);
     log::info!("BCU2 DUT up: IA {}, time divisor {}", device.individual_address(), time_divisor);
 
     // The primary socket, blocking with a short receive timeout so the
@@ -95,7 +95,7 @@ fn main() {
 
 fn handle_command(
     msg: RunnerMessage,
-    device: &mut Microdevice<Bcu2Family>,
+    device: &mut Microdevice<bcu2_stack::Family>,
     socket: &mut UnixStream,
     shm: &mut SharedMemory,
     now_ms: u32,
@@ -161,7 +161,7 @@ fn finish_step(socket: &mut UnixStream, seq: u32, out: PollOutput) {
 /// `Exiting`, shutdown-write (so the runner sees EOF after the message
 /// drains), exit 0.
 fn exit_with(
-    device: &Microdevice<Bcu2Family>,
+    device: &Microdevice<bcu2_stack::Family>,
     socket: &mut UnixStream,
     shm: &mut SharedMemory,
     reason: ExitReason,

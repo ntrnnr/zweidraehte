@@ -11,15 +11,50 @@
 
 use zweidraehte_microdevice::device::DeviceIdentity;
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
+use zweidraehte_microdevice::family::MemoryAccessPolicy;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
+use zweidraehte_proto::access::AccessLevel;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
+use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
 
-/// The DUT's family: 1 KiB of user EEPROM backed from 4000h, the System 7
-/// group object table published at 4200h. Everything the client's
-/// download engine addresses (ADT 4000h, AST 4100h, COT 4200h, app
-/// segment 4300h) lives inside the backing.
-pub type MicroSystem7DutFamily = System7Family<0x400, 0x4200>;
+/// Certification-only memory permissions for the Management template.
+///
+/// The regular micro System 7 type still uses its product-sized EEPROM and
+/// standard policy. This host fixture backs the complete 4000h..7FFFh span so
+/// the vendor template can exercise its open, direction-protected and
+/// authorization-protected windows without adding runtime policy data to any
+/// firmware image.
+pub struct MicroSystem7ConformanceMemoryPolicy;
+
+impl MemoryAccessPolicy for MicroSystem7ConformanceMemoryPolicy {
+    const REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(0x0000, 0x0100),
+        MemoryRegion::open(0x0100, 0x0010),
+        MemoryRegion::open(0x0700, 0x0100),
+        MemoryRegion::open(0x4000, 0x1100),
+        MemoryRegion::read_only(0x5100, 0x0010, MemoryPermission::Open),
+        MemoryRegion::write_only(0x5110, 0x0010, MemoryPermission::Open),
+        MemoryRegion::new(
+            0x5120,
+            0x00E0,
+            MemoryPermission::Level(AccessLevel::Configuration),
+            MemoryPermission::Level(AccessLevel::Configuration),
+        ),
+        MemoryRegion::new(
+            0x5200,
+            0x0100,
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+        ),
+        MemoryRegion::open(0x5300, 0x2D00),
+        MemoryRegion::read_only(0xB6EA, 4, MemoryPermission::Open),
+    ];
+}
+
+/// The DUT's family: 16 KiB of certification backing from 4000h, with the
+/// real fixture tables still at 4000h..43FFh and its COT at 4200h.
+pub type MicroSystem7DutFamily = System7Family<0x4000, 0x4200, MicroSystem7ConformanceMemoryPolicy>;
 
 /// The BDUT address every hand-written suite uses (1.0.1).
 pub fn dut_ia() -> IndividualAddress {

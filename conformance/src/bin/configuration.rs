@@ -138,6 +138,7 @@ async fn main() -> ExitCode {
         ]),
         ("BCU2 (mask 0020)", DutMode::Bcu2, &[
             ("BCU2 descriptor smoke read", scenario_bcu2_descriptor),
+            ("BCU2 mandatory configuration properties", scenario_bcu2_required_properties),
             ("BCU2 programming-mode individual addressing", scenario_bcu2_programming_mode_addressing),
             ("BCU2 download over the property path", scenario_bcu2_full_download),
             ("BCU2 light-switch product download with parameters", scenario_bcu2_light_switch_download),
@@ -530,6 +531,68 @@ async fn run_bcu2_descriptor(bus: &KnxBus, target: Bcu2Target) -> Result<(), Str
     .await;
     close_quietly(conn).await;
     result
+}
+
+fn scenario_bcu2_required_properties<'a>(
+    bus: &'a KnxBus,
+    _control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        let values: &[(u8, u16, &[u8], &[u8], &str)] = &[
+            // The MCU has no EMI, so its eight service-disable bits remain
+            // set even when a client writes a different high octet.
+            (0, pid::SERVICE_CONTROL, &[0xA5, 0x04], &[0xFF, 0x04], "Service Control"),
+            (0, pid::PORT_CONFIGURATION, &[0x5A], &[0x5A], "Port Configuration"),
+            (0, pid::POLL_GROUP_SETTINGS, &[0x12, 0x34, 0x8A], &[0x12, 0x34, 0x8A], "Poll Group Settings"),
+            (3, pid::PEI_TYPE, &[0x11], &[0x11], "application PEI Type"),
+        ];
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
+        let result = async {
+            let level = conn.authorize(&[0xFF; 4]).await.map_err(|e| format!("authorize: {e}"))?;
+            if level != 0 {
+                return Err(format!("authorize granted level {level}, expected 0"));
+            }
+            for &(object, property, written, expected, name) in values {
+                conn.property_write(object, property, 1, 1, written).await.map_err(|e| format!("write {name}: {e}"))?;
+                let actual =
+                    conn.property_read(object, property, 1, 1).await.map_err(|e| format!("read {name}: {e}"))?;
+                if actual != expected {
+                    return Err(format!("{name} readback {actual:02X?}, expected {expected:02X?}"));
+                }
+            }
+
+            // The Device Object reports the physically connected PEI. This
+            // MCU has none; object 3 above stores the application's required
+            // PEI independently.
+            let actual_pei =
+                conn.property_read(0, pid::PEI_TYPE, 1, 1).await.map_err(|e| format!("device PEI: {e}"))?;
+            if actual_pei != [0] {
+                return Err(format!("device PEI {actual_pei:02X?}, expected none"));
+            }
+            conn.restart().await.map_err(|e| format!("restart: {e}"))
+        }
+        .await;
+        close_quietly(conn).await;
+        result?;
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("reconnect: {e}"))?;
+        let result = async {
+            for &(object, property, _, expected, name) in values {
+                let actual = conn
+                    .property_read(object, property, 1, 1)
+                    .await
+                    .map_err(|e| format!("read persisted {name}: {e}"))?;
+                if actual != expected {
+                    return Err(format!("persisted {name} {actual:02X?}, expected {expected:02X?}"));
+                }
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        result
+    })
 }
 
 fn scenario_bcu2_programming_mode_addressing<'a>(
