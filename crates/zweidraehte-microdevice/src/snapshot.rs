@@ -27,6 +27,11 @@ pub struct MicroSnapshot {
     /// Absent in snapshots taken before the System 7 family existed.
     #[serde(default)]
     pub option_reg: u8,
+    /// The only writable part of the otherwise factory-supplied identity.
+    /// `None` keeps snapshots made before this field compatible: restore then
+    /// retains the product's compiled-in hardware type.
+    #[serde(default)]
+    pub hardware_type: Option<[u8; 6]>,
 }
 
 impl MicroSnapshot {
@@ -44,6 +49,7 @@ impl MicroSnapshot {
             table_refs: device.mgmt.lsm.map(|l| l.table_ref),
             device_control: 0,
             option_reg: device.mgmt.option_reg,
+            hardware_type: Some(device.identity.hardware_type),
         }
     }
 
@@ -57,10 +63,13 @@ impl MicroSnapshot {
 
     fn restore_with_security<F: MicroDeviceFamily, const N: usize, SEC: SecurityModule>(
         &self,
-        identity: DeviceIdentity,
+        mut identity: DeviceIdentity,
         time_divisor: u32,
         security: SEC::State,
     ) -> Microdevice<F, N, SEC> {
+        if let Some(hardware_type) = self.hardware_type {
+            identity.hardware_type = hardware_type;
+        }
         let mut eeprom = F::blank_eeprom();
         let n = self.eeprom.len().min(eeprom.as_ref().len());
         eeprom.as_mut()[..n].copy_from_slice(&self.eeprom[..n]);

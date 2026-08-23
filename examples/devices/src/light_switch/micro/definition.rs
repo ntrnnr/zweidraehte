@@ -46,7 +46,14 @@ pub const BCU2_SECURE_P2P_KEY_CAPACITY: usize = 0;
 
 /// The micro System 7 family: 1 KiB of user EEPROM from 4000h, with its group
 /// object table published at 4200h.
-pub type LightSwitchS7Family = System7Family<0x400, 0x4200>;
+pub type LightSwitchS7Family = System7Family<
+    0x400,
+    0x4200,
+    { LightSwitchDevice::MANUFACTURER_ID },
+    { LightSwitchDevice::APPLICATION_ID_TP1_SYSTEM7 },
+    { LightSwitchDevice::APPLICATION_VERSION },
+    { LightSwitchDevice::PEI_TYPE },
+>;
 
 /// Image offset (from 4000h) of the System 7 parameter block at device address
 /// 4300h.
@@ -92,6 +99,7 @@ pub const fn system7_definition() -> System7DeviceDefinition {
         manufacturer_id: LightSwitchDevice::MANUFACTURER_ID,
         device_type: LightSwitchDevice::APPLICATION_ID_TP1_SYSTEM7,
         version: LightSwitchDevice::APPLICATION_VERSION,
+        pei_type: LightSwitchDevice::PEI_TYPE,
         individual_address: IndividualAddress::new(15, 15, 255),
         max_group_addresses: LightSwitchDevice::MAX_ADDRESS_TABLE_ENTRIES as u8,
         max_associations: LightSwitchDevice::MAX_ASSOCIATION_TABLE_ENTRIES as u8,

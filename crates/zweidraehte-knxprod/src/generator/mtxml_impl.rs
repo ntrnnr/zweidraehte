@@ -2519,7 +2519,8 @@ impl MtxmlGenerator {
         // 1. Connect
         controls.push(LoadControl::LdCtrlConnect(LdCtrlConnect {}));
 
-        // 2. Compare device serial number (PID_SERIAL_NUMBER = 78, ObjIdx = 0 for Device Object)
+        // 2. Compare PID_HARDWARE_TYPE (PID 78, ObjIdx 0) with the
+        // product identity before loading a program for that hardware.
         // The InlineData is the expected serial number as hex
         let serial_hex = layout.serial_number.iter().map(|b| format!("{:02X}", b)).collect::<String>();
         // Pad to 10 bytes (20 hex chars) like MDT does

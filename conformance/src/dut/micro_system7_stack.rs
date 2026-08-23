@@ -54,7 +54,8 @@ impl MemoryAccessPolicy for MicroSystem7ConformanceMemoryPolicy {
 
 /// The DUT's family: 16 KiB of certification backing from 4000h, with the
 /// real fixture tables still at 4000h..43FFh and its COT at 4200h.
-pub type MicroSystem7DutFamily = System7Family<0x4000, 0x4200, MicroSystem7ConformanceMemoryPolicy>;
+pub type MicroSystem7DutFamily =
+    System7Family<0x4000, 0x4200, 0x00FA, 0x0B70, 1, 0, MicroSystem7ConformanceMemoryPolicy>;
 
 /// The BDUT address every hand-written suite uses (1.0.1).
 pub fn dut_ia() -> IndividualAddress {
@@ -122,6 +123,7 @@ pub fn definition() -> System7DeviceDefinition {
         manufacturer_id: 0x00FA,
         device_type: 0x0B70,
         version: 1,
+        pei_type: 0,
         individual_address: dut_ia(),
         max_group_addresses: 8,
         max_associations: 8,
@@ -141,7 +143,7 @@ pub fn identity() -> DeviceIdentity {
 
 /// The factory boot image: tables populated, application loaded and
 /// running — a commissioned device, which is what the group and
-/// transport suites expect to find. App2 stays empty.
+/// transport suites expect to find. The optional Interface Program stays empty.
 pub fn factory_snapshot() -> MicroSnapshot {
     let def = definition();
     let refs = MicroSystem7DutFamily::factory_table_refs(&def);
@@ -157,5 +159,6 @@ pub fn factory_snapshot() -> MicroSnapshot {
         table_refs: refs,
         device_control: 0,
         option_reg: 0,
+        hardware_type: Some(HARDWARE_TYPE),
     }
 }

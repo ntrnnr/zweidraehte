@@ -71,7 +71,7 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
             expect("B0 #BDUT #EDI 60 CA", 0),
             expect("BC #BDUT #EDI 62 4B D2 0F", 400),
             inject_delay("B0 #EDI #BDUT 60 CA", 200),
-            comment("Free access cannot write level-1 PID_DEVICE_CONTROL"),
+            comment("Free access cannot write level-3 PID_DEVICE_CONTROL"),
             inject("BC #EDI #BDUT 66 4F D7 00 0E 10 01 04"),
             expect("B0 #BDUT #EDI 60 CE", 0),
             expect("BC #BDUT #EDI 65 4F D6 00 0E 00 01", 400),
@@ -79,10 +79,10 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
         // ====================================================================
-        // MS7-4: Load state machine over the property path (App2)
+        // MS7-4: Load state machine over the property path (Interface Program)
         // ====================================================================
         TestCase::new("MS7-4 LSM cycle via PID_LOAD_STATE_CONTROL on object 4").with_steps(vec![
-            comment("The second application program is the empty machine on a factory device"),
+            comment("The optional Interface Program is the empty machine on a factory device"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             comment("StartLoading (01h): readback answers Loading (02h)"),
             inject("BC #EDI #BDUT 6F 43 D7 04 05 10 01 01 00 00 00 00 00 00 00 00 00"),
@@ -110,12 +110,12 @@ pub fn create_micro_system7_smoke_suite() -> TestSuite {
         // MS7-5: The memory-mapped load-control window
         // ====================================================================
         TestCase::new("MS7-5a Load control via 0104h, status via B6EAh").with_steps(vec![
-            comment("Unload machine 4 (App2) through the window: [4|4] to 0104h"),
+            comment("Unload machine 4 (Interface Program) through the window: [4|4] to 0104h"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 64 42 81 01 04 44"),
             expect("B0 #BDUT #EDI 60 C2", 0),
             expect_none(300),
-            comment("Status bytes: ADT/AST/App Loaded (01h), App2 Unloaded (00h)"),
+            comment("Status bytes: ADT/AST/App Loaded (01h), Interface Program Unloaded (00h)"),
             inject("BC #EDI #BDUT 63 46 04 B6 EA"),
             expect("B0 #BDUT #EDI 60 C6", 0),
             expect("BC #BDUT #EDI 67 42 44 B6 EA 01 01 01 00", 400),

@@ -58,5 +58,6 @@ pub fn factory_snapshot() -> MicroSnapshot {
         table_refs: [0; 4],
         device_control: 0,
         option_reg: 0,
+        hardware_type: None,
     }
 }

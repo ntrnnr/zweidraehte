@@ -21,7 +21,7 @@ use zweidraehte_proto::pid;
 
 /// The DUT product: 1 KiB of user EEPROM from 4000h, the group object
 /// table published at 4200h.
-type Fam = System7Family<0x400, 0x4200>;
+type Fam = System7Family<0x400, 0x4200, 0x0083, 0x0705, 1, 0>;
 
 /// Test-only policy mirroring the conformance fixture's adjacent open,
 /// direction-protected, and level-guarded regions. Keeping it here proves
@@ -55,7 +55,7 @@ impl MemoryAccessPolicy for ProtectedMemoryPolicy {
     ];
 }
 
-type ProtectedFam = System7Family<0x700, 0x4200, ProtectedMemoryPolicy>;
+type ProtectedFam = System7Family<0x700, 0x4200, 0x0083, 0x0705, 1, 0, ProtectedMemoryPolicy>;
 
 static COS: &[System7CoDescriptor] = &[
     // ASAP 0: 1-bit switch input, write+update enabled.
@@ -71,6 +71,7 @@ fn definition() -> System7DeviceDefinition {
         manufacturer_id: 0x0083,
         device_type: 0x0705,
         version: 1,
+        pei_type: 0,
         individual_address: DUT,
         max_group_addresses: 8,
         max_associations: 8,
@@ -96,7 +97,8 @@ fn device() -> Microdevice<Fam> {
     let def = definition();
     let mut dev = Microdevice::new(Fam::build_eeprom(&def), identity(), 1);
     // Factory image with the tables and application marked loaded,
-    // like a programmed device fresh off the line. App2 stays empty.
+    // like a programmed device fresh off the line. The optional interface
+    // program stays empty.
     for (machine, table_ref) in Fam::factory_table_refs(&def).into_iter().enumerate().take(3) {
         dev.mgmt.lsm[machine].state = LoadState::Loaded;
         dev.mgmt.lsm[machine].table_ref = table_ref;
@@ -151,7 +153,7 @@ fn property_descriptions_and_values_share_one_roster() {
     // index. DeviceControl deliberately shares index 1 and its descriptor
     // with the full System 7 stack.
     let rsp = exchange(&mut dev, 0, ApciCode::PropertyDescriptionRead, 0, &[0, 14, 0], 0).expect("described");
-    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x0E, 0x01, 0xB3, 0x30, 0x01, 0xF1]);
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x0E, 0x01, 0xB3, 0x30, 0x01, 0x33]);
 
     // The same roster entry selects the value behavior.
     let rsp = exchange(&mut dev, 1, ApciCode::PropertyValueRead, 0, &[0, 14, 0x10, 0x01], 0).expect("read");
@@ -160,42 +162,87 @@ fn property_descriptions_and_values_share_one_roster() {
     // By-index enumeration returns the actual PID and metadata for a
     // family-backed value. HardwareType is index 3 in the compact roster.
     let rsp = exchange(&mut dev, 2, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 3], 0).expect("enumerated");
-    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x4E, 0x03, 0x16, 0x60, 0x01, 0xF0]);
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x4E, 0x03, 0x96, 0x60, 0x01, 0x31]);
     let rsp = exchange(&mut dev, 3, ApciCode::PropertyValueRead, 0, &[0, 78, 0x10, 0x01], 0).expect("read");
     assert_eq!(&apdu(&rsp)[6..], &[0x00, 0x83, 0x00, 0x00, 0x07, 0x05]);
 
     // A family-backed property that used to be readable but described as
     // nonexistent now carries its real descriptor.
     let rsp = exchange(&mut dev, 4, ApciCode::PropertyDescriptionRead, 0, &[0, 56, 0], 0).expect("described");
-    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x38, 0x07, 0x04, 0x40, 0x01, 0xF0]);
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x38, 0x07, 0x04, 0x40, 0x01, 0x30]);
     let rsp = exchange(&mut dev, 5, ApciCode::PropertyValueRead, 0, &[0, 56, 0x10, 0x01], 0).expect("read");
     assert_eq!(&apdu(&rsp)[6..], &15u16.to_be_bytes());
 
+    // Annex A.2.3 makes Manufacturer ID mandatory for MV-0705. It is
+    // compile-time product identity, but still participates in the same
+    // enumerable roster as stored values.
+    let rsp = exchange(&mut dev, 6, ApciCode::PropertyDescriptionRead, 0, &[0, 12, 0], 0).expect("described");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x0C, 0x08, 0x04, 0x40, 0x01, 0x30]);
+    let rsp = exchange(&mut dev, 7, ApciCode::PropertyValueRead, 0, &[0, 12, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[0x00, 0x83]);
+
     // Unknown PID lookup and an exhausted index scan both return the
     // zero-descriptor form, with the caller's lookup key preserved.
-    let rsp = exchange(&mut dev, 6, ApciCode::PropertyDescriptionRead, 0, &[0, 0xFE, 0], 0).expect("negative reply");
+    let rsp = exchange(&mut dev, 8, ApciCode::PropertyDescriptionRead, 0, &[0, 0xFE, 0], 0).expect("negative reply");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0xFE, 0x00, 0, 0, 0, 0]);
-    let rsp = exchange(&mut dev, 7, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 8], 0).expect("end of roster");
-    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x00, 0x08, 0, 0, 0, 0]);
+    let rsp = exchange(&mut dev, 9, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 9], 0).expect("end of roster");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x00, 0x09, 0, 0, 0, 0]);
 
     // A negative value response keeps the complete 12-bit start index;
     // only the count nibble is cleared. This catches payload/header codecs
     // that accidentally zero the entire packed high octet.
     let rsp =
-        exchange(&mut dev, 8, ApciCode::PropertyValueWrite, 0, &[0, 0xFE, 0x1A, 0xBC, 0], 0).expect("negative reply");
+        exchange(&mut dev, 10, ApciCode::PropertyValueWrite, 0, &[0, 0xFE, 0x1A, 0xBC, 0], 0).expect("negative reply");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0xFE, 0x0A, 0xBC]);
+}
+
+#[test]
+fn mandatory_system7_program_properties_and_table_reference_are_backed() {
+    let mut dev = device();
+    connect(&mut dev);
+
+    let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[3, 13, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[0x00, 0x83, 0x07, 0x05, 0x01]);
+
+    let rsp = exchange(&mut dev, 1, ApciCode::PropertyValueRead, 0, &[3, 16, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[0x00]);
+
+    let rsp =
+        exchange(&mut dev, 2, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
+    assert_eq!(apdu(&rsp)[2], 0);
+
+    let rsp =
+        exchange(&mut dev, 3, ApciCode::PropertyValueWrite, 0, &[1, 7, 0x10, 0x01, 0, 0, 0x44, 0], 0).expect("write");
+    assert_eq!(&apdu(&rsp)[6..], &[0, 0, 0x44, 0]);
+    assert_eq!(dev.mgmt.lsm[0].table_ref, 0x4400);
+
+    let rsp = exchange(&mut dev, 4, ApciCode::PropertyValueRead, 0, &[1, 7, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[0, 0, 0x44, 0]);
+
+    // Hardware Type is the remaining mandatory MV-0705 identity Property.
+    // Unlike Program Version and PEI Type, Annex A.2.3 requires a write at
+    // product-manufacturer level rather than merely permitting one.
+    let hardware_type = [0x00, 0x83, 0x12, 0x34, 0x56, 0x78];
+    let mut write = [0u8; 10];
+    write[..4].copy_from_slice(&[0, 78, 0x10, 0x01]);
+    write[4..].copy_from_slice(&hardware_type);
+    let rsp = exchange(&mut dev, 5, ApciCode::PropertyValueWrite, 0, &write, 0).expect("write");
+    assert_eq!(&apdu(&rsp)[6..], &hardware_type);
+    assert_eq!(dev.hardware_type(), &hardware_type);
 }
 
 #[test]
 fn property_access_is_request_scoped() {
     let mut dev = device();
 
-    // Move the default FFFFFFFFh key below DeviceControl's write level 1,
+    // Move the default FFFFFFFFh key below DeviceControl's write level 3,
     // while keeping a distinct level-0 key for the connected tool.
     dev.mgmt.auth_keys[0] = [0xAA; 4];
     dev.mgmt.auth_keys[1] = [0xBB; 4];
+    dev.mgmt.auth_keys[2] = [0xCC; 4];
+    dev.mgmt.auth_keys[3] = [0xDD; 4];
     dev.mgmt.reset_connection_auth::<Fam>();
-    assert_eq!(dev.mgmt.auth_level, 2, "the default key now grants level 2");
+    assert_eq!(dev.mgmt.auth_level, 4, "the default key now grants level 4");
 
     // A_Authorize is connection-oriented. An unnumbered request neither
     // answers nor changes the level the next connection starts with.
@@ -205,7 +252,7 @@ fn property_access_is_request_scoped() {
         ]);
     let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&authorize)), 0);
     assert!(out.frames.is_empty(), "connectionless authorize is ignored");
-    assert_eq!(dev.mgmt.auth_level, 2);
+    assert_eq!(dev.mgmt.auth_level, 4);
 
     connect(&mut dev);
     let rsp =
@@ -303,7 +350,7 @@ fn option_reg_is_plain_and_lives_at_0100h() {
 }
 
 #[test]
-fn memory_mapped_lsm_cycle_on_app2() {
+fn memory_mapped_lsm_cycle_on_interface_program() {
     let mut dev = device();
     connect(&mut dev);
     let mut seq = 0u8;
@@ -314,7 +361,7 @@ fn memory_mapped_lsm_cycle_on_app2() {
         *seq = (*seq + 1) & 0x0F;
     }
 
-    // StartLoading machine 4 (App2) through the 0104h window.
+    // StartLoading machine 4 (Interface Program) through the 0104h window.
     mem_write(&mut dev, &mut seq, 0x0104, &[0x41]);
     assert_eq!(dev.mgmt.lsm[3].state, LoadState::Loading);
 
@@ -329,7 +376,7 @@ fn memory_mapped_lsm_cycle_on_app2() {
     assert_eq!(dev.mgmt.lsm[3].table_ref, 0x4300);
 
     // LoadCompleted, then read the four status bytes at B6EAh:
-    // ADT/AST/App Loaded, App2 now Loaded too.
+    // ADT/AST/application Loaded, Interface Program now Loaded too.
     mem_write(&mut dev, &mut seq, 0x0104, &[0x42]);
     let rsp = exchange(&mut dev, seq, ApciCode::MemoryRead, 4, &[0xB6, 0xEA], 0).expect("status answered");
     assert_eq!(&apdu(&rsp)[4..8], &[0x01, 0x01, 0x01, 0x01]);
@@ -417,7 +464,7 @@ fn run_state_stop_terminates_instead_of_halting() {
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Running));
     assert!(dev.is_running());
 
-    // The unloaded App2 reads Halted.
+    // The unloaded Interface Program reads Halted.
     let rsp = exchange(&mut dev, 4, ApciCode::PropertyValueRead, 0, &[4, 6, 0x10, 0x01], 0).expect("answered");
     assert_eq!(apdu(&rsp)[6], u8::from(RunState::Halted));
 }
@@ -479,11 +526,16 @@ fn rt8_group_communication() {
 
 #[test]
 #[cfg(feature = "std")]
-fn snapshot_round_trip_preserves_option_reg() {
+fn snapshot_round_trip_preserves_system7_configuration() {
     use zweidraehte_microdevice::snapshot::MicroSnapshot;
     let mut dev = device();
     connect(&mut dev);
     exchange(&mut dev, 0, ApciCode::MemoryWrite, 1, &[0x01, 0x00, 0x5A], 0);
+    let hardware_type = [0x00, 0x83, 0x12, 0x34, 0x56, 0x78];
+    let mut write = [0u8; 10];
+    write[..4].copy_from_slice(&[0, 78, 0x10, 0x01]);
+    write[4..].copy_from_slice(&hardware_type);
+    exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &write, 0).expect("hardware type writes");
     dev.mgmt.auth_keys[0] = [0xAA; 4];
     dev.mgmt.auth_keys[1] = [0xBB; 4];
     let snap = MicroSnapshot::capture(&dev);
@@ -494,6 +546,7 @@ fn snapshot_round_trip_preserves_option_reg() {
     assert_eq!(restored.mgmt.option_reg, 0x5A);
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);
     assert_eq!(restored.individual_address(), DUT);
+    assert_eq!(restored.hardware_type(), &hardware_type);
     assert_eq!(restored.mgmt.auth_level, 2, "restored keys determine disconnected access");
 }
 

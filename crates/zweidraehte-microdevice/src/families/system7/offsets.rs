@@ -14,7 +14,7 @@ pub const LOAD_CONTROL_ADDR: u16 = 0x0104;
 /// Longest record the load-control window accepts.
 pub const LOAD_CONTROL_MAX: usize = 12;
 /// Read-only load-status bytes, one `LoadState` octet per machine
-/// (ADT, AST, App, App2).
+/// (ADT, AST, application, optional interface program).
 pub const LOAD_STATUS_ADDR: u16 = 0xB6EA;
 /// The RT8-coded group address table is fixed at 4000h (Resources
 /// §4.16.9.2), the start of user EEPROM.

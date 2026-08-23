@@ -36,6 +36,8 @@ pub struct System7DeviceDefinition {
     pub manufacturer_id: u16,
     pub device_type: u16,
     pub version: u8,
+    /// Application Program `PID_PEI_TYPE`. Zero denotes no required PEI.
+    pub pei_type: u8,
     /// Factory individual address (15.15.255 until commissioned).
     pub individual_address: IndividualAddress,
     /// Address table capacity in group addresses.
@@ -63,11 +65,24 @@ pub struct System7DeviceDefinition {
     pub app_params: &'static [u8],
 }
 
-impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P> System7Family<EEPROM_LEN, COT_ADDR, P> {
+impl<
+    const EEPROM_LEN: usize,
+    const COT_ADDR: u16,
+    const MANUFACTURER_ID: u16,
+    const APPLICATION_ID: u16,
+    const APPLICATION_VERSION: u8,
+    const PEI_TYPE: u8,
+    P,
+> System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>
+{
     /// Build the boot EEPROM image. Panics when the definition cannot
     /// fit, which is a compile-time error in practice since
     /// definitions are `const`.
     pub fn build_eeprom(def: &System7DeviceDefinition) -> [u8; EEPROM_LEN] {
+        assert!(def.manufacturer_id == MANUFACTURER_ID, "definition and System 7 family manufacturer must agree");
+        assert!(def.device_type == APPLICATION_ID, "definition and System 7 family application ID must agree");
+        assert!(def.version == APPLICATION_VERSION, "definition and System 7 family application version must agree");
+        assert!(def.pei_type == PEI_TYPE, "definition and System 7 family PEI type must agree");
         let mut e = [0u8; EEPROM_LEN];
 
         // ── RT8-coded address table at 4000h ────────────────────────
@@ -125,7 +140,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P> System7Family<EEPROM_LEN, 
 
     /// The `table_ref` values a factory-loaded device reports: the
     /// fixed ADT, the product's AST and application placements, and no
-    /// second application program. Fixtures seed
+    /// optional interface program. Fixtures seed
     /// `ManagementState::lsm[..].table_ref` from this next to setting
     /// the load states.
     pub fn factory_table_refs(def: &System7DeviceDefinition) -> [u16; MAX_LSM] {
@@ -149,7 +164,7 @@ mod tests {
     use crate::eeprom::Tables;
     use crate::management::ManagementState;
 
-    type Fam = System7Family<0x400, 0x4200>;
+    type Fam = System7Family<0x400, 0x4200, 0x00FA, 0x0705, 1, 0>;
 
     static COS: &[System7CoDescriptor] =
         &[System7CoDescriptor { data_ptr: 0x00C6, config: 0x9F, value_type: 0x00 }, System7CoDescriptor {
@@ -165,6 +180,7 @@ mod tests {
             manufacturer_id: 0x00FA,
             device_type: 0x0705,
             version: 1,
+            pei_type: 0,
             individual_address: IndividualAddress::new(1, 1, 10),
             max_group_addresses: 8,
             max_associations: 8,

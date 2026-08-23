@@ -259,7 +259,7 @@ pub trait MicroDeviceFamily: 'static {
     /// Interface object index of machine 0 (the address table).
     const LSM_OBJ_BASE: u8;
     /// Number of load state machines (BCU2: ADT, AST, application;
-    /// System 7 adds the second application program).
+    /// System 7 adds the optional interface program).
     const LSM_COUNT: usize;
     /// Number of interface objects (BCU2: Device, Address Table,
     /// Association Table, Application Program).

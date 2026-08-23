@@ -1086,9 +1086,19 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.set_programming_mode(data[0] & 0x01 != 0);
                 true
             }
+            PropertyBacking::HardwareType if data.len() == self.identity.hardware_type.len() => {
+                self.identity.hardware_type.copy_from_slice(data);
+                true
+            }
             PropertyBacking::LoadState => {
                 let Some(machine) = self.lsm_index(obj) else { return false };
                 dispatch_lsm_event::<F>(machine, data, self.eeprom.as_mut(), &mut self.mgmt);
+                true
+            }
+            PropertyBacking::TableReference => {
+                let Some(machine) = self.lsm_index(obj) else { return false };
+                let [0, 0, high, low] = data else { return false };
+                self.mgmt.lsm[machine].table_ref = u16::from_be_bytes([*high, *low]);
                 true
             }
             // `PDT_CONTROL` writes may carry the ten-octet control record

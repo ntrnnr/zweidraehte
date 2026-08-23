@@ -42,7 +42,8 @@ use zweidraehte_client::{
 };
 use zweidraehte_conformance::dut::fixture_common::SECURE_FDSK;
 use zweidraehte_conformance::dut::{
-    bcu2_light_switch_product, bcu2_product, bcu2_stack, micro_system7_product, system_b_product, system7_product,
+    bcu2_light_switch_product, bcu2_product, bcu2_stack, micro_system7_product, micro_system7_stack, system_b_product,
+    system7_product,
 };
 use zweidraehte_conformance::harness::client_bridge::{self, DutControl};
 use zweidraehte_conformance::harness::{ChildLifecycle, DutMode};
@@ -1052,6 +1053,31 @@ fn scenario_micro_s7_descriptor<'a>(
             let level = conn.authorize(&[0xFF; 4]).await.map_err(|e| format!("authorize: {e}"))?;
             if level != 0 {
                 return Err(format!("authorize granted level {level}, expected 0"));
+            }
+
+            // 06 Profiles v02.02.01 Annex A.2.2/A.2.3/A.2.6: these
+            // objects and identity Properties are mandatory for MV-0705.
+            for object in 0..=3 {
+                let object_type = conn
+                    .property_read(object, pid::OBJECT_TYPE, 1, 1)
+                    .await
+                    .map_err(|e| format!("object {object} type: {e}"))?;
+                if object_type != u16::from(object).to_be_bytes() {
+                    return Err(format!("object {object} type {object_type:02X?}, expected {object:04X}"));
+                }
+            }
+
+            for (object, property, expected, name) in [
+                (0, pid::SERIAL_NUMBER, &micro_system7_stack::SERIAL_NUMBER[..], "serial number"),
+                (0, pid::MANUFACTURER_ID, &[0x00, 0xFA][..], "manufacturer ID"),
+                (0, pid::device::HARDWARE_TYPE, &micro_system7_stack::HARDWARE_TYPE[..], "hardware type"),
+                (3, pid::PROGRAM_VERSION, &[0x00, 0xFA, 0x0B, 0x70, 0x01][..], "program version"),
+                (3, pid::PEI_TYPE, &[0x00][..], "application PEI type"),
+            ] {
+                let actual = conn.property_read(object, property, 1, 1).await.map_err(|e| format!("{name}: {e}"))?;
+                if actual != expected {
+                    return Err(format!("{name} {actual:02X?}, expected {expected:02X?}"));
+                }
             }
             Ok(())
         }

@@ -2,9 +2,10 @@
 
 use core::marker::PhantomData;
 
+use heapless::Vec;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
-    DeviceControl, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
+    DeviceControl, PDT_Generic05, PDT_Generic06, PDT_Generic10, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode,
     PropertyDataDefinition,
 };
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
@@ -15,6 +16,7 @@ use zweidraehte_proto::tables::association::SendingAssociation;
 use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
 
 use super::offsets;
+use crate::device::DeviceIdentity;
 use crate::family::{MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, Reply, ServiceResult, dispatch_lsm_event};
@@ -33,12 +35,24 @@ use crate::transport::Style3;
 ///   no device-side location resource and no interface object; ETS
 ///   knows the address from the product database, so the device and
 ///   the product definition must agree on it at compile time.
+/// - `MANUFACTURER_ID` — the immutable Device Object identity. Keeping it in
+///   the type avoids a RAM field and prevents a download from overwriting it.
+/// - `APPLICATION_ID`, `APPLICATION_VERSION`, and `PEI_TYPE` — the immutable
+///   Application Program identity. These likewise remain compile-time data;
+///   carrying them in [`DeviceIdentity`] would charge every micro profile six
+///   bytes of RAM for System 7-only Properties.
 /// - `P` — an optional compile-time memory-access policy. Products use
 ///   [`StandardSystem7MemoryPolicy`]; fixtures can substitute protected
 ///   regions without adding runtime state or changing family behavior.
-pub struct System7Family<const EEPROM_LEN: usize, const COT_ADDR: u16, P = StandardSystem7MemoryPolicy<EEPROM_LEN>>(
-    PhantomData<P>,
-);
+pub struct System7Family<
+    const EEPROM_LEN: usize,
+    const COT_ADDR: u16,
+    const MANUFACTURER_ID: u16,
+    const APPLICATION_ID: u16,
+    const APPLICATION_VERSION: u8,
+    const PEI_TYPE: u8,
+    P = StandardSystem7MemoryPolicy<EEPROM_LEN>,
+>(PhantomData<P>);
 
 /// The mask's regular memory surface for a product with `EEPROM_LEN`
 /// bytes of user EEPROM.
@@ -56,8 +70,8 @@ impl<const EEPROM_LEN: usize> MemoryAccessPolicy for StandardSystem7MemoryPolicy
 }
 
 /// Machine roster: 0 = group address table, 1 = association table,
-/// 2 = application program, 3 = application program 2. The two
-/// application machines carry run state machines.
+/// 2 = application program, 3 = the optional interface program. Both
+/// program objects carry run state machines.
 const APP_MACHINE: usize = 2;
 
 // The roster is deliberately smaller than the full stack's extensible System 7
@@ -65,58 +79,84 @@ const APP_MACHINE: usize = 2;
 // diagnostics paths actually serve. The common prefix (ObjectType,
 // DeviceControl, OrderInfo) retains the full object's indices.
 const DEVICE_PROPERTIES: &[PropertySpec] = &[
-    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 15, PropertyBacking::ObjectType),
-    PropertySpec::read_write(pid::DEVICE_CONTROL, DeviceControl::ID, 15, 1, PropertyBacking::DeviceControl),
-    PropertySpec::read_only(pid::ORDER_INFO, PDT_Generic10::ID, 15, PropertyBacking::OrderInfo),
-    // Hardware type is boot identity in the micro stack. Describing it
-    // read-only is intentional until privileged writes have a persistent
-    // backing; claiming the profile's RW access while rejecting every write
-    // would recreate the inventory/behavior disagreement this roster removes.
-    PropertySpec::read_only(pid::device::HARDWARE_TYPE, PDT_Generic06::ID, 15, PropertyBacking::HardwareType),
-    PropertySpec::read_write(pid::device::PROGMODE, ProgrammingMode::ID, 15, 15, PropertyBacking::ProgrammingMode),
-    PropertySpec::read_only(pid::SERIAL_NUMBER, PDT_Generic06::ID, 15, PropertyBacking::SerialNumber),
-    PropertySpec::read_only(pid::FIRMWARE_REVISION, PDT_UnsignedChar::ID, 15, PropertyBacking::FirmwareRevision),
+    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 3, PropertyBacking::ObjectType),
+    PropertySpec::read_write(pid::DEVICE_CONTROL, DeviceControl::ID, 3, 3, PropertyBacking::DeviceControl),
+    PropertySpec::read_only(pid::ORDER_INFO, PDT_Generic10::ID, 3, PropertyBacking::OrderInfo),
+    // Annex A.2.3 makes this property mandatory and writable at product-
+    // manufacturer level for MV-0705. `Microdevice` updates the boot identity;
+    // each platform's low-write configuration snapshot persists the result.
+    PropertySpec::read_write(pid::device::HARDWARE_TYPE, PDT_Generic06::ID, 3, 1, PropertyBacking::HardwareType),
+    PropertySpec::read_write(pid::device::PROGMODE, ProgrammingMode::ID, 3, 3, PropertyBacking::ProgrammingMode),
+    PropertySpec::read_only(pid::SERIAL_NUMBER, PDT_Generic06::ID, 3, PropertyBacking::SerialNumber),
+    PropertySpec::read_only(pid::FIRMWARE_REVISION, PDT_UnsignedChar::ID, 3, PropertyBacking::FirmwareRevision),
     PropertySpec::read_only_with_policy(
         pid::device::MAX_APDU_LENGTH,
         PDT_UnsignedInt::ID,
-        15,
+        3,
         AccessPolicy::OPEN,
         PropertyBacking::MaxApduLength,
     ),
+    PropertySpec::read_only(pid::MANUFACTURER_ID, PDT_UnsignedInt::ID, 3, PropertyBacking::FamilySpecific),
 ];
 
 const TABLE_PROPERTIES: &[PropertySpec] = &[
-    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 15, PropertyBacking::ObjectType),
-    PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 15, 2, PropertyBacking::LoadState),
-    PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 15, PropertyBacking::TableReference),
+    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 3, PropertyBacking::ObjectType),
+    PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 3, 3, PropertyBacking::LoadState),
+    // Annex A.2.4/A.2.5 specifies literal 3/3 for MV-0705. The mask
+    // supports 16 authorization levels, but its free runtime level is 15;
+    // these management Properties intentionally remain at controller level.
+    PropertySpec::read_write(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 3, 3, PropertyBacking::TableReference),
 ];
 
-const PROGRAM_PROPERTIES: &[PropertySpec] = &[
-    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 15, PropertyBacking::ObjectType),
-    PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 15, 1, PropertyBacking::LoadState),
-    PropertySpec::read_write(pid::RUN_STATE_CONTROL, pdt::CONTROL, 15, 1, PropertyBacking::RunState),
-    PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 15, PropertyBacking::TableReference),
+const APPLICATION_PROPERTIES: &[PropertySpec] = &[
+    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 3, PropertyBacking::ObjectType),
+    PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 3, 3, PropertyBacking::LoadState),
+    PropertySpec::read_write(pid::RUN_STATE_CONTROL, pdt::CONTROL, 3, 3, PropertyBacking::RunState),
+    PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 3, PropertyBacking::TableReference),
+    PropertySpec::read_only(pid::PROGRAM_VERSION, PDT_Generic05::ID, 3, PropertyBacking::FamilySpecific),
+    PropertySpec::read_only(pid::PEI_TYPE, PDT_UnsignedChar::ID, 3, PropertyBacking::FamilySpecific),
 ];
 
-impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> System7Family<EEPROM_LEN, COT_ADDR, P> {
-    /// Is this interface object one of the two application program
-    /// objects? Object index minus `LSM_OBJ_BASE` is the machine
-    /// index; the application machines are the roster's tail from
-    /// [`APP_MACHINE`].
-    fn app_machine_of(obj: u8) -> Option<usize> {
+const INTERFACE_PROGRAM_PROPERTIES: &[PropertySpec] = &[
+    PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 3, PropertyBacking::ObjectType),
+    PropertySpec::read_write(pid::LOAD_STATE_CONTROL, pdt::CONTROL, 3, 3, PropertyBacking::LoadState),
+    PropertySpec::read_write(pid::RUN_STATE_CONTROL, pdt::CONTROL, 3, 3, PropertyBacking::RunState),
+    PropertySpec::read_only(pid::TABLE_REFERENCE, pdt::UNSIGNED_LONG, 3, PropertyBacking::TableReference),
+];
+
+impl<
+    const EEPROM_LEN: usize,
+    const COT_ADDR: u16,
+    const MANUFACTURER_ID: u16,
+    const APPLICATION_ID: u16,
+    const APPLICATION_VERSION: u8,
+    const PEI_TYPE: u8,
+    P: MemoryAccessPolicy,
+> System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>
+{
+    /// Is this interface object the application or interface program?
+    fn program_machine_of(obj: u8) -> Option<usize> {
         let machine = usize::from(obj.checked_sub(Self::LSM_OBJ_BASE)?);
         (APP_MACHINE..Self::LSM_COUNT).contains(&machine).then_some(machine)
     }
 
-    /// Does this machine index name an application program (and thus
-    /// carry a run state machine)?
-    fn is_app_machine(machine: usize) -> bool {
+    /// Does this machine index name a program object (and thus carry a
+    /// run state machine)?
+    fn is_program_machine(machine: usize) -> bool {
         (APP_MACHINE..Self::LSM_COUNT).contains(&machine)
     }
 }
 
-impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroDeviceFamily
-    for System7Family<EEPROM_LEN, COT_ADDR, P>
+impl<
+    const EEPROM_LEN: usize,
+    const COT_ADDR: u16,
+    const MANUFACTURER_ID: u16,
+    const APPLICATION_ID: u16,
+    const APPLICATION_VERSION: u8,
+    const PEI_TYPE: u8,
+    P: MemoryAccessPolicy,
+> MicroDeviceFamily
+    for System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>
 {
     type EepromStore = [u8; EEPROM_LEN];
     fn blank_eeprom() -> Self::EepromStore {
@@ -166,7 +206,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
 
     const COM_OBJECT_TABLE_FORMAT: BcuComObjectTableFormat = BcuComObjectTableFormat::System7;
 
-    // Machines 1..=4 (ADT, AST, App, App2) answer on interface objects
+    // Machines 1..=4 (ADT, AST, application, interface program) answer on interface objects
     // 1..=4 through PID_LOAD_STATE_CONTROL — what ETS drives — and
     // additionally through the memory window at 0104h.
     const LSM_OBJ_BASE: u8 = 1;
@@ -183,10 +223,36 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
         let roster = match object_index {
             0 => DEVICE_PROPERTIES,
             1 | 2 => TABLE_PROPERTIES,
-            3 | 4 => PROGRAM_PROPERTIES,
+            3 => APPLICATION_PROPERTIES,
+            4 => INTERFACE_PROGRAM_PROPERTIES,
             _ => return None,
         };
         roster.get(usize::from(property_index)).copied()
+    }
+
+    fn property_read_hook(
+        obj: u8,
+        prop_id: u16,
+        _eeprom: &[u8],
+        _identity: &DeviceIdentity,
+        _mgmt: &ManagementState,
+    ) -> Option<Vec<u8, 10>> {
+        let mut value = Vec::new();
+        match (obj, prop_id) {
+            (0, pid::MANUFACTURER_ID) => {
+                let _ = value.extend_from_slice(&MANUFACTURER_ID.to_be_bytes());
+            }
+            (3, pid::PROGRAM_VERSION) => {
+                let _ = value.extend_from_slice(&MANUFACTURER_ID.to_be_bytes());
+                let _ = value.extend_from_slice(&APPLICATION_ID.to_be_bytes());
+                let _ = value.push(APPLICATION_VERSION);
+            }
+            (3, pid::PEI_TYPE) => {
+                let _ = value.push(PEI_TYPE);
+            }
+            _ => return None,
+        }
+        Some(value)
     }
 
     /// No RunError byte on System 7: the application runs when its
@@ -199,7 +265,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     /// unless explicitly stopped, in which case it is Terminated. Unloaded
     /// machines report Halted.
     fn run_state_read(obj: u8, _eeprom: &[u8], mgmt: &ManagementState) -> Option<u8> {
-        let machine = Self::app_machine_of(obj)?;
+        let machine = Self::program_machine_of(obj)?;
         let state = if mgmt.lsm[machine].state != LoadState::Loaded {
             RunState::Halted
         } else if mgmt.run_stopped[machine] {
@@ -211,7 +277,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     }
 
     fn run_state_write(obj: u8, value: u8, _eeprom: &mut [u8], mgmt: &mut ManagementState) -> bool {
-        let Some(machine) = Self::app_machine_of(obj) else { return false };
+        let Some(machine) = Self::program_machine_of(obj) else { return false };
         // 03/05/01 §4.24.2.3.2 Table 96: only Ready, Restart and Stop
         // may arrive from a client — the internal events sharing the
         // byte space are refused.
@@ -251,8 +317,8 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
                     *count = 0;
                 }
             }
-            // Unloading an application halts its run state machine.
-            m if Self::is_app_machine(m) => mgmt.run_stopped[machine] = false,
+            // Unloading a program halts its run state machine.
+            m if Self::is_program_machine(m) => mgmt.run_stopped[machine] = false,
             _ => {}
         }
     }
@@ -261,7 +327,7 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     /// freshly loaded application runs (03/05/01 §4.24, RunEvent
     /// Loaded), clearing any Stop left from the previous program.
     fn load_completed_side_effect(machine: usize, _eeprom: &mut [u8], mgmt: &mut ManagementState) {
-        if Self::is_app_machine(machine) {
+        if Self::is_program_machine(machine) {
             mgmt.run_stopped[machine] = false;
         }
     }

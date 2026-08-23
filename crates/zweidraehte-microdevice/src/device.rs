@@ -76,7 +76,7 @@ pub struct DeviceIdentity {
     pub order_info: [u8; 10],
     /// `PID_HARDWARE_TYPE` — the identity a System 7 download
     /// procedure guards on (`LdCtrlCompareProp` against the product's
-    /// serial). BCU2 predates the property; its family ignores this.
+    /// hardware type). BCU2 predates the property; its family ignores this.
     pub hardware_type: [u8; 6],
 }
 
@@ -208,6 +208,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     pub fn individual_address(&self) -> IndividualAddress {
         self.tables().individual_address()
+    }
+
+    /// Current `PID_HARDWARE_TYPE` value.
+    pub fn hardware_type(&self) -> &[u8; 6] {
+        &self.identity.hardware_type
     }
 
     // ── Programming mode (system status at 0060h) ───────────────────

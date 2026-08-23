@@ -296,7 +296,7 @@ mod tests {
     /// the product address 4200h.
     #[test]
     fn walks_system7_tables_in_place() {
-        type S7 = crate::families::system7::System7Family<0x400, 0x4200>;
+        type S7 = crate::families::system7::System7Family<0x400, 0x4200, 0, 0, 0, 0>;
         let mut e = [0u8; 0x400];
         // ADT: length 3 (IA + 2 GAs), IA 1.1.10 at bytes 1-2.
         e[0] = 3;
@@ -363,7 +363,7 @@ mod tests {
     /// as the one counted slot.
     #[test]
     fn system7_bcu_table_mute_is_length_one() {
-        type S7 = crate::families::system7::System7Family<0x400, 0x4200>;
+        type S7 = crate::families::system7::System7Family<0x400, 0x4200, 0, 0, 0, 0>;
         let mut e = [0u8; 0x400];
         e[0] = 1;
         e[1] = 0x11;
