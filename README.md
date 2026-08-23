@@ -189,12 +189,13 @@ breakdown of what works, what needs testing, and what is missing.
 - **`zweidraehte-microdevice`** (experimental throughout): BCU2 and
   micro-System-7 DUTs pass a smoke suite, the micro System 7 DUT shares
   the full stack's bus-observable System 7 contracts and runs the vendor
-  network, transport, load-state and run-state templates, and the BCU2
-  DUT completes client download/unload scenarios. That is real coverage,
-  but far short of what the full stack gets: Group Objects and Management
-  templates are not in the micro EITT profile, BCU1 has crate-level tests
-  only (no DUT, no firmware), and nothing here has seen a bench or a
-  certification lab.
+  network, transport, load-state, run-state and management templates. Its
+  secure sibling passes all 172 selected cases from the AN158 and AN177 Data
+  Security collections, and the BCU2 DUT completes client download/unload
+  scenarios. That is real coverage, but far short of what the full stack gets:
+  Group Objects and AN170 Group Object Diagnostics are not in the micro EITT
+  profile, BCU1 has a DUT but no reference firmware, and nothing here has seen
+  a certification lab.
 
 ### Known gaps
 
@@ -226,11 +227,11 @@ breakdown of what works, what needs testing, and what is missing.
 - **Profiles**: System B (07B0/27B0/57B0) and System 7 TP1 (0705,
   incl. Data Secure) are implemented by the full stack. The micro stack
   implements BCU1 0012h, BCU2 0020h/0021h/0025h, and System 7 0705h on
-  TP1; plain and Data Secure BCU2 plus micro-System-7 have reference firmware
-  and DUT coverage. System 7 RF/IP siblings, System 300, couplers/routers,
-  and USB interface masks are not implemented.
-- **Micro-stack maturity**: the micro-System-7 EITT profile does not yet
-  run Group Objects or Management, BCU1 has no DUT or firmware target,
+  TP1; plain and Data Secure BCU2 plus plain and Data Secure micro-System-7
+  have reference firmware and DUT coverage. System 7 RF/IP siblings, System
+  300, couplers/routers, and USB interface masks are not implemented.
+- **Micro-stack maturity**: the micro-System-7 EITT profile does not yet run
+  Group Objects or AN170 Group Object Diagnostics, BCU1 has no firmware target,
   and no micro target has been exercised on a real bus for long. Its
   application-parameter adapter, like the full stack's writable typed
   parameter table, also still relies on downloaded bytes containing

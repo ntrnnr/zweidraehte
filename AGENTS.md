@@ -615,9 +615,10 @@ management models — BCU1 0012h, BCU2 0020h/0021h/0025h, and System 7
 **Status: experimental.** This crate is an exploration — how small a KNX
 device gets without an executor, and how much of the "generic" core is
 genuinely family-neutral. It is young and thinly tested next to
-`zweidraehte-device`: BCU1 has crate-level tests only (no DUT, no
-firmware target), the micro System 7 EITT profile omits Group Objects and
-Management, and none of it has bench time. Do not present it as
+`zweidraehte-device`: BCU1 has a DUT and selected EITT coverage but no
+firmware target, the micro System 7 EITT profile omits Group Objects and AN170
+Group Object Diagnostics, and none of it has certification-lab time. Do not
+present it as
 production-ready, do not let it dictate design in the full stack, and
 prefer fixing the full stack when the two disagree unless the micro side
 is demonstrably right. A deliberate sibling to
@@ -626,9 +627,10 @@ pool, no interface-object tower. One owner struct
 (`Microdevice<F: MicroDeviceFamily>`) with a cooperative
 `poll(PollInput, now_ms) -> PollOutput` runloop the main loop drives —
 frames in, frames out, timer ticks in between; interrupts stop at a byte
-ring outside the stack. The current BCU2/System-7 light-switch targets are
-about 21–23 KiB `.text` and 1 KiB `.bss`, versus about 125–126 KiB `.text`
-and 9 KiB `.bss` for their full-stack siblings on the same MCU family.
+ring outside the stack. The current plain BCU2/System-7 light-switch targets
+are about 28–30 KiB flash and 1 KiB static RAM; their secure siblings are
+about 72–74 KiB flash and 1 KiB static RAM, versus about 125–126 KiB `.text`
+and 9 KiB `.bss` for the full-stack siblings on the same MCU family.
 
 Key design points:
 - **The EEPROM bytes ARE the tables**: each family owns one fixed-size flat
@@ -657,17 +659,21 @@ Key design points:
 - `link/tpuart.rs`: sync TPUART host-protocol driver (byte→frame
   assembly, immediate-ack decision, `U_L_Data*` transmission with echo /
   confirm tracking) for polling firmware; the conformance DUT feeds
-  frames directly.
+  frames directly. Data Secure is a compile-time profile module: the BCU2 and
+  System 7 aliases add their family-specific Security IO/Object roster and
+  raise the frame capacity only when selected.
 - Feature `std` adds the postcard `MicroSnapshot` used by the BCU2 and
   micro-System-7 DUTs. BCU2 has smoke plus complete client download/unload
   scenarios. Micro System 7 shares bus-observable smoke contracts with the
-  full stack and runs the vendor Network, Transport, Load State Machine, and
-  Run State Machine templates; Group Objects and Management remain outside
-  its EITT profile.
-- Firmware targets: `firmware/stm32/g0_tp1_bcu2_light_switch` and
-  `firmware/stm32/g0_tp1_micro_system7_light_switch` — bare-metal
-  `cortex-m-rt` + `stm32-metapac`, polled UART, SysTick milliseconds, no
-  embassy. Both use the shared light-switch product behavior.
+  full stack and runs the vendor Network, Transport, Load State Machine, Run
+  State Machine, and Management templates. Its secure composition runs the
+  172 selected cases from the AN158 and AN177 Data Security collections;
+  Group Objects and AN170 remain outside its EITT profile.
+- Firmware targets: `firmware/stm32/g0_tp1_bcu2_light_switch`, its secure
+  sibling, `firmware/stm32/g0_tp1_micro_system7_light_switch`, and its secure
+  sibling — bare-metal `cortex-m-rt` + `stm32-metapac`, polled UART, SysTick
+  milliseconds, no embassy. The secure targets share the small raw-PAC entropy
+  and FRAM counter adapter in `firmware/stm32/micro-common`.
 - **Known soundness constraint**: application parameter bytes are still read
   into enum-bearing Rust types without validating every discriminant. Treat
   fixing the shared wire representation as correctness work, not cleanup.
