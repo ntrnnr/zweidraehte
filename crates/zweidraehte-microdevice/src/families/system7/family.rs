@@ -135,6 +135,10 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     const RAM2_SIZE: usize = 0x100;
     const MEMORY_REGIONS: &'static [MemoryRegion] = P::REGIONS;
 
+    fn memory_access_policy(address: u16, length: usize) -> AccessPolicy {
+        P::security_policy(address, length)
+    }
+
     // RT8 coding: the table starts the user EEPROM, and the IA is defined as
     // bytes 1–2 of the blob (4001h–4002h) — there is no separate cell.
     const ADDR_TABLE_OFFSET: usize = 0;
@@ -188,9 +192,8 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     }
 
     /// 03/05/01 §4.24.2.3.3 Table 97: a loaded application is Running
-    /// unless explicitly stopped, in which case it is Terminated — the
-    /// HALTED intermediate of BCU2/System 2 is unreachable from the
-    /// bus. Unloaded machines report Halted.
+    /// unless explicitly stopped, in which case it is Terminated. Unloaded
+    /// machines report Halted.
     fn run_state_read(obj: u8, _eeprom: &[u8], mgmt: &ManagementState) -> Option<u8> {
         let machine = Self::app_machine_of(obj)?;
         let state = if mgmt.lsm[machine].state != LoadState::Loaded {
@@ -216,7 +219,10 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
                     mgmt.run_stopped[machine] = true;
                 }
             }
-            _ => return false,
+            // Unknown events are ignored by the state machine.  They are not
+            // a malformed property write and therefore still receive the
+            // unchanged state in the positive response.
+            _ => {}
         }
         true
     }

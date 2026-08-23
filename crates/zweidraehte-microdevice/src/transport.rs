@@ -141,6 +141,9 @@ impl<const N: usize> TlState<N> {
         let result = process_event(&mut self.conn, event, self.style);
         let outputs = self.run_actions(&result.actions, now_ms);
         result.apply_state(&mut self.conn);
+        if self.conn.state == ConnectionState::Closed {
+            self.pending_tx = None;
+        }
         outputs
     }
 

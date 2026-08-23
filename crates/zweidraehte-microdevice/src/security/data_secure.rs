@@ -1,5 +1,7 @@
 //! `DataSecure<S, GRP, GO>` — the KNX Data Secure profile module.
 
+use core::cell::Cell;
+
 use heapless::Vec;
 
 use zweidraehte_proto::access::{AccessContext, AccessPolicy, ClientRole, SecurityMode};
@@ -7,9 +9,11 @@ use zweidraehte_proto::crypto::{
     ccm,
     scf::{SecureServiceType, SecurityControlField},
 };
+#[cfg(feature = "conformance")]
+use zweidraehte_proto::dpt::PDT_Generic02;
 use zweidraehte_proto::dpt::{
     PDT_BinaryInformation, PDT_Control, PDT_Function, PDT_Generic01, PDT_Generic06, PDT_Generic08, PDT_Generic16,
-    PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, PropertyDataDefinition,
+    PDT_Generic18, PDT_UnsignedChar, PDT_UnsignedInt, ProgrammingMode, PropertyDataDefinition,
 };
 use zweidraehte_proto::messages::apdu::load_control::{LoadAction, LoadState, load_control_transition};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
@@ -21,6 +25,7 @@ use zweidraehte_proto::security::{
     FunctionPropertyAnswer, SecurityConfig, SecurityFailureType, SecurityState, SecurityTable,
 };
 
+use crate::family::{PropertyBacking, PropertySpec};
 use crate::frame::FrameBuf;
 use crate::sal::{ReplyKey, ReplySecurity, RequestContext};
 
@@ -64,6 +69,11 @@ pub struct DataSecureState<S, const GRP: usize, const GO: usize> {
     /// Master-reset handoff consumed by the dispatch that produced it.
     /// Transient by design: snapshots must never replay a reset request.
     pending_restart: Option<ScheduledRestart>,
+    /// A logged failure that must produce a spontaneous plaintext report.
+    ///
+    /// This is deliberately transient: PID 57 is persisted, but an outgoing
+    /// telegram interrupted by a power loss is not replayed after boot.
+    pending_security_report: Cell<bool>,
 }
 
 impl<S, const GRP: usize, const GO: usize> DataSecureState<S, GRP, GO> {
@@ -74,13 +84,27 @@ impl<S, const GRP: usize, const GO: usize> DataSecureState<S, GRP, GO> {
         // the tool key. Leaving it zero would make the device unreachable
         // until something wrote one, which is the wrong way round.
         let config = SecurityConfig { tool_key: fdsk, ..SecurityConfig::default() };
-        Self { security: SecurityState::from_config(config), seq, fdsk, last_sync_ms: None, pending_restart: None }
+        Self {
+            security: SecurityState::from_config(config),
+            seq,
+            fdsk,
+            last_sync_ms: None,
+            pending_restart: None,
+            pending_security_report: Cell::new(false),
+        }
     }
 
     /// Restore persisted Security IO state over the device's current FDSK
     /// identity and sequence resource.
     pub fn from_config(fdsk: [u8; 16], seq: S, config: SecurityConfig<GRP, 0, GO>) -> Self {
-        Self { security: SecurityState::from_config(config), seq, fdsk, last_sync_ms: None, pending_restart: None }
+        Self {
+            security: SecurityState::from_config(config),
+            seq,
+            fdsk,
+            last_sync_ms: None,
+            pending_restart: None,
+            pending_security_report: Cell::new(false),
+        }
     }
 
     /// Snapshot the low-write-frequency Security IO configuration.
@@ -206,6 +230,16 @@ fn descriptor<const GRP: usize, const GO: usize>(index: u16) -> Option<PropertyD
             configuration,
             AccessPolicy::TOOL_ONLY,
         ),
+        #[cfg(feature = "conformance")]
+        12 => PropertyDescriptor::new(
+            pid::security::TEST_FAILURE_COUNTERS,
+            PDT_Generic02::ID,
+            4,
+            rw,
+            configuration,
+            configuration,
+            AccessPolicy::TOOL_ONLY,
+        ),
         _ => return None,
     })
 }
@@ -217,6 +251,12 @@ fn log_failure<S, const GRP: usize, const GO: usize>(
     frame: &[u8],
 ) {
     state.security.failures_log().borrow_mut().log_failure(kind, source, frame);
+    state.security.set_security_report(state.security.security_report() | 0x01);
+    if state.security.security_report_enabled() {
+        // §6.3.11.4 requires a report for every failure, irrespective of
+        // whether the Security Failure bit was already set.
+        state.pending_security_report.set(true);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -379,13 +419,49 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
     const FRAME_OVERHEAD: usize = secure::OVERHEAD;
     const OBJECT_TYPE: Option<u16> = Some(SECURITY_IO_TYPE);
 
+    fn device_property_spec(index: u8) -> Option<PropertySpec> {
+        // These Device Object properties are obligations of the Data Secure
+        // composition, not mask 0021h. Keeping them here leaves a plain BCU2
+        // roster—and its binary—unchanged.
+        match index {
+            // 06 Profiles §9.1.2.6.2: BCU2 otherwise realizes programming
+            // mode only at memory address 0060h.
+            0 => Some(PropertySpec::read_write_with_policy(
+                pid::device::PROGMODE,
+                ProgrammingMode::ID,
+                3,
+                2,
+                AccessPolicy::READ_OPEN_WRITE_TOOL,
+                PropertyBacking::ProgrammingMode,
+            )),
+            // AN193 object-type 0: both address components are read-only
+            // with 3FF/00C. In Security Mode this admits Tool A+C but not
+            // plain or authentication-only reads.
+            1 => Some(PropertySpec::read_only_with_policy(
+                pid::device::SUBNET_ADDRESS,
+                PDT_UnsignedChar::ID,
+                3,
+                AccessPolicy::new(0x3FF, 0x00C),
+                PropertyBacking::IndividualAddressSubnet,
+            )),
+            2 => Some(PropertySpec::read_only_with_policy(
+                pid::device::DEVICE_ADDRESS,
+                PDT_UnsignedChar::ID,
+                3,
+                AccessPolicy::new(0x3FF, 0x00C),
+                PropertyBacking::IndividualAddressDevice,
+            )),
+            _ => None,
+        }
+    }
+
     #[inline(always)]
     fn plain_reply_context() -> Self::ReplyContext {
         None
     }
 
     fn property_descriptor(prop_id: u16) -> Option<(u16, PropertyDescriptor)> {
-        for index in 0..12 {
+        for index in 0..=12 {
             let desc = descriptor::<GRP, GO>(index)?;
             if desc.pid == prop_id {
                 return Some((index, desc));
@@ -431,6 +507,23 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
                     out.extend_from_slice(&seq_nr).ok()?;
                 }
                 return Some(out);
+            }
+            #[cfg(feature = "conformance")]
+            pid::security::TEST_FAILURE_COUNTERS => {
+                if start == 0 {
+                    return scalar(&4u16.to_be_bytes());
+                }
+                if count == 0 {
+                    return None;
+                }
+                let first = usize::from(start.checked_sub(1)?);
+                let bytes = usize::from(count) * 2;
+                let counters = sec.failures_log().borrow().counters_as_bytes();
+                let end = first.checked_add(usize::from(count))?;
+                if end > 4 {
+                    return None;
+                }
+                return scalar(&counters[first * 2..first * 2 + bytes]);
             }
             _ => {}
         }
@@ -720,26 +813,49 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
         log_failure(state, SecurityFailureType::AccessError, source, frame);
     }
 
+    fn take_security_report(state: &Self::State) -> Option<u8> {
+        state.pending_security_report.replace(false).then(|| state.security.security_report())
+    }
+
     fn factory_reset(state: &mut Self::State, reply: &mut Self::ReplyContext, code: EraseCode) -> bool {
-        let Some(reply) = reply.as_mut() else { return false };
-        let key = {
-            let tool_key = state.security.tool_key();
-            if tool_key == [0; 16] { state.fdsk } else { tool_key }
-        };
-        let Some(sequence) = zweidraehte_proto::security::reserve_next_seq_nr(&mut state.seq) else {
-            return false;
-        };
-        // The response is the last telegram in the old security context.
-        // Capture it request-locally before the durable reset replaces the
-        // Tool Key and sending counter.
-        reply.key = ReplyKey::Prepared { key, sequence };
+        if let Some(reply) = reply.as_mut() {
+            let key = {
+                let tool_key = state.security.tool_key();
+                if tool_key == [0; 16] { state.fdsk } else { tool_key }
+            };
+            let Some(sequence) = zweidraehte_proto::security::reserve_next_seq_nr(&mut state.seq) else {
+                return false;
+            };
+            // A secured response is the last telegram in the old security
+            // context. Capture it request-locally before the durable reset
+            // replaces the Tool Key and sending counter. With Security Mode
+            // off, erase codes 02h/07h also permit a plain request
+            // (3FF/00C); that response needs neither a key nor a sequence
+            // reservation and therefore legitimately has no reply context.
+            reply.key = ReplyKey::Prepared { key, sequence };
+        }
         if state.seq.siat_clear().is_err()
             || !zweidraehte_proto::security::erase_seq_on_factory_reset(&mut state.seq, code)
         {
             return false;
         }
+
+        // Reset without IA (07h) still clears the security tables, failure
+        // log, report and Security IO load state. Its two deliberate
+        // exceptions are the active Tool Key and PID_SECURITY_MODE
+        // (03/05/01 §6.3.5.4 and §6.3.10.4; TSS J 3.8.8.7 and
+        // 3.8.13.6). Preserve only that tool-access context across the common
+        // reset below. A reset with IA (02h) instead reactivates the FDSK.
+        let preserved_tool_context = (code == EraseCode::FactoryResetKeepIA)
+            .then(|| (state.security.security_mode_enabled(), state.security.tool_key()));
         state.security.factory_reset();
-        state.security.reset_tool_key_to_fdsk(state.fdsk);
+        state.pending_security_report.set(false);
+        if let Some((security_mode, tool_key)) = preserved_tool_context {
+            state.security.set_security_mode_enabled(security_mode);
+            state.security.set_tool_key(tool_key);
+        } else {
+            state.security.reset_tool_key_to_fdsk(state.fdsk);
+        }
         true
     }
 
@@ -765,6 +881,18 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
         data: &[u8],
     ) -> Option<FunctionResult<N>> {
         Self::handle_function_state_read(state, prop_id, data)
+    }
+
+    fn function_access_denied<const N: usize>(prop_id: u16, data: &[u8]) -> FunctionResult<N> {
+        let mut response = Vec::new();
+        // Both standardized Security IO function properties repeat their
+        // ServiceID after a negative return code and omit only ServiceInfo
+        // (03/05/01 §6.3.5.3 and §6.3.9.3.3). The ServiceID is the
+        // second function-specific request octet, after Reserved.
+        if matches!(prop_id, pid::security::SECURITY_MODE | pid::security::SECURITY_FAILURES_LOG) {
+            response.push(data.get(1).copied().unwrap_or(0)).expect("one ServiceID fits response");
+        }
+        FunctionResult { code: PropertyReturnCode::AccessDenied, data: response }
     }
 
     fn property_write(state: &mut Self::State, prop_id: u16, count: u8, start: u16, data: &[u8]) -> PropertyReturnCode {
@@ -828,6 +956,24 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
                 }
                 return PropertyReturnCode::Success;
             }
+            #[cfg(feature = "conformance")]
+            pid::security::TEST_FAILURE_COUNTERS => {
+                if start == 0 {
+                    return PropertyReturnCode::Success;
+                }
+                let first = usize::from(start.saturating_sub(1));
+                let elements = usize::from(count);
+                if start == 0 || first + elements > 4 || data.len() != elements * 2 {
+                    return PropertyReturnCode::DataTypeConflict;
+                }
+                let mut log = sec.failures_log().borrow_mut();
+                let mut counters = *log.counters();
+                for (index, value) in data.chunks_exact(2).enumerate() {
+                    counters[first + index] = u16::from_be_bytes([value[0], value[1]]);
+                }
+                log.set_counters(counters);
+                return PropertyReturnCode::Success;
+            }
             _ => {}
         }
         if start != 1 {
@@ -842,12 +988,13 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
                 PropertyReturnCode::Success
             }
             pid::security::SECURITY_REPORT => {
-                // §6.3.11: the report field is cleared by writing it, not set.
-                // Only the tool clears it, and only the clear is meaningful.
                 if data.len() != 1 {
                     return PropertyReturnCode::DataTypeConflict;
                 }
-                sec.set_security_report(sec.security_report() & !data[0]);
+                // The authenticated MaC resets the report by overwriting its
+                // DPT_Bitset8 value (§6.3.11.5). This is ordinary property
+                // assignment; writing 00h clears the failure bit.
+                sec.set_security_report(data[0]);
                 PropertyReturnCode::Success
             }
             pid::security::SECURITY_REPORT_CONTROL => {

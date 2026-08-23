@@ -2,8 +2,9 @@
 //!
 //! These are the management services 06 Profiles §9.1.2.3 makes mandatory
 //! for the KNX Data Security profile module. They address an interface
-//! object by type plus one-based occurrence instead of by index, which is
-//! the only way to reach an object a family keeps out of its indexed roster.
+//! object by type plus one-based occurrence instead of by index. Profile
+//! modules expose the same object through the classic indexed compatibility
+//! surface when a client scans without `PID_IO_LIST`.
 //!
 //! Split from `management.rs` because the two service surfaces share no
 //! dispatch code — the classic path routes by object index and backing
@@ -13,7 +14,8 @@
 use heapless::Vec;
 
 use zweidraehte_proto::access::AccessContext;
-use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
+use zweidraehte_proto::memory::{MemoryError, MemoryOperation, check_memory_access};
+use zweidraehte_proto::messages::apdu::function_property::{FunctionPropertyHeader, FunctionPropertyResponse};
 use zweidraehte_proto::messages::apdu::memory::{MemoryExtendedAccess, MemoryExtendedResponse};
 use zweidraehte_proto::messages::apdu::property_ext::{
     FunctionPropertyExtHeader, FunctionPropertyExtResponse, PropertyExtDescriptionHeader,
@@ -27,7 +29,7 @@ use crate::device::Microdevice;
 use crate::family::MicroDeviceFamily;
 use crate::frame::ApciCode;
 use crate::management::{Reply, ServiceResult};
-use crate::security::{FunctionResult, ObjectRoute, SecurityModule};
+use crate::security::{ObjectRoute, SecurityModule};
 
 /// Where an extended-service payload starts in the canonical frame.
 const EXT_PAYLOAD_START: usize = offsets::MSG_APCI + 2;
@@ -62,7 +64,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 &[],
             );
         }
-        if !SEC::memory_access_allowed(&self.sec, access) {
+        let operation = MemoryOperation::Read;
+        if !SEC::memory_access_allowed(&self.sec, access, F::memory_access_policy(addr, count), operation) {
+            self.record_access_failure(access, frame);
             return Self::memory_ext_reply(
                 ApciCode::MemoryExtendedReadResponse,
                 PropertyReturnCode::AccessDenied,
@@ -78,20 +82,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 &[],
             );
         }
-        if !memory_access_allowed(
-            F::MEMORY_REGIONS,
-            addr,
-            count,
-            MemoryOperation::Read,
-            access.access_level,
-            F::AUTH_LEVELS as u8,
-        ) {
-            return Self::memory_ext_reply(
-                ApciCode::MemoryExtendedReadResponse,
-                PropertyReturnCode::AccessDenied,
-                req.address,
-                &[],
-            );
+        if let Some(code) = Self::memory_region_error(addr, count, operation, access) {
+            return Self::memory_ext_reply(ApciCode::MemoryExtendedReadResponse, code, req.address, &[]);
         }
         let mut data: Vec<u8, FRAME_CAP> = Vec::new();
         for i in 0..req.count {
@@ -120,7 +112,14 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 &[],
             );
         }
-        if !SEC::memory_access_allowed(&self.sec, access) {
+        let operation = MemoryOperation::Write;
+        if !SEC::memory_access_allowed(
+            &self.sec,
+            access,
+            F::memory_access_policy(addr, usize::from(req.count)),
+            operation,
+        ) {
+            self.record_access_failure(access, frame);
             return Self::memory_ext_reply(
                 ApciCode::MemoryExtendedWriteResponse,
                 PropertyReturnCode::AccessDenied,
@@ -139,20 +138,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 &[],
             );
         }
-        if !memory_access_allowed(
-            F::MEMORY_REGIONS,
-            addr,
-            req.data.len(),
-            MemoryOperation::Write,
-            access.access_level,
-            F::AUTH_LEVELS as u8,
-        ) {
-            return Self::memory_ext_reply(
-                ApciCode::MemoryExtendedWriteResponse,
-                PropertyReturnCode::AccessDenied,
-                req.address,
-                &[],
-            );
+        if let Some(code) = Self::memory_region_error(addr, req.data.len(), operation, access) {
+            return Self::memory_ext_reply(ApciCode::MemoryExtendedWriteResponse, code, req.address, &[]);
         }
         if !F::memory_write_intercept(addr, req.data, self.eeprom.as_mut(), &mut self.mgmt) {
             for (i, &byte) in req.data.iter().enumerate() {
@@ -160,6 +147,26 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             }
         }
         Self::memory_ext_reply(ApciCode::MemoryExtendedWriteResponse, PropertyReturnCode::Success, req.address, &[])
+    }
+
+    /// Preserve the richer AN177 error vocabulary at the extended-service
+    /// boundary. Classic memory services expose only success/no-response and
+    /// continue using the smaller boolean region check.
+    fn memory_region_error(
+        address: u16,
+        length: usize,
+        operation: MemoryOperation,
+        access: AccessContext,
+    ) -> Option<PropertyReturnCode> {
+        match check_memory_access(F::MEMORY_REGIONS, address, length, operation, access, F::AUTH_LEVELS as u8) {
+            Some(Ok(_)) => None,
+            Some(Err(MemoryError::WriteProtected)) => Some(match operation {
+                MemoryOperation::Read => PropertyReturnCode::AccessWriteOnly,
+                MemoryOperation::Write => PropertyReturnCode::AccessReadOnly,
+            }),
+            Some(Err(MemoryError::AccessDenied)) => Some(PropertyReturnCode::AccessDenied),
+            Some(Err(MemoryError::NotAccessible)) | None => Some(PropertyReturnCode::AddressVoid),
+        }
     }
 
     /// Narrow an extended service's 24-bit address to this family's 16-bit
@@ -212,7 +219,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                         SEC::function_state_read::<FRAME_CAP>(&self.sec, hdr.prop_id, data)
                     }
                 }
-                Some(_) => Some(FunctionResult { code: PropertyReturnCode::AccessDenied, data: Vec::new() }),
+                Some(_) => {
+                    self.record_access_failure(access, frame);
+                    Some(SEC::function_access_denied(hdr.prop_id, data))
+                }
                 None => None,
             },
             _ => None,
@@ -238,6 +248,62 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 |buf| {
                     FunctionPropertyExtResponse::write_empty(buf, hdr.object_type, hdr.object_instance, hdr.prop_id);
                 },
+            ),
+        }
+    }
+
+    /// Classic indexed twin of [`function_property_ext`](Self::function_property_ext).
+    ///
+    /// Data Secure mandates the extended service, but the Security Interface
+    /// Object remains discoverable at a classic object index and the base
+    /// Function Property procedure is still part of the device-management
+    /// surface. Both forms therefore reach the same module handler and access
+    /// policy; only their addressing and response headers differ.
+    pub(crate) fn function_property(
+        &mut self,
+        frame: &[u8],
+        command: bool,
+        access: AccessContext,
+    ) -> ServiceResult<FRAME_CAP> {
+        let Some(hdr) = FunctionPropertyHeader::parse(frame) else {
+            return ServiceResult::None;
+        };
+        let data = hdr.data(frame);
+        let result = if Self::is_module_object(hdr.object_idx) {
+            match SEC::property_descriptor(hdr.prop_id) {
+                Some((_, desc))
+                    if (command && desc.can_function_write_secure(&access, SEC::security_mode_enabled(&self.sec)))
+                        || (!command
+                            && desc.can_function_read_secure(&access, SEC::security_mode_enabled(&self.sec))) =>
+                {
+                    if command {
+                        SEC::function_command::<FRAME_CAP>(&mut self.sec, hdr.prop_id, data)
+                    } else {
+                        SEC::function_state_read::<FRAME_CAP>(&self.sec, hdr.prop_id, data)
+                    }
+                }
+                Some(_) => {
+                    self.record_access_failure(access, frame);
+                    Some(SEC::function_access_denied(hdr.prop_id, data))
+                }
+                None => None,
+            }
+        } else {
+            None
+        };
+
+        match result {
+            Some(result) => Self::ext_reply(
+                ApciCode::FunctionPropertyStateResponse,
+                FunctionPropertyResponse::msg_len(result.data.len()),
+                |buf| {
+                    FunctionPropertyResponse::write(buf, hdr.object_idx, hdr.prop_id, result.code.into(), &result.data);
+                },
+            ),
+            None => Self::ext_reply(
+                ApciCode::FunctionPropertyStateResponse,
+                FunctionPropertyResponse::EMPTY_MSG_LEN,
+                |buf| FunctionPropertyResponse::write_empty(buf, hdr.object_idx, hdr.prop_id),
             ),
         }
     }
@@ -269,11 +335,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 }
             }
         }
-        // The profile module's object, if it has one, lives outside the
-        // indexed roster entirely — that is the whole point of the second
-        // address space, and on BCU2 the indexed roster must stay at the
-        // four objects the mask has always published. It answers for
-        // occurrence 1 only, there being exactly one of it.
+        // A profile module owns its type/occurrence route independently of
+        // the base family. It answers for occurrence 1 only, there being
+        // exactly one of it; classic services expose the same object at the
+        // first index after `F::OBJECT_COUNT` for scan compatibility.
         if SEC::OBJECT_TYPE == Some(object_type) && object_instance == 1 {
             return Some(ObjectRoute::Module);
         }
@@ -318,6 +383,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     return Self::ext_error(&hdr, PropertyReturnCode::AddressVoid);
                 };
                 if !descriptor.can_read_secure(&access, security_on) {
+                    self.record_access_failure(access, frame);
                     return Self::ext_error(&hdr, PropertyReturnCode::AccessDenied);
                 }
                 SEC::property_read::<FRAME_CAP>(&self.sec, hdr.prop_id, hdr.count, hdr.start_idx)
@@ -327,10 +393,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             // error rather than a parse failure.
             ObjectRoute::Indexed(obj) => match u8::try_from(hdr.prop_id) {
                 Ok(prop_id) => {
-                    let Some((_, spec)) = F::property_spec_by_id(obj, u16::from(prop_id)) else {
+                    let Some((_, spec)) = Self::property_spec_by_id(obj, u16::from(prop_id)) else {
                         return Self::ext_error(&hdr, PropertyReturnCode::AddressVoid);
                     };
                     if !spec.descriptor.can_read_secure(&access, SEC::security_mode_enabled(&self.sec)) {
+                        self.record_access_failure(access, frame);
                         return Self::ext_error(&hdr, PropertyReturnCode::AccessDenied);
                     }
                     self.property_read(obj, prop_id, hdr.count, hdr.start_idx, access)
@@ -394,6 +461,17 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             return ServiceResult::None;
         };
         let data = hdr.data(frame);
+        let policy_denied = match Self::resolve_object(hdr.object_type, hdr.object_instance) {
+            Some(ObjectRoute::Module) => SEC::property_descriptor(hdr.prop_id)
+                .is_some_and(|(_, desc)| !desc.can_write_secure(&access, SEC::security_mode_enabled(&self.sec))),
+            Some(ObjectRoute::Indexed(obj)) => u8::try_from(hdr.prop_id)
+                .ok()
+                .and_then(|pid| Self::property_spec_by_id(obj, u16::from(pid)))
+                .is_some_and(|(_, spec)| {
+                    !spec.descriptor.can_write_secure(&access, SEC::security_mode_enabled(&self.sec))
+                }),
+            None => false,
+        };
         let accepted = match Self::resolve_object(hdr.object_type, hdr.object_instance) {
             Some(ObjectRoute::Module) => {
                 let security_on = SEC::security_mode_enabled(&self.sec);
@@ -418,6 +496,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             Some(code) => code,
             None => PropertyReturnCode::AddressVoid,
         };
+        if policy_denied {
+            self.record_access_failure(access, frame);
+        }
         if !confirmed {
             return ServiceResult::None;
         }
@@ -445,7 +526,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         })
     }
 
-    pub(crate) fn property_ext_description_read(&self, frame: &[u8]) -> ServiceResult<FRAME_CAP> {
+    pub(crate) fn property_ext_description_read(
+        &self,
+        frame: &[u8],
+        access: AccessContext,
+    ) -> ServiceResult<FRAME_CAP> {
         let Some(hdr) = PropertyExtDescriptionHeader::parse(frame) else {
             return ServiceResult::None;
         };
@@ -458,12 +543,19 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ObjectRoute::Module => SEC::property_descriptor(hdr.prop_id),
             ObjectRoute::Indexed(obj) if hdr.prop_id == 0 => {
                 let idx = u8::try_from(hdr.prop_idx).ok()?;
-                F::property_spec(obj, idx).map(|spec| (u16::from(idx), spec.descriptor))
+                Self::property_spec(obj, idx).map(|spec| (u16::from(idx), spec.descriptor))
             }
             ObjectRoute::Indexed(obj) => u8::try_from(hdr.prop_id)
                 .ok()
-                .and_then(|pid| F::property_spec_by_id(obj, u16::from(pid)))
+                .and_then(|pid| Self::property_spec_by_id(obj, u16::from(pid)))
                 .map(|(idx, spec)| (u16::from(idx), spec.descriptor)),
+        });
+        let found = found.filter(|(_, descriptor)| {
+            let allowed = descriptor.can_describe_secure(&access, SEC::security_mode_enabled(&self.sec));
+            if !allowed {
+                self.record_access_failure(access, frame);
+            }
+            allowed
         });
 
         Self::ext_reply(ApciCode::PropertyExtDescriptionResponse, PropertyExtDescriptionResponse::MSG_LEN, |buf| {

@@ -248,6 +248,16 @@ impl PropertyDescriptor {
             && self.policy.can_write(ctx, device_security_on)
     }
 
+    /// Check whether this caller may read the property's description.
+    ///
+    /// 03/04/01 §6.2.6.3.4 defines description access as the logical OR
+    /// of the permissions to read and write the property value. This matters
+    /// for write-only resources such as `PID_TOOL_KEY`: the Tool may inspect
+    /// its descriptor without acquiring permission to read the key itself.
+    pub const fn can_describe_secure(&self, ctx: &AccessContext, device_security_on: bool) -> bool {
+        self.can_read_secure(ctx, device_security_on) || self.can_write_secure(ctx, device_security_on)
+    }
+
     /// Check if a Function Property command (write-like) is allowed.
     ///
     /// Unlike [`can_write_secure`], this does NOT check [`PropertyAccess`]

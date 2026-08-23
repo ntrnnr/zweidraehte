@@ -855,7 +855,7 @@ fn an_address_beyond_the_families_space_is_refused_not_truncated() {
 }
 
 #[test]
-fn an_extended_read_of_a_protected_region_is_denied() {
+fn an_extended_read_of_a_write_only_region_reports_its_direction() {
     // The direction-protected windows live in the protected policy, so this
     // one needs a wide device over that family rather than the standard one.
     let mut dev: Microdevice<ProtectedFam, EXTENDED_FRAME> =
@@ -878,7 +878,9 @@ fn an_extended_read_of_a_protected_region_is_denied() {
     let out = dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&req)), 0);
     let canonical = normalize::<EXTENDED_FRAME>(&out.frames[0]).expect("well-formed");
     let view = FrameView::parse(&canonical).expect("parsable");
-    assert_eq!(view.payload()[0], 0xFC, "E_ACCESS_DENIED");
+    // 03/03/07 distinguishes a direction violation from a failed access
+    // level check so management clients can diagnose the request precisely.
+    assert_eq!(view.payload()[0], 0xFA, "E_ACCESS_WRITE_ONLY");
 }
 
 #[test]

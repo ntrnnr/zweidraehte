@@ -165,10 +165,24 @@ impl<'a> FrameView<'a> {
 
     /// The frame's TPCI. `None` covers the codings 03/03/04 leaves
     /// reserved — among them unnumbered data with non-zero sequence
-    /// bits, which the conformance suite expects dropped (transport
-    /// layer 2.1).
+    /// bits — and TPDUs whose length cannot carry that service.
+    ///
+    /// Control TPDUs consist of exactly their one TPCI octet. Accepting
+    /// trailing octets is not benign: a malformed T_ACK would otherwise
+    /// advance the connection state machine. Data TPDUs need the following
+    /// APCI octet, even when their application value fits in its low six
+    /// bits.
     pub fn tpci(&self) -> Option<Tpci> {
-        Tpci::from_octet(self.tpdu[0], self.address_type())
+        let tpci = Tpci::from_octet(self.tpdu[0], self.address_type())?;
+        let valid_length = match tpci {
+            Tpci::Connect | Tpci::Disconnect | Tpci::Ack(_) | Tpci::Nack(_) => self.tpdu.len() == 1,
+            Tpci::DataBroadcast
+            | Tpci::DataSystemBroadcast
+            | Tpci::DataGroup
+            | Tpci::DataIndividual
+            | Tpci::DataConnected(_) => self.tpdu.len() >= 2,
+        };
+        valid_length.then_some(tpci)
     }
 
     /// The 10-bit APCI of a data PDU (needs at least one APDU octet).
@@ -390,6 +404,17 @@ mod tests {
         let ack = normalize::<MAX_FRAME>(&[0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0xC6]).expect("valid ack frame");
         let view = FrameView::parse(&ack).expect("parsable");
         assert_eq!(view.tpci(), Some(Tpci::Ack(1)));
+    }
+
+    #[test]
+    fn rejects_wrong_transport_pdu_lengths() {
+        let malformed_ack =
+            normalize::<MAX_FRAME>(&[0xB0, 0x00, 0x01, 0x11, 0x0A, 0x61, 0xC6, 0x11]).expect("wire length agrees");
+        assert_eq!(FrameView::parse(&malformed_ack).expect("canonical frame").tpci(), None);
+
+        let truncated_data =
+            normalize::<MAX_FRAME>(&[0xB0, 0x00, 0x01, 0x11, 0x0A, 0x60, 0x40]).expect("wire length agrees");
+        assert_eq!(FrameView::parse(&truncated_data).expect("canonical frame").tpci(), None);
     }
 
     #[test]

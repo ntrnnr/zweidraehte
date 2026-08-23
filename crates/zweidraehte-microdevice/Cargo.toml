@@ -21,6 +21,10 @@ default = []
 std = ["dep:serde", "dep:postcard", "dep:log", "postcard/use-std"]
 defmt = ["dep:defmt"]
 log = ["dep:log"]
+# Host-only manufacturer test resources used by EITT. Embedded products never
+# enable this, so certification hooks cannot enter their property roster or
+# binary.
+conformance = []
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }

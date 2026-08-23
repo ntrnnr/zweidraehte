@@ -362,6 +362,41 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     }
 }
 
+#[cfg(test)]
+mod function_property_tests {
+    use super::*;
+    use crate::security::SecurityFailureType;
+
+    type TestState = SecurityState<1, 1, 1>;
+
+    fn state() -> TestState {
+        SecurityState::from_config(SecurityConfig::default())
+    }
+
+    #[test]
+    fn failure_counters_echo_service_info_before_all_four_counters() {
+        let state = state();
+        state.failures_log().borrow_mut().log_failure(SecurityFailureType::SeqNrError, 0x1041, &[]);
+
+        let answer = state.function_state_read(55, &[0, 0, 0]).expect("PID 55 is a function property");
+
+        assert_eq!(answer.return_code, 0);
+        assert_eq!(answer.data(), &[0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn latest_failure_result_contains_the_complete_fourteen_octets() {
+        let state = state();
+        let fragment = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+        state.failures_log().borrow_mut().log_failure(SecurityFailureType::SeqNrError, 0x1041, &fragment);
+
+        let answer = state.function_state_read(55, &[0, 1, 0]).expect("PID 55 is a function property");
+
+        assert_eq!(answer.return_code, 0);
+        assert_eq!(answer.data(), &[1, 0, 0x10, 0x41, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2]);
+    }
+}
+
 /// Binary search a key table by its leading 2-octet index field.
 ///
 /// Both key tables are sorted by that field and the search is identical; only
@@ -469,14 +504,17 @@ mod tests {
 #[derive(Debug, Clone)]
 pub struct FunctionPropertyAnswer {
     pub return_code: u8,
-    pub data: [u8; 12],
+    pub data: [u8; 14],
     pub data_len: usize,
 }
 
 impl FunctionPropertyAnswer {
     fn new(return_code: u8, data: &[u8]) -> Self {
-        let mut d = [0u8; 12];
-        let len = data.len().min(12);
+        // The largest standardized result is the latest-failure record:
+        // ReadServiceID + index + sender IA + nine diagnostic octets +
+        // ErrorType (03/05/01 §6.3.9.3.2 Figure 78).
+        let mut d = [0u8; 14];
+        let len = data.len().min(d.len());
         d[..len].copy_from_slice(&data[..len]);
         Self { return_code, data: d, data_len: len }
     }
@@ -516,10 +554,14 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
 
     /// PID_SECURITY_MODE command (§6.3.5.1).
     fn security_mode_command(&self, data: &[u8]) -> FunctionPropertyAnswer {
-        if data.len() < 3 {
+        if data.len() < 2 {
             return FunctionPropertyAnswer::new(0xFF, &[]);
         }
-        let (reserved, service_id, service_info) = (data[0], data[1], data[2]);
+        let (reserved, service_id) = (data[0], data[1]);
+        if data.len() != 3 {
+            return FunctionPropertyAnswer::reject(0xF8, service_id);
+        }
+        let service_info = data[2];
         if reserved != 0x00 {
             return FunctionPropertyAnswer::reject(0xF8, service_id);
         }
@@ -541,6 +583,9 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
             return FunctionPropertyAnswer::new(0xFF, &[]);
         }
         let (reserved, read_service_id) = (data[0], data[1]);
+        if data.len() != 2 {
+            return FunctionPropertyAnswer::reject(0xF8, read_service_id);
+        }
         if reserved != 0x00 {
             return FunctionPropertyAnswer::reject(0xF8, read_service_id);
         }
@@ -554,14 +599,17 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     /// PID_SECURITY_FAILURES_LOG command (§6.3.9.3.2): clear.
     fn failure_log_command(&self, data: &[u8]) -> FunctionPropertyAnswer {
         if data.len() < 2 {
-            return FunctionPropertyAnswer::new(0xFF, &[]);
+            return FunctionPropertyAnswer::reject(0xF8, 0);
         }
         let (reserved, service_id) = (data[0], data[1]);
+        if data.len() != 3 || data[2] != 0 {
+            return FunctionPropertyAnswer::reject(0xF8, service_id);
+        }
         if reserved != 0x00 {
-            return FunctionPropertyAnswer::new(0xF8, &[service_id]);
+            return FunctionPropertyAnswer::reject(0xF8, service_id);
         }
         if service_id != 0x00 {
-            return FunctionPropertyAnswer::new(0xF2, &[service_id]);
+            return FunctionPropertyAnswer::reject(0xF2, service_id);
         }
         self.failures_log().borrow_mut().clear();
         FunctionPropertyAnswer::success(&[service_id])
@@ -570,26 +618,33 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
     /// PID_SECURITY_FAILURES_LOG state read (§6.3.9.3.1).
     fn failure_log_state_read(&self, data: &[u8]) -> FunctionPropertyAnswer {
         if data.len() < 2 {
-            return FunctionPropertyAnswer::new(0xFF, &[]);
+            return FunctionPropertyAnswer::reject(0xF8, 0);
         }
         let (reserved, read_service_id) = (data[0], data[1]);
+        if data.len() != 3 {
+            return FunctionPropertyAnswer::reject(0xF8, read_service_id);
+        }
         if reserved != 0x00 {
-            return FunctionPropertyAnswer::new(0xF8, &[read_service_id]);
+            return FunctionPropertyAnswer::reject(0xF8, read_service_id);
         }
         let log = self.failures_log().borrow();
         match read_service_id {
             0x00 => {
-                let mut out = [0u8; 12];
+                if data[2] != 0 {
+                    return FunctionPropertyAnswer::reject(0xF8, read_service_id);
+                }
+                let mut out = [0u8; 14];
                 out[0] = read_service_id;
+                out[1] = data[2];
                 let counters = log.counters_as_bytes();
-                out[1..9].copy_from_slice(&counters);
-                FunctionPropertyAnswer { return_code: 0x00, data: out, data_len: 9 }
+                out[2..10].copy_from_slice(&counters);
+                FunctionPropertyAnswer { return_code: 0x00, data: out, data_len: 10 }
             }
             0x01 => {
                 let index = data.get(2).copied().unwrap_or(0);
                 match log.get_by_index(index) {
                     Some(entry) => {
-                        let mut out = [0u8; 12];
+                        let mut out = [0u8; 14];
                         let mut i = 0;
                         out[i] = read_service_id;
                         i += 1;
@@ -599,17 +654,14 @@ impl<const GRP: usize, const P2P: usize, const GO: usize> SecurityState<GRP, P2P
                         i += 2;
                         out[i..i + 9].copy_from_slice(&entry.frame_fragment);
                         i += 9;
-                        // failure_type is the 13th byte — check if it fits
-                        if i < 12 {
-                            out[i] = entry.failure_type;
-                            i += 1;
-                        }
+                        out[i] = entry.failure_type;
+                        i += 1;
                         FunctionPropertyAnswer { return_code: 0x00, data: out, data_len: i }
                     }
-                    None => FunctionPropertyAnswer::new(0xF8, &[read_service_id]),
+                    None => FunctionPropertyAnswer::reject(0xF8, read_service_id),
                 }
             }
-            _ => FunctionPropertyAnswer::new(0xF2, &[read_service_id]),
+            _ => FunctionPropertyAnswer::reject(0xF2, read_service_id),
         }
     }
 }

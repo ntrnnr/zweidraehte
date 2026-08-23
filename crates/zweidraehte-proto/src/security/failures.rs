@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 
 /// Security failure type indices per KNX spec.
 ///
-/// The failures log maintains 4 × 16-bit counters. Types 0–2 each map
-/// to their own counter; types 3 and 4 both increment counter 3 (the
-/// "access & role" counter). The type value is also stored in the per-entry
-/// ring buffer so that individual failures can be distinguished.
+/// The failures log maintains the four fields from 03/05/01 Figure 77:
+/// reserved, sequence-number, cryptographic, and access/roles. Error Type
+/// encodings are a different numbering (02h, 03h, 04h), so neither the enum
+/// discriminant nor the counter index is a wire representation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 /// `#[non_exhaustive]`: downstream crates stay insulated from new variants,
@@ -33,15 +33,26 @@ pub enum SecurityFailureType {
 }
 
 impl SecurityFailureType {
-    /// Map a failure type to its counter index (0–3).
-    ///
-    /// Types 0–2 map 1:1 to their respective counters. Types 3 (Role)
-    /// and 4 (Access) both map to counter 3.
+    /// Map a failure type to its Figure 77 counter index.
     fn counter_index(self) -> Option<usize> {
-        match self as u8 {
-            0..=2 => Some(self as usize),
-            3 | 4 => Some(3),
-            _ => None,
+        match self {
+            // The first field is reserved and shall remain zero. Invalid SCF
+            // has no standardized counter in this version of the resource.
+            Self::ScfError => None,
+            Self::SeqNrError => Some(1),
+            Self::CryptoError => Some(2),
+            Self::RoleError | Self::AccessError => Some(3),
+        }
+    }
+
+    /// Error Type stored in the latest-failure record (Figure 78).
+    fn error_type(self) -> u8 {
+        match self {
+            // 01h is reserved for Invalid SCF and is not otherwise used.
+            Self::ScfError => 0x01,
+            Self::SeqNrError => 0x02,
+            Self::CryptoError => 0x03,
+            Self::RoleError | Self::AccessError => 0x04,
         }
     }
 }
@@ -57,7 +68,7 @@ pub struct SecurityFailureEntry {
     pub source_addr: u16,
     /// First 9 bytes of the offending frame (zero-padded if shorter).
     pub frame_fragment: [u8; 9],
-    /// Failure type code (discriminant of [`SecurityFailureType`]).
+    /// Standardized Error Type code from Figure 78.
     pub failure_type: u8,
 }
 
@@ -70,10 +81,10 @@ pub struct SecurityFailureEntry {
 /// - **Command(id=0, info=0)**: Clears all counters and entries.
 ///
 /// Counter layout (4 counters, each 16-bit big-endian):
-/// - \[0\] SCF errors (type 0)
-/// - \[1\] Crypto/MAC errors (type 1)
-/// - \[2\] Sequence number errors (type 2)
-/// - \[3\] Access + Role errors (types 3 and 4)
+/// - \[0\] reserved (always zero)
+/// - \[1\] sequence-number errors
+/// - \[2\] cryptographic errors
+/// - \[3\] access + role errors
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct SecurityFailuresLog {
     /// 4 × 16-bit failure counters (saturating at 0xFFFF).
@@ -104,7 +115,7 @@ impl SecurityFailuresLog {
         frag[..copy_len].copy_from_slice(&frame_fragment[..copy_len]);
 
         // Add to ring buffer.
-        let entry = SecurityFailureEntry { source_addr, frame_fragment: frag, failure_type: failure_type as u8 };
+        let entry = SecurityFailureEntry { source_addr, frame_fragment: frag, failure_type: failure_type.error_type() };
         self.entries[self.write_idx as usize] = entry;
         self.write_idx = (self.write_idx + 1) % 8;
         if self.count < 8 {

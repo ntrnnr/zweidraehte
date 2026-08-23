@@ -4,13 +4,11 @@
 //! "Profile Module S-AL") composed onto a base profile rather than a profile
 //! of its own. On the families this crate carries that composition has an
 //! unusual shape, and it is the shape the bench MV-0021 device demonstrates:
-//! its Security Interface Object is reachable **only** by object type, as
-//! `ObjectType=17 Instance=1`, while the indexed roster stays at the four
-//! classic objects the mask has always had.
-//!
-//! So the seam is not "one more interface object". It is a second address
-//! space — the type/occurrence one the extended services use — that a module
-//! can occupy without touching the indexed roster a family publishes.
+//! its Security Interface Object is normally reached by object type, as
+//! `ObjectType=17 Instance=1`. It also follows the four classic BCU2 objects
+//! in the indexed address space: 03/05/02 §3.28.2 scans that space when the
+//! optional `PID_IO_LIST` is absent. The base family's roster remains fixed;
+//! the composed device supplies the additional index.
 //!
 //! [`NoSecurity`] is the default and is zero-sized: its object type is
 //! `None`, so every route into it is a compile-time-known dead branch and a
@@ -18,12 +16,14 @@
 
 use heapless::Vec;
 
-use zweidraehte_proto::access::AccessContext;
+use zweidraehte_proto::access::{AccessContext, AccessPolicy};
+use zweidraehte_proto::memory::MemoryOperation;
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
 use zweidraehte_proto::properties::PropertyDescriptor;
 use zweidraehte_proto::security::{SequenceNumberStorage, SiatAccess};
 
+use crate::family::PropertySpec;
 use crate::frame::FrameBuf;
 use crate::sal::RequestContext;
 
@@ -93,12 +93,21 @@ pub trait SecurityModule: 'static {
     /// `None` for a module that contributes no object, which is what makes
     /// [`NoSecurity`] cost nothing: the resolution branch folds away.
     ///
-    /// The object is reachable by type and occurrence 1 only. A family that
-    /// wants it in its *indexed* roster as well — micro System 7 secure will,
-    /// since 06 Profiles §9.1.2.6.1 gives it index 5 there — publishes it
-    /// through `MicroDeviceFamily::object_type` in the ordinary way; this is
-    /// for the BCU2 case, where the indexed roster must not grow.
+    /// The composed management server also exposes this object at the first
+    /// index after the base family's roster. Keeping that rule here rather
+    /// than changing the family is important: Data Secure is a profile module,
+    /// not a property of mask version 0021h.
     const OBJECT_TYPE: Option<u16> = None;
+
+    /// Property contributed to the Device Object by this profile module.
+    ///
+    /// Indices are local to the contribution and are appended after the base
+    /// family's Device Object properties. Data Secure uses this for the
+    /// mandatory `PID_PROGMODE`; [`NoSecurity`] contributes nothing, so plain
+    /// compositions retain the mask roster and code size.
+    fn device_property_spec(_index: u8) -> Option<PropertySpec> {
+        None
+    }
 
     /// Descriptor lookup for the module object's property roster.
     fn property_descriptor(_prop_id: u16) -> Option<(u16, PropertyDescriptor)> {
@@ -144,6 +153,15 @@ pub trait SecurityModule: 'static {
         _data: &[u8],
     ) -> Option<FunctionResult<N>> {
         None
+    }
+
+    /// Build the property-specific access-denied result.
+    ///
+    /// Function properties may require part of the request to be echoed even
+    /// on an error. The generic server cannot infer that format; a module
+    /// without such a requirement returns only the error code.
+    fn function_access_denied<const N: usize>(_prop_id: u16, _data: &[u8]) -> FunctionResult<N> {
+        FunctionResult { code: PropertyReturnCode::AccessDenied, data: Vec::new() }
     }
 
     /// Try to unwrap a secure frame in place, returning how to proceed.
@@ -208,8 +226,17 @@ pub trait SecurityModule: 'static {
     /// Whether a memory operation is allowed by the security profile.
     ///
     /// The legacy memory-region level remains a separate mandatory check.
-    fn memory_access_allowed(state: &Self::State, access: AccessContext) -> bool {
-        !Self::security_mode_enabled(state) || access.security == zweidraehte_proto::access::SecurityMode::AuthConf
+    fn memory_access_allowed(
+        state: &Self::State,
+        access: AccessContext,
+        policy: AccessPolicy,
+        operation: MemoryOperation,
+    ) -> bool {
+        let security_on = Self::security_mode_enabled(state);
+        match operation {
+            MemoryOperation::Read => policy.can_read(&access, security_on),
+            MemoryOperation::Write => policy.can_write(&access, security_on),
+        }
     }
 
     /// Required security bits for a zero-based group-object slot.
@@ -232,6 +259,16 @@ pub trait SecurityModule: 'static {
 
     /// Record an access-policy rejection after successful authentication.
     fn log_access_failure(_state: &Self::State, _source: u16, _frame: &[u8]) {}
+
+    /// Consume a spontaneous Security Report requested by a logged failure.
+    ///
+    /// The device core owns transmission because the report is a normal,
+    /// plaintext broadcast outside the secure envelope. Keeping the pending
+    /// flag inside the module makes the entire path disappear from a plain
+    /// composition.
+    fn take_security_report(_state: &Self::State) -> Option<u8> {
+        None
+    }
 
     /// Write a range of property elements and report the wire-level result.
     ///
@@ -275,7 +312,12 @@ impl SecurityModule for NoSecurity {
     }
 
     #[inline(always)]
-    fn memory_access_allowed(_state: &Self::State, _access: AccessContext) -> bool {
+    fn memory_access_allowed(
+        _state: &Self::State,
+        _access: AccessContext,
+        _policy: AccessPolicy,
+        _operation: MemoryOperation,
+    ) -> bool {
         true
     }
 
@@ -287,15 +329,15 @@ impl SecurityModule for NoSecurity {
 
 /// Where a `(object_type, occurrence)` pair resolved to.
 ///
-/// The two variants are the two address spaces a device can hold an object
-/// in, and keeping them apart is the point: an object the profile module
-/// contributes must not acquire an index, because on BCU2 the indexed roster
-/// is exactly the four objects the mask has always published.
+/// Extended services need to distinguish a base-family object from the
+/// profile module because their state and property implementations differ.
+/// Classic services expose the module through a compatibility index without
+/// changing this type/occurrence route.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ObjectRoute {
     /// An object in the family's indexed roster.
     Indexed(u8),
-    /// The profile module's object, which has no index.
+    /// The profile module's object.
     Module,
 }
 

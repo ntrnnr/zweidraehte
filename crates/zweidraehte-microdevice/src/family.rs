@@ -29,6 +29,15 @@ use crate::management::{ManagementState, ServiceResult};
 /// runtime state or dynamic dispatch.
 pub trait MemoryAccessPolicy: 'static {
     const REGIONS: &'static [MemoryRegion];
+
+    /// Data-Secure policy for a complete direct-memory request.
+    ///
+    /// Products normally use the profile's configuration-memory policy.
+    /// Conformance fixtures can expose the additional AN193 policy windows
+    /// without storing a runtime region table in the device.
+    fn security_policy(_address: u16, _length: usize) -> AccessPolicy {
+        AccessPolicy::READ_OPEN_WRITE_TOOL
+    }
 }
 
 /// The state that backs one property in the generic management server.
@@ -56,6 +65,10 @@ pub enum PropertyBacking {
     OrderInfo,
     /// Boot identity hardware type.
     HardwareType,
+    /// High octet of the current individual address (`PID_SUBNET_ADDR`).
+    IndividualAddressSubnet,
+    /// Low octet of the current individual address (`PID_DEVICE_ADDRESS`).
+    IndividualAddressDevice,
     /// The stack's fixed TP1 standard-frame APDU limit.
     MaxApduLength,
     /// One of the family's load state machines.
@@ -195,6 +208,17 @@ pub trait MicroDeviceFamily: 'static {
     /// level. Gaps are inaccessible rather than zero-filled phantom
     /// memory.
     const MEMORY_REGIONS: &'static [MemoryRegion];
+
+    /// Data-Secure access policy for a complete direct-memory request.
+    ///
+    /// Standard BCU configuration, table, application-program and parameter
+    /// memory use `3FF/0CC`: open before Security Mode is enabled, then A+C
+    /// only (03/04/01 §6.2.6.3.7 and AN193 §2.2.4.6). A product that
+    /// exposes memory with a different policy can select it by address here;
+    /// no policy table is carried by a plain composition.
+    fn memory_access_policy(_address: u16, _length: usize) -> AccessPolicy {
+        AccessPolicy::READ_OPEN_WRITE_TOOL
+    }
 
     // ── Fixed EEPROM offsets (from `EEPROM_BASE`) ───────────────────
 

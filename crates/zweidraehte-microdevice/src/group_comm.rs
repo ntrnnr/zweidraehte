@@ -69,7 +69,14 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     self.store_received_value(asap, small6, view.payload());
                 }
                 ApciCode::GroupValueRead if flags.read_enable() => {
-                    self.send_group_value(asap, tsap, ApciCode::GroupValueResponse, out);
+                    // A read arriving through any receive association is
+                    // answered through the object's configured sending
+                    // association. RT2 makes that distinction observable:
+                    // the sending TSAP is the row at slot ASAP, and it can be
+                    // a different GA from the request (03/05/01 §4.17.4.3.1).
+                    if let Some(sending_tsap) = self.tables().sending_tsap(asap) {
+                        self.send_group_value(asap, sending_tsap, ApciCode::GroupValueResponse, out);
+                    }
                     return;
                 }
                 _ => {}
@@ -137,7 +144,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     self.store_received_value(asap, small6, view.payload());
                 }
                 ApciCode::GroupValueRead if flags.read_enable() => {
-                    self.send_group_value(asap, tsap, ApciCode::GroupValueResponse, out);
+                    if let Some(sending_tsap) = self.tables().sending_tsap(asap) {
+                        self.send_group_value(asap, sending_tsap, ApciCode::GroupValueResponse, out);
+                    }
                     // One read, one response — even when several
                     // objects share the TSAP.
                     return;

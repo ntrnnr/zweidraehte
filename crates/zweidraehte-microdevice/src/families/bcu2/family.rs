@@ -1,5 +1,7 @@
 //! The BCU2 instance of the family seam.
 
+use core::marker::PhantomData;
+
 use heapless::Vec;
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::dpt::{
@@ -16,7 +18,7 @@ use zweidraehte_proto::transport::TlStyle;
 
 use super::offsets;
 use crate::device::DeviceIdentity;
-use crate::family::{MicroDeviceFamily, PropertyBacking, PropertySpec};
+use crate::family::{MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
@@ -31,13 +33,28 @@ use crate::management::{ManagementState, ServiceResult};
 /// BCU2 hardware chapter and the RT2 resource definitions (§§4.16.4,
 /// 4.17.4 and 4.18.4) do not include it. It therefore must not silently
 /// inherit this family's 0021h memory map.
-pub struct Bcu2Family<const MASK: u16 = 0x0020>;
+pub struct Bcu2Family<const MASK: u16 = 0x0020, P = StandardBcu2MemoryPolicy>(PhantomData<P>);
+
+/// The complete memory surface of an ordinary BCU2 product.
+///
+/// A zero-sized policy parameter keeps fixture-specific permission windows
+/// out of shipping devices and lets a plain composition optimize away the
+/// Data-Secure policy function entirely.
+pub struct StandardBcu2MemoryPolicy;
+
+impl MemoryAccessPolicy for StandardBcu2MemoryPolicy {
+    const REGIONS: &'static [MemoryRegion] = &[
+        MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
+        MemoryRegion::open(0x0100, BCU2_EEPROM_SIZE as u32),
+        MemoryRegion::open(0x0900, 0xD0),
+    ];
+}
 
 /// The BCU2 EEPROM: 0100h..=04DFh. ETS sees 0100h–046Fh; the tail is
 /// reserved for system software but must still answer memory reads.
 pub const BCU2_EEPROM_SIZE: usize = 0x03E0;
 
-impl<const MASK: u16> Bcu2Family<MASK> {
+impl<const MASK: u16, P: MemoryAccessPolicy> Bcu2Family<MASK, P> {
     /// Evaluated wherever `DD0` is, so instantiating the family with a
     /// mask that is not a BCU2 sibling fails at compile time instead
     /// of quietly claiming BCU2 semantics for it.
@@ -179,7 +196,7 @@ impl<const MASK: u16> Bcu2Family<MASK> {
     }
 }
 
-impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
+impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MASK, P> {
     type EepromStore = [u8; BCU2_EEPROM_SIZE];
     fn blank_eeprom() -> Self::EepromStore {
         [0; BCU2_EEPROM_SIZE]
@@ -205,11 +222,11 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     // 09/04/01 Figure 16: 208 bytes at 0900h. The previous E0h widened
     // direct-memory access beyond the BCU2 RAM2 region.
     const RAM2_SIZE: usize = 0xD0;
-    const MEMORY_REGIONS: &'static [MemoryRegion] = &[
-        MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
-        MemoryRegion::open(Self::EEPROM_BASE, Self::EEPROM_SIZE as u32),
-        MemoryRegion::open(Self::RAM2_BASE, Self::RAM2_SIZE as u32),
-    ];
+    const MEMORY_REGIONS: &'static [MemoryRegion] = P::REGIONS;
+
+    fn memory_access_policy(address: u16, length: usize) -> AccessPolicy {
+        P::security_policy(address, length)
+    }
 
     const ADDR_TABLE_OFFSET: usize = 0x16;
     fn ia_eeprom_offset() -> usize {
@@ -249,32 +266,51 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
         }
     }
 
-    /// The application program runs when it is loaded and the RunError
-    /// byte carries no active (low) error bits. ETS halts the device by
-    /// writing 00h there and clears it back to FFh after the download.
+    /// The application program runs when it is loaded, its persistent
+    /// RunError byte carries no active (low) error bits, and the volatile
+    /// Run State Machine has not received `RUNCONTROL_STOP`.
     fn is_app_running(eeprom: &[u8], mgmt: &ManagementState) -> bool {
         eeprom.get(offsets::RUN_ERROR).copied() == Some(offsets::RUN_ERROR_ALL_CLEAR)
             && mgmt.lsm[Self::LSM_COUNT - 1].state == LoadState::Loaded
+            && !mgmt.run_stopped[Self::LSM_COUNT - 1]
     }
 
     fn run_state_read(obj: u8, eeprom: &[u8], mgmt: &ManagementState) -> Option<u8> {
-        (obj == Self::APP_OBJECT)
-            .then(|| if Self::is_app_running(eeprom, mgmt) { RunState::Running } else { RunState::Halted }.into())
+        if obj != Self::APP_OBJECT {
+            return None;
+        }
+        let machine = Self::LSM_COUNT - 1;
+        let state = if mgmt.lsm[machine].state != LoadState::Loaded {
+            RunState::Halted
+        } else if mgmt.run_stopped[machine] {
+            // 03/05/01 §4.24.2.3.3 Table 97 footnote a explicitly
+            // selects Terminated for BCU2 after Stop.
+            RunState::Terminated
+        } else if Self::is_app_running(eeprom, mgmt) {
+            RunState::Running
+        } else {
+            RunState::Halted
+        };
+        Some(state.into())
     }
 
-    fn run_state_write(obj: u8, value: u8, eeprom: &mut [u8], _mgmt: &mut ManagementState) -> bool {
+    fn run_state_write(obj: u8, value: u8, _eeprom: &mut [u8], mgmt: &mut ManagementState) -> bool {
         if obj != Self::APP_OBJECT {
             return false;
         }
-        // The BCU2 run state is a consequence of RunError + load
-        // state, so the controls only touch RunError.
+        let machine = Self::LSM_COUNT - 1;
+        // RunError is persistent application validity/configuration. Run
+        // Control is a volatile diagnostic state machine; conflating the two
+        // made STOP survive a power cycle and prevented the mandatory
+        // power-up transition of a loaded application.
         match RunEvent::from(value) {
-            RunEvent::Restart => eeprom[offsets::RUN_ERROR] = offsets::RUN_ERROR_ALL_CLEAR,
-            RunEvent::Stop => eeprom[offsets::RUN_ERROR] = offsets::RUN_ERROR_HALTED,
-            // Ready (00h) is a no-op; anything else — including the
-            // device-internal events sharing the byte space — is
-            // ignored the way the mask firmware ignores unknown
-            // values.
+            RunEvent::Ready => {}
+            RunEvent::Restart => mgmt.run_stopped[machine] = false,
+            RunEvent::Stop if mgmt.lsm[machine].state == LoadState::Loaded => {
+                mgmt.run_stopped[machine] = true;
+            }
+            // Unknown events are ignored, but the property write itself is
+            // still successful and reports the unchanged state.
             _ => {}
         }
         true
@@ -296,8 +332,15 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
                 // un-marks the program as present.
                 let dev_type = offsets::APPLICATION_ID_DEV_TYPE;
                 eeprom[dev_type..dev_type + 3].fill(0);
+                mgmt.run_stopped[machine] = false;
             }
             _ => {}
+        }
+    }
+
+    fn load_completed_side_effect(machine: usize, _eeprom: &mut [u8], mgmt: &mut ManagementState) {
+        if machine == Self::LSM_COUNT - 1 {
+            mgmt.run_stopped[machine] = false;
         }
     }
 

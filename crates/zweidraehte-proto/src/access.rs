@@ -116,10 +116,11 @@ impl AccessLevel {
 /// Determined by the Secure Application Layer (S-AL) before the message
 /// reaches the plain Application Layer. When Data Secure is not in use,
 /// all messages are [`Plain`](SecurityMode::Plain).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum SecurityMode {
     /// No S-AL protection — plain (unencrypted, unauthenticated) communication.
+    #[default]
     Plain,
     /// S-AL authentication only (MAC verified, data not encrypted).
     AuthOnly,
@@ -127,33 +128,22 @@ pub enum SecurityMode {
     AuthConf,
 }
 
-impl Default for SecurityMode {
-    fn default() -> Self {
-        Self::Plain
-    }
-}
-
 /// Client classification for access policy evaluation.
 ///
 /// Determined by looking up the sender's Individual Address in the
 /// Point-to-point Key Table (for secure links) or assigning "Unlisted"
 /// for plain communication.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ClientRole {
     /// Not in the P2P Key Table — plain communication or unknown sender.
+    #[default]
     Unlisted,
     /// Secure link with assigned roles. The `u16` is a bitmask of R0-R15
     /// from the P2P Key Table entry for this sender.
     Roles(u16),
     /// Tool Key access — the sender used the Tool Key with T-flag set in SCF.
     Tool,
-}
-
-impl Default for ClientRole {
-    fn default() -> Self {
-        Self::Unlisted
-    }
 }
 
 // ============================================================================
@@ -335,12 +325,16 @@ impl AccessPolicy {
     /// roles + tool full access.
     pub const OPEN: Self = Self::new(0x3FF, 0x1FF);
 
-    /// `3FF / 0CC` — Everyone reads; only Tool writes.
-    /// The most common policy for configuration properties.
+    /// `3FF / 0CC` — Open while Security Mode is off; while it is on,
+    /// Roles and the Tool require A+C for both read and write.
+    ///
+    /// This is the usual policy for configuration resources. Plain access is
+    /// open before commissioning; afterwards access requires A+C.
     pub const READ_OPEN_WRITE_TOOL: Self = Self::new(0x3FF, 0x0CC);
 
-    /// `15F / 04C` — Sec off: unlisted read-only, roles+tool read+write.
-    /// Sec on: roles+tool read+write, unlisted no access.
+    /// `15F / 04C` — The Tool may read and write with A+C in either mode.
+    /// Other Roles may read with A+C; plain access is read-only while
+    /// Security Mode is off and denied while it is on.
     /// Used for security-sensitive config like load state, security mode.
     pub const RESTRICTED: Self = Self::new(0x15F, 0x04C);
 
@@ -351,11 +345,11 @@ impl AccessPolicy {
     /// Used for keys, device authentication code, password hashes.
     pub const TOOL_ONLY_CONFIDENTIAL: Self = Self::new(0x008, 0x008);
 
-    /// `00C / 00C` — Only Tool (A+C or A), both security modes.
+    /// `00C / 00C` — Only the Tool with A+C, in both security modes.
     /// Used for P2P key table, group key table.
     pub const TOOL_ONLY: Self = Self::new(0x00C, 0x00C);
 
-    /// `3FF / 00C` — Everyone can read+write when sec off; only Tool (A+C or A)
+    /// `3FF / 00C` — Everyone can read+write when sec off; only Tool with A+C
     /// when sec on. Used for IndividualAddressWrite, IndAddrSerNoWrite.
     pub const OPEN_OFF_TOOL_ON: Self = Self::new(0x3FF, 0x00C);
 

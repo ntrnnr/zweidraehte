@@ -7,4 +7,4 @@ pub mod family;
 pub mod offsets;
 
 pub use device_def::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
-pub use family::{BCU2_EEPROM_SIZE, Bcu2Family};
+pub use family::{BCU2_EEPROM_SIZE, Bcu2Family, StandardBcu2MemoryPolicy};

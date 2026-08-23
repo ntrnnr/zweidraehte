@@ -13,11 +13,12 @@ use zweidraehte_microdevice::frame::{
     ApciCode, EXTENDED_FRAME, FrameBuf, FrameView, MAX_FRAME, SECURE_EXTENDED_FRAME, Tpci, data_frame, normalize,
     to_wire,
 };
-use zweidraehte_microdevice::security::{DataSecureState, MicroSecurityResources, SecurityModule};
+use zweidraehte_microdevice::security::{DataSecure, DataSecureState, MicroSecurityResources, SecurityModule};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
-use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState};
+use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState, RunState};
 use zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode;
+use zweidraehte_proto::pid;
 use zweidraehte_proto::security::{DEFAULT_SENDING, SecurityTable, SequenceNumberStorage, SiatAccess};
 
 static COS: &[Bcu2CoDescriptor] = &[
@@ -27,7 +28,11 @@ static COS: &[Bcu2CoDescriptor] = &[
     Bcu2CoDescriptor { data_ptr: 0xC7, config: 0x4F, value_type: 0x00 },
 ];
 
-static GAS: &[GroupAddress] = &[GroupAddress::from_three_level(1, 0, 1), GroupAddress::from_three_level(1, 0, 2)];
+static GAS: &[GroupAddress] = &[
+    GroupAddress::from_three_level(1, 0, 1),
+    GroupAddress::from_three_level(1, 0, 2),
+    GroupAddress::from_three_level(1, 0, 3),
+];
 
 fn definition() -> Bcu2DeviceDefinition {
     Bcu2DeviceDefinition {
@@ -42,7 +47,9 @@ fn definition() -> Bcu2DeviceDefinition {
         ram_flags_ptr: 0xD0,
         comm_objects: COS,
         group_addresses: GAS,
-        associations: &[(1, 0), (2, 1)],
+        // RT2 slots 0 and 1 are the objects' sending associations. TSAP 3
+        // is a second, receive-only address of ASAP 1.
+        associations: &[(1, 0), (2, 1), (3, 1)],
         app_params: None,
     }
 }
@@ -130,6 +137,25 @@ fn lsm_cycle_via_property_path() {
     // PID_TABLE_REFERENCE reads back the allocated segment address.
     let rsp = exchange(&mut dev, seq, ApciCode::PropertyValueRead, 0, &[3, 7, 0x10, 0x01], 0).expect("answered");
     assert_eq!(&apdu(&rsp)[6..10], &[0x00, 0x00, 0x01, 0x1E]);
+}
+
+#[test]
+fn run_control_accepts_the_ten_octet_control_record() {
+    let mut dev = device();
+    connect(&mut dev);
+
+    let mut stop = vec![3, 6, 0x10, 0x01, 0x02];
+    stop.extend_from_slice(&[0; 9]);
+    let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &stop, 0).expect("run control answered");
+    assert_eq!(apdu(&rsp)[4] >> 4, 1, "one property element was written");
+    assert_eq!(apdu(&rsp)[6], u8::from(RunState::Terminated));
+    assert!(!dev.is_running());
+
+    let mut invalid = vec![3, 6, 0x10, 0x01, 0xFF];
+    invalid.extend_from_slice(&[0; 9]);
+    let rsp = exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &invalid, 0).expect("ignored event answered");
+    assert_eq!(apdu(&rsp)[4] >> 4, 1, "unknown event leaves a successful write");
+    assert_eq!(apdu(&rsp)[6], u8::from(RunState::Terminated));
 }
 
 #[test]
@@ -334,13 +360,13 @@ fn snapshot_round_trip_preserves_persistent_state() {
 // ============================================================================
 //
 // The bench MV-0021 reaches its Security Interface Object as
-// `ObjectType=17 Instance=1` while its indexed roster stays at the four
-// classic objects — 147 type-addressed exchanges across the two traces, and
-// `ObjectIndex=` never above 3. That combination is the thing to pin: an
-// object in the type/occurrence address space that acquires no index.
+// `ObjectType=17 Instance=1`; its known product description means ETS does
+// not need to scan the object's compatibility index. 03/05/02 §3.28.2 still
+// requires that index when optional PID_IO_LIST is absent, so the composed
+// device appends it without changing the base mask's four-object roster.
 //
 // The module here is a stand-in for the Security Interface Object, which
-// arrives with its real property roster next. What it proves is the routing.
+// arrives with its real property roster next. What it proves is both routes.
 
 /// Object Type 17: the Security Interface Object.
 const SECURITY_IO: u16 = 0x0011;
@@ -474,10 +500,8 @@ fn ext_exchange(dev: &mut SecureBcu2, apci: ApciCode, payload: &[u8], seq: u8, n
     };
     let reply = view.payload().to_vec();
 
-    // Acknowledge it. The device sits in OPEN_WAIT until we do, and will not
-    // send further data — a client that skips this sees the next request
-    // acknowledged and unanswered, which is the transport layer working, not
-    // the service failing.
+    // Acknowledge it. The device sits in OPEN_WAIT until we do; BCU2 Style 1
+    // closes the connection if the AL tries to send another response there.
     let ack =
         [TP1_STD_CTRL_BASE, CLIENT.0[0], CLIENT.0[1], DUT.0[0], DUT.0[1], NPCI_HOP_COUNT_6, Tpci::Ack(rsp_seq).octet()];
     assert!(dev.poll(PollInput::Frame(&ack), now + 1).frames.is_empty(), "a T_ACK draws no further frames");
@@ -485,7 +509,30 @@ fn ext_exchange(dev: &mut SecureBcu2, apci: ApciCode, payload: &[u8], seq: u8, n
 }
 
 #[test]
-fn the_module_object_answers_by_type_without_taking_an_index() {
+fn style1_disconnects_when_a_second_reply_is_requested_in_open_wait() {
+    let mut dev = device();
+    connect(&mut dev);
+
+    let first =
+        data_frame::<MAX_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataConnected(0), ApciCode::DeviceDescriptorRead, 0, &[
+        ]);
+    let first_out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&first)), 0);
+    assert_eq!(first_out.frames.len(), 2, "ACK and first response enter OPEN_WAIT");
+
+    let second =
+        data_frame::<MAX_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataConnected(1), ApciCode::DeviceDescriptorRead, 0, &[
+        ]);
+    let second_out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&second)), 1);
+    assert_eq!(second_out.frames.len(), 2, "ACK followed by Style-1 A6 disconnect");
+
+    let ack = canonical(&second_out.frames[0]);
+    assert_eq!(FrameView::parse(&ack).expect("ACK parses").tpci(), Some(Tpci::Ack(1)));
+    let disconnect = canonical(&second_out.frames[1]);
+    assert_eq!(FrameView::parse(&disconnect).expect("disconnect parses").tpci(), Some(Tpci::Disconnect));
+}
+
+#[test]
+fn the_module_object_answers_by_type_and_its_composed_index() {
     let mut dev = secure_device();
     tl_connect(&mut dev);
 
@@ -495,12 +542,16 @@ fn the_module_object_answers_by_type_without_taking_an_index() {
     assert_eq!(reply[5], 1, "one element");
     assert_eq!(reply[8], 0x00, "PID_SECURITY_MODE reads back");
 
-    // … and nowhere in the indexed roster. Every index the mask publishes
-    // must still be one of the four classic objects.
+    // The family still publishes only the four mask-defined objects …
     assert_eq!(Bcu2Family::<0x0021>::OBJECT_COUNT, 4, "the indexed roster does not grow");
     for idx in 0..Bcu2Family::<0x0021>::OBJECT_COUNT {
         assert_ne!(Bcu2Family::<0x0021>::object_type(idx), SECURITY_IO, "index {idx} must not be the Security IO");
     }
+
+    // … while the composed server appends the module at index 4, allowing
+    // DMP_InterfaceObjectScan_R to find it when PID_IO_LIST is absent.
+    let reply = ext_exchange(&mut dev, ApciCode::PropertyValueRead, &[4, 51, 0x10, 0x01], 1, 20);
+    assert_eq!(reply, &[4, 51, 0x10, 0x01, 0x00]);
 }
 
 #[test]
@@ -872,16 +923,39 @@ fn secure_factory_reset_wipes_state_and_reverts_to_the_fdsk() {
 }
 
 #[test]
+fn plain_factory_reset_is_allowed_while_security_mode_is_off() {
+    let mut dev = data_secure_device();
+    dev.security_state().security.set_tool_key([0x5A; 16]);
+
+    let request =
+        data_frame::<SECURE_EXTENDED_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::Restart, 0x21, &[
+            0x02, 0x00,
+        ]);
+    let out = dev.poll(PollInput::Frame(&to_wire::<SECURE_EXTENDED_FRAME>(&request)), 10);
+
+    assert_eq!(out.restart, Some(0x02));
+    assert_eq!(out.frames.len(), 1, "the unnumbered request has one plain response");
+    let response = FrameView::parse(&out.frames[0]).expect("restart response parses");
+    assert_eq!(response.tpci(), Some(Tpci::DataIndividual));
+    assert_eq!(response.payload(), &[0, 0, 0]);
+    assert_eq!(dev.security_state().security.tool_key(), FDSK);
+}
+
+#[test]
 fn secure_factory_reset_keep_ia_preserves_the_address() {
     let mut dev = data_secure_device();
     let ia_offset = Bcu2Family::<0x0021>::ia_eeprom_offset();
     let before = [dev.eeprom()[ia_offset], dev.eeprom()[ia_offset + 1]];
+    dev.security_state().security.set_security_mode_enabled(true);
+    dev.security_state().security.set_tool_key([0x5A; 16]);
     sec_connect(&mut dev);
 
     let out = secure_restart(&mut dev, 1, 0x07, 10);
 
     assert_eq!(out.restart, Some(0x07));
     assert_eq!(&dev.eeprom()[ia_offset..ia_offset + 2], &before);
+    assert!(dev.security_state().security.security_mode_enabled());
+    assert_eq!(dev.security_state().security.tool_key(), [0x5A; 16]);
 }
 
 #[test]
@@ -903,12 +977,69 @@ fn secure_profile_refuses_the_excluded_erase_codes() {
 }
 
 #[test]
+fn unsupported_restart_code_is_reported_before_secure_access_policy() {
+    let mut dev = data_secure_device();
+    dev.security_state().security.set_security_mode_enabled(true);
+    let request =
+        data_frame::<SECURE_EXTENDED_FRAME>(0, CLIENT, DUT.0, false, Tpci::DataIndividual, ApciCode::Restart, 0x21, &[
+            0xFE, 0x00,
+        ]);
+
+    let out = dev.poll(PollInput::Frame(&to_wire::<SECURE_EXTENDED_FRAME>(&request)), 10);
+    assert!(out.restart.is_none());
+    assert_eq!(out.frames.len(), 1);
+    let response = FrameView::parse(&out.frames[0]).expect("restart response");
+    assert_eq!(response.payload(), &[0x02, 0x00, 0x00], "unsupported code is not misreported as access denied");
+}
+
+#[test]
 fn the_security_object_identifies_itself() {
     let mut dev = data_secure_device();
     sec_connect(&mut dev);
     let reply =
         sec_exchange(&mut dev, ApciCode::PropertyExtValueRead, &ext_payload(SECURITY_IO, 1, 1, 1, 1, &[]), 0, 10);
     assert_eq!(&reply[8..], &[0x00, 0x11], "PID_OBJECT_TYPE reads 0011h");
+}
+
+#[test]
+fn the_security_object_is_discoverable_by_classic_property_scan() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    let description = plain_sec_exchange(&mut dev, ApciCode::PropertyDescriptionRead, &[4, 0, 0], 0, 10);
+    assert_eq!(&description[..3], &[4, pid::OBJECT_TYPE as u8, 0]);
+
+    let value = plain_sec_exchange(&mut dev, ApciCode::PropertyValueRead, &[4, 1, 0x10, 0x01], 1, 20);
+    assert_eq!(value, &[4, 1, 0x10, 0x01, 0x00, 0x11]);
+
+    let end = plain_sec_exchange(&mut dev, ApciCode::PropertyDescriptionRead, &[5, 0, 0], 2, 30);
+    assert_eq!(&end[3..], &[0; 4], "the first index after the module terminates the scan");
+}
+
+#[test]
+fn data_secure_contributes_progmode_with_its_profile_policy() {
+    let spec = <DataSecure<RamSeqStore, 8, 4> as SecurityModule>::device_property_spec(0)
+        .expect("Data Secure contributes PID_PROGMODE");
+    assert_eq!(spec.descriptor.pid, pid::device::PROGMODE);
+    assert_eq!(spec.descriptor.read_level, 3);
+    assert_eq!(spec.descriptor.write_level, 2);
+    assert_eq!(spec.descriptor.policy, zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL);
+
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    let enabled = plain_sec_exchange(&mut dev, ApciCode::PropertyValueWrite, &[0, 54, 0x10, 0x01, 0x01], 0, 10);
+    assert_eq!(enabled, &[0, 54, 0x10, 0x01, 0x01]);
+    assert!(dev.is_programming_mode());
+
+    dev.security_state_mut().security.set_security_mode_enabled(true);
+    let denied = plain_sec_exchange(&mut dev, ApciCode::PropertyValueWrite, &[0, 54, 0x10, 0x01, 0x00], 1, 20);
+    assert_eq!(denied, &[0, 54, 0x00, 0x01], "plain write gets the normal negative response");
+    assert!(dev.is_programming_mode());
+
+    let disabled = sec_exchange(&mut dev, ApciCode::PropertyValueWrite, &[0, 54, 0x10, 0x01, 0x00], 2, 30);
+    assert_eq!(disabled, &[0, 54, 0x10, 0x01, 0x00]);
+    assert!(!dev.is_programming_mode());
 }
 
 /// PID_TOOL_KEY is write-only: 06 Profiles §9.1.2.6.4 gives it access
@@ -1189,10 +1320,10 @@ fn the_security_mode_is_a_function_property() {
 fn the_failure_log_reads_its_counters() {
     let mut dev = data_secure_device();
     sec_connect(&mut dev);
-    let payload = vec![0x00, 0x11, 0x00, 0x10, 55, 0x00, 0x00];
+    let payload = vec![0x00, 0x11, 0x00, 0x10, 55, 0x00, 0x00, 0x00];
     let reply = sec_exchange(&mut dev, ApciCode::FunctionPropertyExtStateRead, &payload, 0, 10);
     assert_eq!(reply[5], 0x00, "E_SUCCESS");
-    assert_eq!(&reply[7..], &[0u8; 8], "four 16-bit counters, all zero on a fresh device");
+    assert_eq!(&reply[6..], &[0u8; 10], "service ID, service info, and four zero counters");
 }
 
 /// A factory device answers under its FDSK: until ETS writes a tool key, the
@@ -1433,6 +1564,48 @@ fn plain_management_works_when_security_mode_is_off() {
     assert_eq!(&reply[8..], &[0x00, 0x11], "PID_OBJECT_TYPE answers plain");
 }
 
+/// 03/04/01 §6.2.6.3.4 makes a Property Description readable only
+/// when the requester may read or write the value. Descriptions are not a
+/// public side channel around the value policy.
+#[test]
+fn property_descriptions_follow_the_value_access_policy() {
+    let mut dev = data_secure_device();
+    dev.security_state().security.set_security_mode_enabled(true);
+
+    let serial = plain_connectionless(&mut dev, ApciCode::PropertyDescriptionRead, 0, &[0, 11, 0], 1);
+    let serial = FrameView::parse(&serial).expect("serial description response");
+    assert_eq!(&serial.payload()[3..], &[0; 4], "plain access gets the standard empty descriptor");
+
+    let max_apdu = plain_connectionless(&mut dev, ApciCode::PropertyDescriptionRead, 0, &[0, 56, 0], 2);
+    let max_apdu = FrameView::parse(&max_apdu).expect("Max APDU description response");
+    assert_ne!(&max_apdu.payload()[3..], &[0; 4], "the 3FF/1FF bootstrap property remains describable");
+
+    sec_connect(&mut dev);
+    // Object type 17, occurrence 1, PID 56, description type/index zero.
+    let tool_key_description = [0x00, 0x11, 0x00, 0x10, 56, 0x00, 0x00];
+    let reply = sec_exchange(&mut dev, ApciCode::PropertyExtDescriptionRead, &tool_key_description, 0, 10);
+    assert_ne!(&reply[7..], &[0; 8], "A+C Tool access may describe the write-only Tool Key");
+}
+
+#[test]
+fn a_secure_property_permission_failure_is_logged() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+    let request = secure_individual_frame_with_tpci(
+        ApciCode::PropertyExtValueRead,
+        0,
+        &ext_payload(SECURITY_IO, 1, 59, 1, 0, &[]),
+        &FDSK,
+        &[0, 0, 0, 0, 0, 1],
+        Tpci::DataConnected(0),
+        true,
+        false,
+    );
+    let out = dev.poll(PollInput::Frame(&request), 10);
+    assert_eq!(out.frames.len(), 2, "transport ACK plus protected access-denied response");
+    assert_eq!(dev.security_state().security.failures_log().borrow().counters()[3], 1);
+}
+
 /// A replay (same sequence number twice) is silently dropped.
 #[test]
 fn a_replay_is_dropped() {
@@ -1484,6 +1657,25 @@ fn sequence_zero_is_dropped() {
     let frame = secure_tool_frame(ApciCode::PropertyExtValueRead, 0, &payload, &FDSK, &[0, 0, 0, 0, 0, 0], 0);
     let out = dev.poll(PollInput::Frame(&frame), 10);
     assert_eq!(out.frames.len(), 1, "seq zero gets only its transport ACK");
+    assert_eq!(dev.security_state().security.security_report(), 0x01, "every logged failure sets PID 57");
+}
+
+/// With PID_SECURITY_REPORT_CONTROL enabled, every logged failure also emits
+/// the plaintext urgent broadcast fixed by 03/05/01 §6.3.11.4.
+#[test]
+fn enabled_security_reporting_emits_the_standard_plain_broadcast() {
+    let mut dev = data_secure_device();
+    dev.security_state().security.set_security_report_enabled(true);
+    sec_connect(&mut dev);
+
+    let payload = ext_payload(SECURITY_IO, 1, 1, 1, 1, &[]);
+    let frame = secure_tool_frame(ApciCode::PropertyExtValueRead, 0, &payload, &FDSK, &[0; 6], 0);
+    let out = dev.poll(PollInput::Frame(&frame), 10);
+
+    assert_eq!(out.frames.len(), 2, "transport ACK then spontaneous report");
+    assert_eq!(out.frames[1].as_slice(), &[
+        0xB8, DUT.0[0], DUT.0[1], 0x00, 0x00, 0xE6, 0x03, 0xDB, 0x00, 0x11, 57, 0x00, 0x01
+    ],);
 }
 
 /// A frame encrypted with the wrong key is dropped (MAC mismatch).
@@ -1696,6 +1888,58 @@ fn configure_secure_group(dev: &mut SecureDev, asap: u8, group_index: u16, key: 
 }
 
 #[test]
+fn a_group_read_responds_through_the_rt2_sending_association() {
+    let mut dev = device();
+    dev.write_value(1, &[1]);
+    let receive_only = GroupAddress::from_three_level(1, 0, 3);
+    let request =
+        data_frame::<MAX_FRAME>(0x0C, CLIENT, receive_only.0, true, Tpci::DataGroup, ApciCode::GroupValueRead, 0, &[]);
+
+    let out = dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&request)), 10);
+    assert_eq!(out.frames.len(), 1);
+    let response = canonical(&out.frames[0]);
+    let response = FrameView::parse(&response).expect("group response");
+    assert_eq!(response.dest_group(), GroupAddress::from_three_level(1, 0, 2));
+    assert_eq!(response.apci(), Some(ApciCode::GroupValueResponse.wire10_base() | 1));
+}
+
+#[test]
+fn a_secure_group_read_uses_the_sending_associations_key() {
+    let mut dev = data_secure_device();
+    let incoming_key = [0x33; 16];
+    let outgoing_key = [0x22; 16];
+    configure_secure_group(&mut dev, 1, 3, incoming_key, 0x01);
+
+    let mut key_rows = [0u8; 36];
+    key_rows[..2].copy_from_slice(&2u16.to_be_bytes());
+    key_rows[2..18].copy_from_slice(&outgoing_key);
+    key_rows[18..20].copy_from_slice(&3u16.to_be_bytes());
+    key_rows[20..].copy_from_slice(&incoming_key);
+    let binding = dev.security_state().security.grp_keys();
+    let mut keys = binding.borrow_mut();
+    keys.clear();
+    keys.write_entries(0, &key_rows).expect("two sorted group-key rows fit");
+    drop(keys);
+
+    dev.write_value(1, &[1]);
+    let request = secure_group_frame(
+        GroupAddress::from_three_level(1, 0, 3),
+        ApciCode::GroupValueRead,
+        0,
+        &incoming_key,
+        &[0, 0, 0, 0, 0, 1],
+        false,
+    );
+    let out = dev.poll(PollInput::Frame(&request), 10);
+    assert_eq!(out.frames.len(), 1);
+
+    let response = unwrap_secure_response(&out.frames[0], &outgoing_key);
+    let response = FrameView::parse(&response).expect("secure group response");
+    assert_eq!(response.dest_group(), GroupAddress::from_three_level(1, 0, 2));
+    assert_eq!(response.apci(), Some(ApciCode::GroupValueResponse.wire10_base() | 1));
+}
+
+#[test]
 fn bench_pid61_trace_pins_zero_based_asap_mapping() {
     // `BCU2_app_sec_prog.log` writes the bench device's 71 PID 61 elements in
     // chunks 18/18/18/17 at starts 1/19/37/55. Only wire ASAP 0 is A+C; the
@@ -1844,17 +2088,74 @@ fn a_request_without_a_reply_cannot_secure_the_next_plain_response() {
 }
 
 fn secure_broadcast_tool_frame(apci: ApciCode, payload: &[u8], key: &[u8; 16], sequence: &[u8; 6]) -> Vec<u8> {
+    secure_broadcast_tool_frame_with_confidentiality(apci, payload, key, sequence, true)
+}
+
+fn secure_broadcast_tool_frame_with_confidentiality(
+    apci: ApciCode,
+    payload: &[u8],
+    key: &[u8; 16],
+    sequence: &[u8; 6],
+    confidentiality: bool,
+) -> Vec<u8> {
     let plain: FrameBuf<EXTENDED_FRAME> = data_frame(0, CLIENT, [0, 0], true, Tpci::DataBroadcast, apci, 0, payload);
     let plain_len = plain.len();
-    let scf = 0x98; // Tool, A+C, System Broadcast, S-A_Data.
+    let scf = 0x88 | if confidentiality { 0x10 } else { 0x00 }; // Tool, System Broadcast, S-A_Data.
     let mut frame = plain.to_vec();
     frame.resize(plain_len + secure::OVERHEAD, 0);
     let layout = secure::wrap_plaintext(&mut frame, plain_len, scf, sequence).expect("secure broadcast fits");
     let context =
         secure::SecureApduRef::parse(&frame).expect("secure broadcast").ccm_context(u16::from_be_bytes(CLIENT.0));
-    let mac = ccm::encrypt_and_mac(key, &context, scf, &mut frame[layout.payload_start..layout.payload_end]);
+    let mac = if confidentiality {
+        ccm::encrypt_and_mac(key, &context, scf, &mut frame[layout.payload_start..layout.payload_end])
+    } else {
+        ccm::compute_mac_auth_only(key, &context, scf, &frame[layout.payload_start..layout.payload_end])
+    };
     frame[layout.mac_start..layout.mac_start + secure::MAC_LEN].copy_from_slice(&mac);
     to_wire::<EXTENDED_FRAME>(&frame).to_vec()
+}
+
+#[test]
+fn individual_address_broadcasts_follow_the_service_access_policy() {
+    let mut dev = data_secure_device();
+    dev.set_programming_mode(true);
+    dev.security_state().security.set_security_mode_enabled(true);
+    let new_ia = IndividualAddress::new(2, 3, 4);
+
+    let plain = data_frame::<EXTENDED_FRAME>(
+        0,
+        CLIENT,
+        [0, 0],
+        true,
+        Tpci::DataBroadcast,
+        ApciCode::IndividualAddressWrite,
+        0,
+        new_ia.as_bytes(),
+    );
+    dev.poll(PollInput::Frame(&to_wire::<EXTENDED_FRAME>(&plain)), 1);
+    assert_eq!(dev.individual_address(), DUT, "3FF/00C denies a plain write while Security Mode is on");
+
+    let auth_only = secure_broadcast_tool_frame_with_confidentiality(
+        ApciCode::IndividualAddressWrite,
+        new_ia.as_bytes(),
+        &FDSK,
+        &[0, 0, 0, 0, 0, 2],
+        false,
+    );
+    dev.poll(PollInput::Frame(&auth_only), 2);
+    assert_eq!(dev.individual_address(), DUT, "3FF/00C denies authentication without confidentiality");
+
+    let protected =
+        secure_broadcast_tool_frame(ApciCode::IndividualAddressWrite, new_ia.as_bytes(), &FDSK, &[0, 0, 0, 0, 0, 3]);
+    dev.poll(PollInput::Frame(&protected), 3);
+    assert_eq!(dev.individual_address(), new_ia, "Tool A+C may write while programming mode is active");
+
+    let read = secure_broadcast_tool_frame(ApciCode::IndividualAddressRead, &[], &FDSK, &[0, 0, 0, 0, 0, 4]);
+    let out = dev.poll(PollInput::Frame(&read), 4);
+    assert_eq!(out.frames.len(), 1);
+    let response = unwrap_secure_response_from(&out.frames[0], &FDSK, new_ia);
+    let response = FrameView::parse(&response).expect("decrypted IA response");
+    assert_eq!(response.apci(), Some(ApciCode::IndividualAddressResponse.wire10_base()));
 }
 
 #[test]

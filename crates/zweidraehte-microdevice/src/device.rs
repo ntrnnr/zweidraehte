@@ -23,9 +23,11 @@ use zweidraehte_proto::memory::memory_regions_valid;
 use zweidraehte_proto::messages::apdu::device::{
     IndividualAddressSerialNumberRead, IndividualAddressSerialNumberResponse, IndividualAddressSerialNumberWrite,
 };
+use zweidraehte_proto::messages::apdu::network_parameter::NetworkParameterInfoReport;
 use zweidraehte_proto::messages::apdu::system_network_parameter::{
     SystemNetworkParameterRead, SystemNetworkParameterResponse,
 };
+use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::transport::TlEvent;
 
@@ -55,6 +57,17 @@ pub(crate) const SYSTEM_STATUS_ADDR: usize = 0x60;
 const PROGMODE_BIT: u8 = 0x01;
 /// The parity bit keeping the system status byte's population even.
 const PARITY_BIT: u8 = 0x80;
+
+/// Request metadata needed while crossing the optional S-AL boundary.
+/// Keeping it together makes the distinction from the mutable frame and
+/// output queue explicit at every admission site.
+struct Admission {
+    now_ms: u32,
+    group_key_index: Option<u16>,
+    plain_access: AccessContext,
+    response_tpci: u8,
+    reply_destination: Option<IndividualAddress>,
+}
 
 /// Boot-time identity that does not live in the EEPROM image.
 #[derive(Debug, Clone, Copy)]
@@ -263,7 +276,33 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 self.scan_transmit_requests(&mut out);
             }
         }
+        if let Some(report) = SEC::take_security_report(&self.sec) {
+            self.emit_security_report(report, &mut out);
+        }
         out
+    }
+
+    /// Emit the Security IO's spontaneous failure indication.
+    ///
+    /// 03/05/01 §6.3.11.4 fixes this as an urgent, plaintext broadcast.
+    /// The shared APDU writer owns the object/PID payload layout; this stack
+    /// adds only its compact TP1 frame header around it.
+    fn emit_security_report(&self, report: u8, out: &mut PollOutput<FRAME_CAP>) {
+        const SECURITY_IO_TYPE: u16 = 0x0011;
+        const PID_SECURITY_REPORT: u8 = 57;
+
+        let mut message = [0u8; NetworkParameterInfoReport::msg_len(2)];
+        NetworkParameterInfoReport::write(&mut message, SECURITY_IO_TYPE, PID_SECURITY_REPORT, &[0x00, report]);
+        out.push(frame::data_frame(
+            0x08,
+            self.individual_address(),
+            [0x00, 0x00],
+            true,
+            Tpci::DataBroadcast,
+            ApciCode::NetworkParameterInfoReport,
+            0,
+            &message[offsets::MSG_APCI + 2..],
+        ));
     }
 
     fn handle_frame(&mut self, frame: &mut FrameBuf<FRAME_CAP>, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
@@ -499,13 +538,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     fn admit_incoming(
         &mut self,
         frame: &mut FrameBuf<FRAME_CAP>,
-        now_ms: u32,
-        group_key_index: Option<u16>,
-        plain_access: AccessContext,
-        response_tpci: u8,
-        reply_destination: Option<IndividualAddress>,
+        admission: Admission,
         out: &mut PollOutput<FRAME_CAP>,
     ) -> Option<RequestContext<SEC::ReplyContext>> {
+        let Admission { now_ms, group_key_index, plain_access, response_tpci, reply_destination } = admission;
         if !SEC::ENABLED {
             return Some(RequestContext { access: plain_access, reply: SEC::plain_reply_context() });
         }
@@ -529,6 +565,14 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         ) {
             crate::security::SalResult::Passthrough => {
                 frame.truncate(original_len);
+                // A secure composition reserves room for the S-A_Data
+                // envelope, but that extra capacity must not enlarge the
+                // device's advertised plaintext APDU. Otherwise a plain
+                // management request could use the security headroom to
+                // bypass the profile's maximum-frame limit.
+                if original_len > Self::max_plaintext_frame_len() {
+                    return None;
+                }
                 Some(RequestContext { access: plain_access, reply: SEC::plain_reply_context() })
             }
             crate::security::SalResult::Decrypted(context) => {
@@ -550,7 +594,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     // ordinary management reply: this advances its outgoing
                     // sequence, starts TACK, and retains the encrypted frame
                     // byte-for-byte for retransmission.
-                    if let Some(seq) = self.tl.begin_send(dest, now_ms) {
+                    if !self.tl.can_send() {
+                        self.process_busy_send(dest, now_ms, out);
+                    } else if let Some(seq) = self.tl.begin_send(dest, now_ms) {
                         debug_assert_eq!(frame[6] & 0xFC, Tpci::DataConnected(seq).octet());
                         self.tl.store_pending(frame.clone());
                         out.push(frame.clone());
@@ -585,13 +631,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // S-A_Sync_Res uses the request's communication mode (03/03/07
         // §5.3.2), but a connected response carries the device's next TL
         // sequence. CCM needs that TPCI before the TL sees the response.
-        if !self.tl.can_send() {
-            return;
-        }
         let response_tpci = Tpci::DataConnected(self.tl.send_seq()).octet();
-        let Some(mut request) =
-            self.admit_incoming(frame, now_ms, None, plain_access, response_tpci, Some(source), out)
-        else {
+        let Some(mut request) = self.admit_incoming(
+            frame,
+            Admission { now_ms, group_key_index: None, plain_access, response_tpci, reply_destination: Some(source) },
+            out,
+        ) else {
             return;
         };
         let Some(view) = FrameView::parse(frame) else { return };
@@ -637,9 +682,17 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         out: &mut PollOutput<FRAME_CAP>,
     ) {
         let plain_access = AccessContext::new(self.mgmt.default_access_level::<F>());
-        let Some(mut request) =
-            self.admit_incoming(frame, now_ms, None, plain_access, Tpci::DataIndividual.octet(), None, out)
-        else {
+        let Some(mut request) = self.admit_incoming(
+            frame,
+            Admission {
+                now_ms,
+                group_key_index: None,
+                plain_access,
+                response_tpci: Tpci::DataIndividual.octet(),
+                reply_destination: None,
+            },
+            out,
+        ) else {
             return;
         };
         let Some(view) = FrameView::parse(frame) else { return };
@@ -753,6 +806,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     ) {
         let own = self.individual_address();
         if !self.tl.can_send() {
+            // The AL has produced an E15 request while another numbered
+            // response is unacknowledged. Feed that request to the selected
+            // transport style instead of silently dropping it: BCU2 Style 1
+            // closes with A6, while queue-capable styles remain in OPEN_WAIT.
+            self.process_busy_send(dest, now_ms, out);
             return;
         }
         let seq = self.tl.send_seq();
@@ -771,6 +829,15 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         debug_assert_eq!(actual_seq, seq);
         self.tl.store_pending(frame.clone());
         out.push(frame);
+    }
+
+    fn process_busy_send(&mut self, dest: IndividualAddress, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
+        for output in self.tl.process(TlEvent::RequestData { dest }, now_ms) {
+            // E15 cannot indicate received data. Reusing the ordinary output
+            // path keeps disconnect frames and authorization cleanup exactly
+            // aligned with bus-originated TL transitions.
+            self.run_secured_tl_output(output, None, now_ms, out);
+        }
     }
 
     // ── Broadcast services (programming mode) ───────────────────────
@@ -935,9 +1002,17 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     fn dispatch_broadcast(&mut self, frame: &mut FrameBuf<FRAME_CAP>, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
         let plain_access = AccessContext::new(self.mgmt.default_access_level::<F>());
-        let Some(request) =
-            self.admit_incoming(frame, now_ms, None, plain_access, Tpci::DataBroadcast.octet(), None, out)
-        else {
+        let Some(request) = self.admit_incoming(
+            frame,
+            Admission {
+                now_ms,
+                group_key_index: None,
+                plain_access,
+                response_tpci: Tpci::DataBroadcast.octet(),
+                reply_destination: None,
+            },
+            out,
+        ) else {
             return;
         };
         let Some(view) = FrameView::parse(frame) else { return };
@@ -953,7 +1028,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
         match ApciCode::from_wire10(apci10) {
             ApciCode::IndividualAddressWrite => {
-                if request.access.security != zweidraehte_proto::access::SecurityMode::Plain {
+                if !zweidraehte_proto::access::AccessPolicy::OPEN_OFF_TOOL_ON
+                    .can_write(&request.access, SEC::security_mode_enabled(&self.sec))
+                {
+                    self.record_access_failure(request.access, view.frame);
                     return;
                 }
                 let payload = view.payload();
@@ -963,11 +1041,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 }
             }
             ApciCode::IndividualAddressRead if self.is_programming_mode() => {
-                if request.access.security != zweidraehte_proto::access::SecurityMode::Plain {
-                    return;
-                }
                 let own = self.individual_address();
-                out.push(frame::data_frame(
+                let mut response = frame::data_frame(
                     view.priority_bits(),
                     own,
                     [0, 0],
@@ -976,7 +1051,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     ApciCode::IndividualAddressResponse,
                     0,
                     &[],
-                ));
+                );
+                if SEC::protect_reply(&mut self.sec, request.reply, &mut response) {
+                    out.push(response);
+                }
             }
             _ => {}
         }
@@ -986,9 +1064,17 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let Some(outer) = FrameView::parse(frame) else { return };
         let Some(tsap) = self.tables().tsap_of(outer.dest_group()) else { return };
         let plain_access = AccessContext::new(self.mgmt.default_access_level::<F>());
-        let Some(request) =
-            self.admit_incoming(frame, now_ms, Some(u16::from(tsap)), plain_access, Tpci::DataGroup.octet(), None, out)
-        else {
+        let Some(request) = self.admit_incoming(
+            frame,
+            Admission {
+                now_ms,
+                group_key_index: Some(u16::from(tsap)),
+                plain_access,
+                response_tpci: Tpci::DataGroup.octet(),
+                reply_destination: None,
+            },
+            out,
+        ) else {
             return;
         };
         let Some(view) = FrameView::parse(frame) else { return };

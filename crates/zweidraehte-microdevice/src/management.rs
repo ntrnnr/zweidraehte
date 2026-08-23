@@ -24,7 +24,7 @@ use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse as PropertyDescription;
 
 use crate::device::{MAX_AUTH_LEVELS, MAX_LSM, Microdevice, RAM_SIZE, SYSTEM_STATUS_ADDR};
-use crate::family::{MicroDeviceFamily, PropertyBacking};
+use crate::family::{MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::frame::{ApciCode, MAX_FRAME, is_extended};
 use crate::security::ScheduledRestart;
 use crate::security::SecurityModule;
@@ -178,7 +178,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // the way the mask firmware ignores anything it does not
         // decode — the TL ACK still goes out, no reply follows.
         let has_auth = F::AUTH_LEVELS > 0;
-        let has_properties = F::OBJECT_COUNT > 0;
+        let has_properties = F::OBJECT_COUNT > 0 || SEC::OBJECT_TYPE.is_some();
         // The extended services come with the extended APDU, not separately.
         // 06 Profiles §9.1.2.3 makes both obligations of the same module, and
         // the wire agrees: `A_PropertyExtDescription_Response` is a fixed 23
@@ -189,22 +189,24 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // ~1.7 KiB of .text on the G0 light switch.
         let has_ext_services = has_properties && is_extended(Self::plaintext_frame_capacity());
         match code {
-            ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6, access),
-            ApciCode::MemoryRead if connection_oriented => self.memory_read(small6, payload, access),
-            ApciCode::MemoryWrite if connection_oriented => self.memory_write(small6, payload, access),
+            ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6, frame, access),
+            ApciCode::MemoryRead if connection_oriented => self.memory_read(small6, payload, frame, access),
+            ApciCode::MemoryWrite if connection_oriented => self.memory_write(small6, payload, frame, access),
             // Authorization belongs to a transport connection. In
             // particular, a connectionless System 7 request must not
             // acquire or reuse another client's connection level.
             ApciCode::AuthorizeRequest if has_auth && connection_oriented => self.authorize(payload),
-            ApciCode::KeyWrite if has_auth && connection_oriented => self.key_write(payload, access),
-            ApciCode::PropertyValueRead if has_properties => self.property_value_read(payload, access),
-            ApciCode::PropertyValueWrite if has_properties => self.property_value_write(payload, access),
-            ApciCode::PropertyDescriptionRead if has_properties => self.property_description_read(payload),
+            ApciCode::KeyWrite if has_auth && connection_oriented => self.key_write(payload, frame, access),
+            ApciCode::PropertyValueRead if has_properties => self.property_value_read(payload, frame, access),
+            ApciCode::PropertyValueWrite if has_properties => self.property_value_write(payload, frame, access),
+            ApciCode::PropertyDescriptionRead if has_properties => {
+                self.property_description_read(payload, frame, access)
+            }
+            ApciCode::FunctionPropertyCommand if SEC::ENABLED => self.function_property(frame, true, access),
+            ApciCode::FunctionPropertyStateRead if SEC::ENABLED => self.function_property(frame, false, access),
             // Extended property services (06 Profiles §9.1.2.3.2, all `M`
             // for the Data Secure profile module). They address an object by
-            // type and one-based occurrence rather than by index, which is
-            // the only way to reach an object a family keeps out of its
-            // indexed roster.
+            // type and one-based occurrence rather than by index.
             ApciCode::PropertyExtValueRead if has_ext_services => self.property_ext_value_read(frame, access),
             ApciCode::PropertyExtValueWriteCon if has_ext_services => {
                 self.property_ext_value_write(frame, access, true)
@@ -212,7 +214,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ApciCode::PropertyExtValueWriteUnCon if has_ext_services => {
                 self.property_ext_value_write(frame, access, false)
             }
-            ApciCode::PropertyExtDescriptionRead if has_ext_services => self.property_ext_description_read(frame),
+            ApciCode::PropertyExtDescriptionRead if has_ext_services => {
+                self.property_ext_description_read(frame, access)
+            }
             // Extended memory services (§9.1.2.3.3, `M`). These are what an
             // ETS download to a secure device actually uses — the bench
             // MV-0021 trace carries 361 of the write and no classic memory
@@ -227,6 +231,15 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ApciCode::Restart => self.handle_restart(small6, payload, frame, access, reply_context),
             _ => F::extra_service(code, small6, payload).unwrap_or(ServiceResult::None),
         }
+    }
+
+    /// Record an AIL permission failure.
+    ///
+    /// Error Type 04h explicitly includes attempts to access protected data
+    /// with plain telegrams (03/05/01 §6.3.9.3.2). `NoSecurity` compiles
+    /// this call to a no-op, so plain devices carry no log or branch.
+    pub(crate) fn record_access_failure(&self, access: AccessContext, frame: &[u8]) {
+        SEC::log_access_failure(&self.sec, access.source_addr, frame);
     }
 
     // ── Memory services ─────────────────────────────────────────────
@@ -286,7 +299,13 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         ServiceResult::Reply(Reply::new(ApciCode::MemoryReadResponse, count, &data))
     }
 
-    fn memory_read(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+    fn memory_read(
+        &mut self,
+        count: u8,
+        payload: &[u8],
+        frame: &[u8],
+        access: AccessContext,
+    ) -> ServiceResult<FRAME_CAP> {
         if payload.len() != 2 {
             return ServiceResult::None;
         }
@@ -295,13 +314,18 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // standard 15-octet ceiling. KNX error handling rejects an oversized
         // request with count zero; silently truncating would claim success
         // for a different operation.
-        if !SEC::memory_access_allowed(&self.sec, access)
-            || count > max_memory_data_length(Self::max_apdu_length())
+        let operation = MemoryOperation::Read;
+        if !SEC::memory_access_allowed(&self.sec, access, F::memory_access_policy(addr, usize::from(count)), operation)
+        {
+            self.record_access_failure(access, frame);
+            return Self::memory_response(payload, 0, &[]);
+        }
+        if count > max_memory_data_length(Self::max_apdu_length())
             || !memory_access_allowed(
                 F::MEMORY_REGIONS,
                 addr,
                 usize::from(count),
-                MemoryOperation::Read,
+                operation,
                 access.access_level,
                 F::AUTH_LEVELS as u8,
             )
@@ -315,7 +339,13 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         Self::memory_response(payload, count, &data)
     }
 
-    fn memory_write(&mut self, count: u8, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+    fn memory_write(
+        &mut self,
+        count: u8,
+        payload: &[u8],
+        frame: &[u8],
+        access: AccessContext,
+    ) -> ServiceResult<FRAME_CAP> {
         if payload.len() < 2 {
             return ServiceResult::None;
         }
@@ -324,16 +354,23 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if data.len() != usize::from(count) {
             return ServiceResult::None;
         }
-        if !SEC::memory_access_allowed(&self.sec, access)
-            || !memory_access_allowed(
-                F::MEMORY_REGIONS,
-                addr,
-                data.len(),
-                MemoryOperation::Write,
-                access.access_level,
-                F::AUTH_LEVELS as u8,
-            )
-        {
+        let operation = MemoryOperation::Write;
+        if !SEC::memory_access_allowed(&self.sec, access, F::memory_access_policy(addr, data.len()), operation) {
+            self.record_access_failure(access, frame);
+            return if self.mgmt.verify_mode() {
+                Self::memory_response(&payload[..2], 0, &[])
+            } else {
+                ServiceResult::None
+            };
+        }
+        if !memory_access_allowed(
+            F::MEMORY_REGIONS,
+            addr,
+            data.len(),
+            operation,
+            access.access_level,
+            F::AUTH_LEVELS as u8,
+        ) {
             return if self.mgmt.verify_mode() {
                 Self::memory_response(&payload[..2], 0, &[])
             } else {
@@ -359,20 +396,27 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
     /// with type 3Fh and no data.
     const DD_TYPE_UNSUPPORTED: u8 = 0x3F;
 
-    fn device_descriptor_read(&self, descriptor_type: u8, access: AccessContext) -> ServiceResult<FRAME_CAP> {
+    fn device_descriptor_read(
+        &self,
+        descriptor_type: u8,
+        frame: &[u8],
+        access: AccessContext,
+    ) -> ServiceResult<FRAME_CAP> {
+        let allowed = zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL
+            .can_read(&access, SEC::security_mode_enabled(&self.sec));
+        if !allowed {
+            self.record_access_failure(access, frame);
+        }
         if descriptor_type == 0 {
             // Security Mode deliberately hides the mask from an unsecured
             // probe. ETS treats FFFFh as the signal to install the Tool Key,
             // synchronize and repeat DD0 securely. Returning the real mask
             // here makes it continue down the plaintext download path.
-            let dd0 = if SEC::security_mode_enabled(&self.sec)
-                && access.security != zweidraehte_proto::access::SecurityMode::AuthConf
-            {
-                0xFFFF
-            } else {
-                F::DD0
-            };
+            let dd0 = if allowed { F::DD0 } else { 0xFFFF };
             return ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, 0, &dd0.to_be_bytes()));
+        }
+        if !allowed {
+            return ServiceResult::Reply(Reply::new(ApciCode::DeviceDescriptorResponse, Self::DD_TYPE_UNSUPPORTED, &[]));
         }
         if descriptor_type == 2
             && let Some(dd2) = F::device_descriptor2(self.eeprom.as_ref(), &self.identity, &self.mgmt)
@@ -394,8 +438,16 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         ServiceResult::Reply(Reply::new(ApciCode::AuthorizeResponse, 0, &[granted]))
     }
 
-    fn key_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+    fn key_write(&mut self, payload: &[u8], frame: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
         if payload.len() != 5 {
+            return ServiceResult::None;
+        }
+        if !zweidraehte_proto::access::AccessPolicy::READ_OPEN_WRITE_TOOL
+            .can_write(&access, SEC::security_mode_enabled(&self.sec))
+        {
+            self.record_access_failure(access, frame);
+            // Access Policies at service level reject silently; the TL ACK
+            // has already been emitted (03/04/01 §6.2.2.1.4, TSSJ 3.7.2.10).
             return ServiceResult::None;
         }
         let level = payload[0];
@@ -434,7 +486,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if small6 & 0x01 == 0 {
             let allowed = zweidraehte_proto::security::restart_access_policy(0)
                 .can_write(&access, SEC::security_mode_enabled(&self.sec));
-            return if allowed { ServiceResult::Restart } else { ServiceResult::None };
+            if !allowed {
+                self.record_access_failure(access, frame);
+                return ServiceResult::None;
+            }
+            return ServiceResult::Restart;
         }
 
         // Master reset: parse the erase code from the frame.
@@ -444,6 +500,17 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let erase_code = frame[offsets::MSG_APCI + 2];
         let code = EraseCode::from(erase_code);
 
+        // Unknown codes and ResetIA/ResetAP are unsupported by the Data
+        // Secure profile itself (06 Profiles §9.1.2.5.1), so report that
+        // before consulting an access policy which does not exist for the
+        // request. TSSJ 3.7.2.9 deliberately sends FEh in plain while
+        // Security Mode is on and requires UnsupportedEraseCode, matching the
+        // full stack's ordering.
+        if matches!(code, EraseCode::Other(_) | EraseCode::ResetIA | EraseCode::ResetAP) {
+            let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::UnsupportedEraseCode.into(), 0x00, 0x00]);
+            return ServiceResult::Reply(reply);
+        }
+
         if frame[offsets::MSG_APCI + 3] != 0 {
             let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::InvalidChannel.into(), 0x00, 0x00]);
             return ServiceResult::Reply(reply);
@@ -452,7 +519,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let security_on = SEC::security_mode_enabled(&self.sec);
         let policy = zweidraehte_proto::security::restart_access_policy(erase_code);
         let required_level = zweidraehte_proto::security::restart_required_level(erase_code);
-        if !policy.can_write(&access, security_on) || !access.has_level(required_level) {
+        if !policy.can_write(&access, security_on) {
+            self.record_access_failure(access, frame);
+            let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::AccessDenied.into(), 0x00, 0x00]);
+            return ServiceResult::Reply(reply);
+        }
+        if !access.has_level(required_level) {
             let reply = Reply::new(ApciCode::Restart, 0x21, &[RestartError::AccessDenied.into(), 0x00, 0x00]);
             return ServiceResult::Reply(reply);
         }
@@ -475,8 +547,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     (RestartError::AccessDenied, None)
                 }
             }
-            // 03h/04h: `X` for secure devices (§9.1.2.5.1).
-            EraseCode::ResetIA | EraseCode::ResetAP => (RestartError::UnsupportedEraseCode, None),
+            // Optional ResetParam/ResetLinks are not implemented by this
+            // product; the mandatory and prohibited codes returned above.
             _ => (RestartError::UnsupportedEraseCode, None),
         };
 
@@ -512,14 +584,80 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     // ── Property services ───────────────────────────────────────────
 
-    fn property_value_read(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+    /// Number of mask-defined properties on the Device Object.
+    ///
+    /// Profile-module properties follow this short fixed roster. The loop is
+    /// compile-time-specialized for each family, and [`NoSecurity`](crate::security::NoSecurity)
+    /// contributes no entries.
+    fn family_device_property_count() -> u8 {
+        for index in 0..=u8::MAX {
+            if F::property_spec(0, index).is_none() {
+                return index;
+            }
+        }
+        u8::MAX
+    }
+
+    pub(crate) fn property_spec(object_index: u8, property_index: u8) -> Option<PropertySpec> {
+        if let Some(spec) = F::property_spec(object_index, property_index) {
+            return Some(spec);
+        }
+        if object_index != 0 {
+            return None;
+        }
+        let module_index = property_index.checked_sub(Self::family_device_property_count())?;
+        SEC::device_property_spec(module_index)
+    }
+
+    pub(crate) fn property_spec_by_id(object_index: u8, property_id: u16) -> Option<(u8, PropertySpec)> {
+        if let Some(found) = F::property_spec_by_id(object_index, property_id) {
+            return Some(found);
+        }
+        if object_index != 0 {
+            return None;
+        }
+        let base = Self::family_device_property_count();
+        for module_index in 0..=u8::MAX - base {
+            let spec = SEC::device_property_spec(module_index)?;
+            if spec.descriptor.pid == property_id {
+                return Some((base + module_index, spec));
+            }
+        }
+        None
+    }
+
+    pub(crate) fn is_module_object(object_index: u8) -> bool {
+        SEC::OBJECT_TYPE.is_some() && object_index == F::OBJECT_COUNT
+    }
+
+    fn property_value_read(&mut self, payload: &[u8], frame: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
         let Some(header) = PropertyValueHeader::parse_payload(payload) else {
             return ServiceResult::None;
         };
         let obj = header.object_idx as u8;
         let prop_id = header.prop_id as u8;
         let count = header.count as u8;
-        match self.property_read(obj, prop_id, count, header.start_idx, access) {
+        let security_on = SEC::security_mode_enabled(&self.sec);
+        let module_object = Self::is_module_object(obj);
+        let descriptor = if module_object {
+            SEC::property_descriptor(u16::from(prop_id)).map(|(_, descriptor)| descriptor)
+        } else {
+            Self::property_spec_by_id(obj, u16::from(prop_id)).map(|(_, spec)| spec.descriptor)
+        };
+        let denied =
+            SEC::ENABLED && descriptor.is_some_and(|descriptor| !descriptor.can_read_secure(&access, security_on));
+        let result = if module_object {
+            descriptor
+                .filter(|descriptor| descriptor.can_read_secure(&access, security_on))
+                .and_then(|_| SEC::property_read::<FRAME_CAP>(&self.sec, u16::from(prop_id), count, header.start_idx))
+        } else {
+            self.property_read(obj, prop_id, count, header.start_idx, access)
+                .map(|value| Vec::from_slice(&value).expect("family property fits frame"))
+        };
+        if denied {
+            self.record_access_failure(access, frame);
+        }
+        match result {
             Some(data) => property_value_response(header, header.count, &data),
             // Unknown property / bad index: the negative response keeps the
             // requested start index but carries a zero element count.
@@ -527,19 +665,56 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
     }
 
-    fn property_value_write(&mut self, payload: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+    fn property_value_write(
+        &mut self,
+        payload: &[u8],
+        frame: &[u8],
+        access: AccessContext,
+    ) -> ServiceResult<FRAME_CAP> {
         let Some(header) = PropertyValueHeader::parse_payload(payload) else {
             return ServiceResult::None;
         };
         let obj = header.object_idx as u8;
         let prop_id = header.prop_id as u8;
         let count = header.count as u8;
-        let accepted = self.property_write(obj, prop_id, count, header.start_idx, header.payload_data(payload), access);
+        let security_on = SEC::security_mode_enabled(&self.sec);
+        let module_object = Self::is_module_object(obj);
+        let descriptor = if module_object {
+            SEC::property_descriptor(u16::from(prop_id)).map(|(_, descriptor)| descriptor)
+        } else {
+            Self::property_spec_by_id(obj, u16::from(prop_id)).map(|(_, spec)| spec.descriptor)
+        };
+        let denied =
+            SEC::ENABLED && descriptor.is_some_and(|descriptor| !descriptor.can_write_secure(&access, security_on));
+        let accepted = if module_object {
+            descriptor
+                .filter(|descriptor| descriptor.can_write_secure(&access, security_on))
+                .map(|_| {
+                    SEC::property_write(
+                        &mut self.sec,
+                        u16::from(prop_id),
+                        count,
+                        header.start_idx,
+                        header.payload_data(payload),
+                    ) == zweidraehte_proto::messages::apdu::property_ext::PropertyReturnCode::Success
+                })
+                .unwrap_or(false)
+        } else {
+            self.property_write(obj, prop_id, count, header.start_idx, header.payload_data(payload), access)
+        };
+        if denied {
+            self.record_access_failure(access, frame);
+        }
         let response_data = if accepted {
             // Positive confirmation carries the property's current
             // value — the read-back a client would get, which for the
             // load-state controls is the machine's new state.
-            self.property_read(obj, prop_id, count, header.start_idx, access)
+            if module_object {
+                SEC::property_read::<FRAME_CAP>(&self.sec, u16::from(prop_id), count, header.start_idx)
+            } else {
+                self.property_read(obj, prop_id, count, header.start_idx, access)
+                    .map(|value| Vec::from_slice(&value).expect("family property fits frame"))
+            }
         } else {
             None
         };
@@ -563,7 +738,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         start: u16,
         access: AccessContext,
     ) -> Option<Vec<u8, 10>> {
-        let (_, spec) = F::property_spec_by_id(obj, u16::from(prop_id))?;
+        let (_, spec) = Self::property_spec_by_id(obj, u16::from(prop_id))?;
         let allowed = if SEC::ENABLED {
             spec.descriptor.can_read_secure(&access, SEC::security_mode_enabled(&self.sec))
         } else {
@@ -607,6 +782,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             }
             PropertyBacking::HardwareType => {
                 let _ = v.extend_from_slice(&self.identity.hardware_type);
+            }
+            PropertyBacking::IndividualAddressSubnet => {
+                let _ = v.push(self.individual_address().0[0]);
+            }
+            PropertyBacking::IndividualAddressDevice => {
+                let _ = v.push(self.individual_address().0[1]);
             }
             PropertyBacking::MaxApduLength => {
                 // The profile's wire ceiling, not the family's: a secure BCU2
@@ -652,7 +833,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if count != 1 || start != 1 {
             return false;
         }
-        let Some((_, spec)) = F::property_spec_by_id(obj, u16::from(prop_id)) else {
+        let Some((_, spec)) = Self::property_spec_by_id(obj, u16::from(prop_id)) else {
             return false;
         };
         let allowed = if SEC::ENABLED {
@@ -684,7 +865,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 dispatch_lsm_event::<F>(machine, data, self.eeprom.as_mut(), &mut self.mgmt);
                 true
             }
-            PropertyBacking::RunState if data.len() == 1 => {
+            // `PDT_CONTROL` writes may carry the ten-octet control record
+            // used by the conformance procedure.  Run Control defines only
+            // its first octet; the remaining control data is reserved and
+            // must not turn an otherwise valid event into a failed write.
+            PropertyBacking::RunState if !data.is_empty() => {
                 F::run_state_write(obj, data[0], self.eeprom.as_mut(), &mut self.mgmt)
             }
             PropertyBacking::FamilySpecific => {
@@ -707,7 +892,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     // ── Property descriptions ───────────────────────────────────────
 
-    fn property_description_read(&self, payload: &[u8]) -> ServiceResult<FRAME_CAP> {
+    fn property_description_read(
+        &self,
+        payload: &[u8],
+        frame: &[u8],
+        access: AccessContext,
+    ) -> ServiceResult<FRAME_CAP> {
         if payload.len() != PropertyDescriptionRead::PAYLOAD_LEN {
             return ServiceResult::None;
         }
@@ -717,16 +907,30 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let obj = request.object_idx as u8;
         let requested_pid = request.prop_id as u8;
         let requested_idx = request.prop_idx;
-        let found = if requested_pid == 0 {
-            F::property_spec(obj, requested_idx).map(|spec| (requested_idx, spec))
+        let found = if Self::is_module_object(obj) {
+            if requested_pid == 0 {
+                SEC::property_descriptor_at(u16::from(requested_idx)).map(|descriptor| (requested_idx, descriptor))
+            } else {
+                SEC::property_descriptor(u16::from(requested_pid))
+                    .and_then(|(index, descriptor)| u8::try_from(index).ok().map(|index| (index, descriptor)))
+            }
+        } else if requested_pid == 0 {
+            Self::property_spec(obj, requested_idx).map(|spec| (requested_idx, spec.descriptor))
         } else {
-            F::property_spec_by_id(obj, u16::from(requested_pid))
+            Self::property_spec_by_id(obj, u16::from(requested_pid)).map(|(index, spec)| (index, spec.descriptor))
         };
+        let found = found.filter(|(_, descriptor)| {
+            let allowed =
+                !SEC::ENABLED || descriptor.can_describe_secure(&access, SEC::security_mode_enabled(&self.sec));
+            if !allowed {
+                self.record_access_failure(access, frame);
+            }
+            allowed
+        });
 
-        let reply = if let Some((property_index, spec)) = found {
+        let reply = if let Some((property_index, descriptor)) = found {
             let mut reply = [0u8; PropertyDescriptionApduResponse::PAYLOAD_LEN];
-            let response =
-                PropertyDescription::from_descriptor(u16::from(obj), u16::from(property_index), &spec.descriptor);
+            let response = PropertyDescription::from_descriptor(u16::from(obj), u16::from(property_index), &descriptor);
             let encoded = response.encode(&mut reply);
             debug_assert_eq!(encoded, reply.len());
             reply
