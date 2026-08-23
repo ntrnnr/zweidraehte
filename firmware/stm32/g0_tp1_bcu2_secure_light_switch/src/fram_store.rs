@@ -142,10 +142,26 @@ impl SiatAccess for FramStore {
     }
 
     fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error> {
-        if idx >= self.count()? {
+        if usize::from(idx) >= SIAT_CAPACITY {
             return Err(());
         }
-        self.write_entry(idx, ia, seq)
+
+        let old_count = self.count()?;
+        if idx >= old_count {
+            // KNX array-property entry writes extend the used element range.
+            // ETS first writes count zero to clear PID 54, then starts again
+            // at element 1; requiring idx < count makes that standard load
+            // sequence impossible. Clear any skipped slots, write the new
+            // row, and publish the larger count last so a power loss cannot
+            // expose a partially written entry range.
+            for gap in old_count..idx {
+                self.write_entry(gap, 0, [0; 6])?;
+            }
+            self.write_entry(idx, ia, seq)?;
+            self.fram.get_mut().write(COUNT_OFFSET, &(idx + 1).to_be_bytes()).map_err(|_| ())
+        } else {
+            self.write_entry(idx, ia, seq)
+        }
     }
 
     fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error> {
