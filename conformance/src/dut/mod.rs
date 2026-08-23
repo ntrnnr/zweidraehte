@@ -42,6 +42,7 @@
 pub mod bcu1_stack;
 pub mod bcu2_light_switch_product;
 pub mod bcu2_product;
+pub mod bcu2_secure_runtime;
 pub mod bcu2_secure_stack;
 pub mod bcu2_stack;
 pub mod common;

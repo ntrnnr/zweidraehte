@@ -237,22 +237,6 @@ why = "the 3.6 cleanup belongs to the omitted conditional Roles fixture and has 
 id = "13B93F60-E73F-4152-8FE2-67CAE860A015"
 why = "3.8.19.1 explicitly scopes its BCU1-legacy memory procedure to Device Model 091Ah; this is mask 0021h"
 
-# PID_IO_LIST is optional-recommended in 06 Profiles §9.1.2.6.2. This
-# composition instead supports the specified DMP_InterfaceObjectScan_R
-# fallback, which discovers the Security IO at compatibility index 4.
-
-[[template.not_applicable]]
-id = "70F80272-3D01-4431-BEB7-34FD39EBFF41"
-why = "3.8.6.1 tests optional-recommended PID_IO_LIST, which this composition omits in favour of interface-object scan"
-
-[[template.not_applicable]]
-id = "000FAE29-F1F9-4936-9D11-6461080D7568"
-why = "3.8.6.2 tests optional-recommended PID_IO_LIST, which this composition does not expose"
-
-[[template.not_applicable]]
-id = "73791C2C-068C-474B-9CA3-73EB0824BBC6"
-why = "3.8.6.3 describes optional-recommended PID_IO_LIST, which this composition does not expose"
-
 [[template.not_applicable]]
 id = "21889969-38AE-44DC-8976-1396582852BC"
 why = "3.8.7.2 accesses PID_LOAD_STATE_CONTROL through a non-Tool P2P key; this composition supports Tool-key management only"

@@ -11,7 +11,7 @@ use devices::light_switch::micro;
 use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
 use zweidraehte_microdevice::snapshot::{MicroSnapshot, SecureMicroSnapshot};
 use zweidraehte_microdevice::{MemoryAccessPolicy, SecureBcu2};
-use zweidraehte_proto::access::AccessPolicy;
+use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
@@ -49,11 +49,21 @@ impl Bcu2SecureConformanceMemoryPolicy {
 impl MemoryAccessPolicy for Bcu2SecureConformanceMemoryPolicy {
     const REGIONS: &'static [MemoryRegion] = &[
         MemoryRegion::open(0x0000, 0x0100),
-        MemoryRegion::open(0x0100, 0x0100),
-        MemoryRegion::open(0x0200, 0x0100),
+        MemoryRegion::open(0x0100, 0x0200),
         MemoryRegion::read_only(0x0300, 0x0010, MemoryPermission::Open),
         MemoryRegion::write_only(0x0310, 0x0010, MemoryPermission::Open),
-        MemoryRegion::open(0x0320, 0x01C0),
+        MemoryRegion::new(
+            0x0320,
+            0x00E0,
+            MemoryPermission::Level(AccessLevel::Configuration),
+            MemoryPermission::Level(AccessLevel::Configuration),
+        ),
+        MemoryRegion::new(
+            0x0400,
+            0x00E0,
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+            MemoryPermission::Level(AccessLevel::ProductManufacturer),
+        ),
         MemoryRegion::open(0x0900, 0x00D0),
     ];
 
@@ -97,6 +107,17 @@ pub fn local_factory_snapshot() -> Snapshot {
     security.tool_key = SECURE_FDSK;
 
     Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
+}
+
+/// Base-profile fixture for running the ordinary BCU2 test templates through
+/// the secure composition.
+///
+/// The application and its mixed-width group objects are the same ones used
+/// by mask 0020h. Only the mask, extended frame budget, and composed Security
+/// IO differ. Security itself starts uncommissioned so the base templates can
+/// exercise the services that remain plain while Security Mode is off.
+pub fn base_profile_snapshot() -> Snapshot {
+    local_factory_snapshot()
 }
 
 // The AN158 collection defines this four-object application as bench setup,

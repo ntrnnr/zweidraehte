@@ -1297,6 +1297,7 @@ pub async fn run_suites(suites: &[TestSuite], opts: &EngineOptions) -> Summary {
         DutMode::System7Secure => "System 7 secure (conformance-dut-system7-secure)",
         DutMode::Bcu2 => "BCU2 (conformance-dut-bcu2)",
         DutMode::Bcu2Secure => "secure BCU2 (conformance-dut-bcu2-secure)",
+        DutMode::Bcu2SecureBase => "secure BCU2 base profile (conformance-dut-bcu2-secure-base)",
         DutMode::MicroSystem7 => "micro System 7 (conformance-dut-micro-system7)",
         DutMode::MicroSystem7Secure => "secure micro System 7 (conformance-dut-micro-system7-secure)",
     });

@@ -104,6 +104,9 @@ pub enum DutMode {
     /// `conformance-dut-bcu2-secure` — mask 0021h with the micro Data
     /// Secure profile and APDU-40 extended frames.
     Bcu2Secure,
+    /// The same mask-0021h composition booted with the ordinary BCU2
+    /// application for base-profile EITT templates.
+    Bcu2SecureBase,
     /// `conformance-dut-micro-system7` — System 7 family (mask 0705h),
     /// the no-async `zweidraehte-microdevice` stack.
     MicroSystem7,
@@ -122,6 +125,7 @@ impl DutMode {
             Self::System7Secure => "conformance-dut-system7-secure",
             Self::Bcu2 => "conformance-dut-bcu2",
             Self::Bcu2Secure => "conformance-dut-bcu2-secure",
+            Self::Bcu2SecureBase => "conformance-dut-bcu2-secure-base",
             Self::MicroSystem7 => "conformance-dut-micro-system7",
             Self::MicroSystem7Secure => "conformance-dut-micro-system7-secure",
         }

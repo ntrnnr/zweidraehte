@@ -1,0 +1,52 @@
+template = "KnxConformanceTestTemplate-Management"
+
+# The 40-octet micro receiver rejects these 66-octet APDUs while normalising
+# the wire frame, before they reach the transport state machine. The template
+# explicitly permits that branch but has also activated the mutually exclusive
+# acknowledgements used when a receiver admits the frame into TL. Run the
+# original oversized frames outside EITT's TL sequence bookkeeping and assert
+# the permitted silent-drop behaviour.
+
+[[patch]]
+without_tl_sequence = "BAA8E2E3-A5D1-4315-A623-5CA2A816AC85"
+why = "2.7.10: exercise the permitted pre-TL drop branch for an APDU exceeding the bounded 40-octet receiver"
+insert = [{ expect_none = 1000 }]
+
+[[patch]]
+skip = "8BB14CE9-667C-4D86-B1D4-A2F7F7026E7B"
+why = "2.7.10: a frame dropped before TL has no T_ACK"
+
+[[patch]]
+skip = "2541BA7E-7A0B-4DD0-ABE4-D2A4282C8A08"
+why = "2.7.10: the count-zero response belongs to the alternative branch where the oversized frame reaches AL"
+
+[[patch]]
+skip = "5260BEE7-A7CA-4BE3-8528-AE8ACEDEC257"
+why = "2.7.10: no response was emitted in the selected silent-drop branch"
+
+[[patch]]
+without_tl_sequence = "2F66752B-B9BB-45C6-8AF0-1EC5EC0BC9DB"
+why = "2.7.15: exercise the required pre-TL drop of an APDU exceeding the bounded 40-octet receiver"
+insert = [{ expect_none = 1000 }]
+
+[[patch]]
+skip = "9FC24B3A-6757-4E21-A1C1-D517D7DE0E29"
+why = "2.7.15: a frame dropped before TL has no T_ACK"
+
+[[patch]]
+without_tl_sequence = "8C1B22D8-EB8C-4B3D-BBD8-4E3AC8F407E1"
+why = "2.7.17: inject the first malformed oversized APDU without advancing the TL sequence"
+insert = [{ expect_none = 1000 }]
+
+[[patch]]
+skip = "B1240AD4-11CF-43C7-B3D0-F5AC22C20749"
+why = "2.7.17: the malformed frame is dropped before TL and has no T_ACK"
+
+[[patch]]
+without_tl_sequence = "59204142-B44B-4042-A332-D1651322E3BD"
+why = "2.7.17: inject the second malformed oversized APDU without advancing the TL sequence"
+insert = [{ expect_none = 1000 }]
+
+[[patch]]
+skip = "6BBF35D3-C1D8-4CF1-815A-6DF728132C52"
+why = "2.7.17: the malformed frame is dropped before TL and has no T_ACK"

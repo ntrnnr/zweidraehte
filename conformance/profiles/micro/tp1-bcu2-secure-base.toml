@@ -1,0 +1,154 @@
+# Base-profile EITT coverage for the mask-0021h Data Secure composition.
+#
+# The System-2 requirements, TL Style 1 exceptions, memory fixture, and
+# collection accounting are inherited from mask 0020h. This variant changes
+# only capabilities added by the secure composition: connectionless DD0,
+# extended frames with MAX_APDU_LENGTH 40, and the mask descriptor itself.
+# The Data Secure supplement remains in tp1-bcu2-secure.toml because it boots
+# the distinct AN158 sample application and provisioned security tables.
+
+extends = "tp1-bcu2.toml"
+dut = "bcu2-secure-base"
+
+[[template]]
+file = "KnxConformanceTestTemplate-TransportLayer.xml"
+patches = ["conformance/patches/micro/bcu2/transport-layer.toml"]
+
+[[template]]
+file = "KnxConformanceTestTemplate-Management.xml"
+patches = [
+  "conformance/patches/micro/common/management-base.toml",
+  "conformance/patches/micro/common/management-memory-bit.toml",
+  "conformance/patches/micro/common/management-verify.toml",
+  "conformance/patches/micro/common/management-serial.toml",
+  "conformance/patches/micro/bcu2/management.toml",
+  "conformance/patches/micro/bcu2/management-secure-apdu40.toml",
+]
+
+[template.variables]
+DD0_RESPONSE = "00 21"
+
+# Connectionless Device Descriptor is needed by secure commissioning and is
+# implemented by the composed profile even though it is optional on BCU2.
+[[template.applicable]]
+id = "9A53BCAD-72C5-4E66-BC0F-4B8179F0B2A1"
+why = "the secure BCU2 composition implements connectionless DD0"
+[[template.applicable]]
+id = "5837178A-82EB-4BF1-A4A9-3C36F2FA0AC6"
+why = "the secure BCU2 composition implements connectionless device-descriptor reads"
+[[template.applicable]]
+id = "42F5B9D7-3992-41A1-8955-8CBD90AE09CE"
+why = "illegal connectionless descriptor types exercise the implemented service"
+
+# Every EFF branch not conditional on a 66-octet APDU becomes applicable with
+# the secure composition's extended frames and advertised APDU length 40.
+[[template.applicable]]
+id = "125FDD41-65D6-496D-B20F-EE15A8C31FDD"
+why = "the secure composition supports extended-frame memory responses"
+[[template.applicable]]
+id = "60178AF4-0215-49A6-8FAF-5086FF3733D8"
+why = "the secure composition advertises MAX_APDU_LENGTH 40, below 66"
+[[template.applicable]]
+id = "7409B2E1-0CB0-4A02-9FDF-74D2A48ABA68"
+why = "the secure composition accepts extended-frame memory requests"
+[[template.applicable]]
+id = "453D3028-286F-4039-84F7-D2F173014F37"
+why = "the secure composition supports extended requests and responses"
+
+[[template.applicable]]
+id = "A74445F0-100A-4804-A5CD-1CBA715019D7"
+why = "the secure composition supports extended memory writes and verify responses"
+[[template.applicable]]
+id = "B0B5D6A9-81A8-4F5A-95B6-047FC83CE030"
+why = "the secure composition accepts extended writes whose response fits in SFF"
+[[template.applicable]]
+id = "7B32A143-B03A-4393-B88B-314AA67D0CD7"
+why = "the secure composition must reject writes exceeding its APDU length"
+[[template.applicable]]
+id = "CFB5BEF5-7C53-4192-B992-B67E1A75839A"
+why = "the secure composition validates inconsistent extended write lengths"
+[[template.applicable]]
+id = "3CA86236-C150-4E49-9B00-E50747163082"
+why = "the secure composition supports extended memory writes without verify"
+[[template.applicable]]
+id = "ED4B1736-98A4-4D09-A28A-01C5A561016C"
+why = "the secure composition accepts extended writes whose payload fits in SFF"
+[[template.applicable]]
+id = "F41CB375-5B93-47D2-B14D-CB697FBBE3D7"
+why = "the secure composition must reject oversized extended writes"
+[[template.applicable]]
+id = "0908E70E-49C9-43AF-8BAB-E9246C14BCF9"
+why = "the secure composition validates inconsistent extended write lengths"
+[[template.applicable]]
+id = "8784BD49-3441-4287-9A65-0908E5E70C2D"
+why = "the secure composition validates malformed oversized writes"
+
+[[template.applicable]]
+id = "4C6E4F4B-2A80-4D34-91ED-706FE89FC522"
+why = "the secure composition can return a user-memory response in EFF"
+[[template.applicable]]
+id = "F56F58E8-8666-4032-84C9-16413603F375"
+why = "the secure composition accepts extended user-memory requests"
+[[template.applicable]]
+id = "CD9F4F1A-74F8-43AB-980F-A543389A92D7"
+why = "the secure composition supports extended user-memory responses"
+
+[[template.applicable]]
+id = "21884007-B0DD-4D75-9780-E85B5C6F3EAA"
+why = "the secure composition supports extended user-memory writes"
+[[template.applicable]]
+id = "FC264342-D90B-463D-BD78-8FE3CE8E609E"
+why = "the secure composition accepts extended user-memory writes that fit SFF"
+[[template.applicable]]
+id = "FD15A3BE-36C6-4658-8B18-E6C9C0B44308"
+why = "the secure composition validates inconsistent extended user-memory writes"
+[[template.applicable]]
+id = "C9B422B9-27EE-426B-A252-F209FE9E8879"
+why = "the secure composition supports extended user-memory writes with verify"
+[[template.applicable]]
+id = "42ECA7DA-AF11-4E5F-ADAD-32E8F5D818C2"
+why = "the secure composition returns short verify responses where possible"
+[[template.applicable]]
+id = "3BC42C72-95AA-4549-BF6A-B5C8E0A2016C"
+why = "the secure composition validates inconsistent verified user-memory writes"
+
+# These cases remain excluded for a different reason than mask 0020h: EFF is
+# present, but the secure BCU2 advertises 40 rather than at least 66 octets.
+[[template.not_applicable]]
+id = "1BF06A17-262F-4B23-AB94-5BC1FA8FCDC0"
+why = "2.6.10 applies only when MAX_APDU_LENGTH is at least 66; secure BCU2 advertises 40"
+[[template.not_applicable]]
+id = "AD87F043-9F34-4D4F-9C42-50745C1A6D3A"
+why = "2.7.12 exercises a fixed write requiring MAX_APDU_LENGTH at least 66; secure BCU2 advertises 40"
+[[template.not_applicable]]
+id = "D37A86FB-A074-42B9-8B4E-18CDED99F51A"
+why = "2.7.18 uses the template's 63-octet maximum-service fixture; secure BCU2 advertises 40"
+[[template.not_applicable]]
+id = "4F081E10-6FDD-45EE-AFD9-61B503A4D908"
+why = "2.7.19 uses the template's 63-octet maximum-service fixture; secure BCU2 advertises 40"
+
+[[template.not_applicable]]
+id = "256CBE07-D937-4476-A915-61D7476ED34E"
+why = "2.6.5 is explicitly the standard-frame-only illegal-length branch; secure BCU2 runs 2.6.6 and 2.6.7"
+[[template.not_applicable]]
+id = "47DF0849-EF46-4377-A68C-49B13304A00B"
+why = "2.31.4 is explicitly the standard-frame-only illegal-length branch; secure BCU2 runs the EFF branches"
+
+# The fixed 15-octet UserMemory fixtures are oversized only for devices with
+# MAX_APDU_LENGTH below 19. They are valid requests at this device's APDU 40,
+# so the negative cases do not apply.
+[[template.not_applicable]]
+id = "76887E41-4EDC-4297-83D2-563F64A7747F"
+why = "2.31.6 is conditional on MAX_APDU_LENGTH below 19; secure BCU2 advertises 40"
+[[template.not_applicable]]
+id = "C0BEA8A5-DAC0-48ED-BF38-47FA60051574"
+why = "2.32.9 is conditional on MAX_APDU_LENGTH below 19; secure BCU2 advertises 40"
+[[template.not_applicable]]
+id = "2D805C32-EB0B-40D6-95EC-B1A4EEA1C2B8"
+why = "2.32.11 is conditional on MAX_APDU_LENGTH below 19; secure BCU2 advertises 40"
+[[template.not_applicable]]
+id = "332EA8BC-338E-42B7-8ABF-4D7439C38646"
+why = "2.32.15 is conditional on MAX_APDU_LENGTH below 19; secure BCU2 advertises 40"
+[[template.not_applicable]]
+id = "0795F3D4-8D17-4A7A-B971-878C8684257E"
+why = "2.32.17 is conditional on MAX_APDU_LENGTH below 19; secure BCU2 advertises 40"

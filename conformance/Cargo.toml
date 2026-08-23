@@ -184,6 +184,14 @@ name = "conformance-dut-bcu2-secure"
 path = "src/bin/dut_bcu2_secure.rs"
 required-features = ["dut"]
 
+# The same secure composition booted with the base BCU2 test application.
+# Keeping this as a separate child prevents the AN158 group-object fixture
+# from leaking into Network/Transport/Management test expectations.
+[[bin]]
+name = "conformance-dut-bcu2-secure-base"
+path = "src/bin/dut_bcu2_secure_base.rs"
+required-features = ["dut"]
+
 # The micro-System-7 DUT: the same micro stack instantiated for mask
 # 0705h (TL Style 3, RT8/M112 tables, both load-control paths).
 [[bin]]
