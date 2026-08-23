@@ -107,15 +107,18 @@ pub fn create_section_3_3_suite() -> TestSuite {
 /// 3.3.1: Correct S-A_Sync_Req, A+C, P2P connection-oriented, tool key.
 ///
 /// Sends a sync request inside a connected transport session (T_Connect /
-/// T_Disconnect). The sync frame uses TPCI=0x43 (numbered data, seq 0,
-/// secure APCI escape). The DUT must T_ACK the incoming numbered data and
-/// respond with a correctly encrypted S-A_Sync_Res on the same connection.
+/// T_Disconnect). A malformed secure APDU first advances only the request
+/// direction; the sync then uses TPCI=0x47 (numbered data, seq 1), while the
+/// DUT must protect its S-A_Sync_Res with its independent outgoing seq 0.
 fn test_3_3_1() -> TestCase {
     TestCase::new("3.3.1 correct S-A_Sync_Req-PDU, A+C – P2P – connection-oriented").with_steps(vec![
         wait(1500), // Sync rate limit.
         comment("Open transport connection"),
         inject("BC #EDI #BDUT_ADDR 60 80"),
-        comment("Send connection-oriented sync req (TPCI=0x43: numbered data seq 0)"),
+        comment("Advance only the request-side TL sequence with a malformed secure APDU"),
+        inject("BC #EDI #BDUT_ADDR 60 43 F1"),
+        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
+        comment("Send connection-oriented sync req (TPCI=0x47: numbered data seq 1)"),
         inject_sync_req(SyncReqParams {
             key_name: "TK1".into(),
             tool_access: true,
@@ -127,11 +130,11 @@ fn test_3_3_1() -> TestCase {
             seq_local: SeqSource::Fixed(0),
             serial_number: [0; 6],
             challenge: CHALLENGE_1,
-            tpci_high: 0x43,
+            tpci_high: 0x47,
         }),
         comment("Expect T_ACK for our numbered data"),
-        expect("B0 #BDUT_ADDR #EDI 60 C2", TIMEOUT),
-        comment("Expect connection-oriented sync response"),
+        expect("B0 #BDUT_ADDR #EDI 60 C6", TIMEOUT),
+        comment("Expect connection-oriented sync response on the DUT's independent sequence 0"),
         expect_sync_res_tool("TK1", CHALLENGE_1, None, None, TIMEOUT),
         comment("ACK the DUT's response"),
         inject("BC #EDI #BDUT_ADDR 60 C2"),

@@ -37,7 +37,7 @@ use zweidraehte_proto::crypto::{
 use zweidraehte_proto::messages::{
     apdu::secure::{self, SyncReqRef},
     buffers::{Buffer, MessageBuffer},
-    knx::{KnxMessageBuffer, ServiceType, offsets},
+    knx::{KnxMessageBuffer, ServiceType, Tpci, offsets},
 };
 
 use crate::logging::{debug, warn};
@@ -281,6 +281,25 @@ where
     <D::State as HasExtensionState>::ES: HasSecurityState,
 {
     // Step 6: Verify and decrypt the challenge.
+    //
+    // SyncRes must use exactly the request's communication mode. Reject
+    // anything else (notably group-addressed SyncReq) before changing replay
+    // state; a catch-all connectionless response would hide a routing bug.
+    let response_st = match incoming_service_type {
+        ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
+        ServiceType::T_DataUnack_Ind => ServiceType::T_DataUnack_Req,
+        ServiceType::T_Broadcast_Ind => ServiceType::T_Broadcast_Req,
+        ServiceType::T_SystemBroadcast_Ind => ServiceType::T_SystemBroadcast_Req,
+        _ => return SecureResult::Dropped,
+    };
+
+    // The bus TL stamps the sequence its response will use on connected
+    // indications. SyncRes is already protected here, before it returns to
+    // the TL, so CCM must cover that outgoing TPCI rather than the request's
+    // independent receive-side sequence. The local cEMI management path has
+    // no bus TL state and deliberately leaves the stamp absent; there the
+    // response remains in the request's cEMI transport context.
+    let response_tpci = msg.outgoing_tl_seq().map(Tpci::DataConnected).map(Tpci::octet);
     let buf = msg.buf_mut();
     let mut challenge = [0u8; 6];
     challenge.copy_from_slice(&buf[secure::sync::CHALLENGE..secure::sync::CHALLENGE + 6]);
@@ -385,7 +404,7 @@ where
     let buf = msg.buf_mut();
     let ctrl_byte = buf[0];
     let npdu_byte = buf[offsets::MSG_ADDR_TYPE];
-    let tpci_high = buf[offsets::MSG_TPCI];
+    let tpci_high = response_tpci.unwrap_or(buf[offsets::MSG_TPCI]);
 
     let mac_offset = secure::build_sync_response(
         buf,
@@ -415,13 +434,7 @@ where
     buf[mac_offset..mac_offset + secure::MAC_LEN].copy_from_slice(&mac);
     buf.set_len(secure::sync::FRAME_LEN);
 
-    // Step 11: Set appropriate response service type.
-    let response_st = match incoming_service_type {
-        ServiceType::T_Data_Ind => ServiceType::T_Data_Req,
-        ServiceType::T_Broadcast_Ind => ServiceType::T_Broadcast_Req,
-        ServiceType::T_SystemBroadcast_Ind => ServiceType::T_SystemBroadcast_Req,
-        _ => ServiceType::T_DataUnack_Req,
-    };
+    // Step 11: Preserve the request communication mode selected above.
     msg.set_service_type(response_st);
 
     // Step 12: Update rate limit timestamp.
