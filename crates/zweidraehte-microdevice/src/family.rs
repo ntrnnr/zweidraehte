@@ -5,7 +5,7 @@
 //! [`MicroDeviceFamily`]; the family owns the fixed memory map, the
 //! table wire codings, the load and run state behavior, the interface
 //! object roster, and the device descriptor. The instances live in
-//! [`crate::families`]: BCU2 (masks 0020h/0021h/0025h), micro-System-7
+//! [`crate::families`]: BCU2 (masks 0020h/0021h), micro-System-7
 //! (System 7 tables, memory-mapped load controls, 16 authorization
 //! levels), and BCU1 (mask 0012h — no properties, no load state
 //! machines, no authorization).
@@ -173,7 +173,7 @@ pub trait MicroDeviceFamily: 'static {
     const EEPROM_BASE: u16;
     /// Number of EEPROM bytes the device owns.
     const EEPROM_SIZE: usize;
-    /// The second RAM window (BCU2: E0h bytes at 0900h; System 7: the
+    /// The second RAM window (BCU2: D0h bytes at 0900h; System 7: the
     /// 100h-byte resource window at 0700h). Must fit
     /// [`crate::device::RAM2_CEILING`].
     const RAM2_BASE: u16;

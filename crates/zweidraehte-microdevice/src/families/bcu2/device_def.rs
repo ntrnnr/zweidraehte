@@ -71,17 +71,15 @@ impl Bcu2DeviceDefinition {
         self.assoc_table_offset() + 1 + self.max_associations as usize * 2
     }
 
-    /// Build the boot EEPROM image for the HC05 masks (0020h/0021h),
-    /// which expose ManagementStyle as a memory cell at 0115h.
+    /// Build the boot EEPROM image for mask 0020h.
     pub fn build_eeprom(&self) -> [u8; BCU2_EEPROM_SIZE] {
         self.build_eeprom_for_mask(0x0020)
     }
 
-    /// Build the boot EEPROM image for a specific BCU2 mask. The one
-    /// image delta between the siblings: mask 0025h (AN059) defines
-    /// ManagementStyle as the constant 2 in the master data instead of
-    /// a memory cell, so its image leaves 0115h blank.
+    /// Build the boot EEPROM image for one of the two masks whose BCU2
+    /// memory model is defined by 09/04/01 and the RT2 Resources clauses.
     pub fn build_eeprom_for_mask(&self, mask: u16) -> [u8; BCU2_EEPROM_SIZE] {
+        assert!(mask == 0x0020 || mask == 0x0021, "BCU2 EEPROM images support masks 0020h and 0021h");
         let mut e = [0u8; BCU2_EEPROM_SIZE];
 
         // ── Fixed header ────────────────────────────────────────────
@@ -96,13 +94,11 @@ impl Bcu2DeviceDefinition {
         e[bcu2_offsets::RUN_ERROR] = bcu2_offsets::RUN_ERROR_ALL_CLEAR;
         e[bcu2_offsets::ROUTING_COUNT] = bcu2_offsets::ROUTING_COUNT_DEFAULT;
         e[bcu2_offsets::TX_RETRY] = bcu2_offsets::TX_RETRY_DEFAULT;
-        // ManagementStyle 48h: native BCU2 management, the value ETS
-        // reads from 0115h to rule out BCU1-compat mode. Mask 0025h
-        // has no such cell — its master data declares the style as a
-        // constant, and ETS never reads the address.
-        if mask != 0x0025 {
-            e[bcu2_offsets::MANAGEMENT_STYLE] = bcu2_offsets::MANAGEMENT_STYLE_NATIVE;
-        }
+        // 0115h is UsrSavPtr in the BCU2 memory map (09/04/01
+        // §5.1.2.12.5.7). The ETS 0020h/0021h mask procedures used by our
+        // fixtures expect 48h in that cell; this value is compatibility
+        // evidence, not a distinct "ManagementStyle" resource in Volume 9.
+        e[bcu2_offsets::USER_SAVE_PTR] = bcu2_offsets::USER_SAVE_PTR_DEFAULT;
 
         // ── Table placement ─────────────────────────────────────────
         // Address table is fixed at 0116h; the other two follow their

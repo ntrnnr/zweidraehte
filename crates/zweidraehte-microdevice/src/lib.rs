@@ -31,7 +31,7 @@
 //! state to sync back.
 //!
 //! The family seam ([`family::MicroDeviceFamily`]) keeps the core generic
-//! over the management model: BCU2 (masks 0020h/0021h/0025h),
+//! over the management model: BCU2 (masks 0020h/0021h),
 //! micro-System-7, and BCU1 (mask 0012h).
 
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
@@ -63,11 +63,11 @@ pub use security::{DataSecure, MicroSecurityResources, NoSecurity, SecurityModul
 /// Plain mask-0012 micro profile.
 pub type PlainBcu1 = Microdevice<Bcu1Family>;
 /// Plain BCU2 profile. The const parameter is restricted by `Bcu2Family` to
-/// the supported sibling masks 0020h, 0021h and 0025h.
+/// the supported BCU2 masks 0020h and 0021h.
 pub type PlainBcu2<const MASK: u16 = 0x0020> = Microdevice<Bcu2Family<MASK>>;
-/// Data Secure BCU2 profile. Deliberately fixed to mask 0021h: that is the
-/// only sibling for which the extended management and secure behavior are
-/// backed by hardware evidence.
+/// Data Secure BCU2 composition used by the reference product. It is fixed
+/// to mask 0021h because that pairing is backed by hardware evidence; Data
+/// Secure itself is a profile module and is not encoded by this mask value.
 pub type SecureBcu2<S, const GROUP_KEYS: usize, const GROUP_OBJECTS: usize> =
     Microdevice<Bcu2Family<0x0021>, { frame::SECURE_EXTENDED_FRAME }, DataSecure<S, GROUP_KEYS, GROUP_OBJECTS>>;
 /// Plain micro System 7 profile.

@@ -37,11 +37,10 @@ pub const PORT_ADDR: usize = 0x0C;
 pub const ASSOC_TAB_PTR: usize = 0x11;
 /// Pointer byte to the group object table (value + 0100h).
 pub const COMMS_TAB_PTR: usize = 0x12;
-/// ManagementStyle byte ETS reads once to detect BCU1-compat mode.
-/// A native BCU2 reports 48h. ETS never writes it.
-pub const MANAGEMENT_STYLE: usize = 0x15;
-/// The ManagementStyle value of a native BCU2.
-pub const MANAGEMENT_STYLE_NATIVE: u8 = 0x48;
+/// Pointer to the user save routine (09/04/01 §5.1.2.12.5.7).
+pub const USER_SAVE_PTR: usize = 0x15;
+/// Value used by the ETS 0020h/0021h mask-procedure fixtures.
+pub const USER_SAVE_PTR_DEFAULT: u8 = 0x48;
 /// The device's own individual address, stored inside the address
 /// table blob (offset 0x16 length byte + 1).
 pub const INDIVIDUAL_ADDRESS: usize = 0x17;

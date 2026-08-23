@@ -5,7 +5,7 @@
 //! `conformance-dut-bcu2` process:
 //!
 //! - DD0 answering mask 0020h
-//! - the ManagementStyle byte at 0115h (48h, native BCU2)
+//! - the UsrSavPtr byte at 0115h (48h in the ETS mask fixture)
 //! - OptionReg inversion at 0100h (factory-erased cell reads FFh)
 //! - four-level authorization (factory keys FFFFFFFFh → level 0)
 //! - the property-path load state machines (PID_LOAD_STATE_CONTROL
@@ -53,10 +53,10 @@ pub fn create_bcu2_smoke_suite() -> TestSuite {
             inject_delay("B0 #EDI #BDUT 60 81", 200),
         ]),
         // ====================================================================
-        // B2-2: ManagementStyle and OptionReg
+        // B2-2: UsrSavPtr and OptionReg
         // ====================================================================
-        TestCase::new("B2-2 ManagementStyle 0115h and OptionReg 0100h").with_steps(vec![
-            comment("ETS reads 0115h once to rule out BCU1-compat mode: 48h"),
+        TestCase::new("B2-2 UsrSavPtr 0115h and OptionReg 0100h").with_steps(vec![
+            comment("Volume 9 names 0115h UsrSavPtr; the ETS mask fixture expects 48h"),
             inject_delay("B0 #EDI #BDUT 60 80", 200),
             inject("BC #EDI #BDUT 63 42 01 01 15"),
             expect("B0 #BDUT #EDI 60 C2", 0),

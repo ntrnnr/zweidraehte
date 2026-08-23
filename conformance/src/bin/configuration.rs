@@ -462,11 +462,11 @@ fn scenario_bcu2_descriptor<'a>(
             if descriptor != [0x00, 0x20] {
                 return Err(format!("descriptor {descriptor:02X?}, expected mask 0020"));
             }
-            // The BCU2 signature reads: ManagementStyle 48h at 0115h,
-            // and the factory level-0 key granting authorization.
-            let style = conn.memory_read(0x0115, 1).await.map_err(|e| format!("ManagementStyle: {e}"))?;
-            if style != [0x48] {
-                return Err(format!("ManagementStyle {style:02X?}, expected 48h"));
+            // Volume 9 calls 0115h UsrSavPtr. The ETS mask fixture uses
+            // 48h there, alongside the factory level-0 authorization key.
+            let user_save = conn.memory_read(0x0115, 1).await.map_err(|e| format!("UsrSavPtr: {e}"))?;
+            if user_save != [0x48] {
+                return Err(format!("UsrSavPtr {user_save:02X?}, expected 48h"));
             }
             let level = conn.authorize(&[0xFF; 4]).await.map_err(|e| format!("authorize: {e}"))?;
             if level != 0 {

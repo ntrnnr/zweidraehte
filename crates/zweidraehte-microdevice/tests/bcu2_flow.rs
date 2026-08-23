@@ -60,7 +60,7 @@ fn device() -> Microdevice<Bcu2Family> {
 }
 
 #[test]
-fn dd0_and_management_style_and_authorize() {
+fn dd0_user_save_pointer_and_authorize() {
     let mut dev = device();
     connect(&mut dev);
 
@@ -68,7 +68,7 @@ fn dd0_and_management_style_and_authorize() {
     let rsp = exchange(&mut dev, 0, ApciCode::DeviceDescriptorRead, 0, &[], 0).expect("DD0 answered");
     assert_eq!(apdu(&rsp), &[0x43, 0x40, 0x00, 0x20]);
 
-    // ManagementStyle at 0115h → 48h.
+    // The ETS mask procedure's 0115h compatibility probe → 48h.
     let rsp = exchange(&mut dev, 1, ApciCode::MemoryRead, 1, &[0x01, 0x15], 0).expect("memory answered");
     assert_eq!(apdu(&rsp), &[0x46, 0x41, 0x01, 0x15, 0x48]);
 

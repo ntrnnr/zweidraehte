@@ -20,16 +20,17 @@ use crate::family::{MicroDeviceFamily, PropertyBacking, PropertySpec};
 use crate::frame::ApciCode;
 use crate::management::{ManagementState, ServiceResult};
 
-/// BCU2 / System 2, TP1 — masks 0020h (the default), 0021h and 0025h.
+/// BCU2 / System 2, TP1 — masks 0020h (the default) and 0021h.
 ///
-/// The concrete numbers are the mask 0020h resource map (09_04_01
-/// §5.1.2.12, mirrored in `BCU2_PLAN.md` and the client's `MV_0020`
-/// mask fixture). The three masks share the memory map, the RT2 table
-/// codings, the LSM roster and the procedures byte for byte; what
-/// separates them on the device side is the DD0 value and, for 0025h
-/// (AN059, the non-HC05 BCU2), the `PID_HARDWARE_TYPE` identity
-/// property plus the absence of the memory-mapped ManagementStyle
-/// byte (see [`super::device_def::Bcu2DeviceDefinition`]).
+/// 09/04/01 §5.1.2.1 names these as the two TP1 BCU2 mask versions. It
+/// specifies the 0021h implementation and says only that 0020h has a
+/// different amount of user RAM; exact 0020h compatibility additionally
+/// follows the ETS mask procedure exercised by this crate's fixtures.
+///
+/// DD0 0025h is catalogued as BCU2/System 2 in 03/05/01 §4.1.2, but the
+/// BCU2 hardware chapter and the RT2 resource definitions (§§4.16.4,
+/// 4.17.4 and 4.18.4) do not include it. It therefore must not silently
+/// inherit this family's 0021h memory map.
 pub struct Bcu2Family<const MASK: u16 = 0x0020>;
 
 /// The BCU2 EEPROM: 0100h..=04DFh. ETS sees 0100h–046Fh; the tail is
@@ -40,20 +41,18 @@ impl<const MASK: u16> Bcu2Family<MASK> {
     /// Evaluated wherever `DD0` is, so instantiating the family with a
     /// mask that is not a BCU2 sibling fails at compile time instead
     /// of quietly claiming BCU2 semantics for it.
-    const MASK_IS_BCU2: () = assert!(
-        MASK == 0x0020 || MASK == 0x0021 || MASK == 0x0025,
-        "Bcu2Family covers masks 0020h, 0021h and 0025h only",
-    );
+    const MASK_IS_BCU2: () = assert!(MASK == 0x0020 || MASK == 0x0021, "Bcu2Family covers masks 0020h and 0021h only",);
 
     /// The Application Program interface object: the last of the
     /// machines behind `LSM_OBJ_BASE` (index 3 on the BCU2 roster).
     const APP_OBJECT: u8 = Self::LSM_OBJ_BASE + Self::LSM_COUNT as u8 - 1;
 
-    /// Device-object roster. The sibling masks share values but not every
-    /// write level, so the descriptors are built from the const mask instead
-    /// of copied into three almost-identical tables.
+    /// Device-object roster shared by the two supported masks, apart from
+    /// optional resources selected by the concrete composition.
     fn device_property(index: u8) -> Option<PropertySpec> {
-        let privileged_write = if MASK == 0x0020 { 3 } else { 0 };
+        // 06 Profiles Annex A.2.3: masks 0020h/0021h use level 0 for
+        // writable Device Object controls.
+        let privileged_write = 0;
         match index {
             0 => Some(PropertySpec::read_only(pid::OBJECT_TYPE, PDT_UnsignedInt::ID, 3, PropertyBacking::ObjectType)),
             1 => Some(PropertySpec::read_write(
@@ -106,16 +105,11 @@ impl<const MASK: u16> Bcu2Family<MASK> {
                 3,
                 PropertyBacking::FamilySpecific,
             )),
-            11 if MASK == 0x0025 => Some(PropertySpec::read_only(
-                pid::device::HARDWARE_TYPE,
-                PDT_Generic06::ID,
-                3,
-                PropertyBacking::HardwareType,
-            )),
-            // The APDU-40 secure 0021 profile exposes this at the next free
-            // device-object index. It must remain readable before a secure
-            // link is established so the management client can size that
-            // link's frames.
+            // PID 56 is conditional on long-frame support (06 Profiles
+            // Annex A.2.3 note 57), not on Data Secure. Our only long-frame
+            // BCU2 composition currently uses mask 0021h, so keeping it in
+            // that concrete roster avoids charging the standard-frame 0020h
+            // target for an optional Property.
             11 if MASK == 0x0021 => Some(PropertySpec::read_only_with_policy(
                 pid::device::MAX_APDU_LENGTH,
                 PDT_UnsignedInt::ID,
@@ -128,7 +122,8 @@ impl<const MASK: u16> Bcu2Family<MASK> {
     }
 
     fn table_property(index: u8) -> Option<PropertySpec> {
-        let load_write = if MASK == 0x0020 { 3 } else { 1 };
+        // Annex A.2.4/A.2.5: 0020h and 0021h use level 1.
+        let load_write = 1;
         match index {
             0 => Some(PropertySpec::read_only(pid::OBJECT_TYPE, pdt::UNSIGNED_INT, 3, PropertyBacking::ObjectType)),
             1 => Some(PropertySpec::read_write(
@@ -149,7 +144,8 @@ impl<const MASK: u16> Bcu2Family<MASK> {
     }
 
     fn application_property(index: u8) -> Option<PropertySpec> {
-        let control_write = if MASK == 0x0020 { 3 } else { 0 };
+        // Annex A.2.6: 0020h and 0021h use level 0.
+        let control_write = 0;
         match index {
             0 => Some(PropertySpec::read_only(pid::OBJECT_TYPE, pdt::UNSIGNED_INT, 3, PropertyBacking::ObjectType)),
             1 => Some(PropertySpec::read_write(
@@ -200,7 +196,9 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
     const EEPROM_BASE: u16 = 0x0100;
     const EEPROM_SIZE: usize = BCU2_EEPROM_SIZE;
     const RAM2_BASE: u16 = 0x0900;
-    const RAM2_SIZE: usize = 0xE0;
+    // 09/04/01 Figure 16: 208 bytes at 0900h. The previous E0h widened
+    // direct-memory access beyond the BCU2 RAM2 region.
+    const RAM2_SIZE: usize = 0xD0;
     const MEMORY_REGIONS: &'static [MemoryRegion] = &[
         MemoryRegion::open(0x0000, crate::device::RAM_SIZE as u32),
         MemoryRegion::open(Self::EEPROM_BASE, Self::EEPROM_SIZE as u32),
@@ -308,17 +306,11 @@ impl<const MASK: u16> MicroDeviceFamily for Bcu2Family<MASK> {
         obj: u8,
         prop_id: u16,
         eeprom: &[u8],
-        identity: &DeviceIdentity,
+        _identity: &DeviceIdentity,
         _mgmt: &ManagementState,
     ) -> Option<Vec<u8, 10>> {
         let mut v: Vec<u8, 10> = Vec::new();
         match (obj, prop_id) {
-            // Mask 0025h adds the HardwareConfig_Identical resources
-            // (PID 78) so ETS can guard hardware compatibility; the
-            // HC05 masks predate the property.
-            (0, pid::device::HARDWARE_TYPE) if MASK == 0x0025 => {
-                let _ = v.extend_from_slice(&identity.hardware_type);
-            }
             (0, pid::MANUFACTURER_ID) => {
                 let _ = v.extend_from_slice(&eeprom[offsets::MAN_DATA..offsets::MAN_DATA + 2]);
             }

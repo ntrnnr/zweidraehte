@@ -108,9 +108,10 @@ impl MaskDb {
 /// DD0** decides, and a product written for an older mask is accepted
 /// when the device's mask lists it as downward compatible (a BCU2
 /// runs BCU1 programs). The device is then programmed per *its own*
-/// management model — there is no "compat mode" to switch, the log
-/// shows ETS reading ManagementStyle (0115h) once and never writing
-/// it — while the product supplies the content.
+/// management model — there is no observed "compat mode" write. The
+/// log shows ETS reading 0115h once under its `ManagementStyle` alias
+/// and never writing it; Volume 9 defines that memory cell as
+/// `UsrSavPtr`. The product supplies the content.
 ///
 /// Callers read DD0 (`DeviceDescriptor_Read Type=0`) after
 /// connecting and hand it in; a mismatched, incompatible device fails

@@ -74,8 +74,10 @@ pub const fn bcu2_definition() -> Bcu2DeviceDefinition {
 /// The Data Secure BCU2 (mask 0021h) light-switch definition.
 ///
 /// Its EEPROM geometry and communication-object descriptors deliberately
-/// remain identical to the plain sibling; only the mask/application identity
-/// and the composed security module differ.
+/// match our ETS-backed 0020h fixture. This is a product choice, not a claim
+/// that Volume 9 defines the two masks as byte-for-byte identical; it only
+/// guarantees upward compatibility and explicitly calls out different user
+/// RAM capacity.
 pub const fn secure_bcu2_definition() -> Bcu2DeviceDefinition {
     let mut definition = bcu2_definition();
     definition.device_type = LightSwitchDevice::APPLICATION_ID_TP1_BCU2_SECURE;

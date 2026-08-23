@@ -1,19 +1,19 @@
-//! The BCU2 sibling masks 0021h and 0025h on the same family core:
-//! what actually differs from 0020h on the device side — the DD0
-//! value, mask 0025h's `PID_HARDWARE_TYPE` identity property and
-//! missing ManagementStyle cell, and the Absolute Stack Allocation
-//! sub-control the 0021h/0025h profiles require.
+//! The two TP1 BCU2 masks defined by 09/04/01: the legacy 0020h
+//! compatibility target and the documented 0021h implementation.
+//!
+//! Data Secure is deliberately absent from this comparison. It is a
+//! composable profile module, not a meaning encoded by mask 0021h.
 
 mod common;
 use common::{DUT, apdu, connect, exchange};
 
 use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice};
 use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition, Bcu2Family};
+use zweidraehte_microdevice::family::MicroDeviceFamily;
 use zweidraehte_microdevice::frame::ApciCode;
 use zweidraehte_proto::address::GroupAddress;
-use zweidraehte_proto::messages::apdu::load_control::{
-    AbsSegment, LoadControlRecord, LoadEvent, LoadSegment, LoadState,
-};
+use zweidraehte_proto::messages::apdu::load_control::LoadState;
+use zweidraehte_proto::pid;
 
 static COS: &[Bcu2CoDescriptor] = &[Bcu2CoDescriptor { data_ptr: 0xC6, config: 0x9F, value_type: 0x00 }];
 static GAS: &[GroupAddress] = &[GroupAddress::from_three_level(1, 0, 1)];
@@ -51,94 +51,60 @@ fn device<const MASK: u16>() -> Microdevice<Bcu2Family<MASK>> {
 }
 
 #[test]
-fn dd0_reports_the_sibling_masks() {
+fn dd0_reports_mask_0021() {
     let mut dev = device::<0x0021>();
     connect(&mut dev);
     let rsp = exchange(&mut dev, 0, ApciCode::DeviceDescriptorRead, 0, &[], 0).expect("DD0 answered");
     assert_eq!(apdu(&rsp), &[0x43, 0x40, 0x00, 0x21]);
-
-    let mut dev = device::<0x0025>();
-    connect(&mut dev);
-    let rsp = exchange(&mut dev, 0, ApciCode::DeviceDescriptorRead, 0, &[], 0).expect("DD0 answered");
-    assert_eq!(apdu(&rsp), &[0x43, 0x40, 0x00, 0x25]);
 }
 
 #[test]
-fn hardware_type_answers_on_0025_only() {
-    // Mask 0025h (AN059) adds the PID 78 identity resources so ETS can
-    // guard hardware compatibility.
-    let mut dev = device::<0x0025>();
-    connect(&mut dev);
-    let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[0, 78, 0x10, 0x01], 0).expect("answered");
-    assert_eq!(&apdu(&rsp)[6..12], &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
-    let rsp = exchange(&mut dev, 1, ApciCode::PropertyDescriptionRead, 0, &[0, 78, 0], 0).expect("described");
-    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x4E, 0x0B, 0x16, 0x60, 0x01, 0x30]);
-
-    // The HC05 masks predate the property: negative response (element
-    // count zeroed, no data).
-    let mut dev = device::<0x0020>();
-    connect(&mut dev);
-    let rsp = exchange(&mut dev, 0, ApciCode::PropertyValueRead, 0, &[0, 78, 0x10, 0x01], 0).expect("answered");
-    assert_eq!(apdu(&rsp).len(), 6, "no data in the negative response");
-    assert_eq!(apdu(&rsp)[4] & 0xF0, 0, "element count zeroed");
-    let rsp = exchange(&mut dev, 1, ApciCode::PropertyDescriptionRead, 0, &[0, 78, 0], 0).expect("negative reply");
-    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x4E, 0x00, 0, 0, 0, 0]);
+fn ram2_matches_the_documented_0021_memory_map() {
+    assert_eq!(Bcu2Family::<0x0021>::RAM2_BASE, 0x0900);
+    assert_eq!(Bcu2Family::<0x0021>::RAM2_SIZE, 208);
 }
 
 #[test]
-fn stack_allocation_record_is_accepted_while_loading() {
-    // 06 Profiles: masks 0021h/0025h additionally require the Absolute
-    // Stack Allocation sub-control (event 03h, segment 01h). The stack
-    // announcement is informational for a device that runs no HC05
-    // machine code — the machine must stay in Loading, not error out.
-    let mut dev = device::<0x0021>();
-    connect(&mut dev);
+fn property_write_levels_match_the_mask_columns() {
+    // 06 Profiles Annex A.2.3--A.2.6. The original implementation read
+    // the generic System-2 column as mask 0020h and shifted every mask by
+    // one column; pin the actual 0020h/0021h columns directly.
+    for mask_0021 in [false, true] {
+        let device = if mask_0021 {
+            Bcu2Family::<0x0021>::property_spec_by_id(0, pid::DEVICE_CONTROL)
+        } else {
+            Bcu2Family::<0x0020>::property_spec_by_id(0, pid::DEVICE_CONTROL)
+        }
+        .expect("Device Control exists")
+        .1;
+        assert_eq!(device.descriptor.write_level, 0);
 
-    // Application controls on 0021h require level 0. A wrong key drops
-    // the connection to free access and the write must have no side effect.
-    let rsp = exchange(&mut dev, 0, ApciCode::AuthorizeRequest, 0, &[0x00, 0xDE, 0xAD, 0xBE, 0xEF], 0)
-        .expect("authorize answered");
-    assert_eq!(apdu(&rsp)[2], 3);
-    let rsp =
-        exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[3, 5, 0x10, 0x01, 0x04], 0).expect("denial answered");
-    assert_eq!(&apdu(&rsp)[2..], &[3, 5, 0, 1]);
-    assert_eq!(dev.mgmt.lsm[2].state, LoadState::Loaded);
+        let table = if mask_0021 {
+            Bcu2Family::<0x0021>::property_spec_by_id(1, pid::LOAD_STATE_CONTROL)
+        } else {
+            Bcu2Family::<0x0020>::property_spec_by_id(1, pid::LOAD_STATE_CONTROL)
+        }
+        .expect("table Load State Control exists")
+        .1;
+        assert_eq!(table.descriptor.write_level, 1);
 
-    let rsp =
-        exchange(&mut dev, 2, ApciCode::AuthorizeRequest, 0, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF], 0).expect("authorized");
-    assert_eq!(apdu(&rsp)[2], 0);
-
-    let mut seq = 3u8;
-    let mut send_record = |dev: &mut Microdevice<Bcu2Family<0x0021>>, obj: u8, record: &[u8]| -> Vec<u8> {
-        let mut payload = vec![obj, 5, 0x10, 0x01];
-        payload.extend_from_slice(record);
-        let rsp = exchange(dev, seq, ApciCode::PropertyValueWrite, 0, &payload, 0).expect("property write answered");
-        seq = (seq + 1) & 0x0F;
-        rsp
-    };
-
-    let rsp = send_record(&mut dev, 3, &LoadControlRecord::event(LoadEvent::Unload));
-    assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Unloaded));
-    let rsp = send_record(&mut dev, 3, &LoadControlRecord::event(LoadEvent::StartLoading));
-    assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Loading));
-
-    let mut stack_record = LoadControlRecord::abs_segment(&AbsSegment::eeprom(0x0972, 0x0018));
-    stack_record[1] = LoadSegment::AbsoluteStack.into();
-    let rsp = send_record(&mut dev, 3, &stack_record);
-    assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Loading), "stack record keeps Loading");
-
-    let rsp = send_record(&mut dev, 3, &LoadControlRecord::abs_segment(&AbsSegment::eeprom(0x011E, 0x0080)));
-    assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Loading));
-    let rsp = send_record(&mut dev, 3, &LoadControlRecord::event(LoadEvent::LoadCompleted));
-    assert_eq!(apdu(&rsp)[6], u8::from(LoadState::Loaded));
+        let application = if mask_0021 {
+            Bcu2Family::<0x0021>::property_spec_by_id(3, pid::LOAD_STATE_CONTROL)
+        } else {
+            Bcu2Family::<0x0020>::property_spec_by_id(3, pid::LOAD_STATE_CONTROL)
+        }
+        .expect("application Load State Control exists")
+        .1;
+        assert_eq!(application.descriptor.write_level, 0);
+    }
 }
 
 #[test]
-fn management_style_cell_exists_on_hc05_masks_only() {
+fn user_save_pointer_matches_the_ets_mask_procedures() {
     let def = definition();
-    // 0020h/0021h expose ManagementStyle 48h at 0115h; 0025h declares
-    // the style as a master-data constant and leaves the cell blank.
+    // Volume 9 names 0115h UsrSavPtr. The value 48h comes from the ETS
+    // 0020h/0021h mask-procedure fixtures rather than a standard resource
+    // called ManagementStyle.
     assert_eq!(def.build_eeprom()[0x15], 0x48);
     assert_eq!(def.build_eeprom_for_mask(0x0021)[0x15], 0x48);
-    assert_eq!(def.build_eeprom_for_mask(0x0025)[0x15], 0x00);
 }
