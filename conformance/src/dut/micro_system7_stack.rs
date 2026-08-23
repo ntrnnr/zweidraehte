@@ -13,7 +13,7 @@ use zweidraehte_microdevice::device::DeviceIdentity;
 use zweidraehte_microdevice::families::system7::{System7CoDescriptor, System7DeviceDefinition, System7Family};
 use zweidraehte_microdevice::family::MemoryAccessPolicy;
 use zweidraehte_microdevice::snapshot::MicroSnapshot;
-use zweidraehte_proto::access::AccessLevel;
+use zweidraehte_proto::access::{AccessLevel, AccessPolicy};
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
@@ -50,6 +50,26 @@ impl MemoryAccessPolicy for MicroSystem7ConformanceMemoryPolicy {
         MemoryRegion::open(0x5300, 0x2D00),
         MemoryRegion::read_only(0xB6EA, 4, MemoryPermission::Open),
     ];
+
+    fn security_policy(address: u16, length: usize) -> AccessPolicy {
+        let request_start = u32::from(address);
+        let request_end = request_start.saturating_add(u32::try_from(length).unwrap_or(u32::MAX));
+        let overlaps = |start: u16, length: u16| {
+            let region_start = u32::from(start);
+            let region_end = region_start + u32::from(length);
+            request_start < region_end && region_start < request_end
+        };
+
+        // AN193 probes these two windows. A request touching either inherits
+        // its stricter policy, even when it begins in an adjacent region.
+        if overlaps(0x51D0, 0x10) {
+            AccessPolicy::new(0x000, 0x000)
+        } else if overlaps(0x51E0, 0x10) {
+            AccessPolicy::OPEN_OFF_TOOL_ON
+        } else {
+            AccessPolicy::READ_OPEN_WRITE_TOOL
+        }
+    }
 }
 
 /// The DUT's family: 16 KiB of certification backing from 4000h, with the

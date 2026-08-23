@@ -757,6 +757,7 @@ pub enum SuiteDut {
     Bcu2,
     Bcu2Secure,
     MicroSystem7,
+    MicroSystem7Secure,
 }
 
 /// A collection of related test cases with their variables
@@ -840,6 +841,13 @@ impl TestSuite {
     /// Run this suite against the micro-System-7 DUT.
     pub fn micro_system7(mut self) -> Self {
         self.dut = Some(SuiteDut::MicroSystem7);
+        self
+    }
+
+    /// Run this suite against the Data Secure micro-System-7 DUT.
+    pub fn micro_system7_secure(mut self) -> Self {
+        self.dut = Some(SuiteDut::MicroSystem7Secure);
+        self.requires_security_context = true;
         self
     }
 }

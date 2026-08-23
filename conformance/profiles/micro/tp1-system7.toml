@@ -11,9 +11,11 @@
 # carries the same mask-level protocol behavior while deliberately retaining
 # its standard-frame APDU ceiling. GroupObjects remains outside this profile:
 # its sample application needs shadow-object behaviors and read-on-init which
-# this fixture does not yet implement. Management now runs against a
+# this fixture does not yet implement. Management runs against a
 # conformance-only memory policy; that policy is a zero-sized type and adds no
-# runtime table or certification address to product firmware.
+# runtime table or certification address to product firmware. The Data
+# Security supplement selects the secure composition below and currently runs
+# AN158 and AN177; AN170 remains a documented implementation gap.
 #
 # The micro stack speaks standard frames only (MAX_APDU 15), so once
 # Management joins, its extended-frame conditionals flip the other way
@@ -398,3 +400,249 @@ why = "the vendor collection is marked 'to be defined' and contains no test case
 [[template.skipped_collection]]
 name = "Test of structure of Association Table"
 why = "the collection requires an operator-configured application fixture and interactive verdict"
+
+# ============================================================================
+# 8 TSS J — Data Security
+# ============================================================================
+#
+# Data Secure is a profile module rather than a different mask. The ordinary
+# templates above keep running against the plain 0705h process; this supplement
+# selects the same family composed with the secure server and its AN158 sample
+# application. AN177 runs because the secure alias raises the APDU ceiling to
+# 40 while retaining the small polling implementation.
+
+[[template]]
+file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"
+dut = "micro-system7-secure"
+collections = [
+  "AN158 KNX Data Security",
+  "AN177 Extended Memory Services",
+]
+patches = [
+  "conformance/patches/micro/common/data-security-an158.toml",
+  "conformance/patches/micro/common/data-security-an177.toml",
+]
+
+[[template.skipped_collection]]
+name = "AN163 Extended Interface Object Addressing"
+why = """
+AN163 requires a manufacturer-defined Interface Object of type C351h with \
+writable scalar and array Properties chosen by its PIXIT fields. The compact \
+light-switch fixture has no certification-only object; its mandatory extended \
+Property services run against the Device and Security Interface Objects in \
+AN158.\
+"""
+
+[[template.skipped_collection]]
+name = "AN170 Group Object Diagnostics"
+why = """
+AN170 requires PID_OPERATION_MODE and PID_GO_DIAGNOSTICS plus the diagnostic \
+sample application. The secure micro System 7 composition exposes the required \
+Group Object Table Object, but does not implement those services yet. This is \
+a known missing mandatory feature, not a claim that AN170 is inapplicable.\
+"""
+
+[template.variables]
+BDUT_ADDR = "10 01"
+DD0_RESPONSE = "07 05"
+SER_NUM = "FE ED 07 05 BE EF"
+BDUT_SERIAL_NUMBER = "FE ED 07 05 BE EF"
+
+# Five mask objects precede the two secure profile-module objects. Extended
+# services address the Security IO as OT17/instance 1 at compatibility index 5.
+SEC_INTF_OBJ_INDEX = "05"
+
+READWRITE_MEM_START = "00 50 00"
+READWRITE_MEM_END = "00 50 FF"
+READONLY_MEM_START = "00 51 00"
+READONLY_MEM_END = "00 51 0F"
+WRITEONLY_MEM_START = "00 51 10"
+MEM_AP_000_000 = "00 51 D0"
+MEM_AP_3FF_00C = "00 51 E0"
+
+# Property-description indices are local to the compact System 7 Device Object.
+INDX_PID_SERIAL_NO = "05"
+INDX_PID_DEVICE_CTRL = "01"
+
+[template.tl_sequence]
+recompute = true
+why = """
+the Data Security template contains stale connected-management sequence \
+numbers. EITT recomputes them before execution unless TLSeqNum pins a negative \
+test; mirror that behavior for the micro System 7 transport.\
+"""
+
+# TP1 has no domain address, KNXnet/IP Parameter Object, or RF domain.
+
+[[template.not_applicable]]
+id = "B85CC6FC-F6EB-477D-A852-DE84BBC3E4B0"
+why = "3.7.2.4 reads an open-media domain address; this is a TP1-only device"
+
+[[template.not_applicable]]
+id = "75C11A96-AA15-440B-9119-D81832182D99"
+why = "3.7.2.5 is the selective read of the same absent open-media domain address"
+
+[[template.not_applicable]]
+id = "87877840-77DD-43F8-B223-F975CA47F166"
+why = "3.7.2.11 marks itself only for open media; TP1 has no domain address to write"
+
+[[template.not_applicable]]
+id = "36892560-E67E-428E-BBED-34770A0103F4"
+why = "3.7.2.12.1 verifies PID 66 of a KNXnet/IP Parameter Object; this device has no IP object"
+
+[[template.not_applicable]]
+id = "CC08EB3D-172C-4FE7-B5B6-8C4982CCA5B9"
+why = "3.7.2.12.2 writes an RF domain address; this is a TP1 device"
+
+[[template.not_applicable]]
+id = "7EAD5561-5284-48D3-9286-B5944929527C"
+why = "3.7.2.12.3 verifies PID 66 of a KNXnet/IP Parameter Object; this device has no IP object"
+
+# Non-Tool point-to-point security, its key table and Roles are conditional.
+# This composition deliberately implements only Anonymous and Tool roles.
+
+[[template.not_applicable]]
+id = "025AB016-D259-4E51-8C3D-E361495CFE93"
+why = "3.3.4 is optional without PID_P2P_KEY_TABLE and sends with absent P2PK1"
+
+[[template.not_applicable]]
+id = "28632389-B9C3-4853-A376-1CA7E1FC3644"
+why = "3.3.5 has the same optional-no-P2P-key-table footnote and uses absent P2PK1"
+
+# TSSJ requires the 3.4 cases only when the DUT can be stimulated to originate
+# an S-A_Sync_Req, except 3.4.3. That exception still depends on absent P2PK1.
+
+[[template.not_applicable]]
+id = "A0D50B43-33FD-4774-85AD-CABE38E25D12"
+why = "3.4.1 requires DUT-initiated sync and P2PK1; this composition supports neither"
+
+[[template.not_applicable]]
+id = "D9C7A5B5-5188-4F5E-A19F-9C6FA7E0AE17"
+why = "3.4.2 requires DUT-initiated sync and P2PK1; this composition supports neither"
+
+[[template.not_applicable]]
+id = "13ED2ABB-82C7-48FE-84DC-DEFF39EBFF79"
+why = "3.4.3 is the non-initiating exception, but its setup and assertion use absent P2PK1"
+
+[[template.not_applicable]]
+id = "82E88CE8-3ED6-47EB-A621-C8DF89666FF2"
+why = "3.4.4 requires DUT-initiated sync with a second non-Tool P2P key"
+
+[[template.not_applicable]]
+id = "CC0CF216-1B18-4805-81E9-B6A0A884E945"
+why = "3.4.5 requires DUT-initiated sync and P2PK1; this composition supports neither"
+
+[[template.not_applicable]]
+id = "31846F2F-9DCF-40B9-B33B-4AFF5C51DEEE"
+why = "3.4.6 belongs to the DUT-initiated sync suite and is delegated by the template"
+
+[[template.not_applicable]]
+id = "ED24F362-E4EB-4339-B21E-7E9C80184BC7"
+why = "3.4.7 uses the Tool Key but still requires stimulating a DUT-initiated sync"
+
+[[template.not_applicable]]
+id = "43EA2302-AD52-4257-AA67-1656886992D5"
+why = "3.4.8 requires DUT-initiated point-to-point management"
+
+[[template.not_applicable]]
+id = "77A19D62-3B9C-4C60-8A77-8B6612F625B5"
+why = "3.4.9 requires stimulating a DUT-originated broadcast sync request"
+
+[[template.not_applicable]]
+id = "7567C5D5-96C3-4AC5-9C01-430F05FD324B"
+why = "3.4.10 requires stimulating a DUT-originated sync request"
+
+[[template.not_applicable]]
+id = "7190BBB1-0095-4C20-928F-E9078A340430"
+why = "3.6.1.1 provisions conditional PID_P2P_KEY_TABLE and Roles, both absent here"
+
+[[template.not_applicable]]
+id = "320FD128-B961-4B30-BE87-C88245CC1E93"
+why = "3.6.1.2 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "FEF69A25-1D81-43FF-A3C7-3D8C22085EFE"
+why = "3.6.1.3 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "9E5A59AD-0FD4-413C-95C8-0B26F6ADB410"
+why = "3.6.1.4 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "79F48ED5-A18F-4AA5-B078-E58B0BDAD686"
+why = "3.6.1.5 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "522223CD-8871-4809-B5DC-EEE282C9270D"
+why = "3.6.1.6 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "CCD7F771-458B-4811-AD7B-BA820E8A9ECC"
+why = "3.6.1.7 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "C983AE64-5F54-4D8B-A753-EE7459EBB26B"
+why = "3.6.1.8 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "6406D97D-0EC9-44FA-8206-69E8021BB6CA"
+why = "3.6.1.9 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "78BEC620-7536-4FC6-8B65-A2FB148196F3"
+why = "3.6.1.10 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "9b736799-6c9b-478c-8a56-cc6838de2e9e"
+why = "3.6.1.11 exercises a non-Tool P2P role; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "0815bd91-74da-44a1-994c-f56fc1519e49"
+why = "3.6.1.12 exercises multiple non-Tool P2P roles; this composition implements only Anonymous and Tool"
+
+[[template.not_applicable]]
+id = "BBD66F54-82AB-4C81-815B-F507629167F7"
+why = "the 3.6 cleanup belongs to the omitted conditional Roles fixture"
+
+[[template.not_applicable]]
+id = "13B93F60-E73F-4152-8FE2-67CAE860A015"
+why = "3.8.19.1 scopes its BCU1 legacy-memory procedure to Device Model 091Ah; this is mask 0705h"
+
+[[template.not_applicable]]
+id = "21889969-38AE-44DC-8976-1396582852BC"
+why = "3.8.7.2 accesses PID_LOAD_STATE_CONTROL through absent non-Tool P2P security"
+
+[[template.not_applicable]]
+id = "833EE65D-9EAC-404B-9048-7512C2F45ACF"
+why = "3.8.9.1 tests conditional PID_P2P_KEY_TABLE, which this composition omits"
+
+[[template.not_applicable]]
+id = "B89BCBDB-47E9-4075-A990-FE5AD5181801"
+why = "3.8.9.2 tests conditional PID_P2P_KEY_TABLE, which this composition omits"
+
+[[template.not_applicable]]
+id = "ACC73BB4-07A0-4EAA-81E4-9CD6D350DF5A"
+why = "3.8.9.3 tests conditional PID_P2P_KEY_TABLE, which this composition omits"
+
+[[template.not_applicable]]
+id = "AE76ADE8-3E11-4E40-8EB8-964D82699E87"
+why = "3.8.9.4 describes conditional PID_P2P_KEY_TABLE, which this composition omits"
+
+[[template.not_applicable]]
+id = "82E16440-6415-42DD-8161-A5FFF1E74F33"
+why = "3.8.9.5 tests persistence of conditional PID_P2P_KEY_TABLE, which this composition omits"
+
+[[template.not_applicable]]
+id = "D985CC7C-B14F-4571-9061-4F514E53B27E"
+why = "3.8.18.2 accesses address Properties through absent non-Tool P2P security"
+
+# Collection 5 reuses one memory variable for contradictory policies: the
+# ordinary cases require it open while these two require it above level 2.
+
+[[template.not_applicable]]
+id = "42F07BED-FD70-4BA2-A462-9751CCF9C750"
+why = "5.1.3 requires READWRITE_MEM_START to deny level 2 while 5.1.1 and 5.1.6 require the same address to be writable unauthenticated"
+
+[[template.not_applicable]]
+id = "8288ED21-986B-4429-BED0-0EC9C1B9C67F"
+why = "5.2.2 is 5.1.3's read twin and has the same contradictory memory fixture requirement"

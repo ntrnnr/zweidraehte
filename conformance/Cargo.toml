@@ -70,7 +70,10 @@ async-io = "2"
 # The configuration runner drives the real client library against the
 # DUT; tokio is its runtime (the parent side is executor-agnostic and
 # runs under it unchanged).
-zweidraehte-client = { path = "../crates/zweidraehte-client" }
+# Conformance configuration downloads are host-side integration tests. Let
+# them resolve the published master data the same way ETS does: an explicit
+# `KNX_MASTER_DATA` wins, otherwise use the versioned cache/download.
+zweidraehte-client = { path = "../crates/zweidraehte-client", features = ["master-data-download"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures-lite = { workspace = true }
 tempfile = "3"
@@ -186,6 +189,13 @@ required-features = ["dut"]
 [[bin]]
 name = "conformance-dut-micro-system7"
 path = "src/bin/dut_micro_system7.rs"
+required-features = ["dut"]
+
+# The same micro System 7 base profile with the composable Data Secure
+# module, extended-frame wire capacity, and durable sequence store.
+[[bin]]
+name = "conformance-dut-micro-system7-secure"
+path = "src/bin/dut_micro_system7_secure.rs"
 required-features = ["dut"]
 
 [[bin]]

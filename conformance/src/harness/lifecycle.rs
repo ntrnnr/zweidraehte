@@ -107,6 +107,9 @@ pub enum DutMode {
     /// `conformance-dut-micro-system7` — System 7 family (mask 0705h),
     /// the no-async `zweidraehte-microdevice` stack.
     MicroSystem7,
+    /// `conformance-dut-micro-system7-secure` — the same polling System 7
+    /// family with the composable Data Secure profile.
+    MicroSystem7Secure,
 }
 
 impl DutMode {
@@ -120,6 +123,7 @@ impl DutMode {
             Self::Bcu2 => "conformance-dut-bcu2",
             Self::Bcu2Secure => "conformance-dut-bcu2-secure",
             Self::MicroSystem7 => "conformance-dut-micro-system7",
+            Self::MicroSystem7Secure => "conformance-dut-micro-system7-secure",
         }
     }
 }

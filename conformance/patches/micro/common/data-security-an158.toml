@@ -1,8 +1,8 @@
-# Harness corrections for the AN158 collection on the secure BCU2
-# fixture. Keep this separate from `full/common/data-security.toml`: that file
-# describes full-stack fixture behavior and also names AN163 and AN170
-# telegrams. Unresolved anchors are deliberately fatal when this smaller
-# profile does not select those collections.
+# Harness corrections shared by the secure polling fixtures for AN158. Keep
+# this separate from `full/common/data-security.toml`: that file describes
+# full-stack fixture behavior and also names AN163 and AN170 telegrams.
+# Unresolved anchors are deliberately fatal when this smaller profile does not
+# select those collections.
 
 template = "KnxConformanceTestTemplate-TSSJ DataSecurity"
 
@@ -26,11 +26,11 @@ insert = [
 
 # The template factory-resets the DUT and then restores only IA, tool key and
 # Security IO state. EITT's bench procedure assumes that the operator reloads
-# the sample application described in 2.3.1. The BCU2 EITT boot image is that
-# application. Restore it after the explicit Unload exchange: an Unload must
-# clear the security tables, so restoring any earlier would immediately erase
-# the operator-provisioned keys again. The template then performs its own
-# Unloaded -> Loading -> Loaded transition.
+# the sample application described in 2.3.1. Each secure micro EITT boot image
+# is that application. Restore it after the explicit Unload exchange: an
+# Unload must clear the security tables, so restoring any earlier would
+# immediately erase the operator-provisioned keys again. The template then
+# performs its own Unloaded -> Loading -> Loaded transition.
 [[patch]]
 after = "2EE38A91-83D8-47F1-AFFD-453D5C608547"
 why = "the preparation's erase-02 and explicit Unload wipe the AN158 sample application which the EITT bench procedure requires the operator to reload"

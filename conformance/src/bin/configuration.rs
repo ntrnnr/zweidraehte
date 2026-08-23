@@ -160,6 +160,17 @@ async fn main() -> ExitCode {
             ("micro-S7 unload-all over the memory window", scenario_micro_s7_unload_all),
             ("micro-S7 oversized segment allocation fails typed", scenario_micro_s7_oversized_segment),
         ]),
+        ("Micro System 7 (mask 0705, Data Secure capable)", DutMode::MicroSystem7Secure, &[
+            ("micro-S7 secure composition descriptor in plain mode", scenario_micro_s7_secure_plain_descriptor),
+            (
+                "micro-S7 secure composition individual addressing in plain mode",
+                scenario_micro_s7_secure_plain_addressing,
+            ),
+            ("micro-S7 secure composition plain download", scenario_micro_s7_secure_plain_download),
+            ("micro-S7 secure composition plain unload", scenario_micro_s7_secure_plain_unload),
+            ("micro-S7 secure composition oversized allocation fails typed", scenario_micro_s7_secure_plain_oversized),
+            ("micro-S7 secure first commission and group traffic", scenario_micro_s7_secure_commission),
+        ]),
         ("System B (mask 07B0)", DutMode::SystemB, &[
             ("system B descriptor smoke read", scenario_system_b_descriptor),
             ("system B download over the property path", scenario_system_b_full_download),
@@ -1184,6 +1195,180 @@ fn scenario_micro_s7_full_download<'a>(
     })
 }
 
+fn scenario_micro_s7_secure_commission<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        const TOOL_KEY: [u8; 16] = [0x44; 16];
+        const GROUP_KEY: [u8; 16] = [0x55; 16];
+        const SECURITY_IO: u16 = 0x0011;
+        const SECURITY_OCCURRENCE: u16 = 1;
+
+        let group = GroupAddress::from_three_level(3, 1, 1);
+
+        // Enter the real unprovisioned state while retaining the assigned IA.
+        control.master_reset(7).await.map_err(|e| format!("factory reset while retaining IA: {e}"))?;
+        bus.set_device_security(
+            dut_ia(),
+            SecurityEntry::secure_with_fdsk(SECURE_FDSK, micro_system7_stack::SERIAL_NUMBER),
+        )
+        .await
+        .map_err(|e| format!("install FDSK: {e}"))?;
+
+        let mut first = bus.connect_device(dut_ia()).await.map_err(|e| format!("FDSK sync: {e}"))?;
+        let descriptor = first.device_descriptor_read(0).await.map_err(|e| format!("secure descriptor: {e}"))?;
+        if descriptor != [0x07, 0x05] {
+            close_quietly(first).await;
+            return Err(format!("descriptor {descriptor:02X?}, expected mask 0705"));
+        }
+        let max_apdu = first
+            .property_read(0, pid::device::MAX_APDU_LENGTH, 1, 1)
+            .await
+            .map_err(|e| format!("maximum APDU: {e}"))?;
+        if max_apdu != 40u16.to_be_bytes() {
+            close_quietly(first).await;
+            return Err(format!("secure maximum APDU {max_apdu:02X?}, expected 0028h"));
+        }
+        first.write_tool_key(TOOL_KEY).await.map_err(|e| format!("tool-key rotation: {e}"))?;
+        close_quietly(first).await;
+
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+
+        let masks = mask_db()?;
+        let mask = micro_s7_mask(&masks)?;
+        let product = ProductData::from_mtxml_str(&micro_system7_product::generate_secure_mtxml()?)
+            .map_err(|e| format!("reading secure micro System 7 product back: {e}"))?;
+
+        let mut project = ProjectConfig::new(dut_ia());
+        // Object 3 is the fixture's byte-sized, fully enabled GO. System 7
+        // has a real slot zero, so its GO-security flag is element four.
+        project.links = vec![GroupLink { group_address: group, com_object: 3 }];
+        project.max_apdu = 40;
+        project.security = Some(DownloadSecurityConfig {
+            group_keys: vec![(group, GROUP_KEY)],
+            siat: vec![(tester_ia(), 0)],
+            go_flags: vec![0, 0, 0, 0x03, 0, 0, 0, 0],
+        });
+
+        bus.configure_device(&mask, &product, &project).await.map_err(|e| format!("secure System 7 download: {e}"))?;
+        bus.set_group_key(group, GROUP_KEY).await.map_err(|e| format!("install group key: {e}"))?;
+
+        let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("post-download sync: {e}"))?;
+        let checks = async {
+            let load_state = conn
+                .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::LOAD_STATE_CONTROL, 1, 1)
+                .await
+                .map_err(|e| format!("Security IO load state: {e}"))?;
+            if load_state != [u8::from(LoadState::Loaded)] {
+                return Err(format!("Security IO state {load_state:02X?}, expected Loaded"));
+            }
+            for (property, expected, name) in [
+                (pid::security::GROUP_KEY_TABLE, 1u16, "group-key table"),
+                (pid::security::SECURITY_INDIVIDUAL_ADDRESS_TABLE, 1u16, "SIAT"),
+                (pid::security::GO_SECURITY_FLAGS, 8u16, "GO security flags"),
+            ] {
+                let count = conn
+                    .property_ext_read(SECURITY_IO, SECURITY_OCCURRENCE, property, 0, 1)
+                    .await
+                    .map_err(|e| format!("{name} count: {e}"))?;
+                if count != expected.to_be_bytes() {
+                    return Err(format!("{name} count {count:02X?}, expected {expected}"));
+                }
+            }
+            let mode = conn
+                .function_property_ext_state_read(SECURITY_IO, SECURITY_OCCURRENCE, pid::security::SECURITY_MODE, &[
+                    0, 0,
+                ])
+                .await
+                .map_err(|e| format!("Security Mode: {e}"))?;
+            if mode.return_code != 0 || mode.data != [0, 1] {
+                return Err(format!(
+                    "Security Mode response code {:02X}, data {:02X?}; expected enabled",
+                    mode.return_code, mode.data
+                ));
+            }
+            let cot = conn.memory_read(0x4200, 3).await.map_err(|e| format!("COT read: {e}"))?;
+            if cot[0] != 8 {
+                return Err(format!("COT count {}, expected 8", cot[0]));
+            }
+            Ok(())
+        }
+        .await;
+        close_quietly(conn).await;
+        checks?;
+
+        bus.group_write(group, &[0x5A], GroupValueEncoding::Full)
+            .await
+            .map_err(|e| format!("secure group write to DUT: {e}"))?;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut events = bus.group_events();
+        control.trigger_group_write(3).await.map_err(|e| format!("secure group trigger: {e}"))?;
+        let telegram = tokio::time::timeout(Duration::from_secs(2), events.recv())
+            .await
+            .map_err(|_| "no secure group telegram after trigger".to_string())?
+            .map_err(|e| format!("group events: {e}"))?;
+        if telegram.group != group
+            || telegram.service != GroupService::Write
+            || telegram.data != [0x5A]
+            || !telegram.secured
+        {
+            return Err(format!("unexpected post-commission group telegram: {telegram:?}"));
+        }
+        Ok(())
+    })
+}
+
+/// Run an ordinary mask-0705 scenario against the secure composition in its
+/// uncommissioned state. `full_reset` restores the operator-provisioned AN158
+/// image for EITT, so the configuration runner uses the device's local reset
+/// path to disable Security Mode and revert to the FDSK first.
+fn run_micro_s7_secure_plain<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+    scenario: Scenario,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    Box::pin(async move {
+        control.master_reset(7).await.map_err(|e| format!("factory reset while retaining IA: {e}"))?;
+        scenario(bus, control).await
+    })
+}
+
+fn scenario_micro_s7_secure_plain_descriptor<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    run_micro_s7_secure_plain(bus, control, scenario_micro_s7_descriptor)
+}
+
+fn scenario_micro_s7_secure_plain_addressing<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    run_micro_s7_secure_plain(bus, control, scenario_micro_s7_programming_mode_addressing)
+}
+
+fn scenario_micro_s7_secure_plain_download<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    run_micro_s7_secure_plain(bus, control, scenario_micro_s7_full_download)
+}
+
+fn scenario_micro_s7_secure_plain_unload<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    run_micro_s7_secure_plain(bus, control, scenario_micro_s7_unload_all)
+}
+
+fn scenario_micro_s7_secure_plain_oversized<'a>(
+    bus: &'a KnxBus,
+    control: &'a DutControl,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<(), String>> + 'a>> {
+    run_micro_s7_secure_plain(bus, control, scenario_micro_s7_oversized_segment)
+}
+
 fn scenario_micro_s7_unload_all<'a>(
     bus: &'a KnxBus,
     _control: &'a DutControl,
@@ -1232,11 +1417,13 @@ fn scenario_micro_s7_oversized_segment<'a>(
         let mut conn = bus.connect_device(dut_ia()).await.map_err(|e| format!("connect: {e}"))?;
         let result = async {
             let mut downloader = Downloader::new(&mut conn, resources, 15);
-            // 4 KiB into a 1 KiB backing: the allocation must be
-            // rejected and throw the machine into Error.
+            // The EITT-capable host fixture backs 4000h..7FFFh so its
+            // management templates can probe certification memory. Request
+            // 20 KiB from 4000h to cross that actual boundary: allocation
+            // must be rejected and throw the machine into Error.
             let doomed = [
                 Instruction::LsmEvent { lsm: LsmTarget::Index(1), event: LoadEvent::StartLoading },
-                Instruction::AbsSegment { lsm: LsmTarget::Index(1), segment: AbsSegment::eeprom(0x4000, 0x1000) },
+                Instruction::AbsSegment { lsm: LsmTarget::Index(1), segment: AbsSegment::eeprom(0x4000, 0x5000) },
             ];
             match downloader.run(&doomed, &DeviceImage::new()).await {
                 Err(ClientError::LoadState {

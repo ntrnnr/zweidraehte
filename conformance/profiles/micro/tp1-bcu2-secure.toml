@@ -33,8 +33,8 @@ collections = [
   "AN177 Extended Memory Services",
 ]
 patches = [
-  "conformance/patches/micro/bcu2/data-security-an158.toml",
-  "conformance/patches/micro/bcu2/data-security-an177.toml",
+  "conformance/patches/micro/common/data-security-an158.toml",
+  "conformance/patches/micro/common/data-security-an177.toml",
   "conformance/patches/micro/bcu2/data-security-style1.toml",
 ]
 

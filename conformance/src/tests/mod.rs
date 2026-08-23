@@ -10,6 +10,7 @@ pub mod group_objects;
 pub mod ip_secure;
 pub mod load_state_machines;
 pub mod management;
+pub mod micro_system7_secure_smoke;
 pub mod micro_system7_smoke;
 pub mod network_layer;
 pub mod run_state_machines;

@@ -7,117 +7,25 @@
 //! application; a local master reset is the separate path to an unprovisioned
 //! security state.
 
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
 use devices::light_switch::micro;
 use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition};
-use zweidraehte_microdevice::security::MicroSecurityResources;
 use zweidraehte_microdevice::snapshot::{MicroSnapshot, SecureMicroSnapshot};
 use zweidraehte_microdevice::{MemoryAccessPolicy, SecureBcu2};
 use zweidraehte_proto::access::AccessPolicy;
 use zweidraehte_proto::address::GroupAddress;
 use zweidraehte_proto::memory::{MemoryPermission, MemoryRegion};
 use zweidraehte_proto::messages::apdu::load_control::LoadState;
-use zweidraehte_proto::security::{SecurityConfig, SequenceNumberStorage, SiatAccess};
+use zweidraehte_proto::security::{SecurityConfig, SiatAccess};
 
 use super::bcu2_stack;
 use super::fixture_common::{SECURE_FDSK, secure_seq_store};
+use super::micro_secure_store::MicroSecureStore;
 use crate::tests::security::variables::{GK1, GK2, GK3, GK4, GK5, TK1};
 
 pub const GROUP_KEY_CAPACITY: usize = micro::BCU2_SECURE_GROUP_KEY_CAPACITY;
 pub const SIAT_CAPACITY: usize = micro::BCU2_SECURE_SIAT_CAPACITY;
 pub const GROUP_OBJECT_CAPACITY: usize = micro::BCU2_SECURE_GROUP_OBJECT_CAPACITY;
 pub const P2P_KEY_CAPACITY: usize = micro::BCU2_SECURE_P2P_KEY_CAPACITY;
-
-/// The micro module's handle onto the conformance harness's packed SHM store.
-///
-/// The handle is intentionally zero-sized. Sequence numbers are high-write
-/// state in the dedicated SHM tail, while postcard snapshots contain only the
-/// low-write security configuration. Serializing the handle as a unit keeps
-/// that physical separation visible in the fixture.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Bcu2SecureStore;
-
-impl Serialize for Bcu2SecureStore {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_unit()
-    }
-}
-
-impl<'de> Deserialize<'de> for Bcu2SecureStore {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        <()>::deserialize(deserializer)?;
-        Ok(Self)
-    }
-}
-
-impl SequenceNumberStorage for Bcu2SecureStore {
-    type Error = ();
-
-    fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
-        secure_seq_store().borrow().load_sending_seq().map_err(|_| ())
-    }
-
-    fn save_sending_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        secure_seq_store().borrow_mut().save_sending_seq(seq).map_err(|_| ())
-    }
-
-    fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        secure_seq_store().borrow().load_receiving_seq(peer_ia).map_err(|_| ())
-    }
-
-    fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        secure_seq_store().borrow_mut().save_receiving_seq(peer_ia, seq).map_err(|_| ())
-    }
-
-    fn load_tool_receiving_seq(&self) -> Result<Option<[u8; 6]>, Self::Error> {
-        secure_seq_store().borrow().load_tool_receiving_seq().map_err(|_| ())
-    }
-
-    fn save_tool_receiving_seq(&mut self, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        secure_seq_store().borrow_mut().save_tool_receiving_seq(seq).map_err(|_| ())
-    }
-}
-
-impl SiatAccess for Bcu2SecureStore {
-    type Error = ();
-
-    fn siat_count(&self) -> u16 {
-        secure_seq_store().borrow().siat_count()
-    }
-
-    fn siat_index_of(&self, ia: u16) -> Option<u16> {
-        secure_seq_store().borrow().siat_index_of(ia)
-    }
-
-    fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])> {
-        secure_seq_store().borrow().siat_read_entry(idx)
-    }
-
-    fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error> {
-        if usize::from(idx) >= SIAT_CAPACITY {
-            return Err(());
-        }
-        secure_seq_store().borrow_mut().siat_write_entry(idx, ia, seq).map_err(|_| ())
-    }
-
-    fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error> {
-        if usize::from(count) > SIAT_CAPACITY {
-            return Err(());
-        }
-        secure_seq_store().borrow_mut().siat_set_count(count).map_err(|_| ())
-    }
-
-    fn siat_clear(&mut self) -> Result<(), Self::Error> {
-        secure_seq_store().borrow_mut().siat_clear().map_err(|_| ())
-    }
-}
-
-impl MicroSecurityResources for Bcu2SecureStore {
-    fn fill_random(&mut self, random: &mut [u8; 6]) {
-        getrandom::fill(random).expect("host entropy available");
-    }
-}
 
 /// Memory layout required by AN177 plus the two AN193 policy probes.
 ///
@@ -164,8 +72,8 @@ impl MemoryAccessPolicy for Bcu2SecureConformanceMemoryPolicy {
 }
 
 pub type Device =
-    SecureBcu2<Bcu2SecureStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY, Bcu2SecureConformanceMemoryPolicy>;
-pub type Snapshot = SecureMicroSnapshot<Bcu2SecureStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY>;
+    SecureBcu2<MicroSecureStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY, Bcu2SecureConformanceMemoryPolicy>;
+pub type Snapshot = SecureMicroSnapshot<MicroSecureStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY>;
 
 /// The secure application uses a distinct identity but the same compact
 /// communication-object roster as the plain fixture.
@@ -188,7 +96,7 @@ pub fn local_factory_snapshot() -> Snapshot {
         SecurityConfig::default();
     security.tool_key = SECURE_FDSK;
 
-    Snapshot { base, security, sequence: Bcu2SecureStore, fdsk: SECURE_FDSK }
+    Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
 }
 
 // The AN158 collection defines this four-object application as bench setup,
@@ -251,7 +159,7 @@ pub fn boot_snapshot() -> Snapshot {
     security.grp_keys.write_entries(0, &group_entries).expect("five group keys fit");
     security.go_flags.write_entries(0, &[0x01, 0x03, 0x00, 0x02]).expect("four GO flags fit");
 
-    Snapshot { base, security, sequence: Bcu2SecureStore, fdsk: SECURE_FDSK }
+    Snapshot { base, security, sequence: MicroSecureStore, fdsk: SECURE_FDSK }
 }
 
 /// Seed the high-write SIAT half when the EITT factory image is first loaded.

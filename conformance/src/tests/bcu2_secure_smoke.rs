@@ -78,7 +78,6 @@ pub fn create_bcu2_secure_smoke_suite() -> TestSuite {
 
     TestSuite::new("BCU2 Secure smoke", variables)
         .bcu2_secure()
-        .with_preparation(provision_tk1_via_fdsk())
         .with_cases(cases)
         .with_teardown(vec![comment("Restore the factory image and sequence store"), full_reset(2000)])
 }

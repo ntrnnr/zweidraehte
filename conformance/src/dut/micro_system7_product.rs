@@ -75,6 +75,19 @@ const COM_OBJECT_REFS: &[EtsCommObjectRefDef] = &[];
 
 /// Generate the DUT's application program as MTXML.
 pub fn generate_mtxml() -> Result<String, String> {
+    generate_mtxml_for(false)
+}
+
+/// Generate the same micro System 7 fixture with Data Secure declared.
+///
+/// Security is a profile module: mask, RT8 layout, application tables and
+/// product identity remain identical. Only the secure capability and bounded
+/// Security IO table capacities differ.
+pub fn generate_secure_mtxml() -> Result<String, String> {
+    generate_mtxml_for(true)
+}
+
+fn generate_mtxml_for(secure: bool) -> Result<String, String> {
     let def = micro_system7_stack::definition();
     let device = device_descriptor();
     let base = MicroSystem7DutFamily::EEPROM_BASE as u32;
@@ -123,7 +136,7 @@ pub fn generate_mtxml() -> Result<String, String> {
     };
 
     let app = ApplicationProgramDef {
-        name: "ConformanceMicroSystem7",
+        name: if secure { "ConformanceMicroSystem7Secure" } else { "ConformanceMicroSystem7" },
         device: &device,
         params: &[],
         virtual_params: None,
@@ -146,21 +159,21 @@ pub fn generate_mtxml() -> Result<String, String> {
         bus_interfaces: None,
         additional_addresses_count: None,
         ip_config: None,
-        is_secure_enabled: None,
+        is_secure_enabled: secure.then_some(true),
         max_user_entries: None,
         max_tunneling_user_entries: None,
-        max_security_group_key_table_entries: None,
-        max_security_individual_address_entries: None,
-        max_security_p2p_key_table_entries: None,
+        max_security_group_key_table_entries: secure.then_some(8),
+        max_security_individual_address_entries: secure.then_some(8),
+        max_security_p2p_key_table_entries: secure.then_some(0),
     };
 
     let output = KnxprodBuilder::single_device(SingleDeviceDef {
         app: &app,
         serial_number: micro_system7_stack::HARDWARE_TYPE,
         hardware_version: 1,
-        hardware_name: "Conformance Micro System 7 DUT",
-        product_name: "Conformance Micro System 7 DUT",
-        order_number: "CONF-M0705",
+        hardware_name: if secure { "Conformance Secure Micro System 7 DUT" } else { "Conformance Micro System 7 DUT" },
+        product_name: if secure { "Conformance Secure Micro System 7 DUT" } else { "Conformance Micro System 7 DUT" },
+        order_number: if secure { "CONF-M0705-SEC" } else { "CONF-M0705" },
         is_rail_mounted: false,
         catalog_section: "Conformance",
         is_ip_enabled: None,

@@ -314,7 +314,7 @@ pub fn lower(
             // downstream, so both variants take the same marker here.
             use crate::eitt::profile::Dut;
             let lowered = match profile.dut {
-                Dut::SystemBSecure | Dut::System7Secure | Dut::Bcu2Secure => lowered.secure(),
+                Dut::SystemBSecure | Dut::System7Secure | Dut::Bcu2Secure | Dut::MicroSystem7Secure => lowered.secure(),
                 Dut::Bcu1 | Dut::SystemB | Dut::System7 | Dut::Bcu2 | Dut::MicroSystem7 => lowered,
             };
             suites.push(lowered);

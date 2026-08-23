@@ -73,6 +73,11 @@ fn report_separate_dut(count: usize, filters: &[String], label: &str, command: &
 /// after dropping its secure sibling; an exact secure selection reaches the
 /// first/all branch before anything is removed.
 fn select_dut_mode(suites: &mut Vec<TestSuite>, filters: &[String], default: DutMode) -> DutMode {
+    if only_requires(suites, SuiteDut::MicroSystem7Secure) {
+        return DutMode::MicroSystem7Secure;
+    }
+    report_separate_dut(remove_dut(suites, SuiteDut::MicroSystem7Secure), filters, "secure micro-System-7", "MS7S-");
+
     if only_requires(suites, SuiteDut::Bcu2Secure) {
         return DutMode::Bcu2Secure;
     }
@@ -219,6 +224,7 @@ async fn main() {
         tests::bcu2_smoke::create_bcu2_smoke_suite(),
         tests::bcu2_secure_smoke::create_bcu2_secure_smoke_suite(),
         tests::micro_system7_smoke::create_micro_system7_smoke_suite(),
+        tests::micro_system7_secure_smoke::create_micro_system7_secure_smoke_suite(),
     ];
 
     // The socket-level KNX IP Secure tests live outside the TP1 suite

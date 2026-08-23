@@ -283,6 +283,10 @@ pub enum Dut {
     /// no-async micro stack. Spelled `micro-system7` in profile TOML.
     #[serde(rename = "micro-system7")]
     MicroSystem7,
+    /// `conformance-dut-micro-system7-secure` — the polling System 7
+    /// composition with Data Secure. Spelled `micro-system7-secure` in TOML.
+    #[serde(rename = "micro-system7-secure")]
+    MicroSystem7Secure,
 }
 
 impl From<Dut> for DutMode {
@@ -296,6 +300,7 @@ impl From<Dut> for DutMode {
             Dut::Bcu2 => DutMode::Bcu2,
             Dut::Bcu2Secure => DutMode::Bcu2Secure,
             Dut::MicroSystem7 => DutMode::MicroSystem7,
+            Dut::MicroSystem7Secure => DutMode::MicroSystem7Secure,
         }
     }
 }
@@ -521,12 +526,16 @@ mod tests {
     }
 
     #[test]
-    fn bcu2_dut_names_select_the_existing_harness_modes() {
-        let plain: Profile = toml::from_str("dut = \"bcu2\"").expect("plain BCU2 profile");
-        let secure: Profile = toml::from_str("dut = \"bcu2-secure\"").expect("secure BCU2 profile");
-
-        assert_eq!(DutMode::from(plain.dut), DutMode::Bcu2);
-        assert_eq!(DutMode::from(secure.dut), DutMode::Bcu2Secure);
+    fn micro_dut_names_select_the_existing_harness_modes() {
+        for (name, expected) in [
+            ("bcu2", DutMode::Bcu2),
+            ("bcu2-secure", DutMode::Bcu2Secure),
+            ("micro-system7", DutMode::MicroSystem7),
+            ("micro-system7-secure", DutMode::MicroSystem7Secure),
+        ] {
+            let profile: Profile = toml::from_str(&format!("dut = \"{name}\"")).expect("micro DUT profile");
+            assert_eq!(DutMode::from(profile.dut), expected);
+        }
     }
 
     #[test]
