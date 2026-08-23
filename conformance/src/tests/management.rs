@@ -1353,7 +1353,7 @@ pub fn create_restart_suite() -> TestSuite {
         // UnsupportedEraseCode. The base-profile behaviour these cases
         // were transcribed from is covered where it belongs: the EITT
         // Management template runs against `dut = "plain"` in
-        // conformance/profiles/tp1-systemb.toml.
+        // conformance/profiles/full/tp1-systemb.toml.
         //
         // Nothing resets, so unlike the template originals these cases
         // need no address restoration afterwards.

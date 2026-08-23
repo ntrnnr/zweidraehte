@@ -79,7 +79,7 @@ hand-written suite is self-contained.
 ```bash
 export EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files>
 cargo build   # the runner spawns the DUT binaries
-cargo run --bin conformance-eitt -- --profile conformance/profiles/tp1-systemb.toml
+cargo run --bin conformance-eitt -- --profile conformance/profiles/full/tp1-systemb.toml
 ```
 
 That runs every template the profile lists, with the patches and
@@ -97,7 +97,7 @@ filter by suite or case name.
 
 Two things we commit, neither containing vendor test content:
 
-- `conformance/profiles/*.toml` — what the template cannot know about
+- `conformance/profiles/{full,micro}/*.toml` — what the template cannot know about
   our device: the `#EDI` / `#BDUT` addresses (EITT takes these from its
   project settings, and they are declared nowhere in the XML), which
   medium we are, which DUT binary to drive, and a `[[template]]` entry
@@ -124,15 +124,18 @@ Two things we commit, neither containing vendor test content:
   one it has — for us `collections = ["UINT1"]`. Leaving the selection
   empty runs every collection, which for that template means running
   eight cases against an object of the wrong width.
-- `conformance/patches/{common,systemb,system7}/*.toml` — harness-specific
+- `conformance/patches/{full,micro}/**/*.toml` — harness-specific
   edits anchored on the GUID that the template gives every telegram.
   A patch that `replace`s a telegram still lets it advance the
   TL-sequence recomputation — the frame happens either way, and
   dropping it from the bookkeeping mis-numbers everything after it in
   the same connection.
-  `common/` holds patch sets valid for every DUT of ours (each profile
-  lists the files that apply to its device); `systemb/` and `system7/`
-  hold the device-specific ones. Mostly the
+  The first level owns the implementation under test. `full/common/`
+  means common only to the full-stack System B and System 7 fixtures;
+  family directories hold narrower adaptations. Micro profiles own
+  their patches separately, even where a small patch currently mirrors
+  full-stack behavior, so changing one stack cannot silently change the
+  other's conformance contract. Mostly the
   `trigger_read` / `trigger_write` kicks that 1.4.1.1 and 1.4.1.3 need
   because EITT assumes a BCU whose Group Object Server transmits by
   itself when the application sets the request flag; plus the two
@@ -149,8 +152,8 @@ the patch was compensating for needs re-checking.
 The group-object, network-layer, transport-layer, load/run-state-machine,
 management and TSSJ data-security templates run today, and all 524
 lowered cases pass against the System B profile
-(`conformance/profiles/tp1-systemb.toml`). All seven also run against
-System 7 via `conformance/profiles/tp1-system7.toml` (525 cases, all
+(`conformance/profiles/full/tp1-systemb.toml`). All seven also run against
+System 7 via `conformance/profiles/full/tp1-system7.toml` (525 cases, all
 passing): same template files, with the family differences expressed as
 profile variables (mask, serial, the EEPROM-based memory windows, the
 absolute-allocation load record, the Application Program object at
@@ -161,7 +164,7 @@ TSSJ data-security one drives `conformance-dut-system7-secure`, which
 is the same fixture with Data Secure and the two extra augment-provided
 objects the secure profile requires.
 
-A third profile, `conformance/profiles/tp1-micro-system7.toml`, runs the
+A third profile, `conformance/profiles/micro/tp1-system7.toml`, runs the
 same templates against the polling micro stack's 0705h DUT — but only
 four of them (network layer, transport layer, load and run state
 machines). Group Objects and Management are deliberately out of that
@@ -1287,7 +1290,7 @@ rewriting them hangs the run silently.
 ```bash
 export EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files>
 cargo run --bin conformance-eitt -- \
-  --profile conformance/profiles/tp1-systemb.toml \
+  --profile conformance/profiles/full/tp1-systemb.toml \
   [--template GroupObjects] [--list] [--realtime] [filter...]
 ```
 Executes KNX conformance templates straight from EITT's XML instead of

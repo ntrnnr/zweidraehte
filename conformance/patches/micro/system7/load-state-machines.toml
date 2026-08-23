@@ -1,0 +1,17 @@
+# Fixture-side read-on-init handling for the polling System 7 DUT.
+#
+# These are deliberately micro-owned anchors even though the full-stack
+# fixture has the same visible behaviour. The two implementations may evolve
+# independently without a file named `common` silently coupling them.
+
+template = "KnxConformanceTestTemplate-LoadStateMachines"
+
+[[patch]]
+after = "38FBA40B-40B7-4A6C-BF52-F3C4FF5F61EA"
+why = "2.3.1: drain the read-on-init scan the micro System 7 fixture runs once the association table loads"
+insert = [{ drain = 200 }]
+
+[[patch]]
+after = "8A89FF12-D122-48A9-867E-C6C1E87D5C64"
+why = "2.5.1: drain the same micro-fixture read-on-init scan after the load preceding the error case"
+insert = [{ drain = 200 }]

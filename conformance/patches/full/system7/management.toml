@@ -3,8 +3,8 @@
 # 16-level System 7 authorization model (06 Profiles v02.02.01 §4.2
 # row 12: keys on levels 0-14, level 15 free) answers differently.
 #
-# Applied on top of conformance/patches/common/management.toml by
-# conformance/profiles/tp1-system7.toml. Anchors are the GUIDs the
+# Applied on top of conformance/patches/full/common/management.toml by
+# conformance/profiles/full/tp1-system7.toml. Anchors are the GUIDs the
 # template gives every telegram; one that stops resolving is a hard
 # error — the signal the template has been revised and the compensation
 # here needs re-checking.

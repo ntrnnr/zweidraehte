@@ -4,11 +4,11 @@
 #
 #   EITT_TEMPLATES=<dir with the KnxConformanceTestTemplate-*.xml files> \
 #     cargo run --bin conformance-eitt -- \
-#       --profile conformance/profiles/tp1-system7.toml
+#       --profile conformance/profiles/full/tp1-system7.toml
 #
 # or one of them, by a substring of its file name:
 #
-#   ... --profile conformance/profiles/tp1-system7.toml --template GroupObjects
+#   ... --profile conformance/profiles/full/tp1-system7.toml --template GroupObjects
 #
 # See conformance/src/eitt/profile.rs. The System B twin of this file is
 # tp1-systemb.toml; entries below that differ from it do so because the
@@ -43,7 +43,7 @@ pause = "ignore"
 [[template]]
 file = "KnxConformanceTestTemplate-GroupObjects.xml"
 collections = ["UINT1"]
-patches = ["conformance/patches/common/group-objects.toml"]
+patches = ["conformance/patches/full/common/group-objects.toml"]
 
 [[template.skipped_collection]]
 name = "UINT8"
@@ -81,7 +81,7 @@ GO_ADDR = "08 01"
 
 [[template]]
 file = "KnxConformanceTestTemplate-TransportLayer.xml"
-patches = ["conformance/patches/common/transport-layer.toml"]
+patches = ["conformance/patches/full/common/transport-layer.toml"]
 
 # The template's SER_NUM default is the System B DUT's serial number;
 # the System 7 DUT answers with its own.
@@ -120,7 +120,7 @@ why = "4.1 has no telegrams — it is prose pointing at 6.2.5.1, which we do run
 
 [[template]]
 file = "KnxConformanceTestTemplate-LoadStateMachines.xml"
-patches = ["conformance/patches/common/load-state-machines.toml"]
+patches = ["conformance/patches/full/common/load-state-machines.toml"]
 
 [template.variables]
 LOAD_EVENT_SEGMENT_TYPE = "00"
@@ -155,7 +155,7 @@ staleness is the template's, not the device's.\
 
 [[template]]
 file = "KnxConformanceTestTemplate-RunStateMachines.xml"
-patches = ["conformance/patches/common/run-state-machines.toml"]
+patches = ["conformance/patches/full/common/run-state-machines.toml"]
 
 # The template's default 04 is the Application Program object's index on
 # a System B roster, where the Group Object Table object occupies
@@ -216,8 +216,8 @@ and 2.5.2.\
 [[template]]
 file = "KnxConformanceTestTemplate-Management.xml"
 patches = [
-  "conformance/patches/common/management.toml",
-  "conformance/patches/system7/management.toml",
+  "conformance/patches/full/common/management.toml",
+  "conformance/patches/full/system7/management.toml",
 ]
 collections = [
   "2.3 - 2.4 Individual Address",
@@ -418,9 +418,9 @@ in this DUT either.\
 file = "KnxConformanceTestTemplate-TSSJ DataSecurity.xml"
 dut = "system7-secure"
 patches = [
-  "conformance/patches/common/data-security.toml",
-  "conformance/patches/system7/data-security-go-flags.toml",
-  "conformance/patches/system7/data-security.toml",
+  "conformance/patches/full/common/data-security.toml",
+  "conformance/patches/full/system7/data-security-go-flags.toml",
+  "conformance/patches/full/system7/data-security.toml",
 ]
 
 [template.variables]
