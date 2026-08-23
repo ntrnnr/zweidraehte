@@ -21,6 +21,8 @@ pub struct MicroSnapshot {
     pub auth_keys: Vec<[u8; 4]>,
     pub lsm_states: [u8; MAX_LSM],
     pub table_refs: [u16; MAX_LSM],
+    /// Legacy serialized slot retained for snapshot compatibility.
+    /// `PID_DEVICE_CONTROL` is volatile and this is always captured as zero.
     pub device_control: u8,
     /// Absent in snapshots taken before the System 7 family existed.
     #[serde(default)]
@@ -40,7 +42,7 @@ impl MicroSnapshot {
             auth_keys: device.mgmt.auth_keys.to_vec(),
             lsm_states: device.mgmt.lsm.map(|l| l.state.into()),
             table_refs: device.mgmt.lsm.map(|l| l.table_ref),
-            device_control: device.mgmt.device_control,
+            device_control: 0,
             option_reg: device.mgmt.option_reg,
         }
     }
@@ -75,7 +77,10 @@ impl MicroSnapshot {
                 table_ref: self.table_refs[i],
             };
         }
-        device.mgmt.device_control = self.device_control;
+        // PID_DEVICE_CONTROL resets to zero at startup (03/05/01 §4.2.14.4).
+        // Ignore the legacy snapshot slot, including values written by older
+        // conformance binaries which incorrectly persisted it.
+        let _ = self.device_control;
         device.mgmt.option_reg = self.option_reg;
         device
     }

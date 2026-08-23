@@ -94,6 +94,17 @@ impl Bcu2DeviceDefinition {
         e[bcu2_offsets::RUN_ERROR] = bcu2_offsets::RUN_ERROR_ALL_CLEAR;
         e[bcu2_offsets::ROUTING_COUNT] = bcu2_offsets::ROUTING_COUNT_DEFAULT;
         e[bcu2_offsets::TX_RETRY] = bcu2_offsets::TX_RETRY_DEFAULT;
+        // Permanent mask state lives in the system-reserved EEPROM tail.
+        // 0021h inverts the IndividualAddressWriteEnable bit; both factory
+        // images start commissionable. Polling stays disabled until ETS has
+        // assigned a group and slot.
+        // There is no external message interface on the MCU target, so the
+        // high octet reports every EMI service disabled (03/05/01 §4.2.8).
+        let service_control = 0xFF00 | if mask == 0x0021 { 0u16 } else { 1 << 2 };
+        let service = bcu2_offsets::SERVICE_CONTROL;
+        e[service..service + 2].copy_from_slice(&service_control.to_be_bytes());
+        let poll = bcu2_offsets::POLL_GROUP_SETTINGS;
+        e[poll..poll + 3].copy_from_slice(&[0, 0, 0x80]);
         // 0115h is UsrSavPtr in the BCU2 memory map (09/04/01
         // §5.1.2.12.5.7). The ETS 0020h/0021h mask procedures used by our
         // fixtures expect 48h in that cell; this value is compatibility

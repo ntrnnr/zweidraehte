@@ -48,14 +48,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let small6 = (apci10 & 0x3F) as u8;
         let Some(tsap) = self.tables().tsap_of(view.dest_group()) else { return };
 
-        let mut asaps: heapless::Vec<u8, 16> = heapless::Vec::new();
-        for (t, asap) in self.tables().associations() {
-            if t == tsap {
-                let _ = asaps.push(asap);
+        let association_count = self.tables().assoc_count();
+        for number in 0..association_count {
+            let Some((association_tsap, asap)) = self.tables().association(number) else { continue };
+            if association_tsap != tsap {
+                continue;
             }
-        }
-
-        for asap in asaps {
             let Some(entry) = self.tables().co_entry(asap) else { continue };
             let flags = ComObjectFlags::from_byte(entry.config);
             if !flags.communication_enable() {
@@ -98,25 +96,23 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let small6 = (apci10 & 0x3F) as u8;
         let Some(tsap) = self.tables().tsap_of(view.dest_group()) else { return };
 
-        // Fan out over every association of this TSAP. Collect the
-        // matches first: the update path needs `&mut self`.
-        let mut asaps: heapless::Vec<u8, 16> = heapless::Vec::new();
-        for (t, asap) in self.tables().associations() {
-            if t == tsap {
-                let _ = asaps.push(asap);
-            }
-        }
-
         // Admission is atomic across the fan-out: if one associated object
         // requires a different protection level, none of them is mutated or
-        // allowed to answer. The security table is positional from
-        // `FIRST_ASAP`, while this stack's associations carry wire ASAPs.
+        // allowed to answer. Walk the table once to validate and again to
+        // apply; buffering matches would impose an artificial fan-out limit.
+        // The security table is positional from `FIRST_ASAP`, while this
+        // stack's associations carry wire ASAPs.
         let received_security = match request.access.security {
             zweidraehte_proto::access::SecurityMode::Plain => 0,
             zweidraehte_proto::access::SecurityMode::AuthOnly => 1,
             zweidraehte_proto::access::SecurityMode::AuthConf => 3,
         };
-        for &asap in &asaps {
+        let association_count = self.tables().assoc_count();
+        for number in 0..association_count {
+            let Some((association_tsap, asap)) = self.tables().association(number) else { continue };
+            if association_tsap != tsap {
+                continue;
+            }
             let Some(go_index) = u16::from(asap).checked_sub(F::FIRST_ASAP) else {
                 return;
             };
@@ -130,7 +126,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             }
         }
 
-        for asap in asaps {
+        for number in 0..association_count {
+            let Some((association_tsap, asap)) = self.tables().association(number) else { continue };
+            if association_tsap != tsap {
+                continue;
+            }
             let Some(entry) = self.tables().co_entry(asap) else { continue };
             let flags = ComObjectFlags::from_byte(entry.config);
             if !flags.communication_enable() {

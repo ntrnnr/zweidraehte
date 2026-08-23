@@ -149,21 +149,21 @@ impl MemoryResponse {
 
 /// Parsed fields from `A_UserMemory_Read` or `A_UserMemory_Write`.
 ///
-/// User memory extends the 16-bit address space with a 2-bit extension
-/// stored in bits 3:2 of the second APCI byte.
+/// User memory extends the 16-bit address space with a 4-bit extension.
+/// The extension and count share the first octet following the APCI.
 ///
 /// ## Wire format
 ///
 /// ```text
 /// APDU[0]:   High 2 bits of APCI
-/// APDU[1]:   APCI variant (bits 7:4, 1:0) | addr_ext (bits 3:2)
-/// APDU[2]:   Count (8 bits)
+/// APDU[1]:   APCI
+/// APDU[2]:   Address extension (bits 7:4) | count (bits 3:0)
 /// APDU[3-4]: Address low (16-bit, big-endian)
 /// APDU[5..]: Data (count bytes, Write only)
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct UserMemoryAccess<'a> {
-    /// 2-bit address extension (bits 17:16 of the full 18-bit address).
+    /// 4-bit address extension (bits 19:16 of the full 20-bit address).
     pub addr_ext: u8,
     pub count: u8,
     /// Low 16 bits of the address.
@@ -180,8 +180,8 @@ impl<'a> UserMemoryAccess<'a> {
             return None;
         }
         Some(Self {
-            addr_ext: (buf[offsets::MSG_APCI + 1] >> 2) & 0x03,
-            count: buf[offsets::MSG_APCI + 2],
+            addr_ext: buf[offsets::MSG_APCI + 2] >> 4,
+            count: buf[offsets::MSG_APCI + 2] & 0x0F,
             address_low: u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]),
             data: &[],
         })
@@ -192,15 +192,15 @@ impl<'a> UserMemoryAccess<'a> {
         if buf.len() < Self::MIN_MSG_LEN {
             return None;
         }
-        let addr_ext = (buf[offsets::MSG_APCI + 1] >> 2) & 0x03;
-        let count = buf[offsets::MSG_APCI + 2];
+        let addr_ext = buf[offsets::MSG_APCI + 2] >> 4;
+        let count = buf[offsets::MSG_APCI + 2] & 0x0F;
         let address_low = u16::from_be_bytes([buf[offsets::MSG_APCI + 3], buf[offsets::MSG_APCI + 4]]);
         let data_start = offsets::MSG_APCI + 5;
         let data_end = core::cmp::min(buf.len(), data_start + count as usize);
         Some(Self { addr_ext, count, address_low, data: &buf[data_start..data_end] })
     }
 
-    /// Reconstruct the full 18-bit address from extension and low parts.
+    /// Reconstruct the full 20-bit address from extension and low parts.
     pub fn full_address(&self) -> u32 {
         ((self.addr_ext as u32) << 16) | (self.address_low as u32)
     }
@@ -217,11 +217,10 @@ pub struct UserMemoryResponse;
 impl UserMemoryResponse {
     /// Write a user memory response into a message buffer.
     ///
-    /// Sets the addr_ext in bits 3:2 of APCI byte 1 (preserving the APCI
-    /// variant bits), the count, address, and data.
+    /// Packs the address extension and count into the first octet after the
+    /// APCI, then writes the address and data.
     pub fn write(buf: &mut [u8], addr_ext: u8, count: u8, address_low: u16, data: &[u8]) {
-        buf[offsets::MSG_APCI + 1] = (buf[offsets::MSG_APCI + 1] & 0xF3) | ((addr_ext & 0x03) << 2);
-        buf[offsets::MSG_APCI + 2] = count;
+        buf[offsets::MSG_APCI + 2] = ((addr_ext & 0x0F) << 4) | (count & 0x0F);
         buf[offsets::MSG_APCI + 3] = (address_low >> 8) as u8;
         buf[offsets::MSG_APCI + 4] = address_low as u8;
         if !data.is_empty() {
@@ -376,30 +375,43 @@ mod tests {
     #[test]
     fn user_memory_read_parse() {
         let mut buf = [0u8; 11];
-        // addr_ext=2 in bits 3:2 → 0b0000_1000 = 0x08
-        buf[offsets::MSG_APCI + 1] = 0xC0 | 0x08; // APCI + addr_ext=2
-        buf[offsets::MSG_APCI + 2] = 10; // count
+        buf[offsets::MSG_APCI + 1] = 0xC0;
+        buf[offsets::MSG_APCI + 2] = 0xAA; // addr_ext=A, count=10
         buf[offsets::MSG_APCI + 3] = 0xAB;
         buf[offsets::MSG_APCI + 4] = 0xCD;
         let acc = UserMemoryAccess::parse_read(&buf).unwrap();
-        assert_eq!(acc.addr_ext, 2);
+        assert_eq!(acc.addr_ext, 0x0A);
         assert_eq!(acc.count, 10);
         assert_eq!(acc.address_low, 0xABCD);
-        assert_eq!(acc.full_address(), 0x2ABCD);
+        assert_eq!(acc.full_address(), 0xAABCD);
+    }
+
+    #[test]
+    fn user_memory_write_parse() {
+        let mut buf = [0u8; 14];
+        buf[offsets::MSG_APCI + 1] = 0xC2;
+        buf[offsets::MSG_APCI + 2] = 0xB3; // addr_ext=B, count=3
+        buf[offsets::MSG_APCI + 3] = 0x12;
+        buf[offsets::MSG_APCI + 4] = 0x34;
+        buf[offsets::MSG_APCI + 5..offsets::MSG_APCI + 8].copy_from_slice(&[0x55, 0x66, 0x77]);
+
+        let acc = UserMemoryAccess::parse_write(&buf).expect("complete user-memory write");
+        assert_eq!(acc.addr_ext, 0x0B);
+        assert_eq!(acc.count, 3);
+        assert_eq!(acc.full_address(), 0xB1234);
+        assert_eq!(acc.data, &[0x55, 0x66, 0x77]);
+        assert!(acc.is_length_consistent(buf.len()));
     }
 
     #[test]
     fn user_memory_response_roundtrip() {
         let mut buf = [0u8; 16];
         buf[offsets::MSG_APCI + 1] = 0xC1; // UserMemoryResponse variant bits
-        UserMemoryResponse::write(&mut buf, 3, 2, 0x1234, &[0x55, 0x66]);
+        UserMemoryResponse::write(&mut buf, 0x0A, 2, 0x1234, &[0x55, 0x66]);
 
-        // Verify addr_ext in bits 3:2
-        assert_eq!((buf[offsets::MSG_APCI + 1] >> 2) & 0x03, 3);
-        // Verify variant bits preserved (bits 7:4 and 1:0)
-        assert_eq!(buf[offsets::MSG_APCI + 1] & 0xF3, 0xC1);
-        // Verify count
-        assert_eq!(buf[offsets::MSG_APCI + 2], 2);
+        // The writer preserves the APCI and packs extension + count after it.
+        assert_eq!(buf[offsets::MSG_APCI + 1], 0xC1);
+        assert_eq!(buf[offsets::MSG_APCI + 2], 0xA2);
         // Verify address
         assert_eq!(buf[offsets::MSG_APCI + 3], 0x12);
         assert_eq!(buf[offsets::MSG_APCI + 4], 0x34);

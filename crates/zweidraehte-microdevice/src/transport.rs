@@ -24,8 +24,63 @@ use crate::frame::{FrameBuf, MAX_FRAME};
 /// runtime state made LLVM retain every transition table in every firmware,
 /// so the family supplies one of these zero-sized markers instead.
 pub trait TransportProfile: 'static {
+    /// Storage for the one deferred E15 response required by styles 2 and 3.
+    /// Style 1 closes the connection instead and therefore uses a zero-sized
+    /// implementation: BCU2 does not pay the frame buffer in RAM.
+    type Queue<const N: usize>: TransportQueue<N>;
+
     const STYLE: TlStyle;
     fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult;
+}
+
+/// Profile-selected storage for a deferred outgoing connected frame.
+pub trait TransportQueue<const N: usize>: Default {
+    fn store(&mut self, frame: FrameBuf<N>) -> bool;
+    fn take(&mut self) -> Option<FrameBuf<N>>;
+    fn clear(&mut self);
+}
+
+/// Style 1's zero-sized queue: E15 in `OPEN_WAIT` disconnects instead.
+#[derive(Default)]
+pub struct NoTransportQueue;
+
+impl<const N: usize> TransportQueue<N> for NoTransportQueue {
+    fn store(&mut self, _frame: FrameBuf<N>) -> bool {
+        false
+    }
+
+    fn take(&mut self) -> Option<FrameBuf<N>> {
+        None
+    }
+
+    fn clear(&mut self) {}
+}
+
+/// The single deferred response slot required by Style 2 and Style 3.
+pub struct OneFrameQueue<const N: usize>(Option<FrameBuf<N>>);
+
+impl<const N: usize> Default for OneFrameQueue<N> {
+    fn default() -> Self {
+        Self(None)
+    }
+}
+
+impl<const N: usize> TransportQueue<N> for OneFrameQueue<N> {
+    fn store(&mut self, frame: FrameBuf<N>) -> bool {
+        if self.0.is_some() {
+            return false;
+        }
+        self.0 = Some(frame);
+        true
+    }
+
+    fn take(&mut self) -> Option<FrameBuf<N>> {
+        self.0.take()
+    }
+
+    fn clear(&mut self) {
+        self.0 = None;
+    }
 }
 
 pub struct Style1;
@@ -33,6 +88,8 @@ pub struct Style2;
 pub struct Style3;
 
 impl TransportProfile for Style1 {
+    type Queue<const N: usize> = NoTransportQueue;
+
     const STYLE: TlStyle = TlStyle::Style1;
 
     fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
@@ -41,6 +98,8 @@ impl TransportProfile for Style1 {
 }
 
 impl TransportProfile for Style2 {
+    type Queue<const N: usize> = OneFrameQueue<N>;
+
     const STYLE: TlStyle = TlStyle::Style2;
 
     fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
@@ -49,6 +108,8 @@ impl TransportProfile for Style2 {
 }
 
 impl TransportProfile for Style3 {
+    type Queue<const N: usize> = OneFrameQueue<N>;
+
     const STYLE: TlStyle = TlStyle::Style3;
 
     fn process(conn: &mut BasicConnection, event: TlEvent) -> ProcessResult {
@@ -65,13 +126,16 @@ const CONN_TIMEOUT_MS: u32 = 6_000;
 ///
 /// `N` is the profile's frame capacity — the retransmit slot holds a whole
 /// frame, so it is sized with the rest of them.
-pub struct TlState<const N: usize = MAX_FRAME> {
+pub struct TlState<const N: usize = MAX_FRAME, P: TransportProfile = Style1> {
     conn: BasicConnection,
     ack_deadline: Option<u32>,
     conn_deadline: Option<u32>,
     /// The last numbered data frame we sent, kept for retransmission
     /// until the peer acknowledges it.
     pending_tx: Option<FrameBuf<N>>,
+    /// A second AL response produced while the first is awaiting its T_ACK.
+    /// The projected type is zero-sized on Style 1.
+    queued_tx: P::Queue<N>,
     /// Time-scale divisor inherited from the conformance harness's
     /// fast mode (1 outside of it).
     time_divisor: u32,
@@ -103,6 +167,10 @@ pub enum TlOutput {
         dest: IndividualAddress,
         seq: u8,
     },
+    /// The selected style accepted E15 for deferred delivery.
+    QueueSend,
+    /// The queued frame became the pending frame and must be transmitted.
+    TransmitPending,
     /// The connection dropped (disconnect indication).
     Disconnected,
 }
@@ -111,13 +179,14 @@ pub enum TlOutput {
 /// transition emits an ack, an indication, and timer ops.
 pub type TlOutputs = heapless::Vec<TlOutput, 4>;
 
-impl<const N: usize> TlState<N> {
+impl<const N: usize, P: TransportProfile> TlState<N, P> {
     pub fn new(time_divisor: u32) -> Self {
         Self {
             conn: BasicConnection::new(),
             ack_deadline: None,
             conn_deadline: None,
             pending_tx: None,
+            queued_tx: P::Queue::default(),
             time_divisor: time_divisor.max(1),
         }
     }
@@ -131,12 +200,25 @@ impl<const N: usize> TlState<N> {
         self.conn.seq_no_send
     }
 
+    /// Sequence number to encode in a response produced now. In
+    /// `OPEN_WAIT`, Style 2/3 defer that response until the outstanding
+    /// frame is acknowledged, at which point the send sequence increments.
+    pub fn reply_seq(&self) -> u8 {
+        if self.can_send() { self.send_seq() } else { (self.send_seq() + 1) & 0x0F }
+    }
+
     pub fn time_divisor(&self) -> u32 {
         self.time_divisor
     }
 
     pub fn store_pending(&mut self, frame: FrameBuf<N>) {
         self.pending_tx = Some(frame);
+    }
+
+    /// Retain an E15 response until the current pending frame is
+    /// acknowledged. Returns false for Style 1 and when the one slot is full.
+    pub fn store_queued(&mut self, frame: FrameBuf<N>) -> bool {
+        self.queued_tx.store(frame)
     }
 
     pub fn pending(&self) -> Option<&FrameBuf<N>> {
@@ -156,8 +238,8 @@ impl<const N: usize> TlState<N> {
     /// have the complete frame ready first: once this succeeds the TL is in
     /// `OPEN_WAIT` and expects that frame to be installed with
     /// [`Self::store_pending`].
-    pub fn begin_send<P: TransportProfile>(&mut self, dest: IndividualAddress, now_ms: u32) -> Option<u8> {
-        for output in self.process::<P>(TlEvent::RequestData { dest }, now_ms) {
+    pub fn begin_send(&mut self, dest: IndividualAddress, now_ms: u32) -> Option<u8> {
+        for output in self.process(TlEvent::RequestData { dest }, now_ms) {
             if let TlOutput::SendData { seq, .. } = output {
                 return Some(seq);
             }
@@ -171,21 +253,37 @@ impl<const N: usize> TlState<N> {
         self.ack_deadline = None;
         self.conn_deadline = None;
         self.pending_tx = None;
+        self.queued_tx.clear();
     }
 
     /// Feed one transport event through the state machine.
-    pub fn process<P: TransportProfile>(&mut self, event: TlEvent, now_ms: u32) -> TlOutputs {
+    pub fn process(&mut self, event: TlEvent, now_ms: u32) -> TlOutputs {
         let result = P::process(&mut self.conn, event);
-        let outputs = self.run_actions(&result.actions, now_ms);
+        let mut outputs = self.run_actions(&result.actions, now_ms);
         result.apply_state(&mut self.conn);
         if self.conn.state == ConnectionState::Closed {
             self.pending_tx = None;
+            self.queued_tx.clear();
+        } else if self.conn.state == ConnectionState::OpenIdle
+            && let Some(frame) = self.queued_tx.take()
+        {
+            // A8/A8b has acknowledged and cleared the old pending frame.
+            // Re-enter E15 only after applying OPEN_IDLE, so A7 assigns the
+            // incremented sequence and starts fresh timers.
+            let dest = self.conn.remote_addr;
+            let queued = P::process(&mut self.conn, TlEvent::RequestData { dest });
+            let queued_outputs = self.run_actions(&queued.actions, now_ms);
+            queued.apply_state(&mut self.conn);
+            if queued_outputs.iter().any(|output| matches!(output, TlOutput::SendData { .. })) {
+                self.pending_tx = Some(frame);
+                let _ = outputs.push(TlOutput::TransmitPending);
+            }
         }
         outputs
     }
 
     /// Fire any expired timer. Call once per poll tick.
-    pub fn check_timers<P: TransportProfile>(&mut self, now_ms: u32) -> TlOutputs {
+    pub fn check_timers(&mut self, now_ms: u32) -> TlOutputs {
         // Wrapping-aware comparison: deadlines are near-future values
         // of a free-running u32 millisecond counter.
         fn expired(deadline: u32, now: u32) -> bool {
@@ -196,13 +294,13 @@ impl<const N: usize> TlState<N> {
             && expired(deadline, now_ms)
         {
             self.ack_deadline = None;
-            return self.process::<P>(TlEvent::AckTimeout, now_ms);
+            return self.process(TlEvent::AckTimeout, now_ms);
         }
         if let Some(deadline) = self.conn_deadline
             && expired(deadline, now_ms)
         {
             self.conn_deadline = None;
-            return self.process::<P>(TlEvent::ConnectionTimeout, now_ms);
+            return self.process(TlEvent::ConnectionTimeout, now_ms);
         }
         TlOutputs::new()
     }
@@ -250,11 +348,11 @@ impl<const N: usize> TlState<N> {
                     // frame does not exist yet.
                 }
                 TlAction::ClearPendingMessage => self.pending_tx = None,
-                // Client-only / queueing actions a Style-1 server never
-                // needs: a BCU2 answers one request at a time and
-                // never opens outgoing connections.
+                TlAction::QueueEvent { .. } => {
+                    let _ = out.push(TlOutput::QueueSend);
+                }
+                // Client-only actions a server never needs.
                 TlAction::SendConnect { .. }
-                | TlAction::QueueEvent { .. }
                 | TlAction::DeliverQueuedData { .. }
                 | TlAction::ConfirmConnect { .. }
                 | TlAction::ConfirmData { .. }

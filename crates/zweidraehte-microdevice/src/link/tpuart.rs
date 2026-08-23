@@ -272,6 +272,9 @@ impl<A: Fn(&[u8]) -> bool, const WIRE_CAP: usize, const TX_CAP: usize> TpUart<A,
                 self.tx = TxState::Idle;
                 TpUartEvent::TxConfirmed { positive: b & LDATA_CONFIRM_POSITIVE != 0 }
             }
+            // TODO: BCU2 fast polling needs an NCN51xx-capable poll seam.
+            // Poll-data indications currently fall through with other
+            // unsupported TPUART services.
             // State.indication (xxxxx111) and everything else the
             // chip may volunteer: ignored.
             _ => TpUartEvent::None,

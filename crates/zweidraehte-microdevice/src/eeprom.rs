@@ -113,8 +113,19 @@ impl<'a, F: MicroDeviceFamily> Tables<'a, F> {
         u8::try_from(self.association_table().entry_count()).expect("one-octet count bounds the association table")
     }
 
-    /// Iterate `(tsap, asap)` pairs in table order. Order matters: the
-    /// first association of an ASAP is its sending association.
+    /// Return one association-table row by its zero-based number.
+    ///
+    /// Group reception walks rows by number rather than buffering matching
+    /// ASAPs. That keeps fan-out bounded only by the downloaded table, not by
+    /// an unrelated temporary-vector capacity.
+    pub(crate) fn association(&self, number: u8) -> Option<(u8, u8)> {
+        self.association_table().association(u16::from(number)).map(|association| (association.tsap, association.asap))
+    }
+
+    /// Iterate `(tsap, asap)` pairs in table order.
+    ///
+    /// Receive fan-out uses every matching row. Sending has separate
+    /// realization-specific indexed/first-match rules in [`Self::sending_tsap`].
     pub fn associations(&self) -> impl Iterator<Item = (u8, u8)> + '_ {
         self.association_table().associations().map(|association| (association.tsap, association.asap))
     }

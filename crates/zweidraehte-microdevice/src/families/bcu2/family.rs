@@ -84,7 +84,7 @@ impl<const MASK: u16, P: MemoryAccessPolicy> Bcu2Family<MASK, P> {
                 PDT_UnsignedInt::ID,
                 3,
                 privileged_write,
-                PropertyBacking::ServiceControl,
+                PropertyBacking::FamilySpecific,
             )),
             3 => Some(PropertySpec::read_only(
                 pid::FIRMWARE_REVISION,
@@ -101,19 +101,18 @@ impl<const MASK: u16, P: MemoryAccessPolicy> Bcu2Family<MASK, P> {
                 PropertyBacking::FamilySpecific,
             )),
             7 => Some(PropertySpec::read_only(pid::PEI_TYPE, PDT_UnsignedChar::ID, 3, PropertyBacking::FamilySpecific)),
-            // These two resources are readable, but the micro stack does not
-            // yet persist their profile-defined writes. Advertising RO is
-            // honest; the missing write behavior is tracked separately.
-            8 => Some(PropertySpec::read_only(
+            8 => Some(PropertySpec::read_write(
                 pid::PORT_CONFIGURATION,
                 PDT_UnsignedChar::ID,
                 3,
+                privileged_write,
                 PropertyBacking::FamilySpecific,
             )),
-            9 => Some(PropertySpec::read_only(
+            9 => Some(PropertySpec::read_write(
                 pid::POLL_GROUP_SETTINGS,
                 PDT_PollGroupSettings::ID,
                 3,
+                privileged_write,
                 PropertyBacking::FamilySpecific,
             )),
             10 => Some(PropertySpec::read_only(
@@ -191,6 +190,13 @@ impl<const MASK: u16, P: MemoryAccessPolicy> Bcu2Family<MASK, P> {
                 3,
                 PropertyBacking::FamilySpecific,
             )),
+            5 => Some(PropertySpec::read_write(
+                pid::PEI_TYPE,
+                PDT_UnsignedChar::ID,
+                3,
+                control_write,
+                PropertyBacking::FamilySpecific,
+            )),
             _ => None,
         }
     }
@@ -250,6 +256,8 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
     const LSM_OBJ_BASE: u8 = 1;
     const LSM_COUNT: usize = 3;
     const OBJECT_COUNT: u8 = 4;
+    const DETECT_OWN_INDIVIDUAL_ADDRESS: bool = true;
+
     fn object_type(idx: u8) -> u16 {
         // Interface object types happen to equal the object indices for
         // the BCU2 roster: Device (0), Address Table (1), Association
@@ -264,6 +272,13 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
             3 => Self::application_property(property_index),
             _ => None,
         }
+    }
+
+    fn individual_address_write_enabled(eeprom: &[u8]) -> bool {
+        let base = offsets::SERVICE_CONTROL;
+        let service_control = u16::from_be_bytes([eeprom[base], eeprom[base + 1]]);
+        let bit_set = service_control & (1 << 2) != 0;
+        if MASK == 0x0021 { !bit_set } else { bit_set }
     }
 
     /// The application program runs when it is loaded, its persistent
@@ -363,14 +378,22 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
             (0, pid::MANUFACTURER_ID) => {
                 let _ = v.extend_from_slice(&eeprom[offsets::MAN_DATA..offsets::MAN_DATA + 2]);
             }
+            (0, pid::SERVICE_CONTROL) => {
+                let base = offsets::SERVICE_CONTROL;
+                let _ = v.extend_from_slice(&eeprom[base..base + 2]);
+            }
             (0, pid::PEI_TYPE) => {
-                let _ = v.push(eeprom[offsets::PEI_TYPE]);
+                // This is the actually connected external interface. The
+                // MCU product has none; the application's required PEI is a
+                // distinct Property on object 3.
+                let _ = v.push(0);
             }
             (0, pid::PORT_CONFIGURATION) => {
                 let _ = v.push(eeprom[offsets::PORT_ADDR]);
             }
             (0, pid::POLL_GROUP_SETTINGS) => {
-                let _ = v.extend_from_slice(&[0x00, 0x00, 0x00]);
+                let base = offsets::POLL_GROUP_SETTINGS;
+                let _ = v.extend_from_slice(&eeprom[base..base + 3]);
             }
             (0, pid::MANUFACTURER_DATA) => {
                 let _ = v.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
@@ -379,9 +402,61 @@ impl<const MASK: u16, P: MemoryAccessPolicy> MicroDeviceFamily for Bcu2Family<MA
                 let base = offsets::APPLICATION_ID;
                 let _ = v.extend_from_slice(&eeprom[base..base + 5]);
             }
+            (3, pid::PEI_TYPE) => {
+                let _ = v.push(eeprom[offsets::PEI_TYPE]);
+            }
             _ => return None,
         }
         Some(v)
+    }
+
+    fn property_write_hook(
+        obj: u8,
+        prop_id: u16,
+        data: &[u8],
+        eeprom: &mut [u8],
+        _mgmt: &mut ManagementState,
+    ) -> Option<bool> {
+        match (obj, prop_id) {
+            (0, pid::SERVICE_CONTROL) => Some(if let [high, low] = data {
+                // Bits 0 and 1 are abandoned and shall read zero; bits 3..7
+                // are reserved. This MCU has no EMI, for which Resources
+                // §4.2.8 requires all high-octet services to stay disabled.
+                // Only the mask-specific IA-write gate is meaningful here.
+                let _ = high;
+                let value = u16::from_be_bytes([0xFF, *low & 0x04]);
+                let base = offsets::SERVICE_CONTROL;
+                eeprom[base..base + 2].copy_from_slice(&value.to_be_bytes());
+                true
+            } else {
+                false
+            }),
+            (0, pid::PORT_CONFIGURATION) => Some(if let [value] = data {
+                eeprom[offsets::PORT_ADDR] = *value;
+                true
+            } else {
+                false
+            }),
+            (0, pid::POLL_GROUP_SETTINGS) => Some(if let [group_hi, group_lo, control] = data {
+                // 03/05/01 §4.2.18: bits 6..4 are reserved. Retain the
+                // polling-disable flag and slot while normalizing them.
+                // TODO: Apply this setting once the link driver exposes
+                // BCU2 fast-poll services; this is permanent configuration,
+                // not a substitute for the link-layer implementation.
+                let base = offsets::POLL_GROUP_SETTINGS;
+                eeprom[base..base + 3].copy_from_slice(&[*group_hi, *group_lo, *control & 0x8F]);
+                true
+            } else {
+                false
+            }),
+            (3, pid::PEI_TYPE) => Some(if let [value] = data {
+                eeprom[offsets::PEI_TYPE] = *value;
+                true
+            } else {
+                false
+            }),
+            _ => None,
+        }
     }
 
     /// A BCU2 exposes its analog channels through `A_ADC_Read`.

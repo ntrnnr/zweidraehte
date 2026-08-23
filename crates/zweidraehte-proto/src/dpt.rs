@@ -386,7 +386,7 @@ impl fmt::Debug for KnxDateTime {
 /// KNX poll group settings (3 bytes, PDT 0x0D).
 ///
 /// - Bytes 0–1: group address (big-endian u16)
-/// - Byte 2: `-------E` polling enabled (bit 0)
+/// - Byte 2: `D---SSSS`: polling disabled (bit 7), slot number (bits 3..0)
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub struct PollGroupSettings {
     data: [u8; 3],
@@ -396,8 +396,14 @@ impl PollGroupSettings {
     pub fn new(group_address: u16, enabled: bool) -> Self {
         let mut data = [0u8; 3];
         data[0..2].copy_from_slice(&group_address.to_be_bytes());
-        data[2] = enabled as u8;
+        data[2] = if enabled { 0 } else { 0x80 };
         Self { data }
+    }
+
+    pub fn with_slot(group_address: u16, enabled: bool, slot: u8) -> Self {
+        let mut value = Self::new(group_address, enabled);
+        value.data[2] |= slot & 0x0F;
+        value
     }
 
     pub const fn from_bytes(bytes: [u8; 3]) -> Self {
@@ -413,13 +419,17 @@ impl PollGroupSettings {
     }
 
     pub const fn enabled(&self) -> bool {
-        self.data[2] & 0x01 != 0
+        self.data[2] & 0x80 == 0
+    }
+
+    pub const fn slot(&self) -> u8 {
+        self.data[2] & 0x0F
     }
 }
 
 impl fmt::Debug for PollGroupSettings {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PollGroup({:#06X}, enabled={})", self.group_address(), self.enabled())
+        write!(f, "PollGroup({:#06X}, enabled={}, slot={})", self.group_address(), self.enabled(), self.slot())
     }
 }
 
@@ -2424,6 +2434,19 @@ const impl PropertyDataDefinition for MaxRetryCount {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn poll_group_settings_use_disable_and_slot_bits() {
+        let enabled = PollGroupSettings::with_slot(0x1234, true, 10);
+        assert_eq!(enabled.to_bytes(), [0x12, 0x34, 0x0A]);
+        assert!(enabled.enabled());
+        assert_eq!(enabled.slot(), 10);
+
+        let disabled = PollGroupSettings::with_slot(0x5678, false, 15);
+        assert_eq!(disabled.to_bytes(), [0x56, 0x78, 0x8F]);
+        assert!(!disabled.enabled());
+        assert_eq!(disabled.slot(), 15);
+    }
 
     #[test]
     fn test_interface_object() {

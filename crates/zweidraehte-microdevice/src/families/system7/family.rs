@@ -16,7 +16,8 @@ use zweidraehte_proto::tables::com_object::BcuComObjectTableFormat;
 
 use super::offsets;
 use crate::family::{MemoryAccessPolicy, MicroDeviceFamily, PropertyBacking, PropertySpec};
-use crate::management::{ManagementState, dispatch_lsm_event};
+use crate::frame::ApciCode;
+use crate::management::{ManagementState, Reply, ServiceResult, dispatch_lsm_event};
 use crate::transport::Style3;
 
 /// System 7 TP1, mask version 0705h.
@@ -127,6 +128,9 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
     const AUTH_LEVELS: usize = 16;
     const CONNECTIONLESS_PROPERTIES: bool = true;
     const CONNECTIONLESS_DEVICE_DESCRIPTOR: bool = true;
+    // PID_SERIAL_NUMBER is present in the Device Object, which makes the
+    // corresponding read/write AL services mandatory (06 Profiles §6.3).
+    const SERIAL_NUMBER_ADDRESSING: bool = true;
 
     const EEPROM_BASE: u16 = offsets::ADT_ADDR;
     const EEPROM_SIZE: usize = EEPROM_LEN;
@@ -320,5 +324,23 @@ impl<const EEPROM_LEN: usize, const COT_ADDR: u16, P: MemoryAccessPolicy> MicroD
         };
         dispatch_lsm_event::<Self>(machine - 1, &record[..len], eeprom, mgmt);
         true
+    }
+
+    /// System 7 keeps the BCU-era analog service and mandates application
+    /// identification for mask 0705h (06 Profiles §4.3.8). This minimal
+    /// profile declares manufacturer-device ID 00h and two zero-valued
+    /// manufacturer-specific octets; products needing another declaration
+    /// can make it part of a future product-specific family parameter.
+    fn extra_service<const N: usize>(code: ApciCode, small6: u8, payload: &[u8]) -> Option<ServiceResult<N>> {
+        if let Some(adc) = crate::families::adc_read_stub(code, small6, payload) {
+            return Some(adc);
+        }
+        match code {
+            ApciCode::UserManufacturerInfoRead => {
+                Some(ServiceResult::Reply(Reply::new(ApciCode::UserManufacturerInfoResponse, 0, &[0, 0, 0])))
+            }
+            ApciCode::UserManufacturerInfoResponse => Some(ServiceResult::None),
+            _ => None,
+        }
     }
 }

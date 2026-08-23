@@ -16,10 +16,12 @@ use zweidraehte_proto::memory::{MemoryOperation, memory_access_allowed};
 use zweidraehte_proto::messages::apdu::load_control::{
     AbsSegment, LoadAction, LoadSegment, LoadState, load_control_transition,
 };
+use zweidraehte_proto::messages::apdu::memory::{MemoryBitWrite, UserMemoryAccess};
 use zweidraehte_proto::messages::apdu::property::{
     PropertyDescriptionRead, PropertyDescriptionResponse as PropertyDescriptionApduResponse, PropertyValueHeader,
 };
 use zweidraehte_proto::messages::apdu::restart::EraseCode;
+use zweidraehte_proto::messages::knx::offsets;
 use zweidraehte_proto::pid;
 use zweidraehte_proto::properties::PropertyDescriptionResponse as PropertyDescription;
 
@@ -37,6 +39,13 @@ use crate::security::SecurityModule;
 const fn max_memory_data_length(max_apdu: u16) -> u8 {
     let by_apdu = (max_apdu as usize).saturating_sub(3);
     if by_apdu > 0x3F { 0x3F } else { by_apdu as u8 }
+}
+
+/// User-memory services carry a packed extension/count octet ahead of the
+/// 16-bit address, reducing a standard-frame response by one data octet.
+const fn max_user_memory_data_length(max_apdu: u16) -> u8 {
+    let by_apdu = (max_apdu as usize).saturating_sub(4);
+    if by_apdu > 0x0F { 0x0F } else { by_apdu as u8 }
 }
 
 /// One reply APDU. `small6` rides in the APCI low octet for the short
@@ -140,6 +149,10 @@ impl ManagementState {
 
     pub fn reset_connection_auth<F: MicroDeviceFamily>(&mut self) {
         self.auth_level = self.default_access_level::<F>();
+        // Verify Mode is scoped to one transport connection. Resources
+        // §4.2.14.7 requires it to clear immediately when that connection
+        // closes; boot and factory reset use this same disconnected state.
+        self.device_control &= !pid::device_control::VERIFY_MODE;
     }
 
     pub fn verify_mode(&self) -> bool {
@@ -192,6 +205,13 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ApciCode::DeviceDescriptorRead => self.device_descriptor_read(small6, frame, access),
             ApciCode::MemoryRead if connection_oriented => self.memory_read(small6, payload, frame, access),
             ApciCode::MemoryWrite if connection_oriented => self.memory_write(small6, payload, frame, access),
+            ApciCode::MemoryBitWrite if connection_oriented => self.memory_bit_write(frame, access),
+            // 06 Profiles §4.2.2 requires DMA on user memory for every
+            // BCU-era family. These services use the same physical address
+            // space and access policy as A_Memory_*, but add a 4-bit logical
+            // address extension on the wire.
+            ApciCode::UserMemoryRead if connection_oriented => self.user_memory_read(frame, access),
+            ApciCode::UserMemoryWrite if connection_oriented => self.user_memory_write(frame, access),
             // Authorization belongs to a transport connection. In
             // particular, a connectionless System 7 request must not
             // acquire or reuse another client's connection level.
@@ -352,7 +372,15 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let addr = u16::from_be_bytes([payload[0], payload[1]]);
         let data = &payload[2..];
         if data.len() != usize::from(count) {
-            return ServiceResult::None;
+            // 03/03/07 §3.5.3 uses the count-zero response as the write
+            // error indication when Verify Mode is active. Without Verify
+            // Mode, a malformed write remains silent like every other
+            // rejected A_Memory_Write.
+            return if self.mgmt.verify_mode() {
+                Self::memory_response(&payload[..2], 0, &[])
+            } else {
+                ServiceResult::None
+            };
         }
         let operation = MemoryOperation::Write;
         if !SEC::memory_access_allowed(&self.sec, access, F::memory_access_policy(addr, data.len()), operation) {
@@ -388,6 +416,202 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             return Self::memory_response(&payload[..2], count, data);
         }
         ServiceResult::None
+    }
+
+    // ── Bit-oriented memory access ──────────────────────────────────
+
+    /// Apply the bit masks as one memory operation.
+    ///
+    /// A partial write would be worse than rejecting the request: the service
+    /// promises that a range crossing an access boundary remains unchanged.
+    /// We therefore validate both the read and write sides, calculate all new
+    /// octets in RAM, and only then touch the backing image.
+    fn memory_bit_write(&mut self, frame: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+        // Count and address precede the masks, so they remain available for
+        // the specified Verify-Mode error response even when the mask data is
+        // truncated or the count is outside the legal 1..=5 range.
+        const HEADER_LEN: usize = offsets::MSG_APCI + 5;
+        if frame.len() < HEADER_LEN {
+            return ServiceResult::None;
+        }
+        let count = frame[offsets::MSG_APCI + 2] & 0x0F;
+        let address = u16::from_be_bytes([frame[offsets::MSG_APCI + 3], frame[offsets::MSG_APCI + 4]]);
+        let address_bytes = address.to_be_bytes();
+        let error = |this: &Self| {
+            if this.mgmt.verify_mode() { Self::memory_response(&address_bytes, 0, &[]) } else { ServiceResult::None }
+        };
+
+        if !(1..=5).contains(&count) || frame.len() != MemoryBitWrite::expected_msg_len(usize::from(count)) {
+            return error(self);
+        }
+        let request = MemoryBitWrite::parse(frame).expect("memory-bit length validated");
+        let count = usize::from(request.count);
+
+        // A_MemoryBit_Write necessarily reads before it writes. Keep the
+        // two legacy permissions explicit so a future asymmetric memory map
+        // cannot accidentally turn a write-only region into readable state.
+        let legacy_read_allowed = memory_access_allowed(
+            F::MEMORY_REGIONS,
+            request.address,
+            count,
+            MemoryOperation::Read,
+            access.access_level,
+            F::AUTH_LEVELS as u8,
+        );
+        let legacy_write_allowed = memory_access_allowed(
+            F::MEMORY_REGIONS,
+            request.address,
+            count,
+            MemoryOperation::Write,
+            access.access_level,
+            F::AUTH_LEVELS as u8,
+        );
+        let secure_allowed = SEC::memory_access_allowed(
+            &self.sec,
+            access,
+            F::memory_access_policy(request.address, count),
+            MemoryOperation::Write,
+        );
+        if !secure_allowed {
+            self.record_access_failure(access, frame);
+        }
+        if !legacy_read_allowed || !legacy_write_allowed || !secure_allowed {
+            return error(self);
+        }
+
+        let mut new_data = [0u8; 5];
+        for (i, result) in new_data[..count].iter_mut().enumerate() {
+            let old = self.mem_read_byte(request.address.wrapping_add(i as u16));
+            *result = (old & request.and_masks[i]) ^ request.xor_masks[i];
+        }
+
+        if !F::memory_write_intercept(request.address, &new_data[..count], self.eeprom.as_mut(), &mut self.mgmt) {
+            for (i, &byte) in new_data[..count].iter().enumerate() {
+                self.mem_write_byte(request.address.wrapping_add(i as u16), byte);
+            }
+        }
+
+        if !self.mgmt.verify_mode() {
+            return ServiceResult::None;
+        }
+
+        // Verify reports what the storage actually accepted. This matters
+        // for special registers such as the parity-protected system status
+        // byte, where a syntactically valid write may deliberately be lost.
+        let mut readback = [0u8; 5];
+        for (i, byte) in readback[..count].iter_mut().enumerate() {
+            *byte = self.mem_read_byte(request.address.wrapping_add(i as u16));
+        }
+        Self::memory_response(&address_bytes, request.count, &readback[..count])
+    }
+
+    // ── Extended-address user memory access ─────────────────────────
+
+    fn user_memory_response(addr_ext: u8, address: u16, count: u8, bytes: &[u8]) -> ServiceResult<FRAME_CAP> {
+        let mut data: Vec<u8, FRAME_CAP> = Vec::new();
+        let _ = data.push(((addr_ext & 0x0F) << 4) | (count & 0x0F));
+        let _ = data.extend_from_slice(&address.to_be_bytes());
+        let _ = data.extend_from_slice(bytes);
+        ServiceResult::Reply(Reply::new(ApciCode::UserMemoryResponse, 0, &data))
+    }
+
+    fn user_memory_write_error(&self, addr_ext: u8, address: u16) -> ServiceResult<FRAME_CAP> {
+        if self.mgmt.verify_mode() {
+            Self::user_memory_response(addr_ext, address, 0, &[])
+        } else {
+            ServiceResult::None
+        }
+    }
+
+    fn user_memory_read(&mut self, frame: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+        let Some(request) = UserMemoryAccess::parse_read(frame) else {
+            return ServiceResult::None;
+        };
+        // A read has no trailing data. Treat a malformed request like an
+        // unsupported APDU rather than accepting hidden trailing octets.
+        if frame.len() != UserMemoryAccess::MIN_MSG_LEN {
+            return ServiceResult::None;
+        }
+
+        let operation = MemoryOperation::Read;
+        let count = usize::from(request.count);
+        if !SEC::memory_access_allowed(
+            &self.sec,
+            access,
+            F::memory_access_policy(request.address_low, count),
+            operation,
+        ) {
+            self.record_access_failure(access, frame);
+            return Self::user_memory_response(request.addr_ext, request.address_low, 0, &[]);
+        }
+
+        // BCU1/BCU2/System 7 expose no memory above 64 KiB. The service is
+        // still mandatory as the Application Device Management memory
+        // service; a non-zero extension therefore receives the specified
+        // count-zero error response rather than aliasing low memory.
+        if request.addr_ext != 0
+            || request.count == 0
+            || request.count > max_user_memory_data_length(Self::max_apdu_length())
+            || !memory_access_allowed(
+                F::MEMORY_REGIONS,
+                request.address_low,
+                count,
+                operation,
+                access.access_level,
+                F::AUTH_LEVELS as u8,
+            )
+        {
+            return Self::user_memory_response(request.addr_ext, request.address_low, 0, &[]);
+        }
+
+        let mut data: Vec<u8, FRAME_CAP> = Vec::new();
+        for i in 0..request.count {
+            let _ = data.push(self.mem_read_byte(request.address_low.wrapping_add(u16::from(i))));
+        }
+        Self::user_memory_response(request.addr_ext, request.address_low, request.count, &data)
+    }
+
+    fn user_memory_write(&mut self, frame: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
+        let Some(request) = UserMemoryAccess::parse_write(frame) else {
+            return ServiceResult::None;
+        };
+        if !request.is_length_consistent(frame.len()) || request.count == 0 {
+            return self.user_memory_write_error(request.addr_ext, request.address_low);
+        }
+
+        let operation = MemoryOperation::Write;
+        if !SEC::memory_access_allowed(
+            &self.sec,
+            access,
+            F::memory_access_policy(request.address_low, request.data.len()),
+            operation,
+        ) {
+            self.record_access_failure(access, frame);
+            return self.user_memory_write_error(request.addr_ext, request.address_low);
+        }
+        if request.addr_ext != 0
+            || !memory_access_allowed(
+                F::MEMORY_REGIONS,
+                request.address_low,
+                request.data.len(),
+                operation,
+                access.access_level,
+                F::AUTH_LEVELS as u8,
+            )
+        {
+            return self.user_memory_write_error(request.addr_ext, request.address_low);
+        }
+
+        if !F::memory_write_intercept(request.address_low, request.data, self.eeprom.as_mut(), &mut self.mgmt) {
+            for (i, &byte) in request.data.iter().enumerate() {
+                self.mem_write_byte(request.address_low.wrapping_add(i as u16), byte);
+            }
+        }
+        if self.mgmt.verify_mode() {
+            Self::user_memory_response(request.addr_ext, request.address_low, request.count, request.data)
+        } else {
+            ServiceResult::None
+        }
     }
 
     // ── Device descriptor ───────────────────────────────────────────
@@ -719,10 +943,14 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             None
         };
 
-        if accepted {
-            property_value_response(header, header.count, response_data.as_deref().unwrap_or_default())
-        } else {
-            property_value_response(header, 0, &[])
+        // 03/04/01 §6.2.2.2.2 requires the regular write service to read the
+        // value back. A write-only property (notably PID_TOOL_KEY, 008/008)
+        // may have accepted and persisted the write while that read-back is
+        // forbidden; AN193 §2.2.2 says the MaS must then return the standard
+        // property error, not a positive count with an empty payload.
+        match (accepted, response_data) {
+            (true, Some(data)) => property_value_response(header, header.count, &data),
+            _ => property_value_response(header, 0, &[]),
         }
     }
 
@@ -764,9 +992,6 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             }
             PropertyBacking::DeviceControl => {
                 let _ = v.push(self.mgmt.device_control);
-            }
-            PropertyBacking::ServiceControl => {
-                let _ = v.extend_from_slice(&[0x00, 0x00]);
             }
             PropertyBacking::ProgrammingMode => {
                 let _ = v.push(u8::from(self.is_programming_mode()));
@@ -846,14 +1071,15 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         }
         match spec.backing {
             PropertyBacking::DeviceControl if data.len() == 1 => {
-                self.mgmt.device_control = data[0];
-                true
-            }
-            PropertyBacking::ServiceControl if data.len() == 2 => {
-                // Accepted and discarded: the controllable services
-                // (PEI abort, user program checks) have no equivalent
-                // here. TODO: honor the IndividualAddressWriteEnable
-                // bit once a client is seen driving it on mask 0020h.
+                // Status bits are owned by the device. A client may clear
+                // the complete temporary resource with zero, or control the
+                // supported Verify bit without manufacturing status flags.
+                self.mgmt.device_control = if data[0] == 0 {
+                    0
+                } else {
+                    let status = pid::device_control::USER_STOPPED | pid::device_control::ADDRESS_DUPLICATION;
+                    (self.mgmt.device_control & status) | (data[0] & pid::device_control::VERIFY_MODE)
+                };
                 true
             }
             PropertyBacking::ProgrammingMode if data.len() == 1 => {

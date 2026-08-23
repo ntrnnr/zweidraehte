@@ -10,10 +10,11 @@ use zweidraehte_microdevice::device::{DeviceIdentity, Microdevice, PollInput};
 use zweidraehte_microdevice::families::bcu2::{Bcu2CoDescriptor, Bcu2DeviceDefinition, Bcu2Family};
 use zweidraehte_microdevice::family::MicroDeviceFamily;
 use zweidraehte_microdevice::frame::{
-    ApciCode, EXTENDED_FRAME, FrameBuf, FrameView, MAX_FRAME, SECURE_EXTENDED_FRAME, Tpci, data_frame, normalize,
-    to_wire,
+    ApciCode, EXTENDED_FRAME, FrameBuf, FrameView, MAX_FRAME, SECURE_EXTENDED_FRAME, Tpci, data_frame,
+    disconnect_frame, normalize, to_wire,
 };
 use zweidraehte_microdevice::security::{DataSecure, DataSecureState, MicroSecurityResources, SecurityModule};
+use zweidraehte_microdevice::snapshot::MicroSnapshot;
 use zweidraehte_proto::address::{GroupAddress, IndividualAddress};
 use zweidraehte_proto::encoding::tp1::{NPCI_HOP_COUNT_6, TP1_STD_CTRL_BASE};
 use zweidraehte_proto::messages::apdu::load_control::{AbsSegment, LoadControlRecord, LoadEvent, LoadState, RunState};
@@ -175,6 +176,218 @@ fn verify_mode_echoes_memory_writes() {
     // Clearing RunError back to FFh revives it.
     exchange(&mut dev, 2, ApciCode::MemoryWrite, 1, &[0x01, 0x0D, 0xFF], 0).expect("echoed");
     assert!(dev.is_running());
+
+    // In Verify Mode both forms of count/data mismatch receive the standard
+    // count-zero error response and must leave the target untouched.
+    for (seq, count, data) in [(3, 3, &[0x01, 0x80, 0x12, 0x34][..]), (4, 1, &[0x01, 0x80, 0x12, 0x34][..])] {
+        let rsp = exchange(&mut dev, seq, ApciCode::MemoryWrite, count, data, 0).expect("verified error response");
+        assert_eq!(&apdu(&rsp)[1..], &[0x40, 0x01, 0x80]);
+    }
+    let rsp = exchange(&mut dev, 5, ApciCode::MemoryRead, 1, &[0x01, 0x80], 0).expect("memory read");
+    assert_eq!(apdu(&rsp)[4], 0x00);
+}
+
+#[test]
+fn mandatory_bcu2_configuration_properties_roundtrip_and_persist() {
+    let mut dev = device();
+    connect(&mut dev);
+
+    for (seq, object, property, written, expected) in [
+        (0, 0, pid::SERVICE_CONTROL, &[0xA5, 0x04][..], &[0xFF, 0x04][..]),
+        (1, 0, pid::PORT_CONFIGURATION, &[0x5A][..], &[0x5A][..]),
+        (2, 0, pid::POLL_GROUP_SETTINGS, &[0x12, 0x34, 0x8A][..], &[0x12, 0x34, 0x8A][..]),
+        (3, 3, pid::PEI_TYPE, &[0x11][..], &[0x11][..]),
+    ] {
+        let mut request = vec![object, property as u8, 0x10, 0x01];
+        request.extend_from_slice(written);
+        let response = exchange(&mut dev, seq, ApciCode::PropertyValueWrite, 0, &request, 0)
+            .unwrap_or_else(|| panic!("PID {property} write answered"));
+        assert_eq!(&apdu(&response)[6..], expected, "PID {property} readback");
+    }
+
+    // Device-object PEI is the actual connected interface (none); object 3
+    // carries the application-required PEI that was configured above.
+    let actual =
+        exchange(&mut dev, 4, ApciCode::PropertyValueRead, 0, &[0, 16, 0x10, 0x01], 0).expect("device PEI read");
+    assert_eq!(&apdu(&actual)[6..], &[0]);
+
+    let snapshot = MicroSnapshot::capture(&dev);
+    let identity = DeviceIdentity { serial_number: [0, 0x83, 0, 0, 0, 1], order_info: [0; 10], hardware_type: [0; 6] };
+    let mut restored = snapshot.restore::<Bcu2Family>(identity, 1);
+    connect(&mut restored);
+    for (seq, object, property, expected) in [
+        (0, 0, pid::SERVICE_CONTROL, &[0xFF, 0x04][..]),
+        (1, 0, pid::PORT_CONFIGURATION, &[0x5A][..]),
+        (2, 0, pid::POLL_GROUP_SETTINGS, &[0x12, 0x34, 0x8A][..]),
+        (3, 3, pid::PEI_TYPE, &[0x11][..]),
+    ] {
+        let response =
+            exchange(&mut restored, seq, ApciCode::PropertyValueRead, 0, &[object, property as u8, 0x10, 0x01], 0)
+                .unwrap_or_else(|| panic!("PID {property} persisted read answered"));
+        assert_eq!(&apdu(&response)[6..], expected, "PID {property} persisted value");
+    }
+}
+
+#[test]
+fn service_control_gates_plain_individual_address_writes() {
+    let mut dev = device();
+    connect(&mut dev);
+    let new_ia = IndividualAddress::new(2, 3, 4);
+    let write = data_frame::<MAX_FRAME>(
+        0,
+        CLIENT,
+        [0, 0],
+        true,
+        Tpci::DataGroup,
+        ApciCode::IndividualAddressWrite,
+        0,
+        new_ia.as_bytes(),
+    );
+    dev.set_programming_mode(true);
+
+    exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &[0, 8, 0x10, 0x01, 0, 0], 0).expect("disable IA writes");
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
+    assert_eq!(dev.individual_address(), DUT);
+
+    let mut serial_payload = vec![0, 0x83, 0, 0, 0, 1];
+    serial_payload.extend_from_slice(IndividualAddress::new(4, 5, 6).as_bytes());
+    serial_payload.extend_from_slice(&[0; 4]);
+    let serial_write = data_frame::<MAX_FRAME>(
+        0,
+        CLIENT,
+        [0, 0],
+        true,
+        Tpci::DataBroadcast,
+        ApciCode::IndividualAddressSerialNumberWrite,
+        0,
+        &serial_payload,
+    );
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&serial_write)), 0);
+    assert_eq!(dev.individual_address(), DUT, "the same gate covers serial-number addressing");
+
+    exchange(&mut dev, 1, ApciCode::PropertyValueWrite, 0, &[0, 8, 0x10, 0x01, 0, 4], 0).expect("enable IA writes");
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&write)), 0);
+    assert_eq!(dev.individual_address(), new_ia);
+}
+
+#[test]
+fn receiving_our_source_address_latches_device_control_duplication() {
+    let mut dev = device();
+    assert_eq!(dev.mgmt.device_control, 0);
+
+    let duplicate = data_frame::<MAX_FRAME>(
+        0,
+        DUT,
+        GroupAddress::from_three_level(2, 0, 0).0,
+        true,
+        Tpci::DataGroup,
+        ApciCode::GroupValueWrite,
+        1,
+        &[],
+    );
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&duplicate)), 0);
+    assert_eq!(
+        dev.mgmt.device_control & pid::device_control::ADDRESS_DUPLICATION,
+        pid::device_control::ADDRESS_DUPLICATION,
+    );
+
+    // The management client clears the latched diagnostic by writing zero.
+    connect(&mut dev);
+    exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &[0, 14, 0x10, 0x01, 0], 0).expect("device control write");
+    assert_eq!(dev.mgmt.device_control, 0);
+
+    exchange(
+        &mut dev,
+        1,
+        ApciCode::PropertyValueWrite,
+        0,
+        &[0, 14, 0x10, 0x01, pid::device_control::ADDRESS_DUPLICATION],
+        1,
+    )
+    .expect("device control status-bit write");
+    assert_eq!(dev.mgmt.device_control, 0, "the client cannot manufacture a duplication status");
+}
+
+#[test]
+fn disconnect_clears_verify_mode_but_keeps_latched_diagnostics() {
+    let mut dev = device();
+    dev.mgmt.device_control = pid::device_control::ADDRESS_DUPLICATION;
+    connect(&mut dev);
+    exchange(
+        &mut dev,
+        0,
+        ApciCode::PropertyValueWrite,
+        0,
+        &[0, 14, 0x10, 0x01, pid::device_control::ADDRESS_DUPLICATION | pid::device_control::VERIFY_MODE],
+        0,
+    )
+    .expect("verify mode write");
+
+    let disconnect = disconnect_frame::<MAX_FRAME>(CLIENT, DUT);
+    dev.poll(PollInput::Frame(&to_wire::<MAX_FRAME>(&disconnect)), 1);
+    assert_eq!(dev.mgmt.device_control, pid::device_control::ADDRESS_DUPLICATION);
+}
+
+#[test]
+fn verify_mode_also_confirms_user_memory_writes() {
+    let mut dev = device();
+    connect(&mut dev);
+    exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &[0, 14, 0x10, 0x01, 0x04], 0).expect("verify mode enabled");
+
+    let rsp = exchange(&mut dev, 1, ApciCode::UserMemoryWrite, 0, &[2, 0x01, 0x80, 0x42, 0x24], 0)
+        .expect("verified user-memory write");
+    assert_eq!(&apdu(&rsp)[1..], &[0xC1, 2, 0x01, 0x80, 0x42, 0x24]);
+
+    let rsp = exchange(&mut dev, 2, ApciCode::UserMemoryRead, 0, &[2, 0x01, 0x80], 0).expect("user-memory read");
+    assert_eq!(&apdu(&rsp)[1..], &[0xC1, 2, 0x01, 0x80, 0x42, 0x24]);
+
+    // A malformed verified write reports count zero and leaves memory
+    // untouched, as required for UserMemory's only error indication.
+    let rsp = exchange(&mut dev, 3, ApciCode::UserMemoryWrite, 0, &[2, 0x01, 0x80, 0x99], 0)
+        .expect("verified error response");
+    assert_eq!(&apdu(&rsp)[1..], &[0xC1, 0, 0x01, 0x80]);
+    let rsp = exchange(&mut dev, 4, ApciCode::UserMemoryRead, 0, &[1, 0x01, 0x80], 0).expect("user-memory read");
+    assert_eq!(apdu(&rsp)[5], 0x42);
+}
+
+#[test]
+fn verify_mode_reports_memory_bit_write_results_and_errors() {
+    let mut dev = device();
+    connect(&mut dev);
+    exchange(&mut dev, 0, ApciCode::PropertyValueWrite, 0, &[0, 14, 0x10, 0x01, 0x04], 0).expect("verify mode enabled");
+
+    exchange(&mut dev, 1, ApciCode::MemoryWrite, 5, &[0x09, 0x70, 0x0F, 0x0F, 0x0F, 0x0F, 0x0F], 0)
+        .expect("verified seed write");
+    let rsp = exchange(
+        &mut dev,
+        2,
+        ApciCode::MemoryBitWrite,
+        0,
+        &[5, 0x09, 0x70, 0x33, 0x33, 0x33, 0x33, 0x33, 0x55, 0x55, 0x55, 0x55, 0x55],
+        0,
+    )
+    .expect("verified memory-bit response");
+    assert_eq!(&apdu(&rsp)[1..], &[0x45, 0x09, 0x70, 0x56, 0x56, 0x56, 0x56, 0x56]);
+
+    exchange(&mut dev, 3, ApciCode::MemoryWrite, 1, &[0x09, 0xCF, 0x0F], 0).expect("verified seed write");
+    let rsp = exchange(&mut dev, 4, ApciCode::MemoryBitWrite, 0, &[2, 0x09, 0xCF, 0x33, 0x33, 0x55, 0x55], 0)
+        .expect("verified boundary error");
+    assert_eq!(&apdu(&rsp)[1..], &[0x40, 0x09, 0xCF]);
+    let rsp = exchange(&mut dev, 5, ApciCode::MemoryRead, 1, &[0x09, 0xCF], 0).expect("memory read");
+    assert_eq!(apdu(&rsp)[4], 0x0F, "rejected range remains untouched");
+
+    // The protocol restricts the operation to five octets. A malformed
+    // count-six request still carries enough header to identify the error.
+    let rsp = exchange(
+        &mut dev,
+        6,
+        ApciCode::MemoryBitWrite,
+        0,
+        &[6, 0x09, 0xA0, 0x33, 0x33, 0x33, 0x33, 0x33, 0x33, 0x55, 0x55, 0x55, 0x55, 0x55],
+        0,
+    )
+    .expect("verified illegal-count error");
+    assert_eq!(&apdu(&rsp)[1..], &[0x40, 0x09, 0xA0]);
 }
 
 #[test]
@@ -345,6 +558,7 @@ fn snapshot_round_trip_preserves_persistent_state() {
     let mut dev = device();
     connect(&mut dev);
     exchange(&mut dev, 0, ApciCode::MemoryWrite, 1, &[0x01, 0x1B, 0x42], 0);
+    dev.mgmt.device_control = pid::device_control::ADDRESS_DUPLICATION | pid::device_control::VERIFY_MODE;
     let snap = MicroSnapshot::capture(&dev);
     let bytes = postcard::to_allocvec(&snap).expect("serializes");
     let back: MicroSnapshot = postcard::from_bytes(&bytes).expect("deserializes");
@@ -353,6 +567,7 @@ fn snapshot_round_trip_preserves_persistent_state() {
     assert_eq!(restored.eeprom_image()[0x1B], 0x42);
     assert_eq!(restored.mgmt.lsm[2].state, LoadState::Loaded);
     assert!(!restored.is_programming_mode(), "RAM state does not survive");
+    assert_eq!(restored.mgmt.device_control, 0, "Device Control is reset on power-up");
 }
 
 // ============================================================================
@@ -1059,6 +1274,20 @@ fn the_tool_key_is_write_only() {
         sec_exchange(&mut dev, ApciCode::PropertyExtValueRead, &ext_payload(SECURITY_IO, 1, 56, 1, 1, &[]), 1, 20);
     assert_eq!(reply[5], 0, "count zero");
     assert_eq!(reply[8], 0xFC, "the existing property refuses read access");
+}
+
+#[test]
+fn classic_tool_key_write_takes_effect_but_reports_failed_readback() {
+    let mut dev = data_secure_device();
+    sec_connect(&mut dev);
+
+    let key = [0xA5; 16];
+    let mut request = vec![4, pid::security::TOOL_KEY as u8, 0x10, 0x01];
+    request.extend_from_slice(&key);
+    let reply = sec_exchange(&mut dev, ApciCode::PropertyValueWrite, &request, 0, 10);
+
+    assert_eq!(dev.security_state().security.tool_key(), key, "the permitted write takes effect");
+    assert_eq!(reply, &[4, pid::security::TOOL_KEY as u8, 0x00, 0x01], "write-only read-back is an error");
 }
 
 /// The group key table is an array property: element 0 is the count probe,

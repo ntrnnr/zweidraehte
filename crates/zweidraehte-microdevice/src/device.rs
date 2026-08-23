@@ -134,7 +134,7 @@ pub struct Microdevice<F: MicroDeviceFamily, const FRAME_CAP: usize = MAX_FRAME,
     /// family's `RAM2_SIZE` bounds what is addressable).
     pub(crate) ram2: [u8; RAM2_CEILING],
     pub(crate) identity: DeviceIdentity,
-    pub(crate) tl: TlState<FRAME_CAP>,
+    pub(crate) tl: TlState<FRAME_CAP, F::Transport>,
     /// Public so fixtures (tests, the conformance DUT) can seed load
     /// states and keys the way a factory-programmed device ships.
     pub mgmt: ManagementState,
@@ -265,7 +265,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 }
             }
             PollInput::Timer => {
-                let timer_outputs = self.tl.check_timers::<F::Transport>(now_ms);
+                let timer_outputs = self.tl.check_timers(now_ms);
                 for output in timer_outputs {
                     if SEC::ENABLED {
                         self.run_secured_tl_output(output, None, now_ms, &mut out);
@@ -312,6 +312,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // G0 even though every `NoSecurity` hook itself folds to nothing.
         if !SEC::ENABLED {
             let Some(view) = FrameView::parse(frame) else { return };
+            self.detect_own_individual_address(view.source);
             self.handle_plain_frame(view, now_ms, out);
             return;
         }
@@ -348,7 +349,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             _ => return,
         };
 
-        let outputs = self.tl.process::<F::Transport>(event, now_ms);
+        let outputs = self.tl.process(event, now_ms);
         for output in outputs {
             self.run_plain_tl_output(output, Some(view), now_ms, out);
         }
@@ -356,6 +357,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     fn handle_secured_frame(&mut self, frame: &mut FrameBuf<FRAME_CAP>, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
         let Some(view) = FrameView::parse(frame) else { return };
+        self.detect_own_individual_address(view.source);
         if view.is_group {
             if view.dest_raw == [0, 0] {
                 self.dispatch_broadcast(frame, now_ms, out);
@@ -387,9 +389,19 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             _ => return,
         };
 
-        let outputs = self.tl.process::<F::Transport>(event, now_ms);
+        let outputs = self.tl.process(event, now_ms);
         for output in outputs {
             self.run_secured_tl_output(output, Some(&mut *frame), now_ms, out);
+        }
+    }
+
+    #[inline]
+    fn detect_own_individual_address(&mut self, source: IndividualAddress) {
+        // Volume 6 Profiles §2.3.2 requires this BCU2-specific diagnostic.
+        // The TPUART driver consumes our transmit echo, so a frame reaching
+        // this boundary with our source address really came from the bus.
+        if F::DETECT_OWN_INDIVIDUAL_ADDRESS && source == self.individual_address() {
+            self.mgmt.device_control |= zweidraehte_proto::pid::device_control::ADDRESS_DUPLICATION;
         }
     }
 
@@ -416,12 +428,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 let Some(view) = frame else { return };
                 self.dispatch_plain_management(view, source, now_ms, out);
             }
-            TlOutput::Retransmit => {
+            TlOutput::Retransmit | TlOutput::TransmitPending => {
                 if let Some(pending) = self.tl.pending() {
                     out.push(pending.clone());
                 }
             }
-            TlOutput::SendData { .. } => {}
+            TlOutput::SendData { .. } | TlOutput::QueueSend => {}
         }
     }
 
@@ -453,12 +465,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 let Some(frame) = frame else { return };
                 self.dispatch_management_frame(frame, source, now_ms, out);
             }
-            TlOutput::Retransmit => {
+            TlOutput::Retransmit | TlOutput::TransmitPending => {
                 if let Some(pending) = self.tl.pending() {
                     out.push(pending.clone());
                 }
             }
-            TlOutput::SendData { .. } => {
+            TlOutput::SendData { .. } | TlOutput::QueueSend => {
                 // Produced by our own RequestData in send_reply(); the
                 // frame is built there where the APDU is at hand.
             }
@@ -595,8 +607,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     // sequence, starts TACK, and retains the encrypted frame
                     // byte-for-byte for retransmission.
                     if !self.tl.can_send() {
-                        self.process_busy_send(dest, now_ms, out);
-                    } else if let Some(seq) = self.tl.begin_send::<F::Transport>(dest, now_ms) {
+                        if self.process_busy_send(dest, now_ms, out) {
+                            let _ = self.tl.store_queued(frame.clone());
+                        }
+                    } else if let Some(seq) = self.tl.begin_send(dest, now_ms) {
                         debug_assert_eq!(frame[6] & 0xFC, Tpci::DataConnected(seq).octet());
                         self.tl.store_pending(frame.clone());
                         out.push(frame.clone());
@@ -631,7 +645,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // S-A_Sync_Res uses the request's communication mode (03/03/07
         // §5.3.2), but a connected response carries the device's next TL
         // sequence. CCM needs that TPCI before the TL sees the response.
-        let response_tpci = Tpci::DataConnected(self.tl.send_seq()).octet();
+        let response_tpci = Tpci::DataConnected(self.tl.reply_seq()).octet();
         let Some(mut request) = self.admit_incoming(
             frame,
             Admission { now_ms, group_key_index: None, plain_access, response_tpci, reply_destination: Some(source) },
@@ -805,15 +819,8 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         out: &mut PollOutput<FRAME_CAP>,
     ) {
         let own = self.individual_address();
-        if !self.tl.can_send() {
-            // The AL has produced an E15 request while another numbered
-            // response is unacknowledged. Feed that request to the selected
-            // transport style instead of silently dropping it: BCU2 Style 1
-            // closes with A6, while queue-capable styles remain in OPEN_WAIT.
-            self.process_busy_send(dest, now_ms, out);
-            return;
-        }
-        let seq = self.tl.send_seq();
+        let can_send = self.tl.can_send();
+        let seq = self.tl.reply_seq();
         let mut frame: FrameBuf<FRAME_CAP> =
             frame::data_frame(priority_bits, own, dest.0, false, Tpci::DataConnected(seq), apci, small6, payload);
         // The TL sequence number is part of the inner TPCI and is therefore
@@ -823,7 +830,16 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if !SEC::protect_reply(&mut self.sec, reply_context, &mut frame) {
             return;
         }
-        let Some(actual_seq) = self.tl.begin_send::<F::Transport>(dest, now_ms) else {
+        if !can_send {
+            // The AL has produced E15 while another numbered response is
+            // unacknowledged. Style 2/3 retain one complete response; Style 1
+            // closes and leaves its zero-sized queue empty.
+            if self.process_busy_send(dest, now_ms, out) {
+                let _ = self.tl.store_queued(frame);
+            }
+            return;
+        }
+        let Some(actual_seq) = self.tl.begin_send(dest, now_ms) else {
             return;
         };
         debug_assert_eq!(actual_seq, seq);
@@ -831,13 +847,19 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         out.push(frame);
     }
 
-    fn process_busy_send(&mut self, dest: IndividualAddress, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) {
-        for output in self.tl.process::<F::Transport>(TlEvent::RequestData { dest }, now_ms) {
+    fn process_busy_send(&mut self, dest: IndividualAddress, now_ms: u32, out: &mut PollOutput<FRAME_CAP>) -> bool {
+        let mut queued = false;
+        for output in self.tl.process(TlEvent::RequestData { dest }, now_ms) {
             // E15 cannot indicate received data. Reusing the ordinary output
             // path keeps disconnect frames and authorization cleanup exactly
             // aligned with bus-originated TL transitions.
-            self.run_secured_tl_output(output, None, now_ms, out);
+            if output == TlOutput::QueueSend {
+                queued = true;
+            } else {
+                self.run_secured_tl_output(output, None, now_ms, out);
+            }
         }
+        queued
     }
 
     // ── Broadcast services (programming mode) ───────────────────────
@@ -892,6 +914,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             ApciCode::IndividualAddressSerialNumberWrite => {
                 if !zweidraehte_proto::access::AccessPolicy::OPEN_OFF_TOOL_ON
                     .can_write(&access, SEC::security_mode_enabled(&self.sec))
+                    || !F::individual_address_write_enabled(self.eeprom.as_ref())
                 {
                     return true;
                 }
@@ -978,7 +1001,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         match ApciCode::from_wire10(apci10) {
             ApciCode::IndividualAddressWrite => {
                 let payload = view.payload();
-                if self.is_programming_mode() && payload.len() == 2 {
+                if F::individual_address_write_enabled(self.eeprom.as_ref())
+                    && self.is_programming_mode()
+                    && payload.len() == 2
+                {
                     let base = F::ia_eeprom_offset();
                     self.eeprom.as_mut()[base..base + 2].copy_from_slice(payload);
                 }
@@ -1032,6 +1058,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                     .can_write(&request.access, SEC::security_mode_enabled(&self.sec))
                 {
                     self.record_access_failure(request.access, view.frame);
+                    return;
+                }
+                if !F::individual_address_write_enabled(self.eeprom.as_ref()) {
                     return;
                 }
                 let payload = view.payload();

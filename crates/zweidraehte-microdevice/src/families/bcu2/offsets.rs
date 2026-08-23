@@ -44,3 +44,11 @@ pub const USER_SAVE_PTR_DEFAULT: u8 = 0x48;
 /// The device's own individual address, stored inside the address
 /// table blob (offset 0x16 length byte + 1).
 pub const INDIVIDUAL_ADDRESS: usize = 0x17;
+
+// The mask keeps permanent management state in its system-reserved EEPROM
+// tail (0470h..04DFh). Keeping these values in the already-present BCU2 image
+// avoids adding unused RAM fields to BCU1 and System 7 compositions.
+/// Permanent `PID_SERVICE_CONTROL` backing (2 bytes, big-endian).
+pub const SERVICE_CONTROL: usize = 0x370;
+/// Permanent `PID_POLL_GROUP_SETTINGS` backing (3 bytes).
+pub const POLL_GROUP_SETTINGS: usize = SERVICE_CONTROL + 2;

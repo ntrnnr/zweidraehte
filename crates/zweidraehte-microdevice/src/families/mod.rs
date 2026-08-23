@@ -54,5 +54,10 @@ pub(crate) fn adc_read_stub<const N: usize>(code: ApciCode, small6: u8, payload:
         return None;
     }
     let read_count = payload.first().copied().unwrap_or(1);
-    Some(ServiceResult::Reply(Reply::new(ApciCode::AdcResponse, small6, &[read_count, 0x00, 0x00])))
+    // 06 Profiles §4.6.3 requires channels 1 (bus voltage) and 4 (PEI
+    // type). An unsupported channel is still answered, but with count zero;
+    // claiming every channel exists defeats the management conformance test
+    // and gives applications invented hardware resources.
+    let count = if matches!(small6, 1 | 4) { read_count } else { 0 };
+    Some(ServiceResult::Reply(Reply::new(ApciCode::AdcResponse, small6, &[count, 0x00, 0x00])))
 }

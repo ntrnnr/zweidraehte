@@ -54,8 +54,6 @@ pub enum PropertyBacking {
     ObjectType,
     /// `ManagementState::device_control`.
     DeviceControl,
-    /// The fixed BCU-era service-control view.
-    ServiceControl,
     /// The programming-mode bit shared with memory address 0060h.
     ProgrammingMode,
     /// The micro stack's firmware revision.
@@ -266,6 +264,11 @@ pub trait MicroDeviceFamily: 'static {
     /// Number of interface objects (BCU2: Device, Address Table,
     /// Association Table, Application Program).
     const OBJECT_COUNT: u8;
+
+    /// Whether receiving a frame with our own Individual Address as its
+    /// source latches the duplication flag in `PID_DEVICE_CONTROL`.
+    const DETECT_OWN_INDIVIDUAL_ADDRESS: bool = false;
+
     /// Interface object type of object index `idx` (only called with
     /// `idx < OBJECT_COUNT`).
     fn object_type(idx: u8) -> u16;
@@ -291,6 +294,13 @@ pub trait MicroDeviceFamily: 'static {
             }
         }
         None
+    }
+
+    /// Whether the permanent service-control field permits either form of
+    /// Individual Address write. The family owns its persistent backing;
+    /// families without the field impose no extra gate here.
+    fn individual_address_write_enabled(_eeprom: &[u8]) -> bool {
+        true
     }
 
     // ── Run state model ──────────────────────────────────────────────
