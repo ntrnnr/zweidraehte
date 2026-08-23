@@ -10,6 +10,7 @@ mod definition;
 pub use app::LightSwitchMicroApp;
 pub use definition::{
     BCU2_PARAMS_IMAGE_OFFSET, BCU2_SECURE_GROUP_KEY_CAPACITY, BCU2_SECURE_GROUP_OBJECT_CAPACITY,
-    BCU2_SECURE_P2P_KEY_CAPACITY, BCU2_SECURE_SIAT_CAPACITY, LightSwitchS7Family, S7_PARAMS_IMAGE_OFFSET,
-    bcu2_definition, secure_bcu2_definition, system7_definition,
+    BCU2_SECURE_P2P_KEY_CAPACITY, BCU2_SECURE_SIAT_CAPACITY, LightSwitchS7Family, LightSwitchSecureS7Family,
+    S7_PARAMS_IMAGE_OFFSET, S7_SECURE_GROUP_KEY_CAPACITY, S7_SECURE_GROUP_OBJECT_CAPACITY, S7_SECURE_P2P_KEY_CAPACITY,
+    S7_SECURE_SIAT_CAPACITY, bcu2_definition, secure_bcu2_definition, secure_system7_definition, system7_definition,
 };

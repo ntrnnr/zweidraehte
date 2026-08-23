@@ -98,7 +98,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bcu2_secure_image = micro::secure_bcu2_definition().build_eeprom_for_mask(0x0021);
     let bcu2_secure_tables: &'static [u8] =
         Box::leak(bcu2_secure_image[..micro::BCU2_PARAMS_IMAGE_OFFSET].to_vec().into_boxed_slice());
-    let s7_micro_image = micro::LightSwitchS7Family::build_eeprom(&micro::system7_definition());
+    let s7_micro_image = micro::LightSwitchSecureS7Family::build_eeprom(&micro::secure_system7_definition());
     let s7_micro_cot = &s7_micro_image[0x200..0x200 + 3 + LightSwitchDevice::MAX_COM_OBJECTS as usize * 4];
 
     let page_layout = LightSwitchDevice::page_layout();
@@ -502,9 +502,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         is_secure_enabled: Some(true),
         max_user_entries: None,
         max_tunneling_user_entries: None,
-        max_security_individual_address_entries: Some(32),
-        max_security_group_key_table_entries: Some(10),
-        max_security_p2p_key_table_entries: Some(0),
+        max_security_individual_address_entries: Some(micro::S7_SECURE_SIAT_CAPACITY as u16),
+        max_security_group_key_table_entries: Some(micro::S7_SECURE_GROUP_KEY_CAPACITY as u16),
+        max_security_p2p_key_table_entries: Some(micro::S7_SECURE_P2P_KEY_CAPACITY as u16),
     };
 
     // The BCU2 (mask 0020h) variant on the microdevice stack: two

@@ -44,6 +44,14 @@ pub const BCU2_SECURE_GROUP_KEY_CAPACITY: usize = LightSwitchDevice::MAX_ADDRESS
 pub const BCU2_SECURE_GROUP_OBJECT_CAPACITY: usize = LightSwitchDevice::MAX_COM_OBJECTS as usize;
 pub const BCU2_SECURE_P2P_KEY_CAPACITY: usize = 0;
 
+/// Data Secure capacities for the shared System 7 product. The larger SIAT
+/// matches the existing full-stack firmware and its MTXML declaration; group
+/// and GO tables remain bounded by this product's ordinary table sizes.
+pub const S7_SECURE_SIAT_CAPACITY: usize = 32;
+pub const S7_SECURE_GROUP_KEY_CAPACITY: usize = LightSwitchDevice::MAX_ADDRESS_TABLE_ENTRIES as usize;
+pub const S7_SECURE_GROUP_OBJECT_CAPACITY: usize = LightSwitchDevice::MAX_COM_OBJECTS as usize;
+pub const S7_SECURE_P2P_KEY_CAPACITY: usize = 0;
+
 /// The micro System 7 family: 1 KiB of user EEPROM from 4000h, with its group
 /// object table published at 4200h.
 pub type LightSwitchS7Family = System7Family<
@@ -51,6 +59,16 @@ pub type LightSwitchS7Family = System7Family<
     0x4200,
     { LightSwitchDevice::MANUFACTURER_ID },
     { LightSwitchDevice::APPLICATION_ID_TP1_SYSTEM7 },
+    { LightSwitchDevice::APPLICATION_VERSION },
+    { LightSwitchDevice::PEI_TYPE },
+>;
+
+/// Secure application identity over the same System 7 EEPROM geometry.
+pub type LightSwitchSecureS7Family = System7Family<
+    0x400,
+    0x4200,
+    { LightSwitchDevice::MANUFACTURER_ID },
+    { LightSwitchDevice::APPLICATION_ID_TP1_SYSTEM7_SECURE },
     { LightSwitchDevice::APPLICATION_VERSION },
     { LightSwitchDevice::PEI_TYPE },
 >;
@@ -113,6 +131,14 @@ pub const fn system7_definition() -> System7DeviceDefinition {
     }
 }
 
+/// The Data Secure System 7 definition used by both micro firmware and the
+/// existing secure 0705h product variant.
+pub const fn secure_system7_definition() -> System7DeviceDefinition {
+    let mut definition = system7_definition();
+    definition.device_type = LightSwitchDevice::APPLICATION_ID_TP1_SYSTEM7_SECURE;
+    definition
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +169,13 @@ mod tests {
         assert_eq!(&image[0x201..0x203], &[0x00, 0xD0]);
         assert_eq!(&image[0x203..0x205], &[0x00, 0xC6]);
         assert_eq!(&image[0x300..0x300 + DEFAULT_PARAM_BYTES.len()], &DEFAULT_PARAM_BYTES);
+    }
+
+    #[test]
+    fn secure_s7_keeps_geometry_but_uses_the_secure_application_identity() {
+        let plain = LightSwitchS7Family::build_eeprom(&system7_definition());
+        let secure = LightSwitchSecureS7Family::build_eeprom(&secure_system7_definition());
+        assert_eq!(secure_system7_definition().device_type, LightSwitchDevice::APPLICATION_ID_TP1_SYSTEM7_SECURE);
+        assert_eq!(plain, secure, "security changes the profile and identity, not the EEPROM segment geometry");
     }
 }
