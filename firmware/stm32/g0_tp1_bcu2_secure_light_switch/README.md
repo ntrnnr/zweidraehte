@@ -2,8 +2,8 @@
 
 Mask 0021h Data Secure reference firmware for the
 `zweidraehte-microdevice` stack. It uses no executor or async HAL. The
-release ELF is about 65 KiB of flash and 1 KiB of static RAM on the
-STM32G0B0RE; the flash-persistent plain 0020h sibling is about 26 KiB.
+release ELF is about 70 KiB of flash and 1 KiB of static RAM on the
+STM32G0B0RE; the flash-persistent plain 0020h sibling is about 27 KiB.
 
 Low-write ETS configuration lives in the penultimate internal-flash page.
 The secure counters and SIAT live in an external FM25L16B FRAM, because a

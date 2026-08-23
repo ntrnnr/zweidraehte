@@ -1,9 +1,4 @@
-//! Minimal FM25L16B adapter for the micro stack's high-write security state.
-//!
-//! The generic SPI protocol lives in `fm25l16b`; this module contains only
-//! the STM32G0 register adapter and the compact on-media layout. Sequence
-//! numbers are written before a secure frame leaves the device, so putting
-//! them in internal flash is not an option without a much larger wear-leveler.
+//! FM25L16B-backed sequence numbers, SIAT, and sync-response entropy.
 
 use core::cell::RefCell;
 use core::convert::Infallible;
@@ -17,9 +12,6 @@ use stm32_metapac::{self as pac, GPIOB, RCC, SPI2};
 use zweidraehte_microdevice::security::MicroSecurityResources;
 use zweidraehte_proto::security::{DEFAULT_SENDING, SequenceNumberStorage, SiatAccess};
 
-use crate::SIAT_CAPACITY;
-
-const MAGIC: [u8; 4] = *b"B2S1";
 const MAGIC_OFFSET: u16 = 0;
 const SENDING_OFFSET: u16 = 4;
 const TOOL_OFFSET: u16 = 10;
@@ -27,28 +19,45 @@ const COUNT_OFFSET: u16 = 16;
 const ENTRIES_OFFSET: u16 = 18;
 const ENTRY_SIZE: u16 = 8;
 
-/// Secure sequence/SIAT store plus the CSPRNG used for sync challenges.
-pub struct FramStore {
+/// Write-through security state for a target with `SIAT` peer slots.
+///
+/// `FORMAT` is a product-owned four-octet on-media tag encoded as a big-endian
+/// `u32`. Giving each layout its own tag prevents one firmware variant from
+/// interpreting another variant's counters. Changing `SIAT` or the layout
+/// requires a new tag.
+pub struct FramStore<const SIAT: usize, const FORMAT: u32> {
     fram: RefCell<Fm25l16b<PacSpi, ChipSelect>>,
     rng: ChaCha20Rng,
 }
 
-impl FramStore {
+impl<const SIAT: usize, const FORMAT: u32> FramStore<SIAT, FORMAT> {
+    const VALID_LAYOUT: () = {
+        assert!(ENTRIES_OFFSET as usize + SIAT * ENTRY_SIZE as usize <= fm25l16b::CAPACITY as usize);
+        assert!(FORMAT != u32::MAX, "an erased FRAM must not look initialized");
+    };
+
     pub fn open(rng: ChaCha20Rng) -> Result<Self, ()> {
+        // The FM25L16B has 2 KiB. Make an oversized product declaration fail
+        // at compile time instead of wrapping its 16-bit media offsets. The
+        // format tag also cannot equal the erased-media pattern.
+        let () = Self::VALID_LAYOUT;
+        let expected_magic = FORMAT.to_be_bytes();
+
         let mut fram = Fm25l16b::new(init_spi(), ChipSelect);
         let mut magic = [0u8; 4];
         fram.read(MAGIC_OFFSET, &mut magic).map_err(|_| ())?;
-
-        if magic != MAGIC {
-            // Write the magic last. A power loss during initialization leaves
-            // the old/non-magic header and the next boot retries from scratch.
+        if magic != expected_magic {
+            // Publish the magic last. Interrupted initialization is retried in
+            // full rather than exposing a partial replay-protection table.
             fram.write(SENDING_OFFSET, &DEFAULT_SENDING).map_err(|_| ())?;
             fram.write(TOOL_OFFSET, &[0; 6]).map_err(|_| ())?;
             fram.write(COUNT_OFFSET, &[0; 2]).map_err(|_| ())?;
-            fram.write(ENTRIES_OFFSET, &[0; SIAT_CAPACITY * ENTRY_SIZE as usize]).map_err(|_| ())?;
-            fram.write(MAGIC_OFFSET, &MAGIC).map_err(|_| ())?;
+            for index in 0..SIAT {
+                let offset = ENTRIES_OFFSET + u16::try_from(index).map_err(|_| ())? * ENTRY_SIZE;
+                fram.write(offset, &[0; ENTRY_SIZE as usize]).map_err(|_| ())?;
+            }
+            fram.write(MAGIC_OFFSET, &expected_magic).map_err(|_| ())?;
         }
-
         Ok(Self { fram: RefCell::new(fram), rng })
     }
 
@@ -62,30 +71,30 @@ impl FramStore {
         let mut bytes = [0u8; 2];
         self.fram.borrow_mut().read(COUNT_OFFSET, &mut bytes).map_err(|_| ())?;
         let count = u16::from_be_bytes(bytes);
-        (usize::from(count) <= SIAT_CAPACITY).then_some(count).ok_or(())
+        (usize::from(count) <= SIAT).then_some(count).ok_or(())
     }
 
-    fn read_entry(&self, idx: u16) -> Result<(u16, [u8; 6]), ()> {
-        if usize::from(idx) >= SIAT_CAPACITY {
+    fn read_entry(&self, index: u16) -> Result<(u16, [u8; 6]), ()> {
+        if usize::from(index) >= SIAT {
             return Err(());
         }
         let mut bytes = [0u8; ENTRY_SIZE as usize];
-        self.fram.borrow_mut().read(ENTRIES_OFFSET + idx * ENTRY_SIZE, &mut bytes).map_err(|_| ())?;
+        self.fram.borrow_mut().read(ENTRIES_OFFSET + index * ENTRY_SIZE, &mut bytes).map_err(|_| ())?;
         Ok((u16::from_be_bytes([bytes[0], bytes[1]]), bytes[2..].try_into().expect("six-byte SIAT sequence")))
     }
 
-    fn write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), ()> {
-        if usize::from(idx) >= SIAT_CAPACITY {
+    fn write_entry(&mut self, index: u16, ia: u16, seq: [u8; 6]) -> Result<(), ()> {
+        if usize::from(index) >= SIAT {
             return Err(());
         }
         let mut bytes = [0u8; ENTRY_SIZE as usize];
         bytes[..2].copy_from_slice(&ia.to_be_bytes());
         bytes[2..].copy_from_slice(&seq);
-        self.fram.get_mut().write(ENTRIES_OFFSET + idx * ENTRY_SIZE, &bytes).map_err(|_| ())
+        self.fram.get_mut().write(ENTRIES_OFFSET + index * ENTRY_SIZE, &bytes).map_err(|_| ())
     }
 }
 
-impl SequenceNumberStorage for FramStore {
+impl<const SIAT: usize, const FORMAT: u32> SequenceNumberStorage for FramStore<SIAT, FORMAT> {
     type Error = ();
 
     fn load_sending_seq(&self) -> Result<[u8; 6], Self::Error> {
@@ -97,8 +106,8 @@ impl SequenceNumberStorage for FramStore {
     }
 
     fn load_receiving_seq(&self, peer_ia: u16) -> Result<Option<[u8; 6]>, Self::Error> {
-        for idx in 0..self.count()? {
-            let (ia, seq) = self.read_entry(idx)?;
+        for index in 0..self.count()? {
+            let (ia, seq) = self.read_entry(index)?;
             if ia == peer_ia {
                 return Ok(Some(seq));
             }
@@ -107,10 +116,10 @@ impl SequenceNumberStorage for FramStore {
     }
 
     fn save_receiving_seq(&mut self, peer_ia: u16, seq: &[u8; 6]) -> Result<(), Self::Error> {
-        for idx in 0..self.count()? {
-            let (ia, _) = self.read_entry(idx)?;
+        for index in 0..self.count()? {
+            let (ia, _) = self.read_entry(index)?;
             if ia == peer_ia {
-                return self.write_entry(idx, ia, *seq);
+                return self.write_entry(index, ia, *seq);
             }
         }
         Err(())
@@ -126,7 +135,7 @@ impl SequenceNumberStorage for FramStore {
     }
 }
 
-impl SiatAccess for FramStore {
+impl<const SIAT: usize, const FORMAT: u32> SiatAccess for FramStore<SIAT, FORMAT> {
     type Error = ();
 
     fn siat_count(&self) -> u16 {
@@ -134,45 +143,38 @@ impl SiatAccess for FramStore {
     }
 
     fn siat_index_of(&self, ia: u16) -> Option<u16> {
-        (0..self.siat_count()).find(|&idx| self.read_entry(idx).is_ok_and(|entry| entry.0 == ia)).map(|idx| idx + 1)
+        (0..self.siat_count())
+            .find(|&index| self.read_entry(index).is_ok_and(|entry| entry.0 == ia))
+            .map(|index| index + 1)
     }
 
-    fn siat_read_entry(&self, idx: u16) -> Option<(u16, [u8; 6])> {
-        (idx < self.siat_count()).then(|| self.read_entry(idx).ok()).flatten()
+    fn siat_read_entry(&self, index: u16) -> Option<(u16, [u8; 6])> {
+        (index < self.siat_count()).then(|| self.read_entry(index).ok()).flatten()
     }
 
-    fn siat_write_entry(&mut self, idx: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error> {
-        if usize::from(idx) >= SIAT_CAPACITY {
+    fn siat_write_entry(&mut self, index: u16, ia: u16, seq: [u8; 6]) -> Result<(), Self::Error> {
+        if usize::from(index) >= SIAT {
             return Err(());
         }
-
         let old_count = self.count()?;
-        if idx >= old_count {
-            // KNX array-property entry writes extend the used element range.
-            // ETS first writes count zero to clear PID 54, then starts again
-            // at element 1; requiring idx < count makes that standard load
-            // sequence impossible. Clear any skipped slots, write the new
-            // row, and publish the larger count last so a power loss cannot
-            // expose a partially written entry range.
-            for gap in old_count..idx {
+        if index >= old_count {
+            for gap in old_count..index {
                 self.write_entry(gap, 0, [0; 6])?;
             }
-            self.write_entry(idx, ia, seq)?;
-            self.fram.get_mut().write(COUNT_OFFSET, &(idx + 1).to_be_bytes()).map_err(|_| ())
+            self.write_entry(index, ia, seq)?;
+            self.fram.get_mut().write(COUNT_OFFSET, &(index + 1).to_be_bytes()).map_err(|_| ())
         } else {
-            self.write_entry(idx, ia, seq)
+            self.write_entry(index, ia, seq)
         }
     }
 
     fn siat_set_count(&mut self, count: u16) -> Result<(), Self::Error> {
-        if usize::from(count) > SIAT_CAPACITY {
+        if usize::from(count) > SIAT {
             return Err(());
         }
-        let old = self.count()?;
-        // Newly exposed and truncated rows must both start blank; otherwise a
-        // count-only write could resurrect an old replay counter.
-        for idx in count.min(old)..count.max(old) {
-            self.write_entry(idx, 0, [0; 6])?;
+        let old_count = self.count()?;
+        for index in count.min(old_count)..count.max(old_count) {
+            self.write_entry(index, 0, [0; 6])?;
         }
         self.fram.get_mut().write(COUNT_OFFSET, &count.to_be_bytes()).map_err(|_| ())
     }
@@ -182,15 +184,11 @@ impl SiatAccess for FramStore {
     }
 }
 
-impl MicroSecurityResources for FramStore {
+impl<const SIAT: usize, const FORMAT: u32> MicroSecurityResources for FramStore<SIAT, FORMAT> {
     fn fill_random(&mut self, random: &mut [u8; 6]) {
         self.rng.try_fill_bytes(random).ok();
     }
 }
-
-// ============================================================================
-// Bare-PAC SPI2 adapter (mode 0, 4 MHz)
-// ============================================================================
 
 pub struct PacSpi;
 
@@ -223,9 +221,9 @@ impl SpiBus<u8> for PacSpi {
     }
 
     fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<(), Self::Error> {
-        for i in 0..read.len().max(write.len()) {
-            let received = Self::exchange(write.get(i).copied().unwrap_or(0));
-            if let Some(slot) = read.get_mut(i) {
+        for index in 0..read.len().max(write.len()) {
+            let received = Self::exchange(write.get(index).copied().unwrap_or(0));
+            if let Some(slot) = read.get_mut(index) {
                 *slot = received;
             }
         }
@@ -268,9 +266,6 @@ fn init_spi() -> PacSpi {
     use pac::spi::vals::{Br, Cpha, Cpol, Ds, Frxth, Lsbfirst, Mstr};
 
     RCC.apbenr1().modify(|w| w.set_spi2en(true));
-
-    // PB13/14/15 are SPI2 AF0. PB12 is CS and PB9 holds the FRAM's
-    // active-low write-protect pin high for the life of the firmware.
     GPIOB.moder().modify(|w| {
         w.set_moder(9, Moder::OUTPUT);
         w.set_moder(12, Moder::OUTPUT);

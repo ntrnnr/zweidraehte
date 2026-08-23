@@ -1,10 +1,10 @@
-# Data Secure BCU2 light switch on the polling micro stack. Like the plain
-# sibling this target has no executor or HAL; only the PAC and blocking
-# peripheral adapters are linked.
+# Data Secure System 7 light switch on the polling micro stack. The target
+# stays raw-PAC and executor-free; only secure micro firmware pulls in the
+# shared ADC/FRAM helper.
 [package]
 edition = "2024"
 license.workspace = true
-name = "stm32g0_tp1_bcu2_secure_light_switch"
+name = "stm32g0_tp1_micro_system7_secure_light_switch"
 version = "0.1.0"
 
 [dependencies]
@@ -28,6 +28,5 @@ zweidraehte-util = { version = "0.1.0", path = "../../../crates/zweidraehte-util
 dev-provisioning-build = { path = "../../common/dev-provisioning-build" }
 
 [features]
-# Development convenience only. Production firmware refuses to boot unless
-# tools/knx-provision has written a valid per-device KNXP serial and FDSK.
+# Production refuses to boot without a valid KNXP serial/FDSK record.
 provision-on-boot = []

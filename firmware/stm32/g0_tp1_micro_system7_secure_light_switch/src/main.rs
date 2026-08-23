@@ -1,14 +1,8 @@
-//! Data Secure BCU2 (mask 0021h) light switch on the polling micro stack.
+//! Data Secure System 7 (mask 0705h) light switch on the polling stack.
 //!
-//! There is no executor and no async HAL: one main loop polls USART1, the
-//! TPUART state machine, stack timers, and the shared light-switch application.
-//! The security-specific resources are deliberately separate by write rate:
-//!
-//! - the final internal-flash page contains the per-device `KNXP` serial/FDSK;
-//! - the preceding page stores low-rate EEPROM, management and Security IO
-//!   configuration at restart or after a standalone IA write;
-//! - an external FM25L16B on SPI2 stores every sequence-counter advance and
-//!   the SIAT without flash wear.
+//! Low-write configuration lives in internal flash. Sending/receiving
+//! sequence numbers and the SIAT are written through to an external
+//! FM25L16B before protected effects become observable.
 //!
 //! Hardware:
 //!   PA9  USART1_TX → TPUART RXD       PA10 USART1_RX ← TPUART TXD
@@ -32,31 +26,36 @@ use devices::light_switch::micro::{self, LightSwitchMicroApp};
 use heapless::{Deque, Vec};
 use panic_probe as _;
 use stm32_metapac::{self as pac, GPIOA, GPIOB, GPIOC, GPIOD, RCC, USART1};
-use zweidraehte_microdevice::SecureBcu2;
+use zweidraehte_microdevice::SecureSystem7;
 use zweidraehte_microdevice::device::{DeviceIdentity, PollInput, PollOutput};
 use zweidraehte_microdevice::frame::SECURE_EXTENDED_FRAME;
 use zweidraehte_microdevice::link::tpuart::{TpUart, TpUartEvent};
 use zweidraehte_util::input::{ButtonEvent, PolledButton};
 
-pub const GROUP_KEY_CAPACITY: usize = micro::BCU2_SECURE_GROUP_KEY_CAPACITY;
-pub const GROUP_OBJECT_CAPACITY: usize = micro::BCU2_SECURE_GROUP_OBJECT_CAPACITY;
-pub const SIAT_CAPACITY: usize = micro::BCU2_SECURE_SIAT_CAPACITY;
-// Preserve the existing `B2S1` on-media format across the shared-adapter
-// refactor; changing it would reset replay counters on the next boot.
-const SEQUENCE_FORMAT: u32 = u32::from_be_bytes(*b"B2S1");
+pub const GROUP_KEY_CAPACITY: usize = micro::S7_SECURE_GROUP_KEY_CAPACITY;
+pub const GROUP_OBJECT_CAPACITY: usize = micro::S7_SECURE_GROUP_OBJECT_CAPACITY;
+pub const SIAT_CAPACITY: usize = micro::S7_SECURE_SIAT_CAPACITY;
+const SEQUENCE_FORMAT: u32 = u32::from_be_bytes(*b"S7S1");
 pub type SequenceStore = stm32_micro_common::FramStore<SIAT_CAPACITY, SEQUENCE_FORMAT>;
 
-pub type Device = SecureBcu2<SequenceStore, GROUP_KEY_CAPACITY, GROUP_OBJECT_CAPACITY>;
+pub type Fam = micro::LightSwitchSecureS7Family;
+pub type Device = SecureSystem7<
+    SequenceStore,
+    GROUP_KEY_CAPACITY,
+    GROUP_OBJECT_CAPACITY,
+    0x400,
+    0x4200,
+    { LightSwitchDevice::MANUFACTURER_ID },
+    { LightSwitchDevice::APPLICATION_ID_TP1_SYSTEM7_SECURE },
+    { LightSwitchDevice::APPLICATION_VERSION },
+    { LightSwitchDevice::PEI_TYPE },
+>;
 
 const FRAME_CAPACITY: usize = SECURE_EXTENDED_FRAME;
 const WIRE_CAPACITY: usize = FRAME_CAPACITY + 1;
 const TX_CAPACITY: usize = WIRE_CAPACITY * 2;
 const PROGRAMMING_BUTTON_DEBOUNCE_MS: u32 = 50;
 type PendingFrames = Deque<Vec<u8, FRAME_CAPACITY>, 8>;
-
-// ============================================================================
-// Milliseconds via SysTick
-// ============================================================================
 
 static MILLIS: AtomicU32 = AtomicU32::new(0);
 
@@ -68,10 +67,6 @@ fn SysTick() {
 fn now_ms() -> u32 {
     MILLIS.load(Ordering::Relaxed)
 }
-
-// ============================================================================
-// Bare-metal TPUART and board GPIO
-// ============================================================================
 
 fn init_hardware() {
     RCC.gpioenr().modify(|w| {
@@ -130,8 +125,6 @@ fn uart_write_blocking(bytes: &[u8]) {
         while !USART1.isr().read().txe() {}
         USART1.tdr().write(|w| w.set_dr(u16::from(byte)));
     }
-    // `TXE` only means the final byte reached the shift register. Persistence
-    // and reset may follow immediately, so wait until it is physically out.
     while !USART1.isr().read().tc() {}
 }
 
@@ -157,8 +150,6 @@ fn flush_tpuart<A: Fn(&[u8]) -> bool>(
     pending: &mut PendingFrames,
     now: u32,
 ) {
-    // Reset requests and immediate ACK bytes can be queued independently of
-    // an L_Data transmission; always drain those first.
     if !tpuart.pending_tx().is_empty() {
         uart_write_blocking(tpuart.pending_tx());
         tpuart.clear_tx();
@@ -175,10 +166,6 @@ fn flush_tpuart<A: Fn(&[u8]) -> bool>(
     }
 }
 
-// ============================================================================
-// Main loop
-// ============================================================================
-
 #[entry]
 fn main() -> ! {
     let core = cortex_m::Peripherals::take().expect("first and only take");
@@ -194,14 +181,15 @@ fn main() -> ! {
     let provisioned = config::load_identity().expect("valid KNXP serial and FDSK");
     let rng = stm32_micro_common::seed_csprng();
     let sequence = SequenceStore::open(rng).expect("FM25L16B sequence store");
-    let restored = config::load(micro::secure_bcu2_definition().build_eeprom_for_mask(0x0021), provisioned.fdsk);
+    let default_eeprom = Fam::build_eeprom(&micro::secure_system7_definition());
+    let restored = config::load(default_eeprom, provisioned.fdsk);
     let identity = DeviceIdentity {
         serial_number: provisioned.serial_number,
         order_info: [0; 10],
-        hardware_type: LightSwitchDevice::HARDWARE_TYPE_TP1_BCU2_SECURE,
+        hardware_type: LightSwitchDevice::HARDWARE_TYPE_TP1_SYSTEM7_SECURE,
     };
     let mut stack = restored.into_device(identity, provisioned.fdsk, sequence);
-    let mut app = LightSwitchMicroApp::new(micro::BCU2_PARAMS_IMAGE_OFFSET);
+    let mut app = LightSwitchMicroApp::new(micro::S7_PARAMS_IMAGE_OFFSET);
 
     let mut tpuart: TpUart<_, WIRE_CAPACITY, TX_CAPACITY> = TpUart::new_sized(|_header: &[u8]| true);
     // TODO: replace the ack-everything filter with IA/address-table matching
@@ -211,11 +199,10 @@ fn main() -> ! {
     let mut programming_button = PolledButton::new();
     let mut last_tick = 0u32;
 
-    defmt::info!("secure BCU2 micro stack up, IA {}", stack.individual_address().0);
+    defmt::info!("secure micro-System-7 stack up, IA {}", stack.individual_address().0);
 
     loop {
         let now = now_ms();
-
         while let Some(byte) = uart_read() {
             let mut persist_ia = false;
             match tpuart.push_byte(byte, now) {
@@ -237,7 +224,7 @@ fn main() -> ! {
             flush_tpuart(&mut tpuart, &mut pending, now);
             if persist_ia {
                 defmt::info!("individual address changed — persisting config");
-                config::save(&stack).expect("persist secure BCU2 config");
+                config::save(&stack).expect("persist secure System 7 config");
             }
         }
 
@@ -268,7 +255,7 @@ fn main() -> ! {
 
         flush_tpuart(&mut tpuart, &mut pending, now);
         if pending.is_empty() && tpuart.ready_to_send() && restart_pending {
-            config::save(&stack).expect("persist secure BCU2 config");
+            config::save(&stack).expect("persist secure System 7 config");
             cortex_m::peripheral::SCB::sys_reset();
         }
     }

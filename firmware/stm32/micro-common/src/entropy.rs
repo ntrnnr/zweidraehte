@@ -1,9 +1,8 @@
-//! Boot-time CSPRNG seeding without pulling in the embassy ADC driver.
+//! Boot-time CSPRNG seeding without an async HAL.
 //!
-//! PA0 must be physically unconnected. We sample 1024 ADC LSBs and condition
-//! the eight 32-bit lanes before using them as a ChaCha20 key. The generator
-//! then lives in `FramStore`, beside the only micro-stack resource that asks
-//! for random bytes (`S-A_Sync_Res`).
+//! PA0 must be physically unconnected. The ADC's least-significant bits are
+//! conditioned into a ChaCha20 seed; the resulting generator is used only for
+//! the random challenge in `S-A_Sync_Res`.
 
 use chacha20::ChaCha20Rng;
 use chacha20::rand_core::SeedableRng;
@@ -19,8 +18,6 @@ pub fn seed_csprng() -> ChaCha20Rng {
     GPIOA.pupdr().modify(|w| w.set_pupdr(0, Pupdr::FLOATING));
     RCC.apbenr2().modify(|w| w.set_adcen(true));
 
-    // Use the known 16 MHz peripheral clock rather than depending on an
-    // asynchronously selected ADC clock left over from reset state.
     ADC1.cfgr2().modify(|w| w.set_ckmode(Ckmode::PCLK_DIV2));
     ADC1.cr().modify(|w| w.set_advregen(true));
     for _ in 0..400 {
@@ -41,17 +38,17 @@ pub fn seed_csprng() -> ChaCha20Rng {
     while !ADC1.isr().read().adrdy() {}
 
     let mut lanes = [0u32; 8];
-    for i in 0..SEED_SAMPLES {
+    for sample_index in 0..SEED_SAMPLES {
         ADC1.cr().modify(|w| w.set_adstart(true));
         while !ADC1.isr().read().eoc() {}
         let sample = ADC1.dr().read().data();
-        let lane = i & 7;
+        let lane = sample_index & 7;
         lanes[lane] = lanes[lane].rotate_left(1) ^ u32::from(sample & 1);
     }
 
     let mut seed = [0u8; 32];
-    for (i, lane) in lanes.into_iter().enumerate() {
-        seed[i * 4..i * 4 + 4].copy_from_slice(&mix(lane).to_le_bytes());
+    for (index, lane) in lanes.into_iter().enumerate() {
+        seed[index * 4..index * 4 + 4].copy_from_slice(&mix(lane).to_le_bytes());
     }
     ChaCha20Rng::from_seed(seed)
 }
