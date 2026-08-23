@@ -208,20 +208,20 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let data = hdr.data(frame);
         let security_on = SEC::security_mode_enabled(&self.sec);
         let result = match Self::resolve_object(hdr.object_type, hdr.object_instance) {
-            Some(ObjectRoute::Module) => match SEC::property_descriptor(hdr.prop_id) {
+            Some(ObjectRoute::Module(object)) => match SEC::property_descriptor(object, hdr.prop_id) {
                 Some((_, desc))
                     if (command && desc.can_function_write_secure(&access, security_on))
                         || (!command && desc.can_function_read_secure(&access, security_on)) =>
                 {
                     if command {
-                        SEC::function_command::<FRAME_CAP>(&mut self.sec, hdr.prop_id, data)
+                        SEC::function_command::<FRAME_CAP>(&mut self.sec, object, hdr.prop_id, data)
                     } else {
-                        SEC::function_state_read::<FRAME_CAP>(&self.sec, hdr.prop_id, data)
+                        SEC::function_state_read::<FRAME_CAP>(&self.sec, object, hdr.prop_id, data)
                     }
                 }
                 Some(_) => {
                     self.record_access_failure(access, frame);
-                    Some(SEC::function_access_denied(hdr.prop_id, data))
+                    Some(SEC::function_access_denied(object, hdr.prop_id, data))
                 }
                 None => None,
             },
@@ -269,22 +269,22 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             return ServiceResult::None;
         };
         let data = hdr.data(frame);
-        let result = if Self::is_module_object(hdr.object_idx) {
-            match SEC::property_descriptor(hdr.prop_id) {
+        let result = if let Some(object) = Self::module_object(hdr.object_idx) {
+            match SEC::property_descriptor(object, hdr.prop_id) {
                 Some((_, desc))
                     if (command && desc.can_function_write_secure(&access, SEC::security_mode_enabled(&self.sec)))
                         || (!command
                             && desc.can_function_read_secure(&access, SEC::security_mode_enabled(&self.sec))) =>
                 {
                     if command {
-                        SEC::function_command::<FRAME_CAP>(&mut self.sec, hdr.prop_id, data)
+                        SEC::function_command::<FRAME_CAP>(&mut self.sec, object, hdr.prop_id, data)
                     } else {
-                        SEC::function_state_read::<FRAME_CAP>(&self.sec, hdr.prop_id, data)
+                        SEC::function_state_read::<FRAME_CAP>(&self.sec, object, hdr.prop_id, data)
                     }
                 }
                 Some(_) => {
                     self.record_access_failure(access, frame);
-                    Some(SEC::function_access_denied(hdr.prop_id, data))
+                    Some(SEC::function_access_denied(object, hdr.prop_id, data))
                 }
                 None => None,
             }
@@ -335,12 +335,15 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 }
             }
         }
-        // A profile module owns its type/occurrence route independently of
-        // the base family. It answers for occurrence 1 only, there being
-        // exactly one of it; classic services expose the same object at the
-        // first index after `F::OBJECT_COUNT` for scan compatibility.
-        if SEC::OBJECT_TYPE == Some(object_type) && object_instance == 1 {
-            return Some(ObjectRoute::Module);
+        // Profile-module objects continue the same occurrence count and are
+        // exposed at consecutive classic indices after the family roster.
+        for index in 0..SEC::OBJECT_COUNT {
+            if SEC::object_type(index) == Some(object_type) {
+                seen += 1;
+                if seen == object_instance {
+                    return Some(ObjectRoute::Module(index));
+                }
+            }
         }
         None
     }
@@ -377,16 +380,16 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             return Self::ext_error(&hdr, PropertyReturnCode::AddressVoid);
         };
         let value = match route {
-            ObjectRoute::Module => {
+            ObjectRoute::Module(object) => {
                 let security_on = SEC::security_mode_enabled(&self.sec);
-                let Some((_, descriptor)) = SEC::property_descriptor(hdr.prop_id) else {
+                let Some((_, descriptor)) = SEC::property_descriptor(object, hdr.prop_id) else {
                     return Self::ext_error(&hdr, PropertyReturnCode::AddressVoid);
                 };
                 if !descriptor.can_read_secure(&access, security_on) {
                     self.record_access_failure(access, frame);
                     return Self::ext_error(&hdr, PropertyReturnCode::AccessDenied);
                 }
-                SEC::property_read::<FRAME_CAP>(&self.sec, hdr.prop_id, hdr.count, hdr.start_idx)
+                SEC::property_read::<FRAME_CAP>(&self.sec, object, hdr.prop_id, hdr.count, hdr.start_idx)
             }
             // A 12-bit PID that does not fit the classic roster's 8-bit space
             // cannot name one of a family's properties, so it is an address
@@ -401,7 +404,6 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                         return Self::ext_error(&hdr, PropertyReturnCode::AccessDenied);
                     }
                     self.property_read(obj, prop_id, hdr.count, hdr.start_idx, access)
-                        .map(|v| Vec::from_slice(&v).expect("a family property is at most ten octets"))
                 }
                 Err(_) => None,
             },
@@ -462,7 +464,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         };
         let data = hdr.data(frame);
         let policy_denied = match Self::resolve_object(hdr.object_type, hdr.object_instance) {
-            Some(ObjectRoute::Module) => SEC::property_descriptor(hdr.prop_id)
+            Some(ObjectRoute::Module(object)) => SEC::property_descriptor(object, hdr.prop_id)
                 .is_some_and(|(_, desc)| !desc.can_write_secure(&access, SEC::security_mode_enabled(&self.sec))),
             Some(ObjectRoute::Indexed(obj)) => u8::try_from(hdr.prop_id)
                 .ok()
@@ -473,11 +475,11 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             None => false,
         };
         let accepted = match Self::resolve_object(hdr.object_type, hdr.object_instance) {
-            Some(ObjectRoute::Module) => {
+            Some(ObjectRoute::Module(object)) => {
                 let security_on = SEC::security_mode_enabled(&self.sec);
-                SEC::property_descriptor(hdr.prop_id).map(|(_, desc)| {
+                SEC::property_descriptor(object, hdr.prop_id).map(|(_, desc)| {
                     if desc.can_write_secure(&access, security_on) {
-                        SEC::property_write(&mut self.sec, hdr.prop_id, hdr.count, hdr.start_idx, data)
+                        SEC::property_write(&mut self.sec, object, hdr.prop_id, hdr.count, hdr.start_idx, data)
                     } else {
                         PropertyReturnCode::AccessDenied
                     }
@@ -537,10 +539,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // Same lookup rule as the classic service: a zero PID means "the
         // property at this index", anything else means "this property".
         let found = Self::resolve_object(hdr.object_type, hdr.object_instance).and_then(|route| match route {
-            ObjectRoute::Module if hdr.prop_id == 0 => {
-                SEC::property_descriptor_at(hdr.prop_idx).map(|desc| (hdr.prop_idx, desc))
+            ObjectRoute::Module(object) if hdr.prop_id == 0 => {
+                SEC::property_descriptor_at(object, hdr.prop_idx).map(|desc| (hdr.prop_idx, desc))
             }
-            ObjectRoute::Module => SEC::property_descriptor(hdr.prop_id),
+            ObjectRoute::Module(object) => SEC::property_descriptor(object, hdr.prop_id),
             ObjectRoute::Indexed(obj) if hdr.prop_id == 0 => {
                 let idx = u8::try_from(hdr.prop_idx).ok()?;
                 Self::property_spec(obj, idx).map(|spec| (u16::from(idx), spec.descriptor))

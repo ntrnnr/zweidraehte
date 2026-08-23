@@ -13,7 +13,7 @@ use zweidraehte_proto::messages::apdu::load_control::LoadState;
 use crate::device::{DeviceIdentity, MAX_AUTH_LEVELS, MAX_LSM, Microdevice};
 use crate::family::MicroDeviceFamily;
 use crate::management::Lsm;
-use crate::security::{DataSecure, DataSecureState, MicroSecurityResources, SecurityModule};
+use crate::security::{DataSecure, DataSecureProfile, DataSecureState, MicroSecurityResources, SecurityModule};
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct MicroSnapshot {
@@ -110,7 +110,9 @@ pub struct SecureMicroSnapshot<S, const GRP: usize, const GO: usize> {
 }
 
 impl<S: MicroSecurityResources + Clone + 'static, const GRP: usize, const GO: usize> SecureMicroSnapshot<S, GRP, GO> {
-    pub fn capture<F: MicroDeviceFamily, const N: usize>(device: &Microdevice<F, N, DataSecure<S, GRP, GO>>) -> Self {
+    pub fn capture<F: MicroDeviceFamily, const N: usize, P: DataSecureProfile>(
+        device: &Microdevice<F, N, DataSecure<S, GRP, GO, P>>,
+    ) -> Self {
         Self {
             base: MicroSnapshot::capture_common(device),
             security: device.sec.to_config(),
@@ -119,11 +121,11 @@ impl<S: MicroSecurityResources + Clone + 'static, const GRP: usize, const GO: us
         }
     }
 
-    pub fn restore<F: MicroDeviceFamily, const N: usize>(
+    pub fn restore<F: MicroDeviceFamily, const N: usize, P: DataSecureProfile>(
         &self,
         identity: DeviceIdentity,
         time_divisor: u32,
-    ) -> Microdevice<F, N, DataSecure<S, GRP, GO>> {
+    ) -> Microdevice<F, N, DataSecure<S, GRP, GO, P>> {
         self.base.restore_with_security(
             identity,
             time_divisor,

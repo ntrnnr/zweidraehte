@@ -84,6 +84,25 @@ pub type PlainSystem7<
     const PEI_TYPE: u8,
     P = families::system7::StandardSystem7MemoryPolicy<EEPROM_LEN>,
 > = Microdevice<System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>>;
+/// Data Secure composed onto the micro System 7 family. The mask remains
+/// 0705h; Data Secure is expressed by the profile module, not a different
+/// device descriptor.
+pub type SecureSystem7<
+    S,
+    const GROUP_KEYS: usize,
+    const GROUP_OBJECTS: usize,
+    const EEPROM_LEN: usize,
+    const COT_ADDR: u16,
+    const MANUFACTURER_ID: u16,
+    const APPLICATION_ID: u16,
+    const APPLICATION_VERSION: u8,
+    const PEI_TYPE: u8,
+    P = families::system7::StandardSystem7MemoryPolicy<EEPROM_LEN>,
+> = Microdevice<
+    System7Family<EEPROM_LEN, COT_ADDR, MANUFACTURER_ID, APPLICATION_ID, APPLICATION_VERSION, PEI_TYPE, P>,
+    { frame::SECURE_EXTENDED_FRAME },
+    DataSecure<S, GROUP_KEYS, GROUP_OBJECTS, security::System7DataSecureProfile>,
+>;
 
 /// Crate-internal logging shim: `log` on the host, `defmt` on embedded,
 /// nothing when neither feature is enabled. Only `debug!` exists — this

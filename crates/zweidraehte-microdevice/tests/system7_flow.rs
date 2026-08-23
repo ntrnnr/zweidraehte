@@ -181,18 +181,25 @@ fn property_descriptions_and_values_share_one_roster() {
     let rsp = exchange(&mut dev, 7, ApciCode::PropertyValueRead, 0, &[0, 12, 0x10, 0x01], 0).expect("read");
     assert_eq!(&apdu(&rsp)[6..], &[0x00, 0x83]);
 
+    // The two address components share the same virtual IA backing as the
+    // RT8 address table and the full System 7 Device Object.
+    let rsp = exchange(&mut dev, 8, ApciCode::PropertyValueRead, 0, &[0, 57, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[DUT.0[0]]);
+    let rsp = exchange(&mut dev, 9, ApciCode::PropertyValueRead, 0, &[0, 58, 0x10, 0x01], 0).expect("read");
+    assert_eq!(&apdu(&rsp)[6..], &[DUT.0[1]]);
+
     // Unknown PID lookup and an exhausted index scan both return the
     // zero-descriptor form, with the caller's lookup key preserved.
-    let rsp = exchange(&mut dev, 8, ApciCode::PropertyDescriptionRead, 0, &[0, 0xFE, 0], 0).expect("negative reply");
+    let rsp = exchange(&mut dev, 10, ApciCode::PropertyDescriptionRead, 0, &[0, 0xFE, 0], 0).expect("negative reply");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0xFE, 0x00, 0, 0, 0, 0]);
-    let rsp = exchange(&mut dev, 9, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 9], 0).expect("end of roster");
-    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x00, 0x09, 0, 0, 0, 0]);
+    let rsp = exchange(&mut dev, 11, ApciCode::PropertyDescriptionRead, 0, &[0, 0, 11], 0).expect("end of roster");
+    assert_eq!(&apdu(&rsp)[2..], &[0x00, 0x00, 0x0B, 0, 0, 0, 0]);
 
     // A negative value response keeps the complete 12-bit start index;
     // only the count nibble is cleared. This catches payload/header codecs
     // that accidentally zero the entire packed high octet.
     let rsp =
-        exchange(&mut dev, 10, ApciCode::PropertyValueWrite, 0, &[0, 0xFE, 0x1A, 0xBC, 0], 0).expect("negative reply");
+        exchange(&mut dev, 12, ApciCode::PropertyValueWrite, 0, &[0, 0xFE, 0x1A, 0xBC, 0], 0).expect("negative reply");
     assert_eq!(&apdu(&rsp)[2..], &[0x00, 0xFE, 0x0A, 0xBC]);
 }
 

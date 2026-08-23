@@ -97,6 +97,20 @@ const DEVICE_PROPERTIES: &[PropertySpec] = &[
         PropertyBacking::MaxApduLength,
     ),
     PropertySpec::read_only(pid::MANUFACTURER_ID, PDT_UnsignedInt::ID, 3, PropertyBacking::FamilySpecific),
+    PropertySpec::read_only_with_policy(
+        pid::device::SUBNET_ADDRESS,
+        PDT_UnsignedChar::ID,
+        3,
+        AccessPolicy::OPEN_OFF_TOOL_ON,
+        PropertyBacking::IndividualAddressSubnet,
+    ),
+    PropertySpec::read_only_with_policy(
+        pid::device::DEVICE_ADDRESS,
+        PDT_UnsignedChar::ID,
+        3,
+        AccessPolicy::OPEN_OFF_TOOL_ON,
+        PropertyBacking::IndividualAddressDevice,
+    ),
 ];
 
 const TABLE_PROPERTIES: &[PropertySpec] = &[
@@ -284,11 +298,7 @@ impl<
         match RunEvent::from(value) {
             RunEvent::Ready => {}
             RunEvent::Restart => mgmt.run_stopped[machine] = false,
-            RunEvent::Stop => {
-                if mgmt.lsm[machine].state == LoadState::Loaded {
-                    mgmt.run_stopped[machine] = true;
-                }
-            }
+            RunEvent::Stop if mgmt.lsm[machine].state == LoadState::Loaded => mgmt.run_stopped[machine] = true,
             // Unknown events are ignored by the state machine.  They are not
             // a malformed property write and therefore still receive the
             // unchanged state in the positive response.

@@ -4,7 +4,7 @@ use core::cell::Cell;
 
 use heapless::Vec;
 
-use zweidraehte_proto::access::{AccessContext, AccessPolicy, ClientRole, SecurityMode};
+use zweidraehte_proto::access::{AccessContext, AccessLevel, AccessPolicy, ClientRole, SecurityMode};
 use zweidraehte_proto::crypto::{
     ccm,
     scf::{SecureServiceType, SecurityControlField},
@@ -32,6 +32,7 @@ use crate::sal::{ReplyKey, ReplySecurity, RequestContext};
 use super::{FunctionResult, MicroSecurityResources, SalResult, ScheduledRestart, SecurityModule};
 
 pub const SECURITY_IO_TYPE: u16 = 0x0011;
+pub const GROUP_OBJECT_TABLE_IO_TYPE: u16 = 0x0009;
 
 /// `PID_OBJECT_NAME` for the Security Interface Object.
 const OBJECT_NAME: &[u8] = b"SecurityIO";
@@ -44,7 +45,116 @@ const OBJECT_NAME: &[u8] = b"SecurityIO";
 /// (`Cc` — mandatory only when non-tool point-to-point is supported)
 /// unimplemented rather than present-but-empty. The bench MV-0021 exposes
 /// neither, and its product file declares no P2P capacity.
-pub struct DataSecure<S, const GRP: usize, const GO: usize>(core::marker::PhantomData<S>);
+pub struct DataSecure<S, const GRP: usize, const GO: usize, P = Bcu2DataSecureProfile>(
+    core::marker::PhantomData<(S, P)>,
+);
+
+/// The family-facing shape of the Data Secure profile module.
+///
+/// Cryptography, Security IO state and persistence stay identical. Only the
+/// observable access-level notation and the objects/properties contributed by
+/// the composition differ between a four-level BCU2 and a sixteen-level
+/// System 7 device.
+pub trait DataSecureProfile: 'static {
+    const MAX_ACCESS_LEVELS: u8;
+    const OBJECT_COUNT: u8;
+
+    fn object_type(index: u8) -> Option<u16>;
+    fn device_property_spec(index: u8) -> Option<PropertySpec>;
+
+    fn adjust_family_property(_object_index: u8, spec: PropertySpec) -> PropertySpec {
+        spec
+    }
+}
+
+/// Data Secure exposure for the four-level BCU2 composition.
+pub struct Bcu2DataSecureProfile;
+
+impl DataSecureProfile for Bcu2DataSecureProfile {
+    const MAX_ACCESS_LEVELS: u8 = 4;
+    const OBJECT_COUNT: u8 = 1;
+
+    fn object_type(index: u8) -> Option<u16> {
+        (index == 0).then_some(SECURITY_IO_TYPE)
+    }
+
+    fn device_property_spec(index: u8) -> Option<PropertySpec> {
+        match index {
+            // 06 Profiles §9.1.2.6.2: BCU2 otherwise realizes programming
+            // mode only at memory address 0060h.
+            0 => Some(PropertySpec::read_write_with_policy(
+                pid::device::PROGMODE,
+                ProgrammingMode::ID,
+                3,
+                2,
+                AccessPolicy::READ_OPEN_WRITE_TOOL,
+                PropertyBacking::ProgrammingMode,
+            )),
+            // AN193 object-type 0: both address components are read-only
+            // with 3FF/00C. In Security Mode this admits Tool A+C but not
+            // plain or authentication-only reads.
+            1 => Some(PropertySpec::read_only_with_policy(
+                pid::device::SUBNET_ADDRESS,
+                PDT_UnsignedChar::ID,
+                3,
+                AccessPolicy::OPEN_OFF_TOOL_ON,
+                PropertyBacking::IndividualAddressSubnet,
+            )),
+            2 => Some(PropertySpec::read_only_with_policy(
+                pid::device::DEVICE_ADDRESS,
+                PDT_UnsignedChar::ID,
+                3,
+                AccessPolicy::OPEN_OFF_TOOL_ON,
+                PropertyBacking::IndividualAddressDevice,
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// Data Secure exposure composed onto the sixteen-level System 7 profile.
+pub struct System7DataSecureProfile;
+
+impl DataSecureProfile for System7DataSecureProfile {
+    const MAX_ACCESS_LEVELS: u8 = 16;
+    const OBJECT_COUNT: u8 = 2;
+
+    fn object_type(index: u8) -> Option<u16> {
+        match index {
+            0 => Some(SECURITY_IO_TYPE),
+            // Secure System 7 has no base Group Object Table IO. The profile
+            // adds the mandatory host object while the RT8 table itself stays
+            // at its product-defined memory address.
+            1 => Some(GROUP_OBJECT_TABLE_IO_TYPE),
+            _ => None,
+        }
+    }
+
+    fn device_property_spec(index: u8) -> Option<PropertySpec> {
+        (index == 0).then(|| PropertySpec {
+            descriptor: PropertyDescriptor::new(
+                pid::device::IO_LIST,
+                PDT_UnsignedInt::ID,
+                0,
+                PropertyAccess::ReadOnly,
+                AccessLevel::Runtime.for_levels(Self::MAX_ACCESS_LEVELS),
+                AccessLevel::SystemManufacturer.for_levels(Self::MAX_ACCESS_LEVELS),
+                AccessPolicy::READ_OPEN_WRITE_TOOL,
+            ),
+            backing: PropertyBacking::InterfaceObjectList,
+        })
+    }
+
+    fn adjust_family_property(object_index: u8, mut spec: PropertySpec) -> PropertySpec {
+        // Data Security strengthens the base profile's Programming Mode write
+        // from controller level 3 to configuration level 2. The property is
+        // already in the System 7 Device Object and must not appear twice.
+        if object_index == 0 && spec.descriptor.pid == pid::device::PROGMODE {
+            spec.descriptor.write_level = AccessLevel::Configuration.for_levels(Self::MAX_ACCESS_LEVELS);
+        }
+        spec
+    }
+}
 
 /// Runtime state of the Security Interface Object.
 ///
@@ -114,9 +224,9 @@ impl<S, const GRP: usize, const GO: usize> DataSecureState<S, GRP, GO> {
 }
 
 /// The Security Interface Object's spec-ordered property roster.
-fn descriptor<const GRP: usize, const GO: usize>(index: u16) -> Option<PropertyDescriptor> {
+fn descriptor<P: DataSecureProfile, const GRP: usize, const GO: usize>(index: u16) -> Option<PropertyDescriptor> {
     let configuration = 2;
-    let runtime = 3;
+    let runtime = AccessLevel::Runtime.for_levels(P::MAX_ACCESS_LEVELS);
     let system = 0;
     let rw = PropertyAccess::ReadWrite;
     let ro = PropertyAccess::ReadOnly;
@@ -412,47 +522,25 @@ fn one_element<const N: usize>() -> Option<Vec<u8, N>> {
     scalar(&1u16.to_be_bytes())
 }
 
-impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> SecurityModule for DataSecure<S, GRP, GO> {
+impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: DataSecureProfile> SecurityModule
+    for DataSecure<S, GRP, GO, P>
+{
     type State = DataSecureState<S, GRP, GO>;
     type ReplyContext = Option<ReplySecurity>;
     const ENABLED: bool = true;
     const FRAME_OVERHEAD: usize = secure::OVERHEAD;
-    const OBJECT_TYPE: Option<u16> = Some(SECURITY_IO_TYPE);
+    const OBJECT_COUNT: u8 = P::OBJECT_COUNT;
+
+    fn object_type(index: u8) -> Option<u16> {
+        P::object_type(index)
+    }
+
+    fn adjust_family_property(object_index: u8, spec: PropertySpec) -> PropertySpec {
+        P::adjust_family_property(object_index, spec)
+    }
 
     fn device_property_spec(index: u8) -> Option<PropertySpec> {
-        // These Device Object properties are obligations of the Data Secure
-        // composition, not mask 0021h. Keeping them here leaves a plain BCU2
-        // roster—and its binary—unchanged.
-        match index {
-            // 06 Profiles §9.1.2.6.2: BCU2 otherwise realizes programming
-            // mode only at memory address 0060h.
-            0 => Some(PropertySpec::read_write_with_policy(
-                pid::device::PROGMODE,
-                ProgrammingMode::ID,
-                3,
-                2,
-                AccessPolicy::READ_OPEN_WRITE_TOOL,
-                PropertyBacking::ProgrammingMode,
-            )),
-            // AN193 object-type 0: both address components are read-only
-            // with 3FF/00C. In Security Mode this admits Tool A+C but not
-            // plain or authentication-only reads.
-            1 => Some(PropertySpec::read_only_with_policy(
-                pid::device::SUBNET_ADDRESS,
-                PDT_UnsignedChar::ID,
-                3,
-                AccessPolicy::new(0x3FF, 0x00C),
-                PropertyBacking::IndividualAddressSubnet,
-            )),
-            2 => Some(PropertySpec::read_only_with_policy(
-                pid::device::DEVICE_ADDRESS,
-                PDT_UnsignedChar::ID,
-                3,
-                AccessPolicy::new(0x3FF, 0x00C),
-                PropertyBacking::IndividualAddressDevice,
-            )),
-            _ => None,
-        }
+        P::device_property_spec(index)
     }
 
     #[inline(always)]
@@ -460,9 +548,13 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
         None
     }
 
-    fn property_descriptor(prop_id: u16) -> Option<(u16, PropertyDescriptor)> {
+    fn property_descriptor(object: u8, prop_id: u16) -> Option<(u16, PropertyDescriptor)> {
+        if object != 0 {
+            let descriptor = Self::property_descriptor_at(object, 0)?;
+            return (descriptor.pid == prop_id).then_some((0, descriptor));
+        }
         for index in 0..=12 {
-            let desc = descriptor::<GRP, GO>(index)?;
+            let desc = descriptor::<P, GRP, GO>(index)?;
             if desc.pid == prop_id {
                 return Some((index, desc));
             }
@@ -470,11 +562,40 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
         None
     }
 
-    fn property_descriptor_at(index: u16) -> Option<PropertyDescriptor> {
-        descriptor::<GRP, GO>(index)
+    fn property_descriptor_at(object: u8, index: u16) -> Option<PropertyDescriptor> {
+        if object == 0 {
+            return descriptor::<P, GRP, GO>(index);
+        }
+        if P::object_type(object) != Some(GROUP_OBJECT_TABLE_IO_TYPE) || index != 0 {
+            return None;
+        }
+        Some(PropertyDescriptor::new(
+            pid::OBJECT_TYPE,
+            PDT_UnsignedInt::ID,
+            1,
+            PropertyAccess::ReadOnly,
+            AccessLevel::Runtime.for_levels(P::MAX_ACCESS_LEVELS),
+            AccessLevel::SystemManufacturer.for_levels(P::MAX_ACCESS_LEVELS),
+            AccessPolicy::READ_OPEN_WRITE_TOOL,
+        ))
     }
 
-    fn property_read<const N: usize>(state: &Self::State, prop_id: u16, count: u8, start: u16) -> Option<Vec<u8, N>> {
+    fn property_read<const N: usize>(
+        state: &Self::State,
+        object: u8,
+        prop_id: u16,
+        count: u8,
+        start: u16,
+    ) -> Option<Vec<u8, N>> {
+        if object != 0 {
+            if P::object_type(object) != Some(GROUP_OBJECT_TABLE_IO_TYPE) || prop_id != pid::OBJECT_TYPE {
+                return None;
+            }
+            if start == 0 {
+                return (count != 0).then(one_element).flatten();
+            }
+            return (count == 1 && start == 1).then(|| scalar(&GROUP_OBJECT_TABLE_IO_TYPE.to_be_bytes())).flatten();
+        }
         let sec = &state.security;
         // The array properties carry their own element addressing; the
         // scalars answer the `start = 0` probe with a count of one.
@@ -869,33 +990,51 @@ impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> Sec
 
     fn function_command<const N: usize>(
         state: &mut Self::State,
+        object: u8,
         prop_id: u16,
         data: &[u8],
     ) -> Option<FunctionResult<N>> {
+        if object != 0 {
+            return None;
+        }
         Self::handle_function_command(state, prop_id, data)
     }
 
     fn function_state_read<const N: usize>(
         state: &Self::State,
+        object: u8,
         prop_id: u16,
         data: &[u8],
     ) -> Option<FunctionResult<N>> {
+        if object != 0 {
+            return None;
+        }
         Self::handle_function_state_read(state, prop_id, data)
     }
 
-    fn function_access_denied<const N: usize>(prop_id: u16, data: &[u8]) -> FunctionResult<N> {
+    fn function_access_denied<const N: usize>(object: u8, prop_id: u16, data: &[u8]) -> FunctionResult<N> {
         let mut response = Vec::new();
         // Both standardized Security IO function properties repeat their
         // ServiceID after a negative return code and omit only ServiceInfo
         // (03/05/01 §6.3.5.3 and §6.3.9.3.3). The ServiceID is the
         // second function-specific request octet, after Reserved.
-        if matches!(prop_id, pid::security::SECURITY_MODE | pid::security::SECURITY_FAILURES_LOG) {
+        if object == 0 && matches!(prop_id, pid::security::SECURITY_MODE | pid::security::SECURITY_FAILURES_LOG) {
             response.push(data.get(1).copied().unwrap_or(0)).expect("one ServiceID fits response");
         }
         FunctionResult { code: PropertyReturnCode::AccessDenied, data: response }
     }
 
-    fn property_write(state: &mut Self::State, prop_id: u16, count: u8, start: u16, data: &[u8]) -> PropertyReturnCode {
+    fn property_write(
+        state: &mut Self::State,
+        object: u8,
+        prop_id: u16,
+        count: u8,
+        start: u16,
+        data: &[u8],
+    ) -> PropertyReturnCode {
+        if object != 0 {
+            return PropertyReturnCode::AccessReadOnly;
+        }
         // PDT_CONTROL is reachable through both the legacy data-property
         // path and the preferred extended function-property path. Keep the
         // transition and its unload side effects in one place so the two
@@ -1038,7 +1177,9 @@ fn adapt_answer<const N: usize>(answer: FunctionPropertyAnswer) -> FunctionResul
     }
 }
 
-impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize> DataSecure<S, GRP, GO> {
+impl<S: MicroSecurityResources + 'static, const GRP: usize, const GO: usize, P: DataSecureProfile>
+    DataSecure<S, GRP, GO, P>
+{
     pub(crate) fn handle_function_command<const N: usize>(
         state: &mut DataSecureState<S, GRP, GO>,
         prop_id: u16,

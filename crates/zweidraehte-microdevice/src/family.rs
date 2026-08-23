@@ -78,6 +78,11 @@ pub enum PropertyBacking {
     RunState,
     /// Storage and encoding handled by the family's property hooks.
     FamilySpecific,
+    /// The composed interface-object roster, encoded as two octets per type.
+    ///
+    /// The container owns this value because neither the base family nor an
+    /// optional profile module can see the other's object list in isolation.
+    InterfaceObjectList,
 }
 
 /// One entry in a BCU family's ordered interface-object property roster.

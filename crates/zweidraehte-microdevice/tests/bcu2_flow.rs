@@ -597,12 +597,19 @@ impl SecurityModule for StubSecurity {
     type State = StubSecurityState;
     type ReplyContext = ();
     const ENABLED: bool = true;
-    const OBJECT_TYPE: Option<u16> = Some(SECURITY_IO);
+    const OBJECT_COUNT: u8 = 1;
+
+    fn object_type(index: u8) -> Option<u16> {
+        (index == 0).then_some(SECURITY_IO)
+    }
 
     fn plain_reply_context() {}
 
-    fn property_descriptor(prop_id: u16) -> Option<(u16, zweidraehte_proto::properties::PropertyDescriptor)> {
-        (prop_id == 51).then(|| {
+    fn property_descriptor(
+        object: u8,
+        prop_id: u16,
+    ) -> Option<(u16, zweidraehte_proto::properties::PropertyDescriptor)> {
+        (object == 0 && prop_id == 51).then(|| {
             (
                 0,
                 zweidraehte_proto::properties::PropertyDescriptor::new(
@@ -618,17 +625,21 @@ impl SecurityModule for StubSecurity {
         })
     }
 
-    fn property_descriptor_at(index: u16) -> Option<zweidraehte_proto::properties::PropertyDescriptor> {
-        (index == 0).then(|| Self::property_descriptor(51).expect("PID 51 exists").1)
+    fn property_descriptor_at(object: u8, index: u16) -> Option<zweidraehte_proto::properties::PropertyDescriptor> {
+        (object == 0 && index == 0).then(|| Self::property_descriptor(0, 51).expect("PID 51 exists").1)
     }
 
     fn property_read<const N: usize>(
         state: &Self::State,
+        object: u8,
         prop_id: u16,
         count: u8,
         start: u16,
     ) -> Option<heapless::Vec<u8, N>> {
         let mut v = heapless::Vec::new();
+        if object != 0 {
+            return None;
+        }
         if start == 0 {
             // Element-count probe.
             let _ = v.extend_from_slice(&1u16.to_be_bytes());
@@ -643,12 +654,13 @@ impl SecurityModule for StubSecurity {
 
     fn property_write(
         state: &mut Self::State,
+        object: u8,
         prop_id: u16,
         _count: u8,
         _start: u16,
         data: &[u8],
     ) -> PropertyReturnCode {
-        if prop_id != 51 || data.is_empty() {
+        if object != 0 || prop_id != 51 || data.is_empty() {
             return PropertyReturnCode::DataTypeConflict;
         }
         state.mode = data[0];

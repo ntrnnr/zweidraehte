@@ -45,12 +45,13 @@ pub struct ScheduledRestart {
     pub wipe_individual_address: Option<bool>,
 }
 
-/// A profile module contributing an interface object reached by type.
+/// A profile module contributing zero or more interface objects reached by
+/// type.
 ///
 /// Kept deliberately narrow: the module owns some state and answers property
-/// reads and writes for one object type. Everything else — frame handling,
-/// the transport layer, the classic management model — stays the base
-/// stack's, which is what "composed onto a base profile" means.
+/// reads and writes for its contributed objects. Everything else — frame
+/// handling, the transport layer, the classic management model — stays the
+/// base stack's, which is what "composed onto a base profile" means.
 pub trait SecurityModule: 'static {
     /// Per-device state this module owns, held inside [`Microdevice`].
     ///
@@ -88,16 +89,28 @@ pub trait SecurityModule: 'static {
     /// profile has no envelope; Data Secure adds the fixed S-A_Data overhead.
     const FRAME_OVERHEAD: usize = 0;
 
-    /// The interface object type this module serves, if it serves one.
+    /// Number of interface objects contributed after the base-family roster.
     ///
-    /// `None` for a module that contributes no object, which is what makes
-    /// [`NoSecurity`] cost nothing: the resolution branch folds away.
+    /// `NoSecurity` contributes zero, so every lookup branch folds away.
+    /// Data Secure contributes its Security IO; profiles which require a
+    /// Group Object Table host may contribute that as a second object without
+    /// pretending it belongs to mask 0705h itself.
+    const OBJECT_COUNT: u8 = 0;
+
+    /// Type of one contributed object, addressed by its module-local index.
+    fn object_type(_index: u8) -> Option<u16> {
+        None
+    }
+
+    /// Refine a base-family descriptor when composition changes its policy.
     ///
-    /// The composed management server also exposes this object at the first
-    /// index after the base family's roster. Keeping that rule here rather
-    /// than changing the family is important: Data Secure is a profile module,
-    /// not a property of mask version 0021h.
-    const OBJECT_TYPE: Option<u16> = None;
+    /// Data Secure strengthens System 7's existing PID_PROGMODE write level;
+    /// BCU2 instead contributes the whole property because its base roster
+    /// lacks it. Keeping this hook profile-owned avoids mask checks in the
+    /// generic management server.
+    fn adjust_family_property(_object_index: u8, spec: PropertySpec) -> PropertySpec {
+        spec
+    }
 
     /// Property contributed to the Device Object by this profile module.
     ///
@@ -110,12 +123,12 @@ pub trait SecurityModule: 'static {
     }
 
     /// Descriptor lookup for the module object's property roster.
-    fn property_descriptor(_prop_id: u16) -> Option<(u16, PropertyDescriptor)> {
+    fn property_descriptor(_object: u8, _prop_id: u16) -> Option<(u16, PropertyDescriptor)> {
         None
     }
 
     /// Descriptor lookup by the property's observable zero-based index.
-    fn property_descriptor_at(_index: u16) -> Option<PropertyDescriptor> {
+    fn property_descriptor_at(_object: u8, _index: u16) -> Option<PropertyDescriptor> {
         None
     }
 
@@ -127,6 +140,7 @@ pub trait SecurityModule: 'static {
     /// as the address error.
     fn property_read<const N: usize>(
         _state: &Self::State,
+        _object: u8,
         _prop_id: u16,
         _count: u8,
         _start: u16,
@@ -140,6 +154,7 @@ pub trait SecurityModule: 'static {
     /// caller renders as the empty response 03/03/07 §3.4.4 specifies.
     fn function_command<const N: usize>(
         _state: &mut Self::State,
+        _object: u8,
         _prop_id: u16,
         _data: &[u8],
     ) -> Option<FunctionResult<N>> {
@@ -149,6 +164,7 @@ pub trait SecurityModule: 'static {
     /// `A_FunctionPropertyExtState_Read` against the module's object.
     fn function_state_read<const N: usize>(
         _state: &Self::State,
+        _object: u8,
         _prop_id: u16,
         _data: &[u8],
     ) -> Option<FunctionResult<N>> {
@@ -160,7 +176,7 @@ pub trait SecurityModule: 'static {
     /// Function properties may require part of the request to be echoed even
     /// on an error. The generic server cannot infer that format; a module
     /// without such a requirement returns only the error code.
-    fn function_access_denied<const N: usize>(_prop_id: u16, _data: &[u8]) -> FunctionResult<N> {
+    fn function_access_denied<const N: usize>(_object: u8, _prop_id: u16, _data: &[u8]) -> FunctionResult<N> {
         FunctionResult { code: PropertyReturnCode::AccessDenied, data: Vec::new() }
     }
 
@@ -277,6 +293,7 @@ pub trait SecurityModule: 'static {
     /// being misreported as authorization failures.
     fn property_write(
         _state: &mut Self::State,
+        _object: u8,
         _prop_id: u16,
         _count: u8,
         _start: u16,
@@ -338,7 +355,7 @@ pub enum ObjectRoute {
     /// An object in the family's indexed roster.
     Indexed(u8),
     /// The profile module's object.
-    Module,
+    Module(u8),
 }
 
 /// One function-property answer: a return code and the data after it.
@@ -349,7 +366,10 @@ pub struct FunctionResult<const N: usize> {
 
 mod data_secure;
 
-pub use data_secure::{DataSecure, DataSecureState, SECURITY_IO_TYPE};
+pub use data_secure::{
+    Bcu2DataSecureProfile, DataSecure, DataSecureProfile, DataSecureState, GROUP_OBJECT_TABLE_IO_TYPE,
+    SECURITY_IO_TYPE, System7DataSecureProfile,
+};
 
 /// What the S-AL decided about an incoming frame.
 pub enum SalResult<R> {

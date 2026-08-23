@@ -191,7 +191,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         // the way the mask firmware ignores anything it does not
         // decode — the TL ACK still goes out, no reply follows.
         let has_auth = F::AUTH_LEVELS > 0;
-        let has_properties = F::OBJECT_COUNT > 0 || SEC::OBJECT_TYPE.is_some();
+        let has_properties = F::OBJECT_COUNT > 0 || SEC::OBJECT_COUNT > 0;
         // The extended services come with the extended APDU, not separately.
         // 06 Profiles §9.1.2.3 makes both obligations of the same module, and
         // the wire agrees: `A_PropertyExtDescription_Response` is a fixed 23
@@ -824,25 +824,32 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
 
     pub(crate) fn property_spec(object_index: u8, property_index: u8) -> Option<PropertySpec> {
         if let Some(spec) = F::property_spec(object_index, property_index) {
-            return Some(spec);
+            return Some(SEC::adjust_family_property(object_index, spec));
         }
         if object_index != 0 {
             return None;
         }
         let module_index = property_index.checked_sub(Self::family_device_property_count())?;
-        SEC::device_property_spec(module_index)
+        let mut spec = SEC::device_property_spec(module_index)?;
+        if spec.backing == PropertyBacking::InterfaceObjectList {
+            spec.descriptor.max_elements = u16::from(F::OBJECT_COUNT) + u16::from(SEC::OBJECT_COUNT);
+        }
+        Some(spec)
     }
 
     pub(crate) fn property_spec_by_id(object_index: u8, property_id: u16) -> Option<(u8, PropertySpec)> {
-        if let Some(found) = F::property_spec_by_id(object_index, property_id) {
-            return Some(found);
+        if let Some((index, spec)) = F::property_spec_by_id(object_index, property_id) {
+            return Some((index, SEC::adjust_family_property(object_index, spec)));
         }
         if object_index != 0 {
             return None;
         }
         let base = Self::family_device_property_count();
         for module_index in 0..=u8::MAX - base {
-            let spec = SEC::device_property_spec(module_index)?;
+            let mut spec = SEC::device_property_spec(module_index)?;
+            if spec.backing == PropertyBacking::InterfaceObjectList {
+                spec.descriptor.max_elements = u16::from(F::OBJECT_COUNT) + u16::from(SEC::OBJECT_COUNT);
+            }
             if spec.descriptor.pid == property_id {
                 return Some((base + module_index, spec));
             }
@@ -850,8 +857,9 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         None
     }
 
-    pub(crate) fn is_module_object(object_index: u8) -> bool {
-        SEC::OBJECT_TYPE.is_some() && object_index == F::OBJECT_COUNT
+    pub(crate) fn module_object(object_index: u8) -> Option<u8> {
+        let module_index = object_index.checked_sub(F::OBJECT_COUNT)?;
+        SEC::object_type(module_index).map(|_| module_index)
     }
 
     fn property_value_read(&mut self, payload: &[u8], frame: &[u8], access: AccessContext) -> ServiceResult<FRAME_CAP> {
@@ -862,21 +870,20 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let prop_id = header.prop_id as u8;
         let count = header.count as u8;
         let security_on = SEC::security_mode_enabled(&self.sec);
-        let module_object = Self::is_module_object(obj);
-        let descriptor = if module_object {
-            SEC::property_descriptor(u16::from(prop_id)).map(|(_, descriptor)| descriptor)
+        let module_object = Self::module_object(obj);
+        let descriptor = if let Some(module_object) = module_object {
+            SEC::property_descriptor(module_object, u16::from(prop_id)).map(|(_, descriptor)| descriptor)
         } else {
             Self::property_spec_by_id(obj, u16::from(prop_id)).map(|(_, spec)| spec.descriptor)
         };
         let denied =
             SEC::ENABLED && descriptor.is_some_and(|descriptor| !descriptor.can_read_secure(&access, security_on));
-        let result = if module_object {
-            descriptor
-                .filter(|descriptor| descriptor.can_read_secure(&access, security_on))
-                .and_then(|_| SEC::property_read::<FRAME_CAP>(&self.sec, u16::from(prop_id), count, header.start_idx))
+        let result = if let Some(module_object) = module_object {
+            descriptor.filter(|descriptor| descriptor.can_read_secure(&access, security_on)).and_then(|_| {
+                SEC::property_read::<FRAME_CAP>(&self.sec, module_object, u16::from(prop_id), count, header.start_idx)
+            })
         } else {
             self.property_read(obj, prop_id, count, header.start_idx, access)
-                .map(|value| Vec::from_slice(&value).expect("family property fits frame"))
         };
         if denied {
             self.record_access_failure(access, frame);
@@ -902,20 +909,21 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let prop_id = header.prop_id as u8;
         let count = header.count as u8;
         let security_on = SEC::security_mode_enabled(&self.sec);
-        let module_object = Self::is_module_object(obj);
-        let descriptor = if module_object {
-            SEC::property_descriptor(u16::from(prop_id)).map(|(_, descriptor)| descriptor)
+        let module_object = Self::module_object(obj);
+        let descriptor = if let Some(module_object) = module_object {
+            SEC::property_descriptor(module_object, u16::from(prop_id)).map(|(_, descriptor)| descriptor)
         } else {
             Self::property_spec_by_id(obj, u16::from(prop_id)).map(|(_, spec)| spec.descriptor)
         };
         let denied =
             SEC::ENABLED && descriptor.is_some_and(|descriptor| !descriptor.can_write_secure(&access, security_on));
-        let accepted = if module_object {
+        let accepted = if let Some(module_object) = module_object {
             descriptor
                 .filter(|descriptor| descriptor.can_write_secure(&access, security_on))
                 .map(|_| {
                     SEC::property_write(
                         &mut self.sec,
+                        module_object,
                         u16::from(prop_id),
                         count,
                         header.start_idx,
@@ -933,11 +941,10 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
             // Positive confirmation carries the property's current
             // value — the read-back a client would get, which for the
             // load-state controls is the machine's new state.
-            if module_object {
-                SEC::property_read::<FRAME_CAP>(&self.sec, u16::from(prop_id), count, header.start_idx)
+            if let Some(module_object) = module_object {
+                SEC::property_read::<FRAME_CAP>(&self.sec, module_object, u16::from(prop_id), count, header.start_idx)
             } else {
                 self.property_read(obj, prop_id, count, header.start_idx, access)
-                    .map(|value| Vec::from_slice(&value).expect("family property fits frame"))
             }
         } else {
             None
@@ -965,7 +972,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         count: u8,
         start: u16,
         access: AccessContext,
-    ) -> Option<Vec<u8, 10>> {
+    ) -> Option<Vec<u8, FRAME_CAP>> {
         let (_, spec) = Self::property_spec_by_id(obj, u16::from(prop_id))?;
         let allowed = if SEC::ENABLED {
             spec.descriptor.can_read_secure(&access, SEC::security_mode_enabled(&self.sec))
@@ -978,14 +985,19 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         if start == 0 {
             return (count != 0).then(|| {
                 let mut v = Vec::new();
-                let _ = v.extend_from_slice(&1u16.to_be_bytes());
+                let elements = if spec.backing == PropertyBacking::InterfaceObjectList {
+                    u16::from(F::OBJECT_COUNT) + u16::from(SEC::OBJECT_COUNT)
+                } else {
+                    1
+                };
+                let _ = v.extend_from_slice(&elements.to_be_bytes());
                 v
             });
         }
-        if count != 1 || start != 1 {
+        if spec.backing != PropertyBacking::InterfaceObjectList && (count != 1 || start != 1) {
             return None;
         }
-        let mut v: Vec<u8, 10> = Vec::new();
+        let mut v: Vec<u8, FRAME_CAP> = Vec::new();
         match spec.backing {
             PropertyBacking::ObjectType => {
                 let _ = v.extend_from_slice(&F::object_type(obj).to_be_bytes());
@@ -1034,13 +1046,25 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 let _ = v.push(state);
             }
             PropertyBacking::FamilySpecific => {
-                return F::property_read_hook(
-                    obj,
-                    u16::from(prop_id),
-                    self.eeprom.as_ref(),
-                    &self.identity,
-                    &self.mgmt,
-                );
+                let value =
+                    F::property_read_hook(obj, u16::from(prop_id), self.eeprom.as_ref(), &self.identity, &self.mgmt)?;
+                v.extend_from_slice(&value).ok()?;
+            }
+            PropertyBacking::InterfaceObjectList => {
+                let total = u16::from(F::OBJECT_COUNT) + u16::from(SEC::OBJECT_COUNT);
+                let first = start.checked_sub(1)?;
+                if first >= total || count == 0 {
+                    return None;
+                }
+                let end = (first + u16::from(count)).min(total);
+                for index in first..end {
+                    let object_type = if index < u16::from(F::OBJECT_COUNT) {
+                        F::object_type(index as u8)
+                    } else {
+                        SEC::object_type((index - u16::from(F::OBJECT_COUNT)) as u8)?
+                    };
+                    v.extend_from_slice(&object_type.to_be_bytes()).ok()?;
+                }
             }
         }
         Some(v)
@@ -1112,6 +1136,7 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
                 F::property_write_hook(obj, u16::from(prop_id), data, self.eeprom.as_mut(), &mut self.mgmt)
                     .unwrap_or(false)
             }
+            PropertyBacking::InterfaceObjectList => false,
             _ => false,
         }
     }
@@ -1143,11 +1168,12 @@ impl<F: MicroDeviceFamily, const FRAME_CAP: usize, SEC: SecurityModule> Microdev
         let obj = request.object_idx as u8;
         let requested_pid = request.prop_id as u8;
         let requested_idx = request.prop_idx;
-        let found = if Self::is_module_object(obj) {
+        let found = if let Some(module_object) = Self::module_object(obj) {
             if requested_pid == 0 {
-                SEC::property_descriptor_at(u16::from(requested_idx)).map(|descriptor| (requested_idx, descriptor))
+                SEC::property_descriptor_at(module_object, u16::from(requested_idx))
+                    .map(|descriptor| (requested_idx, descriptor))
             } else {
-                SEC::property_descriptor(u16::from(requested_pid))
+                SEC::property_descriptor(module_object, u16::from(requested_pid))
                     .and_then(|(index, descriptor)| u8::try_from(index).ok().map(|index| (index, descriptor)))
             }
         } else if requested_pid == 0 {
